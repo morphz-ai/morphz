@@ -25,6 +25,32 @@ test("requires publication metadata for every blog post", async () => {
   }
 });
 
+test("cognitive OS articles explain observation, frame, and session residency in both languages", async () => {
+  const sources = await Promise.all(["zh", "en"].map((locale) =>
+    readFile(new URL(`${locale}/cognitive-operating-system.md`, contentRoot), "utf8"),
+  ));
+  const examples = sources.map((source) => source.match(/```lisp\n([\s\S]*?)\n```/)?.[1]);
+  assert.ok(examples[0]);
+  assert.equal(examples[0], examples[1]);
+  assert.match(examples[0], /\(derive release\/regression-result\s+\(from @e42\)/);
+  assert.match(examples[0], /\(retire @e42\)/);
+  assert.match(sources[0].split("```lisp")[0], /观察（Observation）是一条.*输入记录/);
+  assert.match(sources[1].split("```lisp")[0], /An observation is an input record/);
+  assert.match(sources[0], /@e42.*立即退出活动上下文/);
+  assert.match(sources[1], /@e42.*immediately leaves the active context/);
+  const sourceLinks = sources.map((source) => [...source.matchAll(/\]\((https:\/\/github\.com\/morphz-ai\/morphz\/blob\/v0\.1\.2\/[^)]+)\)/g)].map((match) => match[1]));
+  assert.equal(sourceLinks[0].length, 3);
+  assert.deepEqual(sourceLinks[0], sourceLinks[1]);
+  for (const [index, prefix] of ["", "/en"].entries()) {
+    for (const term of ["context_tx", "restore", "retire-session", "restore-session", "schedule_tx", "thread_control", "active-session", "send_message", "session_signal"]) {
+      assert.ok(sources[index].includes(`\`${term}\``), `article explains ${term}`);
+    }
+    for (const related of ["/blog/from-chat-completion-to-structured-context-evaluation", "/blog/maintaining-context-without-compaction", "/blog/one-agent-multiple-threads", "/docs/sessions-and-concurrency"]) {
+      assert.ok(sources[index].includes(`](${prefix}${related})`));
+    }
+  }
+});
+
 test("concurrency articles keep mechanism names, source links, and related reading aligned", async () => {
   const slug = "one-agent-multiple-threads.md";
   const sources = await Promise.all(["zh", "en"].map((locale) =>

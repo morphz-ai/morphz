@@ -375,7 +375,7 @@ test("context-maintenance articles are discoverable, bilingual, and readable wit
   assert.ok(sitemap.includes(`https://morphz.ai/en/blog/${slug}`));
 });
 
-test("concurrency articles are listed first and serve their complete bilingual body without JavaScript", async () => {
+test("concurrency articles precede older articles and serve their complete bilingual body without JavaScript", async () => {
   const slug = "one-agent-multiple-threads";
   for (const [prefix, otherPrefix, title, finalHeading] of [
     ["", "/en", "一个 Agent，多条线程：Morphz 的并发调度", "成本与边界"],
@@ -407,6 +407,36 @@ test("concurrency articles are listed first and serve their complete bilingual b
   for (const prefix of ["", "/en"]) {
     assert.ok(sitemap.includes(`https://morphz.ai${prefix}/blog/${slug}`));
   }
+});
+
+test("cognitive OS articles are discoverable, bilingual, and readable without JavaScript", async () => {
+  const slug = "cognitive-operating-system";
+  for (const [locale, prefix, otherPrefix, title, finalHeading] of [
+    ["zh", "", "/en", "Morphz：一个认知操作系统的实现", "认知操作系统的职责"],
+    ["en", "/en", "", "Morphz: Implementing a Cognitive Operating System", "the-role-of-a-cognitive-operating-system"],
+  ]) {
+    const root = `${prefix}/blog`;
+    const index = await (await render(root)).text();
+    const cards = index.match(/<div class="blog-index__list">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    assert.equal(cards.match(/href="([^"]+)"/)?.[1], `${root}/${slug}`);
+    const response = await render(`${root}/${slug}`);
+    assert.equal(response.status, 200);
+    const article = await response.text();
+    assert.ok(article.includes(`<h1>${title}</h1>`));
+    const prose = article.match(/<div class="doc-prose blog-prose">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    for (const tool of ["context_tx", "schedule_tx", "send_message", "session_signal", "restore"]) {
+      assert.ok(prose.includes(`<code>${tool}</code>`));
+    }
+    assert.match(prose, /\(retire @e42\)/);
+    assert.ok(prose.includes(`<h2 id="${finalHeading}">`));
+    assert.ok(prose.includes(`/images/articles/cognitive-operating-system-${locale}-v1.svg`));
+    assert.doesNotMatch(prose, /motion-reveal|opacity:\s*0|visibility:\s*hidden/);
+    assert.ok(article.includes(`rel="canonical" href="https://morphz.ai${root}/${slug}"`));
+    const languageSwitch = article.match(/<a\b[^>]*class="language-switch"[^>]*>/)?.[0] ?? "";
+    assert.ok(languageSwitch.includes(`href="${otherPrefix}/blog/${slug}"`));
+  }
+  const sitemap = await (await render("/sitemap.xml")).text();
+  for (const prefix of ["", "/en"]) assert.ok(sitemap.includes(`https://morphz.ai${prefix}/blog/${slug}`));
 });
 
 test("renders the bilingual paper and native distribution pages", async () => {

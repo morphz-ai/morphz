@@ -6,6 +6,7 @@ const articles = [
   ["from-chat-completion-to-structured-context-evaluation", [["structured-context-evaluation", 800]]],
   ["maintaining-context-without-compaction", [["context-transactions", 735], ["cross-task-memory", 825]]],
   ["one-agent-multiple-threads", [["concurrent-threads", 725]]],
+  ["cognitive-operating-system", [["cognitive-operating-system", 2200, 1800]]],
 ];
 
 test("article diagrams are localized, accessible, self-contained static SVGs", async () => {
@@ -14,12 +15,12 @@ test("article diagrams are localized, accessible, self-contained static SVGs", a
       const markdown = await readFile(new URL(`../content/blog/${locale}/${slug}.md`, import.meta.url), "utf8");
       const figures = [...markdown.matchAll(/<figure class="article-figure">([\s\S]*?)<\/figure>/g)];
       assert.equal(figures.length, diagrams.length, `${locale}/${slug} figure count`);
-      for (const [index, [name, height]] of diagrams.entries()) {
+      for (const [index, [name, height, width = 1200]] of diagrams.entries()) {
         const src = `/images/articles/${name}-${locale}-v1.svg`;
         const figure = figures[index][1];
         assert.ok(figure.includes(`href="${src}"`), "full-size image is available as a link");
         assert.ok(figure.includes(`src="${src}"`));
-        assert.ok(figure.includes(`width="1200" height="${height}"`), "reserve image space before it loads");
+        assert.ok(figure.includes(`width="${width}" height="${height}"`), "reserve image space before it loads");
         assert.match(figure, /loading="lazy" decoding="async"/);
         assert.match(figure, /target="_blank" rel="noopener noreferrer" aria-label="[^"]+"/);
         const alt = figure.match(/\balt="([^"]+)"/)?.[1] ?? "";
@@ -30,7 +31,7 @@ test("article diagrams are localized, accessible, self-contained static SVGs", a
         assert.doesNotMatch(figure, /motion-reveal|opacity|visibility|onload|onerror/);
 
         const svg = await readFile(new URL(`../public${src}`, import.meta.url), "utf8");
-        assert.ok(svg.includes(`viewBox="0 0 1200 ${height}"`));
+        assert.ok(svg.includes(`viewBox="0 0 ${width} ${height}"`));
         assert.ok(svg.includes(`lang="${locale === "zh" ? "zh-CN" : "en"}"`));
         assert.match(svg, /role="img" aria-labelledby="title desc"/);
         assert.match(svg, /<title id="title">[^<]+<\/title><desc id="desc">[^<]+<\/desc>/);
@@ -45,7 +46,7 @@ test("article diagrams are localized, accessible, self-contained static SVGs", a
   }
 });
 
-test("all six article pages include real figures in server-rendered HTML", async () => {
+test("all article pages include real figures in server-rendered HTML", async () => {
   const { default: worker } = await import("../dist/server/index.js");
   for (const [locale, prefix] of [["zh", ""], ["en", "/en"]]) {
     for (const [slug, diagrams] of articles) {
