@@ -224,6 +224,43 @@ timer to Cell `park`, which atomically verifies the exact RuntimeStore revision,
 due ingress and ownership, saves the deadline, then fences the old process.
 Only a positive park receipt permits exit 0. Ambiguous authority failures exit
 nonzero and recover; they never reopen admission with a potentially stale fence.
+This is also enforced at the Store boundary: once the park RPC starts, its RAII
+decision guard fences the client on error, cancellation or success. Only an
+explicit `parked: false` receipt leaves the old owner usable. Failure before
+submitting park does not invalidate otherwise valid ownership.
+
+### Observer delivery boundary (transport not yet connected)
+
+`host_observers` supplies a pure local delivery queue and a one-time installable
+park barrier, bound to that Store's exact compute owner and epoch; it has no URL,
+credential, socket or transport implementation.
+The opt-in hosted executable does **not yet** install a publisher or replace its
+existing WebSocket admission guard. This is a tested prerequisite, not a claim
+that the complete Cloud observation path or scale-to-zero UI has shipped.
+
+Each cycle retains exact batches until their matching epoch/sequence receipts.
+Failed, mismatched or ambiguous acknowledgements cannot consume a batch or reuse
+its sequence with changed content. A cycle certifies the durable append frontier
+only after its last batch is acknowledged. Startup requires an acknowledged reset;
+non-Session facts require an empty checkpoint; oversized events require a reset
+for durable API resynchronization rather than truncation. Opt-in model request
+diagnostics never enter observer batches. Bounds are 64 events and 128 KiB per
+batch, with at most 64 durable facts and 64 drafts per staged cycle.
+
+While holding the native replica mutex, `try_park` freezes the shared queue and
+checks the actual Event Store append sequence, not producer timestamps or an
+empty-channel heuristic. Queue staging uses that same freeze lock. No new cycle,
+publication or native write may cross the park decision. Busy/preflight rejection
+releases the freeze; a successful or ambiguous park permanently closes it.
+Process-local activity is rechecked after the frontier read. New Event Store
+facts, pending resets and even ephemeral-only unacknowledged batches defer park.
+
+Socket-free regressions exercise the real Store, native SQLite replica/journal,
+and restore path against a fault-injected fenced authority. They cover late and
+backdated commits, a write blocked across park, explicit busy, lost park receipts,
+cancellation on both sides of commit, and a newer owner's recovery without lost
+or duplicate facts. They do not substitute for real Cloud delivery, Session
+authorization, host-exit/socket survival or three-platform product gates.
 
 Local workerd/native-process gates cover drain, orderly idle exit, cache-free
 replacement, and a real `schedule_tx` durable Objective/Thread whose native
@@ -337,6 +374,24 @@ precision, bounded pagination and capacity errors.
 - Clippy all targets with `-D warnings`, ordinary non-cloud `cargo check`, fmt,
   TypeScript and hosted dry-run passed. Synthetic credentials and loopback only;
   no real Provider spend, cloud deployment or production migration.
+
+### Verified on 2026-09-08 (local observer frontier and park decision)
+
+- Full Rust library with `remote-store`: **1,303 passed, 7 existing ignored**.
+  The 12 added tests cover exact retry batches, final-cycle acknowledgement,
+  explicit reset/capacity, owner/epoch binding, late/backdated native commits,
+  the final process-activity check, a write blocked across park, cancellation
+  before/after authority commit, lost receipts and cache-free owner recovery.
+- Rebuilt `morphz-runtime-host`; Clippy all targets with `-D warnings` passed.
+- Ordinary non-cloud `cargo check`, formatting and diff checks passed.
+- Cloud full suite with that rebuilt binary: **149 passed / 21 files**, including
+  all four actual native-process gates. This verifies that the park-decision
+  guard preserves existing drain, wake, recovery and business-ingress behavior.
+- The new observer queue/barrier remains unconnected to an outbound transport.
+  Its tests use a socket-free authority with real native SQLite; the existing
+  cross-repository host gates use local workerd and a synthetic Provider, not
+  production credentials or paid model calls. Full product observer/Edge/approval
+  integration and actual Linux/cloud deployment remain unverified.
 
 Builds use a separate temporary target with incremental/debug artifacts disabled;
 the verification cache is approximately 6 GiB, not a full-size debug target.

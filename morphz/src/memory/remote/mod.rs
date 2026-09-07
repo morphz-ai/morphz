@@ -2,6 +2,8 @@
 //! The local SQLite instance only computes transactions. A remote failure never
 //! acknowledges an operation or silently promotes that disposable replica.
 mod lease;
+#[cfg(test)]
+mod observer_tests;
 pub mod protocol;
 mod quiescence;
 mod replica;
@@ -13,6 +15,7 @@ pub mod host_configuration;
 pub mod host_credentials;
 pub mod host_files;
 pub mod host_lifecycle;
+pub mod host_observers;
 pub mod http;
 use protocol::{Commit, Fence, Head, RemoteStoreTransport, StoreError, PROTOCOL};
 use replica::Replica;
@@ -20,7 +23,7 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
 };
 use tokio::sync::Mutex;
@@ -32,6 +35,26 @@ pub struct RemoteRuntimeStore {
     lost: Arc<AtomicBool>,
     lease_control: Option<Arc<dyn protocol::RemoteStoreLeaseTransport>>,
     _lease_guard: Option<lease::LeaseGuard>,
+    observer_progress: OnceLock<Arc<host_observers::ObserverProgress>>,
+}
+
+/// Once a park RPC starts, only an explicit busy receipt proves this owner may
+/// continue. Error, cancellation and success all fence local work immediately.
+struct ParkDecision<'a> {
+    lost: &'a AtomicBool,
+    observers: Option<host_observers::ObserverPause>,
+    busy: bool,
+}
+
+impl Drop for ParkDecision<'_> {
+    fn drop(&mut self) {
+        if !self.busy {
+            self.lost.store(true, Ordering::Release);
+            if let Some(observers) = self.observers.take() {
+                observers.seal();
+            }
+        }
+    }
 }
 
 impl RemoteRuntimeStore {
@@ -46,6 +69,7 @@ impl RemoteRuntimeStore {
             lost: Arc::new(AtomicBool::new(false)),
             lease_control: None,
             _lease_guard: None,
+            observer_progress: OnceLock::new(),
         };
         // Connecting validates schema/ownership and restores the complete state;
         // never create a local empty Runtime because the remote is unreachable.
@@ -85,6 +109,7 @@ impl RemoteRuntimeStore {
             lost,
             lease_control: Some(transport),
             _lease_guard: Some(guard),
+            observer_progress: OnceLock::new(),
         };
         *store.replica.lock().await = Some(store.restore().await?);
         store.ensure_owned()?;
@@ -101,6 +126,20 @@ impl RemoteRuntimeStore {
 
     pub fn ownership_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.lost)
+    }
+
+    /// The hosted embedding installs its observer delivery barrier once, before
+    /// admitting HTTP. Ordinary/local Runtime embeddings do not select it.
+    pub fn install_observer_progress(
+        &self,
+        progress: Arc<host_observers::ObserverProgress>,
+    ) -> Result<(), StoreError> {
+        if progress.fence() != &self.fence {
+            return Err("observer barrier belongs to a different compute owner".into());
+        }
+        self.observer_progress
+            .set(progress)
+            .map_err(|_| "observer delivery barrier is already installed".into())
     }
 
     fn ensure_owned(&self) -> Result<(), StoreError> {
@@ -145,10 +184,31 @@ impl RemoteRuntimeStore {
             *slot = Some(replica);
             return Ok(false);
         }
-        let parked = self
+        let observer_pause = if let Some(progress) = self.observer_progress.get() {
+            let Some(pause) = progress.pause() else {
+                *slot = Some(replica);
+                return Ok(false);
+            };
+            if !pause.caught_up(&replica.store).await? || !process_idle() {
+                *slot = Some(replica);
+                return Ok(false);
+            }
+            Some(pause)
+        } else {
+            None
+        };
+        // Keep both the replica lock and the observer pause until the durable
+        // park decision. No new fact or publication may cross this boundary.
+        let lease_control = self
             .lease_control
             .as_ref()
-            .ok_or("parking requires owned compute")?
+            .ok_or("parking requires owned compute")?;
+        let mut decision = ParkDecision {
+            lost: &self.lost,
+            observers: observer_pause,
+            busy: false,
+        };
+        let parked = lease_control
             .park(
                 &self.fence,
                 replica.revision,
@@ -156,11 +216,11 @@ impl RemoteRuntimeStore {
             )
             .await?
             .parked;
-        if parked {
-            self.lost.store(true, Ordering::Release);
-        } else {
+        if !parked {
+            decision.busy = true;
             *slot = Some(replica);
         }
+        drop(decision);
         Ok(parked)
     }
 
