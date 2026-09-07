@@ -1,5 +1,7 @@
 pub mod lexical;
 pub mod postgres;
+#[cfg(feature = "remote-store")]
+pub mod remote;
 pub mod sqlite;
 
 pub use lexical::{

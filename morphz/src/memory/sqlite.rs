@@ -138,6 +138,11 @@ fn sqlite_has_wal_reset_fix(version: &str) -> bool {
 }
 
 impl SqliteStore {
+    #[cfg(feature = "remote-store")]
+    pub(super) fn computation_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::new_with_config(db_path, &SqliteStorageConfig::default()).await
     }

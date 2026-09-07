@@ -15,6 +15,7 @@ experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
 # lets deliberately minimal binaries omit the backend without presenting it as
 # an experimental Runtime capability.
 context-db = []
+remote-store = ["context-db"]
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
@@ -94,6 +95,10 @@ tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25.1"
 yao-lang = { path = "../yao" }
 morphz-cognitive-coordination = { path = "../experiments/morphz-cognitive-coordination", optional = true, default-features = false }
+
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
