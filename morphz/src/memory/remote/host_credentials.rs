@@ -2,7 +2,9 @@
 //! Root encryption keys stay in the trusted Worker; this client only carries
 //! its per-Agent service token and current compute fence.
 use super::{http::HttpRemoteStoreTransport, protocol::Fence};
-use crate::secret_store::{ManagedSecret, SecretUseAuditRecord, SecretValueBackend};
+use crate::secret_store::{
+    ManagedSecret, SecretUseAuditRecord, SecretValueBackend, VersionedSecretValue,
+};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -11,6 +13,8 @@ use std::sync::{
     Arc,
 };
 use std::time::Duration;
+
+const GENERATION_CONFLICT: &str = "credential authority logical generation changed";
 
 pub struct HostCredentialBackend {
     endpoint: reqwest::Url,
@@ -74,6 +78,12 @@ impl HostCredentialBackend {
                 return Err("credential authority response too large".into());
             }
             if !status.is_success() {
+                if status.as_u16() == 409
+                    && serde_json::from_slice::<Value>(&bytes)
+                        .is_ok_and(|body| body["error"] == "credential_generation_conflict")
+                {
+                    return Err(GENERATION_CONFLICT.into());
+                }
                 return Err(format!(
                     "credential authority rejected request ({})",
                     status.as_u16()
@@ -87,7 +97,10 @@ impl HostCredentialBackend {
         })();
         // An ambiguous write must never leave this process serving an outdated
         // catalog. The host exits; its successor loads the committed authority.
-        if result.is_err() {
+        if result
+            .as_ref()
+            .is_err_and(|error| error != GENERATION_CONFLICT)
+        {
             self.lost.store(true, Ordering::Release);
         }
         result
@@ -154,6 +167,30 @@ impl SecretValueBackend for HostCredentialBackend {
         }
         Ok(())
     }
+    fn put_managed_if_version(
+        &self,
+        entry: &ManagedSecret,
+        value: &str,
+        version: Option<u64>,
+    ) -> Result<bool, String> {
+        let generation =
+            version.ok_or("hosted conditional credential update requires a captured version")?;
+        let receipt = match self.request(json!({"operation":"replace", "name":entry.name,
+            "value":value, "metadata":entry, "expectedGeneration":generation, "requestId":Self::request_id()?})) {
+            Ok(receipt) => receipt,
+            Err(error) if error == GENERATION_CONFLICT => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if !receipt["revision"]
+            .as_u64()
+            .is_some_and(|revision| revision > generation)
+            || receipt["present"] != true
+        {
+            self.lost.store(true, Ordering::Release);
+            return Err("conditional credential publication receipt mismatch".into());
+        }
+        Ok(true)
+    }
     fn get(&self, locator: &str) -> Result<Option<String>, String> {
         self.read(Self::name(locator)?, json!({}))
     }
@@ -174,6 +211,42 @@ impl SecretValueBackend for HostCredentialBackend {
             }
         }
         self.read(&entry.name, Value::Object(usage))
+    }
+    fn get_managed_versioned(
+        &self,
+        entry: &ManagedSecret,
+        audit: &SecretUseAuditRecord,
+    ) -> Result<VersionedSecretValue, String> {
+        let mut usage = serde_json::Map::new();
+        for (name, value) in [
+            ("context_id", &audit.context_id),
+            ("session_id", &audit.session_id),
+            ("objective_id", &audit.objective_id),
+            ("target_id", &audit.target_id),
+        ] {
+            if let Some(value) = value {
+                usage.insert(name.into(), json!(value));
+            }
+        }
+        let response =
+            self.request(json!({"operation":"read-versioned", "name":entry.name, "usage":usage}))?;
+        let version = response["generation"]
+            .as_u64()
+            .ok_or("credential authority omitted its logical generation")?;
+        let value = if response["value"].is_null() {
+            None
+        } else {
+            Some(
+                response["value"]
+                    .as_str()
+                    .ok_or("invalid versioned credential value")?
+                    .to_string(),
+            )
+        };
+        Ok(VersionedSecretValue {
+            value,
+            version: Some(version),
+        })
     }
     fn delete(&self, locator: &str) -> Result<bool, String> {
         let name = Self::name(locator)?;

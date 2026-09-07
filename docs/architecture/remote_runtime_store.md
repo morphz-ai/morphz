@@ -168,8 +168,26 @@ Runtime API, resolves its managed credential against a local HTTP fixture, kills
 the host, removes only its test cache, and repeats the Provider call after recovery.
 It checks both configuration/catalog restoration and durable usage audit, with
 no `.env` or credential files in the restored HOME. This is not a real Provider
-OAuth refresh/rotation test or a Cloud deployment. Refresh version propagation,
-audit retention, key recovery and real platform gates remain required.
+OAuth service test or a Cloud deployment. Audit retention, key recovery and real
+platform gates remain required.
+
+OAuth refresh now captures a SecretStore value/version snapshot after claiming
+its refresh lease. The Cloud backend publishes with that captured generation,
+not a head fetched just before the write. Authenticated generation is preserved
+only across key rewrapping; writes, metadata changes and login advance it, and
+deletion leaves a tombstone. The Worker can retry physical CAS across rotation,
+but never across a changed logical value. Expected generation conflicts preserve
+the newer credential without marking compute ownership lost. Account status is
+published through its own revision CAS and checked again before authorization;
+late refresh responses cannot undo operator disable/logout or invalidate a new
+login. Refresh lease ownership is revalidated before publication.
+
+Local backends use the same SecretStore lock, retaining explicit backend selection
+and environment-bootstrap first publication, with an in-process catalog revision
+preventing bootstrap ABA. This is not a cross-process local credential CAS. Cloud
+never falls back to the process environment and requires authoritative versions.
+The private Agent Cell envelope is unreleased and has no legacy dual-read path;
+ordinary local configuration/catalog formats are unchanged.
 
 Keep the materialization root's absolute location stable across replacements:
 existing Runtime attachment metadata contains absolute paths. The Cloud image
@@ -305,5 +323,20 @@ precision, bounded pagination and capacity errors.
   Seatbelt. The full suite passed in the local test environment allowing both;
   no production access or real Provider credentials were involved.
 
+### Verified on 2026-09-08 (conditional OAuth publication)
+
+- Final Rust library: **1,291 passed, 7 existing ignored**, including held refresh
+  races against login, logout, disable, failed old refresh and replacement lease
+  owner; local scope/delete/reauthorization and environment-bootstrap ABA tests.
+- Real Rust→workerd recovery: **5 passed**, including an external credential
+  mutation bypassing the host catalog, authenticated generation CAS, harmless key
+  rotation, and expected conflicts that do not report compute ownership loss.
+- Rebuilt native host; Cloud full suite **137 passed / 20 files**, with all four
+  native-process gates executed. Credential cases cover commit-time races, same
+  plaintext reauthorization, replay and forged generation.
+- Clippy all targets with `-D warnings`, ordinary non-cloud `cargo check`, fmt,
+  TypeScript and hosted dry-run passed. Synthetic credentials and loopback only;
+  no real Provider spend, cloud deployment or production migration.
+
 Builds use a separate temporary target with incremental/debug artifacts disabled;
-the current verification cache is about 5.3 GiB, not a full-size debug target.
+the verification cache is approximately 6 GiB, not a full-size debug target.

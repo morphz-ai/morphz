@@ -72,6 +72,70 @@ fn fence() -> Fence {
     }
 }
 
+// Match the hosted binary's multi-thread runtime: synchronous credential I/O
+// yields its Tokio worker so the independent compute lease can keep renewing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the real Agent Cell credential workerd conformance server"]
+async fn credential_refresh_uses_captured_generation_across_key_rotation_and_new_login() {
+    use morphz::memory::remote::host_credentials::HostCredentialBackend;
+    use morphz::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
+    let base = std::env::var("MORPHZ_TEST_REMOTE_STORE_URL").unwrap();
+    let id = format!(
+        "native-credentials-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    );
+    let endpoint = format!(
+        "{}{id}",
+        base.replace("/runtime-store/", "/managed-runtime-store/")
+    );
+    let store = RemoteRuntimeStore::connect_owned(Arc::new(
+        HttpRemoteStoreTransport::new(&endpoint, "conformance-only").unwrap(),
+    ))
+    .await
+    .unwrap();
+    let fence = store.compute_fence();
+    let lost = store.ownership_flag();
+    let endpoint = format!("{}{id}", base.replace("/runtime-store/", "/credentials/"));
+    let backend = Arc::new(
+        HostCredentialBackend::new(
+            &endpoint,
+            "conformance-only",
+            fence.clone(),
+            lost.clone(),
+            false,
+        )
+        .unwrap(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let secrets = SecretStore::managed(backend).unwrap();
+        secrets.put("TOKEN", "initial", SecretScopeKind::Runtime, None).unwrap();
+        let snapshot = secrets.snapshot_for_update("TOKEN", SecretUseContext::default(), None).unwrap();
+        let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+        let mutation = |operation: &str, expected: u64, request_id: &str, value: Option<&str>| {
+            let mut body = json!({"protocol":"morphz-host-credentials/1", "fence":fence, "operation":operation,
+                "name":"TOKEN", "expectedRevision":expected, "requestId":request_id});
+            if let Some(value) = value { body["value"] = json!(value); body["metadata"] = json!(secrets.list().unwrap()[0]); }
+            let response = client.post(&endpoint).bearer_auth("conformance-only").json(&body).send().unwrap();
+            assert!(response.status().is_success());
+        };
+        mutation("rotate", 1, "rotate", None);
+        assert!(secrets.replace_if_unchanged(&snapshot, "refreshed").unwrap());
+        assert_eq!(secrets.resolve("TOKEN", SecretUseContext::default()).unwrap().as_deref(), Some("refreshed"));
+        let snapshot = secrets.snapshot_for_update("TOKEN", SecretUseContext::default(), None).unwrap();
+        // An external authority change bypasses this SecretStore's local cache:
+        // rejection must come from the real encrypted Cell CAS, not only a lock.
+        mutation("write", 3, "login", Some("new-login"));
+        assert!(!secrets.replace_if_unchanged(&snapshot, "stale-refresh").unwrap());
+        assert!(!lost.load(Ordering::Acquire)); // Expected conflict is not lease loss.
+        assert_eq!(secrets.resolve("TOKEN", SecretUseContext::default()).unwrap().as_deref(), Some("new-login"));
+        mutation("delete", 4, "logout", None);
+        assert!(!secrets.replace_if_unchanged(&snapshot, "revived").unwrap());
+        mutation("write", 5, "reauthorize", Some("new-login"));
+        assert!(!secrets.replace_if_unchanged(&snapshot, "stale-again").unwrap());
+        assert!(!lost.load(Ordering::Acquire));
+    }).await.unwrap();
+}
+
 struct SlowReadTransport {
     inner: HttpRemoteStoreTransport,
     delay: AtomicU8,

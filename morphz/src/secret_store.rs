@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -95,6 +95,35 @@ pub struct SecretUseContext<'a> {
     pub target_id: Option<&'a str>,
 }
 
+/// A backend's logical value version, captured atomically with disclosure.
+/// No Debug/Serialize: this object contains secret material.
+pub struct VersionedSecretValue {
+    pub value: Option<String>,
+    pub version: Option<u64>,
+}
+
+pub struct SecretSnapshot {
+    value: zeroize::Zeroizing<String>,
+    name: String,
+    value_backend: String,
+    entry: Option<ManagedSecret>,
+    version: Option<u64>,
+    bootstrap_revision: Option<u64>,
+}
+impl SecretSnapshot {
+    pub fn value(&self) -> &str {
+        self.value.as_str()
+    }
+    pub fn same_version(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.value_backend == other.value_backend
+            && self.entry == other.entry
+            && self.version == other.version
+            && self.bootstrap_revision == other.bootstrap_revision
+            && self.value == other.value
+    }
+}
+
 /// Storage boundary for secret values. Server and Edge hosts can inject a
 /// Vault/KMS/target-local implementation without changing SDK, HTTP or tools.
 pub trait SecretValueBackend: Send + Sync {
@@ -120,6 +149,30 @@ pub trait SecretValueBackend: Send + Sync {
         _audit: &SecretUseAuditRecord,
     ) -> Result<Option<String>, String> {
         self.get(&secret_locator(&entry.name))
+    }
+    fn get_managed_versioned(
+        &self,
+        entry: &ManagedSecret,
+        audit: &SecretUseAuditRecord,
+    ) -> Result<VersionedSecretValue, String> {
+        Ok(VersionedSecretValue {
+            value: self.get_managed(entry, audit)?,
+            version: None,
+        })
+    }
+    /// Local backends are serialized by SecretStore's metadata lock. An
+    /// authoritative backend MUST implement atomic version comparison itself.
+    fn put_managed_if_version(
+        &self,
+        entry: &ManagedSecret,
+        value: &str,
+        version: Option<u64>,
+    ) -> Result<bool, String> {
+        if self.manages_metadata() || version.is_some() {
+            return Err("credential backend requires atomic conditional publication".into());
+        }
+        self.put_managed(entry, value)?;
+        Ok(true)
     }
     fn recent_usage(&self, _limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
         Err("this credential backend does not own audit".into())
@@ -363,6 +416,9 @@ pub struct SecretStore {
     backend_operation_timeout: Duration,
     native_keyring_operation_timeout: Duration,
     catalog: RwLock<BTreeMap<String, ManagedSecret>>,
+    // Process-local ABA protection for first publication of an environment
+    // alias. Remote managed values instead use the authority's durable version.
+    catalog_revision: AtomicU64,
     audit_lock: Mutex<()>,
 }
 
@@ -435,6 +491,7 @@ impl SecretStore {
             backend_operation_timeout: BACKEND_OPERATION_TIMEOUT,
             native_keyring_operation_timeout: NATIVE_KEYRING_OPERATION_TIMEOUT,
             catalog: RwLock::new(catalog),
+            catalog_revision: AtomicU64::new(0),
             audit_lock: Mutex::new(()),
         })
     }
@@ -516,6 +573,7 @@ impl SecretStore {
             native_keyring_operation_timeout: native_keyring_operation_timeout
                 .max(Duration::from_millis(1)),
             catalog: RwLock::new(catalog),
+            catalog_revision: AtomicU64::new(0),
             audit_lock: Mutex::new(()),
         })
     }
@@ -689,6 +747,7 @@ impl SecretStore {
         next.insert(name.to_string(), entry.clone());
         self.persist_catalog(next.values())?;
         *guard = next;
+        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
         drop(guard);
         if let Some(previous) =
             previous.filter(|entry| cleanup_previous && entry.value_backend != backend_id)
@@ -759,6 +818,7 @@ impl SecretStore {
         next.insert(name.to_string(), entry.clone());
         self.persist_catalog(next.values())?;
         *guard = next;
+        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
         Ok(entry)
     }
 
@@ -768,6 +828,7 @@ impl SecretStore {
             .write()
             .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let Some(entry) = guard.get(name).cloned() else {
+            self.catalog_revision.fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         };
         let backend = self.backend(&entry.value_backend)?;
@@ -778,6 +839,7 @@ impl SecretStore {
         next.remove(name);
         self.persist_catalog(next.values())?;
         *guard = next;
+        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
         Ok(true)
     }
 
@@ -843,6 +905,123 @@ impl SecretStore {
             return Ok(true);
         }
         Ok(self.catalog_path.is_some() && std::env::var_os(name).is_some())
+    }
+
+    /// Capture a credential before an asynchronous refresh. Local bootstrap
+    /// aliases keep their existing first-publication behavior, but only while
+    /// both the environment value and absence of managed metadata are unchanged.
+    /// Authoritative Cloud stores never read an environment alias.
+    pub fn snapshot_for_update(
+        &self,
+        name: &str,
+        usage: SecretUseContext<'_>,
+        bootstrap_backend: Option<&str>,
+    ) -> Result<SecretSnapshot, String> {
+        validate_name(name)?;
+        let catalog = self
+            .catalog
+            .read()
+            .map_err(|_| "Secret metadata catalog lock is poisoned")?;
+        let entry = catalog.get(name).cloned();
+        let Some(entry) = entry else {
+            if self.catalog_path.is_none() {
+                return Err("conditional credential publication requires managed metadata".into());
+            }
+            let value = std::env::var(name)
+                .map_err(|_| "credential alias has no managed metadata or bootstrap value")?;
+            validate_value(&value)?;
+            let backend = self.backend(bootstrap_backend.unwrap_or(&self.default_backend_id))?;
+            return Ok(SecretSnapshot {
+                value: zeroize::Zeroizing::new(value),
+                name: name.to_string(),
+                value_backend: backend.backend_id().to_string(),
+                entry: None,
+                version: None,
+                bootstrap_revision: Some(self.catalog_revision.load(Ordering::Relaxed)),
+            });
+        };
+        drop(catalog);
+        authorize_entry(&entry, usage.clone())?;
+        let backend = self.backend(&entry.value_backend)?;
+        let managed = backend.manages_metadata();
+        let audit = usage_record(&entry, usage.clone());
+        let copy = entry.clone();
+        let result =
+            self.run_backend_operation(&entry.value_backend, "read for update", move || {
+                backend.get_managed_versioned(&copy, &audit)
+            })?;
+        if managed && result.version.is_none() {
+            return Err("credential authority omitted its logical version".into());
+        }
+        let value = result.value.ok_or("managed credential no longer exists")?;
+        validate_value(&value)?;
+        if self.audit_path.is_some() {
+            let _ = self.append_usage_audit(&entry, usage);
+        }
+        Ok(SecretSnapshot {
+            value: zeroize::Zeroizing::new(value),
+            name: entry.name.clone(),
+            value_backend: entry.value_backend.clone(),
+            entry: Some(entry),
+            version: result.version,
+            bootstrap_revision: None,
+        })
+    }
+
+    /// A late refresh cannot replace a new login, changed scope, backend switch
+    /// or deleted alias. Compare while holding the same lock used by writes.
+    pub fn replace_if_unchanged(
+        &self,
+        snapshot: &SecretSnapshot,
+        value: &str,
+    ) -> Result<bool, String> {
+        validate_value(value)?;
+        let mut guard = self
+            .catalog
+            .write()
+            .map_err(|_| "Secret metadata catalog lock is poisoned")?;
+        if guard.get(&snapshot.name) != snapshot.entry.as_ref() {
+            return Ok(false);
+        }
+        if snapshot
+            .bootstrap_revision
+            .is_some_and(|revision| revision != self.catalog_revision.load(Ordering::Relaxed))
+        {
+            return Ok(false);
+        }
+        if snapshot.entry.is_none()
+            && !std::env::var(&snapshot.name).is_ok_and(|value| value == snapshot.value.as_str())
+        {
+            return Ok(false);
+        }
+        let backend = self.backend(&snapshot.value_backend)?;
+        let now = chrono::Utc::now();
+        let mut next_entry = snapshot.entry.clone().unwrap_or_else(|| ManagedSecret {
+            name: snapshot.name.clone(),
+            secret_ref: format!("secret://runtime/{}", snapshot.name),
+            scope_kind: SecretScopeKind::Runtime,
+            scope_id: None,
+            value_backend: snapshot.value_backend.clone(),
+            created_at: now,
+            updated_at: now,
+        });
+        next_entry.updated_at = now;
+        let copy = next_entry.clone();
+        let version = snapshot.version;
+        let value = zeroize::Zeroizing::new(value.to_string());
+        if !self.run_backend_operation(
+            &next_entry.value_backend,
+            "conditional write",
+            move || backend.put_managed_if_version(&copy, value.as_str(), version),
+        )? {
+            return Ok(false);
+        }
+        let mut next = guard.clone();
+        next.insert(next_entry.name.clone(), next_entry);
+        self.persist_catalog(next.values())?;
+        *guard = next;
+        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
     }
 
     pub fn recent_usage(&self, limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
@@ -911,7 +1090,7 @@ impl SecretStore {
         if self.catalog_path.is_none() {
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => return tokio::task::block_in_place(run),
-                Ok(_) => return Err("authoritative credential I/O requires a blocking worker or multi-thread Runtime".into()),
+                Ok(_) => return Err("authoritative credential I/O requires a multi-thread Tokio Runtime or a thread outside Tokio".into()),
                 Err(_) => {}
             }
         }
@@ -1563,6 +1742,123 @@ mod tests {
                 .as_deref(),
             Some("sensitive")
         );
+    }
+
+    #[test]
+    fn conditional_publication_preserves_new_login_scope_and_deletion() {
+        let (_directory, store) = test_store();
+        store
+            .put("REFRESH", "initial", SecretScopeKind::Runtime, None)
+            .unwrap();
+        let initial = store
+            .snapshot_for_update("REFRESH", SecretUseContext::default(), None)
+            .unwrap();
+        assert!(store.replace_if_unchanged(&initial, "refreshed").unwrap());
+        assert!(!store.replace_if_unchanged(&initial, "stale").unwrap());
+        let current = store
+            .snapshot_for_update("REFRESH", SecretUseContext::default(), None)
+            .unwrap();
+        store
+            .put("REFRESH", "new-login", SecretScopeKind::Runtime, None)
+            .unwrap();
+        assert!(!store.replace_if_unchanged(&current, "stale").unwrap());
+        let current = store
+            .snapshot_for_update("REFRESH", SecretUseContext::default(), None)
+            .unwrap();
+        store
+            .put(
+                "REFRESH",
+                "new-login",
+                SecretScopeKind::Session,
+                Some("one".into()),
+            )
+            .unwrap();
+        assert!(!store.replace_if_unchanged(&current, "scope-reset").unwrap());
+        assert!(store
+            .snapshot_for_update("REFRESH", SecretUseContext::default(), None)
+            .is_err());
+        let scoped = store
+            .snapshot_for_update(
+                "REFRESH",
+                SecretUseContext {
+                    session_id: Some("one"),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        store.delete("REFRESH").unwrap();
+        assert!(!store.replace_if_unchanged(&scoped, "revived").unwrap());
+        store
+            .put(
+                "REFRESH",
+                "new-login",
+                SecretScopeKind::Session,
+                Some("one".into()),
+            )
+            .unwrap();
+        assert!(!store
+            .replace_if_unchanged(&scoped, "old-generation")
+            .unwrap());
+    }
+
+    #[test]
+    fn bootstrap_refresh_preserves_explicit_local_backend_and_newer_login() {
+        // A child-only environment avoids mutating shared process state while
+        // other Rust tests are running. No real environment credential is read.
+        const NAME: &str = "MORPHZ_TEST_BOOTSTRAP_REFRESH_VALUE";
+        if std::env::var_os(NAME).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "secret_store::tests::bootstrap_refresh_preserves_explicit_local_backend_and_newer_login"])
+                .env(NAME, "synthetic-bootstrap")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = SecretStore::with_backends(
+            directory.path().join("secrets.json"),
+            "memory_test",
+            vec![
+                Arc::new(MemorySecretBackend::default()),
+                Arc::new(HostEnvFileSecretBackend::new(directory.path().join(".env"))),
+            ],
+        )
+        .unwrap();
+        let initial = store
+            .snapshot_for_update(NAME, SecretUseContext::default(), Some("morphz_env_file"))
+            .unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert!(store
+            .replace_if_unchanged(&initial, "synthetic-refreshed")
+            .unwrap());
+        assert_eq!(store.list().unwrap()[0].value_backend, "morphz_env_file");
+        assert_eq!(
+            store
+                .resolve(NAME, SecretUseContext::default())
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-refreshed")
+        );
+        assert!(!store.replace_if_unchanged(&initial, "stale").unwrap());
+
+        let (_directory, store) = test_store();
+        let initial = store
+            .snapshot_for_update(NAME, SecretUseContext::default(), None)
+            .unwrap();
+        store
+            .put(NAME, "new-login", SecretScopeKind::Runtime, None)
+            .unwrap();
+        assert!(!store.replace_if_unchanged(&initial, "stale").unwrap());
+        store.delete(NAME).unwrap();
+        assert!(!store.replace_if_unchanged(&initial, "revived").unwrap());
+        let absent = store
+            .snapshot_for_update(NAME, SecretUseContext::default(), None)
+            .unwrap();
+        assert!(!store.delete(NAME).unwrap());
+        assert!(!store
+            .replace_if_unchanged(&absent, "revived-bootstrap")
+            .unwrap());
     }
 
     #[test]
