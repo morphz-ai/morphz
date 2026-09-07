@@ -15,7 +15,7 @@ experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
 # lets deliberately minimal binaries omit the backend without presenting it as
 # an experimental Runtime capability.
 context-db = []
-remote-store = ["context-db", "reqwest/blocking"]
+remote-store = ["context-db", "reqwest/blocking", "dep:http-body"]
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
@@ -40,6 +40,7 @@ required-features = ["context-db"]
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
+http-body = { version = "1", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"

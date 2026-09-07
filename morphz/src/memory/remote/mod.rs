@@ -3,6 +3,7 @@
 //! acknowledges an operation or silently promotes that disposable replica.
 mod lease;
 pub mod protocol;
+mod quiescence;
 mod replica;
 
 use super::*;
@@ -11,6 +12,7 @@ use crate::scheduler::*;
 pub mod host_configuration;
 pub mod host_credentials;
 pub mod host_files;
+pub mod host_lifecycle;
 pub mod http;
 use protocol::{Commit, Fence, Head, RemoteStoreTransport, StoreError, PROTOCOL};
 use replica::Replica;
@@ -117,6 +119,49 @@ impl RemoteRuntimeStore {
             .ok_or("this Store uses an externally managed compute fence")?
             .complete_recovery(&self.fence)
             .await
+    }
+
+    /// Caller holds a closed HTTP admission gate. Taking the replica mutex
+    /// prevents native workers from claiming any new physical operation during
+    /// the final snapshot and park RPC. No business state is cancelled/rewritten.
+    pub async fn try_park(&self, process_idle: impl Fn() -> bool) -> Result<bool, StoreError> {
+        let mut slot = self.replica.lock().await;
+        self.ensure_owned()?;
+        if !process_idle() {
+            return Ok(false);
+        }
+        let mut replica = match slot.take() {
+            Some(replica) => replica,
+            None => self.restore().await?,
+        };
+        let head = self.transport.head(&self.fence).await?;
+        self.validate_head(&head, &replica.schema)?;
+        if head.revision != replica.revision || head.sequence != replica.sequence {
+            replica = self.restore().await?;
+        }
+        let snapshot = quiescence::inspect(&replica.store).await?;
+        if !snapshot.blockers.is_empty() || !process_idle() {
+            tracing::debug!(event_code = "host.park.deferred", blockers = ?snapshot.blockers, "Native owners are not quiescent");
+            *slot = Some(replica);
+            return Ok(false);
+        }
+        let parked = self
+            .lease_control
+            .as_ref()
+            .ok_or("parking requires owned compute")?
+            .park(
+                &self.fence,
+                replica.revision,
+                snapshot.next_wake.map(|time| time.timestamp_millis()),
+            )
+            .await?
+            .parked;
+        if parked {
+            self.lost.store(true, Ordering::Release);
+        } else {
+            *slot = Some(replica);
+        }
+        Ok(parked)
     }
 
     fn validate_head(&self, head: &Head, schema: &str) -> Result<(), StoreError> {

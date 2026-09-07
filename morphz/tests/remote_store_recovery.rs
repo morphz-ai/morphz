@@ -100,6 +100,14 @@ impl RemoteStoreTransport for SlowReadTransport {
 }
 #[async_trait::async_trait]
 impl RemoteStoreLeaseTransport for SlowReadTransport {
+    async fn park(
+        &self,
+        fence: &Fence,
+        revision: u64,
+        next_wake_at_ms: Option<i64>,
+    ) -> Result<morphz::memory::remote::protocol::ParkReceipt, StoreError> {
+        self.inner.park(fence, revision, next_wake_at_ms).await
+    }
     async fn claim(&self, owner_id: &str) -> Result<Lease, StoreError> {
         self.inner.claim(owner_id).await
     }

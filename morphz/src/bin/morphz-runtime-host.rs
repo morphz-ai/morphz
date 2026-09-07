@@ -4,6 +4,7 @@ use morphz::config::{self, ServerIdentityMode};
 use morphz::llm::Client;
 use morphz::memory::remote::host_configuration::HostConfiguration;
 use morphz::memory::remote::host_credentials::HostCredentialBackend;
+use morphz::memory::remote::host_lifecycle::HostRequestGate;
 use morphz::memory::remote::{
     host_files::HostFiles, http::HttpRemoteStoreTransport, protocol::StoreError, RemoteRuntimeStore,
 };
@@ -12,7 +13,11 @@ use morphz::provider::{build_configured_client, routing::RoutedClient};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
 use morphz::secret_store::SecretStore;
 use morphz::web::{Server, ServerDefaults};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 fn required(name: &str) -> Result<String, StoreError> {
     std::env::var(name)
@@ -157,19 +162,40 @@ async fn run() -> Result<(), StoreError> {
     store.ensure_session(initial_session).await?;
     store.complete_recovery().await?;
     let bind = required("MORPHZ_BIND")?;
-    Server::new(runtime, defaults)
+    let idle_seconds: u64 = std::env::var("MORPHZ_HOST_IDLE_SECONDS")
+        .unwrap_or_else(|_| "60".into())
+        .parse()
+        .map_err(|_| "MORPHZ_HOST_IDLE_SECONDS must be a positive integer")?;
+    if idle_seconds == 0 {
+        return Err("MORPHZ_HOST_IDLE_SECONDS must be positive".into());
+    }
+    let gate = Arc::new(HostRequestGate::default());
+    Server::new(runtime.clone(), defaults)
         .with_identity(gateway_identity)
+        .with_host_request_gate(gate.clone())
         .start(&bind)
         .await?;
     tracing::info!(
         event_code = "host.ready",
         "Hosted Runtime restored and ready"
     );
+    let mut next_park_probe = Instant::now() + Duration::from_secs(idle_seconds);
     loop {
         tokio::select! {
             result = tokio::signal::ctrl_c() => { result?; return Ok(()); },
             () = tokio::time::sleep(Duration::from_millis(100)) => {
                 if store.ownership_lost() { return Err("compute ownership lost; process must be replaced".into()); }
+                // A busy native owner must not cause a Store scan every 100ms.
+                if Instant::now() >= next_park_probe {
+                    next_park_probe = Instant::now() + Duration::from_secs(5);
+                    if let Some(attempt) = gate.begin_park(Duration::from_secs(idle_seconds)) {
+                        if store.try_park(|| runtime.hosted_process_is_quiescent()).await? {
+                            attempt.commit();
+                            tracing::info!(event_code = "host.parked", "Runtime quiescence and next deadline committed; exiting idle compute");
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
     }

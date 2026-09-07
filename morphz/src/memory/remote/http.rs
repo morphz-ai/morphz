@@ -167,6 +167,19 @@ impl RemoteStoreTransport for HttpRemoteStoreTransport {
 
 #[async_trait::async_trait]
 impl RemoteStoreLeaseTransport for HttpRemoteStoreTransport {
+    async fn park(
+        &self,
+        fence: &Fence,
+        revision: u64,
+        next_wake_at_ms: Option<i64>,
+    ) -> Result<ParkReceipt, StoreError> {
+        self.rpc(
+            "park",
+            fence,
+            json!({"revision":revision, "nextWakeAtMs":next_wake_at_ms}),
+        )
+        .await
+    }
     async fn claim(&self, owner_id: &str) -> Result<Lease, StoreError> {
         self.rpc(
             "claim",

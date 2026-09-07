@@ -319,6 +319,10 @@ impl Default for InMemoryEventBus {
 }
 
 impl InMemoryEventBus {
+    #[cfg(feature = "remote-store")]
+    pub(crate) fn has_hosted_in_flight_dispatch(&self) -> bool {
+        !self.async_in_flight.is_empty() || self.durable_lock.try_lock().is_err()
+    }
     pub fn new() -> Self {
         Self::with_concurrency_limit(10)
     }

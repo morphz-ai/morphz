@@ -175,8 +175,30 @@ Keep the materialization root's absolute location stable across replacements:
 existing Runtime attachment metadata contains absolute paths. The Cloud image
 uses `/run/morphz-home` and clears only its own disposable cache. The constructor
 refuses nonempty directories, rather than deleting an existing user HOME.
-Automatic compute parking is not implemented by this host yet. Do not stop it
-based solely on HTTP inactivity, and do not claim scale-to-zero behavior.
+The opt-in host now parks after `MORPHZ_HOST_IDLE_SECONDS` (default 60, positive)
+without HTTP activity, but inactivity alone never authorizes exit. An admission
+gate accounts for entire request/response bodies and WebSocket lifetimes. It
+exclusively closes ingress before checking process-local execution queues and
+native durable owners under the replica transaction mutex. Busy checks reopen
+ingress and retry no more often than every five seconds. Health probes do not
+reset the activity clock. Requests during a park attempt receive an explicit
+retryable `runtime_parking` 503 before reaching business handlers.
+
+The native check rejects active Activations, Jobs, Plans, Signals, deliveries,
+runnable Objectives, assignments/delegations, claimed/due timers, projection
+work and live Provider refresh leases. It exports the earliest future native
+timer to Cell `park`, which atomically verifies the exact RuntimeStore revision,
+due ingress and ownership, saves the deadline, then fences the old process.
+Only a positive park receipt permits exit 0. Ambiguous authority failures exit
+nonzero and recover; they never reopen admission with a potentially stale fence.
+
+Local workerd/native-process gates cover drain, orderly idle exit, cache-free
+replacement, and a real `schedule_tx` durable Objective/Thread whose native
+deadline fires a DO alarm and starts replacement compute without another user
+request. This is not a deployed Linux Container gate. Open WebSockets and active
+approval waits currently retain compute; frontend/Edge hibernation, approval-wait
+parking, and transparent request-versus-park recovery remain required before
+claiming the complete scale-to-zero product experience.
 
 Hosted file limits are explicit: at most 24 MiB per object, 34 MiB per upload
 transaction, 100 pointers. This executable caps ingress at 8 MiB per attachment,
@@ -251,5 +273,18 @@ precision, bounded pagination and capacity errors.
   synthetic loopback service. No real model spend, cloud deployment, Linux image
   build, existing Agent migration or production data access occurred.
 
-Builds used a separate temporary target with incremental/debug artifacts disabled;
-the verification cache was about 1.8 GiB, not another full-size development target.
+### Verified on 2026-09-08 (native idle parking and timer wake)
+
+- Full Rust library with `remote-store`: **1,286 passed, 7 existing ignored**;
+  Clippy all targets with `-D warnings`, fmt and diff checks passed.
+- Cloud full suite: **119 passed / 19 files**, including all three native-process
+  gates, local D1/workerd and an isolated temporary PostgreSQL cluster. The
+  durable Schedule gate was run again after strengthening its repeated-alarm
+  assertion: the child still has exactly one Activation after replacement.
+- TypeScript and hosted dry-run passed; no Linux image or real cloud deployment.
+- The first restricted test run could not bind loopback ports or run nested
+  Seatbelt. The full suite passed in the local test environment allowing both;
+  no production access or real Provider credentials were involved.
+
+Builds use a separate temporary target with incremental/debug artifacts disabled;
+the current verification cache is about 5.3 GiB, not a full-size debug target.

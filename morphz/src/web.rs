@@ -105,6 +105,8 @@ pub struct Server {
     default_agent_id: String,
     default_context_id: String,
     identity: ServerIdentityConfig,
+    #[cfg(feature = "remote-store")]
+    host_request_gate: Option<Arc<crate::memory::remote::host_lifecycle::HostRequestGate>>,
 }
 
 pub struct ServerDefaults {
@@ -744,11 +746,22 @@ impl Server {
             default_agent_id: defaults.agent_id,
             default_context_id: defaults.context_id,
             identity: ServerIdentityConfig::default(),
+            #[cfg(feature = "remote-store")]
+            host_request_gate: None,
         }
     }
 
     pub fn with_identity(mut self, identity: ServerIdentityConfig) -> Self {
         self.identity = identity;
+        self
+    }
+
+    #[cfg(feature = "remote-store")]
+    pub fn with_host_request_gate(
+        mut self,
+        gate: Arc<crate::memory::remote::host_lifecycle::HostRequestGate>,
+    ) -> Self {
+        self.host_request_gate = Some(gate);
         self
     }
 
@@ -1428,6 +1441,15 @@ impl Server {
             .layer(cors)
             .with_state(Arc::clone(&state));
 
+        #[cfg(feature = "remote-store")]
+        let app = if let Some(gate) = &self.host_request_gate {
+            app.layer(middleware::from_fn(
+                crate::memory::remote::host_lifecycle::gate_request,
+            ))
+            .layer(axum::Extension(gate.clone()))
+        } else {
+            app
+        };
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!(
             addr = %addr,
@@ -8355,6 +8377,9 @@ async fn handle_ws_upgrade(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
+    #[cfg(feature = "remote-store")] gate: Option<
+        axum::Extension<Arc<crate::memory::remote::host_lifecycle::HostRequestGate>>,
+    >,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -8380,13 +8405,24 @@ async fn handle_ws_upgrade(
             "a non-Operator WebSocket subscription must specify session_id",
         );
     }
-    ws.on_upgrade(move |socket| {
+    #[cfg(feature = "remote-store")]
+    let connection_permit = match gate {
+        Some(axum::Extension(gate)) => match gate.enter(true) {
+            Some(permit) => Some(permit),
+            None => return crate::memory::remote::host_lifecycle::parking_response(),
+        },
+        None => None,
+    };
+    ws.on_upgrade(move |socket| async move {
+        #[cfg(feature = "remote-store")]
+        let _connection_permit = connection_permit;
         handle_ws(
             socket,
             state,
             query.session_id,
             query.observe_model_requests,
         )
+        .await
     })
 }
 

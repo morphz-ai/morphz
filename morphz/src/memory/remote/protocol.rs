@@ -68,6 +68,12 @@ pub struct Page {
     pub next: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParkReceipt {
+    pub parked: bool,
+}
+
 /// Transport is deployment-injected and authenticated outside model authority.
 /// No method may select a different backend or return cached success on failure.
 #[async_trait::async_trait]
@@ -89,4 +95,12 @@ pub trait RemoteStoreLeaseTransport: RemoteStoreTransport {
     /// Only call after the Runtime's complete startup recovery, never just
     /// because the storage snapshot has finished downloading.
     async fn complete_recovery(&self, fence: &Fence) -> Result<(), StoreError>;
+    /// The caller has closed ingress and checked native quiescence at revision.
+    /// Busy leaves ownership intact; an ambiguous result requires process exit.
+    async fn park(
+        &self,
+        fence: &Fence,
+        revision: u64,
+        next_wake_at_ms: Option<i64>,
+    ) -> Result<ParkReceipt, StoreError>;
 }

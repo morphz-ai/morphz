@@ -3090,6 +3090,28 @@ impl MorphzRuntime {
         &self.inner.config
     }
 
+    /// Supplemental process-local check. The hosted Store separately inspects
+    /// durable owners under its transaction mutex before releasing compute.
+    #[cfg(feature = "remote-store")]
+    pub fn hosted_process_is_quiescent(&self) -> bool {
+        let admission = self.inner.orchestrator.activation_admission_snapshot();
+        let models = self.inner.orchestrator.model_provider_metrics();
+        self.inner.started.load(Ordering::Acquire)
+            && admission.queued_activation_ids.is_empty()
+            && admission.in_flight_activation_ids.is_empty()
+            && admission.suspended_activation_ids.is_empty()
+            && admission.waiter_count == 0
+            && models.in_flight == 0
+            && models.queued == 0
+            && self
+                .inner
+                .orchestrator
+                .durable_event_writer_metrics()
+                .queue_depth
+                == 0
+            && !self.inner.bus.has_hosted_in_flight_dispatch()
+    }
+
     #[cfg(feature = "experimental-cognitive-coordination")]
     pub fn cognitive_coordination_network(
         &self,
