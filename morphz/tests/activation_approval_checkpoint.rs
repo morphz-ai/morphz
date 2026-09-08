@@ -7,6 +7,9 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::*;
 use serde_json::json;
 
+#[cfg(feature = "remote-store")]
+#[path = "activation_approval_checkpoint/hosted_objectives.rs"]
+mod hosted_objectives;
 #[path = "activation_approval_checkpoint/infer_children.rs"]
 mod infer_children;
 #[path = "activation_approval_checkpoint/nested_plans.rs"]

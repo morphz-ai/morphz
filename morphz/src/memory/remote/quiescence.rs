@@ -4,6 +4,7 @@
 use super::protocol::StoreError;
 use crate::memory::{sqlite::SqliteStore, TimerStore};
 use chrono::{DateTime, Utc};
+mod objectives;
 
 pub(super) struct Quiescence {
     pub blockers: Vec<&'static str>,
@@ -55,13 +56,22 @@ pub(super) async fn inspect(store: &SqliteStore) -> Result<Quiescence, StoreErro
                 WHERE link.signal_id = s.id AND s.status = 'claimed'
                   AND s.thread_id = w.thread_id AND s.thread_generation = w.thread_generation))"#),
         ("delivery", "SELECT EXISTS(SELECT 1 FROM threads WHERE delivery_status IN ('pending','deferred'))"),
-        ("objective", "SELECT EXISTS(SELECT 1 FROM objectives WHERE active_evaluation_id IS NOT NULL OR (status = 'active' AND wait_condition_json IS NULL))"),
+        ("objective", r#"SELECT EXISTS(SELECT 1 FROM objectives o
+            WHERE (o.active_evaluation_id IS NOT NULL OR (o.status = 'active' AND o.wait_condition_json IS NULL))
+              AND NOT EXISTS (SELECT 1 FROM objective_approval_waits ow
+                JOIN parked_approvals a ON a.id = ow.activation_id
+                WHERE ow.objective_id = o.id AND ow.evaluation_id = o.active_evaluation_id
+                  AND ow.objective_generation = o.generation AND o.status = 'active'
+                  AND o.evaluation_lease_expires_at IS NULL AND o.completion_intent_json IS NULL))"#),
         ("delegation", "SELECT EXISTS(SELECT 1 FROM delegations WHERE status IN ('queued','running'))"),
         ("assignment", "SELECT EXISTS(SELECT 1 FROM work_assignments WHERE status IN ('queued','running'))"),
         ("timer_handler", "SELECT EXISTS(SELECT 1 FROM runtime_timers WHERE status = 'claimed')"),
         ("recall_projection", "SELECT EXISTS(SELECT 1 FROM recall_projection_outbox)"),
     ] {
         if sqlx::query_scalar::<_, i64>(&format!("{APPROVAL_OWNERS}{predicate}")).fetch_one(pool).await? != 0 { blockers.push(name); }
+    }
+    if blockers.is_empty() && !objectives::bindings_are_current(store).await? {
+        blockers.push("objective_binding");
     }
     let now = Utc::now();
     if sqlx::query_scalar::<_, i64>(

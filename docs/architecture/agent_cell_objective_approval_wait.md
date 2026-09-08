@@ -287,9 +287,10 @@ consumed or broadened, and no native owner is cancelled to obtain quiescence.
 The proof runs under the existing replica lock. Process queues, Recall
 projection, delivery, Edge commands, timers and credential-refresh protections
 are unchanged; the Cell still checks the exact Store revision while atomically
-releasing the compute fence. **The Objective predicate is unchanged:** a held
-Evaluation still blocks hosted parking. This is not yet the complete Objective
-or Edge long-connection scale-to-zero acceptance.
+releasing the compute fence. At that step the Objective predicate was unchanged:
+a held Evaluation still blocked hosted parking. The following section records
+its subsequent exact-binding proof; Edge long-connection scale-to-zero remains
+unaccepted.
 
 The actual loopback workerd gate
 `workerd_approval_checkpoint_parks_without_consuming_permission` passes all
@@ -324,3 +325,62 @@ endpoint with `MORPHZ_TEST_REMOTE_STORE_URL` and:
 cargo test -p morphz --features remote-store --test activation_approval_checkpoint \
   workerd_approval_checkpoint_parks_without_consuming_permission -- --ignored --exact
 ```
+
+### Retained Objective Evaluation parking
+
+The next real workerd gate reproduced the remaining blanket Objective blocker.
+The hosted predicate now requires a current `objective_approval_waits` anchor,
+matching generation/Evaluation, no physical lease and no completion intent.
+That SQL classification is only a first check: before parking, a read-only
+native proof visits **every** parked Activation, not just the last anchor.
+It reuses `binding_event`, `validate_owner`, strict dependency decoding and
+`dependency_matches`. Each immutable batch must still bind the current
+Agent/Context/Session/Principal, Evaluation and exact required dependency.
+An ordinary batch cannot stand in for an Objective anchor. A revoked Session
+Principal binding, old Evaluation, changed dependency or missing evidence
+cannot be treated as quiescent.
+
+A creation prelude obtains its binding only from successful `objective_create`
+results of that immutable batch. Those results are selected by the native
+`attempt_id` contract, not the optional `activation_id` display projection.
+The initial implementation incorrectly used the latter; the prelude case
+failed, and passes after using the actual batch identity. Owner traversal is
+keyset-paged in groups of 128 and creation evidence uses the native 4096-entry
+proof bound. No new schema, compatibility format, permission, data migration
+or ownership mutation is introduced by this read-only check. All other native
+quiescence, process, revision and compute-fence checks remain in force.
+
+`hosted_objectives::workerd_objective_parking_retains_its_exact_evaluation`
+passes nine combinations: ordinary, creation-prelude and exact-dependency
+interrupt bindings, each with allow, deny and changed-dependency cases. Two
+real native Activation owners share an Evaluation; the first checkpoint cannot
+park, while the final one may. Empty-cache reconnection restores identical
+Objective/checkpoint state; admission reclaims the same Evaluation, revision
+and continuation sequence. An added or replaced required dependency prevents
+parking even though the Objective checkpoint still exists. No Job executes and
+no grant is consumed. Together with the eight ordinary/Plan/infer combinations,
+the two real workerd gates pass **17 scenarios in 14.19 seconds**.
+
+This establishes the native Store/Cell seam, not a completed hosted
+Objective/Edge/Provider acceptance. Real host-process and end-to-end gates are
+tracked separately; no production deployment is implied.
+
+Final retained-Evaluation source regression passes **1331 library cases / 8
+explicitly ignored**, **43 local integration cases**, and Clippy for the library,
+hosted binary and all four integration targets with `-D warnings`. PostgreSQL
+ownership logic and schema did not change; its earlier disposable PostgreSQL cases
+were not rerun or counted as fresh evidence. Reproduce both native workerd gates
+with the isolated conformance endpoint and:
+
+```sh
+cargo test -p morphz --features remote-store --test activation_approval_checkpoint \
+  workerd_ -- --ignored --test-threads=1
+```
+
+The new host passes all **7 existing workerd/R2 process gates** (194.36 seconds
+total), including actual alarm wake, parking races and receipt-loss recovery.
+The default-feature library check and formatting/diff checks pass. Host SHA-256:
+`f4dfaed75aa02bbeb351f0396b4885c4a10391ca689cf1e23175359123de684d`.
+Temporary conformance services and synthetic data were cleaned up. These seven
+host gates still do not substitute for an actual hosted Objective approval with
+a real Edge/Provider; the complete six-part delivery goal remains active.

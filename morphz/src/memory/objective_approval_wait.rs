@@ -137,7 +137,7 @@ pub(super) fn infer_selections_match(
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-fn optional_dependency(event: &crate::event::Event) -> Result<Option<&str>, DynError> {
+pub(super) fn optional_dependency(event: &crate::event::Event) -> Result<Option<&str>, DynError> {
     match event.payload.get("objective_pending_dependency_id") {
         None | Some(JsonValue::Null) => Ok(None),
         Some(JsonValue::String(id)) if !id.is_empty() => Ok(Some(id)),

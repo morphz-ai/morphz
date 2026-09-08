@@ -370,7 +370,11 @@ async fn postgres_objective_infer_admission_requires_exact_inherited_proof() {
     infer_admission_contract(store).await;
 }
 
-async fn objective(store: &dyn RuntimeStore, batch: &Batch, label: &str) -> ObjectiveRecord {
+pub(super) async fn objective(
+    store: &dyn RuntimeStore,
+    batch: &Batch,
+    label: &str,
+) -> ObjectiveRecord {
     let a = store
         .get_thread_activation(&batch.request.activation_id)
         .await
@@ -406,7 +410,22 @@ async fn objective(store: &dyn RuntimeStore, batch: &Batch, label: &str) -> Obje
     }
 }
 
-async fn bind(store: &dyn RuntimeStore, batch: &mut Batch, o: &ObjectiveRecord, late: bool) {
+pub(super) async fn bind(
+    store: &dyn RuntimeStore,
+    batch: &mut Batch,
+    o: &ObjectiveRecord,
+    late: bool,
+) {
+    bind_with_dependency(store, batch, o, late, None).await;
+}
+
+pub(super) async fn bind_with_dependency(
+    store: &dyn RuntimeStore,
+    batch: &mut Batch,
+    o: &ObjectiveRecord,
+    late: bool,
+    dependency: Option<&str>,
+) {
     let mut call = store
         .query(QueryFilter {
             event_id: Some(batch.request.assistant_call_event_id.clone()),
@@ -417,6 +436,10 @@ async fn bind(store: &dyn RuntimeStore, batch: &mut Batch, o: &ObjectiveRecord, 
         .remove(0);
     call.id = format!("objective-{}", call.id);
     call.sequence = None;
+    if let Some(dependency) = dependency {
+        call.payload
+            .insert("objective_pending_dependency_id".into(), json!(dependency));
+    }
     if late {
         call.payload.get_mut("tool_calls").unwrap().as_array_mut().unwrap().push(json!({
             "id":"create-objective", "type":"function", "function":{"name":"objective_create", "arguments":"{}"}
@@ -448,7 +471,11 @@ async fn bind(store: &dyn RuntimeStore, batch: &mut Batch, o: &ObjectiveRecord, 
     store.append(call).await.unwrap();
 }
 
-async fn additional_owner(store: &dyn RuntimeStore, batch: &Batch, label: &str) -> Batch {
+pub(super) async fn additional_owner(
+    store: &dyn RuntimeStore,
+    batch: &Batch,
+    label: &str,
+) -> Batch {
     additional_owner_as(store, batch, label, None).await
 }
 
