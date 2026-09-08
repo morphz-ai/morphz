@@ -16,6 +16,12 @@ pub(in crate::memory) struct Snapshot {
     pub group: Option<(String, u64, String)>,
 }
 
+pub(super) struct ValidatedFrontier {
+    pub snapshots: Vec<Snapshot>,
+    pub job_ids: HashSet<String>,
+    pub infer_activation_ids: HashSet<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate(
     remaining: &mut HashMap<&str, &str>,
@@ -25,8 +31,9 @@ pub(super) fn validate(
     groups: &[ActionGroupRecord],
     jobs: &[ExecutionJobRecord],
     pending_jobs: &HashSet<&str>,
+    infer_children: &[InferApprovalDependency],
     require_all_plans: bool,
-) -> Result<(Vec<Snapshot>, HashSet<String>), Error> {
+) -> Result<ValidatedFrontier, Error> {
     let by_id: HashMap<_, _> = plans.iter().map(|p| (p.id.as_str(), p)).collect();
     let roots = remaining
         .iter()
@@ -35,11 +42,12 @@ pub(super) fn validate(
         .collect::<Vec<_>>();
     let mut visited = HashSet::new();
     let mut consumed_jobs = HashSet::new();
+    let mut consumed_infers = HashSet::new();
     let mut snapshots = Vec::new();
     for call_id in roots {
         let root_id = deterministic_plan_execution_id(&activation.id, call_id)?;
         let mut queue = vec![(root_id.clone(), None::<JsonValue>)];
-        let before = consumed_jobs.len();
+        let before = consumed_jobs.len() + consumed_infers.len();
         while let Some((id, expected_program)) = queue.pop() {
             if !visited.insert(id.clone()) || visited.len() > 4096 {
                 return Err("Approval checkpoint Plan graph is cyclic, shared or too large".into());
@@ -91,6 +99,36 @@ pub(super) fn validate(
                 .as_deref()
                 .ok_or("Approval checkpoint Plan has no pending child")?;
             match (plan.pending_kind, effect) {
+                (Some(PlanExecutionWaitKind::Evaluation), PlanEffect::Infer { .. }) => {
+                    let child = infer_children
+                        .iter()
+                        .find(|child| child.initial_activation.id == pending)
+                        .ok_or(ActivationApprovalWaitChanged)?;
+                    // A concurrent cancel advances the Thread generation. It
+                    // is a wakeup/replay, not a malformed historical route.
+                    validate_infer_child(child)?;
+                    validate_plan_evaluation_activation_route(
+                        plan,
+                        &child.request,
+                        &child.thread,
+                        &child.signal,
+                        &child.initial_activation,
+                        thread,
+                        activation,
+                        None,
+                    )?;
+                    let expected = crate::plan_execution::pending_infer_request_event(plan)?;
+                    if expected.id != child.request.id || expected.payload != child.request.payload
+                    {
+                        return Err(
+                            "Approval checkpoint infer Program differs from its durable request"
+                                .into(),
+                        );
+                    }
+                    if !consumed_infers.insert(child.activation.id.clone()) {
+                        return Err("Approval checkpoint shares an infer continuation".into());
+                    }
+                }
                 (
                     Some(PlanExecutionWaitKind::ExecutionJob),
                     PlanEffect::Call { sequence, tool, .. },
@@ -178,7 +216,7 @@ pub(super) fn validate(
                 }
             }
         }
-        if consumed_jobs.len() == before {
+        if consumed_jobs.len() + consumed_infers.len() == before {
             return Err(ActivationApprovalWaitChanged.into());
         }
         remaining.remove(call_id);
@@ -190,5 +228,9 @@ pub(super) fn validate(
     {
         return Err("Approval checkpoint cannot discard an unreachable unfinished Plan".into());
     }
-    Ok((snapshots, consumed_jobs))
+    Ok(ValidatedFrontier {
+        snapshots,
+        job_ids: consumed_jobs,
+        infer_activation_ids: consumed_infers,
+    })
 }

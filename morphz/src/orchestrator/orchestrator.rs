@@ -1646,6 +1646,8 @@ pub struct DurableApprovalServices {
 }
 
 impl DurableApprovalServices {
+    // Keep the independently scoped authority stores explicit at construction.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         broker: Arc<PermissionBroker>,
         approvals: Arc<dyn ApprovalStore>,
@@ -4775,6 +4777,7 @@ impl Orchestrator {
         // process-local and writes no business state.
         let dirty_contexts = Arc::clone(&self.supervision_audit_dirty_contexts);
         let plan_reconcile_wakeup = Arc::clone(&self.plan_reconcile_wakeup);
+        let admission_wakeup = self.activation_admission.clone();
         let action_group_reconcile_dirty = Arc::clone(&self.action_group_reconcile_dirty);
         let action_group_reconcile_wakeup = Arc::clone(&self.action_group_reconcile_wakeup);
         self.bus.subscribe(
@@ -4782,11 +4785,13 @@ impl Orchestrator {
             Arc::new(move |event| {
                 let dirty_contexts = Arc::clone(&dirty_contexts);
                 let plan_reconcile_wakeup = Arc::clone(&plan_reconcile_wakeup);
+                let admission_wakeup = admission_wakeup.clone();
                 let action_group_reconcile_dirty = Arc::clone(&action_group_reconcile_dirty);
                 let action_group_reconcile_wakeup = Arc::clone(&action_group_reconcile_wakeup);
                 Box::pin(async move {
                     if scheduler_audit_event(&event) {
                         plan_reconcile_wakeup.notify_one();
+                        admission_wakeup.notify_durable_queue_change();
                         if let Some(context_id) = event
                             .payload
                             .get("context_id")
@@ -5888,6 +5893,17 @@ impl Orchestrator {
             || parallel_conflicts > 0
             || program_conflicts > 0
         {
+            if !recovered.is_empty()
+                || !jobs.resumed.is_empty()
+                || !evaluations.resumed.is_empty()
+                || parallel_resumed > 0
+                || programs_resumed > 0
+            {
+                // Recovery may requeue a Plan while its owning Activation is
+                // checkpointed and has no process-local waiter left to notify.
+                // Retain a hint; startup still dispatches only after repairs.
+                self.activation_admission.notify_durable_queue_change();
+            }
             tracing::info!(
                 expired_running_requeued = recovered.len(),
                 execution_jobs_resumed = jobs.resumed.len(),
@@ -16662,6 +16678,12 @@ impl Orchestrator {
                             .ok_or("PlanExecution disappeared while waiting for a Job")?;
                     }
                     Some(PlanExecutionWaitKind::Evaluation) => {
+                        if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
+                        }
                         let activation_id = plan
                             .pending_id
                             .clone()
@@ -18465,6 +18487,7 @@ impl Orchestrator {
             }
         }
         let mut pending_approval_ids = Vec::new();
+        let mut pending_infer_activation_ids = Vec::new();
         let mut tasks = Vec::new();
         let mut outputs = Vec::<(Event, bool)>::new();
         let mut allowed_tool_names = options
@@ -19177,6 +19200,7 @@ impl Orchestrator {
                         .downcast::<DeferredPlanApproval>()
                         .expect("checked control outcome");
                     pending_approval_ids.extend(deferred.approval_ids);
+                    pending_infer_activation_ids.extend(deferred.infer_activation_ids);
                     continue;
                 }
                 Ok(Err(error)) => {
@@ -19238,7 +19262,10 @@ impl Orchestrator {
             };
             outputs.push((output, already_persisted));
         }
-        if outputs.is_empty() && pending_approval_ids.is_empty() {
+        if outputs.is_empty()
+            && pending_approval_ids.is_empty()
+            && pending_infer_activation_ids.is_empty()
+        {
             return Err("All tool tasks terminated unexpectedly before producing results".into());
         }
         if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
@@ -19309,7 +19336,10 @@ impl Orchestrator {
         } else {
             // One eval may contain multiple physical approval dependencies.
             debug_assert!(
-                outputs.len() <= 1 && (outputs.is_empty() != pending_approval_ids.is_empty())
+                outputs.len() <= 1
+                    && (outputs.is_empty()
+                        != (pending_approval_ids.is_empty()
+                            && pending_infer_activation_ids.is_empty()))
             );
             for (mut output, already_persisted) in outputs {
                 if !options.wake_on_output {
@@ -19337,18 +19367,22 @@ impl Orchestrator {
                     .await?;
             }
         }
-        if !pending_approval_ids.is_empty() {
+        if !pending_approval_ids.is_empty() || !pending_infer_activation_ids.is_empty() {
             pending_approval_ids.sort();
             pending_approval_ids.dedup();
+            pending_infer_activation_ids.sort();
+            pending_infer_activation_ids.dedup();
             if options.plan_execution_id.is_some() {
                 return Err(DeferredPlanApproval {
                     approval_ids: pending_approval_ids,
+                    infer_activation_ids: pending_infer_activation_ids,
                 }
                 .into());
             }
             return Err(ReadyToSuspendApprovalBatch {
                 assistant_call_event_id,
                 pending_approval_ids,
+                pending_infer_activation_ids,
                 completed_output_event_ids,
             }
             .into());
@@ -20073,6 +20107,7 @@ impl Orchestrator {
             _ => return Err("Scheduler Kernel returned an invalid Thread control result".into()),
         };
         if let ThreadMutation::Updated(updated) = &mutation {
+            self.activation_admission.notify_durable_queue_change();
             if action == ThreadControlAction::Cancel {
                 self.cancel_thread_activations(&current, reason).await?;
             }

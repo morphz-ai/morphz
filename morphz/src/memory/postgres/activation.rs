@@ -2574,7 +2574,13 @@ impl ActivationStore for PostgresStore {
     ) -> Result<Option<crate::memory::ActivationApprovalWaitCheckpoint>, StoreError> {
         let rows = sqlx::query_as("SELECT approval_id, assistant_call_event_id FROM activation_approval_waits WHERE activation_id = $1 ORDER BY approval_id")
             .bind(activation_id).fetch_all(&self.pool).await?;
-        crate::memory::activation_approval_wait::checkpoint_from_rows(activation_id, rows)
+        let infer_rows = sqlx::query_as("SELECT child_activation_id, assistant_call_event_id FROM activation_approval_infer_waits WHERE activation_id = $1 ORDER BY child_activation_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        crate::memory::activation_approval_wait::checkpoint_from_rows(
+            activation_id,
+            rows,
+            infer_rows,
+        )
     }
 
     async fn update_thread_activation(

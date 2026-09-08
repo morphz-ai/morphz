@@ -434,6 +434,7 @@ impl PostgresStore {
                 "20260908_01_activation_approval_waits",
                 "20260908_03_retain_approval_resume_boundary",
                 "20260908_04_nested_plan_approval_waits",
+                "20260908_05_infer_parent_approval_waits",
             ] {
                 store
                     .run_versioned_migration(

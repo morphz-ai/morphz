@@ -9,6 +9,113 @@ mod plan_graph;
 pub(crate) struct PlanApprovalFrontier {
     pub plan_ids: Vec<String>,
     pub approval_ids: Vec<String>,
+    pub infer_activation_ids: Vec<String>,
+}
+
+pub(super) struct InferApprovalDependency {
+    pub activation: ThreadActivationRecord,
+    pub initial_activation: ThreadActivationRecord,
+    pub thread: ThreadRecord,
+    pub request: Event,
+    pub signal: ThreadSignalRecord,
+}
+
+fn validate_infer_child(child: &InferApprovalDependency) -> Result<(), Error> {
+    let a = &child.activation;
+    let t = &child.thread;
+    if a.status != ThreadActivationStatus::Queued
+        || a.claimed_by.is_some()
+        || a.lease_expires_at.is_some()
+        || t.lifecycle != ThreadLifecycle::Open
+        || t.control_state != ThreadControlState::Active
+        || a.generation != t.generation
+    {
+        return Err(ActivationApprovalWaitChanged.into());
+    }
+    if a.root_turn_id != t.root_turn_id
+        || a.agent_id != t.agent_id
+        || a.context_id != t.context_id
+        || a.session_id != t.session_id
+        || a.initiating_principal_id != t.initiating_principal_id
+    {
+        return Err("Approval checkpoint infer continuation has an unrelated route".into());
+    }
+    Ok(())
+}
+
+// This probe may race a child decision. Only the native checkpoint transaction
+// and recursive readiness view authorize suspension, never these sampled reads.
+async fn infer_frontier(
+    store: &dyn RuntimeStore,
+    plans: &[PlanExecutionRecord],
+) -> Result<Vec<InferApprovalDependency>, Error> {
+    let mut children = Vec::new();
+    for plan in plans.iter().filter(|p| {
+        p.status == PlanExecutionStatus::Waiting
+            && p.pending_kind == Some(PlanExecutionWaitKind::Evaluation)
+    }) {
+        let Some(id) = &plan.pending_id else { continue };
+        let Some(initial_activation) = store.get_thread_activation(id).await? else {
+            continue;
+        };
+        let Some(thread) = store
+            .get_thread_by_root(&initial_activation.root_turn_id)
+            .await?
+        else {
+            continue;
+        };
+        let mut live = store
+            .list_thread_activations_by_root(&thread.context_id, &thread.root_turn_id)
+            .await?
+            .into_iter()
+            .filter(|a| !a.status.is_terminal());
+        let Some(activation) = live.next() else {
+            continue;
+        };
+        if live.next().is_some()
+            || store
+                .next_pending_thread_signal(&thread.id)
+                .await?
+                .is_some()
+            || store
+                .get_thread_activation_approval_wait(&activation.id)
+                .await?
+                .is_none()
+            || store
+                .dialogue_turn_activation_runnable(&activation.id)
+                .await?
+        {
+            continue;
+        }
+        let Some(signal) = store
+            .list_activation_signals(id)
+            .await?
+            .into_iter()
+            .find(|s| s.id == stable_thread_signal_id(&thread.root_turn_id))
+        else {
+            continue;
+        };
+        let Some(request) = store
+            .query(QueryFilter {
+                event_id: Some(thread.root_turn_id.clone()),
+                context_id: Some(thread.context_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|e| e.id == thread.root_turn_id)
+        else {
+            continue;
+        };
+        children.push(InferApprovalDependency {
+            activation,
+            initial_activation,
+            thread,
+            request,
+            signal,
+        });
+    }
+    Ok(children)
 }
 
 /// Conservative readiness probe for releasing one Plan stack. These reads are
@@ -74,7 +181,8 @@ pub(crate) async fn plan_approval_frontier(
     }
     let pending_jobs = approvals.keys().copied().collect();
     let mut roots = HashMap::from([(root.tool_call_id.as_str(), "eval")]);
-    let Ok((snapshots, consumed)) = plan_graph::validate(
+    let infer_children = infer_frontier(store, &plans).await?;
+    let Ok(frontier) = plan_graph::validate(
         &mut roots,
         &activation,
         &thread,
@@ -82,16 +190,19 @@ pub(crate) async fn plan_approval_frontier(
         &groups,
         &jobs,
         &pending_jobs,
+        &infer_children,
         false,
     ) else {
         return Ok(None);
     };
     Ok(Some(PlanApprovalFrontier {
-        plan_ids: snapshots.into_iter().map(|p| p.id).collect(),
-        approval_ids: consumed
+        plan_ids: frontier.snapshots.into_iter().map(|p| p.id).collect(),
+        approval_ids: frontier
+            .job_ids
             .iter()
             .map(|id| approvals[id.as_str()].clone())
             .collect(),
+        infer_activation_ids: frontier.infer_activation_ids.into_iter().collect(),
     }))
 }
 
@@ -102,6 +213,7 @@ pub struct ActivationApprovalWaitRequest {
     pub claimed_by: String,
     pub assistant_call_event_id: String,
     pub pending_approval_ids: Vec<String>,
+    pub pending_infer_activation_ids: Vec<String>,
     pub completed_output_event_ids: Vec<String>,
 }
 
@@ -110,6 +222,7 @@ pub struct ActivationApprovalWaitCheckpoint {
     pub activation_id: String,
     pub assistant_call_event_id: String,
     pub approval_ids: Vec<String>,
+    pub infer_activation_ids: Vec<String>,
 }
 
 /// A decision or cancellation won before the checkpoint transaction. The
@@ -127,17 +240,19 @@ impl std::error::Error for ActivationApprovalWaitChanged {}
 pub(super) fn checkpoint_from_rows(
     activation_id: &str,
     rows: Vec<(String, String)>,
+    infer_rows: Vec<(String, String)>,
 ) -> Result<Option<ActivationApprovalWaitCheckpoint>, Error> {
-    let Some((_, event_id)) = rows.first() else {
+    let Some((_, event_id)) = rows.first().or_else(|| infer_rows.first()) else {
         return Ok(None);
     };
-    if rows.iter().any(|(_, id)| id != event_id) {
+    if rows.iter().chain(&infer_rows).any(|(_, id)| id != event_id) {
         return Err("Approval checkpoint contains conflicting assistant-call identities".into());
     }
     Ok(Some(ActivationApprovalWaitCheckpoint {
         activation_id: activation_id.into(),
         assistant_call_event_id: event_id.clone(),
         approval_ids: rows.into_iter().map(|(id, _)| id).collect(),
+        infer_activation_ids: infer_rows.into_iter().map(|(id, _)| id).collect(),
     }))
 }
 
@@ -167,15 +282,40 @@ pub(super) const PLAN_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS activation_app
     PRIMARY KEY (activation_id, plan_id)
 )"#;
 
+pub(super) const INFER_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS activation_approval_infer_waits (
+    activation_id TEXT NOT NULL REFERENCES thread_activations(id) ON DELETE CASCADE,
+    child_activation_id TEXT NOT NULL REFERENCES thread_activations(id),
+    child_revision BIGINT NOT NULL CHECK(child_revision >= 1),
+    child_thread_id TEXT NOT NULL REFERENCES threads(id),
+    child_thread_revision BIGINT NOT NULL CHECK(child_thread_revision >= 1),
+    child_generation BIGINT NOT NULL CHECK(child_generation >= 1),
+    assistant_call_event_id TEXT NOT NULL REFERENCES events(id),
+    CHECK(activation_id <> child_activation_id),
+    PRIMARY KEY (activation_id, child_activation_id)
+)"#;
+pub(super) const INFER_INDEX: &str = "CREATE INDEX IF NOT EXISTS activation_approval_infer_child ON activation_approval_infer_waits(child_activation_id, activation_id)";
+
 // Resume on ANY change, including denial, cancellation or permission-policy
 // re-evaluation. Waiting for ALL approvals would prevent the first approved
 // command from running. Missing dependencies also require reconciliation;
 // they must never turn into an immortal sleeping owner.
 pub(super) const VIEW_QUERY: &str = r#"
-    SELECT w.activation_id FROM activation_approval_waits w
-    LEFT JOIN approval_requests a ON a.id = w.approval_id
-    LEFT JOIN execution_jobs j ON j.id = w.job_id
-    WHERE NOT EXISTS (
+    WITH RECURSIVE owners(activation_id) AS (
+        SELECT activation_id FROM activation_approval_waits
+        UNION SELECT activation_id FROM activation_approval_infer_waits
+    ), invalid(activation_id) AS (
+    SELECT w.activation_id FROM owners w
+    LEFT JOIN thread_activations owner ON owner.id = w.activation_id
+    WHERE owner.id IS NULL OR owner.status <> 'queued' OR EXISTS (
+        SELECT 1 FROM activation_approval_waits aw
+        LEFT JOIN approval_requests a ON a.id = aw.approval_id
+        LEFT JOIN execution_jobs j ON j.id = aw.job_id
+        WHERE aw.activation_id = w.activation_id AND
+            (a.id IS NULL OR j.id IS NULL OR a.status <> 'pending_human'
+             OR a.revision <> aw.approval_revision OR a.job_id <> aw.job_id
+             OR j.status <> 'waiting_approval' OR j.revision <> aw.job_revision
+             OR j.activation_id <> aw.activation_id)
+    ) OR EXISTS (
         SELECT 1 FROM activation_approval_plan_waits pw
         LEFT JOIN plan_executions p ON p.id = pw.plan_id
         LEFT JOIN action_groups g ON g.id = pw.group_id
@@ -185,26 +325,44 @@ pub(super) const VIEW_QUERY: &str = r#"
              OR (pw.group_id IS NOT NULL AND (g.id IS NULL
                  OR g.revision <> pw.group_revision OR g.status <> pw.group_status)))
     )
-    AND NOT EXISTS (
+    OR EXISTS (
         SELECT 1 FROM plan_executions p
         WHERE p.activation_id = w.activation_id
           AND p.status NOT IN ('succeeded', 'failed', 'cancelled')
           AND NOT EXISTS (SELECT 1 FROM activation_approval_plan_waits pw
               WHERE pw.activation_id = w.activation_id AND pw.plan_id = p.id)
     )
-    AND NOT EXISTS (
+    OR EXISTS (
         SELECT 1 FROM execution_jobs j
         WHERE j.activation_id = w.activation_id
           AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')
           AND NOT EXISTS (SELECT 1 FROM activation_approval_waits jw
               WHERE jw.activation_id = w.activation_id AND jw.job_id = j.id)
     )
-    GROUP BY w.activation_id
-    HAVING MIN(CASE WHEN a.status = 'pending_human'
-        AND a.revision = w.approval_revision AND a.job_id = w.job_id
-        AND j.status = 'waiting_approval' AND j.revision = w.job_revision
-        AND j.activation_id = w.activation_id
-        THEN 1 ELSE 0 END) = 1"#;
+    OR EXISTS (
+        SELECT 1 FROM activation_approval_infer_waits iw
+        LEFT JOIN thread_activations c ON c.id = iw.child_activation_id
+        LEFT JOIN threads t ON t.id = iw.child_thread_id
+        WHERE iw.activation_id = w.activation_id AND
+            (c.id IS NULL OR t.id IS NULL OR c.status <> 'queued'
+             OR c.revision <> iw.child_revision OR t.revision <> iw.child_thread_revision
+             OR c.root_turn_id <> t.root_turn_id OR c.generation <> iw.child_generation
+             OR t.generation <> iw.child_generation OR t.status <> 'open'
+             OR t.control_state <> 'active'
+             OR NOT EXISTS (SELECT 1 FROM owners o WHERE o.activation_id = c.id)
+             OR EXISTS (SELECT 1 FROM thread_activations sibling
+                 WHERE sibling.root_turn_id = t.root_turn_id
+                   AND sibling.status IN ('queued', 'running') AND sibling.id <> c.id)
+             OR EXISTS (SELECT 1 FROM thread_signals s WHERE s.thread_id = t.id
+                 AND s.thread_generation = t.generation AND s.status = 'pending'))
+    )
+    UNION
+    SELECT iw.activation_id FROM activation_approval_infer_waits iw
+    JOIN invalid child ON child.activation_id = iw.child_activation_id
+    )
+    SELECT activation_id FROM owners o WHERE NOT EXISTS (
+        SELECT 1 FROM invalid i WHERE i.activation_id = o.activation_id
+    )"#;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -219,6 +377,7 @@ pub(super) fn validate(
     outputs: &[Event],
     plans: &[PlanExecutionRecord],
     groups: &[ActionGroupRecord],
+    infer_children: &[InferApprovalDependency],
 ) -> Result<Vec<plan_graph::Snapshot>, Error> {
     if activation.status != ThreadActivationStatus::Running
         || activation.claimed_by.as_deref() != Some(request.claimed_by.as_str())
@@ -271,8 +430,15 @@ pub(super) fn validate(
     {
         return Err("Approval checkpoint tool IDs must be nonempty and unique".into());
     }
-    if approvals.is_empty()
+    if (approvals.is_empty() && infer_children.is_empty())
         || approvals.len() != request.pending_approval_ids.len()
+        || infer_children.len() != request.pending_infer_activation_ids.len()
+        || infer_children
+            .iter()
+            .map(|c| &c.activation.id)
+            .collect::<HashSet<_>>()
+            .len()
+            != infer_children.len()
         || approvals
             .iter()
             .map(|a| &a.id)
@@ -281,7 +447,8 @@ pub(super) fn validate(
             != approvals.len()
     {
         return Err(
-            "Approval checkpoint requires an exact nonempty set of pending human approvals".into(),
+            "Approval checkpoint requires an exact nonempty set of approval or infer dependencies"
+                .into(),
         );
     }
     let mut pending_jobs = HashSet::new();
@@ -330,7 +497,7 @@ pub(super) fn validate(
             );
         }
     }
-    let (snapshots, plan_jobs) = plan_graph::validate(
+    let frontier = plan_graph::validate(
         &mut remaining,
         activation,
         thread,
@@ -338,11 +505,13 @@ pub(super) fn validate(
         groups,
         jobs,
         &pending_jobs,
+        infer_children,
         true,
     )?;
-    if pending_jobs
-        .iter()
-        .any(|id| !direct_jobs.contains(*id) && !plan_jobs.contains(*id))
+    if frontier.infer_activation_ids.len() != infer_children.len()
+        || pending_jobs
+            .iter()
+            .any(|id| !direct_jobs.contains(*id) && !frontier.job_ids.contains(*id))
         || !remaining.is_empty()
         || jobs
             .iter()
@@ -350,5 +519,5 @@ pub(super) fn validate(
     {
         return Err("Approval checkpoint cannot suspend unfinished sibling work".into());
     }
-    Ok(snapshots)
+    Ok(frontier.snapshots)
 }

@@ -299,6 +299,13 @@ impl ActivationAdmissionController {
         self.inner.refill_changed.notified().await;
     }
 
+    /// A persisted dependency may become runnable without changing a local
+    /// permit. Request a coalesced rescan, never admit it from this hint alone.
+    /// The retained Notify permit also covers startup before the refill task.
+    pub(crate) fn notify_durable_queue_change(&self) {
+        self.inner.refill_changed.notify_one();
+    }
+
     /// Wait until this durable Activation is selected by class, aging,
     /// hierarchical fairness, and reserved capacity.
     pub async fn acquire(
@@ -909,6 +916,26 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), controller.wait_for_change())
             .await
             .expect("refill notification must retain one permit");
+    }
+
+    #[tokio::test]
+    async fn durable_dependency_notification_retains_hint_without_admitting_work() {
+        let controller = ActivationAdmissionController::new(limits(1));
+        for _ in 0..2 {
+            controller.notify_durable_queue_change();
+            controller.notify_durable_queue_change();
+            tokio::time::timeout(Duration::from_secs(1), controller.wait_for_change())
+                .await
+                .expect("dependency hint must survive until the next rescan");
+            assert_eq!(controller.queued_len(), 0);
+            assert_eq!(controller.in_flight_len(), 0);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), controller.wait_for_change())
+                    .await
+                    .is_err(),
+                "a burst must coalesce rather than create repeated scans"
+            );
+        }
     }
 
     #[tokio::test]

@@ -1,8 +1,8 @@
 //! Direct tool batches release their live evaluation stack before the Store
 //! commits the approval checkpoint. Nested Plan stacks propagate a distinct
 //! control outcome; they do not fabricate terminal tool results. Infer child
-//! batches can checkpoint independently; the infer/Objective parent waits
-//! remain separate integration gates and still prevent whole-host parking.
+//! batches can checkpoint independently; infer parents persist exact dependency
+//! edges after child stacks return. Objective-owned waits remain a separate gate.
 use super::*;
 use crate::memory::{ActivationApprovalWaitChanged, ActivationApprovalWaitRequest};
 
@@ -10,6 +10,7 @@ use crate::memory::{ActivationApprovalWaitChanged, ActivationApprovalWaitRequest
 pub(super) struct ReadyToSuspendApprovalBatch {
     pub assistant_call_event_id: String,
     pub pending_approval_ids: Vec<String>,
+    pub pending_infer_activation_ids: Vec<String>,
     pub completed_output_event_ids: Vec<String>,
 }
 
@@ -23,6 +24,7 @@ impl std::error::Error for ReadyToSuspendApprovalBatch {}
 #[derive(Debug)]
 pub(super) struct DeferredPlanApproval {
     pub approval_ids: Vec<String>,
+    pub infer_activation_ids: Vec<String>,
 }
 impl std::fmt::Display for DeferredPlanApproval {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,11 +83,16 @@ impl Orchestrator {
             .plan_ids
             .iter()
             .any(|id| id != &plan.id && self.plan_child_runners.contains(id))
+            || frontier.infer_activation_ids.iter().any(|id| {
+                self.activation_routes.contains_key(id)
+                    || self.activation_admission_slots.contains_key(id)
+            })
         {
             return Ok(None);
         }
         Ok(Some(DeferredPlanApproval {
             approval_ids: frontier.approval_ids,
+            infer_activation_ids: frontier.infer_activation_ids,
         }))
     }
     /// `false` means a decision won the race: replay this exact immutable
@@ -111,6 +118,7 @@ impl Orchestrator {
                     claimed_by: self.runtime_claimant_id.clone(),
                     assistant_call_event_id: batch.assistant_call_event_id.clone(),
                     pending_approval_ids: batch.pending_approval_ids.clone(),
+                    pending_infer_activation_ids: batch.pending_infer_activation_ids.clone(),
                     completed_output_event_ids: batch.completed_output_event_ids.clone(),
                 })
                 .await;
@@ -119,6 +127,7 @@ impl Orchestrator {
                     tracing::info!(
                         activation_id,
                         pending_approvals = batch.pending_approval_ids.len(),
+                        pending_infer_activations = batch.pending_infer_activation_ids.len(),
                         event_code = "orchestrator.activation.approval_suspended",
                         "Suspended the tool batch on durable human approval dependencies"
                     );

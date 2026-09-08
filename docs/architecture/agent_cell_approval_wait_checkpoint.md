@@ -1,8 +1,9 @@
 # Agent Cell approval-wait checkpoint
 
 Status: native Store boundary, direct tool-batch suspension and nested physical
-Plan approval suspension and infer-child tool batches implemented. Infer/Objective parent waits and
-real Cloud parking integration remain incomplete.
+Plan approval suspension, infer-child tool batches and infer-parent approval dependencies implemented. Objective-owned waits and
+real Cloud parking integration remain incomplete. Native parent-wait verification
+is described below; it is not a deployed Cloud completion claim.
 This document does not authorize
 deploying the checkpoint path or relaxing the existing quiescence gate.
 
@@ -31,12 +32,12 @@ SQLite and PostgreSQL validate, within the write transaction:
   same causal route, including the Objective creation prelude; deduplicated
   raw provider calls are not fictitious unfinished siblings;
 - each unfinished Yao Plan is reachable from an `eval` in that exact batch,
-  through deterministic parallel branches or a Program child, and every live
-  leaf waits on one of the supplied pending-human Approval/Job dependencies;
+  through deterministic parallel branches, a Program child or a verified infer
+  dependency, and every live leaf reaches supplied pending-human Approval/Job dependencies;
 - no nonterminal sibling Job or unreachable unfinished Plan is discarded.
 
 The transaction writes `activation_approval_waits` and, for nested continuations,
-`activation_approval_plan_waits`. It records Approval/Job and Plan/parallel-Group
+`activation_approval_plan_waits` and `activation_approval_infer_waits`. It records Approval/Job and Plan/parallel-Group
 revisions, statuses and the assistant-call Event reference, requeues the same Activation,
 clears its execution owner and lease, and cancels its activation-lease Timer.
 It does not acknowledge its Thread Signals, finish the Thread, consume a
@@ -94,9 +95,80 @@ rows. Existing output IDs and grant-claim fences prevent sibling re-execution.
 
 Custom callback reviewers still run their callback and block parking until it
 returns. An infer child's own physical tool batch can checkpoint through the
-same boundary. The parent waiting for that child's typed terminal result and
-active Objective Evaluation waits retain their live waits; they are not made
+same boundary. A parent waiting only on checkpointed infer children and/or its
+own human approvals can release its stack after those children release theirs.
+Active Objective Evaluation waits retain their live stacks; they are not made
 eligible for whole-host parking by this change.
+
+## Native infer-parent dependency checkpoint
+
+Each infer edge references the **current checkpointed child Activation**, its
+revision, logical Thread revision/generation and the parent's immutable
+assistant-call Event. The child's initial Activation can already be completed:
+the original infer Event/Signal/Activation still proves its Plan identity, while
+the current continuation proves the actual wait. Matching IDs or a model-supplied
+route alone are insufficient. Validation reuses the native infer route contract
+and compares the reconstructed pending Program request with the durable Event.
+
+The child must be the sole nonterminal Activation in its open, active Thread,
+with no new pending Signal. Its own checkpoint must remain blocked in the same
+native readiness view. Parent-owned Jobs remain parent-owned; this never copies
+foreign approvals into the parent's capability scope. An infer-only parent may
+have zero direct approvals. Extra, duplicate or unrelated child IDs are rejected.
+
+The shared SQLite/PostgreSQL view computes invalid leaves then recursively
+propagates invalidation to ancestors. A changed approval, Job, Plan, Group,
+child Activation or Thread, a new child continuation, or new pending input wakes
+the original parent. One deepest decision invalidates every ancestor **before**
+any child process runs; it does not wait for all leaves. Terminal owner cleanup
+removes all three checkpoint tables. PostgreSQL adds migration
+`20260908_05_infer_parent_approval_waits`; SQLite installs the same schema/view.
+
+PostgreSQL retains the owner/Group/Plan/Job lock order and does not acquire
+descendant row locks in reverse order. Child revisions are sampled under the
+transaction; concurrent changes invalidate that exact saved edge, even if they
+commit after it was sampled. Cancellation/generation changes are a typed
+dependency change, so the caller replays rather than publishing a tool failure.
+
+The strengthened real-process cancellation regression exposed an additional
+gap: child cancellation made a saved parent runnable and recovery requeued its
+Plan, but no local permit changed to notify admission. Durable scheduler events,
+Thread controls and successful Plan recovery now request the existing coalesced
+queue rescan. This hint neither admits work nor bypasses database readiness. It
+retains a notification across startup; it does not add a database polling loop.
+
+Final-source integration verification: **31 distinct tests passed**: ten SQLite
+checkpoint cases, five real-process Runtime cases, five infer handoff cases,
+six SQLite owner-cancellation cases and five PostgreSQL cases. Each final PG
+case used a fresh database in the same disposable loopback-only cluster; no
+production/Supabase connection was used. Native infer cases include three-level
+dependencies, successor Activations, duplicate/unrelated IDs, cancellation,
+pause, new Activations/input and sixteen decision/cancellation races per backend.
+
+The five Runtime cases passed **ten consecutive rounds / 120 subprocess
+lifetimes** on the final source. Both parent and child are queued without a
+claimant/lease before process exit; partial allow/deny keeps both original
+assistant-call identities and never repeats completed reads. Live approval and
+post-restart child cancellation resume the original parent with one EventBus
+handler and one Activation slot. This replaces the earlier b5cbcc6d fixture's
+assertion that the uncheckpointed parent must prevent process quiescence.
+
+No hosted quiescence predicate has been relaxed. Active Objective waits, actual
+Cell parking/wake integration and deployed Provider/Edge flows remain required.
+
+Library filters `plan`, `cancel`, `action_group`, `activation`, and `recovery`
+passed 52/34/2/35/26 tests respectively: **134 distinct tests after de-duplication**,
+or **165 distinct passing tests** including the integrations above. The new
+notification test proves retained/coalesced wake hints do not admit an Activation.
+The `approval_runtime_resume` suite requires `--features remote-store`; a default
+build reports zero cases and is not evidence for this gate.
+
+`cargo clippy -p morphz --features remote-store --lib -- -D warnings`, default
+`cargo check -p morphz`, formatting and diff checks passed. All test PostgreSQL
+clusters were stopped and their synthetic data removed. No production instance,
+main worktree, actual Provider or cloud compute resource was changed. The latest
+Cloudflare CLI probe still reports expired authentication; Ubuntu SSH still times
+out. Neither external condition is evidence that the full Cloud goal is complete.
 
 ## Nested physical Plan execution
 
@@ -128,8 +200,8 @@ Plan join as a malformed assistant call.
 
 ## Remaining integration gates
 
-1. Extend the Plan-frontier checkpoint to infer-result and active Objective
-   parent waits.
+1. Extend the Plan-frontier checkpoint to active Objective-owned waits, retaining
+   their Evaluation lease and objective transaction boundaries correctly.
    Unsupported wait forms remain rejected by the Store. These are required
    integration gates, not a narrower definition of complete Cloud support.
 2. Only after the above may quiescence recognize checkpointed owners and their
@@ -162,10 +234,10 @@ This applies to startup, live queue refill and lease-expiry recovery. It changes
 only the EventBus handler channel, not the child's own bounded Activation
 admission, Thread gate, permission checks, persistence or de-duplication.
 
-The infer fixture performs actual host exits before an allow and a later deny.
+The b5cbcc6d infer fixture performed actual host exits before an allow and a later deny.
 Each child re-checkpoint uses the same assistant-call Event, already completed
 reads stay unchanged, and the typed infer value reaches the original parent.
-It also asserts the distinction that matters for safe Cloud parking: the child
+That earlier version also asserted the distinction that matters for safe Cloud parking: the child
 is queued with no claimant or lease, but the uncheckpointed parent still makes
 `hosted_process_is_quiescent()` false. No ownership rows are manually expired or
 rewritten to make recovery pass. This is a native crash-recovery gate, **not**
@@ -178,7 +250,7 @@ not re-evaluate the child model, and refills the parent's failed infer outcome.
 The five process cases passed ten consecutive rounds (120 child-process
 lifetimes) without increasing the default native thread stack.
 
-The final source passed 149 distinct targeted tests: 133 library tests across
+That b5cbcc6d source passed 149 distinct targeted tests: 133 library tests across
 `plan`, `cancel`, `action_group`, `activation` and `recovery` (de-duplicated),
 plus 16 integration tests across `approval_runtime_resume`, `plan_infer_handoff`
 and the SQLite cases of `plan_owner_cancellation`. The subprocess entrypoint

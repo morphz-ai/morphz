@@ -7,8 +7,10 @@ impl SqliteStore {
         &self,
         request: ActivationApprovalWaitRequest,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>> {
-        if request.pending_approval_ids.is_empty()
+        if (request.pending_approval_ids.is_empty()
+            && request.pending_infer_activation_ids.is_empty())
             || request.pending_approval_ids.len() > 4096
+            || request.pending_infer_activation_ids.len() > 4096
             || request.completed_output_event_ids.len() > 4096
         {
             return Err("Approval checkpoint must contain a bounded nonempty wait set".into());
@@ -83,6 +85,44 @@ impl SqliteStore {
             .iter()
             .map(action_group_from_row)
             .collect::<Result<Vec<_>, _>>()?;
+        // Child state is sampled without taking descendant row locks: that
+        // would invert cancellation's owner -> Group -> Plan lock order. Any
+        // concurrent decision/change invalidates the stored revision edge in
+        // the readiness view, including changes committed after this snapshot.
+        let mut infer_children = Vec::new();
+        for id in &request.pending_infer_activation_ids {
+            let row = sqlx::query("SELECT c.* FROM thread_activations c JOIN threads t ON t.root_turn_id = c.root_turn_id WHERE c.id = ? AND c.status = 'queued' AND t.status = 'open' AND t.control_state = 'active' AND EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = c.id) AND NOT EXISTS (SELECT 1 FROM thread_activations a WHERE a.root_turn_id = c.root_turn_id AND a.status IN ('queued','running') AND a.id <> c.id) AND NOT EXISTS (SELECT 1 FROM thread_signals s WHERE s.thread_id = t.id AND s.thread_generation = t.generation AND s.status = 'pending')")
+                .bind(id).fetch_optional(&mut *tx).await?
+                .ok_or(crate::memory::ActivationApprovalWaitChanged)?;
+            let child = thread_activation_from_row(&row)?;
+            let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+                .bind(&child.root_turn_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let child_thread = thread_from_row(&row)?;
+            let request_event =
+                stored_event_in_transaction(&mut tx, &child.root_turn_id, &child.context_id)
+                    .await?
+                    .ok_or("Approval checkpoint infer request is not durable")?;
+            let row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+                .bind(crate::memory::stable_thread_activation_id(
+                    &request_event.id,
+                ))
+                .fetch_one(&mut *tx)
+                .await?;
+            let initial_activation = thread_activation_from_row(&row)?;
+            let row = sqlx::query("SELECT * FROM thread_signals WHERE id = ?")
+                .bind(crate::memory::stable_thread_signal_id(&request_event.id))
+                .fetch_one(&mut *tx)
+                .await?;
+            infer_children.push(activation_approval_wait::InferApprovalDependency {
+                activation: child,
+                initial_activation,
+                thread: child_thread,
+                request: request_event,
+                signal: thread_signal_from_row(&row)?,
+            });
+        }
         let plan_snapshots = activation_approval_wait::validate(
             &request,
             &activation,
@@ -93,6 +133,7 @@ impl SqliteStore {
             &outputs,
             &plans,
             &groups,
+            &infer_children,
         )?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query("DELETE FROM activation_approval_waits WHERE activation_id = ?")
@@ -103,6 +144,17 @@ impl SqliteStore {
             .bind(&activation.id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM activation_approval_infer_waits WHERE activation_id = ?")
+            .bind(&activation.id)
+            .execute(&mut *tx)
+            .await?;
+        for child in &infer_children {
+            sqlx::query("INSERT INTO activation_approval_infer_waits (activation_id, child_activation_id, child_revision, child_thread_id, child_thread_revision, child_generation, assistant_call_event_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                .bind(&activation.id).bind(&child.activation.id).bind(i64::try_from(child.activation.revision)?)
+                .bind(&child.thread.id).bind(i64::try_from(child.thread.revision)?)
+                .bind(i64::try_from(child.thread.generation)?).bind(&call.id)
+                .execute(&mut *tx).await?;
+        }
         for snapshot in plan_snapshots {
             let (group_id, group_revision, group_status) = match snapshot.group {
                 Some((id, revision, status)) => {

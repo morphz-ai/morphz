@@ -7,6 +7,8 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::*;
 use serde_json::json;
 
+#[path = "activation_approval_checkpoint/infer_children.rs"]
+mod infer_children;
 #[path = "activation_approval_checkpoint/nested_plans.rs"]
 mod nested_plans;
 
@@ -114,6 +116,24 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> Batch {
         ThreadActivationMutation::Updated(a) => a,
         other => panic!("{other:?}"),
     };
+    seed_running_batch(store, &running, label).await
+}
+
+async fn seed_running_batch(
+    store: &dyn RuntimeStore,
+    running: &ThreadActivationRecord,
+    label: &str,
+) -> Batch {
+    let activation = running.id.clone();
+    let agent = running.agent_id.clone();
+    let context = running.context_id.clone();
+    let session = running.session_id.clone();
+    let thread = store
+        .get_thread_by_root(&running.root_turn_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
     let mut jobs = Vec::new();
     let mut approvals = Vec::new();
     for i in 0..2 {
@@ -203,6 +223,7 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> Batch {
         .unwrap();
     Batch {
         request: ActivationApprovalWaitRequest {
+            pending_infer_activation_ids: vec![],
             activation_id: activation,
             expected_revision: running.revision,
             claimed_by: "worker-before-exit".into(),

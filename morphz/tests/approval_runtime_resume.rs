@@ -273,9 +273,8 @@ async fn approval_runtime_child() {
             .unwrap();
     }
     if stage == "live" {
-        // Exercise ordinary decision -> live queue refill while the parent
-        // still occupies the sole EventBus handler. Restart recovery uses a
-        // different dispatch call site and is not sufficient to prove this.
+        // Exercise ordinary decision -> live queue refill after both stacks
+        // release. Restart recovery uses a different dispatch call site.
         for expected in [2, 1] {
             let pending = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
@@ -286,7 +285,7 @@ async fn approval_runtime_child() {
                         })
                         .await
                         .unwrap();
-                    if pending.len() == expected {
+                    if pending.len() == expected && runtime.hosted_process_is_quiescent() {
                         let job = native
                             .get_execution_job(&pending[0].job_id)
                             .await
@@ -387,10 +386,7 @@ async fn approval_runtime_child() {
                 })
                 .await
                 .unwrap();
-            if jobs.len() == 3
-                && (runtime.hosted_process_is_quiescent()
-                    || (client.infer && matches!(stage.as_str(), "initial" | "partial")))
-            {
+            if jobs.len() == 3 && runtime.hosted_process_is_quiescent() {
                 let wait = native
                     .get_thread_activation_approval_wait(&jobs[0].activation_id)
                     .await
@@ -402,10 +398,6 @@ async fn approval_runtime_child() {
                 };
                 if wait.as_ref().map_or(0, |wait| wait.approval_ids.len()) == expected {
                     if client.infer && matches!(stage.as_str(), "initial" | "partial") {
-                        assert!(
-                            !runtime.hosted_process_is_quiescent(),
-                            "the uncheckpointed infer parent must still block parking"
-                        );
                         let plan = native
                             .list_plan_executions(PlanExecutionFilter {
                                 include_terminal: true,
@@ -421,11 +413,24 @@ async fn approval_runtime_child() {
                             plan.pending_id.as_deref(),
                             Some(jobs[0].activation_id.as_str())
                         );
-                        assert!(native
+                        let parent_wait = native
                             .get_thread_activation_approval_wait(&plan.activation_id)
                             .await
                             .unwrap()
-                            .is_none());
+                            .expect("the infer parent must checkpoint before whole-host parking");
+                        assert!(parent_wait.approval_ids.is_empty());
+                        assert_eq!(
+                            parent_wait.infer_activation_ids,
+                            vec![jobs[0].activation_id.clone()]
+                        );
+                        let parent = native
+                            .get_thread_activation(&plan.activation_id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(parent.status, ThreadActivationStatus::Queued);
+                        assert!(parent.claimed_by.is_none());
+                        assert!(parent.lease_expires_at.is_none());
                         let child = native
                             .get_thread_activation(&jobs[0].activation_id)
                             .await
@@ -553,7 +558,7 @@ async fn nested_plan_approval_resumes_across_real_process_exits() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn infer_child_approval_resumes_across_real_process_exits() {
-    // This proves child checkpoint/crash recovery, not safe parent parking.
+    // Both parent and child checkpoint before each process exits.
     approval_process_case(false, true).await;
 }
 
@@ -689,6 +694,27 @@ async fn approval_process_case(nested: bool, infer: bool) {
         .unwrap()
         .unwrap();
     assert_eq!(checkpoint.approval_ids.len(), 2);
+    let parent_checkpoint = if infer {
+        let parent_id = native
+            .list_plan_executions(PlanExecutionFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap()
+            .activation_id;
+        Some(
+            native
+                .get_thread_activation_approval_wait(&parent_id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     let one = before
         .iter()
         .find(|j| j.request["path"] == json!(root.join("outside/one.txt")))
@@ -725,6 +751,17 @@ async fn approval_process_case(nested: bool, infer: bool) {
         checkpoint.assistant_call_event_id
     );
     assert_eq!(remaining.approval_ids.len(), 1);
+    if let Some(parent_checkpoint) = parent_checkpoint {
+        assert_eq!(
+            native
+                .get_thread_activation_approval_wait(&parent_checkpoint.activation_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            parent_checkpoint,
+            "partial child execution must retain the original parent assistant-call boundary"
+        );
+    }
     assert!(checkpoint.approval_ids.contains(&remaining.approval_ids[0]));
     assert_eq!(
         native.get_execution_job(&free.id).await.unwrap().unwrap(),

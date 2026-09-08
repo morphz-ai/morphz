@@ -2020,6 +2020,12 @@ impl SqliteStore {
         sqlx::query(super::activation_approval_wait::PLAN_TABLE)
             .execute(&pool)
             .await?;
+        sqlx::query(super::activation_approval_wait::INFER_TABLE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(super::activation_approval_wait::INFER_INDEX)
+            .execute(&pool)
+            .await?;
         // Retain the exact assistant-call identity across claim and a second
         // crash. Terminal mutation (including aggregate Thread cancellation)
         // removes it atomically; re-suspension replaces its dependency set.
@@ -2043,6 +2049,7 @@ impl SqliteStore {
             BEGIN
                 DELETE FROM activation_approval_waits WHERE activation_id = NEW.id;
                 DELETE FROM activation_approval_plan_waits WHERE activation_id = NEW.id;
+                DELETE FROM activation_approval_infer_waits WHERE activation_id = NEW.id;
             END"#,
         )
         .execute(&mut *checkpoint_schema)
@@ -13167,7 +13174,9 @@ impl ActivationStore for SqliteStore {
     > {
         let rows = sqlx::query_as("SELECT approval_id, assistant_call_event_id FROM activation_approval_waits WHERE activation_id = ? ORDER BY approval_id")
             .bind(activation_id).fetch_all(&self.pool).await?;
-        super::activation_approval_wait::checkpoint_from_rows(activation_id, rows)
+        let infer_rows = sqlx::query_as("SELECT child_activation_id, assistant_call_event_id FROM activation_approval_infer_waits WHERE activation_id = ? ORDER BY child_activation_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        super::activation_approval_wait::checkpoint_from_rows(activation_id, rows, infer_rows)
     }
 
     async fn update_thread_activation(
