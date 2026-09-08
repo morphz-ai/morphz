@@ -5035,96 +5035,114 @@ impl ObjectiveSupervisor {
         }
     }
 
-    async fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) -> Result<(), DynError> {
-        if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
-            let mut activation_ids = self
-                .evaluations
-                .activation_ids_for_evaluation(&objective.id, evaluation_id)
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>();
-            self.evaluations
-                .cancel_evaluation(&objective.id, evaluation_id);
-            if let Some(store) = self.activation_store.as_ref() {
-                // The registry is deliberately process-local, so it is empty
-                // after a Runtime restart. Recover the same exact fencing
-                // relation from each nonterminal Activation's immutable
-                // Trigger Event before claiming a replacement Evaluation.
-                // Event-id reads are indexed and this path runs only at an
-                // expired Objective lease boundary, not in the hot scheduler
-                // loop.
-                for activation in store
-                    .list_context_thread_activations(&objective.context_id, false)
-                    .await?
+    /// Recover exact Evaluation ownership from immutable routes, including a
+    /// creation prelude saved in an approval checkpoint. Control and recovery
+    /// share this lookup; neither infers ownership from Session membership.
+    pub(crate) async fn evaluation_activation_ids(
+        &self,
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+    ) -> Result<std::collections::HashSet<String>, DynError> {
+        let mut activation_ids = self
+            .evaluations
+            .activation_ids_for_evaluation(&objective.id, evaluation_id)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        if let Some(store) = self.activation_store.as_ref() {
+            // The registry is deliberately process-local, so it is empty
+            // after a Runtime restart. Recover the same exact fencing
+            // relation from each nonterminal Activation's immutable
+            // Trigger Event before claiming a replacement Evaluation.
+            // Event-id reads are indexed. This is an ownership control
+            // boundary, not the hot scheduler loop.
+            for activation in store
+                .list_context_thread_activations(&objective.context_id, false)
+                .await?
+            {
+                if activation_ids.contains(&activation.id)
+                    || activation.agent_id != objective.agent_id
+                    || activation.session_id != objective.coordinator_session_id
                 {
-                    if activation_ids.contains(&activation.id) {
-                        continue;
-                    }
-                    let mut routed = self
-                        .audit_store
-                        .query(QueryFilter {
-                            event_id: Some(activation.trigger_event_id.clone()),
-                            ..QueryFilter::default()
-                        })
-                        .await?
-                        .into_iter()
-                        .find(|event| event.id == activation.trigger_event_id)
-                        .is_some_and(|event| {
-                            event
+                    continue;
+                }
+                let mut routed = self
+                    .audit_store
+                    .query(QueryFilter {
+                        event_id: Some(activation.trigger_event_id.clone()),
+                        ..QueryFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == activation.trigger_event_id)
+                    .is_some_and(|event| {
+                        event
+                            .payload
+                            .get("objective_id")
+                            .and_then(|value| value.as_str())
+                            == Some(objective.id.as_str())
+                            && event
                                 .payload
-                                .get("objective_id")
+                                .get("objective_evaluation_id")
                                 .and_then(|value| value.as_str())
-                                == Some(objective.id.as_str())
-                                && event
-                                    .payload
-                                    .get("objective_evaluation_id")
-                                    .and_then(|value| value.as_str())
-                                    == Some(evaluation_id)
-                        });
-                    if !routed {
-                        if let Some(wait) = store
-                            .get_thread_activation_approval_wait(&activation.id)
-                            .await?
-                        {
-                            let calls = self
+                                == Some(evaluation_id)
+                    });
+                if !routed {
+                    if let Some(wait) = store
+                        .get_thread_activation_approval_wait(&activation.id)
+                        .await?
+                    {
+                        let calls = self
+                            .audit_store
+                            .query(QueryFilter {
+                                event_id: Some(wait.assistant_call_event_id),
+                                context_id: Some(activation.context_id.clone()),
+                                ..Default::default()
+                            })
+                            .await?;
+                        if let Some(call) = calls.first() {
+                            let outputs = self
                                 .audit_store
                                 .query(QueryFilter {
-                                    event_id: Some(wait.assistant_call_event_id),
                                     context_id: Some(activation.context_id.clone()),
+                                    activation_id: Some(activation.id.clone()),
+                                    topic: Some("chat/tool_output".into()),
                                     ..Default::default()
                                 })
                                 .await?;
-                            if let Some(call) = calls.first() {
-                                let outputs = self
-                                    .audit_store
-                                    .query(QueryFilter {
-                                        context_id: Some(activation.context_id.clone()),
-                                        activation_id: Some(activation.id.clone()),
-                                        topic: Some("chat/tool_output".into()),
-                                        ..Default::default()
-                                    })
-                                    .await?;
-                                routed = crate::memory::approval_checkpoint_objective_binding(
-                                    call, &outputs,
-                                )?
-                                .is_some_and(|binding| {
-                                    binding
+                            routed = crate::memory::approval_checkpoint_objective_binding(
+                                call, &outputs,
+                            )?
+                            .is_some_and(|binding| {
+                                binding
+                                    .payload
+                                    .get("objective_id")
+                                    .and_then(JsonValue::as_str)
+                                    == Some(objective.id.as_str())
+                                    && binding
                                         .payload
-                                        .get("objective_id")
+                                        .get("objective_evaluation_id")
                                         .and_then(JsonValue::as_str)
-                                        == Some(objective.id.as_str())
-                                        && binding
-                                            .payload
-                                            .get("objective_evaluation_id")
-                                            .and_then(JsonValue::as_str)
-                                            == Some(evaluation_id)
-                                });
-                            }
+                                        == Some(evaluation_id)
+                            });
                         }
                     }
-                    if routed {
-                        activation_ids.insert(activation.id);
-                    }
                 }
+                if routed {
+                    activation_ids.insert(activation.id);
+                }
+            }
+        }
+        Ok(activation_ids)
+    }
+
+    async fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) -> Result<(), DynError> {
+        if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
+            let activation_ids = self
+                .evaluation_activation_ids(objective, evaluation_id)
+                .await?;
+            self.evaluations
+                .cancel_evaluation(&objective.id, evaluation_id);
+            if let Some(store) = self.activation_store.as_ref() {
                 for activation_id in activation_ids {
                     // The Orchestrator may observe the cancellation tombstone
                     // and finish concurrently. CAS conflicts are therefore

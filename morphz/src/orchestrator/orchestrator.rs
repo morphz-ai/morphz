@@ -15554,7 +15554,7 @@ impl Orchestrator {
             &parent_activation,
             None, // Live Objective admission cannot consume a closed-generation Outcome.
         )?;
-        if persisted.payload != event.payload
+        if !infer_dispatch_payload_matches(&persisted, event, &activation.id)
             || event
                 .payload
                 .get("objective_id")
@@ -16140,6 +16140,12 @@ impl Orchestrator {
                 "Yao Plan and execution Thread have inconsistent authoritative routes".into(),
             );
         }
+        // Evaluation ownership and capability-lease scope are not the same
+        // authority. A dialogue can create an Objective before its Plan runs,
+        // without becoming an Objective-supervised Thread. Freeze exactly the
+        // same durable supervision scope that physical preflight uses below.
+        let objective_scope_id =
+            active_objective_scope_id(self.plan_store.as_deref(), &thread).await?;
         if tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer {
             let transfer = crate::artifact::transfer_request_from_tool_arguments(
                 &raw_arguments,
@@ -16170,7 +16176,7 @@ impl Orchestrator {
                 },
             )?;
             attach_execution_join_route(&mut request, None, false)?;
-            if let Some(objective_id) = plan.objective_id.as_deref() {
+            if let Some(objective_id) = objective_scope_id.as_deref() {
                 request
                     .as_object_mut()
                     .ok_or("Yao Plan Execution Job request must be a JSON object")?
@@ -16286,7 +16292,7 @@ impl Orchestrator {
             &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
         )?;
         attach_execution_join_route(&mut request, None, false)?;
-        if let Some(objective_id) = plan.objective_id.as_deref() {
+        if let Some(objective_id) = objective_scope_id.as_deref() {
             request
                 .as_object_mut()
                 .ok_or("Yao Plan Execution Job request must be a JSON object")?
@@ -18509,10 +18515,6 @@ impl Orchestrator {
         let mut defer_human = (options.plan_execution_id.is_some() || options.wake_on_output)
             && activation_route.is_some()
             && self
-                .objective_evaluations
-                .get_for_activation(attempt_id)
-                .is_none()
-            && self
                 .durable_approvals
                 .as_ref()
                 .is_some_and(|services| services.durable_human_decisions);
@@ -19984,16 +19986,27 @@ impl Orchestrator {
         let reason = format!(
             "Objective '{objective_id}' Evaluation '{evaluation_id}' was paused or cancelled"
         );
+        let mut activation_ids = self
+            .objective_evaluations
+            .activation_ids_for_evaluation(objective_id, evaluation_id)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if let Some(supervisor) = self.objective_supervisor.as_ref() {
+            if let Some(objective) = supervisor.get(objective_id).await? {
+                activation_ids.extend(
+                    supervisor
+                        .evaluation_activation_ids(&objective, evaluation_id)
+                        .await?,
+                );
+            }
+        }
         // The physical cancellation intent is durable before the in-memory
         // signal drops the model/Activation future. This ordering prevents a
         // fast cancellation from orphaning already-materialized Actions.
         let mut cancellation_error = None;
-        for activation_id in self
-            .objective_evaluations
-            .activation_ids_for_evaluation(objective_id, evaluation_id)
-        {
+        for activation_id in &activation_ids {
             if let Err(error) = self
-                .request_cancel_execution_jobs_for_activation(&activation_id, &reason)
+                .request_cancel_execution_jobs_for_activation(activation_id, &reason)
                 .await
             {
                 tracing::error!(
@@ -20014,6 +20027,20 @@ impl Orchestrator {
             .cancel_evaluation(objective_id, evaluation_id);
         if let Some(error) = cancellation_error {
             return Err(error);
+        }
+        // A parked/cold owner has no model Future left to observe an in-memory
+        // cancellation. Fence the same persisted owners through the normal
+        // Kernel terminal transition after their physical intents are durable.
+        if let Some(store) = self.context_engine.session_store() {
+            for activation_id in &activation_ids {
+                self.activation_cancellations
+                    .request(activation_id, &reason);
+                if let Some(activation) = store.get_thread_activation(activation_id).await? {
+                    self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
+                        .await?;
+                    self.activation_admission.forget(activation_id);
+                }
+            }
         }
         Ok(was_running)
     }
@@ -22263,6 +22290,37 @@ fn attach_execution_join_route(
     Ok(())
 }
 
+/// Recovery adds only dispatch hints to a copy of the immutable trigger.
+/// Those hints carry no Evaluation authority and must name this exact owner.
+/// Every other payload field remains subject to exact equality.
+fn infer_dispatch_payload_matches(
+    persisted: &Event,
+    dispatched: &Event,
+    activation_id: &str,
+) -> bool {
+    if persisted.payload == dispatched.payload {
+        return true;
+    }
+    if dispatched
+        .payload
+        .get("runtime_recovery_activation_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(activation_id)
+        || dispatched.payload.get("runtime_force_evaluation") != Some(&json!(true))
+    {
+        return false;
+    }
+    let mut payload = dispatched.payload.clone();
+    for key in ["runtime_recovery_activation_id", "runtime_force_evaluation"] {
+        if let Some(value) = persisted.payload.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        } else {
+            payload.remove(key);
+        }
+    }
+    payload == persisted.payload
+}
+
 fn extend_exec_output_facts(
     payload: &mut serde_json::Map<String, serde_json::Value>,
     output: &str,
@@ -22512,6 +22570,48 @@ fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String,
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn infer_recovery_hints_never_replace_durable_authority() {
+        let persisted = crate::event::Event::new(
+            "infer-event".into(),
+            "Runtime".into(),
+            crate::event::TYPE_INFER_REQUEST.into(),
+            "runtime/infer_request".into(),
+            json!({"objective_id":"o", "objective_evaluation_id":"e", "plan_execution_id":"p"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(super::infer_dispatch_payload_matches(
+            &persisted, &persisted, "a"
+        ));
+        let mut recovered = persisted.clone();
+        recovered
+            .payload
+            .insert("runtime_recovery_activation_id".into(), json!("a"));
+        recovered
+            .payload
+            .insert("runtime_force_evaluation".into(), json!(true));
+        assert!(super::infer_dispatch_payload_matches(
+            &persisted, &recovered, "a"
+        ));
+        for (key, value) in [
+            ("runtime_recovery_activation_id", json!("other")),
+            ("runtime_force_evaluation", json!(false)),
+            ("objective_id", json!("other")),
+            ("objective_evaluation_id", json!("other")),
+            ("plan_execution_id", json!("other")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = recovered.clone();
+            invalid.payload.insert(key.into(), value);
+            assert!(
+                !super::infer_dispatch_payload_matches(&persisted, &invalid, "a"),
+                "{key}"
+            );
+        }
+    }
 
     use super::{
         action_group_reconcile_id, activation_admission_class, active_objective_scope_id,

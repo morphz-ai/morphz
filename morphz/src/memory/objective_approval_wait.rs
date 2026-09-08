@@ -137,6 +137,14 @@ pub(super) fn infer_selections_match(
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+fn optional_dependency(event: &crate::event::Event) -> Result<Option<&str>, DynError> {
+    match event.payload.get("objective_pending_dependency_id") {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(id)) if !id.is_empty() => Ok(Some(id)),
+        _ => Err("Objective checkpoint has an invalid dependency identity".into()),
+    }
+}
+
 /// A routed trigger cannot silently become an unrelated ordinary batch.
 /// Steering that only names a target Objective (no Evaluation) is not an
 /// Evaluation binding; a successful creation prelude may bind it later.
@@ -148,8 +156,8 @@ pub(super) fn validate_trigger_binding(
     if trigger.payload.contains_key("objective_evaluation_id") {
         let binding = binding_event(call, outputs)?;
         if binding.map(route).transpose()?.flatten() != route(trigger)?
-            || binding.and_then(|event| event.payload.get("objective_pending_dependency_id"))
-                != trigger.payload.get("objective_pending_dependency_id")
+            || binding.map(optional_dependency).transpose()?.flatten()
+                != optional_dependency(trigger)?
         {
             return Err(
                 "Approval checkpoint cannot drop or replace its trigger Evaluation route".into(),
@@ -250,6 +258,20 @@ mod tests {
         assert!(validate_trigger_binding(&trigger, &call, &[]).is_err());
         let target_only = event(json!({"objective_id":"o"}));
         validate_trigger_binding(&target_only, &call, &[]).unwrap();
+    }
+
+    #[test]
+    fn missing_and_null_dependency_are_equivalent_but_malformed_is_not() {
+        let trigger = event(json!({"objective_id":"o", "objective_evaluation_id":"e"}));
+        let mut call = event(
+            json!({"tool_calls":[], "objective_id":"o", "objective_evaluation_id":"e", "objective_pending_dependency_id":null}),
+        );
+        validate_trigger_binding(&trigger, &call, &[]).unwrap();
+        for invalid in [json!(""), json!({}), json!(42), json!("other-dependency")] {
+            call.payload
+                .insert("objective_pending_dependency_id".into(), invalid);
+            assert!(validate_trigger_binding(&trigger, &call, &[]).is_err());
+        }
     }
 
     #[test]

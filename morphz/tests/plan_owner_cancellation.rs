@@ -786,6 +786,173 @@ async fn creation_races_cancel(store: &dyn RuntimeStore, label: &str) {
     }
 }
 
+async fn activation_owner_contract(store: &dyn RuntimeStore, label: &str) {
+    for (index, status) in [
+        ThreadActivationStatus::Cancelled,
+        ThreadActivationStatus::Failed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let new = seed(store, &format!("{label}-{index}")).await;
+        let activation = store
+            .get_thread_activation(&new.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let queued = store.create_plan_execution(new.clone()).await.unwrap();
+        let running = updated(
+            store
+                .claim_plan_execution(
+                    &queued.id,
+                    queued.revision,
+                    "worker",
+                    "claim",
+                    Utc::now() + Duration::minutes(1),
+                )
+                .await
+                .unwrap(),
+        );
+        let (group, members) = group_request(&new);
+        persist_group_call(store, &group).await;
+        store
+            .create_action_group(group.clone(), members)
+            .await
+            .unwrap();
+        store
+            .commit_action_group_member_result(
+                &group.id,
+                "branch-0",
+                ActionGroupMemberStatus::Succeeded,
+                &group_event(&group, Some(0)),
+                &group_event(&group, None),
+            )
+            .await
+            .unwrap();
+
+        // Another Activation in this very same Thread is not the target.
+        let sibling_id = format!("{}-sibling", activation.id);
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: sibling_id.clone(),
+                agent_id: new.agent_id.clone(),
+                context_id: new.context_id.clone(),
+                session_id: new.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: format!("{}-sibling", activation.trigger_event_id),
+                trigger_sequence: 2,
+                trigger_kind: "runtime/plan".into(),
+                parent_activation_id: None,
+                root_turn_id: activation.root_turn_id.clone(),
+            })
+            .await
+            .unwrap();
+        let mut sibling_new = new.clone();
+        sibling_new.id.push_str("-sibling");
+        sibling_new.activation_id = sibling_id;
+        let sibling = store.create_plan_execution(sibling_new).await.unwrap();
+
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &activation.id,
+                    activation.revision + 1,
+                    status,
+                    None,
+                    None,
+                    None
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Conflict { .. }
+        ));
+        assert_eq!(
+            store
+                .get_plan_execution(&running.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            running
+        );
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &activation.id,
+                    activation.revision,
+                    status,
+                    None,
+                    None,
+                    None
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Updated(_)
+        ));
+        let closed = store
+            .get_plan_execution(&running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed.status, PlanExecutionStatus::Cancelled);
+        assert!(
+            closed.claimed_by.is_none()
+                && closed.claim_token.is_none()
+                && closed.lease_expires_at.is_none()
+        );
+        assert!(
+            closed.pending_id.is_none()
+                && closed.pending_kind.is_none()
+                && closed.finished_at.is_some()
+        );
+        let closed_group = store.get_action_group(&group.id).await.unwrap().unwrap();
+        assert_eq!(closed_group.status, ActionGroupStatus::Cancelled);
+        assert_eq!(closed_group.terminal_member_count, 1);
+        assert_eq!(
+            store
+                .get_plan_execution(&sibling.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            sibling
+        );
+        let mut late = new.clone();
+        late.id.push_str("-late");
+        late.tool_call_id.push_str("-late");
+        assert!(store.create_plan_execution(late).await.is_err());
+    }
+    for index in 0..12 {
+        let new = seed(store, &format!("{label}-race-{index}")).await;
+        let activation = store
+            .get_thread_activation(&new.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (created, cancelled) = tokio::join!(
+            store.create_plan_execution(new.clone()),
+            store.update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Cancelled,
+                None,
+                None,
+                None
+            )
+        );
+        assert!(matches!(
+            cancelled.unwrap(),
+            ThreadActivationMutation::Updated(_)
+        ));
+        let persisted = store.get_plan_execution(&new.id).await.unwrap();
+        match created {
+            Ok(_) => assert_eq!(persisted.unwrap().status, PlanExecutionStatus::Cancelled),
+            Err(error) => {
+                assert!(error.to_string().contains("live owner"), "{error}");
+                assert!(persisted.is_none());
+            }
+        }
+    }
+}
+
 async fn job_handoff_races_cancel(store: &dyn RuntimeStore, label: &str) {
     for i in 0..12 {
         let new = seed(store, &format!("{label}-{i}")).await;
@@ -1000,6 +1167,15 @@ async fn sqlite_plan_creation_races_owner_cancellation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_activation_terminal_closes_only_its_logical_owners() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::new(tmp.path().join("store.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    activation_owner_contract(&store, "sqlite-activation").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqlite_action_group_owner_cancellation_and_races() {
     let tmp = tempfile::tempdir().unwrap();
     let store = SqliteStore::new(tmp.path().join("store.sqlite").to_str().unwrap())
@@ -1042,4 +1218,5 @@ async fn postgres_plan_owner_cancellation_matches_sqlite() {
     group_races_cancel(&store, &format!("{label}-group-race")).await;
     job_handoff_races_cancel(&store, &format!("{label}-handoff")).await;
     infer_reconciliation_races_cancel(&store, &format!("{label}-infer")).await;
+    activation_owner_contract(&store, &format!("{label}-activation")).await;
 }

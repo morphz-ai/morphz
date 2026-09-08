@@ -13349,6 +13349,18 @@ impl ActivationStore for SqliteStore {
         .await?;
         if result.rows_affected() == 1 {
             if status.is_terminal() {
+                if matches!(
+                    status,
+                    ThreadActivationStatus::Cancelled | ThreadActivationStatus::Failed
+                ) {
+                    // This Activation, not its whole Thread/Session, lost
+                    // execution authority. Close its logical children before
+                    // committing the owner fence, even with no live Runtime.
+                    sqlx::query("UPDATE action_groups SET revision = revision + 1, status = 'cancelled', updated_at = ?, settled_at = ? WHERE activation_id = ? AND status = 'running'")
+                        .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
+                    sqlx::query("UPDATE plan_executions SET revision = revision + 1, status = 'cancelled', error = 'owning Activation terminated', pending_kind = NULL, pending_id = NULL, claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL, updated_at = ?, finished_at = ? WHERE activation_id = ? AND status IN ('queued', 'running', 'waiting')")
+                        .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
+                }
                 sqlx::query(
                     r#"UPDATE thread_signals
                        SET status = 'acknowledged', acknowledged_at = ?

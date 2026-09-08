@@ -514,6 +514,11 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                END IF;
              END IF;
 
+             -- Plan/Group enrollment locks Thread before reading its owner.
+             -- Use that same order to prevent enrollment across this fence.
+             IF p_status IN ('cancelled', 'failed') THEN
+               PERFORM id FROM threads WHERE root_turn_id = current_root_turn_id FOR UPDATE;
+             END IF;
              UPDATE thread_activations
                 SET revision = revision + 1,
                     status = p_status,
@@ -545,6 +550,19 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
              END IF;
 
              IF p_status IN ('completed', 'cancelled', 'failed') THEN
+               IF p_status IN ('cancelled', 'failed') THEN
+                 UPDATE action_groups
+                    SET revision = revision + 1, status = 'cancelled',
+                        updated_at = p_now, settled_at = p_now
+                  WHERE activation_id = p_id AND status = 'running';
+                 UPDATE plan_executions
+                    SET revision = revision + 1, status = 'cancelled',
+                        error = 'owning Activation terminated',
+                        pending_kind = NULL, pending_id = NULL,
+                        claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL,
+                        updated_at = p_now, finished_at = p_now
+                  WHERE activation_id = p_id AND status IN ('queued', 'running', 'waiting');
+               END IF;
                UPDATE thread_signals
                   SET status = 'acknowledged', acknowledged_at = p_now
                 WHERE id IN (

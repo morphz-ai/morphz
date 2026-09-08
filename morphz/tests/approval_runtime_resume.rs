@@ -22,6 +22,58 @@ struct FixtureClient {
     calls: AtomicUsize,
 }
 
+/// Uses the real objective_create/objective_update tools around the existing
+/// physical batch. The synthetic model's assertions ignore only those control
+/// receipts; the Runtime persists and compiles the complete actual history.
+struct ObjectiveFixtureClient {
+    inner: Arc<FixtureClient>,
+    native: Arc<SqliteStore>,
+    completing: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Client for ObjectiveFixtureClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+    async fn create_completion(
+        &self,
+        mut messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if self.completing.load(Ordering::SeqCst) {
+            assert!(messages.iter().any(
+                |m| m.role == "tool" && m.tool_call_id.as_deref() == Some("complete-objective")
+            ));
+            return Ok(Response {
+                content: "checkpoint-batch-complete".into(),
+                tool_calls: vec![],
+            });
+        }
+        messages
+            .retain(|m| m.role != "tool" || m.tool_call_id.as_deref() != Some("create-objective"));
+        let initial = matches!(self.inner.stage.as_str(), "initial" | "live")
+            && self.inner.calls.load(Ordering::SeqCst) == 0;
+        let mut response = self.inner.create_completion(messages, tools).await?;
+        if initial {
+            response.tool_calls.insert(0, ToolCallRepr {
+                id: "create-objective".into(), r#type: "function".into(), func_name: "objective_create".into(),
+                arguments: json!({"stated_objective":"Verify the synthetic approval batch across process exits; accept one exact outside read and deny the other, then report completion", "reason":"The test explicitly spans multiple Runtime processes", "source_refs":[]}).to_string(),
+            });
+        } else if response.content == "checkpoint-batch-complete" {
+            let objectives = self.native.list_recoverable_objectives().await?;
+            assert_eq!(objectives.len(), 1);
+            let objective = &objectives[0];
+            self.completing.store(true, Ordering::SeqCst);
+            response = Response { content: String::new(), tool_calls: vec![ToolCallRepr {
+                id: "complete-objective".into(), r#type: "function".into(), func_name: "objective_update".into(),
+                arguments: json!({"objective_id":objective.id,"base_revision":objective.revision,"status":"completed","reason":"The native test verified the exact allowed read and rejected sibling without duplicate work", "evidence_refs":[]}).to_string(),
+            }] };
+        }
+        Ok(response)
+    }
+}
+
 #[async_trait::async_trait]
 impl Client for FixtureClient {
     fn supports_async_cancellation(&self) -> bool {
@@ -185,6 +237,7 @@ async fn approval_runtime_child() {
     let root = PathBuf::from(std::env::var("MORPHZ_APPROVAL_FIXTURE_ROOT").unwrap());
     let stage = std::env::var("MORPHZ_APPROVAL_FIXTURE_STAGE").unwrap();
     let native = store(&root).await;
+    let objective = std::env::var("MORPHZ_APPROVAL_FIXTURE_OBJECTIVE").as_deref() == Ok("1");
     let client = Arc::new(FixtureClient {
         root: root.clone(),
         stage: stage.clone(),
@@ -205,7 +258,16 @@ async fn approval_runtime_child() {
     config.permissions.read_only_outside_workspace = false;
     config.permissions.workspace_root = root.join("workspace").to_string_lossy().into_owned();
     config.background_task.artifact_dir = root.join("artifacts").to_string_lossy().into_owned();
-    let runtime = MorphzRuntime::builder(config, client.clone())
+    let model: Arc<dyn Client> = if objective {
+        Arc::new(ObjectiveFixtureClient {
+            inner: client.clone(),
+            native: native.clone(),
+            completing: std::sync::atomic::AtomicBool::new(false),
+        })
+    } else {
+        client.clone()
+    };
+    let runtime = MorphzRuntime::builder(config, model)
         .store("sqlite:approval-fixture", native.clone())
         .secret_store(Arc::new(
             SecretStore::new(
@@ -223,6 +285,62 @@ async fn approval_runtime_child() {
         .unwrap();
     let mut replies = runtime.subscribe("chat/reply", 8);
     runtime.start().await.unwrap();
+    if matches!(
+        stage.as_str(),
+        "pause-objective" | "cancel-objective" | "verify-stopped-objective"
+    ) {
+        if stage != "verify-stopped-objective" {
+            let objectives = native.list_recoverable_objectives().await.unwrap();
+            assert_eq!(objectives.len(), 1);
+            let held = &objectives[0];
+            assert!(held.evaluation_lease_expires_at.is_none());
+            let mutation = if stage == "pause-objective" {
+                runtime
+                    .pause_objective(&held.id, held.revision, "synthetic cold pause")
+                    .await
+            } else {
+                runtime
+                    .cancel_objective(&held.id, held.revision, "synthetic cold cancellation")
+                    .await
+            }
+            .unwrap();
+            assert!(matches!(mutation, ObjectiveMutation::Updated(_)));
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let jobs = native
+                    .list_execution_jobs(ExecutionJobFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let plans = native
+                    .list_plan_executions(PlanExecutionFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                if jobs.len() == 3
+                    && jobs.iter().all(|job| job.status.is_terminal())
+                    && plans.iter().all(|plan| plan.status.is_terminal())
+                    && runtime.hosted_process_is_quiescent()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cold Objective control must close its pending Jobs and release all live stacks");
+        assert_eq!(
+            client.calls.load(Ordering::SeqCst),
+            0,
+            "control must not re-evaluate a model"
+        );
+        return;
+    }
     if stage == "cancel" {
         let jobs = native
             .list_execution_jobs(ExecutionJobFilter {
@@ -513,6 +631,10 @@ async fn approval_runtime_child() {
 }
 
 fn run_child(root: &Path, stage: &str, nested: bool, infer: bool) {
+    run_child_with_objective(root, stage, nested, infer, false);
+}
+
+fn run_child_with_objective(root: &Path, stage: &str, nested: bool, infer: bool, objective: bool) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -522,6 +644,10 @@ fn run_child(root: &Path, stage: &str, nested: bool, infer: bool) {
         ])
         .env("MORPHZ_APPROVAL_FIXTURE_ROOT", root)
         .env("MORPHZ_APPROVAL_FIXTURE_STAGE", stage)
+        .env(
+            "MORPHZ_APPROVAL_FIXTURE_OBJECTIVE",
+            if objective { "1" } else { "0" },
+        )
         .env(
             "MORPHZ_APPROVAL_FIXTURE_NESTED",
             if nested { "1" } else { "0" },
@@ -670,10 +796,146 @@ async fn cancelling_checkpointed_infer_child_after_restart_closes_parent() {
 }
 
 async fn approval_process_case(nested: bool, infer: bool) {
+    approval_objective_process_case(nested, infer, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_approval_prelude_resumes_across_real_process_exits() {
+    approval_objective_process_case(false, false, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_infer_approval_resumes_across_real_process_exits() {
+    approval_objective_process_case(false, true, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_parallel_approval_resumes_across_real_process_exits() {
+    approval_objective_process_case(true, false, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_objective_pause_closes_approval_owners() {
+    objective_cold_control_case("pause-objective").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_objective_cancel_closes_approval_owners() {
+    objective_cold_control_case("cancel-objective").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_objective_infer_approvals_wake_exact_owners() {
+    let temp = prepare_fixture();
+    run_child_with_objective(temp.path(), "live", false, true, true);
+    let native = store(temp.path()).await;
+    let objectives = native
+        .list_session_objectives("context-default", "approval-process-session", true)
+        .await
+        .unwrap();
+    assert_eq!(objectives.len(), 1);
+    assert_eq!(objectives[0].status, ObjectiveStatus::Completed);
+    assert!(native
+        .get_objective_approval_wait(&objectives[0].id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+async fn objective_cold_control_case(stage: &str) {
+    for (nested, infer) in [(false, false), (true, false), (false, true)] {
+        let temp = prepare_fixture();
+        let root = temp.path();
+        run_child_with_objective(root, "initial", nested, infer, true);
+        let native = store(root).await;
+        let jobs = native
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let free = jobs
+            .iter()
+            .find(|j| j.tool_call_id == "read-0")
+            .unwrap()
+            .clone();
+        drop(native);
+        run_child_with_objective(root, stage, nested, infer, true);
+        let native = store(root).await;
+        assert_eq!(
+            native.get_execution_job(&free.id).await.unwrap().unwrap(),
+            free
+        );
+        for job in native
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .filter(|j| j.id != free.id)
+        {
+            assert_eq!(job.status, ExecutionJobStatus::Cancelled);
+            assert!(job.side_effect_started_at.is_none());
+        }
+        assert!(native
+            .list_approvals(ApprovalFilter::default())
+            .await
+            .unwrap()
+            .iter()
+            .all(|a| !a.status.is_pending() && a.grant_consumed_at.is_none()));
+        assert!(native
+            .list_context_thread_activations(&free.context_id, false)
+            .await
+            .unwrap()
+            .is_empty());
+        let objectives = native
+            .list_session_objectives(&free.context_id, &free.session_id, true)
+            .await
+            .unwrap();
+        assert_eq!(objectives.len(), 1);
+        assert_eq!(
+            objectives[0].status,
+            if stage == "pause-objective" {
+                ObjectiveStatus::Paused
+            } else {
+                ObjectiveStatus::Cancelled
+            }
+        );
+        assert!(objectives[0].active_evaluation_id.is_none());
+        assert!(native
+            .get_objective_approval_wait(&objectives[0].id)
+            .await
+            .unwrap()
+            .is_none());
+        drop(native);
+        run_child_with_objective(root, "verify-stopped-objective", nested, infer, true);
+    }
+}
+
+async fn approval_objective_process_case(nested: bool, infer: bool, objective: bool) {
     let temp = prepare_fixture();
     let root = temp.path();
-    run_child(root, "initial", nested, infer);
+    run_child_with_objective(root, "initial", nested, infer, objective);
     let native = store(root).await;
+    let held = if objective {
+        let rows = native.list_recoverable_objectives().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let o = rows[0].clone();
+        assert!(o.active_evaluation_id.is_some());
+        assert!(o.evaluation_lease_expires_at.is_none());
+        let hold = native
+            .get_objective_approval_wait(&o.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(&hold.evaluation_id), o.active_evaluation_id.as_ref());
+        Some(o)
+    } else {
+        None
+    };
     let before = native
         .list_execution_jobs(ExecutionJobFilter {
             include_terminal: true,
@@ -682,6 +944,24 @@ async fn approval_process_case(nested: bool, infer: bool) {
         .await
         .unwrap();
     assert_eq!(before.len(), 3);
+    if objective && nested {
+        let plans = native
+            .list_plan_executions(PlanExecutionFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(plans
+            .iter()
+            .all(|p| p.objective_id.as_deref() == held.as_ref().map(|o| o.id.as_str())));
+        // This creation-prelude dialogue has Evaluation ownership, not an
+        // Objective-supervised Thread's capability-lease authority.
+        assert!(before.iter().all(|job| job
+            .request
+            .get(morphz::approval::CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+            .is_none()));
+    }
     let free = before
         .iter()
         .find(|j| j.tool_call_id == "read-0")
@@ -739,8 +1019,20 @@ async fn approval_process_case(nested: bool, infer: bool) {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "partial", nested, infer);
+    run_child_with_objective(root, "partial", nested, infer, objective);
     let native = store(root).await;
+    if let Some(held) = &held {
+        let current = native.get_objective(&held.id).await.unwrap().unwrap();
+        assert_eq!(current.active_evaluation_id, held.active_evaluation_id);
+        assert_eq!(current.continuation_sequence, held.continuation_sequence);
+        assert_eq!(current.revision, held.revision);
+        assert!(current.evaluation_lease_expires_at.is_none());
+        assert!(native
+            .get_objective_approval_wait(&held.id)
+            .await
+            .unwrap()
+            .is_some());
+    }
     let remaining = native
         .get_thread_activation_approval_wait(&free.activation_id)
         .await
@@ -797,8 +1089,18 @@ async fn approval_process_case(nested: bool, infer: bool) {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "final", nested, infer);
+    run_child_with_objective(root, "final", nested, infer, objective);
     let native = store(root).await;
+    if let Some(held) = &held {
+        let current = native.get_objective(&held.id).await.unwrap().unwrap();
+        assert_eq!(current.status, ObjectiveStatus::Completed);
+        assert_eq!(current.continuation_sequence, held.continuation_sequence);
+        assert!(native
+            .get_objective_approval_wait(&held.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
     assert_eq!(
         native.get_execution_job(&free.id).await.unwrap().unwrap(),
         free
@@ -829,7 +1131,10 @@ async fn approval_process_case(nested: bool, infer: bool) {
         })
         .await
         .unwrap();
-    assert_eq!(outputs.len(), if nested || infer { 4 } else { 3 });
+    assert_eq!(
+        outputs.len(),
+        (if nested || infer { 4 } else { 3 }) + if objective { 2 } else { 0 }
+    );
     let rejected = outputs
         .iter()
         .find(|e| e.payload["tool_status"] == "rejected")

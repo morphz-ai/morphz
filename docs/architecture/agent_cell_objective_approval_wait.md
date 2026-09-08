@@ -1,8 +1,9 @@
 # Objective approval ownership checkpoint
 
-Status: native ownership handoff implemented; live Objective approval
-suspension and hosted parking are **not yet enabled**. This is a prerequisite
-of the complete Agent Cell delivery, not a substitute for its online gates.
+Status: live Objective approval suspension is enabled in the isolated Runtime
+worktree and verified across real local process exits. Hosted deployment is
+**not yet accepted**. This is part of the complete Agent Cell delivery, not a
+substitute for its remaining online and fault-injection gates.
 
 ## Invariants
 
@@ -92,10 +93,52 @@ both checkpoint and admission return without deadlock, prove rollback releases
 the Objective lock, and compare unchanged claimant/revision/lease/approval
 state before retrying successfully.
 
-Final-source integration verification (2026-09-09): **37 distinct passing cases**
-(12 SQLite checkpoint, 9 PostgreSQL, 5 real-process approval resume, 5 infer
-handoff and 6 SQLite owner-cancellation). The five real-process cases cover
-existing direct/Plan/infer waits, **not** enabled live Objective parking.
+Integration verification (2026-09-09): **44 distinct passing cases**
+(12 SQLite checkpoint, 9 PostgreSQL, 11 real-process approval resume/control,
+5 infer handoff and 7 SQLite owner-cancellation). The subprocess tests use
+synthetic models and actual read tools, not real Provider calls.
+
+The new Objective fixtures create the Objective through its real tool prelude,
+then run direct, parallel Plan and infer batches through three separate Runtime
+processes. One outside read is approved and the other denied. The exact
+Evaluation, revision and continuation are retained; the completed sibling is
+unchanged; an approved Job executes once; no denial executes. Both pause and
+cancel cover all three shapes after process exit, followed by a third process
+proving the stopped work does not revive. Jobs, Plans, Activations and approvals
+are terminal, grants remain unconsumed, and the host has no live stacks.
+An additional live infer case uses the real decision/wakeup API without restart.
+
+These fixtures exposed and now cover four defects:
+
+- Missing and JSON-null optional dependency IDs were incorrectly treated as
+  distinct routes. Both mean no dependency; malformed or different IDs still
+  fail validation.
+- Infer replay adds two Runtime dispatch hints. Only the exact recovery
+  Activation ID plus `runtime_force_evaluation=true` may differ from the saved
+  payload. Every other field and the complete native Plan/Signal graph are
+  still checked. Wrong owners, replaced routes and extra fields are rejected.
+- Plan construction used Evaluation ownership as capability-lease scope,
+  while dispatch used Thread supervision. Both now use the same persisted
+  supervision resolver. A creation-prelude dialogue gains no extra lease
+  authority, and immutable Job-request equality is unchanged.
+- Cold Objective control could miss its process-local owners, then leave
+  logical Plans behind even after Jobs closed. Control now reuses the
+  Supervisor's exact persisted ownership lookup. SQLite/PostgreSQL cancel an
+  Activation's unfinished Plans and Action Groups in its terminal transaction,
+  retaining completed results and leaving other Activations in the same Thread
+  untouched. PostgreSQL uses the same Thread-first enrollment lock order and
+  migration `20260909_01_terminal_activation_owners` refreshes that function.
+  Native tests cover stale CAS, both failed/cancelled owners and twelve real
+  creation/cancellation races on each backend, without a Runtime reconciler.
+
+Final-source library verification: **1331 passed / 8 explicitly ignored**.
+The first restricted-host run passed 1322 and failed nine tests because the
+outer host sandbox refused the tests' own `sandbox-exec` calls. The approved
+host rerun passed all 1331 with the actual Seatbelt allow/deny checks retained;
+the nine failures were not skipped or converted into permissive execution.
+Clippy for the library and four integration targets passes with `-D warnings`.
+The nine PostgreSQL cases used separate fresh databases in one disposable,
+loopback-only PostgreSQL 15 cluster; it was stopped after verification.
 
 The new SQLite/PostgreSQL infer gate constructs an admitted Program, its Plan,
 child Thread/Activation and exact claimed Signal using native APIs. It asserts
@@ -104,7 +147,7 @@ the parent's persisted selection. An incorrect dependency and stale claimant
 fail without changing the physical lease or revision; the correct route is
 accepted; a subsequent Objective pause rejects it.
 
-The library filters `objective` (83), `plan` (52), `cancel` (34), `action_group`
+The prior-commit library filters `objective` (83), `plan` (52), `cancel` (34), `action_group`
 (2), `activation` (35) and `recovery` (26) all pass; these filters overlap and
 must not be added as a distinct-test count. They include real Runtime directed
 interrupts that replace four cancelled children and preserve the wait through
@@ -132,10 +175,12 @@ compares the unchanged live Activation and local Evaluation binding, releases
 the lock and verifies success. A second round pauses the Objective during
 contention and verifies the retry rejects it instead of using stale authority.
 
-Still required before enabling the live path: directed-input and dependency
+Still required before hosted acceptance: directed-input and dependency
 replacement while an Objective is actually approval-checkpointed in a real
-Runtime; late-prelude cold recovery, pause/resume and terminal-anchor recovery;
-full Objective/infer ownership handoff across process exit. Hosted ingress,
+Runtime; pause/resume, terminal-anchor recovery and a crash between Objective
+control commit and physical cancellation propagation. The successful cold
+pause/cancel round trip is not proof of that intermediate crash boundary.
+Hosted ingress,
 Provider/Edge, actual Cloudflare parking and the other five deployment closures
 remain separate acceptance requirements. No quiescence predicate is relaxed.
 

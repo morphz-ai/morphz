@@ -2,8 +2,8 @@
 //! commits the approval checkpoint. Nested Plan stacks propagate a distinct
 //! control outcome; they do not fabricate terminal tool results. Infer child
 //! batches can checkpoint independently; infer parents persist exact dependency
-//! edges after child stacks return. Objective Store handoff exists, but live
-//! Objective suspension stays gated until directed-input recovery is verified.
+//! edges after child stacks return. Objective ownership is handed off only by
+//! the native checkpoint transaction after every live owner is covered.
 use super::*;
 use crate::memory::{ActivationApprovalWaitChanged, ActivationApprovalWaitRequest};
 
@@ -52,15 +52,9 @@ impl Orchestrator {
     }
 
     pub(super) fn can_defer_plan_approval(&self, plan: &PlanExecutionRecord) -> bool {
-        plan.objective_evaluation_id.is_none()
-            && self
-                .objective_evaluations
-                .get_for_activation(&plan.activation_id)
-                .is_none()
-            && self
-                .durable_approvals
-                .as_ref()
-                .is_some_and(|s| s.durable_human_decisions)
+        self.durable_approvals
+            .as_ref()
+            .is_some_and(|s| s.durable_human_decisions)
             && self.activation_route(&plan.activation_id).is_some()
     }
 
