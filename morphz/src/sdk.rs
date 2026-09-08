@@ -2949,7 +2949,18 @@ impl MorphzSdk {
                 "An empty authorization rule must be revoked instead of adjusted",
             ));
         }
-        if !restricted_delta.is_subset_of(&current_delta) {
+        let target = self
+            .runtime
+            .get_execution_target(&current.target_id)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    "Authorization rule Target does not exist",
+                )
+            })?;
+        if !restricted_delta.is_subset_of_for_target(&current_delta, &target) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
                 "An authorization rule adjustment cannot expand its permission boundary",

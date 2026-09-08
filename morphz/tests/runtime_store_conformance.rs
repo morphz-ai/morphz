@@ -8116,7 +8116,7 @@ where
 
 async fn assert_capability_lease_conformance<S>(store: Arc<S>)
 where
-    S: CapabilityLeaseStore + Send + Sync + 'static,
+    S: CapabilityLeaseStore + ExecutionTargetStore + Send + Sync + 'static,
 {
     let lease = NewCapabilityLease {
         id: "lease-conformance".to_string(),
@@ -8241,6 +8241,88 @@ where
         .await
         .unwrap()
         .is_empty());
+
+    // The database and SDK must use the same Target-specific ancestry as
+    // admission: a Windows rule can be narrowed while hosted on Unix.
+    store
+        .register_execution_target(ExecutionTargetRegistration {
+            id: "windows-lease-target".into(),
+            owner_principal_id: Some("principal:conformance".into()),
+            provider_node_id: Some("node-conformance".into()),
+            kind: ExecutionTargetKind::EdgeNode,
+            name: "Windows lease fixture".into(),
+            status: ExecutionTargetStatus::Online,
+            platform: Some("windows-x86_64".into()),
+            workspace_root: Some(r"C:\workspace".into()),
+            capabilities: vec!["exec".into()],
+            metadata: json!({}),
+            policy_digest: "windows-policy".into(),
+            last_seen_at: None,
+        })
+        .await
+        .unwrap();
+    let CapabilityLeaseMutation::Created(windows) = store
+        .ensure_capability_lease(NewCapabilityLease {
+            id: "windows-directory-lease".into(),
+            principal_id: "principal:conformance".into(),
+            agent_id: "conformance-agent".into(),
+            scope: CapabilityLeaseScope::Session,
+            session_id: "conformance-session".into(),
+            thread_id: "conformance-thread".into(),
+            scope_id: "conformance-session".into(),
+            target_id: "windows-lease-target".into(),
+            capabilities: vec!["filesystem.write".into()],
+            requested: json!({"write_roots":[r"C:\project"]}),
+            policy_digest: "windows-policy".into(),
+            issued_by_approval_id: None,
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected Windows directory lease");
+    };
+    for path in [
+        r"C:\project-other",
+        r"D:\project\child",
+        r"C:\project\..\outside",
+    ] {
+        assert!(store
+            .restrict_capability_lease(
+                &windows.id,
+                windows.revision,
+                CapabilityLeaseRestriction {
+                    requested: json!({"write_roots":[path]}),
+                    expires_at: windows.expires_at,
+                }
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cannot expand"));
+    }
+    let restriction = CapabilityLeaseRestriction {
+        requested: json!({"write_roots":[r"C:\project\child"]}),
+        expires_at: windows.expires_at,
+    };
+    let CapabilityLeaseMutation::Updated(narrowed) = store
+        .restrict_capability_lease(&windows.id, windows.revision, restriction.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("Windows child directory must be a valid restriction on any database host");
+    };
+    assert!(matches!(
+        store
+            .restrict_capability_lease(&windows.id, windows.revision, restriction)
+            .await
+            .unwrap(),
+        CapabilityLeaseMutation::Existing(_)
+    ));
+    store
+        .revoke_capability_lease(&narrowed.id, narrowed.revision, "fixture complete")
+        .await
+        .unwrap();
 }
 
 async fn assert_execution_job_conformance<S>(store: Arc<S>)

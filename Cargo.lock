@@ -3698,6 +3698,7 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-bash",
+ "typed-path",
  "unicode-normalization",
  "unicode-width 0.2.2",
  "vt100",

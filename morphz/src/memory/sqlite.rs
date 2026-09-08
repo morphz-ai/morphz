@@ -25261,7 +25261,11 @@ impl CapabilityLeaseStore for SqliteStore {
         if restricted_delta.is_empty() {
             return Err("Capability Lease restriction cannot remove every permission; revoke the rule instead".into());
         }
-        if !restricted_delta.is_subset_of(&current_delta) {
+        let target = self
+            .get_execution_target(&current.target_id)
+            .await?
+            .ok_or("Capability Lease Target does not exist")?;
+        if !restricted_delta.is_subset_of_for_target(&current_delta, &target) {
             return Err("Capability Lease adjustment cannot expand its permission boundary".into());
         }
         let now = Utc::now();

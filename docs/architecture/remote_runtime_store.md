@@ -124,6 +124,22 @@ binds the user's Principal, rather than a bootstrap-local operator claiming the
 Session. Cloud local execution is disabled; uploaded files remain available for
 transfer to a selected Edge target through the existing tool/API contract.
 
+Remote capability leases use the registered Target's platform for directory
+ancestry, never the compute host's `PathBuf` semantics or a model-supplied dialect.
+Windows paths are parsed into Windows components even on a Unix Cloud host;
+Unix paths preserve literal backslashes. Relative/parent-traversal paths cannot
+prove ancestry. Windows device namespaces, alternate streams and ambiguous
+trailing dot/space components cannot reuse a directory grant. Component case is
+not folded (Windows directories may be case-sensitive), and different verbatim
+and ordinary prefixes are not silently equated. Unknown remote platforms only
+reuse exact path requests until the Target advertises a supported platform.
+
+Admission, the rule-editing API, SQLite and PostgreSQL share this comparison.
+No lease or database migration is required. This is only the Cloud-side lexical
+capability boundary: Edge still canonicalizes on the real filesystem and applies
+its own permission profile and native sandbox. A Session directory lease does
+not become Full Access or imply network/secret access.
+
 The `host_files` materialization service has no directory upload/scanning API.
 Callers supply immutable uploaded bytes at specific generated file paths.
 Stage content and offset/manifest publish atomically before HTTP acknowledgement;

@@ -1723,7 +1723,10 @@ async fn covering_capability_lease_grant(
         let granted =
             serde_json::from_value::<crate::approval::CapabilityDelta>(lease.requested.clone())
                 .ok()?;
-        if !requirement.requested.is_subset_of(&granted) {
+        if !requirement
+            .requested
+            .is_subset_of_for_target(&granted, target)
+        {
             return None;
         }
         Some(DurableApprovalGrant {

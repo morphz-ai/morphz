@@ -156,24 +156,103 @@ impl CapabilityDelta {
     /// already-authorized capability scope. Directory leases cover their
     /// descendants; secret names and network remain explicit.
     pub fn is_subset_of(&self, granted: &Self) -> bool {
+        self.is_subset_with(granted, |path, root| {
+            [path, root].iter().all(|value| {
+                !value
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+            }) && path.starts_with(root)
+        })
+    }
+
+    /// Remote paths belong to the registered Target, not the Runtime host.
+    /// Use its advertised OS, never infer a dialect from model-authored paths.
+    /// This is a lexical lease check; Edge still resolves the actual paths and
+    /// applies its independent native policy/sandbox before any physical effect.
+    pub fn is_subset_of_for_target(
+        &self,
+        granted: &Self,
+        target: &crate::memory::ExecutionTargetRecord,
+    ) -> bool {
+        if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
+            return self.is_subset_of(granted);
+        }
+        let os = target
+            .platform
+            .as_deref()
+            .unwrap_or_default()
+            .split('-')
+            .next()
+            .unwrap_or_default();
+        self.is_subset_with(granted, |path, root| target_path_is_within(path, root, os))
+    }
+
+    fn is_subset_with(
+        &self,
+        granted: &Self,
+        contains: impl Fn(&std::path::Path, &std::path::Path) -> bool,
+    ) -> bool {
         (!self.network || granted.network)
             && self.read_roots.iter().all(|path| {
-                granted.read_roots.iter().any(|root| path.starts_with(root))
-                    || granted
-                        .write_roots
-                        .iter()
-                        .any(|root| path.starts_with(root))
+                granted.read_roots.iter().any(|root| contains(path, root))
+                    || granted.write_roots.iter().any(|root| contains(path, root))
             })
-            && self.write_roots.iter().all(|path| {
-                granted
-                    .write_roots
-                    .iter()
-                    .any(|root| path.starts_with(root))
-            })
+            && self
+                .write_roots
+                .iter()
+                .all(|path| granted.write_roots.iter().any(|root| contains(path, root)))
             && self
                 .secret_env
                 .iter()
                 .all(|name| granted.secret_env.contains(name))
+    }
+}
+
+fn target_path_is_within(path: &std::path::Path, root: &std::path::Path, os: &str) -> bool {
+    use typed_path::{
+        Utf8UnixComponent, Utf8UnixPath, Utf8WindowsComponent, Utf8WindowsPath, Utf8WindowsPrefix,
+    };
+    let (Some(path), Some(root)) = (path.to_str(), root.to_str()) else {
+        return false;
+    };
+    match os {
+        "windows" => {
+            let path = Utf8WindowsPath::new(path);
+            let root = Utf8WindowsPath::new(root);
+            let valid = |value: &Utf8WindowsPath| {
+                value.is_absolute()
+                    && value.is_valid()
+                    && value.components().all(|part| match part {
+                        Utf8WindowsComponent::ParentDir | Utf8WindowsComponent::CurDir => false,
+                        Utf8WindowsComponent::Normal(name) => !name.ends_with(['.', ' ']),
+                        Utf8WindowsComponent::Prefix(prefix) => matches!(
+                            prefix.kind(),
+                            Utf8WindowsPrefix::Disk(_)
+                                | Utf8WindowsPrefix::UNC(_, _)
+                                | Utf8WindowsPrefix::VerbatimDisk(_)
+                                | Utf8WindowsPrefix::VerbatimUNC(_, _)
+                        ),
+                        Utf8WindowsComponent::RootDir => true,
+                    })
+            };
+            valid(path) && valid(root) && path.starts_with(root)
+        }
+        "linux" | "macos" | "freebsd" | "openbsd" | "netbsd" | "dragonfly" | "solaris"
+        | "illumos" | "android" | "ios" => {
+            let path = Utf8UnixPath::new(path);
+            let root = Utf8UnixPath::new(root);
+            let valid = |value: &Utf8UnixPath| {
+                value.is_absolute()
+                    && value.is_valid()
+                    && !value
+                        .components()
+                        .any(|part| part == Utf8UnixComponent::ParentDir)
+            };
+            valid(path) && valid(root) && path.starts_with(root)
+        }
+        // An untyped remote Target cannot prove directory ancestry. Exact
+        // requests may reuse an existing grant, but never guess the host OS.
+        _ => !path.is_empty() && path == root,
     }
 }
 
@@ -1277,6 +1356,127 @@ mod tests {
             ..CapabilityDelta::default()
         };
         assert!(!sibling_project.is_subset_of(&granted));
+    }
+
+    #[test]
+    fn remote_directory_lease_uses_target_path_components_without_widening() {
+        for (os, root, child) in [
+            ("windows", r"C:\project", r"C:\project\child\file.txt"),
+            ("windows", r"C:\project", "C:/project/child/file.txt"),
+            (
+                "windows",
+                r"\\server\share\project",
+                r"\\server\share\project\child",
+            ),
+            ("windows", r"\\?\C:\project", r"\\?\C:\project\child"),
+            ("linux", "/project", "/project/child/file.txt"),
+            ("macos", "/project", "/project/child/file.txt"),
+        ] {
+            assert!(
+                super::target_path_is_within(child.as_ref(), root.as_ref(), os),
+                "{os}: {child}"
+            );
+        }
+        for path in [
+            r"C:\project-other\file",
+            r"D:\project\child",
+            r"C:\project\..\other",
+            r"C:\project\child\..\..\other",
+            r"C:\project\.. \other",
+            r"C:project\child",
+            r"\project\child",
+            r"C:\PROJECT\child",
+            r"C:\project\file:stream",
+            r"\\.\C:\project\child",
+            r"\\?\C:\project\child",
+            r"C:\project\child.",
+        ] {
+            assert!(
+                !super::target_path_is_within(path.as_ref(), r"C:\project".as_ref(), "windows"),
+                "{path}"
+            );
+        }
+        assert!(!super::target_path_is_within(
+            r"\\server\other\project\child".as_ref(),
+            r"\\server\share\project".as_ref(),
+            "windows"
+        ));
+        for path in ["/project-other/file", "/project/../other", "project/child"] {
+            assert!(!super::target_path_is_within(
+                path.as_ref(),
+                "/project".as_ref(),
+                "linux"
+            ));
+        }
+        // Unix backslashes are literal filename characters, not separators.
+        assert!(!super::target_path_is_within(
+            r"/project\child".as_ref(),
+            "/project".as_ref(),
+            "linux"
+        ));
+        assert!(!super::target_path_is_within(
+            r"C:\project\child".as_ref(),
+            r"C:\project".as_ref(),
+            "linux"
+        ));
+        assert!(!super::target_path_is_within(
+            "/project/child".as_ref(),
+            "/project".as_ref(),
+            "unknown"
+        ));
+        assert!(super::target_path_is_within(
+            "/project".as_ref(),
+            "/project".as_ref(),
+            "unknown"
+        ));
+    }
+
+    #[test]
+    fn target_capability_subset_keeps_network_secrets_and_access_direction_explicit() {
+        let now = chrono::Utc::now();
+        let target = crate::memory::ExecutionTargetRecord {
+            id: "windows-device".into(),
+            revision: 1,
+            owner_principal_id: None,
+            provider_node_id: Some("node".into()),
+            kind: crate::memory::ExecutionTargetKind::ManagedSsh,
+            name: "device".into(),
+            status: crate::memory::ExecutionTargetStatus::Online,
+            platform: Some("windows-x86_64".into()),
+            workspace_root: None,
+            capabilities: vec![],
+            metadata: json!({}),
+            policy_digest: "policy".into(),
+            created_at: now,
+            updated_at: now,
+            last_seen_at: Some(now),
+        };
+        let granted = CapabilityDelta {
+            write_roots: vec![r"C:\project".into()],
+            ..Default::default()
+        };
+        let mut requested = CapabilityDelta {
+            write_roots: vec![r"C:\project\child".into()],
+            ..Default::default()
+        };
+        assert!(requested.is_subset_of_for_target(&granted, &target));
+        requested.network = true;
+        assert!(!requested.is_subset_of_for_target(&granted, &target));
+        requested.network = false;
+        requested.secret_env.push("SECRET".into());
+        assert!(!requested.is_subset_of_for_target(&granted, &target));
+        requested.secret_env.clear();
+        requested.read_roots = std::mem::take(&mut requested.write_roots);
+        assert!(requested.is_subset_of_for_target(&granted, &target));
+        assert!(!granted.is_subset_of_for_target(&requested, &target));
+        let escape = CapabilityDelta {
+            write_roots: vec![PathBuf::from("/project/../other")],
+            ..Default::default()
+        };
+        assert!(!escape.is_subset_of(&CapabilityDelta {
+            write_roots: vec![PathBuf::from("/project")],
+            ..Default::default()
+        }));
     }
 
     #[test]
