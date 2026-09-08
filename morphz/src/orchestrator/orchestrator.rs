@@ -88,6 +88,10 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 mod approval_wait;
 use approval_wait::ReadyToSuspendApprovalBatch;
 
+#[path = "plan_children.rs"]
+mod plan_children;
+use plan_children::PlanChildRunners;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DelegationReturnRoute {
     thread_id: String,
@@ -3082,6 +3086,7 @@ pub struct Orchestrator {
     /// slow fallback exists only for shared-store mutations from another
     /// process and the commit-before-notify crash window.
     plan_reconcile_wakeup: Arc<Notify>,
+    plan_child_runners: PlanChildRunners,
     plan_job_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     plan_evaluation_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     plan_action_group_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
@@ -4128,6 +4133,7 @@ impl Orchestrator {
             session_contexts: DashMap::new(),
             supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
             plan_reconcile_wakeup: Arc::new(Notify::new()),
+            plan_child_runners: PlanChildRunners::default(),
             plan_job_reconcile_cursor: Mutex::new(None),
             plan_evaluation_reconcile_cursor: Mutex::new(None),
             plan_action_group_reconcile_cursor: Mutex::new(None),
@@ -5710,7 +5716,7 @@ impl Orchestrator {
         Ok(violations)
     }
 
-    async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
+    pub(crate) async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
@@ -16239,6 +16245,25 @@ impl Orchestrator {
         .into_new_job()
     }
 
+    #[cfg(any(feature = "remote-store", test))]
+    pub(crate) fn active_plan_child_count(&self) -> usize {
+        self.plan_child_runners.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn waiting_plan_runner_count(&self) -> usize {
+        let slots = self
+            .activation_admission_slots
+            .iter()
+            .map(|entry| Arc::clone(entry.value()))
+            .collect::<Vec<_>>();
+        let mut count = 0;
+        for slot in slots {
+            count += slot.state.lock().await.waiting_plans;
+        }
+        count
+    }
+
     async fn suspend_activation_admission(
         &self,
         activation_id: &str,
@@ -16278,8 +16303,15 @@ impl Orchestrator {
                 objective_id: child.objective_id.clone(),
                 objective_evaluation_id: child.objective_evaluation_id.clone(),
             };
+            let Some(registration) = self
+                .plan_child_runners
+                .register(&child.id, Arc::clone(&self.plan_reconcile_wakeup))
+            else {
+                continue;
+            };
             let weak = orchestrator.clone();
             tokio::spawn(async move {
+                let _registration = registration;
                 let Some(orchestrator) = weak.upgrade() else {
                     return;
                 };
@@ -16292,7 +16324,6 @@ impl Orchestrator {
                         "A durable Yao child Plan ended with failure"
                     );
                 }
-                orchestrator.plan_reconcile_wakeup.notify_one();
             });
         }
         Ok(())

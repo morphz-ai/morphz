@@ -3109,6 +3109,7 @@ impl MorphzRuntime {
             && admission.in_flight_activation_ids.is_empty()
             && admission.suspended_activation_ids.is_empty()
             && admission.waiter_count == 0
+            && self.inner.orchestrator.active_plan_child_count() == 0
             && models.in_flight == 0
             && models.queued == 0
             && self
@@ -10917,6 +10918,10 @@ fn env_flag_enabled(name: &str) -> bool {
 #[cfg(test)]
 #[path = "runtime/scheduler_lifecycle_tests.rs"]
 mod scheduler_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "runtime/plan_child_lifecycle_tests.rs"]
+mod plan_child_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

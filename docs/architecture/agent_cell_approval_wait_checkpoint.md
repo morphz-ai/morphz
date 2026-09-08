@@ -163,3 +163,50 @@ Existing-behavior gate: **48 passed, 0 failed**, for **62 passing tests** overal
 `cargo check -p morphz --features remote-store --lib`, targeted `rustfmt --check`,
 and `git diff --check` also passed. The local PostgreSQL cluster and workerd
 fixture are disposable; existing data and deployed services are not modified.
+
+## Nested Plan prerequisite: one live child runner per Plan
+
+The parent execution loop and durable reconciliation both start child Plans.
+Before process-local registration, repeated recovery passes could create more
+live execution stacks for an already waiting child. A real Runtime regression
+with one parent and two parallel branches waiting for human approval observed
+**five suspended Plan stacks instead of three**. Existing Job preflight
+serialization still preserved two approvals and two unstarted Jobs; this was
+not evidence of duplicate physical execution or an approval bypass.
+
+`PlanChildRunners` now registers each durable child Plan ID before spawning.
+Concurrent recovery passes reuse the existing runner; unrelated child IDs run
+independently. An owned guard releases registration before waking reconciliation
+on completion, failure, panic, task abortion, or an unpolled future being dropped.
+The registry does not replace durable Plan claims, fencing, or cancellation
+semantics. It is rebuilt naturally after process restart.
+
+The supplemental hosted-process quiescence check also requires zero registered
+child runners. The durable Store's existing blockers are unchanged. This only
+tightens the parking boundary; it does not make nested waits safe to suspend.
+
+Five new regressions cover 32 concurrent registrations, independent Plan IDs,
+unpolled/aborted/panicking task cleanup, and actual parallel Runtime approvals
+under eight repeated reconciliation passes. Successful approval produces two
+completed Jobs and three completed Plans with no model retry. Session
+cancellation releases both child stacks and human waiters, leaves both Jobs
+cancelled without starting their effects, and does not make another model call.
+The cancellation regression does **not** establish complete parent Plan terminal
+cleanup; that remains part of the nested continuation/lifecycle gate above.
+
+This prerequisite's verification ran **60 distinct tests, all passing**: 49
+Plan-filtered library tests (including the five new regressions), six SQLite
+approval-checkpoint tests, the three-process approval-resume test, and four
+Plan/infer handoff regressions:
+
+```sh
+cargo test -p morphz --features remote-store --lib plan
+cargo test -p morphz --features remote-store \
+  --test plan_infer_handoff --test approval_runtime_resume \
+  --test activation_approval_checkpoint
+```
+
+The PostgreSQL and workerd conformance tests were not rerun for this
+process-local-only change; those two tests remain explicitly ignored without
+their isolated fixtures. The subprocess helper is again invoked by its parent.
+No external model requests, cloud resources, or production data were used.
