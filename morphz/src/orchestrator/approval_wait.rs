@@ -35,6 +35,93 @@ impl std::fmt::Display for DeferredPlanApproval {
 impl std::error::Error for DeferredPlanApproval {}
 
 impl Orchestrator {
+    /// Objective control commits before physical cancellation. A process may
+    /// exit between them, leaving a parked batch with no live Future to observe
+    /// cancellation. Recover its exact immutable Evaluation binding before
+    /// redispatch. The checkpoint, not Session membership or the presence of a
+    /// pending approval, supplies ownership; admission remains unchanged.
+    pub(super) async fn reconcile_revoked_objective_approval_waits(&self) -> Result<(), DynError> {
+        let (Some(store), Some(supervisor)) = (
+            self.context_engine.session_store(),
+            self.objective_supervisor.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let mut reconciled = HashSet::new();
+        for context in store.list_contexts(false).await? {
+            for activation in store
+                .list_context_thread_activations(&context.id, false)
+                .await?
+            {
+                let Some(wait) = store
+                    .get_thread_activation_approval_wait(&activation.id)
+                    .await?
+                else {
+                    continue;
+                };
+                let call = self
+                    .context_engine
+                    .find_event(&activation.context_id, &wait.assistant_call_event_id)
+                    .await?
+                    .ok_or(
+                        "Objective approval recovery is missing its immutable assistant batch",
+                    )?;
+                let outputs = self
+                    .store
+                    .query(QueryFilter {
+                        context_id: Some(activation.context_id.clone()),
+                        activation_id: Some(activation.id.clone()),
+                        topic: Some("chat/tool_output".into()),
+                        ..Default::default()
+                    })
+                    .await?;
+                let Some(binding) =
+                    crate::memory::approval_checkpoint_objective_binding(&call, &outputs)?
+                else {
+                    continue;
+                };
+                let route = crate::objective::ActiveObjectiveEvaluation::from_event(binding)
+                    .ok_or("Objective approval recovery has an invalid Evaluation binding")?;
+                let Some(objective) = supervisor.get(&route.objective_id).await? else {
+                    return Err(
+                        "Objective approval recovery is missing its durable Objective".into(),
+                    );
+                };
+                if objective.agent_id != activation.agent_id
+                    || objective.context_id != activation.context_id
+                    || objective.coordinator_session_id != activation.session_id
+                {
+                    return Err("Objective approval recovery has conflicting owner scope".into());
+                }
+                // Evaluation IDs are fencing tokens and never reused. A
+                // subsequent resume cannot make this old batch current again.
+                // Stop states also cover an exit before finish_evaluation.
+                if objective.active_evaluation_id.as_deref() == Some(route.evaluation_id.as_str())
+                    && !matches!(
+                        objective.status,
+                        crate::memory::ObjectiveStatus::Paused
+                            | crate::memory::ObjectiveStatus::Cancelled
+                            | crate::memory::ObjectiveStatus::Failed
+                    )
+                {
+                    continue;
+                }
+                if !reconciled.insert((route.objective_id.clone(), route.evaluation_id.clone())) {
+                    continue;
+                }
+                self.cancel_objective_evaluation(&route.objective_id, &route.evaluation_id)
+                    .await?;
+                tracing::info!(
+                    objective_id = %route.objective_id,
+                    evaluation_id = %route.evaluation_id,
+                    event_code = "orchestrator.startup.revoked_objective_approval_closed",
+                    "Closed approval checkpoints whose Objective Evaluation was revoked before restart"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn can_defer_persisted_plan_approval(
         &self,
         plan_id: &str,

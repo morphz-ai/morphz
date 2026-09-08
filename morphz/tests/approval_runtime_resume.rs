@@ -287,6 +287,73 @@ async fn approval_runtime_child() {
     runtime.start().await.unwrap();
     if matches!(
         stage.as_str(),
+        "pause-objective-commit"
+            | "cancel-objective-commit"
+            | "pause-objective-state-commit"
+            | "cancel-objective-state-commit"
+    ) {
+        let objectives = native.list_recoverable_objectives().await.unwrap();
+        assert_eq!(objectives.len(), 1);
+        let held = &objectives[0];
+        // Exercise the durable steps of pause_objective/cancel_objective,
+        // then exit without destructors before physical cancellation begins.
+        // There is no production failpoint or direct SQL ownership mutation.
+        let status = if stage.starts_with("pause-") {
+            ObjectiveStatus::Paused
+        } else {
+            ObjectiveStatus::Cancelled
+        };
+        let mutation = if stage.ends_with("-state-commit") {
+            native
+                .update_objective_state(
+                    &held.id,
+                    held.revision,
+                    status,
+                    None,
+                    Some("synthetic exit before Evaluation release"),
+                )
+                .await
+                .unwrap()
+        } else {
+            runtime
+                .update_objective_state(
+                    &held.id,
+                    held.revision,
+                    status,
+                    None,
+                    Some("synthetic exit after Objective control commit"),
+                )
+                .await
+                .unwrap()
+        };
+        let ObjectiveMutation::Updated(committed) = mutation else {
+            panic!("control commit failed")
+        };
+        assert_eq!(committed.status, status);
+        assert_eq!(
+            committed.active_evaluation_id.is_some(),
+            stage.ends_with("-state-commit")
+        );
+        let jobs = native
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: false,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            jobs.len(),
+            2,
+            "the crash seam must precede physical cancellation"
+        );
+        assert!(jobs
+            .iter()
+            .all(|j| j.status == ExecutionJobStatus::WaitingApproval));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        std::process::exit(0);
+    }
+    if matches!(
+        stage.as_str(),
         "pause-objective" | "cancel-objective" | "verify-stopped-objective"
     ) {
         if stage != "verify-stopped-objective" {
@@ -825,6 +892,26 @@ async fn cold_objective_cancel_closes_approval_owners() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_pause_commit_survives_exit_before_physical_cancellation() {
+    objective_cold_control_case("pause-objective-commit").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_cancel_commit_survives_exit_before_physical_cancellation() {
+    objective_cold_control_case("cancel-objective-commit").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_pause_state_commit_survives_exit_before_evaluation_release() {
+    objective_cold_control_case("pause-objective-state-commit").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_cancel_state_commit_survives_exit_before_evaluation_release() {
+    objective_cold_control_case("cancel-objective-state-commit").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_objective_infer_approvals_wake_exact_owners() {
     let temp = prepare_fixture();
     run_child_with_objective(temp.path(), "live", false, true, true);
@@ -862,6 +949,11 @@ async fn objective_cold_control_case(stage: &str) {
             .clone();
         drop(native);
         run_child_with_objective(root, stage, nested, infer, true);
+        if stage.ends_with("-commit") {
+            // Nothing after the committed control ran in the prior process.
+            // Recovery, not the test, must close every exact old owner.
+            run_child_with_objective(root, "verify-stopped-objective", nested, infer, true);
+        }
         let native = store(root).await;
         assert_eq!(
             native.get_execution_job(&free.id).await.unwrap().unwrap(),
@@ -898,7 +990,7 @@ async fn objective_cold_control_case(stage: &str) {
         assert_eq!(objectives.len(), 1);
         assert_eq!(
             objectives[0].status,
-            if stage == "pause-objective" {
+            if stage.starts_with("pause-") {
                 ObjectiveStatus::Paused
             } else {
                 ObjectiveStatus::Cancelled

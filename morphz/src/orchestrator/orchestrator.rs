@@ -4877,6 +4877,7 @@ impl Orchestrator {
         // running it first lets those futures contend with startup repairs for
         // the same SQLite writer and can make an otherwise healthy restart
         // fail with SQLITE_BUSY.
+        self.reconcile_revoked_objective_approval_waits().await?;
         self.rebuild_activation_admission_queue().await?;
         self.audit_active_supervision_invariants().await?;
         self.recover_provider_waits().await?;

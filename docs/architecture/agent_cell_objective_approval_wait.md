@@ -175,11 +175,41 @@ compares the unchanged live Activation and local Evaluation binding, releases
 the lock and verifies success. A second round pauses the Objective during
 contention and verifies the retry rejects it instead of using stale authority.
 
+### Interrupted Objective control recovery
+
+The next native gate reproduced both pause and cancellation failures after
+the control commit but before physical cancellation: the fresh Runtime left
+the two pending approval Jobs alive and the five-second recovery assertion
+failed. This was not a normal shutdown or a simulated approval decision.
+
+Startup now checks the immutable assistant batch behind each parked approval
+checkpoint before rebuilding admission or redispatching work. It reuses the
+same successful creation-prelude binding proof and exact Evaluation-owner
+cancellation path as live control. A revoked Evaluation is fenced and its
+pending physical Jobs, logical Plans and approvals are closed. Valid parked
+Evaluations are left waiting; no permission is granted or broadened. This
+uses the existing store contract and adds no schema or compatibility layer.
+
+Four new real-process tests cover pause/cancel at two persisted seams, each
+with direct, parallel Plan and infer batches: immediately after the native
+Objective state transition, and after Evaluation release but before physical
+cancellation. The test process calls `exit` without running destructors only
+after proving both approval Jobs are still pending. A fresh Runtime must close
+them; another restart verifies idempotence. Completed siblings stay byte-for-
+byte unchanged, denied/unapproved Jobs never start, grants remain unconsumed,
+the Objective stays paused/cancelled with no old Evaluation, and no model is
+called during recovery. All **15 process-level cases pass** (one separate
+subprocess entry point is explicitly ignored and invoked by the tests).
+
+The additional same-Objective replacement-Evaluation preservation fixture has
+not been added or run: its write was interrupted by automatic permission-review
+transport failure and timeout. Do not count that boundary as verified.
+
 Still required before hosted acceptance: directed-input and dependency
 replacement while an Objective is actually approval-checkpointed in a real
-Runtime; pause/resume, terminal-anchor recovery and a crash between Objective
-control commit and physical cancellation propagation. The successful cold
-pause/cancel round trip is not proof of that intermediate crash boundary.
+Runtime; pause/resume, replacement-Evaluation preservation and terminal-anchor
+recovery. The control-commit crash seam above is now covered, but not every
+possible control or dependency replacement interleaving.
 Hosted ingress,
 Provider/Edge, actual Cloudflare parking and the other five deployment closures
 remain separate acceptance requirements. No quiescence predicate is relaxed.
