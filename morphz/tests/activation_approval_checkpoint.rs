@@ -14,6 +14,178 @@ mod nested_plans;
 #[path = "activation_approval_checkpoint/objective_owners.rs"]
 mod objective_owners;
 
+#[cfg(feature = "remote-store")]
+#[tokio::test]
+#[ignore = "requires the real Agent Cell workerd conformance server"]
+async fn workerd_approval_checkpoint_parks_without_consuming_permission() {
+    use morphz::memory::remote::{http::HttpRemoteStoreTransport, RemoteRuntimeStore};
+    use std::sync::Arc;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("morphz::memory::remote=debug")
+        .with_test_writer()
+        .try_init();
+    let base = std::env::var("MORPHZ_TEST_REMOTE_STORE_URL").unwrap();
+    for shape in ["direct", "serial", "parallel", "infer"] {
+        for decision in ["allow", "deny"] {
+            let label = format!("{shape}-{decision}");
+            let endpoint = format!(
+                "{}park-approval-{label}-{}",
+                base.replace("/runtime-store/", "/managed-runtime-store/"),
+                Utc::now().timestamp_nanos_opt().unwrap()
+            );
+            let connect = || {
+                RemoteRuntimeStore::connect_owned(Arc::new(
+                    HttpRemoteStoreTransport::new(&endpoint, "conformance-only").unwrap(),
+                ))
+            };
+            let store = Arc::new(connect().await.unwrap());
+            let mut batch = if matches!(shape, "serial" | "parallel") {
+                nested_plans::nested(store.clone(), &label, shape == "parallel")
+                    .await
+                    .0
+            } else {
+                seed(store.as_ref(), &label).await
+            };
+            let child = if shape == "infer" {
+                Some(
+                    infer_children::child_with_objective(
+                        store.clone(),
+                        &mut batch,
+                        &format!("{label}-child"),
+                        false,
+                        None,
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            store.complete_recovery().await.unwrap();
+            assert!(
+                !store.try_park(|| true).await.unwrap(),
+                "a live tool batch must not park"
+            );
+            if let Some(child) = &child {
+                checkpoint(store.as_ref(), child).await;
+            }
+            let parked_activation = checkpoint(store.as_ref(), &batch).await;
+            assert_waiting(store.as_ref(), &batch).await;
+            let unrelated = seed(store.as_ref(), &format!("{label}-uncovered")).await;
+            assert!(
+                !store.try_park(|| true).await.unwrap(),
+                "unrelated live work must keep compute running"
+            );
+            checkpoint(store.as_ref(), &unrelated).await;
+            assert!(
+                !store.try_park(|| true).await.unwrap(),
+                "unprocessed Recall projection work must still block parking"
+            );
+            // The production Runtime drains this outbox in its normal worker.
+            // Use that same generation-fenced projection operation here; never
+            // erase pending projection intents just to make the host idle.
+            let mut projected = 0;
+            let mut drained = false;
+            for _ in 0..8 {
+                let result = store
+                    .project_recall_outbox_batch("approval-park-fixture", 128)
+                    .await
+                    .unwrap();
+                assert_eq!(result.failed, 0);
+                projected += result.projected;
+                if result.claimed == 0 {
+                    drained = true;
+                    break;
+                }
+            }
+            assert!(drained && projected > 0);
+            let jobs = store
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let approvals = store
+                .list_approvals(ApprovalFilter::default())
+                .await
+                .unwrap();
+            let plans = store
+                .list_plan_executions(PlanExecutionFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(
+                !store.try_park(|| false).await.unwrap(),
+                "live process work still blocks parking"
+            );
+            assert!(
+                store.try_park(|| true).await.unwrap(),
+                "a complete durable approval checkpoint must release compute: {label}"
+            );
+            assert!(store.ownership_lost());
+            assert!(store
+                .get_thread_activation(&batch.request.activation_id)
+                .await
+                .is_err());
+            drop(store);
+
+            let restored = connect().await.unwrap();
+            assert_eq!(
+                restored
+                    .get_thread_activation(&batch.request.activation_id)
+                    .await
+                    .unwrap(),
+                Some(parked_activation)
+            );
+            for approval in &approvals {
+                assert_eq!(
+                    restored.get_approval(&approval.id).await.unwrap().as_ref(),
+                    Some(approval)
+                );
+                assert!(approval.grant_consumed_at.is_none());
+            }
+            assert_eq!(
+                restored
+                    .list_execution_jobs(ExecutionJobFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap(),
+                jobs
+            );
+            assert_eq!(
+                restored
+                    .list_plan_executions(PlanExecutionFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap(),
+                plans
+            );
+            assert_waiting(&restored, &batch).await;
+            restored.complete_recovery().await.unwrap();
+            // A descendant decision must wake its parent just like a direct one.
+            resolve(&restored, child.as_ref().unwrap_or(&batch), decision).await;
+            assert!(restored
+                .dialogue_turn_activation_runnable(&batch.request.activation_id)
+                .await
+                .unwrap());
+            assert!(
+                !restored.try_park(|| true).await.unwrap(),
+                "a decision must wake the exact checkpoint before compute can park again"
+            );
+            for job in &jobs {
+                let current = restored.get_execution_job(&job.id).await.unwrap().unwrap();
+                assert!(current.side_effect_started_at.is_none());
+            }
+        }
+    }
+}
+
 struct Batch {
     request: ActivationApprovalWaitRequest,
     jobs: Vec<ExecutionJobRecord>,

@@ -264,9 +264,63 @@ or every concurrent terminal/input commit interleaving. The control-commit
 crash seam is covered, but not every possible control/dependency replacement.
 Hosted ingress,
 Provider/Edge, actual Cloudflare parking and the other five deployment closures
-remain separate acceptance requirements. No quiescence predicate is relaxed.
+remain separate acceptance requirements. These Objective gates did not change
+hosted quiescence.
 
 The fresh CLI check still reports an expired Cloudflare authorization that
 cannot refresh noninteractively. No paid resources or production data were
 changed for these gates. The approved architecture remains Cloudflare-only,
 without KMS/Hyperdrive, with a total incremental test budget of USD 20.
+
+### Hosted approval quiescence (2026-09-09)
+
+The hosted Store previously treated every queued Activation and every
+`waiting_approval` Job as runnable, even after the native checkpoint had released
+all physical owners. Its parking check now reuses the scheduler's recursive
+`activation_pending_approval_waits` proof. Only current open/active Thread
+generations with matching routes, no claimant and no physical lease qualify.
+Jobs, Plans, Groups and already-claimed Signals must each match that exact
+checkpoint and current revision. A decision, missing dependency, new uncovered
+owner or pending Signal continues to block parking. No permission is granted,
+consumed or broadened, and no native owner is cancelled to obtain quiescence.
+
+The proof runs under the existing replica lock. Process queues, Recall
+projection, delivery, Edge commands, timers and credential-refresh protections
+are unchanged; the Cell still checks the exact Store revision while atomically
+releasing the compute fence. **The Objective predicate is unchanged:** a held
+Evaluation still blocks hosted parking. This is not yet the complete Objective
+or Edge long-connection scale-to-zero acceptance.
+
+The actual loopback workerd gate
+`workerd_approval_checkpoint_parks_without_consuming_permission` passes all
+eight direct/serial/parallel/infer × allow/deny combinations (7.56 seconds).
+It first proves that a live batch, unrelated work and unprocessed Recall outbox
+each prevent parking. Projection is drained through the Runtime's real
+generation-fenced projection API, not by deleting intents. After parking, an
+old owner is fenced, a new empty-cache Store restores identical owners and
+unconsumed approvals, and a decision makes the exact checkpoint runnable again.
+No model or physical command executes in this native Store gate. Actual host
+process exits and Provider/Edge acceptance remain separate evidence.
+
+Final-source regression: **1331 library cases passed / 8 explicitly ignored**
+(128.91 seconds) and **43 local integration cases passed**. Clippy for the
+library, hosted binary and four integration targets passes with `-D warnings`;
+the default-feature library check and formatting/diff checks also pass.
+No PostgreSQL-specific source changed in this parking patch; the earlier ten
+PostgreSQL cases were not rerun or counted as fresh evidence here.
+
+The freshly rebuilt native host also passes all **7 existing workerd/R2
+process gates** (193.41 seconds total): natural parking, actual alarm/deadline
+wakeup, empty-cache restoration, receipt-loss recovery and stale-owner fencing.
+Its SHA-256 is
+`aa390aaa252a34a8c8266da64b740c1025581c2379c1306b73dd53358bdea44d`.
+Those process gates do not yet exercise an actual hosted approval/Edge wait;
+the eight new approval combinations above exercise the native Store/Cell seam.
+
+Run it against the Cloud repository's isolated `test/runtime-store-server.mjs`
+endpoint with `MORPHZ_TEST_REMOTE_STORE_URL` and:
+
+```sh
+cargo test -p morphz --features remote-store --test activation_approval_checkpoint \
+  workerd_approval_checkpoint_parks_without_consuming_permission -- --ignored --exact
+```

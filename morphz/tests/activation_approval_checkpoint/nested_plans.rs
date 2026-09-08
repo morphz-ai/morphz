@@ -71,7 +71,7 @@ async fn drive(c: &PlanExecutionCoordinator, plan: &PlanExecutionRecord) -> Plan
 
 // Mixed outer batch: two direct approval waits, a completed direct read, and
 // a real eval root containing serial or parallel physical effects.
-async fn nested(
+pub(super) async fn nested(
     store: Arc<dyn RuntimeStore>,
     label: &str,
     parallel: bool,
