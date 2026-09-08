@@ -2294,6 +2294,18 @@ impl PlanExecutionCoordinator {
                     )
                     .into());
                 }
+                // The first successful Activation may only have handed off to
+                // tools. A later cancellation/failure belongs to the logical
+                // infer Thread and is not a successful model result string.
+                match thread.lifecycle {
+                    crate::memory::ThreadLifecycle::Cancelled => {
+                        return Ok(Err("child Evaluation was cancelled".to_string()));
+                    }
+                    crate::memory::ThreadLifecycle::Failed => {
+                        return Ok(Err("child Evaluation failed".to_string()));
+                    }
+                    _ => {}
+                }
                 let event_id = thread.result_event_id.as_deref().ok_or_else(|| {
                     format!(
                         "child Thread '{}' completed without a result Event",

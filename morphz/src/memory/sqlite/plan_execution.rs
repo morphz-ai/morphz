@@ -3,7 +3,8 @@
 use super::{
     append_direct_thread_signal_in_transaction, append_event_in_transaction,
     ensure_execution_job_in_transaction, ensure_thread_in_transaction, parse_time,
-    thread_activation_from_row, thread_from_row, thread_signal_from_row, SqliteStore,
+    thread_activation_from_row, thread_from_row, thread_outcome_from_row, thread_signal_from_row,
+    SqliteStore,
 };
 use crate::memory::{
     stable_thread_id, validate_plan_evaluation_activation_route, NewExecutionJob, NewPlanExecution,
@@ -886,6 +887,14 @@ impl PlanExecutionStore for SqliteStore {
             .into());
         }
         let signal = thread_signal_from_row(&signal_rows[0])?;
+        let outcome_row = sqlx::query("SELECT * FROM thread_outcomes WHERE thread_id = ?")
+            .bind(&child_thread.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let child_outcome = outcome_row
+            .as_ref()
+            .map(thread_outcome_from_row)
+            .transpose()?;
         validate_plan_evaluation_activation_route(
             &plan,
             &event,
@@ -894,6 +903,7 @@ impl PlanExecutionStore for SqliteStore {
             &activation,
             &parent_thread,
             &parent_activation,
+            child_outcome.as_ref(),
         )?;
 
         if signal.parent_activation_id.is_none() {

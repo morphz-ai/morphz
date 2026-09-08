@@ -2,7 +2,254 @@
 use chrono::{Duration, Utc};
 use morphz::event::Event;
 use morphz::memory::{sqlite::SqliteStore, *};
+use morphz::plan_execution::{
+    PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt, PlanExecutionCoordinator,
+    PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
+};
 use serde_json::json;
+use std::sync::Arc;
+
+struct NoPhysicalCalls;
+
+#[async_trait::async_trait]
+impl PlanCallPlanner for NoPhysicalCalls {
+    async fn plan_call(
+        &self,
+        _: &PlanExecutionRecord,
+        _: &morphz::sexpr_eval::PlanEffect,
+        _: &str,
+    ) -> PlanExecutionResult<NewExecutionJob> {
+        panic!("infer cancellation must not execute a physical call")
+    }
+}
+
+async fn cancelled_infer_refills_parent(store: Arc<dyn RuntimeStore>, label: &str) {
+    for completed_first_step in [false, true] {
+        let new = seed(store.as_ref(), &format!("{label}-{completed_first_step}")).await;
+        let registry = Arc::new(morphz::tool::Registry::new());
+        let program = morphz::sexpr_eval::validate(
+            "(eval (infer (returns String) \"synthetic infer\"))",
+            &registry,
+            &morphz::sexpr_eval::AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let coordinator = PlanExecutionCoordinator::new(store.clone(), registry.clone());
+        let queued = coordinator
+            .ensure(
+                PlanExecutionRoute {
+                    activation_id: new.activation_id,
+                    thread_id: new.thread_id,
+                    agent_id: new.agent_id,
+                    context_id: new.context_id,
+                    session_id: new.session_id,
+                    initiating_principal_id: None,
+                    tool_call_id: new.tool_call_id,
+                    objective_id: None,
+                    objective_evaluation_id: None,
+                },
+                &program,
+                PlanArtifactBinding::default(),
+            )
+            .await
+            .unwrap();
+        let (plan, event, child_id) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "worker",
+                "claim",
+                Utc::now() + Duration::minutes(1),
+                &NoPhysicalCalls,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                activation_id,
+                ..
+            } => (plan, request_event, activation_id),
+            other => panic!("{other:?}"),
+        };
+        let event = store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let child = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        let sequence = event.sequence.unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: stable_thread_signal_id(&event.id),
+                    thread_id: child.id.clone(),
+                    thread_generation: child.generation,
+                    event_id: event.id.clone(),
+                    principal_id: None,
+                    sequence,
+                    kind: event.topic.clone(),
+                    parent_activation_id: Some(plan.activation_id.clone()),
+                },
+                NewThreadActivation {
+                    id: child_id.clone(),
+                    agent_id: plan.agent_id.clone(),
+                    context_id: plan.context_id.clone(),
+                    session_id: plan.session_id.clone(),
+                    initiating_principal_id: None,
+                    trigger_event_id: event.id.clone(),
+                    trigger_sequence: sequence,
+                    trigger_kind: event.topic.clone(),
+                    parent_activation_id: Some(plan.activation_id.clone()),
+                    root_turn_id: event.id,
+                },
+                1,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        if completed_first_step {
+            // A successful first Activation may only hand off to a tool step;
+            // cancelling the logical infer Thread must still fail the infer.
+            assert!(matches!(
+                store
+                    .update_thread_activation(
+                        &activation.id,
+                        activation.revision,
+                        ThreadActivationStatus::Succeeded,
+                        None,
+                        None,
+                        None
+                    )
+                    .await
+                    .unwrap(),
+                ThreadActivationMutation::Updated(_)
+            ));
+        }
+        let child = store.get_thread(&child.id).await.unwrap().unwrap();
+        if completed_first_step {
+            // A projection flag alone cannot witness a closed generation.
+            let false_terminal = match store
+                .update_thread(
+                    &child.id,
+                    child.revision,
+                    None,
+                    Some(ThreadLifecycle::Cancelled),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+            {
+                ThreadMutation::Updated(thread) => thread,
+                other => panic!("{other:?}"),
+            };
+            let error = coordinator
+                .reconcile_evaluation(&plan.id, &child_id)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("missing its durable cancellation Outcome"),
+                "{error}"
+            );
+            assert_eq!(
+                store.get_plan_execution(&plan.id).await.unwrap(),
+                Some(plan.clone())
+            );
+            assert!(matches!(
+                store
+                    .update_thread(
+                        &child.id,
+                        false_terminal.revision,
+                        None,
+                        Some(ThreadLifecycle::Open),
+                        None,
+                        None,
+                        None,
+                        None
+                    )
+                    .await
+                    .unwrap(),
+                ThreadMutation::Updated(_)
+            ));
+        }
+        let child = store.get_thread(&child.id).await.unwrap().unwrap();
+        cancel(store.as_ref(), &child).await;
+        let closed = store.get_thread(&child.id).await.unwrap().unwrap();
+        drop(coordinator);
+        let coordinator = PlanExecutionCoordinator::new(store.clone(), registry);
+        let receipt = coordinator
+            .reconcile_evaluation(&plan.id, &child_id)
+            .await
+            .expect(
+            "a durably cancelled infer must refill its parent instead of failing route validation",
+        );
+        let resumed = match receipt {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            coordinator
+                .drive_once(
+                    &resumed.id,
+                    resumed.revision,
+                    "worker",
+                    "finish",
+                    Utc::now() + Duration::minutes(1),
+                    &NoPhysicalCalls
+                )
+                .await
+                .unwrap(),
+            PlanDriveReceipt::Failed { .. }
+        ));
+        let terminal = store.get_plan_execution(&plan.id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, PlanExecutionStatus::Failed);
+        assert!(terminal.error.as_deref().unwrap().contains("cancelled"));
+        assert!(
+            matches!(coordinator.reconcile_evaluation(&plan.id, &child_id).await.unwrap(), PlanResumeReceipt::Existing(p) if p == terminal)
+        );
+        assert_eq!(store.get_thread(&child.id).await.unwrap(), Some(closed));
+    }
+}
+
+#[tokio::test]
+async fn sqlite_cancelled_infer_refills_parent_without_live_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(tmp.path().join("store.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    cancelled_infer_refills_parent(store, "sqlite-infer-refill").await;
+}
+
+#[tokio::test]
+#[ignore = "requires MORPHZ_TEST_POSTGRES_URL pointing to an isolated disposable database"]
+async fn postgres_cancelled_infer_refills_parent_without_live_child() {
+    let url = std::env::var("MORPHZ_TEST_POSTGRES_URL")
+        .expect("explicit disposable PostgreSQL URL required");
+    let store = Arc::new(
+        morphz::memory::postgres::PostgresStore::new(&url, 4)
+            .await
+            .unwrap(),
+    );
+    cancelled_infer_refills_parent(
+        store,
+        &format!(
+            "pg-infer-refill-{}",
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ),
+    )
+    .await;
+}
 
 async fn seed(store: &dyn RuntimeStore, label: &str) -> NewPlanExecution {
     let agent = format!("agent-{label}");
@@ -707,12 +954,17 @@ async fn infer_reconciliation_races_cancel(store: &dyn RuntimeStore, label: &str
                         .unwrap(),
                 );
             }
+            if cancel_child {
+                assert!(reconciled
+                    .expect("child cancellation must retain a valid historical infer route")
+                    .is_some());
+                continue;
+            }
             match reconciled {
                 Ok(activation) => assert!(activation.is_some()),
                 Err(e) => {
-                    // This gate checks lock ordering, not infer-cancellation
-                    // propagation. Cancellation may invalidate the exact
-                    // generation route, but must not produce a database error.
+                    // Parent cancellation can invalidate the original wait,
+                    // but must not produce a database/lock-order error.
                     let reason = e.to_string();
                     assert!(reason.contains("没有等待 child Activation")
                         || reason == "PlanExecution route is inconsistent with deterministic infer Activation"

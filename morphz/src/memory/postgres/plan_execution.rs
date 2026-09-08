@@ -948,6 +948,14 @@ impl PlanExecutionStore for PostgresStore {
             .into());
         }
         let signal = signal_from_row(&signal_rows[0])?;
+        let outcome_row = sqlx::query("SELECT * FROM thread_outcomes WHERE thread_id = $1")
+            .bind(&child_thread.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let child_outcome = outcome_row
+            .as_ref()
+            .map(super::thread_group::outcome_from_row)
+            .transpose()?;
         validate_plan_evaluation_activation_route(
             &plan,
             &event,
@@ -956,6 +964,7 @@ impl PlanExecutionStore for PostgresStore {
             &activation,
             &parent_thread,
             &parent_activation,
+            child_outcome.as_ref(),
         )?;
 
         if signal.parent_activation_id.is_none() {

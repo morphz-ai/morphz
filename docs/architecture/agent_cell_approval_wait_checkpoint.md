@@ -271,9 +271,9 @@ cargo test -p morphz --features remote-store \
 
 The six owner-cancellation tests include 120 paired creation, settlement,
 physical handoff, and infer-reconciliation/cancellation races across the two
-databases. Infer race assertions establish lock-order convergence, not cancellation
-propagation: existing generation-route validation may reject the cancelled
-child. The Runtime approval gate again executes its three subprocess stages.
+databases. Infer race assertions initially established lock-order convergence;
+the follow-up below additionally requires a valid historical route after child
+cancellation. The Runtime approval gate again executes its three subprocess stages.
 
 Library filters `plan`, `cancel`, and `action_group` passed 49, 34, and 2 tests,
 respectively (84 distinct tests after their single overlap). Default-feature
@@ -282,3 +282,48 @@ also passed. An initial command inadvertently selected two opt-in workerd tests
 without their required fixture URL; both failed at fixture validation, before
 any transport call. The final command explicitly excludes them. This native
 change has **not** revalidated workerd restore or actual Cloud parking.
+
+## Consuming a cancelled infer
+
+A subsequent deterministic regression reproduced a distinct recovery failure:
+Thread cancellation advances its execution generation, but parent Plan refill
+validated the child Signal against that new live generation. A cancelled child
+therefore produced `PlanExecution route is inconsistent with deterministic infer
+Signal`, leaving its parent waiting.
+
+Historical result consumption now uses the cancellation Outcome read in the
+same native transaction as the route. It must match the exact child Thread,
+root, Session, terminal kind, result Event reference and Activation generation;
+that closed generation must immediately precede the Thread's revoked generation.
+The original infer Event, Signal, Activation and parent route are still checked.
+Live Objective admission passes no Outcome and cannot use this closed-generation
+path. No record is reopened and no generation fence is removed.
+
+The logical Thread outcome also takes precedence over an earlier successful
+Activation: success of the initial model/tool step does not turn a later Thread
+cancellation into a successful infer string. Reconciliation refills the same
+Plan effect with the terminal failure and preserves idempotent replay.
+
+Native SQLite/PostgreSQL tests reconstruct the coordinator after cancellation,
+cover cancellation before and after completion of the first Activation, reject
+a cancelled projection without its durable Outcome, and prove the child remains
+cancelled. A real Runtime test blocks the synthetic child model, cancels it using
+the public API, verifies parent completion and the child future's destruction,
+and requires exactly three model calls (parent, child, parent continuation).
+Both EventBus and Activation concurrency limits are one. No external Provider
+or physical tool is used.
+
+This closes consumption of an already-materialized cancelled infer, **not**
+parent-to-child recursive cancellation or pre-materialization cancellation.
+Nested approval checkpoints and real Cloud compute parking remain required.
+
+Verification: the same five integration suites above now pass **28 tests**,
+including the three new cancellation/refill gates. The strengthened child-cancel
+race must return a valid historical route, not an accepted generation error.
+The 49/34/2 library filters again pass (84 distinct tests), as do default-feature
+`cargo check`, formatting and diff checks: **112 distinct passing tests**.
+The PostgreSQL full run used a fresh database. Reusing the prior temporary
+database had accumulated 72 queued synthetic Activations, exceeding an approval
+test's global 32-row admission window; the test then failed to find its new row.
+Fresh-fixture verification passed without changing production code or loosening
+that assertion. workerd and deployed Cloud compute were not exercised here.

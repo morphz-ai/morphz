@@ -15470,6 +15470,7 @@ impl Orchestrator {
             activation,
             &parent,
             &parent_activation,
+            None, // Live Objective admission cannot consume a closed-generation Outcome.
         )?;
         if persisted.payload != event.payload
             || event
