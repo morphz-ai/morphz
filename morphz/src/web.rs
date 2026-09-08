@@ -4728,6 +4728,9 @@ async fn handle_claim_edge_command(
     Path(node_id): Path<String>,
     headers: HeaderMap,
     Query(query): Query<EdgeClaimQuery>,
+    #[cfg(feature = "remote-store")] permit: Option<
+        axum::Extension<Arc<crate::memory::remote::host_lifecycle::RequestPermit>>,
+    >,
     Json(command): Json<ClaimEdgeCommand>,
 ) -> impl IntoResponse {
     let device_token = match node_device_token(&headers) {
@@ -4737,6 +4740,12 @@ async fn handle_claim_edge_command(
     let wait = std::time::Duration::from_secs(query.wait_seconds.unwrap_or(20).min(25));
     let deadline = tokio::time::Instant::now() + wait;
     loop {
+        #[cfg(feature = "remote-store")]
+        if let Some(axum::Extension(permit)) = &permit {
+            if !permit.resume_edge_poll() {
+                return crate::memory::remote::host_lifecycle::parking_response();
+            }
+        }
         match state
             .sdk
             .claim_edge_command(&node_id, &device_token, command.clone())
@@ -4748,10 +4757,24 @@ async fn handle_claim_edge_command(
                 // Local producers wake this immediately. Five seconds is the
                 // durable/cross-process fallback, replacing the previous 250ms
                 // write-poll loop without weakening crash recovery.
-                state
+                let changed = state
                     .runtime
-                    .wait_for_edge_command_change(remaining.min(std::time::Duration::from_secs(5)))
-                    .await;
+                    .wait_for_edge_command_change(remaining.min(std::time::Duration::from_secs(5)));
+                #[cfg(feature = "remote-store")]
+                if let Some(axum::Extension(permit)) = &permit {
+                    if !permit.pause_empty_edge_poll() {
+                        changed.await;
+                        continue;
+                    }
+                    tokio::select! {
+                        () = changed => {},
+                        () = permit.wait_for_parking() => {
+                            return crate::memory::remote::host_lifecycle::parking_response();
+                        }
+                    }
+                    continue;
+                }
+                changed.await;
             }
             Ok(None) => return StatusCode::NO_CONTENT.into_response(),
             Err(error) => return sdk_error_response(error),

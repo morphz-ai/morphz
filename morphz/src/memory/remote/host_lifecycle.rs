@@ -3,7 +3,10 @@ use axum::{body::Body, extract::Request, middleware::Next, response::Response, E
 use std::{
     collections::HashMap,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -21,6 +24,7 @@ struct State {
 }
 pub struct HostRequestGate {
     state: Mutex<State>,
+    parking_changed: tokio::sync::Notify,
 }
 impl Default for HostRequestGate {
     fn default() -> Self {
@@ -31,12 +35,14 @@ impl Default for HostRequestGate {
                 last_activity: Instant::now(),
                 reservations: HashMap::new(),
             }),
+            parking_changed: tokio::sync::Notify::new(),
         }
     }
 }
 pub struct RequestPermit {
     gate: Arc<HostRequestGate>,
     activity: bool,
+    active: AtomicBool,
 }
 pub struct ParkAttempt {
     gate: Arc<HostRequestGate>,
@@ -76,6 +82,7 @@ impl HostRequestGate {
         Some(RequestPermit {
             gate: self.clone(),
             activity: true,
+            active: AtomicBool::new(true),
         })
     }
     pub fn enter(self: &Arc<Self>, activity: bool) -> Option<RequestPermit> {
@@ -90,6 +97,7 @@ impl HostRequestGate {
         Some(RequestPermit {
             gate: self.clone(),
             activity,
+            active: AtomicBool::new(true),
         })
     }
     pub fn begin_park(self: &Arc<Self>, idle: Duration) -> Option<ParkAttempt> {
@@ -104,16 +112,56 @@ impl HostRequestGate {
             return None;
         }
         state.parking = true;
+        self.parking_changed.notify_waiters();
         Some(ParkAttempt {
             gate: self.clone(),
             committed: false,
         })
     }
+    async fn wait_for_parking(&self) {
+        let changed = self.parking_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if self.state.lock().unwrap_or_else(|e| e.into_inner()).parking {
+            return;
+        }
+        changed.await;
+    }
+}
+impl RequestPermit {
+    /// Only an authenticated Edge claim that has returned no work may yield
+    /// its admission while waiting. Re-entry is mandatory before another claim.
+    pub fn pause_empty_edge_poll(&self) -> bool {
+        // A gateway business reservation is a stronger pin, never downgrade it.
+        if self.activity {
+            return false;
+        }
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.active.swap(false, Ordering::Relaxed) {
+            state.requests -= 1;
+        }
+        true
+    }
+    pub fn resume_edge_poll(&self) -> bool {
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.parking {
+            return false;
+        }
+        if !self.active.swap(true, Ordering::Relaxed) {
+            state.requests += 1;
+        }
+        true
+    }
+    pub async fn wait_for_parking(&self) {
+        self.gate.wait_for_parking().await;
+    }
 }
 impl Drop for RequestPermit {
     fn drop(&mut self) {
         let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.requests -= 1;
+        if self.active.load(Ordering::Relaxed) {
+            state.requests -= 1;
+        }
         if self.activity {
             state.last_activity = Instant::now();
         }
@@ -150,7 +198,30 @@ pub fn parking_response() -> Response {
 }
 struct GuardedBody {
     body: Body,
-    permit: Option<RequestPermit>,
+    permit: Option<Arc<RequestPermit>>,
+}
+
+/// Idle maintenance does not renew the business activity clock. Authentication
+/// and every actual Store operation still run under normal native admission.
+pub fn is_passive_edge_request(method: &str, path: &str) -> bool {
+    if method != "POST" {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix("/api/edge/nodes/") else {
+        return false;
+    };
+    let Some((node, operation)) = rest.split_once('/') else {
+        return false;
+    };
+    !node.is_empty()
+        && node.len() <= 200
+        && node
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        && matches!(
+            operation,
+            "challenge" | "connect" | "heartbeat" | "jobs/claim"
+        )
 }
 impl http_body::Body for GuardedBody {
     type Data = axum::body::Bytes;
@@ -174,7 +245,7 @@ impl http_body::Body for GuardedBody {
 }
 pub async fn gate_request(
     Extension(gate): Extension<Arc<HostRequestGate>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     // Health probes participate in admission, but do not keep idle compute warm.
@@ -192,11 +263,16 @@ pub async fn gate_request(
                     .expect("static response")
             }
         },
-        None => gate.enter(request.uri().path() != "/health"),
+        None => gate.enter(
+            request.uri().path() != "/health"
+                && !is_passive_edge_request(request.method().as_str(), request.uri().path()),
+        ),
     };
     let Some(permit) = permit else {
         return parking_response();
     };
+    let permit = Arc::new(permit);
+    request.extensions_mut().insert(permit.clone());
     let (parts, body) = next.run(request).await.into_parts();
     Response::from_parts(
         parts,
@@ -210,6 +286,63 @@ pub async fn gate_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn empty_poll_yields_but_claim_reentry_and_parking_are_exclusive() {
+        let gate = Arc::new(HostRequestGate::default());
+        let poll = gate.enter(false).unwrap();
+        assert!(gate.begin_park(Duration::ZERO).is_none());
+        assert!(poll.pause_empty_edge_poll());
+        assert!(poll.pause_empty_edge_poll()); // no request-count underflow
+        assert!(poll.resume_edge_poll());
+        assert!(gate.begin_park(Duration::ZERO).is_none());
+        assert!(poll.pause_empty_edge_poll());
+        let park = gate.begin_park(Duration::ZERO).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), poll.wait_for_parking())
+            .await
+            .unwrap();
+        assert!(!poll.resume_edge_poll());
+        drop(park);
+        assert!(poll.resume_edge_poll());
+        drop(poll);
+        assert!(gate.begin_park(Duration::ZERO).is_some());
+    }
+    #[test]
+    fn passive_poll_does_not_renew_activity_or_weaken_a_business_reservation() {
+        let gate = Arc::new(HostRequestGate::default());
+        gate.state.lock().unwrap().last_activity = Instant::now() - Duration::from_secs(60);
+        let poll = gate.enter(false).unwrap();
+        assert!(poll.pause_empty_edge_poll());
+        drop(poll);
+        assert!(gate.begin_park(Duration::from_secs(30)).is_some());
+        let id = gate.reserve().unwrap().unwrap();
+        let business = gate.enter_reserved(&id).unwrap();
+        assert!(!business.pause_empty_edge_poll());
+        assert!(gate.begin_park(Duration::ZERO).is_none());
+    }
+    #[test]
+    fn only_closed_idle_edge_routes_are_passive() {
+        for operation in ["challenge", "connect", "heartbeat", "jobs/claim"] {
+            assert!(is_passive_edge_request(
+                "POST",
+                &format!("/api/edge/nodes/node-1_2/{operation}")
+            ));
+        }
+        for path in [
+            "/api/edge/pair",
+            "/api/edge/nodes/n/jobs/j/heartbeat",
+            "/api/edge/nodes/n/jobs/j/finish",
+            "/api/edge/nodes/n/rotate-key",
+            "/api/edge/nodes/n/heartbeat/",
+            "/api/edge/nodes/n%2Fx/heartbeat",
+            "/api/edge/nodes//heartbeat",
+        ] {
+            assert!(!is_passive_edge_request("POST", path));
+        }
+        assert!(!is_passive_edge_request(
+            "GET",
+            "/api/edge/nodes/n/heartbeat"
+        ));
+    }
     #[test]
     fn admission_and_parking_are_mutually_exclusive_and_failed_checks_reopen() {
         let gate = Arc::new(HostRequestGate::default());
@@ -261,14 +394,14 @@ mod tests {
         let gate = Arc::new(HostRequestGate::default());
         let body = Body::new(GuardedBody {
             body: Body::from("response"),
-            permit: gate.enter(true),
+            permit: gate.enter(true).map(Arc::new),
         });
         assert!(gate.begin_park(Duration::ZERO).is_none());
         assert_eq!(axum::body::to_bytes(body, 100).await.unwrap(), "response");
         drop(gate.begin_park(Duration::ZERO).unwrap());
         let body = Body::new(GuardedBody {
             body: Body::from("response"),
-            permit: gate.enter(true),
+            permit: gate.enter(true).map(Arc::new),
         });
         drop(body);
         assert!(gate.begin_park(Duration::ZERO).is_some());

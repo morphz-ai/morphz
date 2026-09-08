@@ -52,6 +52,32 @@ use crate::sdk::{
 
 pub type EdgeNodeError = Box<dyn Error + Send + Sync>;
 
+#[derive(Debug)]
+struct EdgeRuntimeSleeping;
+impl std::fmt::Display for EdgeRuntimeSleeping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cloud Runtime is idle; Edge maintenance was not accepted")
+    }
+}
+impl Error for EdgeRuntimeSleeping {}
+
+fn is_runtime_sleep_response(status: StatusCode, bytes: &[u8]) -> bool {
+    if status != StatusCode::SERVICE_UNAVAILABLE || bytes.len() > 1024 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    value.get("retryable").and_then(serde_json::Value::as_bool) == Some(true)
+        && match value.get("error").and_then(serde_json::Value::as_str) {
+            Some("edge_runtime_sleeping") => {
+                value.get("admission").and_then(serde_json::Value::as_str) == Some("not_accepted")
+            }
+            Some("runtime_parking") => true,
+            _ => false,
+        }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EdgeLocalCapabilityLease {
     pub id: String,
@@ -1030,6 +1056,9 @@ async fn decode_response<T: DeserializeOwned>(
     let status = response.status();
     let bytes = response.bytes().await?;
     if !status.is_success() {
+        if is_runtime_sleep_response(status, &bytes) {
+            return Err(Box::new(EdgeRuntimeSleeping));
+        }
         let detail = serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|value| {
@@ -2079,9 +2108,17 @@ impl EdgeNodeWorker {
             match result {
                 Ok(_) => failures = 0,
                 Err(error) => {
-                    failures = failures.saturating_add(1);
-                    let delay = 1_u64.checked_shl(failures.min(6)).unwrap_or(60).min(60);
-                    tracing::warn!(event_code = "edge.connection_or_execution.retrying", %error, delay_seconds = delay, "Edge Node connection or execution failed; retrying with backoff");
+                    let delay = if error.downcast_ref::<EdgeRuntimeSleeping>().is_some() {
+                        // Not a heartbeat ACK and not a successful claim. Quiet,
+                        // bounded polling reconnects promptly after user/timer work.
+                        failures = 0;
+                        2
+                    } else {
+                        failures = failures.saturating_add(1);
+                        let delay = 1_u64.checked_shl(failures.min(6)).unwrap_or(60).min(60);
+                        tracing::warn!(event_code = "edge.connection_or_execution.retrying", %error, delay_seconds = delay, "Edge Node connection or execution failed; retrying with backoff");
+                        delay
+                    };
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
                         changed = shutdown.changed() => {
@@ -2291,6 +2328,43 @@ mod tests {
     };
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn sleeping_gateway_is_not_a_successful_claim_or_an_authentication_failure() {
+        let sleeping =
+            r#"{"error":"edge_runtime_sleeping","admission":"not_accepted","retryable":true}"#;
+        let response = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(503)
+                .body(sleeping)
+                .unwrap(),
+        );
+        let error = decode_response::<serde_json::Value>(response)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<EdgeRuntimeSleeping>().is_some());
+        for status in [400, 401, 403, 429, 502] {
+            assert!(!is_runtime_sleep_response(
+                StatusCode::from_u16(status).unwrap(),
+                sleeping.as_bytes()
+            ));
+        }
+        for body in [
+            r#"{"error":"runtime_response_lost","admission":"unknown","retryable":true}"#,
+            r#"{"error":"edge_runtime_sleeping","admission":"unknown","retryable":true}"#,
+            r#"{"error":"edge_runtime_sleeping"}"#,
+            "not json",
+        ] {
+            assert!(!is_runtime_sleep_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                body.as_bytes()
+            ));
+        }
+        assert!(is_runtime_sleep_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            br#"{"error":"runtime_parking","retryable":true}"#
+        ));
+    }
 
     #[test]
     fn missing_edge_credentials_explain_the_pairing_action() {
