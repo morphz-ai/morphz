@@ -1,0 +1,535 @@
+/* Morphz desktop interaction system. Sizes are product tokens, not HIG claims. */
+:root {
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-6: 24px;
+  --ui-radius-control: 7px;
+  --ui-radius-panel: 12px;
+  --ui-reading-width: 760px;
+}
+[hidden] {
+  display: none !important;
+}
+.app {
+  --muted: light-dark(#686868, #a3a3a3);
+}
+/* Keep the four brand accent tokens; use their strong shade for small text. */
+.app .document-link,
+.app .retry-input,
+.app .message-object-link,
+.app .search-result-footer button,
+.app .message.annotation .message-author,
+.app .execution-result > button,
+.app .job-status.running,
+.app .job-status.waiting_approval,
+.app .unread-label {
+  color: var(--accent-strong);
+}
+.app .primary,
+.app .notification-trigger small {
+  background: var(--accent-strong);
+}
+.app input::placeholder,
+.app textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.app .workspace-search-controls input:focus {
+  box-shadow: none;
+}
+.unread-label {
+  color: var(--accent);
+  font-size: 12px;
+}
+.matter-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 12px;
+  margin: 20px 0 8px;
+}
+.matter-filters small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.app .matter-filters button[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--ink);
+}
+.project-directory-toolbar {
+  flex-wrap: wrap;
+}
+.app .project-directory-toolbar select {
+  font-size: 12px;
+  padding: 8px;
+  width: auto;
+}
+.app small,
+.app .context-chip,
+.app .model-status,
+.app .compose-hint {
+  font-size: 12px;
+}
+.app .icon-button {
+  min-width: 32px;
+  min-height: 32px;
+}
+.topbar {
+  height: 56px;
+  gap: 12px;
+}
+.top-actions {
+  gap: 12px;
+}
+.workspace-options {
+  position: relative;
+}
+.workspace-options > summary {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ui-radius-control);
+  cursor: pointer;
+  list-style: none;
+}
+.workspace-options > summary::-webkit-details-marker {
+  display: none;
+}
+.workspace-options > summary:hover {
+  background: var(--soft);
+}
+.workspace-options-menu {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  top: 40px;
+  width: 180px;
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-panel);
+  padding: 6px;
+  background: var(--paper);
+  box-shadow: 0 8px 28px var(--shadow);
+}
+.app .workspace-options-menu button {
+  width: 100%;
+  height: 36px;
+  padding: 8px 10px;
+}
+.workspace-options-menu button svg {
+  flex-shrink: 0;
+}
+.app .workspace-options-menu .icon-button {
+  justify-content: flex-start;
+}
+.primary-panel {
+  overflow: hidden;
+}
+.primary-panel > main {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.exchange-header {
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 36px;
+  color: var(--muted);
+  border-top: 1px solid var(--hairline);
+}
+.app .exchange-header button {
+  font-size: 12px;
+  padding: 5px 7px;
+  white-space: nowrap;
+}
+.exchange-header small {
+  color: var(--muted);
+}
+.exchange-space {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  text-align: right;
+}
+.conversation {
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  margin: 0 auto;
+  padding: 0 12px 12px;
+  flex: 0 1 30dvh;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  position: relative;
+}
+.primary-panel[data-interaction="history"] > .conversation {
+  flex: 1 1 0;
+}
+.conversation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border: 0;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .conversation-execution-button {
+  font-size: 12px;
+  padding: 4px 6px;
+}
+.conversation .conversation-message {
+  margin: 0 0 20px;
+}
+.conversation .human-message {
+  border-top: 1px solid var(--hairline);
+  padding-top: 12px;
+}
+.conversation .human-message:first-child {
+  border-top: 0;
+}
+.conversation-message .message-author time {
+  font-size: 12px;
+}
+.conversation-message > p,
+.reply-content {
+  font-size: 15px;
+  line-height: 1.7;
+}
+.conversation-message .message-author {
+  font-size: 12px;
+}
+.conversation-empty {
+  padding: 16px;
+}
+.message-progress {
+  color: var(--muted);
+  font-size: 12px;
+}
+.message-progress summary {
+  cursor: pointer;
+}
+.app .new-exchange {
+  position: sticky;
+  bottom: 0;
+  display: block;
+  margin: 0 auto;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 20px var(--shadow);
+}
+.composer-dock {
+  padding: 8px 24px 16px;
+}
+.composer {
+  max-width: var(--ui-reading-width);
+  border-radius: var(--ui-radius-panel);
+  padding: 8px 12px;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+.app .composer textarea {
+  min-height: 48px;
+  padding: 8px 4px;
+  font-size: 15px;
+  field-sizing: content;
+}
+.composer-heading .context-chip {
+  max-width: calc(100% - 44px);
+}
+.compose-hint {
+  display: none;
+}
+.app .send {
+  width: 32px;
+  height: 32px;
+}
+.model-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statusbar {
+  height: 24px;
+  font-size: 12px;
+}
+.application-launcher {
+  padding-top: 32px;
+}
+.launcher-heading h1,
+.collection h1 {
+  font-size: 24px;
+}
+.launcher-footer {
+  border-top: 0;
+}
+.application-tile small {
+  line-height: 1.5;
+}
+.app dialog {
+  color: var(--ink);
+  background: var(--paper);
+}
+.create-dialog {
+  width: min(460px, calc(100vw - 40px));
+  border-radius: var(--ui-radius-panel);
+  padding: 24px;
+  overflow: auto;
+}
+.create-dialog:has(.task-fields),
+.create-dialog:has(.task-grid) {
+  width: min(640px, calc(100vw - 40px));
+}
+.create-dialog header {
+  margin-bottom: 20px;
+}
+.create-dialog header button {
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  justify-content: center;
+}
+.create-dialog h2 {
+  font-size: 18px;
+}
+.create-dialog footer {
+  margin-top: 24px;
+  padding-top: 16px;
+}
+.library-dialog {
+  width: min(640px, calc(100vw - 40px));
+}
+.task-dialog {
+  width: min(640px, calc(100vw - 40px));
+}
+.document-draft {
+  width: min(900px, 100%);
+  padding: 24px 36px;
+  margin: auto;
+}
+.document-draft header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.document-draft h2 {
+  font-size: 18px;
+}
+.document-draft .field {
+  font-size: 12px;
+}
+.app .document-draft input {
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  font-size: 26px;
+  padding: 12px 0;
+}
+.app .document-draft textarea {
+  width: 100%;
+  min-height: 40dvh;
+  border: 0;
+  background: transparent;
+  padding: 12px 0;
+  font-size: 16px;
+  line-height: 1.8;
+  resize: vertical;
+}
+.document-draft footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+}
+.search-dialog {
+  position: fixed;
+  inset: 14dvh 0 auto;
+  margin: 0 auto;
+  padding: 0;
+  width: min(640px, calc(100vw - 40px));
+  max-height: min(65dvh, 660px);
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-panel);
+  box-shadow: 0 20px 70px #0002;
+  overflow: hidden;
+}
+.search-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.search-dialog::backdrop {
+  background: light-dark(#0003, #0007);
+}
+.workspace-search-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+.workspace-search-controls .search-field {
+  height: 36px;
+  border: 0;
+  box-shadow: none;
+}
+.app .workspace-search-controls input {
+  border: 0;
+  font-size: 16px;
+  padding: 6px 8px;
+  outline: none;
+  background: transparent;
+}
+.workspace-search-controls button {
+  min-height: 32px;
+  min-width: 32px;
+  justify-content: center;
+}
+.workspace-search-controls:focus-within {
+  box-shadow: inset 0 -2px var(--accent);
+}
+.search-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+}
+.app .search-scope select {
+  max-width: 55%;
+  padding: 4px 6px;
+  font-size: 12px;
+  border: 0;
+  background: var(--soft);
+}
+.search-scope p {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.workspace-search-results {
+  overflow: auto;
+  min-height: 0;
+  padding: 0 8px;
+}
+.workspace-search-results article {
+  padding: 8px;
+  border: 0;
+  border-radius: 7px;
+  margin: 2px 0;
+}
+.workspace-search-results article[data-selected="true"] {
+  background: var(--soft);
+  box-shadow: inset 2px 0 var(--accent);
+}
+.app .search-result-open {
+  width: 100%;
+  padding: 0;
+}
+.search-result-open small {
+  font-size: 12px;
+}
+.workspace-search-results p {
+  margin: 6px 0 0 24px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.search-result-footer {
+  padding-left: 24px;
+}
+.search-result-footer small {
+  max-width: 65%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-help {
+  display: flex;
+  gap: 16px;
+  color: var(--muted);
+  border-top: 1px solid var(--hairline);
+  padding: 8px 16px;
+  font-size: 12px;
+}
+.workspace-search-results .search-empty {
+  padding: 20px 8px;
+  margin: 0;
+  color: var(--muted);
+}
+.search-dialog footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 16px;
+}
+.search-result-open:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-height: 650px) {
+  .composer-heading {
+    min-height: 24px;
+  }
+  .app .composer textarea {
+    min-height: 38px;
+  }
+  .composer-dock {
+    padding-bottom: 8px;
+  }
+  .conversation {
+    flex-basis: 24dvh;
+  }
+  .search-dialog {
+    top: 8dvh;
+    max-height: 78dvh;
+  }
+}
+@media (max-width: 850px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+  .top-actions {
+    gap: 6px;
+  }
+  .exchange-header,
+  .conversation {
+    width: calc(100% - 24px);
+  }
+  .composer-dock {
+    padding-inline: 12px;
+  }
+  .composer-actions .inline {
+    gap: 4px;
+  }
+  .model-status {
+    font-size: 12px;
+    max-width: 48%;
+  }
+}
+@media (max-width: 480px) {
+  .breadcrumb {
+    gap: 3px;
+  }
+  .topbar {
+    gap: 4px;
+  }
+  .top-actions .input-toggle kbd {
+    display: none;
+  }
+  .search-dialog {
+    width: calc(100vw - 24px);
+  }
+  .conversation-heading > span {
+    display: none;
+  }
+}
