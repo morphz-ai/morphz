@@ -16,6 +16,7 @@ pub(in crate::memory) struct Snapshot {
     pub group: Option<(String, u64, String)>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn validate(
     remaining: &mut HashMap<&str, &str>,
     activation: &ThreadActivationRecord,
@@ -24,6 +25,7 @@ pub(super) fn validate(
     groups: &[ActionGroupRecord],
     jobs: &[ExecutionJobRecord],
     pending_jobs: &HashSet<&str>,
+    require_all_plans: bool,
 ) -> Result<(Vec<Snapshot>, HashSet<String>), Error> {
     let by_id: HashMap<_, _> = plans.iter().map(|p| (p.id.as_str(), p)).collect();
     let roots = remaining
@@ -181,9 +183,10 @@ pub(super) fn validate(
         }
         remaining.remove(call_id);
     }
-    if plans
-        .iter()
-        .any(|p| !p.status.is_terminal() && !visited.contains(&p.id))
+    if require_all_plans
+        && plans
+            .iter()
+            .any(|p| !p.status.is_terminal() && !visited.contains(&p.id))
     {
         return Err("Approval checkpoint cannot discard an unreachable unfinished Plan".into());
     }

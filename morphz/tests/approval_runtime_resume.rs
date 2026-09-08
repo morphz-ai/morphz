@@ -17,6 +17,7 @@ use std::time::Duration;
 struct FixtureClient {
     root: PathBuf,
     stage: String,
+    nested: bool,
     calls: AtomicUsize,
 }
 
@@ -36,18 +37,36 @@ impl Client for FixtureClient {
             "unexpected extra model request"
         );
         if self.stage == "initial" {
+            let mut calls = vec![ToolCallRepr {
+                id: "read-0".into(),
+                r#type: "function".into(),
+                func_name: "read".into(),
+                arguments: json!({"path":self.root.join("workspace/free.txt")}).to_string(),
+            }];
+            if self.nested {
+                calls.push(ToolCallRepr {
+                    id: "eval-root".into(), r#type: "function".into(), func_name: "eval".into(),
+                    arguments: json!({"program":format!(
+                        "(eval (requires (tools read)) (par (branch one (call read (path {}))) (branch two (call read (path {})))))",
+                        json!(self.root.join("outside/one.txt")), json!(self.root.join("outside/two.txt")),
+                    )}).to_string(),
+                });
+            } else {
+                calls.extend(
+                    ["outside/one.txt", "outside/two.txt"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, name)| ToolCallRepr {
+                            id: format!("read-{}", i + 1),
+                            r#type: "function".into(),
+                            func_name: "read".into(),
+                            arguments: json!({"path":self.root.join(name)}).to_string(),
+                        }),
+                );
+            }
             Ok(Response {
                 content: String::new(),
-                tool_calls: ["workspace/free.txt", "outside/one.txt", "outside/two.txt"]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, name)| ToolCallRepr {
-                        id: format!("read-{i}"),
-                        r#type: "function".into(),
-                        func_name: "read".into(),
-                        arguments: json!({"path":self.root.join(name)}).to_string(),
-                    })
-                    .collect(),
+                tool_calls: calls,
             })
         } else {
             assert_eq!(
@@ -60,7 +79,7 @@ impl Client for FixtureClient {
                 .collect::<Vec<_>>();
             assert_eq!(
                 tools.len(),
-                3,
+                if self.nested { 2 } else { 3 },
                 "the resumed batch must contain every sibling result"
             );
             let content = tools
@@ -69,9 +88,16 @@ impl Client for FixtureClient {
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(content.contains("free-fixture"));
-            assert!(content.contains("approved-fixture"));
+            if !self.nested {
+                assert!(content.contains("approved-fixture"));
+                assert!(content.contains("approval did not authorize"));
+            } else {
+                // The outer model receives the failed eval result, not the
+                // internal physical read's permission-rejection envelope.
+                assert!(content.contains("(par ...) failed"), "{content}");
+                assert!(content.contains("synthetic denial"), "{content}");
+            }
             assert!(!content.contains("must-not-be-read"));
-            assert!(content.contains("approval did not authorize"));
             Ok(Response {
                 content: "checkpoint-batch-complete".into(),
                 tool_calls: Vec::new(),
@@ -91,15 +117,22 @@ async fn store(root: &Path) -> Arc<SqliteStore> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "subprocess fixture; invoked by approval_batch_resumes_across_real_process_exits"]
 async fn approval_runtime_child() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
     let root = PathBuf::from(std::env::var("MORPHZ_APPROVAL_FIXTURE_ROOT").unwrap());
     let stage = std::env::var("MORPHZ_APPROVAL_FIXTURE_STAGE").unwrap();
     let native = store(&root).await;
     let client = Arc::new(FixtureClient {
         root: root.clone(),
         stage: stage.clone(),
+        nested: std::env::var("MORPHZ_APPROVAL_FIXTURE_NESTED").as_deref() == Ok("1"),
         calls: AtomicUsize::new(0),
     });
     let mut config = AppConfig::default();
+    config.orchestrator.activation_admission.max_in_flight = 1;
+    config.orchestrator.event_bus.max_in_flight = 1;
     config.permissions.mode = PermissionMode::Custom;
     config.permissions.reviewer = ReviewerKind::User;
     config.permissions.read_only_outside_workspace = false;
@@ -145,10 +178,44 @@ async fn approval_runtime_child() {
             .unwrap();
     }
     if stage == "final" {
-        let reply = tokio::time::timeout(Duration::from_secs(15), replies.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let reply = match tokio::time::timeout(Duration::from_secs(15), replies.recv()).await {
+            Ok(reply) => reply.unwrap(),
+            Err(error) => {
+                let plans = native
+                    .list_plan_executions(PlanExecutionFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let jobs = native
+                    .list_execution_jobs(ExecutionJobFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let groups = native
+                    .list_action_groups(ActionGroupFilter {
+                        include_terminal: true,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let events = native
+                    .query(QueryFilter {
+                        topic: Some("chat/tool_output".into()),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                panic!("final reply timed out: {error}; plans={:?}; jobs={:?}; groups={:?}; events={:?}",
+                    plans.iter().map(|p| (&p.id, p.status, p.pending_kind, &p.error)).collect::<Vec<_>>(),
+                    jobs.iter().map(|j| (&j.id, j.status)).collect::<Vec<_>>(),
+                    groups.iter().map(|g| (&g.id, g.status)).collect::<Vec<_>>(),
+                    events.iter().map(|e| (&e.topic, &e.payload)).collect::<Vec<_>>());
+            }
+        };
         assert_eq!(reply.payload["text"], "checkpoint-batch-complete");
     }
     let idle = tokio::time::timeout(Duration::from_secs(15), async {
@@ -190,6 +257,13 @@ async fn approval_runtime_child() {
     })
     .await;
     if idle.is_err() {
+        let plans = native
+            .list_plan_executions(PlanExecutionFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let snapshot = runtime
             .scheduler_snapshot(
                 &runtime.identity().context_id,
@@ -216,8 +290,10 @@ async fn approval_runtime_child() {
             None => None,
         };
         panic!(
-            "Runtime did not settle; stage={stage}, process_idle={}, wait={wait:?}, summary={:?}, admission={:?}",
+            "Runtime did not settle; stage={stage}, process_idle={}, wait={wait:?}, summary={:?}, admission={:?}, plans={:?}, jobs={:?}",
             runtime.hosted_process_is_quiescent(), snapshot.summary, snapshot.admission,
+            plans.iter().map(|p| (&p.id, p.status, p.pending_kind, &p.error)).collect::<Vec<_>>(),
+            jobs.iter().map(|j| (&j.id, j.status, &j.claimed_by)).collect::<Vec<_>>(),
         );
     }
     assert_eq!(
@@ -226,7 +302,7 @@ async fn approval_runtime_child() {
     );
 }
 
-fn run_child(root: &Path, stage: &str) {
+fn run_child(root: &Path, stage: &str, nested: bool) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -236,6 +312,10 @@ fn run_child(root: &Path, stage: &str) {
         ])
         .env("MORPHZ_APPROVAL_FIXTURE_ROOT", root)
         .env("MORPHZ_APPROVAL_FIXTURE_STAGE", stage)
+        .env(
+            "MORPHZ_APPROVAL_FIXTURE_NESTED",
+            if nested { "1" } else { "0" },
+        )
         .env_remove("RUST_MIN_STACK")
         .output()
         .unwrap();
@@ -245,10 +325,24 @@ fn run_child(root: &Path, stage: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("recovery_item_failed"),
+        "Plan joins must not be misrouted through assistant-batch recovery: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approval_batch_resumes_across_real_process_exits() {
+    approval_process_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_plan_approval_resumes_across_real_process_exits() {
+    approval_process_case(true).await;
+}
+
+async fn approval_process_case(nested: bool) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir(root.join("workspace")).unwrap();
@@ -256,7 +350,7 @@ async fn approval_batch_resumes_across_real_process_exits() {
     std::fs::write(root.join("workspace/free.txt"), "free-fixture").unwrap();
     std::fs::write(root.join("outside/one.txt"), "approved-fixture").unwrap();
     std::fs::write(root.join("outside/two.txt"), "must-not-be-read").unwrap();
-    run_child(root, "initial");
+    run_child(root, "initial", nested);
     let native = store(root).await;
     let before = native
         .list_execution_jobs(ExecutionJobFilter {
@@ -272,7 +366,16 @@ async fn approval_batch_resumes_across_real_process_exits() {
         .unwrap()
         .clone();
     assert_eq!(free.status, ExecutionJobStatus::Succeeded);
-    let one = before.iter().find(|j| j.tool_call_id == "read-1").unwrap();
+    let checkpoint = native
+        .get_thread_activation_approval_wait(&free.activation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.approval_ids.len(), 2);
+    let one = before
+        .iter()
+        .find(|j| j.request["path"] == json!(root.join("outside/one.txt")))
+        .unwrap();
     let approvals = native
         .list_approvals(ApprovalFilter {
             job_id: Some(one.id.clone()),
@@ -293,8 +396,19 @@ async fn approval_batch_resumes_across_real_process_exits() {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "partial");
+    run_child(root, "partial", nested);
     let native = store(root).await;
+    let remaining = native
+        .get_thread_activation_approval_wait(&free.activation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        remaining.assistant_call_event_id,
+        checkpoint.assistant_call_event_id
+    );
+    assert_eq!(remaining.approval_ids.len(), 1);
+    assert!(checkpoint.approval_ids.contains(&remaining.approval_ids[0]));
     assert_eq!(
         native.get_execution_job(&free.id).await.unwrap().unwrap(),
         free,
@@ -329,7 +443,7 @@ async fn approval_batch_resumes_across_real_process_exits() {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "final");
+    run_child(root, "final", nested);
     let native = store(root).await;
     assert_eq!(
         native.get_execution_job(&free.id).await.unwrap().unwrap(),
@@ -350,7 +464,7 @@ async fn approval_batch_resumes_across_real_process_exits() {
     assert!(after.iter().all(|j| j.status.is_terminal()));
     assert!(after
         .iter()
-        .find(|j| j.tool_call_id == "read-2")
+        .find(|j| j.request["path"] == json!(root.join("outside/two.txt")))
         .unwrap()
         .side_effect_started_at
         .is_none());
@@ -361,5 +475,31 @@ async fn approval_batch_resumes_across_real_process_exits() {
         })
         .await
         .unwrap();
-    assert_eq!(outputs.len(), 3);
+    assert_eq!(outputs.len(), if nested { 4 } else { 3 });
+    let rejected = outputs
+        .iter()
+        .find(|e| e.payload["tool_status"] == "rejected")
+        .unwrap();
+    assert_eq!(rejected.payload["executed"], false);
+    assert_eq!(rejected.payload["approval_status"], "denied");
+    assert!(rejected.payload["text"]
+        .as_str()
+        .unwrap()
+        .contains("approval did not authorize"));
+    if nested {
+        let plans = native
+            .list_plan_executions(PlanExecutionFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 3);
+        assert!(plans.iter().all(|p| p.status.is_terminal()));
+        assert!(outputs.iter().any(|e| e
+            .payload
+            .get("text")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.contains("approved-fixture"))));
+    }
 }

@@ -1,4 +1,5 @@
 mod activation_approval_wait;
+pub(crate) use activation_approval_wait::plan_approval_frontier;
 pub mod lexical;
 pub mod postgres;
 #[cfg(feature = "remote-store")]

@@ -86,7 +86,7 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 #[path = "approval_wait.rs"]
 mod approval_wait;
-use approval_wait::ReadyToSuspendApprovalBatch;
+use approval_wait::{DeferredPlanApproval, ReadyToSuspendApprovalBatch};
 
 #[path = "plan_children.rs"]
 mod plan_children;
@@ -5783,7 +5783,10 @@ impl Orchestrator {
                     continue;
                 }
             };
-            self.spawn_plan_children(children.clone())?;
+            // Recovery converges durable facts only. The owning Activation
+            // replays its parent Plan and starts children after restoring the
+            // complete execution route. Admission alone is too early, and a
+            // global spawn could race with a parent's approval checkpoint.
             if children.iter().all(|child| child.status.is_terminal()) {
                 let Some(group_id) = parent.pending_id.as_deref() else {
                     parallel_conflicts = parallel_conflicts.saturating_add(1);
@@ -5831,7 +5834,7 @@ impl Orchestrator {
                     continue;
                 }
             };
-            self.spawn_plan_children(vec![child.clone()])?;
+            // The live owning parent, not this background scan, starts work.
             if child.status.is_terminal() {
                 match coordinator
                     .reconcile_program_child(&parent.id, &child.id)
@@ -6187,6 +6190,11 @@ impl Orchestrator {
                     .map(|attempt_id| format!("tool_calls_selected_{attempt_id}"))
             })
             .collect::<Vec<_>>();
+        evidence_ids.extend(
+            running
+                .iter()
+                .map(|group| group.assistant_call_event_id.clone()),
+        );
         for group in &running {
             if let Some(members) = members_by_group.get(&group.id) {
                 evidence_ids.extend(
@@ -16281,53 +16289,70 @@ impl Orchestrator {
         })
     }
 
-    fn spawn_plan_children(&self, children: Vec<PlanExecutionRecord>) -> PlanExecutionResult<()> {
-        let orchestrator = self
-            .self_ref
-            .get()
-            .cloned()
-            .ok_or("Orchestrator has not started and cannot schedule a Yao child Plan")?;
-        for child in children {
-            if child.status.is_terminal() {
-                continue;
-            }
-            let program: crate::sexpr_eval::Program =
-                serde_json::from_value(child.program_json.clone())?;
-            let route = PlanExecutionRoute {
-                activation_id: child.activation_id.clone(),
-                thread_id: child.thread_id.clone(),
-                agent_id: child.agent_id.clone(),
-                context_id: child.context_id.clone(),
-                session_id: child.session_id.clone(),
-                initiating_principal_id: child.initiating_principal_id.clone(),
-                tool_call_id: child.tool_call_id.clone(),
-                objective_id: child.objective_id.clone(),
-                objective_evaluation_id: child.objective_evaluation_id.clone(),
-            };
-            let Some(registration) = self
-                .plan_child_runners
-                .register(&child.id, Arc::clone(&self.plan_reconcile_wakeup))
-            else {
-                continue;
-            };
-            let weak = orchestrator.clone();
-            tokio::spawn(async move {
-                let _registration = registration;
-                let Some(orchestrator) = weak.upgrade() else {
-                    return;
-                };
-                let child_id = child.id;
-                if let Err(error) = orchestrator.execute_durable_plan(route, program).await {
-                    tracing::error!(
-                        plan_execution_id = %child_id,
-                        %error,
-                        event_code = "plan_execution.child_failed",
-                        "A durable Yao child Plan ended with failure"
-                    );
+    fn spawn_plan_children(
+        &self,
+        children: Vec<PlanExecutionRecord>,
+    ) -> futures_util::future::BoxFuture<'_, PlanExecutionResult<()>> {
+        // Erase the recursive parent -> child -> parent Future type while
+        // retaining Send and structured registration before tokio::spawn.
+        Box::pin(async move {
+            let orchestrator = self
+                .self_ref
+                .get()
+                .cloned()
+                .ok_or("Orchestrator has not started and cannot schedule a Yao child Plan")?;
+            for child in children {
+                if child.status.is_terminal()
+                    || self.plan_child_runners.contains(&child.id)
+                    || !self
+                        .activation_admission_slots
+                        .contains_key(&child.activation_id)
+                    || self.activation_route(&child.activation_id).is_none()
+                    || self.deferred_plan_approval(&child).await?.is_some()
+                {
+                    continue;
                 }
-            });
-        }
-        Ok(())
+                let program: crate::sexpr_eval::Program =
+                    serde_json::from_value(child.program_json.clone())?;
+                let route = PlanExecutionRoute {
+                    activation_id: child.activation_id.clone(),
+                    thread_id: child.thread_id.clone(),
+                    agent_id: child.agent_id.clone(),
+                    context_id: child.context_id.clone(),
+                    session_id: child.session_id.clone(),
+                    initiating_principal_id: child.initiating_principal_id.clone(),
+                    tool_call_id: child.tool_call_id.clone(),
+                    objective_id: child.objective_id.clone(),
+                    objective_evaluation_id: child.objective_evaluation_id.clone(),
+                };
+                let Some(registration) = self
+                    .plan_child_runners
+                    .register(&child.id, Arc::clone(&self.plan_reconcile_wakeup))
+                else {
+                    continue;
+                };
+                let weak = orchestrator.clone();
+                tokio::spawn(async move {
+                    let _registration = registration;
+                    let Some(orchestrator) = weak.upgrade() else {
+                        return;
+                    };
+                    let child_id = child.id;
+                    if let Err(error) = orchestrator.execute_durable_plan(route, program).await {
+                        if error.downcast_ref::<DeferredPlanApproval>().is_some() {
+                            return;
+                        }
+                        tracing::error!(
+                            plan_execution_id = %child_id,
+                            %error,
+                            event_code = "plan_execution.child_failed",
+                            "A durable Yao child Plan ended with failure"
+                        );
+                    }
+                });
+            }
+            Ok(())
+        })
     }
 
     async fn execute_durable_plan(
@@ -16406,7 +16431,6 @@ impl Orchestrator {
             .await?;
         let worker_id = format!("plan-runner-{}", self.runtime_claimant_id);
         let mut suspended_admission = None;
-        let mut spawned_child_plans = HashSet::new();
 
         loop {
             if plan.status == PlanExecutionStatus::Waiting {
@@ -16598,7 +16622,14 @@ impl Orchestrator {
                             job.status,
                             ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval
                         ) {
-                            self.execute_plan_call(&route, &plan).await?;
+                            if let Err(error) = self.execute_plan_call(&route, &plan).await {
+                                if error.downcast_ref::<DeferredPlanApproval>().is_some() {
+                                    if let Some(suspended) = suspended_admission.take() {
+                                        suspended.release().await?;
+                                    }
+                                }
+                                return Err(error);
+                            }
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
@@ -16736,23 +16767,18 @@ impl Orchestrator {
                         let children = coordinator
                             .ensure_parallel_children_for_waiting(&plan)
                             .await?;
-                        let newly_visible = children
-                            .iter()
-                            .filter(|child| {
-                                !child.status.is_terminal()
-                                    && spawned_child_plans.insert(child.id.clone())
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if !newly_visible.is_empty() {
-                            self.spawn_plan_children(newly_visible)?;
-                        }
+                        self.spawn_plan_children(children.clone()).await?;
                         if children.iter().all(|child| child.status.is_terminal()) {
                             plan = plan_from_resume(
                                 coordinator
                                     .reconcile_action_group(&plan.id, &group_id)
                                     .await?,
                             )?;
+                        } else if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             plan = store.get_plan_execution(&plan.id).await?.ok_or(
@@ -16766,17 +16792,18 @@ impl Orchestrator {
                             .clone()
                             .ok_or("waiting(plan_execution) is missing pending_id")?;
                         let child = coordinator.ensure_program_child_for_waiting(&plan).await?;
-                        if !child.status.is_terminal()
-                            && spawned_child_plans.insert(child.id.clone())
-                        {
-                            self.spawn_plan_children(vec![child.clone()])?;
-                        }
+                        self.spawn_plan_children(vec![child.clone()]).await?;
                         if child.status.is_terminal() {
                             plan = plan_from_resume(
                                 coordinator
                                     .reconcile_program_child(&plan.id, &child_id)
                                     .await?,
                             )?;
+                        } else if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             plan = store.get_plan_execution(&plan.id).await?.ok_or(
@@ -16823,7 +16850,7 @@ impl Orchestrator {
                 arguments: serde_json::to_string(&arguments)?,
             }],
         };
-        self.execute_tool_calls(
+        Box::pin(self.execute_tool_calls(
             &route.session_id,
             &route.activation_id,
             response,
@@ -16842,7 +16869,7 @@ impl Orchestrator {
                 harness_functions: None,
                 harness_types: None,
             },
-        )
+        ))
         .await?;
         Ok(())
     }
@@ -18394,11 +18421,9 @@ impl Orchestrator {
             })
             .transpose()?;
 
-        // Nested Plans and Objective Evaluations still own live parent waits.
-        // Their durable continuation integration is a separate required gate;
-        // do not discard those stacks with a direct assistant-batch checkpoint.
-        let defer_human = options.plan_execution_id.is_none()
-            && options.wake_on_output
+        // A physical Plan leaf propagates its wait to the enclosing immutable
+        // batch. Infer/Objective parent continuations are not checkpointed yet.
+        let mut defer_human = (options.plan_execution_id.is_some() || options.wake_on_output)
             && !internal_child_handoff
             && self
                 .durable_approvals
@@ -18408,6 +18433,11 @@ impl Orchestrator {
                 .objective_evaluations
                 .get_for_activation(attempt_id)
                 .is_none();
+        if defer_human {
+            if let Some(plan_id) = options.plan_execution_id.as_deref() {
+                defer_human = Box::pin(self.can_defer_persisted_plan_approval(plan_id)).await?;
+            }
+        }
         let mut pending_approval_ids = Vec::new();
         let mut tasks = Vec::new();
         let mut outputs = Vec::<(Event, bool)>::new();
@@ -18508,7 +18538,9 @@ impl Orchestrator {
                 let prepared = crate::tool::CURRENT_SESSION_ID
                     .scope(
                         session_id.to_string(),
-                        self.prepare_physical_execution(
+                        // This is a large state machine. Keep preflight on
+                        // the heap, including during default-stack restart.
+                        Box::pin(self.prepare_physical_execution(
                             tool,
                             route,
                             agent_id,
@@ -18522,7 +18554,7 @@ impl Orchestrator {
                             action_group_id.as_deref(),
                             options.wake_on_output && action_group_id.is_none(),
                             defer_human,
-                        ),
+                        )),
                     )
                     .await;
                 match prepared? {
@@ -18731,6 +18763,9 @@ impl Orchestrator {
                                                                         &output.text,
                                                                     );
                                                                     (output, status)
+                                                                }
+                                                                Ok(Err(error)) if error.downcast_ref::<DeferredPlanApproval>().is_some() => {
+                                                                    return Err(error);
                                                                 }
                                                                 Ok(Err(error)) => (
                                                                     crate::tool::ToolExecutionResult::text(
@@ -19111,6 +19146,13 @@ impl Orchestrator {
             let metadata = task.metadata;
             let (mut output, already_persisted, job_outcome) = match task.handle.await {
                 Ok(Ok(result)) => (result.output, result.already_persisted, None),
+                Ok(Err(error)) if error.downcast_ref::<DeferredPlanApproval>().is_some() => {
+                    let deferred = error
+                        .downcast::<DeferredPlanApproval>()
+                        .expect("checked control outcome");
+                    pending_approval_ids.extend(deferred.approval_ids);
+                    continue;
+                }
                 Ok(Err(error)) => {
                     let reason = format!(
                         "execution task for tool '{}' failed while converging on a terminal state: {error}",
@@ -19239,7 +19281,10 @@ impl Orchestrator {
                 }
             }
         } else {
-            debug_assert_eq!(outputs.len() + pending_approval_ids.len(), 1);
+            // One eval may contain multiple physical approval dependencies.
+            debug_assert!(
+                outputs.len() <= 1 && (outputs.is_empty() != pending_approval_ids.is_empty())
+            );
             for (mut output, already_persisted) in outputs {
                 if !options.wake_on_output {
                     output
@@ -19267,6 +19312,14 @@ impl Orchestrator {
             }
         }
         if !pending_approval_ids.is_empty() {
+            pending_approval_ids.sort();
+            pending_approval_ids.dedup();
+            if options.plan_execution_id.is_some() {
+                return Err(DeferredPlanApproval {
+                    approval_ids: pending_approval_ids,
+                }
+                .into());
+            }
             return Err(ReadyToSuspendApprovalBatch {
                 assistant_call_event_id,
                 pending_approval_ids,
@@ -21760,6 +21813,12 @@ async fn recover_action_group_from_durable_events(
     group: &ActionGroupRecord,
     groups: &dyn ActionGroupStore,
 ) -> Result<usize, DynError> {
+    let source = context_engine
+        .find_event(&group.context_id, &group.assistant_call_event_id)
+        .await?;
+    if plan_children::uses_plan_group_recovery(group, source.as_ref())? {
+        return Ok(0);
+    }
     let durable_attempt_id = group
         .assistant_call_event_id
         .strip_prefix("call_")
@@ -21803,6 +21862,10 @@ async fn recover_action_group_from_prefetched_events(
     members: &[ActionGroupMemberRecord],
     evidence: &HashMap<String, Event>,
 ) -> Result<usize, DynError> {
+    if plan_children::uses_plan_group_recovery(group, evidence.get(&group.assistant_call_event_id))?
+    {
+        return Ok(0);
+    }
     let durable_attempt_id = group
         .assistant_call_event_id
         .strip_prefix("call_")

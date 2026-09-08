@@ -12,6 +12,25 @@ struct ParallelApprovalClient {
     calls: AtomicUsize,
 }
 
+struct GatedReview {
+    calls: AtomicUsize,
+    release: tokio::sync::Semaphore,
+}
+#[async_trait::async_trait]
+impl ApprovalProvider for GatedReview {
+    async fn review(
+        &self,
+        _: &crate::approval::ApprovalRequest,
+    ) -> Result<ApprovalDecision, RuntimeError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.release.acquire().await.unwrap().forget();
+        Ok(ApprovalDecision::AllowOnce {
+            rationale: "synthetic callback".into(),
+            risk_tags: vec![],
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl Client for ParallelApprovalClient {
     async fn create_completion(
@@ -56,16 +75,21 @@ impl Client for ParallelApprovalClient {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn parallel_plan_reconciliation_preserves_one_human_waiter_per_child() {
-    run_parallel_approval_case(false).await;
+async fn parallel_plan_reconciliation_preserves_durable_wait_without_child_stacks() {
+    run_parallel_approval_case(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parallel_plan_cancellation_releases_child_execution_stacks() {
-    run_parallel_approval_case(true).await;
+    run_parallel_approval_case(true, false).await;
 }
 
-async fn run_parallel_approval_case(cancel: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parallel_plan_custom_reviewer_keeps_live_callback_until_it_decides() {
+    run_parallel_approval_case(false, true).await;
+}
+
+async fn run_parallel_approval_case(cancel: bool, custom: bool) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir(root.join("workspace")).unwrap();
@@ -85,7 +109,11 @@ async fn run_parallel_approval_case(cancel: bool) {
     config.permissions.reviewer = ReviewerKind::User;
     config.permissions.read_only_outside_workspace = false;
     config.permissions.workspace_root = root.join("workspace").to_string_lossy().into_owned();
-    let runtime = MorphzRuntime::builder(config, client.clone())
+    let callback = Arc::new(GatedReview {
+        calls: AtomicUsize::new(0),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let mut builder = MorphzRuntime::builder(config, client.clone())
         .database_path(root.join("runtime.sqlite").to_string_lossy())
         .secret_store(Arc::new(
             SecretStore::new(
@@ -97,10 +125,11 @@ async fn run_parallel_approval_case(cancel: bool) {
         .tool_policy(RuntimeToolPolicy {
             context_only: false,
             coding_eval: true,
-        })
-        .build()
-        .await
-        .unwrap();
+        });
+    if custom {
+        builder = builder.approval_provider(callback.clone());
+    }
+    let runtime = builder.build().await.unwrap();
     let mut replies = runtime.subscribe("chat/reply", 4);
     runtime.start().await.unwrap();
     let session = runtime
@@ -123,14 +152,42 @@ async fn run_parallel_approval_case(cancel: bool) {
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while runtime.inner.human_approval_hub.pending().len() != 2 {
+        loop {
+            if custom {
+                if callback.calls.load(Ordering::SeqCst) == 2 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+            let pending = runtime.pending_approvals().await;
+            let jobs = runtime
+                .inner
+                .store
+                .list_execution_jobs(ExecutionJobFilter::default())
+                .await
+                .unwrap();
+            if pending.len() == 2
+                && jobs.len() == 2
+                && runtime
+                    .inner
+                    .store
+                    .get_thread_activation_approval_wait(&jobs[0].activation_id)
+                    .await
+                    .unwrap()
+                    .is_some()
+                && runtime.inner.orchestrator.active_plan_child_count() == 0
+                && runtime.inner.orchestrator.waiting_plan_runner_count().await == 0
+            {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
     .expect("both Plan branches must reach the ordinary human boundary");
-    // A real reconciliation pass must reuse the two existing child runners,
-    // not create competing human review futures for their identical Jobs.
+    // Recovery must retain the durable waits, not recreate sleeping child
+    // stacks or duplicate human callback futures while approval is pending.
     for _ in 0..8 {
         runtime
             .inner
@@ -166,16 +223,20 @@ async fn run_parallel_approval_case(cancel: bool) {
                 && j.side_effect_started_at.is_none()),
         "{jobs:?}"
     );
-    assert_eq!(runtime.inner.human_approval_hub.pending().len(), 2);
+    assert!(runtime.inner.human_approval_hub.pending().is_empty());
+    assert_eq!(runtime.pending_approvals().await.len(), 2);
     assert_eq!(
         runtime.inner.orchestrator.waiting_plan_runner_count().await,
-        3,
-        "one parent and two children may wait; recovery must not multiply execution stacks"
+        if custom { 3 } else { 0 },
+        "only a durable checkpoint may release the parent and child stacks"
     );
     assert_eq!(client.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.inner.orchestrator.active_plan_child_count(), 2);
+    assert_eq!(
+        runtime.inner.orchestrator.active_plan_child_count(),
+        if custom { 2 } else { 0 }
+    );
     #[cfg(feature = "remote-store")]
-    assert!(!runtime.hosted_process_is_quiescent());
+    assert_eq!(runtime.hosted_process_is_quiescent(), !custom);
     if cancel {
         assert_eq!(
             runtime
@@ -249,17 +310,22 @@ async fn run_parallel_approval_case(cancel: bool) {
         );
         return;
     }
-    for approval in &approvals {
-        runtime
-            .decide_approval(
-                &approval.id,
-                ApprovalDecision::AllowOnce {
-                    rationale: "synthetic read only".into(),
-                    risk_tags: vec![],
-                },
-            )
-            .await
-            .unwrap();
+    if custom {
+        assert_eq!(callback.calls.load(Ordering::SeqCst), 2);
+        callback.release.add_permits(2);
+    } else {
+        for approval in &approvals {
+            runtime
+                .decide_approval(
+                    &approval.id,
+                    ApprovalDecision::AllowOnce {
+                        rationale: "synthetic read only".into(),
+                        risk_tags: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+        }
     }
     let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
         .await

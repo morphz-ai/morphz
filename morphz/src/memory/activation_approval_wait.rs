@@ -6,6 +6,95 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use std::collections::{HashMap, HashSet};
 mod plan_graph;
 
+pub(crate) struct PlanApprovalFrontier {
+    pub plan_ids: Vec<String>,
+    pub approval_ids: Vec<String>,
+}
+
+/// Conservative readiness probe for releasing one Plan stack. These reads are
+/// not the commit boundary: the enclosing immutable batch is revalidated under
+/// the native transaction before its Activation can suspend. A changing or
+/// unsupported frontier retains its live runner; it never grants authority.
+pub(crate) async fn plan_approval_frontier(
+    store: &dyn RuntimeStore,
+    root: &PlanExecutionRecord,
+) -> Result<Option<PlanApprovalFrontier>, Error> {
+    if root.status != PlanExecutionStatus::Waiting || root.objective_evaluation_id.is_some() {
+        return Ok(None);
+    }
+    let Some(activation) = store.get_thread_activation(&root.activation_id).await? else {
+        return Ok(None);
+    };
+    let Some(thread) = store.get_thread(&root.thread_id).await? else {
+        return Ok(None);
+    };
+    let plans = store
+        .list_plan_executions(PlanExecutionFilter {
+            activation_id: Some(root.activation_id.clone()),
+            include_terminal: true,
+            limit: Some(4097),
+            ..Default::default()
+        })
+        .await?;
+    let groups = store
+        .list_action_groups(ActionGroupFilter {
+            activation_id: Some(root.activation_id.clone()),
+            include_terminal: false,
+            limit: Some(4097),
+            ..Default::default()
+        })
+        .await?;
+    let jobs = store
+        .list_execution_jobs(ExecutionJobFilter {
+            activation_id: Some(root.activation_id.clone()),
+            status: Some(ExecutionJobStatus::WaitingApproval),
+            limit: Some(4097),
+            ..Default::default()
+        })
+        .await?;
+    if plans.len() > 4096 || groups.len() > 4096 || jobs.len() > 4096 {
+        return Ok(None);
+    }
+    let mut approvals = HashMap::new();
+    for job in &jobs {
+        if job.claim_token.is_some() || job.side_effect_started_at.is_some() {
+            continue;
+        }
+        let pending = store
+            .list_approvals(ApprovalFilter {
+                job_id: Some(job.id.clone()),
+                status: Some(ApprovalStatus::PendingHuman),
+                pending_only: true,
+                limit: Some(2),
+            })
+            .await?;
+        if pending.len() == 1 {
+            approvals.insert(job.id.as_str(), pending[0].id.clone());
+        }
+    }
+    let pending_jobs = approvals.keys().copied().collect();
+    let mut roots = HashMap::from([(root.tool_call_id.as_str(), "eval")]);
+    let Ok((snapshots, consumed)) = plan_graph::validate(
+        &mut roots,
+        &activation,
+        &thread,
+        &plans,
+        &groups,
+        &jobs,
+        &pending_jobs,
+        false,
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(PlanApprovalFrontier {
+        plan_ids: snapshots.into_iter().map(|p| p.id).collect(),
+        approval_ids: consumed
+            .iter()
+            .map(|id| approvals[id.as_str()].clone())
+            .collect(),
+    }))
+}
+
 #[derive(Debug, Clone)]
 pub struct ActivationApprovalWaitRequest {
     pub activation_id: String,
@@ -249,6 +338,7 @@ pub(super) fn validate(
         groups,
         jobs,
         &pending_jobs,
+        true,
     )?;
     if pending_jobs
         .iter()

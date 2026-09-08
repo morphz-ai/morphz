@@ -1,7 +1,8 @@
 # Agent Cell approval-wait checkpoint
 
-Status: native Store boundary and direct tool-batch Orchestrator suspension
-implemented; nested parent waits and Cloud parking integration remain incomplete.
+Status: native Store boundary, direct tool-batch suspension and nested physical
+Plan approval suspension implemented. Infer-child/Objective parent waits and
+real Cloud parking integration remain incomplete.
 This document does not authorize
 deploying the checkpoint path or relaxing the existing quiescence gate.
 
@@ -91,16 +92,42 @@ not an execution failure. The same handler replays the exact persisted call.
 Ordinary live decisions wake admission; startup recovers from the same durable
 rows. Existing output IDs and grant-claim fences prevent sibling re-execution.
 
-Custom callback reviewers still run their callback. The native Store can now
-validate a nested Plan frontier, but Runtime has not yet propagated the deferred
-outcome through nested Plan stacks. Those stacks, infer-child waits and active
-Objective Evaluation waits still retain their existing live wait and block
-parking. Native checkpoint tests are not proof of whole-process suspension.
+Custom callback reviewers still run their callback and block parking until it
+returns. Infer-child waits and active Objective Evaluation waits retain their
+existing live waits; they are not made eligible by this change.
+
+## Nested physical Plan execution
+
+A physical Plan leaf returns a distinct `DeferredPlanApproval` control outcome.
+It is propagated before ordinary tool-error normalization, without inventing a
+tool result or completing the Plan. A waiting parallel or Program parent uses
+the shared graph validator to probe its durable human frontier and waits for
+all descendant runner registrations to release before returning the same
+control outcome. Each Plan releases its admission wait explicitly. The outer
+immutable assistant batch then uses the existing atomic checkpoint transaction.
+The probe is deliberately non-atomic and conservative; only that transaction
+can requeue the owning Activation after checking every exact revision.
+
+Recovery scans converge durable Plan/Group facts, but do not launch child
+execution. Only a live parent, with its owning Activation route restored, may
+start children. Starting them as soon as admission exists is too early: on
+restart it can bypass durable physical preflight and attach a process-local
+approval callback before the causal route is restored. A background launch
+could also race a parent that has already joined its children for suspension.
+The parent checks the registry on every resume, so a concurrent approval
+decision can restart a deferred child without a stale local "already spawned"
+set stranding it.
+
+Plan parallel joins have their own immutable `runtime/plan_parallel_request`
+intent and branch-result protocol. Ordinary assistant-batch recovery validates
+that intent's exact group identity and route and leaves it to the Plan
+coordinator. It does not guess ownership from an ID prefix or report a valid
+Plan join as a malformed assistant call.
 
 ## Remaining integration gates
 
-1. Connect the native Plan-frontier checkpoint to Runtime stack release and
-   resumption; extend it to infer-child and active Objective parent waits.
+1. Extend the Plan-frontier checkpoint to infer-child and active Objective
+   parent waits.
    Unsupported wait forms remain rejected by the Store. These are required
    integration gates, not a narrower definition of complete Cloud support.
 2. Only after the above may quiescence recognize checkpointed owners and their
@@ -115,6 +142,48 @@ workerd Cell transport. Its cache-restore tests do not by themselves prove
 whole-process safe parking or completion of the six Cloud deployment goals.
 
 ## Verified on 2026-09-08
+
+### Native Runtime nested-stack gate
+
+The three-OS-process `approval_runtime_resume` fixture now covers both direct
+tools and an outer batch containing a completed read plus a parallel `eval`.
+The fixture uses one Activation slot and one EventBus slot. It proves:
+
+- initial two-approval wait reaches the unchanged process-quiescence check;
+- after that process exits, one allowed read executes in the next process;
+- the partial batch re-checkpoints the **same assistant-call Event** without a
+  model request and without replaying the completed sibling;
+- after a second exit, denying the remaining read produces its rejected,
+  `executed=false` result, closes the branch/parent/group, and resumes the model;
+- the denied file is never read, the allowed grant is consumed once, and only
+  the original three physical Jobs exist after completion.
+
+Both cases passed **20 consecutive paired runs** with the default native Rust
+thread stack (120 actual child-process lifetimes). No `RUST_MIN_STACK` override
+is used. An intermediate implementation reproduced a default-stack overflow in
+direct recovery; physical preflight, persisted Plan ownership inspection and
+Plan-internal tool execution now cross explicit heap Future boundaries instead
+of expanding the outer execution state machine's inline layout.
+
+The callback-negative Runtime fixture retains its two live custom callbacks
+and blocks quiescence until they decide. The built-in-reviewer fixture releases
+all parent/child stacks; repeated Plan scans do not recreate them. Cancellation
+closes the same durable Plans, Groups and unstarted Jobs. A separate intent
+classification test rejects mismatched Plan join identity/routes rather than
+silently treating malformed Groups as another recovery protocol.
+
+These are native Runtime and disposable database tests. They do **not** establish
+real Cell-gateway safe parking, observer transport or remote-cache restoration,
+nor completion of the overall Cloud deployment goal.
+
+The final source revision passed **119 distinct tests**: 86 library tests
+(`plan`, `cancel`, `action_group`, removing the one overlap) and 33 integration
+tests across `activation_approval_checkpoint`, `approval_runtime_resume`,
+`plan_infer_handoff`, `plan_owner_cancellation`, and `runtime_store_conformance`.
+PostgreSQL tests used a fresh isolated loopback PostgreSQL 15 database, not a
+hosted pooler or Supabase. The two actual remote/workerd tests and the approval
+subprocess entrypoint were explicitly excluded. Default-feature `cargo check`,
+formatting and diff checks passed separately. No production data was migrated.
 
 ### Native nested frontier gate (subsequent extension)
 
@@ -147,8 +216,9 @@ The final regression run passed **116 distinct tests**: 84 library tests
 tests from `activation_approval_checkpoint`, `approval_runtime_resume`,
 `plan_infer_handoff`, `plan_owner_cancellation`, and `runtime_store_conformance`.
 Both PostgreSQL conformance tests used the disposable loopback database, not
-Supabase or a hosted pooler. The three-process approval test still covers the
-direct batch; it does not cover nested Runtime stack suspension. The two
+Supabase or a hosted pooler. At that earlier Store-only gate, the three-process
+approval test covered only the direct batch; nested Runtime stack coverage is
+documented above. The two
 workerd/remote-restore tests and the subprocess entrypoint were explicitly
 excluded. Default-feature `cargo check` is verified separately.
 
