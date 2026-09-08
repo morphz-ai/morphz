@@ -317,6 +317,17 @@ export function SearchDocuments({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const backdropPointer = useRef(false);
+  const outsidePanel = (x: number, y: number) => {
+    const bounds = dialog.current?.getBoundingClientRect();
+    return (
+      !!bounds &&
+      (x < bounds.left ||
+        x > bounds.right ||
+        y < bounds.top ||
+        y > bounds.bottom)
+    );
+  };
   const [selected, setSelected] = useState(0);
   const [query, setQuery] = useState(""),
     [projectId, setProjectId] = useState("");
@@ -377,6 +388,23 @@ export function SearchDocuments({
       ref={dialog}
       className="search-dialog"
       aria-label="搜索工作空间"
+      onPointerDown={(e) => {
+        backdropPointer.current =
+          e.button === 0 &&
+          e.target === e.currentTarget &&
+          outsidePanel(e.clientX, e.clientY);
+      }}
+      onPointerCancel={() => {
+        backdropPointer.current = false;
+      }}
+      onClick={(e) => {
+        const dismiss =
+          backdropPointer.current &&
+          e.target === e.currentTarget &&
+          outsidePanel(e.clientX, e.clientY);
+        backdropPointer.current = false;
+        if (dismiss) onClose();
+      }}
       onKeyDown={(e) => {
         if (
           e.nativeEvent.isComposing ||
@@ -422,9 +450,6 @@ export function SearchDocuments({
             }}
           />
         </label>
-        <button aria-label="关闭工作空间搜索" onClick={onClose}>
-          <X />
-        </button>
       </div>
       <div className="search-scope">
         <select

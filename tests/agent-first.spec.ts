@@ -1,0 +1,171 @@
+import { test, expect } from "@playwright/test";
+import { openLibrary } from "./application-helpers.js";
+import { openInput, composerAction } from "./interaction-helpers.js";
+
+test("保存回执和断线不增设底栏或挤动页面；关键信息留在消息和连接入口", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const input = await openInput(page);
+  await composerAction(page, "固定输入框");
+  await input.fill("隔离界面测试，只保存输入");
+  const before = await page.locator(".workspace-body").boundingBox();
+  const composerBefore = await page.locator(".composer").boundingBox();
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await expect(
+    page
+      .locator(".human-message")
+      .filter({ hasText: "隔离界面测试，只保存输入" }),
+  ).toContainText("未发送");
+  await expect(page.locator(".statusbar, .workspace-notice")).toHaveCount(0);
+  expect(await page.locator(".workspace-body").boundingBox()).toEqual(before);
+  expect(await page.locator(".composer").boundingBox()).toEqual(composerBefore);
+  await input.fill("断线时保留草稿");
+  await page.route("**/api/workspace", (route) =>
+    route.fulfill({ status: 503, json: { message: "隔离测试断线" } }),
+  );
+  await expect(page.locator(".model-status")).toContainText("工作中心已断开");
+  await expect(page.getByLabel("重新连接工作中心")).toBeVisible();
+  expect(await page.locator(".workspace-body").boundingBox()).toEqual(before);
+  expect(await page.locator(".composer").boundingBox()).toEqual(composerBefore);
+  await expect(
+    page.getByRole("button", { name: "保存输入", exact: true }),
+  ).toBeDisabled();
+  await expect(input).toHaveValue("断线时保留草稿");
+  await page.unroute("**/api/workspace");
+  await page.getByLabel("重新连接工作中心").click();
+  await expect(page.getByText("工作中心已连接", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("重新连接工作中心")).toHaveCount(0);
+  await expect(page.locator(".statusbar")).toHaveCount(0);
+  await openInput(page);
+  await expect(input).toHaveValue("断线时保留草稿");
+});
+
+test("创建入口共用输入框：保留草稿、无需填表、未提交不创建", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openLibrary(page);
+  const initial = await (await page.request.get("/api/workspace")).json();
+  const input = await openInput(page);
+  await input.fill("这段草稿不能被入口覆盖");
+  for (const [button, intent] of [
+    ["新建事项", "安排事项"],
+    ["新建文档", "创作文档"],
+    ["添加网站", "添加网站"],
+    ["新建交互产物", "制作表格或报告"],
+  ] as const) {
+    await page
+      .locator(".creation-actions")
+      .getByRole("button", { name: button, exact: true })
+      .click();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("这段草稿不能被入口覆盖");
+    await expect(page.locator(".composer-intent")).toContainText(intent);
+    for (const width of [1440, 760]) {
+      await page.setViewportSize({ width, height: 900 });
+      const chip = (await page.locator(".composer-intent").boundingBox())!;
+      expect(
+        (await page.locator(".composer-meta").boundingBox())!.height,
+      ).toBeLessThanOrEqual(24);
+      const context = (await page
+        .locator(".composer-meta .context-chip")
+        .boundingBox())!;
+      expect(
+        Math.abs(chip.y + chip.height / 2 - context.y - context.height / 2),
+      ).toBeLessThan(1);
+      expect(chip.x - context.x - context.width).toBeGreaterThanOrEqual(0);
+      expect(chip.x - context.x - context.width).toBeLessThanOrEqual(10);
+      expect(
+        await page
+          .locator(".composer-meta")
+          .evaluate((el) => el.scrollWidth <= el.clientWidth),
+      ).toBe(true);
+    }
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByLabel("新对象标题")).toHaveCount(0);
+  }
+  await page.reload();
+  await openInput(page);
+  await expect(input).toHaveValue("这段草稿不能被入口覆盖");
+  await expect(page.locator(".composer-intent")).toContainText(
+    "制作表格或报告",
+  );
+  await page.locator(".composer").screenshot({
+    path: "test-results/composer-inline-intent.png",
+    animations: "disabled",
+  });
+  await page.getByLabel("移除输入意图").click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("这段草稿不能被入口覆盖");
+  await expect(page.locator(".composer-intent")).toHaveCount(0);
+  const after = await (await page.request.get("/api/workspace")).json();
+  expect(after.workspace.artifacts.length).toBe(
+    initial.workspace.artifacts.length,
+  );
+  expect(after.workspace.inputs.length).toBe(initial.workspace.inputs.length);
+  await page.screenshot({ path: "test-results/agent-first-composer.png" });
+  await page.getByLabel("收起 AI 输入框").click();
+  await page.getByLabel("关闭应用 资料", { exact: true }).click();
+});
+
+test("事项意图按空间保存；请求失败留草稿，未连接不冒充创建", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  await nav.getByRole("button", { name: /^事项/ }).click();
+  await page.getByRole("button", { name: "新建事项", exact: true }).click();
+  const input = page.getByLabel("AI 输入内容");
+  const body = "先记下核对宣传文案这件事，由我处理，不要执行";
+  await input.fill(body);
+  await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  await openInput(page);
+  await expect(input).not.toHaveValue(body);
+  await nav.getByRole("button", { name: /^事项/ }).click();
+  await openInput(page);
+  await expect(input).toHaveValue(body);
+  await expect(page.locator(".composer-intent")).toContainText("安排事项");
+  const initial = await (await page.request.get("/api/workspace")).json();
+  await page.route("**/api/commands", (route) =>
+    route.fulfill({ status: 503, json: { message: "测试：中心暂不可用" } }),
+  );
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect(page.locator(".composer-error")).toContainText("中心暂不可用");
+  await expect(page.locator(".statusbar")).toHaveCount(0);
+  await expect(input).toHaveValue(body);
+  await expect(page.locator(".composer-intent")).toContainText("安排事项");
+  await page.unroute("**/api/commands");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await expect(page.locator(".composer-error")).toHaveCount(0);
+  await expect(page.locator(".statusbar")).toHaveCount(0);
+  await expect(page.locator(".workspace-notice")).toHaveCount(0);
+  await expect(
+    page.locator(".human-message").filter({ hasText: body }),
+  ).toContainText("未发送");
+  await expect(
+    page.locator(".human-message").filter({ hasText: body }),
+  ).toContainText("安排事项");
+  const saved = await (await page.request.get("/api/workspace")).json();
+  const recorded = saved.workspace.inputs.find(
+    (item: { body: string }) => item.body === body,
+  );
+  expect(recorded.intent).toBe("task");
+  expect(
+    saved.workspace.projects.find(
+      (p: { id: string }) => p.id === recorded.projectId,
+    ).kind,
+  ).toBe("inbox");
+  expect(saved.workspace.artifacts.length).toBe(
+    initial.workspace.artifacts.length,
+  );
+  expect(saved.workspace.inputs.length).toBe(
+    initial.workspace.inputs.length + 1,
+  );
+});

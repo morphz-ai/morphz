@@ -193,12 +193,39 @@ test("桌面回执接续在丢回执、对象改版和重启后仍然只创建�
       () => assert.fail("尚在工作的会话不重复唤醒"),
     );
     assert.equal(store.snapshot().inputs.length, 0);
+    const conversationId = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "create-conversation",
+          projectId: "first-project",
+          title: "浏览器原对话",
+        },
+      },
+      localAccess,
+    ).entityId;
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "update-conversation",
+          conversationId,
+          expectedRevision: 1,
+          archived: true,
+        },
+      },
+      localAccess,
+    );
     assert.throws(
       () =>
         broker.drain(
           () => true,
           () => {
             throw new Error("lost ack");
+          },
+          (id) => {
+            assert.equal(id, route.session_id);
+            return conversationId;
           },
         ),
       /lost ack/,
@@ -233,6 +260,7 @@ test("桌面回执接续在丢回执、对象改版和重启后仍然只创建�
     assert.equal(sends, 1);
     assert.equal(store.snapshot().inputs.length, 1);
     assert.equal(store.snapshot().inputs[0]!.artifactRevision, 1);
+    assert.equal(store.snapshot().inputs[0]!.conversationId, conversationId);
   } finally {
     store.close();
   }

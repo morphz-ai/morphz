@@ -1,3 +1,4 @@
+import { composerAction } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
@@ -36,7 +37,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   });
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("语音范围测试");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
@@ -92,7 +93,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   await expect(page.getByLabel("AI 输入内容")).toHaveValue(
     "确认后的语音批注。",
   );
-  await page.getByRole("button", { name: "保存为批注", exact: true }).click();
+  await composerAction(page, "保存为批注");
   await expect(page.locator(".annotation")).toContainText("确认后的语音批注。");
   await expect(page.locator(".annotation")).toContainText("v2");
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
@@ -128,7 +129,7 @@ test("朗读不会自动请求，取消后可关闭且不修改对象", async ({
   });
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("朗读测试");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByRole("button", { name: "编辑", exact: true }).click();

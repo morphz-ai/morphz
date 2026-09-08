@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { inputIntentSchema } from "./input-intent.js";
 import {
   documentImportIssue,
   documentTextIssue,
@@ -117,6 +118,7 @@ export const artifactSchema = z
   .object({
     id,
     projectId: id,
+    originConversationId: id.optional(),
     title,
     content: contentSchema,
     revision: z.number().int().positive(),
@@ -147,6 +149,40 @@ export const artifactSchema = z
   })
   .strict();
 export type Artifact = z.infer<typeof artifactSchema>;
+export const discussionSchema = z
+  .object({
+    id,
+    projectId: id,
+    title,
+    revision: z.number().int().positive(),
+    archivedAt: timestamp.nullable(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+  .strict();
+export type Discussion = z.infer<typeof discussionSchema>;
+// The default discussion uses the workspace ID in its own namespace. This
+// preserves legacy routes and avoids rewriting old inputs or command receipts.
+export function discussionId(value: {
+  projectId: string;
+  conversationId?: string;
+}) {
+  return value.conversationId ?? value.projectId;
+}
+export function ensureDiscussions(state: Workspace) {
+  for (const project of state.projects) {
+    if (!state.conversations.some((c) => c.id === project.id))
+      state.conversations.push({
+        id: project.id,
+        projectId: project.id,
+        title: "默认对话",
+        revision: 1,
+        archivedAt: null,
+        createdAt: project.createdAt,
+        updatedAt: project.createdAt,
+      });
+  }
+}
 export const stateSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -171,11 +207,12 @@ export const stateSchema = z
           title,
           members: z.array(id).min(1),
           createdAt: timestamp,
-          kind: z.enum(["project", "desk", "inbox"]).optional(),
+          kind: z.enum(["project", "desk", "inbox", "dialogue"]).optional(),
           ownerPrincipalId: id.optional(),
         })
         .strict(),
     ),
+    conversations: z.array(discussionSchema).default([]),
     artifacts: z.array(artifactSchema),
     applications: z
       .array(applicationManifestSchema.extend({ installedBy: id }).strict())
@@ -212,6 +249,7 @@ export const stateSchema = z
         .object({
           id,
           projectId: id,
+          conversationId: id.optional(),
           artifactId: id.nullable(),
           artifactRevision: z.number().int().positive().nullable(),
           selection: z.string().max(10000),
@@ -219,6 +257,7 @@ export const stateSchema = z
           author: authorSchema,
           targetActantId: id,
           status: z.literal("recorded"),
+          intent: inputIntentSchema.optional(),
           application: z
             .object({
               instanceId: id,
@@ -253,6 +292,18 @@ export const stateSchema = z
 export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
+  z
+    .object({ type: z.literal("create-conversation"), projectId: id, title })
+    .strict(),
+  z
+    .object({
+      type: z.literal("update-conversation"),
+      conversationId: id,
+      expectedRevision: z.number().int().positive(),
+      title: title.optional(),
+      archived: z.boolean().optional(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal("save-workspace-as-project"),
@@ -347,6 +398,7 @@ export const operationSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("create-artifact"),
       projectId: id,
+      conversationId: id.optional(),
       title,
       content: contentSchema,
     })
@@ -381,6 +433,8 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      conversationId: id.optional(),
+      intent: inputIntentSchema.optional(),
       applicationInstanceId: id.optional(),
       projectId: id,
       artifactId: id.nullable(),
@@ -419,7 +473,7 @@ export const localAccess: AccessContext = {
   actantId: "local-human",
 };
 export function initialWorkspace(now = new Date().toISOString()): Workspace {
-  return {
+  const state: Workspace = {
     schemaVersion: 1,
     id: "local-workspace",
     name: "我的工作空间",
@@ -465,8 +519,17 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
         members: ["local-owner", "morphz-service"],
         createdAt: now,
       },
+      {
+        id: "local-dialogue",
+        kind: "dialogue",
+        ownerPrincipalId: "local-owner",
+        title: "对话",
+        members: ["local-owner", "morphz-service"],
+        createdAt: now,
+      },
     ],
     applications: [],
+    conversations: [],
     applicationInstances: [],
     artifacts: [],
     relations: [],
@@ -474,6 +537,8 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     inputs: [],
     taskResponses: [],
   };
+  ensureDiscussions(state);
+  return state;
 }
 export function getArtifact(state: Workspace, artifactId: string): Artifact {
   const artifact = state.artifacts.find((a) => a.id === artifactId);
@@ -545,6 +610,7 @@ export function applyCommand(
     throw new DomainError("forbidden", "参与者与主体不匹配。");
   const state = structuredClone(current),
     op = command.operation;
+  ensureDiscussions(state);
   // An application frame never receives a general-purpose command capability.
   if (command.applicationInstanceId) {
     const instance = state.applicationInstances.find(
@@ -805,6 +871,47 @@ export function applyCommand(
       createdAt: now,
     });
     entityId = space.id;
+  } else if (
+    op.type === "create-conversation" ||
+    op.type === "update-conversation"
+  ) {
+    const conversation =
+      op.type === "update-conversation"
+        ? state.conversations.find((c) => c.id === op.conversationId)
+        : undefined;
+    if (op.type === "update-conversation" && !conversation)
+      throw new DomainError("not_found", "对话不存在。");
+    const project = checkProject(
+      state,
+      op.type === "create-conversation"
+        ? op.projectId
+        : conversation!.projectId,
+      access,
+    );
+    if (actor.kind !== "human" || spaceKind(project) !== "project")
+      throw new DomainError("forbidden", "只有项目成员可以管理项目内的对话。");
+    if (op.type === "create-conversation") {
+      state.conversations.push({
+        id: entityId,
+        projectId: project.id,
+        title: op.title,
+        revision: 1,
+        archivedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } else {
+      if (conversation!.revision !== op.expectedRevision)
+        throw new DomainError("conflict", "对话已发生变化，请同步后重试。");
+      if (op.archived && conversation!.id === project.id)
+        throw new DomainError("invalid", "默认对话始终保留，无需归档。");
+      if (op.title !== undefined) conversation!.title = op.title;
+      if (op.archived !== undefined)
+        conversation!.archivedAt = op.archived ? now : null;
+      conversation!.updatedAt = now;
+      conversation!.revision++;
+      entityId = conversation!.id;
+    }
   } else if (op.type === "install-application") {
     if (
       actor.kind !== "human" ||
@@ -901,6 +1008,14 @@ export function applyCommand(
     op.type === "import-pdf"
   ) {
     checkProject(state, op.projectId, access);
+    if (
+      op.type === "create-artifact" &&
+      op.conversationId &&
+      !state.conversations.some(
+        (c) => c.id === op.conversationId && c.projectId === op.projectId,
+      )
+    )
+      throw new DomainError("forbidden", "产物的来源对话不属于当前项目。");
     if (op.type === "import-document") {
       const issue =
         documentImportIssue(op.relativePath) ?? documentTextIssue(op.text);
@@ -925,6 +1040,9 @@ export function applyCommand(
     state.artifacts.push({
       id: entityId,
       projectId: op.projectId,
+      ...(op.type === "create-artifact" && op.conversationId
+        ? { originConversationId: op.conversationId }
+        : {}),
       title: artifactTitle,
       content,
       revision: 1,
@@ -1044,6 +1162,17 @@ export function applyCommand(
     });
   } else if (op.type === "record-input") {
     const project = checkProject(state, op.projectId, access);
+    const conversationId = discussionId(op);
+    const conversation = state.conversations.find(
+      (c) => c.id === conversationId && c.projectId === project.id,
+    );
+    if (!conversation)
+      throw new DomainError("not_found", "对话不存在或不属于当前项目。");
+    if (conversation.archivedAt && actor.kind === "human")
+      throw new DomainError(
+        "conflict",
+        "此对话已归档，请恢复后再发送。草稿不会丢失。",
+      );
     const instance = op.applicationInstanceId
       ? state.applicationInstances.find(
           (i) =>
@@ -1080,6 +1209,7 @@ export function applyCommand(
     state.inputs.push({
       id: entityId,
       projectId: op.projectId,
+      conversationId,
       artifactId: op.artifactId,
       artifactRevision: op.artifactRevision,
       selection: op.selection,
@@ -1087,6 +1217,7 @@ export function applyCommand(
       author: { ...access },
       targetActantId: op.targetActantId,
       status: "recorded",
+      ...(op.intent ? { intent: op.intent } : {}),
       ...(app && instance
         ? {
             application: {
@@ -1100,6 +1231,7 @@ export function applyCommand(
       createdAt: now,
     });
   }
+  ensureDiscussions(state);
   state.revision++;
   return {
     state,

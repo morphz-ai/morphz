@@ -1,12 +1,70 @@
+import { composerAction } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+
+test("搜索无关闭按钮，外部点击关闭且不误触背后的页面", async ({ page }) => {
+  await page.goto("/");
+  const input = page.getByLabel("AI 输入内容");
+  await input.fill("关闭搜索后继续编辑");
+  const originalTitle = await page.title();
+  await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(2, 5));
+  await input.press("Control+k");
+  const dialog = page.getByRole("dialog", { name: "搜索工作空间" });
+  await expect(dialog.getByRole("button", { name: /关闭/ })).toHaveCount(0);
+  await page.getByLabel("全文搜索").fill("暂时的搜索词");
+  const field = (await page.getByLabel("全文搜索").boundingBox())!;
+  const bounds = (await dialog.boundingBox())!;
+  // Selecting text and releasing outside must not dismiss the panel.
+  await page.mouse.move(field.x + 20, field.y + field.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x - 10, bounds.y + 20);
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await page.getByLabel("搜索项目范围").selectOption("");
+  await expect(dialog).toBeVisible();
+  const behind = (await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: /^事项/ })
+    .boundingBox())!;
+  // Use locator clicks so Playwright waits for the modal's hit-test surface;
+  // a raw coordinate click immediately after showModal can reach an underlying
+  // out-of-process application iframe before Chromium has painted the backdrop.
+  await dialog.click({
+    position: {
+      x: behind.x + 20 - bounds.x,
+      y: behind.y + behind.height / 2 - bounds.y,
+    },
+  });
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveTitle(originalTitle);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("关闭搜索后继续编辑");
+  expect(
+    await input.evaluate((el: HTMLTextAreaElement) => [
+      el.selectionStart,
+      el.selectionEnd,
+    ]),
+  ).toEqual([2, 5]);
+  await input.press("Control+k");
+  await expect(page.getByLabel("全文搜索")).toBeFocused();
+  const reopenedBounds = (await dialog.boundingBox())!;
+  await dialog.click({
+    position: { x: reopenedBounds.width + 12, y: 20 },
+  });
+  await expect(dialog).toHaveCount(0);
+  await expect(input).toBeFocused();
+  await input.press("Control+k");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(input).toBeFocused();
+});
 
 test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口比例", async ({
   page,
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("快速打开验证");
   await page.getByLabel("新文档正文").fill("搜索需要保持输入的连续性。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
@@ -59,7 +117,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("region", { name: "新建文档编辑区" }),
@@ -67,7 +125,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
   await page.getByLabel("新对象标题", { exact: true }).fill("尚未创建的草稿");
   await page.getByLabel("新文档正文").fill("离开画布也不能丢掉这段文字。");
   await page.getByRole("button", { name: "取消", exact: true }).click();
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await expect(page.getByLabel("新文档正文")).toHaveValue(
     "离开画布也不能丢掉这段文字。",
   );
@@ -84,7 +142,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
     .click();
   await page.reload();
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建文档", exact: true }).click();
+  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
   await expect(page.getByLabel("新对象标题", { exact: true })).toHaveValue(
     "尚未创建的草稿",
   );
@@ -165,12 +223,24 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
     });
   });
   await page.reload();
-  await page.getByLabel("查看交流记录").click();
-  await page.getByLabel("展开完整记录").click();
+  await composerAction(page, "查看交流记录");
+  await composerAction(page, "展开完整记录");
   const exchange = page.locator(".conversation");
   await expect(
     page.locator(`.agent-reply[data-input-id="${ids[0]}"]`),
   ).toHaveText(/第一项工作的回复/);
+  expect(
+    await exchange.evaluate((el) => getComputedStyle(el).scrollbarWidth),
+  ).toBe("none");
+  await exchange.hover();
+  await page.mouse.wheel(0, -400);
+  await expect
+    .poll(() =>
+      exchange.evaluate(
+        (el) => el.scrollTop < el.scrollHeight - el.clientHeight - 50,
+      ),
+    )
+    .toBe(true);
   await exchange.evaluate((el) => {
     el.scrollTop = 0;
     el.dispatchEvent(new Event("scroll"));
@@ -192,7 +262,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
     page.getByRole("button", { name: "有新内容 · 返回最新" }),
   ).toBeVisible({ timeout: 10000 });
   expect(await exchange.evaluate((el) => el.scrollTop)).toBeLessThan(5);
-  await page.getByLabel("收起交流记录").click();
+  await composerAction(page, "收起交流记录");
   messages = [
     ...messages,
     {
@@ -206,12 +276,12 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
       kind: "reply",
     },
   ];
-  await expect(page.locator(".exchange-header .unread-label")).toBeVisible({
+  await expect(page.locator(".composer-more .unread-label")).toBeVisible({
     timeout: 10000,
   });
   await expect(exchange).toHaveCount(0);
   await expect(page.locator(".creation-actions")).toBeVisible();
-  await page.getByLabel("查看交流记录").click();
+  await composerAction(page, "查看交流记录");
   expect(await exchange.evaluate((el) => el.scrollTop)).toBeLessThan(5);
   await page.getByRole("button", { name: "有新内容 · 返回最新" }).click();
   await expect(

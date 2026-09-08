@@ -7,9 +7,16 @@ export async function openLibrary(page: Page) {
   if (await tab.count()) await tab.click();
   else {
     await page.getByRole("button", { name: "应用启动台", exact: true }).click();
-    await page.getByRole("listitem", { name: "资料 1.0.0" }).dblclick();
+    await page.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
   }
   const back = page.getByRole("button", { name: "所有资料", exact: true });
-  if (await back.count()) await back.click();
-  await expect(page.locator(".creation-actions")).toBeVisible();
+  // Reopening an application asynchronously restores its last object. Wait for
+  // that surface before returning to the collection; a one-shot count can see
+  // the transient empty view and skip the required back action.
+  await expect(async () => {
+    if (await back.isVisible()) await back.click({ timeout: 1000 });
+    await expect(page.locator(".creation-actions")).toBeVisible({
+      timeout: 1000,
+    });
+  }).toPass({ timeout: 6000 });
 }

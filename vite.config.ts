@@ -48,6 +48,8 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 65419,
     strictPort: true,
+    // Pin the local HMR endpoint; desktop development shares this Vite server.
+    hmr: { host: "127.0.0.1", clientPort: 65419 },
     proxy: { "/api": { target: "http://127.0.0.1:65420" } },
     headers: {
       "Content-Security-Policy":

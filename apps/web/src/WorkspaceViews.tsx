@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUpRight, Folder, Plus, Search, Clock3 } from "lucide-react";
 import {
   spaceKind,
@@ -18,10 +19,12 @@ export function ProjectDirectory({
   state,
   onOpen,
   onCreate,
+  toolbarTarget,
 }: {
   state: Workspace;
   onOpen: (id: string) => void;
   onCreate: () => void;
+  toolbarTarget: HTMLElement | null;
 }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
@@ -43,37 +46,37 @@ export function ProjectDirectory({
     );
   return (
     <section className="collection project-directory" aria-label="项目目录">
-      <div className="collection-title">
-        <h1>项目</h1>
-        <button className="outline" onClick={onCreate}>
-          <Plus />
-          创建项目
-        </button>
-      </div>
-      <p className="intro">按项目组织内容、工作与协作关系。</p>
-      <div className="project-directory-toolbar">
-        <span>
-          {state.projects.filter((p) => spaceKind(p) === "project").length}{" "}
-          个项目
-        </span>
-        <label className="search-field">
-          <Search />
-          <input
-            aria-label="搜索项目"
-            value={query}
-            placeholder="搜索项目"
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </label>
-        <select
-          aria-label="项目排序"
-          value={sort}
-          onChange={(e) => setSort(e.target.value)}
-        >
-          <option value="recent">最近更新</option>
-          <option value="name">名称</option>
-        </select>
-      </div>
+      {toolbarTarget &&
+        createPortal(
+          <div className="project-directory-toolbar">
+            <span>
+              {state.projects.filter((p) => spaceKind(p) === "project").length}{" "}
+              个项目
+            </span>
+            <label className="search-field">
+              <Search />
+              <input
+                aria-label="搜索项目"
+                value={query}
+                placeholder="搜索项目"
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </label>
+            <select
+              aria-label="项目排序"
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+            >
+              <option value="recent">最近更新</option>
+              <option value="name">名称</option>
+            </select>
+            <button onClick={onCreate} aria-label="创建项目" title="创建项目">
+              <Plus />
+              <span className="toolbar-action-label">创建项目</span>
+            </button>
+          </div>,
+          toolbarTarget,
+        )}
       <div className="project-grid">
         {projects.map((p) => {
           const objects = state.artifacts.filter((a) => a.projectId === p.id);

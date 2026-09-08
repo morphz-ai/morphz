@@ -5,6 +5,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import {
+  chromium,
+  expect,
+  _electron,
+  type Page,
+  type ElectronApplication,
+} from "@playwright/test";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,6 +26,11 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { localAccess, contentSchema } from "../packages/core/src/model.js";
 
 const live = process.argv.includes("--live");
+let streamApp: ElectronApplication | undefined;
+let streamWindow: Page | undefined;
+let sawStreamText = false,
+  sawStreamTool = false,
+  streamFailure: unknown;
 const model = live ? process.env.MORPHZWORK_LIVE_MODEL : "test-model";
 const protocol = live ? process.env.MORPHZWORK_LIVE_PROTOCOL : "openai-chat";
 const testKey = live ? process.env.MORPHZWORK_TEST_KEY : "isolated-test-key";
@@ -66,6 +78,7 @@ const source = store.execute(
 const namespace = randomUUID(),
   runtimeToken = randomBytes(32).toString("hex");
 let stage = 0,
+  taskPhase = false,
   revisionPhase = false,
   understandingRound = 0,
   understandingStage = 0,
@@ -85,7 +98,30 @@ const provider = createServer(async (request, response) => {
   const result = store.snapshot().artifacts.find((a) => a.title === "测试交付");
   let args: unknown;
   let toolName = "host_morphz_work";
-  if (understandingRound) {
+  if (taskPhase) {
+    args =
+      stage++ === 0
+        ? { action: "list" }
+        : stage === 2
+          ? {
+              action: "create-task",
+              title: "核对宣传文案",
+              task: {
+                kind: "task",
+                description: "核对宣传文案，仅记录，由我处理，不执行。",
+                assigneeId: "local-human",
+                model: null,
+                priority: "normal",
+                dueDate: null,
+                assignment: "proposed",
+                execution: "planned",
+                delivery: "none",
+                resultIds: [],
+                runRequested: 0,
+              },
+            }
+          : undefined;
+  } else if (understandingRound) {
     const current = store
       .snapshot()
       .artifacts.find(
@@ -166,6 +202,76 @@ const provider = createServer(async (request, response) => {
     : { role: "assistant", content: "已在工作空间保存测试交付。" };
   if (input.stream) {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (
+      streamWindow &&
+      ((!call && !sawStreamText) || (call && !sawStreamTool))
+    ) {
+      const sendDelta = (delta: unknown, finish_reason: string | null = null) =>
+        response.write(
+          `data: ${JSON.stringify({ id: "stream-proof", choices: [{ index: 0, delta, finish_reason }] })}\n\n`,
+        );
+      try {
+        if (call) {
+          const args = call.function.arguments,
+            cut = Math.max(1, Math.floor(args.length / 2));
+          sendDelta({
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: call.id,
+                type: "function",
+                function: { name: call.function.name, arguments: "" },
+              },
+            ],
+          });
+          sendDelta({
+            tool_calls: [
+              { index: 0, function: { arguments: args.slice(0, cut) } },
+            ],
+          });
+          const row = streamWindow
+            .locator('.message-tool[data-tool-status="generating"]')
+            .first();
+          await expect(row).toContainText(call.function.name, {
+            timeout: 15000,
+          });
+          await row.locator("summary").click();
+          await expect(row.locator("pre")).toHaveText(args.slice(0, cut));
+          await streamWindow.screenshot({
+            path: join(directory, "desktop-tool-stream.png"),
+          });
+          sawStreamTool = true;
+          sendDelta(
+            {
+              tool_calls: [
+                { index: 0, function: { arguments: args.slice(cut) } },
+              ],
+            },
+            "tool_calls",
+          );
+        } else {
+          sendDelta({ role: "assistant", content: "已在工作空间" });
+          await expect(
+            streamWindow
+              .locator('[data-streaming="true"]')
+              .filter({ hasText: "已在工作空间" }),
+          ).toBeVisible({ timeout: 15000 });
+          await expect(
+            streamWindow.locator(".agent-reply.reply"),
+          ).not.toContainText("保存测试交付。");
+          await streamWindow.screenshot({
+            path: join(directory, "desktop-text-stream.png"),
+          });
+          sawStreamText = true;
+          sendDelta({ content: "保存测试交付。" }, "stop");
+        }
+      } catch (error) {
+        streamFailure = error;
+      }
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     response.write(
       `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: call ? { role: "assistant", tool_calls: [{ ...call, index: 0 }] } : message, finish_reason: call ? "tool_calls" : "stop" }] })}\n\n`,
     );
@@ -241,7 +347,7 @@ const bridge = new RuntimeBridge(store, {
 });
 const app = createAppServer(store, {
   port: workPort,
-  webRoot: "/nonexistent",
+  webRoot: resolve("dist/web"),
   runtime: bridge,
   agentTools: runtimeAgentTools(store, bridge, manifest.token),
 });
@@ -274,7 +380,35 @@ try {
     }
   }, "Runtime start");
   bridge.start();
-  async function send(body: string, artifactId: string | null = null) {
+  if (!live && process.argv.includes("--stream-ui")) {
+    const env = {
+      ...process.env,
+      MORPHZWORK_TEST_PROFILE: join(directory, "stream-desktop"),
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    streamApp = await _electron.launch({
+      args: ["apps/desktop/main.cjs", `--center=${origin}`],
+      env,
+    });
+    streamWindow = await streamApp.firstWindow();
+    await streamWindow
+      .getByRole("button", { name: "我的项目", exact: true })
+      .click();
+    if (!(await streamWindow.getByLabel("AI 输入内容").isVisible()))
+      await streamWindow
+        .getByRole("button", { name: /向 Morphz 输入/ })
+        .click();
+    await streamWindow.getByLabel("AI 输入内容").focus();
+    await streamWindow.getByLabel("更多输入选项", { exact: true }).click();
+    await streamWindow.getByLabel("展开完整记录", { exact: true }).click();
+    await streamWindow.getByLabel("更多输入选项", { exact: true }).click();
+    await streamWindow.getByLabel("固定输入框", { exact: true }).click();
+  }
+  async function send(
+    body: string,
+    artifactId: string | null = null,
+    conversationId?: string,
+  ) {
     const boot = (await (await fetch(origin + "/api/workspace")).json()) as {
       csrfToken: string;
     };
@@ -290,6 +424,7 @@ try {
         operation: {
           type: "record-input",
           projectId: "first-project",
+          ...(conversationId ? { conversationId } : {}),
           artifactId,
           artifactRevision: artifactId ? 1 : null,
           body,
@@ -316,6 +451,57 @@ try {
     .snapshot()
     .artifacts.find((a) => a.title === "测试交付");
   assert.ok(artifact, "实际工具调用应创建对象");
+  if (streamWindow) {
+    if (streamFailure) throw streamFailure;
+    assert.ok(
+      sawStreamText && sawStreamTool,
+      "正文和工具参数必须在供应商结束前由真实 Electron 显示",
+    );
+    await expect(
+      streamWindow
+        .locator(".agent-reply.reply")
+        .filter({ hasText: "已在工作空间保存测试交付。" }),
+    ).toHaveCount(1);
+    await expect(streamWindow.locator('[data-streaming="true"]')).toHaveCount(
+      0,
+    );
+    await expect(
+      streamWindow.locator(
+        ".conversation .avatar, .conversation .message-author",
+      ),
+    ).toHaveCount(0);
+    await expect(
+      streamWindow
+        .locator(".conversation .message-meta > span")
+        .filter({ hasText: /^(我|Morphz)$/ }),
+    ).toHaveCount(0);
+    const human = (await streamWindow
+      .locator(".human-message")
+      .first()
+      .boundingBox())!;
+    const agent = (await streamWindow
+      .locator(".agent-reply.reply")
+      .first()
+      .boundingBox())!;
+    assert.ok(human.x > agent.x + 10, "Human 在右，Agent 在左");
+    await streamWindow.screenshot({
+      path: join(directory, "desktop-conversation-final.png"),
+    });
+    await streamWindow.reload();
+    await expect(streamWindow.locator(".message-tool")).not.toHaveCount(0);
+    await expect(
+      streamWindow
+        .locator(".agent-reply.reply")
+        .filter({ hasText: "已在工作空间保存测试交付。" }),
+    ).toHaveCount(1);
+    console.log(
+      "PASS: real Electron → center SSE → Runtime WebSocket: partial text and tool arguments visible before provider completion; final deduplication, two-sided layout and reload history. Screenshots:",
+      directory,
+    );
+    await streamApp!.close();
+    streamApp = undefined;
+    streamWindow = undefined;
+  }
   assert.equal(artifact.createdBy.actantId, "morphz-agent");
   assert.equal(store.snapshot().relations.length, 1);
   store.execute(
@@ -471,9 +657,141 @@ try {
       "PASS: principal-bound human response → dependent work → durable Runtime Schedule → real model execution.",
     );
   }
+  if (!live) {
+    taskPhase = true;
+    stage = 0;
+    const browser = await chromium.launch({ channel: "chrome" });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 960 },
+      });
+      await page.goto(origin);
+      await page
+        .getByRole("navigation", { name: "主导航" })
+        .getByRole("button", { name: /^事项/ })
+        .click();
+      await page.getByRole("button", { name: "新建事项", exact: true }).click();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await page
+        .getByLabel("AI 输入内容")
+        .fill("帮我记下核对宣传文案，由我处理，先不要执行。");
+      await page.getByRole("button", { name: "发送消息", exact: true }).click();
+      await expect(
+        page.getByRole("heading", { name: "核对宣传文案", exact: true }),
+      ).toBeVisible({ timeout: 60000 });
+      const task = store
+        .snapshot()
+        .artifacts.find((a) => a.title === "核对宣传文案")!;
+      assert.equal(task.createdBy.actantId, "morphz-agent");
+      assert.equal(task.content.kind, "task");
+      if (task.content.kind === "task") {
+        assert.equal(task.content.runRequested, 0);
+        assert.equal(task.content.assigneeId, "local-human");
+      }
+      const input = store
+        .snapshot()
+        .inputs.find(
+          (i) => i.body === "帮我记下核对宣传文案，由我处理，先不要执行。",
+        )!;
+      assert.equal(input.intent, "task");
+      assert.equal(input.projectId, task.projectId);
+      await waitUntil(
+        () =>
+          bridge.snapshot().deliveries.find((d) => d.inputId === input.id)
+            ?.state === "completed",
+        "composer task completion",
+      );
+      await page.getByLabel("收起 AI 输入框").click();
+      await page
+        .getByRole("button", { name: "打开事项", exact: true })
+        .filter({
+          has: page.getByRole("heading", { name: "核对宣传文案", exact: true }),
+        })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "核对宣传文案", exact: true }),
+      ).toBeVisible();
+      await page.screenshot({ path: join(directory, "agent-first-task.png") });
+      console.log(
+        "PASS: unified composer → real Runtime → Host create-task → persisted Agent-authored task → actual Inbox UI. Deterministic model fixture; no manual form or frontend object creation.",
+      );
+    } finally {
+      await browser.close();
+    }
+  }
   console.log(
     `PASS: real Runtime → ExecutionJob → authenticated Host tool → Work object create/read/search/link/revise, with human annotation and preserved history. Model transport: ${live ? `live ${model}` : "deterministic fixture"}.`,
   );
+  if (!live) {
+    taskPhase = true;
+    stage = 0;
+    const c = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "create-conversation",
+          projectId: "first-project",
+          title: "独立讨论",
+        },
+      },
+      localAccess,
+    ).entityId;
+    await send(
+      "在新的项目对话里记录一件由我核对宣传文案的事项，不执行。",
+      null,
+      c,
+    );
+    const created = store
+      .snapshot()
+      .artifacts.find((a) => a.originConversationId === c);
+    assert.ok(
+      created &&
+        created.createdBy.actantId === "morphz-agent" &&
+        created.content.kind === "task",
+    );
+    const ledger = store.runtimeState() as {
+      sessions: Record<
+        string,
+        { id: string; projectId: string; conversationId?: string }
+      >;
+    };
+    const original = Object.values(ledger.sessions).find(
+      (s) =>
+        s.projectId === "first-project" &&
+        (!s.conversationId || s.conversationId === "first-project"),
+    )!;
+    const added = Object.values(ledger.sessions).find(
+      (s) => s.conversationId === c,
+    )!;
+    assert.notEqual(original.id, added.id);
+    const session = async (id: string) =>
+      (
+        await fetch(`http://127.0.0.1:${runtimePort}/api/sessions/${id}`, {
+          headers: { Authorization: `Bearer ${runtimeToken}` },
+        })
+      ).json();
+    assert.equal(
+      (await session(original.id)).context_id,
+      (await session(added.id)).context_id,
+    );
+    assert.ok(
+      bridge
+        .snapshot()
+        .messages.some((m) => m.conversationId === c && m.kind === "reply"),
+    );
+    const scoped = await bridge.executions.snapshot({
+      projectId: "first-project",
+      artifactId: null,
+      conversationId: c,
+    });
+    assert.ok(
+      scoped.jobs.length > 0 &&
+        scoped.jobs.every((j) => j.session_id === added.id),
+    );
+    console.log(
+      "PASS: separate project conversation → real Runtime Session with shared Context → real Host-created task with conversation provenance → correctly scoped reply and executions.",
+    );
+  }
 } catch (error) {
   console.error(
     output
@@ -487,6 +805,7 @@ try {
   console.error("Test data retained in", directory);
   throw error;
 } finally {
+  await streamApp?.close();
   await bridge.stop();
   app.closeIdleConnections();
   await new Promise<void>((r) => app.close(() => r()));

@@ -199,6 +199,7 @@ try {
     .getByRole("button", { name: "放入输入框", exact: true })
     .click();
   await expect(ui.getByLabel("AI 输入内容")).toHaveValue(transcript);
+  await ui.getByLabel("更多输入选项", { exact: true }).click();
   await ui.getByRole("button", { name: "保存为批注", exact: true }).click();
   await expect(ui.locator(".annotation")).toContainText(transcript);
   await expect(ui.locator(".annotation")).toContainText("v1");

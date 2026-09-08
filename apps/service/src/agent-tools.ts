@@ -101,7 +101,11 @@ const envelopeSchema = z
     arguments: requestSchema,
   })
   .strict();
-export type ToolScope = { projectId: string; access: AccessContext };
+export type ToolScope = {
+  projectId: string;
+  conversationId?: string;
+  access: AccessContext;
+};
 
 export const workToolDefinition = {
   name: "host_morphz_work",
@@ -639,6 +643,12 @@ export class AgentTools {
     bytes[8] = (bytes[8]! & 0x3f) | 0x80;
     const hex = bytes.toString("hex"),
       commandId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    if (
+      operation.type === "create-artifact" &&
+      scope.conversationId &&
+      scope.conversationId !== scope.projectId
+    )
+      operation.conversationId = scope.conversationId;
     const receipt = this.store.execute({ commandId, operation }, scope.access);
     return {
       ok: true,

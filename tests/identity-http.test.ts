@@ -59,6 +59,15 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
     assert.equal((await fetch(origin + "/api/workspace")).status, 401);
     assert.equal((await fetch(origin + "/api/notifications")).status, 401);
     assert.equal((await fetch(origin + "/api/speech/status")).status, 401);
+    assert.equal(
+      (
+        await fetch(
+          origin +
+            "/api/conversation/stream?projectId=first-project&conversationId=first-project",
+        )
+      ).status,
+      401,
+    );
     const login = async (token: string) => {
       const r = await fetch(origin + "/api/identity/login", {
         method: "POST",
@@ -91,6 +100,22 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
       [],
     );
     assert.equal((await get("/api/artifacts/" + privateId)).status, 403);
+    assert.equal(
+      (
+        await get(
+          "/api/conversation/stream?projectId=first-project&conversationId=first-project",
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await get(
+          `/api/conversation/stream?projectId=${projectId}&conversationId=first-project`,
+        )
+      ).status,
+      404,
+    );
     assert.equal((await get("/api/assets/" + asset.assetId)).status, 404);
     assert.equal(
       (await get("/api/tasks/" + privateId + "/runtime")).status,
@@ -153,6 +178,15 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
         .createdBy.principalId,
       other.principalId,
     );
+    const streamResponse = await get(
+      `/api/conversation/stream?projectId=${projectId}&conversationId=${projectId}`,
+    );
+    assert.equal(
+      streamResponse.headers.get("content-type"),
+      "text/event-stream",
+    );
+    const reader = streamResponse.body!.getReader();
+    assert.ok(!(await reader.read()).done);
     identity.replaceConfiguration({
       ...config,
       members: config.members.map((m) => ({
@@ -161,6 +195,14 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
       })),
     });
     assert.equal((await get("/api/workspace")).status, 401);
+    await Promise.race([
+      (async () => {
+        while (!(await reader.read()).done) {}
+      })(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("撤销后流未关闭")), 3000).unref(),
+      ),
+    ]);
     assert.equal((await post(image)).status, 401);
     assert.equal(
       (await fetch(origin + "/api/workspace", { headers: { Cookie: cookieA } }))
@@ -168,6 +210,7 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
       200,
     );
   } finally {
+    server.closeStreams();
     await new Promise<void>((r) => server.close(() => r()));
     store.close();
   }

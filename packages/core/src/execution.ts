@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { id } from "./model.js";
 export const executionScopeSchema = z
-  .object({ projectId: id, artifactId: id.nullable() })
+  .object({
+    projectId: id,
+    artifactId: id.nullable(),
+    conversationId: id.optional(),
+  })
   .strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const jobSchema = z.object({

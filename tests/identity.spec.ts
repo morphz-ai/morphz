@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { IdentityCenter } from "../apps/service/src/identity.js";
 import { createAppServer } from "../apps/service/src/http.js";
+import { openInput } from "./interaction-helpers.js";
 
 test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销清空界面", async ({
   page,
@@ -64,6 +65,7 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     await expect(page.getByLabel("AI 输入内容")).toHaveValue("乙的草稿");
     await page.getByRole("button", { name: "退出当前身份" }).click();
     await login(0);
+    await openInput(page);
     await expect(page.getByLabel("AI 输入内容")).toHaveValue(
       "只有甲可见的未发送草稿",
     );

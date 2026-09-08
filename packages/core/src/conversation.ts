@@ -24,6 +24,7 @@ export const conversationRuntimeSchema = z.object({
     z.object({
       id: z.string(),
       projectId: z.string(),
+      conversationId: z.string().optional(),
       artifactId: z.string().nullable(),
       inputId: z.string().nullable().optional(),
       rootId: z.string().nullable().optional(),
@@ -36,15 +37,14 @@ export const conversationRuntimeSchema = z.object({
 export type ConversationRuntime = z.infer<typeof conversationRuntimeSchema>;
 
 /** Group only by authoritative input identity. Unattributed older events stay separate. */
-export function conversationGroups(
-  inputs: Array<{ id: string; createdAt: string }>,
-  messages: ConversationRuntime["messages"],
-) {
+export function conversationGroups<
+  T extends { id: string; createdAt: string; inputId?: string | null },
+>(inputs: Array<{ id: string; createdAt: string }>, messages: T[]) {
   const groups = inputs.map((input) => ({
     id: input.id,
     inputId: input.id as string | null,
     createdAt: input.createdAt,
-    messages: [] as ConversationRuntime["messages"],
+    messages: [] as T[],
   }));
   const index = new Map(groups.map((group) => [group.id, group]));
   for (const message of messages) {

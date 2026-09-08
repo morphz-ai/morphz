@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
+import { openInput } from "./interaction-helpers.js";
 
 test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏和四主题", async ({
   page,
@@ -41,8 +43,8 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   for (const [title, body] of docs) {
     await projects();
     await page
-      .locator(".creation-actions")
-      .getByRole("button", { name: "新建文档", exact: true })
+      .locator(".library-authoring-options")
+      .getByRole("button", { name: "自己写文档", exact: true })
       .click();
     await page.getByLabel("新对象标题", { exact: true }).fill(title);
     await page.getByLabel("新文档正文").fill(body);
@@ -54,10 +56,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
     ["整理发布素材", "确认文档、封面与发布说明之间的关联。"],
   ] as const) {
     await projects();
-    await page.getByRole("button", { name: "新建事项", exact: true }).click();
-    await page.getByLabel("新对象标题", { exact: true }).fill(title);
-    await page.getByLabel("工作要求").fill(body);
-    await page.getByRole("button", { name: "创建", exact: true }).click();
+    await seedLibraryArtifact(page, title, humanTask(body));
     await expect(page.locator(".object-paper > h1")).toHaveText(title);
   }
   await projects();
@@ -145,6 +144,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   for (const width of [1380, 1024, 760, 390, 320]) {
     await page.setViewportSize({ width, height: 820 });
     await projects();
+    await openInput(page);
     await expect(page.getByLabel("AI 输入内容")).toBeVisible();
     expect(
       await page
@@ -168,11 +168,11 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   for (const title of ["审阅交互方案", "整理发布素材"]) {
     await projects();
     await page.locator(".artifact-card").filter({ hasText: title }).click();
-    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.getByRole("button", { name: "手动编辑", exact: true }).click();
     await page.getByLabel("事项负责人").selectOption("morphz-agent");
     await page.getByRole("button", { name: "保存版本", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "编辑", exact: true }),
+      page.getByRole("button", { name: "手动编辑", exact: true }),
     ).toBeVisible();
   }
   expect(errors).toEqual([]);

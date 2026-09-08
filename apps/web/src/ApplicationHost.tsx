@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   BookOpen,
   Braces,
@@ -6,8 +7,8 @@ import {
   Film,
   Globe,
   Grid2X2,
+  FolderPlus,
   Layers2,
-  Plus,
   Upload,
   X,
 } from "lucide-react";
@@ -54,6 +55,7 @@ export function ApplicationHost({
   onNotice,
   enabled = true,
   foreground = true,
+  toolbarTarget,
 }: {
   client: WorkspaceClient;
   workspaceId: string;
@@ -66,6 +68,7 @@ export function ApplicationHost({
   onNotice: (message: string) => void;
   enabled?: boolean;
   foreground?: boolean;
+  toolbarTarget: HTMLElement | null;
 }) {
   const state = client.boot!.workspace;
   const space = state.projects.find((p) => p.id === workspaceId)!;
@@ -83,13 +86,13 @@ export function ApplicationHost({
         ),
     ),
   ];
-  const appKey = (app: ApplicationManifest) => `${app.id}@${app.version}`;
-  const [selected, setSelected] = useState(appKey(objectsApplication)),
-    [busy, setBusy] = useState(false),
+  const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
+  const launching = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   async function launch(app: ApplicationManifest) {
-    if (busy) return;
+    if (launching.current) return;
+    launching.current = true;
     setBusy(true);
     try {
       const receipt = await client.execute({
@@ -102,6 +105,7 @@ export function ApplicationHost({
     } catch (error) {
       onNotice((error as Error).message);
     } finally {
+      launching.current = false;
       setBusy(false);
     }
   }
@@ -113,137 +117,131 @@ export function ApplicationHost({
         expectedRevision: instance.revision,
       });
       if (activeId === instance.id) onActivate(null);
-      onNotice("应用已关闭，视图状态和内容已保留；后台任务继续执行。");
     } catch (error) {
       onNotice((error as Error).message);
     }
   }
   if (!enabled) return <>{children}</>;
-  return (
-    <section className="application-host" aria-label="认知应用工作空间">
-      <div className="application-strip">
-        <button
-          className="application-home"
-          aria-label="应用启动台"
-          aria-pressed={!active}
-          onClick={() => onActivate(null)}
-        >
-          <Grid2X2 />
-        </button>
-        <div
-          role="tablist"
-          aria-label="已打开的应用"
-          className="application-tabs"
-        >
-          {instances.map((instance) => {
-            const app = applicationFor(
-              state,
-              instance.applicationId,
-              instance.applicationVersion,
-            );
-            return (
-              <div
-                className="application-tab"
-                data-active={active?.id === instance.id}
-                key={instance.id}
-              >
-                <button
-                  role="tab"
-                  aria-selected={active?.id === instance.id}
-                  onClick={() => onActivate(instance.id)}
-                >
-                  <AppIcon app={app} />
-                  <span>{app.title}</span>
-                </button>
-                <button
-                  aria-label={`关闭应用 ${app.title}`}
-                  onClick={() => void close(instance)}
-                >
-                  <X />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        {active?.applicationId === objectsApplication.id &&
-          active.state.artifactId && (
-            <button
-              onClick={async () => {
-                try {
-                  await client.execute({
-                    type: "set-application-state",
-                    instanceId: active.id,
-                    expectedRevision: active.revision,
-                    state: { ...active.state, artifactId: null },
-                  });
-                  onActivate(active.id);
-                } catch (e) {
-                  onNotice((e as Error).message);
-                }
-              }}
+  const toolbar = (
+    <div className="application-strip" aria-label={`${space.title}的应用`}>
+      <button
+        className="application-home"
+        aria-label="应用启动台"
+        title={`${space.title} · 应用启动台`}
+        aria-pressed={!active}
+        onClick={() => onActivate(null)}
+      >
+        <Grid2X2 />
+      </button>
+      {!active && <h1 className="toolbar-title">{space.title}</h1>}
+      <div
+        role="tablist"
+        aria-label="已打开的应用"
+        className="application-tabs"
+      >
+        {instances.map((instance) => {
+          const app = applicationFor(
+            state,
+            instance.applicationId,
+            instance.applicationVersion,
+          );
+          return (
+            <div
+              className="application-tab"
+              data-active={active?.id === instance.id}
+              key={instance.id}
             >
-              所有资料
-            </button>
-          )}
-        {spaceKind(space) === "desk" && (
-          <button className="workspace-save" onClick={onSaveProject}>
-            保存为项目
-          </button>
-        )}
+              <button
+                role="tab"
+                aria-selected={active?.id === instance.id}
+                title={`${app.title} · ${app.version}`}
+                onClick={() => onActivate(instance.id)}
+              >
+                <AppIcon app={app} />
+                <span>{app.title}</span>
+              </button>
+              <button
+                aria-label={`关闭应用 ${app.title}`}
+                onClick={() => void close(instance)}
+              >
+                <X />
+              </button>
+            </div>
+          );
+        })}
       </div>
       {!active && (
-        <div className="application-launcher">
-          <div className="launcher-heading">
-            <div>
-              <h1>{space.title}</h1>
-              <p>打开应用，或直接在下方提出想法。</p>
-            </div>
-            <button className="outline" onClick={() => upload.current?.click()}>
-              <Upload />
-              安装应用
-            </button>
-          </div>
-          <div className="application-grid" role="list" aria-label="应用列表">
-            {applications.map((app) => (
-              <button
-                role="listitem"
-                className="application-tile"
-                key={app.id + app.version}
-                aria-label={`${app.title} ${app.version}`}
-                aria-pressed={selected === appKey(app)}
-                disabled={busy}
-                onClick={() => setSelected(appKey(app))}
-                onDoubleClick={() => void launch(app)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void launch(app);
-                  }
-                }}
-              >
-                <span className="application-icon">
-                  <AppIcon app={app} />
-                </span>
-                <strong>{app.title}</strong>
-                <small>{app.description}</small>
-              </button>
-            ))}
-          </div>
-          <div className="launcher-footer">
-            <span>双击或按回车打开</span>
-            <button
-              className="outline"
-              disabled={busy}
-              onClick={() =>
-                void launch(
-                  applications.find((a) => appKey(a) === selected) ??
-                    objectsApplication,
-                )
+        <button
+          className="toolbar-install"
+          aria-label="安装应用"
+          title="安装应用"
+          onClick={() => upload.current?.click()}
+        >
+          <Upload />
+          <span>安装应用</span>
+        </button>
+      )}
+      {active?.applicationId === objectsApplication.id &&
+        active.state.artifactId && (
+          <button
+            onClick={async () => {
+              try {
+                await client.execute({
+                  type: "set-application-state",
+                  instanceId: active.id,
+                  expectedRevision: active.revision,
+                  state: { ...active.state, artifactId: null },
+                });
+                onActivate(active.id);
+              } catch (e) {
+                onNotice((e as Error).message);
               }
-            >
-              <Plus />
-              打开应用
-            </button>
+            }}
+          >
+            所有资料
+          </button>
+        )}
+      {spaceKind(space) === "desk" && (
+        <button
+          className="workspace-save"
+          aria-label="保存为项目"
+          title="保存为项目"
+          onClick={onSaveProject}
+        >
+          <FolderPlus />
+          <span>保存为项目</span>
+        </button>
+      )}
+    </div>
+  );
+  return (
+    <section className="application-host" aria-label="认知应用工作空间">
+      {toolbarTarget && createPortal(toolbar, toolbarTarget)}
+      {!active && (
+        <div className="application-launcher">
+          <div
+            className="application-grid"
+            role="list"
+            aria-label="应用列表"
+            aria-busy={busy}
+          >
+            {applications.map((app) => (
+              <div role="listitem" key={`${app.id}@${app.version}`}>
+                <button
+                  type="button"
+                  className="application-tile"
+                  aria-label={`${app.title} ${app.version}`}
+                  disabled={busy}
+                  onClick={() => void launch(app)}
+                >
+                  <span className="application-icon">
+                    <AppIcon app={app} />
+                  </span>
+                  <strong>{app.title}</strong>
+                  <small>{app.description}</small>
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -308,9 +306,7 @@ export function ApplicationHost({
           client={client}
           onClose={() => setInstalling(null)}
           onInstalled={() => {
-            setSelected(appKey(installing));
             setInstalling(null);
-            onNotice("应用已安装，双击图标即可启动。");
           }}
         />
       )}

@@ -1,15 +1,17 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { MessageCircle } from "lucide-react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import { discussionId } from "../../../packages/core/src/model.js";
 import {
   conversationGroups,
   type ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import { shouldFollow } from "./interaction.js";
 import { actorName } from "./client.js";
-import { BrandMark } from "./BrandMark.js";
-import { ExecutionDialog } from "./ExecutionDialog.js";
+import { useConversationStream } from "./useConversationStream.js";
+import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 
 export type ExchangePosition = {
@@ -23,10 +25,9 @@ export type ExchangePosition = {
 export function Conversation({
   inputs,
   state,
-  contextTitle,
   runtime,
   projectId,
-  artifactId,
+  conversationId,
   onRetry,
   client,
   onOpen,
@@ -35,28 +36,79 @@ export function Conversation({
 }: {
   inputs: Workspace["inputs"];
   state: Workspace;
-  contextTitle: string;
   runtime: ConversationRuntime;
   projectId: string;
-  artifactId: string | null;
+  conversationId: string;
   onRetry: (id: string) => Promise<void>;
   client: WorkspaceClient;
   onOpen: (id: string) => void;
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
 }) {
-  const [executions, setExecutions] = useState(false);
-  const [stopping, setStopping] = useState<string | null>(null);
-  const [stopError, setStopError] = useState("");
+  const [stopStates, setStopStates] = useState<
+    Record<string, { pending: boolean; error: string }>
+  >({});
+  async function stopResponse(inputId: string) {
+    setStopStates((states) => ({
+      ...states,
+      [inputId]: { pending: true, error: "" },
+    }));
+    try {
+      await client.cancelInput(inputId);
+      setStopStates((states) => ({
+        ...states,
+        [inputId]: { pending: false, error: "" },
+      }));
+    } catch (cause) {
+      setStopStates((states) => ({
+        ...states,
+        [inputId]: {
+          pending: false,
+          error:
+            cause instanceof Error ? cause.message : "未能确认停止，请重试。",
+        },
+      }));
+    }
+  }
   const scroller = useRef<HTMLElement>(null);
-  const saved = positions.get(projectId);
+  const saved = positions.get(conversationId);
   const following = useRef(saved?.following ?? true);
   const initialized = useRef(false);
   const revealed = useRef(saved?.revealed ?? revealInputId);
   const [unread, setUnread] = useState(false);
-  const groups = conversationGroups(
-    inputs,
-    runtime.messages.filter((m) => m.projectId === projectId),
+  const stream = useConversationStream(
+    projectId,
+    conversationId,
+    runtime.configured,
+  );
+  const messages = new Map<string, LiveMessage>();
+  for (const m of runtime.messages)
+    if (m.projectId === projectId && discussionId(m) === conversationId)
+      messages.set(m.id, {
+        ...m,
+        conversationId,
+        inputId: m.inputId ?? null,
+        rootId: m.rootId ?? null,
+      });
+  for (const m of stream.messages)
+    if (m.projectId === projectId && m.conversationId === conversationId)
+      messages.set(m.id, m);
+  const groups = conversationGroups(inputs, [...messages.values()]);
+  // Keep cancellation with the corresponding response, including before its
+  // first token arrives. Only authoritative input IDs establish ownership.
+  const responseControls = new Map(
+    groups.flatMap((group) => {
+      const delivery = runtime.deliveries.find(
+        (d) => d.inputId === group.inputId,
+      );
+      if (
+        !delivery ||
+        !["queued", "sending", "running"].includes(delivery.state) ||
+        !(delivery.cancellable || delivery.cancelRequested)
+      )
+        return [];
+      return [[group.messages.at(-1)?.id ?? group.id, delivery] as const];
+    }),
   );
   const items = groups.flatMap((group) => [
     ...inputs
@@ -75,13 +127,21 @@ export function Conversation({
     })),
   ]);
   const contentVersion = items
-    .map((item) => item.id + ":" + (item.reply?.text.length ?? 0))
+    .map(
+      (item) =>
+        item.id +
+        ":" +
+        (item.reply?.text.length ?? 0) +
+        ":" +
+        (item.reply?.tool?.arguments.length ?? 0) +
+        ":" +
+        (item.reply?.tool?.result?.length ?? 0) +
+        ":" +
+        (item.reply?.tool?.status ?? "") +
+        ":" +
+        item.reply?.streaming,
+    )
     .join("|");
-  const active = runtime.deliveries.filter(
-    (d) =>
-      inputs.some((i) => i.id === d.inputId) &&
-      ["queued", "sending", "running"].includes(d.state),
-  );
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -95,7 +155,7 @@ export function Conversation({
       setUnread(true);
     revealed.current = revealInputId;
     initialized.current = true;
-    positions.set(projectId, {
+    positions.set(conversationId, {
       top: el.scrollTop,
       following: following.current,
       version: contentVersion,
@@ -122,7 +182,7 @@ export function Conversation({
         following.current = shouldFollow(
           el.scrollHeight - el.clientHeight - el.scrollTop,
         );
-        positions.set(projectId, {
+        positions.set(conversationId, {
           top: el.scrollTop,
           following: following.current,
           version: contentVersion,
@@ -131,21 +191,6 @@ export function Conversation({
         if (following.current) setUnread(false);
       }}
     >
-      <header className="conversation-heading">
-        <span>{contextTitle}的交流</span>
-        <button
-          className="conversation-execution-button"
-          disabled={!runtime.configured}
-          onClick={() => setExecutions(true)}
-        >
-          执行记录与审批
-        </button>
-      </header>
-      {stopError && (
-        <p role="alert" className="delivery-error">
-          {stopError}
-        </p>
-      )}
       {(!runtime.connected || runtime.error) && (
         <div className="runtime-notice" role="note">
           <span className="connection-dot" />
@@ -177,149 +222,125 @@ export function Conversation({
             const status = !delivery
               ? "已保存 · 未发送"
               : {
-                  queued: "排队中",
-                  sending: "正在发送",
-                  running: "Morphz 正在处理",
-                  completed: "已完成",
+                  queued: "",
+                  sending: "",
+                  running: "",
+                  completed: "",
                   failed: "执行失败",
                   cancelled: "已取消",
                 }[delivery.state];
+            const control = responseControls.get(id);
+            const stopControl = control && (
+              <StopResponse
+                key={control.inputId}
+                delivery={control}
+                stopping={stopStates[control.inputId]?.pending ?? false}
+                error={stopStates[control.inputId]?.error ?? ""}
+                onStop={stopResponse}
+              />
+            );
             return (
-              <article
-                className={
-                  "message conversation-message" +
-                  (reply ? " agent-reply " + reply.kind : " human-message")
-                }
-                key={id}
-                data-input-id={item?.id ?? reply?.inputId ?? undefined}
-              >
-                <div className="message-author">
-                  <span className="avatar">
-                    {item ? (
-                      actorName(state, item.author.actantId).slice(0, 1)
-                    ) : (
-                      <BrandMark />
-                    )}
-                  </span>
-                  <span>
-                    {item
-                      ? actorName(state, item.author.actantId)
-                      : reply?.kind === "reply"
-                        ? "Morphz"
-                        : "执行进度"}
-                  </span>
-                  <time dateTime={createdAt}>
-                    {new Date(createdAt).toLocaleString("zh-CN", {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </time>
-                </div>
-                {item?.selection && <blockquote>{item.selection}</blockquote>}
-                {item?.artifactId && (
-                  <button
-                    className="message-object-link"
-                    onClick={() => onOpen(item.artifactId!)}
-                  >
-                    {state.artifacts.find((a) => a.id === item.artifactId)
-                      ?.title ?? "关联对象"}{" "}
-                    · v{item.artifactRevision}
-                  </button>
-                )}
-                {item ? (
-                  <p>{item.body}</p>
-                ) : (
-                  <div className="reply-content">
-                    {reply?.kind === "progress" ? (
-                      <details className="message-progress">
-                        <summary>执行进度</summary>
-                        <p>{reply.text}</p>
-                      </details>
-                    ) : (
-                      <Markdown
-                        skipHtml
-                        components={{
-                          a: ({ children }) => <span>{children}</span>,
-                          img: ({ alt }) => <span>{alt || "图片"}</span>,
-                        }}
-                      >
-                        {reply!.text}
-                      </Markdown>
-                    )}
-                  </div>
-                )}
-                {item && (
-                  <small>
-                    {delivery?.cancelRequested
-                      ? "已请求停止 · 等待 Runtime 确认"
-                      : status}
-                    {item.artifactRevision
-                      ? " · v" + item.artifactRevision
-                      : ""}
-                  </small>
-                )}
-                {delivery?.error && (
-                  <div className="delivery-error" role="alert">
-                    {delivery.error}
-                  </div>
-                )}
-                {item && delivery?.cancellable && (
-                  <button
-                    className="retry-input"
-                    disabled={stopping === item.id}
-                    title="只停止这条输入的处理；已发生的操作不会撤销。"
-                    onClick={async () => {
-                      setStopping(item.id);
-                      setStopError("");
-                      try {
-                        await client.cancelInput(item.id);
-                      } catch (error) {
-                        setStopError(
-                          error instanceof Error
-                            ? error.message
-                            : "未能确认停止。",
-                        );
-                      } finally {
-                        setStopping(null);
-                      }
-                    }}
-                  >
-                    {stopping === item.id
-                      ? "正在请求…"
-                      : delivery.state === "queued"
-                        ? "取消发送"
-                        : "停止这次处理"}
-                  </button>
-                )}
-                {item &&
-                  runtime.configured &&
-                  (!delivery || delivery.retryable) && (
+              <Fragment key={id}>
+                <article
+                  className={
+                    "message conversation-message" +
+                    (reply ? " agent-reply " + reply.kind : " human-message")
+                  }
+                  key={id}
+                  data-input-id={item?.id ?? reply?.inputId ?? undefined}
+                  data-message-id={id}
+                  data-streaming={reply?.streaming || undefined}
+                  data-stream-active={
+                    (stream.connected &&
+                      reply?.streaming &&
+                      (!reply.tool || reply.tool.status === "generating")) ||
+                    undefined
+                  }
+                >
+                  {item?.intent && (
+                    <small className="message-intent">
+                      {inputIntents[item.intent].label}
+                    </small>
+                  )}
+                  {item?.selection && <blockquote>{item.selection}</blockquote>}
+                  {item?.artifactId && (
                     <button
-                      className="retry-input"
-                      onClick={() => void onRetry(item.id)}
+                      className="message-object-link"
+                      onClick={() => onOpen(item.artifactId!)}
                     >
-                      {delivery ? "重试发送" : "发送这条消息"}
+                      {state.artifacts.find((a) => a.id === item.artifactId)
+                        ?.title ?? "关联对象"}{" "}
+                      · v{item.artifactRevision}
                     </button>
                   )}
-              </article>
+                  {item ? (
+                    <p>{item.body}</p>
+                  ) : (
+                    <div className="reply-content">
+                      {reply?.tool ? (
+                        <ToolMessage message={reply} />
+                      ) : reply?.kind === "progress" ? (
+                        <details className="message-progress">
+                          <summary>执行进度</summary>
+                          <p>{reply.text}</p>
+                        </details>
+                      ) : (
+                        <>
+                          <Markdown
+                            skipHtml
+                            components={{
+                              a: ({ children }) => <span>{children}</span>,
+                              img: ({ alt }) => <span>{alt || "图片"}</span>,
+                            }}
+                          >
+                            {reply!.text}
+                          </Markdown>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {(reply?.kind !== "tool" || stopControl) && (
+                    <div className="message-meta">
+                      {reply && stopControl}
+                      {item &&
+                        item.author.actantId !== client.boot?.actantId && (
+                          <span>{actorName(state, item.author.actantId)}</span>
+                        )}
+                      {item && status && <span>{status}</span>}
+                      {reply?.kind !== "tool" && (
+                        <MessageActions
+                          createdAt={createdAt}
+                          text={item?.body ?? reply!.text}
+                        />
+                      )}
+                    </div>
+                  )}
+                  {delivery?.error && (
+                    <div className="delivery-error" role="alert">
+                      {delivery.error}
+                    </div>
+                  )}
+                  {item &&
+                    runtime.configured &&
+                    (!delivery || delivery.retryable) && (
+                      <button
+                        className="retry-input"
+                        onClick={() => void onRetry(item.id)}
+                      >
+                        {delivery ? "重试发送" : "发送这条消息"}
+                      </button>
+                    )}
+                </article>
+                {item && stopControl && (
+                  <div className="response-placeholder">{stopControl}</div>
+                )}
+              </Fragment>
             );
           })}
         </div>
       ) : (
         <div className="conversation-empty">
-          <MessageCircle />
           <p>这里还没有交流记录</p>
-          <small>在下方输入，围绕当前工作继续。</small>
-        </div>
-      )}
-      {active.length > 0 && (
-        <div className="execution-status" role="status">
-          <span className="connection-dot" />
-          {runtime.connected
-            ? `Morphz 正在处理${active.length > 1 ? ` ${active.length} 条消息` : ""}…`
-            : "等待连接恢复…"}
         </div>
       )}
       {unread && (
@@ -335,15 +356,186 @@ export function Conversation({
           有新内容 · 返回最新
         </button>
       )}
-      {executions && (
-        <ExecutionDialog
-          key={projectId + ":" + artifactId}
-          client={client}
-          scope={{ projectId, artifactId }}
-          onClose={() => setExecutions(false)}
-          onOpen={onOpen}
-        />
-      )}
     </section>
+  );
+}
+
+function StopResponse({
+  delivery,
+  stopping,
+  error,
+  onStop,
+}: {
+  delivery: ConversationRuntime["deliveries"][number];
+  stopping: boolean;
+  error: string;
+  onStop: (inputId: string) => Promise<void>;
+}) {
+  const pending = stopping || delivery.cancelRequested;
+  const label = pending ? "已请求停止，等待确认" : "停止这次处理";
+  return (
+    <div
+      className="response-controls"
+      data-response-input-id={delivery.inputId}
+    >
+      <button
+        className="stop-response"
+        aria-label={label}
+        title={pending ? label : "停止这次处理；已发生的操作不会撤销。"}
+        disabled={pending}
+        onClick={() => {
+          if (!pending) void onStop(delivery.inputId);
+        }}
+      >
+        <Square size={12} fill="currentColor" aria-hidden="true" />
+        <span>停止</span>
+      </button>
+      {error && (
+        <span className="delivery-error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function MessageActions({
+  createdAt,
+  text,
+}: {
+  createdAt: string;
+  text: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  return (
+    <>
+      <span className="message-peek">
+        <time dateTime={createdAt}>
+          {new Date(createdAt).toLocaleString("zh-CN", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </time>
+        <button
+          className="message-copy"
+          type="button"
+          aria-label={copied ? "已复制消息" : "复制消息"}
+          title={copied ? "已复制" : "复制消息"}
+          onClick={async () => {
+            setError(false);
+            try {
+              await copyMessage(text);
+              setCopied(true);
+            } catch {
+              setCopied(false);
+              setError(true);
+            }
+          }}
+        >
+          {copied ? (
+            <Check size={13} aria-hidden="true" />
+          ) : (
+            <Copy size={13} aria-hidden="true" />
+          )}
+        </button>
+      </span>
+      {error && (
+        <span className="delivery-error" role="alert">
+          复制失败，请重试或选中文字复制。
+        </span>
+      )}
+    </>
+  );
+}
+
+async function copyMessage(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Electron's permission gate can reject the async Clipboard API. Copy only
+    // the requested message via the existing user gesture; never read clipboard.
+    const selection = window.getSelection();
+    const ranges = selection
+      ? Array.from({ length: selection.rangeCount }, (_, i) =>
+          selection.getRangeAt(i).cloneRange(),
+        )
+      : [];
+    const focused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.readOnly = true;
+    input.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.append(input);
+    try {
+      input.select();
+      if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+    } finally {
+      input.remove();
+      focused?.focus({ preventScroll: true });
+      if (selection) {
+        selection.removeAllRanges();
+        for (const range of ranges) selection.addRange(range);
+      }
+    }
+  }
+}
+
+function ToolMessage({ message }: { message: LiveMessage }) {
+  const tool = message.tool!;
+  const status =
+    (
+      {
+        generating: "正在生成参数",
+        pending: "参数已生成",
+        running: "执行中",
+        queued: "排队中",
+        waiting_approval: "等待审批",
+        approval_required: "等待审批",
+        success: "已完成",
+        succeeded: "已完成",
+        completed: "已完成",
+        failed: "失败",
+        error: "失败",
+        cancelled: "已取消",
+      } as Record<string, string>
+    )[tool.status] ?? tool.status;
+  return (
+    <details className="message-tool" data-tool-status={tool.status}>
+      <summary>
+        <ChevronRight className="tool-chevron" size={14} />
+        <Wrench size={14} aria-hidden="true" />
+        <span className="tool-name">{tool.name || "工具调用"}</span>
+        <span className="tool-state">{status}</span>
+      </summary>
+      <div className="tool-details">
+        {tool.arguments && (
+          <>
+            <span className="tool-detail-label">参数</span>
+            <pre>{tool.arguments}</pre>
+          </>
+        )}
+        {tool.result !== undefined && (
+          <>
+            <span className="tool-detail-label">结果</span>
+            <pre>{tool.result || "无文本输出"}</pre>
+          </>
+        )}
+        {tool.truncated && (
+          <small>此处为预览；完整记录可在执行记录与审批中查看。</small>
+        )}
+      </div>
+    </details>
   );
 }

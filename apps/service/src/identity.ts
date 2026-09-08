@@ -200,6 +200,9 @@ export function workspaceFor(
   return {
     ...state,
     projects,
+    conversations: state.conversations.filter((c) =>
+      projectIds.has(c.projectId),
+    ),
     artifacts,
     applicationInstances: state.applicationInstances.filter((i) =>
       projectIds.has(i.workspaceId),

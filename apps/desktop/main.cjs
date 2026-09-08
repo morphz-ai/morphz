@@ -16,6 +16,7 @@ const {
 const { DesktopBrowser } = require("./browser.cjs");
 const { MicrophoneGate } = require("./microphone.cjs");
 const { DesktopCapture } = require("./capture.cjs");
+const { rendererURL, loadDevelopmentWindow } = require("./development.cjs");
 app.setName("Morphz");
 app.enableSandbox();
 const testProfile = process.env.MORPHZWORK_TEST_PROFILE;
@@ -35,12 +36,14 @@ else {
       !window ||
       event.sender !== window.webContents ||
       event.senderFrame !== event.sender.mainFrame ||
-      !trustedAppURL(event.senderFrame.url, url)
+      !trustedAppURL(event.senderFrame.url, uiURL)
     )
       throw new Error("请求不来自受信任的应用主窗口。");
   }
   const url = centerFromArgs(process.argv);
-  const microphone = new MicrophoneGate(url);
+  const hot = process.argv.includes("--hot");
+  const uiURL = rendererURL(url, hot, app.isPackaged);
+  const microphone = new MicrophoneGate(uiURL);
   const capture = new DesktopCapture();
   let microphoneRequest = 0;
   async function createWindow() {
@@ -94,10 +97,10 @@ else {
       window = null;
     });
     window.webContents.on("will-navigate", (event, destination) => {
-      if (!trustedAppURL(destination, url)) event.preventDefault();
+      if (!trustedAppURL(destination, uiURL)) event.preventDefault();
     });
     window.webContents.on("will-redirect", (event, destination) => {
-      if (!trustedAppURL(destination, url)) event.preventDefault();
+      if (!trustedAppURL(destination, uiURL)) event.preventDefault();
     });
     window.webContents.on("will-attach-webview", (event) =>
       event.preventDefault(),
@@ -116,9 +119,10 @@ else {
     // Always go through the one-use request gate, including after a previous recording.
     appSession.setPermissionCheckHandler(() => false);
     appSession.on("will-download", (event) => event.preventDefault());
-    window.once("ready-to-show", () => window.show());
     try {
-      await window.loadURL(url);
+      if (hot) await loadDevelopmentWindow(window, url, uiURL);
+      else await window.loadURL(url);
+      window.show();
     } catch {
       await dialog.showMessageBox(window, {
         type: "info",

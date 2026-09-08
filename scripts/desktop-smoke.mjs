@@ -5,12 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
+const port = Number(process.env.MORPHZWORK_DESKTOP_TEST_PORT ?? 65419);
+assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535);
+const origin = `http://127.0.0.1:${port}`;
 try {
-  await fetch("http://127.0.0.1:65419/api/health", {
+  await fetch(`${origin}/api/health`, {
     signal: AbortSignal.timeout(500),
   });
   throw new Error(
-    "65419 is already in use; the desktop smoke test requires a free development port.",
+    `${port} is already in use; the desktop smoke test requires a free development port.`,
   );
 } catch (e) {
   if (e.message.includes("already in use")) throw e;
@@ -22,7 +25,7 @@ const service = spawn(
   {
     env: {
       ...process.env,
-      MORPHZWORK_PORT: "65419",
+      MORPHZWORK_PORT: String(port),
       MORPHZWORK_DATA_DIR: join(dir, "data"),
       MORPHZWORK_ENV_FILE: "",
     },
@@ -34,7 +37,7 @@ try {
   let ready = false;
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch("http://127.0.0.1:65419/api/health");
+      const r = await fetch(`${origin}/api/health`);
       if (r.ok) {
         ready = true;
         break;
@@ -46,7 +49,7 @@ try {
   const env = { ...process.env, MORPHZWORK_TEST_PROFILE: join(dir, "profile") };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
-    args: ["apps/desktop/main.cjs", "--development"],
+    args: ["apps/desktop/main.cjs", `--center=${origin}`],
     env,
   });
   const window = await app.firstWindow();
@@ -74,6 +77,14 @@ try {
     nodeIntegration: false,
     contextIsolation: true,
   });
+  await window.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
+  await window
+    .getByRole("button", { name: "关闭应用 资料", exact: true })
+    .click();
+  await expect(
+    window.getByRole("button", { name: "资料 1.0.0", exact: true }),
+  ).toBeVisible();
+  await expect(window.locator(".statusbar")).toHaveCount(0);
   await window.getByLabel("AI 输入内容").fill("桌面快捷键检查");
   await window.getByLabel("AI 输入内容").press("Control+j");
   assert.equal(await window.getByLabel("AI 输入内容").isVisible(), false);
@@ -82,15 +93,36 @@ try {
     await window.getByLabel("AI 输入内容").inputValue(),
     "桌面快捷键检查",
   );
-  const web = await (
-    await fetch("http://127.0.0.1:65419/api/workspace")
-  ).json();
+  const web = await (await fetch(`${origin}/api/workspace`)).json();
   const desktop = await window.evaluate(
     async () => await (await fetch("/api/workspace")).json(),
   );
   assert.equal(desktop.workspace.id, web.workspace.id);
   assert.equal(desktop.workspace.revision, web.workspace.revision);
-  await window.getByLabel("AI 输入内容").fill("");
+  const desktopInput = window.getByLabel("AI 输入内容");
+  await desktopInput.fill("原生输入区验收，不发送");
+  await expect(window.locator(".conversation")).toBeVisible();
+  await window
+    .getByRole("main", { name: "主工作区" })
+    .click({ position: { x: 640, y: 160 } });
+  await expect(desktopInput).toHaveCount(0);
+  await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
+  await expect(desktopInput).toBeFocused();
+  await expect(desktopInput).toHaveValue("原生输入区验收，不发送");
+  await window.getByLabel("更多输入选项", { exact: true }).click();
+  await window.getByLabel("固定输入框", { exact: true }).click();
+  await window
+    .getByRole("main", { name: "主工作区" })
+    .click({ position: { x: 640, y: 160 } });
+  await expect(desktopInput).toBeVisible();
+  await expect(window.getByLabel("取消固定输入框")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await desktopInput.fill("");
+  console.log(
+    "PASS: native composer focus expands history, outside clicks collapse, pin keeps it open, and drafts survive.",
+  );
   await window.getByRole("button", { name: "外观设置", exact: true }).click();
   await window.getByRole("button", { name: "亮色", exact: true }).click();
   await window.getByRole("button", { name: "电光青", exact: true }).click();
@@ -152,7 +184,9 @@ try {
     .getByLabel("应用包文件")
     .setInputFiles("examples/applications/scratchpad.json");
   await window.getByRole("button", { name: "允许并安装" }).click();
-  await window.getByRole("listitem", { name: "工作便笺 1.0.0" }).dblclick();
+  await window
+    .getByRole("button", { name: "工作便笺 1.0.0", exact: true })
+    .click();
   const application = window.frameLocator('iframe[title="工作便笺应用界面"]');
   await expect(application.locator("#status")).toContainText("已连接");
   await application.locator("#note").fill("真实桌面的独立认知应用");
@@ -170,6 +204,22 @@ try {
     "真实桌面的独立认知应用",
   );
   await window.screenshot({ path: "test-results/desktop-application.png" });
+  const appBounds = await window
+    .locator(".cognitive-application-frame")
+    .boundingBox();
+  const barBounds = await window.locator(".topbar").boundingBox();
+  assert.equal(barBounds.height, 48);
+  assert.equal(appBounds.y, barBounds.y + barBounds.height);
+  await expect(
+    window.locator(".topbar").getByRole("tab", { name: "工作便笺" }),
+  ).toBeVisible();
+  await expect(
+    window.locator(".sidebar-header").getByLabel("外观设置", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    window.locator(".sidebar-header .notification-trigger"),
+  ).toBeVisible();
+  await expect(window.locator(".topbar .input-toggle")).toHaveCount(0);
   await window.getByRole("button", { name: "应用启动台", exact: true }).click();
   console.log(
     "PASS: real Electron installs and launches an independent application, saves state, restores after reload, and exposes neither Node nor desktop IPC to its frame.",
@@ -195,7 +245,73 @@ try {
         ),
       "no-drag",
     );
+    const upperEdge = await window.locator(".topbar").evaluate((el) => {
+      const style = getComputedStyle(el, "::before");
+      return {
+        region: style.getPropertyValue("-webkit-app-region"),
+        height: style.height,
+      };
+    });
+    assert.deepEqual(upperEdge, { region: "drag", height: "6px" });
+    const navigation = window.getByRole("navigation", { name: "主导航" });
+    for (const name of ["项目", "事项"]) {
+      await navigation
+        .getByRole("button", { name: new RegExp(`^${name}`) })
+        .click();
+      await expect(window.locator(".toolbar-title button")).toHaveCount(0);
+      assert.notEqual(
+        await window
+          .locator(".page-toolbar-slot")
+          .evaluate((el) =>
+            getComputedStyle(el).getPropertyValue("-webkit-app-region"),
+          ),
+        "no-drag",
+        "Toolbar whitespace must remain draggable, not a full-width no-drag container.",
+      );
+      const regions = await window
+        .locator(
+          ".topbar button, .topbar input, .topbar select, .topbar summary",
+        )
+        .evaluateAll((elements) =>
+          elements
+            .filter((el) => el.getBoundingClientRect().width > 0)
+            .map((el) =>
+              getComputedStyle(el).getPropertyValue("-webkit-app-region"),
+            ),
+        );
+      assert.ok(
+        regions.length > 0 && regions.every((region) => region === "no-drag"),
+      );
+    }
+    await navigation
+      .getByRole("button", { name: "工作台", exact: true })
+      .click();
+    await window
+      .getByRole("button", { name: "应用启动台", exact: true })
+      .click();
+    console.log(
+      "PASS: native upper-edge drag regions preserve clickable controls and draggable page-header whitespace.",
+    );
   }
+  const sidebarBounds = await window.locator(".sidebar").boundingBox();
+  const toggleBounds = await window.locator(".sidebar-toggle").boundingBox();
+  assert.ok(
+    Math.abs(
+      sidebarBounds.x +
+        sidebarBounds.width -
+        toggleBounds.x -
+        toggleBounds.width -
+        16,
+    ) < 1,
+  );
+  assert.ok(
+    Math.abs(
+      toggleBounds.y +
+        toggleBounds.height / 2 -
+        barBounds.y -
+        barBounds.height / 2,
+    ) < 1,
+  );
   await window.getByRole("button", { name: "隐藏侧边栏", exact: true }).click();
   assert.equal(await window.locator(".sidebar").isVisible(), false);
   await window.getByRole("button", { name: "显示侧边栏", exact: true }).click();
@@ -225,6 +341,16 @@ try {
     width: innerWidth,
     height: innerHeight,
   }));
+  const contentBounds = await window.locator(".workspace").boundingBox();
+  assert.ok(
+    Math.abs(
+      searchBounds.x +
+        searchBounds.width / 2 -
+        contentBounds.x -
+        contentBounds.width / 2,
+    ) < 1,
+  );
+  assert.ok(searchBounds.x >= contentBounds.x + 12);
   assert.ok(
     searchBounds.x >= 0 &&
       searchBounds.x + searchBounds.width <= viewport.width,
@@ -234,6 +360,13 @@ try {
       searchBounds.y + searchBounds.height <= viewport.height,
   );
   // Electron's CDP screenshot can crop at non-default zoom; capture the native compositor.
+  await window.bringToFront();
+  await window.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   const zoomImage = await app.evaluate(async ({ BrowserWindow }) =>
     (await BrowserWindow.getAllWindows()[0].capturePage())
       .toPNG()
@@ -245,11 +378,114 @@ try {
   );
   await window.keyboard.press("Escape");
   await expect(window.getByLabel("AI 输入内容")).toBeFocused();
+  await window.getByRole("button", { name: "通知", exact: true }).click();
+  const notifications = window.getByRole("dialog", {
+    name: "通知",
+    exact: true,
+  });
+  await expect(
+    notifications.getByRole("heading", { name: "通知", exact: true }),
+  ).toBeFocused();
+  const notificationBounds = await notifications.boundingBox();
+  assert.ok(
+    notificationBounds.x >= 0 &&
+      notificationBounds.x + notificationBounds.width <= viewport.width,
+  );
+  assert.ok(
+    notificationBounds.y >= 0 &&
+      notificationBounds.y + notificationBounds.height <= viewport.height,
+  );
+  await expect(
+    notifications.getByRole("radio", { name: "仅高优先级" }),
+  ).toBeVisible();
+  await window.bringToFront();
+  await window.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const notificationImage = await app.evaluate(async ({ BrowserWindow }) =>
+    (await BrowserWindow.getAllWindows()[0].capturePage())
+      .toPNG()
+      .toString("base64"),
+  );
+  writeFileSync(
+    "test-results/desktop-notifications-zoom-200.png",
+    Buffer.from(notificationImage, "base64"),
+  );
+  await window.keyboard.press("Escape");
+  await expect(
+    window.getByRole("button", { name: "通知", exact: true }),
+  ).toBeFocused();
   await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1),
   );
   console.log(
     "PASS: real Electron launch, shared center, isolated renderer, no Node exposure, composer shortcuts.",
+  );
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].setSize(1200, 820),
+  );
+  const nav = window.getByRole("navigation", { name: "主导航" });
+  await expect(nav.getByRole("button").first()).toHaveText("对话");
+  await nav.getByRole("button", { name: "对话", exact: true }).click();
+  await expect(window).toHaveTitle("对话 — Morphz");
+  if (!(await window.getByLabel("AI 输入内容").isVisible()))
+    await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
+  await window.getByLabel("AI 输入内容").fill("原生全局对话草稿，不发送");
+  await expect(window.locator(".conversation")).toBeVisible();
+  await window.getByRole("button", { name: "新建项目", exact: true }).click();
+  await window.getByLabel("新对象标题", { exact: true }).fill("原生多对话验收");
+  await window.getByRole("button", { name: "创建", exact: true }).click();
+  await window.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
+  await window.getByLabel("项目对话", { exact: true }).click();
+  await window.getByLabel("新建项目对话").click();
+  await expect(window.getByLabel("项目对话", { exact: true })).toHaveText(
+    "对话 2",
+  );
+  await expect(
+    window.getByLabel("关闭应用 资料", { exact: true }),
+  ).toBeVisible();
+  await window.getByLabel("AI 输入内容").fill("第二对话草稿，不发送");
+  await window.getByLabel("项目对话", { exact: true }).click();
+  await window.getByLabel("归档：对话 2", { exact: true }).click();
+  await expect(window.getByLabel("AI 输入内容")).toHaveCount(0);
+  await window.getByRole("button", { name: "恢复对话", exact: true }).click();
+  if (!(await window.getByLabel("AI 输入内容").isVisible()))
+    await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
+  await expect(window.getByLabel("AI 输入内容")).toHaveValue(
+    "第二对话草稿，不发送",
+  );
+  await window.getByLabel("项目对话", { exact: true }).click();
+  await expect(
+    window.getByLabel("项目对话列表", { exact: true }),
+  ).toBeVisible();
+  await window.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const conversationImage = await app.evaluate(async ({ BrowserWindow }) =>
+    (await BrowserWindow.getAllWindows()[0].capturePage())
+      .toPNG()
+      .toString("base64"),
+  );
+  writeFileSync(
+    "test-results/desktop-conversations.png",
+    Buffer.from(conversationImage, "base64"),
+  );
+  await window.keyboard.press("Escape");
+  await nav.getByRole("button", { name: "对话", exact: true }).click();
+  if (!(await window.getByLabel("AI 输入内容").isVisible()))
+    await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
+  await expect(window.getByLabel("AI 输入内容")).toHaveValue(
+    "原生全局对话草稿，不发送",
+  );
+  await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  console.log(
+    "PASS: native fixed global dialogue, project conversations, preserved application, archive/restore and independent drafts.",
   );
   if (process.platform === "darwin") {
     await app.evaluate(({ BrowserWindow }) =>
@@ -283,7 +519,7 @@ try {
   }
   await app.close();
   app = undefined;
-  assert.equal((await fetch("http://127.0.0.1:65419/api/health")).ok, true);
+  assert.equal((await fetch(`${origin}/api/health`)).ok, true);
   console.log(
     "PASS: normal desktop quit leaves the independent center available.",
   );

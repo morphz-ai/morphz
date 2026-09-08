@@ -17,6 +17,11 @@ const schema = z.object({
     }),
   ),
 });
+const notificationModes = [
+  { value: "all", label: "全部事项" },
+  { value: "high", label: "仅高优先级" },
+  { value: "off", label: "不提示" },
+] as const;
 export function Notifications({
   client,
   onOpen,
@@ -32,6 +37,7 @@ export function Notifications({
     [open, setOpen] = useState(false),
     [error, setError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null),
+    heading = useRef<HTMLHeadingElement>(null),
     current = useRef(client);
   current.current = client;
   useEffect(() => {
@@ -55,7 +61,7 @@ export function Notifications({
       clearInterval(timer);
     };
   }, []);
-  useModal(dialog, undefined, open);
+  useModal(dialog, heading, open);
   async function change(
     command: Parameters<WorkspaceClient["notifications"]>[0],
   ) {
@@ -76,7 +82,11 @@ export function Notifications({
         onClick={() => setOpen(true)}
       >
         <Bell size={17} />
-        {view.unread > 0 && <small>{view.unread}</small>}
+        {view.unread > 0 && (
+          <span className="notification-badge" aria-hidden="true">
+            {view.unread > 99 ? "99+" : view.unread}
+          </span>
+        )}
       </button>
       {open && (
         <dialog
@@ -86,7 +96,32 @@ export function Notifications({
           onCancel={() => setOpen(false)}
         >
           <header>
-            <h2>通知</h2>
+            <h2 ref={heading} tabIndex={-1}>
+              通知
+            </h2>
+            <fieldset
+              className="notification-preferences"
+              aria-describedby="notification-mode-hint"
+              title="提醒范围：仅影响未读提示，不改变事项或通知记录。"
+            >
+              <legend className="visually-hidden">提醒范围</legend>
+              <div className="notification-modes">
+                {notificationModes.map((mode) => (
+                  <label key={mode.value}>
+                    <input
+                      type="radio"
+                      name="notification-mode"
+                      value={mode.value}
+                      checked={view.mode === mode.value}
+                      onChange={() =>
+                        void change({ action: "settings", mode: mode.value })
+                      }
+                    />
+                    <span>{mode.label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <button
               className="icon-button"
               aria-label="关闭通知"
@@ -95,25 +130,8 @@ export function Notifications({
               <X />
             </button>
           </header>
-          <label>
-            提醒范围
-            <select
-              aria-label="通知提醒范围"
-              value={view.mode}
-              onChange={(e) =>
-                void change({
-                  action: "settings",
-                  mode: e.target.value as "all" | "high" | "off",
-                })
-              }
-            >
-              <option value="all">全部事项</option>
-              <option value="high">仅高优先级</option>
-              <option value="off">不显示未读提示</option>
-            </select>
-          </label>
-          <p className="muted">
-            设置与已读状态跟随当前身份。文字修订不会反复生成提醒。
+          <p className="visually-hidden" id="notification-mode-hint">
+            仅影响未读提示，不改变事项或通知记录。
           </p>
           {error && <p role="alert">{error}</p>}
           <div className="notification-list">
@@ -121,6 +139,7 @@ export function Notifications({
               <button
                 key={i.id}
                 data-unread={!i.read}
+                aria-label={`${i.read ? "" : "未读，"}${i.title}，${i.priority === "high" ? "高优先级，" : ""}${i.reason}`}
                 onClick={async () => {
                   if (await change({ action: "read", ids: [i.id] })) {
                     setOpen(false);
@@ -135,7 +154,9 @@ export function Notifications({
                 </small>
               </button>
             ))}
-            {!view.items.length && <p>目前没有需要提醒的事项。</p>}
+            {!view.items.length && !error && (
+              <p className="notification-empty">暂无通知</p>
+            )}
           </div>
         </dialog>
       )}

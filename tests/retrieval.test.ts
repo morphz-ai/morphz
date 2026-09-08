@@ -192,7 +192,7 @@ test("旧数据库无来源字段可升级，保留原对象，旧版本不能�
     assert.equal(
       (db.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      11,
+      12,
     );
     db.close();
   } finally {

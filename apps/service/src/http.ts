@@ -18,6 +18,7 @@ import { z } from "zod";
 import { extractPdf } from "./pdf.js";
 import { pdfImportIssue, maxPdfBytes } from "../../../packages/core/src/pdf.js";
 import { disconnectedRuntime } from "../../../packages/core/src/conversation.js";
+import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import type { RuntimeBridge } from "./runtime.js";
 import type { WorkspaceStore } from "./store.js";
 import type { AgentTools } from "./agent-tools.js";
@@ -80,7 +81,8 @@ export function createAppServer(
     ...(options.devOrigin ? [options.devOrigin] : []),
   ]);
   const hosts = new Set([...origins].map((origin) => new URL(origin).host));
-  return createServer(async (req, res) => {
+  const streams = new Set<() => void>();
+  const server = createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "no-store");
@@ -239,6 +241,9 @@ export function createAppServer(
         const scope = executionScopeSchema.parse({
           projectId: url.searchParams.get("projectId"),
           artifactId: url.searchParams.get("artifactId") || null,
+          ...(url.searchParams.get("conversationId")
+            ? { conversationId: url.searchParams.get("conversationId") }
+            : {}),
         });
         const jobId = url.searchParams.get("jobId");
         checkProject(store.snapshot(), scope.projectId, localAccess);
@@ -355,6 +360,92 @@ export function createAppServer(
           runtime:
             options.runtime?.snapshot(localAccess) ?? disconnectedRuntime,
         });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/conversation/stream") {
+        const scope = z
+          .object({
+            projectId: z.string().min(1),
+            conversationId: z.string().min(1),
+          })
+          .parse(Object.fromEntries(url.searchParams));
+        checkProject(store.snapshot(), scope.projectId, localAccess);
+        if (
+          !store
+            .snapshot()
+            .conversations.some(
+              (c) =>
+                c.id === scope.conversationId &&
+                c.projectId === scope.projectId,
+            )
+        )
+          throw new DomainError("not_found", "对话不存在。");
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "X-Accel-Buffering": "no",
+          Connection: "keep-alive",
+        });
+        res.flushHeaders();
+        let closed = false,
+          dispose: (() => void) | undefined;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          streams.delete(close);
+          dispose?.();
+          res.end();
+        };
+        const heartbeat = setInterval(() => {
+          try {
+            assertIdentity();
+            checkProject(store.snapshot(), scope.projectId, localAccess);
+            res.write(": keepalive\n\n");
+          } catch {
+            close();
+          }
+        }, 1000);
+        res.on("close", close);
+        streams.add(close);
+        let previous = new Map<string, string>(),
+          connection: boolean | undefined;
+        const send = (value: ConversationStream) => {
+          if (closed) return;
+          try {
+            assertIdentity();
+            const next = new Map(
+              value.messages.map((m) => [m.id, JSON.stringify(m)]),
+            );
+            const messages = value.messages.filter(
+              (m) => previous.get(m.id) !== next.get(m.id),
+            );
+            const removed = [...previous.keys()].filter((id) => !next.has(id));
+            if (
+              connection === value.connected &&
+              !messages.length &&
+              !removed.length
+            )
+              return;
+            if (res.writableLength > 4 * 1024 * 1024) {
+              close();
+              return;
+            }
+            res.write(
+              `data: ${JSON.stringify({ connected: value.connected, reset: connection === undefined, removed, messages })}\n\n`,
+            );
+            previous = next;
+            connection = value.connected;
+          } catch {
+            close();
+          }
+        };
+        dispose = options.runtime?.observeConversation(
+          scope,
+          localAccess,
+          send,
+          close,
+        );
+        if (!options.runtime) send({ connected: false, messages: [] });
         return;
       }
       if (
@@ -729,5 +820,10 @@ export function createAppServer(
         });
       }
     }
+  });
+  return Object.assign(server, {
+    closeStreams: () => {
+      for (const close of streams) close();
+    },
   });
 }

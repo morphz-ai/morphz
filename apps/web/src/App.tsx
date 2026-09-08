@@ -5,6 +5,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowUp,
   ChevronDown,
@@ -26,16 +27,19 @@ import {
   Search,
   FileUp,
   Mic,
-  Scan,
+  SquareBottomDashedScissors,
+  Pin,
   Brain,
   Maximize2,
   Minimize2,
   History,
   MoreHorizontal,
+  ListChecks,
 } from "lucide-react";
 import {
   inboxFor,
   spaceKind,
+  discussionId,
   type Artifact,
   type TaskContent,
 } from "../../../packages/core/src/model.js";
@@ -46,8 +50,16 @@ import {
   useWorkspace,
   storageScope,
 } from "./client.js";
-import { ArtifactEditor, TaskFields } from "./ArtifactEditor.js";
+import { ArtifactEditor } from "./ArtifactEditor.js";
+import {
+  inputIntents,
+  type InputIntent,
+} from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
+import { ExecutionDialog } from "./ExecutionDialog.js";
+import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import { ProjectConversations } from "./ProjectConversations.js";
+import { ComposerOptions } from "./ComposerOptions.js";
 import { BrandMark } from "./BrandMark.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
@@ -55,15 +67,15 @@ import { ApplicationHost } from "./ApplicationHost.js";
 import { objectsApplication } from "../../../packages/core/src/applications.js";
 import { ImportDocuments, SearchDocuments } from "./LibraryDialogs.js";
 import { UnderstandingDialog } from "./UnderstandingDialog.js";
-import { emptyInteractive } from "../../../packages/core/src/interactive.js";
 import { SpeechDialog } from "./SpeechDialog.js";
 import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { Notifications } from "./Notifications.js";
 import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
+import { useExchangeFocus } from "./useExchangeFocus.js";
 
-type View = "inbox" | "desk" | "projects";
+type View = "dialogue" | "inbox" | "desk" | "projects";
 type Preferences = {
   accent: "cyan" | "iris" | "coral" | "mono";
   appearance: "system" | "light" | "dark";
@@ -79,9 +91,13 @@ type Preferences = {
   projectOpen: boolean;
   applications?: Record<string, string | null>;
   interactions?: Record<string, InteractionMode>;
+  pinnedInputs?: Record<string, boolean>;
+  selectedConversations?: Record<string, string>;
 };
 type InputDraft = {
   body: string;
+  intent?: InputIntent;
+  taskResult?: { taskId: string; revision: number };
   selection: string;
   revision: number | null;
   page?: number;
@@ -101,6 +117,7 @@ const defaultPrefs: Preferences = {
 };
 const emptyDraft: InputDraft = { body: "", selection: "", revision: null };
 const labels: Record<View, string> = {
+  dialogue: "对话",
   inbox: "事项",
   desk: "工作台",
   projects: "项目",
@@ -189,12 +206,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       accent: ["cyan", "iris", "coral", "mono"].includes(p.accent ?? "")
         ? p.accent!
         : defaultPrefs.accent,
-      view: ["inbox", "desk", "projects"].includes(p.view ?? "")
+      view: ["dialogue", "inbox", "desk", "projects"].includes(p.view ?? "")
         ? p.view!
         : defaultPrefs.view,
     };
   });
   const [notice, setNotice] = useState(""),
+    [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
     [taskFilter, setTaskFilter] = useState<
       "mine" | "active" | "waiting" | "completed" | "all"
     >("mine"),
@@ -210,24 +228,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactRevision?: number;
     } | null>(null),
     [importOpen, setImportOpen] = useState(false),
+    [executions, setExecutions] = useState<ExecutionScope | null>(null),
     [understandingOpen, setUnderstandingOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
     [themeOpen, setThemeOpen] = useState(false),
     [spaceMenu, setSpaceMenu] = useState(false),
+    [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null),
+    [detailToolbarTarget, setDetailToolbarTarget] =
+      useState<HTMLDivElement | null>(null),
+    [pageToolbarTarget, setPageToolbarTarget] = useState<HTMLDivElement | null>(
+      null,
+    ),
     [creating, setCreating] = useState<
-      | "document"
-      | "task"
-      | "project"
-      | "save-project"
-      | "website"
-      | "interactive"
-      | null
+      "document" | "project" | "save-project" | null
     >(null),
     [sending, setSending] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, InputDraft>>(() =>
     readLocal(draftKey("inputs"), {}),
   );
+  const savingWorkspace = useRef<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null),
+    exchange = useRef<HTMLDivElement>(null),
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null),
@@ -248,20 +269,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     media.addEventListener("change", changed);
     return () => media.removeEventListener("change", changed);
   }, []);
-  const personalSpace = (kind: "desk" | "inbox") =>
+  const personalSpace = (kind: "desk" | "inbox" | "dialogue") =>
     state?.projects.find(
       (p) => p.kind === kind && p.ownerPrincipalId === client.boot!.principalId,
     );
   const project =
-    prefs.view === "desk" || (prefs.view === "projects" && !prefs.projectOpen)
-      ? personalSpace("desk")
-      : prefs.view === "inbox"
-        ? personalSpace("inbox")
-        : (state?.projects.find(
-            (p) => p.id === prefs.projectId && spaceKind(p) === "project",
-          ) ??
-          state?.projects.find((p) => spaceKind(p) === "project") ??
-          personalSpace("desk"));
+    creating === "save-project" && savingWorkspace.current
+      ? state?.projects.find((p) => p.id === savingWorkspace.current)
+      : prefs.view === "dialogue"
+        ? personalSpace("dialogue")
+        : prefs.view === "desk" ||
+            (prefs.view === "projects" && !prefs.projectOpen)
+          ? personalSpace("desk")
+          : prefs.view === "inbox"
+            ? personalSpace("inbox")
+            : (state?.projects.find(
+                (p) => p.id === prefs.projectId && spaceKind(p) === "project",
+              ) ??
+              state?.projects.find((p) => spaceKind(p) === "project") ??
+              personalSpace("desk"));
   const applicationWorkspaceOpen =
     prefs.view === "desk" || (prefs.view === "projects" && prefs.projectOpen);
   const activeId =
@@ -288,15 +314,39 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             ? activeInstance.state.artifactId
             : null)),
   );
+  const selectedConversation =
+    state?.conversations.find(
+      (c) =>
+        c.projectId === project?.id &&
+        c.id === prefs.selectedConversations?.[project?.id ?? ""],
+    ) ?? state?.conversations.find((c) => c.id === project?.id);
+  const conversationId = selectedConversation?.id ?? project?.id ?? "";
+  function conversationKey(workspaceId: string) {
+    return workspaceId === project?.id
+      ? conversationId
+      : (prefs.selectedConversations?.[workspaceId] ?? workspaceId);
+  }
   const contextKey =
-    (project?.id ?? "") +
-    ":" +
-    (artifact?.id ?? activeInstance?.id ?? prefs.view);
-  const interaction = prefs.interactions?.[project?.id ?? ""] ?? "input";
+    conversationId + ":" + (artifact?.id ?? activeInstance?.id ?? prefs.view);
+  const dialogueCanvas = prefs.view === "dialogue" && !artifact;
+  const interaction = prefs.interactions?.[conversationId] ?? "input";
   const inputVisible = interaction !== "hidden";
   const conversationVisible =
-    interaction === "recent" || interaction === "history";
-  const historyVisible = interaction === "history";
+    dialogueCanvas ||
+    !!selectedConversation?.archivedAt ||
+    interaction === "recent" ||
+    interaction === "history";
+  const historyVisible = dialogueCanvas || interaction === "history";
+  const inputPinned = !!prefs.pinnedInputs?.[conversationId];
+  const keepExchangeOpen = useExchangeFocus({
+    root: exchange,
+    scope: conversationId,
+    visible: inputVisible,
+    pinned: inputPinned,
+    suspended:
+      !!speech || !!capture || searchOpen || !!creating || !!executions,
+    onLeave: () => setInteraction("hidden"),
+  });
   const latestInteraction = useRef(interaction);
   latestInteraction.current = interaction;
   const positions = useRef(new Map<string, number>());
@@ -306,25 +356,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   );
   const [seenReplies, setSeenReplies] = useState<Record<string, string>>({});
   const replies = client.boot!.runtime.messages.filter(
-    (m) => m.projectId === project?.id,
+    (m) => m.projectId === project?.id && discussionId(m) === conversationId,
   );
   const replyVersion = replies.map((m) => m.id + ":" + m.text.length).join("|");
   const unseenReply =
-    !!replyVersion && replyVersion !== seenReplies[project?.id ?? ""];
+    !!replyVersion && replyVersion !== seenReplies[conversationId];
   useEffect(() => {
     if (conversationVisible && project)
-      setSeenReplies((old) => ({ ...old, [project.id]: replyVersion }));
-  }, [conversationVisible, project?.id, replyVersion]);
+      setSeenReplies((old) => ({ ...old, [conversationId]: replyVersion }));
+  }, [conversationVisible, conversationId, replyVersion]);
   useEffect(() => {
     setSpaceMenu(false);
   }, [project?.id, prefs.view, activeId]);
   useLayoutEffect(() => {
-    const element = main.current;
+    const element =
+      main.current?.querySelector<HTMLElement>(
+        ".application-pane:not([hidden]) .library-results, .application-pane:not([hidden]):not(:has(.library-results))",
+      ) ?? main.current;
     element?.scrollTo({ top: positions.current.get(contextKey) ?? 0 });
     return () => {
       if (element) positions.current.set(contextKey, element.scrollTop);
     };
-  }, [contextKey]);
+  }, [contextKey, activeId]);
   useEffect(() => {
     document.title = `${artifact?.title ?? (prefs.view === "projects" && prefs.projectOpen ? project?.title : labels[prefs.view])} — Morphz`;
   }, [artifact?.title, project?.title, prefs.view, prefs.projectOpen]);
@@ -341,7 +394,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       "view" in change ||
       "projectId" in change ||
       "artifactId" in change ||
-      "applications" in change
+      "applications" in change ||
+      "selectedConversations" in change
     )
       navigationGeneration.current++;
     setPrefs((previous) => {
@@ -349,11 +403,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ...previous,
         ...("artifactId" in change ? { artifactRevision: null } : {}),
         ...change,
+        ...(change.selectedConversations
+          ? {
+              selectedConversations: {
+                ...previous.selectedConversations,
+                ...change.selectedConversations,
+              },
+            }
+          : {}),
         ...(change.interactions
           ? {
               interactions: {
                 ...previous.interactions,
                 ...change.interactions,
+              },
+            }
+          : {}),
+        ...(change.pinnedInputs
+          ? {
+              pinnedInputs: {
+                ...previous.pinnedInputs,
+                ...change.pinnedInputs,
               },
             }
           : {}),
@@ -367,7 +437,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   }
   function setInteraction(mode: InteractionMode, id = project?.id) {
-    if (id) prefer({ interactions: { [id]: mode } });
+    if (id) prefer({ interactions: { [conversationKey(id)]: mode } });
   }
   function setDraft(key: string, value: InputDraft) {
     setDrafts((previous) => {
@@ -409,14 +479,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             ? "projects"
             : owner?.kind === "inbox"
               ? "inbox"
-              : "desk",
+              : owner?.kind === "dialogue"
+                ? "dialogue"
+                : "desk",
         projectOpen: !!owner && spaceKind(owner) === "project",
         projectId: workspaceId,
         artifactId: id,
         artifactRevision: revision ?? null,
         artifactPage: page ?? null,
-        ...(prefs.interactions?.[workspaceId] === "history"
-          ? { interactions: { [workspaceId]: "recent" as const } }
+        ...(prefs.interactions?.[conversationKey(workspaceId)] === "history"
+          ? {
+              interactions: {
+                [conversationKey(workspaceId)]: "recent" as const,
+              },
+            }
           : {}),
         applications: { ...prefs.applications, [workspaceId]: result.entityId },
       });
@@ -431,13 +507,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       applications: { ...prefs.applications, [project.id]: id },
       artifactId: null,
       ...(historyVisible
-        ? { interactions: { [project.id]: "recent" as const } }
+        ? { interactions: { [conversationId]: "recent" as const } }
         : {}),
     });
   }
   function navigate(view: View) {
     setCreating(null);
     prefer({ view, artifactId: null, projectOpen: false });
+  }
+  function selectConversation(id: string) {
+    if (!project) return;
+    prefer({
+      selectedConversations: {
+        ...prefs.selectedConversations,
+        [project.id]: id,
+      },
+      interactions: {
+        [id]: prefs.interactions?.[id] === "history" ? "history" : "recent",
+      },
+    });
   }
   function openProject(id: string) {
     setCreating(null);
@@ -449,16 +537,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   }
   function showInput() {
+    keepExchangeOpen();
     setMobileCollaboration(false);
     previousFocus.current = document.activeElement as HTMLElement;
     setInteraction(revealInput(interaction));
     requestAnimationFrame(() => input.current?.focus());
   }
+  function composeIntent(intent: InputIntent) {
+    // Preserve the exact workspace, object reference, selection and unfinished text.
+    // Clicking a shortcut neither submits a request nor creates an empty object.
+    setDraft(contextKey, { ...draft, intent });
+    showInput();
+  }
   function hideInput() {
     setInteraction("hidden");
-    if (document.activeElement === input.current) {
-      if (previousFocus.current?.isConnected) previousFocus.current.focus();
-      else toggle.current?.focus();
+    if (document.activeElement?.closest("#global-composer")) {
+      requestAnimationFrame(() => {
+        if (previousFocus.current?.isConnected) previousFocus.current.focus();
+        else toggle.current?.focus();
+      });
     }
   }
   useEffect(() => {
@@ -499,6 +596,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         } else if (themeOpen) {
           e.preventDefault();
           setThemeOpen(false);
+          theme.current?.querySelector<HTMLButtonElement>("button")?.focus();
         } else if (mobileCollaboration) {
           e.preventDefault();
           setMobileCollaboration(false);
@@ -534,12 +632,33 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     document.documentElement.dataset.appearance = prefs.appearance;
   }, [prefs.appearance]);
   async function send(asAnnotation = false) {
-    if (!project || !draft.body.trim() || sending) return;
+    if (
+      !project ||
+      selectedConversation?.archivedAt ||
+      !draft.body.trim() ||
+      sending
+    )
+      return;
     const key = contextKey,
       captured = { ...draft };
     setSending(true);
+    setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
-      if (asAnnotation && artifact && captured.selection && captured.revision)
+      if (captured.taskResult && !asAnnotation) {
+        if (captured.taskResult.taskId !== artifact?.id)
+          throw new Error("请回到这件事项后提交结果，草稿已保留。");
+        await client.execute({
+          type: "respond-task",
+          taskId: captured.taskResult.taskId,
+          expectedRevision: captured.taskResult.revision,
+          body: captured.body,
+        });
+      } else if (
+        asAnnotation &&
+        artifact &&
+        captured.selection &&
+        captured.revision
+      )
         await client.execute({
           type: "annotate",
           artifactId: artifact.id,
@@ -553,6 +672,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           {
             type: "record-input",
             projectId: project.id,
+            conversationId,
             ...(activeInstance
               ? { applicationInstanceId: activeInstance.id }
               : {}),
@@ -562,13 +682,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               : null,
             selection: captured.selection,
             body: captured.body,
+            ...(captured.intent ? { intent: captured.intent } : {}),
             targetActantId: "morphz-agent",
           },
           !!client.boot?.runtime.configured,
         );
         setRevealedInputs((old) => ({
           ...old,
-          [project.id]: receipt.entityId,
+          [conversationId]: receipt.entityId,
         }));
       }
       setDraft(key, { ...emptyDraft });
@@ -576,22 +697,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         if (asAnnotation) {
           if (compact) setMobileCollaboration(true);
           else prefer({ collaboration: true });
-        } else {
+        } else if (!captured.taskResult) {
           setMobileCollaboration(false);
           setInteraction(afterSend(latestInteraction.current));
           if (latestInteraction.current !== "hidden")
             requestAnimationFrame(() => input.current?.focus());
         }
       }
-      setNotice(
-        asAnnotation
-          ? "批注已保存，原文版本已关联。"
-          : client.boot?.runtime.configured
-            ? "消息已保存并排队发送给 Morphz。"
-            : "输入已保存到中心；尚未发送给 Morphz Runtime。",
-      );
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : "保存失败，草稿已保留。");
+      setInputErrors((old) => ({
+        ...old,
+        [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
+      }));
     } finally {
       setSending(false);
     }
@@ -608,7 +725,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         content: { kind: "image", assetId, alt: "" },
       });
       await openObject(project.id, receipt.entityId);
-      setNotice("图片已保存，可以添加关联和讨论。");
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "导入失败。");
     } finally {
@@ -655,11 +771,36 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               b.updatedAt.localeCompare(a.updatedAt)
             );
           });
-  const inputs = state.inputs.filter((i) => i.projectId === project.id);
+  const inputs = state.inputs.filter(
+    (i) => i.projectId === project.id && discussionId(i) === conversationId,
+  );
   const annotations = artifact
     ? state.annotations.filter((a) => a.artifactId === artifact.id)
     : [];
   const contextTitle = artifact?.title ?? project.title;
+  const openExecutions = () => {
+    keepExchangeOpen();
+    setExecutions({
+      projectId: project.id,
+      conversationId,
+      artifactId: artifact?.id ?? null,
+    });
+  };
+  const executionButton = (
+    <button
+      className="icon-button composer-executions"
+      aria-label="执行记录与审批"
+      title={
+        client.boot!.runtime.configured
+          ? "执行记录与审批"
+          : "连接 Agent 后可查看执行记录与审批"
+      }
+      disabled={!client.boot!.runtime.configured}
+      onClick={openExecutions}
+    >
+      <ListChecks />
+    </button>
+  );
   return (
     <div
       className={
@@ -679,9 +820,73 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         id="workspace-sidebar"
         aria-label="工作空间导航"
       >
-        <div className="wordmark">
-          <BrandMark />
-          <span>Morphz</span>
+        <div className="sidebar-header">
+          <div className="wordmark">
+            <BrandMark />
+            <span>Morphz</span>
+          </div>
+          <div className="sidebar-tools">
+            <div className="theme-wrap" ref={theme}>
+              <button
+                className="icon-button"
+                title="外观设置"
+                aria-label="外观设置"
+                aria-expanded={themeOpen}
+                onClick={() => setThemeOpen(!themeOpen)}
+              >
+                <Palette />
+              </button>
+              {themeOpen && (
+                <section className="theme-menu" aria-label="外观设置面板">
+                  <span className="section-label">外观模式</span>
+                  <div className="mode-options">
+                    {(["system", "light", "dark"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        aria-pressed={prefs.appearance === mode}
+                        onClick={() => prefer({ appearance: mode })}
+                      >
+                        {
+                          { system: "跟随系统", light: "亮色", dark: "暗色" }[
+                            mode
+                          ]
+                        }
+                      </button>
+                    ))}
+                  </div>
+                  <span className="section-label">主题色</span>
+                  <div className="color-options">
+                    {(["cyan", "iris", "coral", "mono"] as const).map(
+                      (color) => (
+                        <button
+                          key={color}
+                          aria-pressed={prefs.accent === color}
+                          onClick={() => {
+                            prefer({ accent: color });
+                            setThemeOpen(false);
+                            theme.current
+                              ?.querySelector<HTMLButtonElement>("button")
+                              ?.focus();
+                          }}
+                        >
+                          <span className={"swatch " + color} />
+                          {
+                            {
+                              cyan: "电光青",
+                              iris: "鸢尾紫",
+                              coral: "暖珊瑚",
+                              mono: "纯单色",
+                            }[color]
+                          }
+                        </button>
+                      ),
+                    )}
+                  </div>
+                </section>
+              )}
+            </div>
+            <Notifications client={client} onOpen={open} />
+          </div>
         </div>
         <div className="space-label">{state.name}</div>
         <button
@@ -694,8 +899,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           <kbd>{mac ? "⌘K" : "Ctrl+K"}</kbd>
         </button>
         <nav aria-label="主导航">
-          {(["inbox", "desk", "projects"] as View[]).map((view) => {
+          {(["dialogue", "inbox", "desk", "projects"] as View[]).map((view) => {
             const Icon = {
+              dialogue: MessageCircle,
               inbox: Inbox,
               desk: PanelsTopLeft,
               projects: Layers2,
@@ -744,13 +950,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             ))}
         </div>
         <div className="sidebar-bottom">
-          <Notifications client={client} onOpen={open} />
           <span className="avatar">我</span>
           <div>
             {actorName(state, client.boot!.actantId)}
             <small>
               <span className="presence-dot" data-online={client.online} />
               {client.online ? "工作中心已连接" : "工作中心已断开"}
+              {!client.online && (
+                <button
+                  className="icon-button"
+                  aria-label="重新连接工作中心"
+                  title="重新连接"
+                  onClick={() => void client.refresh()}
+                >
+                  <RefreshCw />
+                </button>
+              )}
             </small>
           </div>
           {client.boot?.capabilities.teamAuthentication && (
@@ -767,37 +982,142 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         </div>
       </aside>
       <div className="workspace">
-        <header className="topbar">
+        <header
+          className="topbar"
+          aria-label={`${applicationWorkspaceOpen ? project.title : labels[prefs.view]}工具栏`}
+        >
           <button
             className="icon-button sidebar-toggle"
             aria-label={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
             title={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
             aria-expanded={prefs.sidebar}
             aria-controls="workspace-sidebar"
-            onClick={() => prefer({ sidebar: !prefs.sidebar })}
+            onClick={() => {
+              setThemeOpen(false);
+              prefer({ sidebar: !prefs.sidebar });
+            }}
           >
             <PanelLeft />
           </button>
-          <div className="breadcrumb">
-            <button onClick={() => navigate(prefs.view)}>
-              {labels[prefs.view]}
-            </button>
-            {prefs.view === "projects" && prefs.projectOpen && (
+          <div
+            className="application-toolbar-slot"
+            ref={setToolbarTarget}
+            hidden={!applicationWorkspaceOpen}
+          />
+          {!applicationWorkspaceOpen && artifact?.content.kind === "task" ? (
+            <div className="breadcrumb task-breadcrumb">
+              <button onClick={() => navigate(prefs.view)}>
+                {labels[prefs.view]}
+              </button>
+              <ChevronRight />
+              <h1 className="toolbar-title">{artifact.title}</h1>
+            </div>
+          ) : (
+            !applicationWorkspaceOpen && (
+              <div className="breadcrumb">
+                <h1 className="toolbar-title">
+                  {artifact ? (
+                    <button onClick={() => navigate(prefs.view)}>
+                      {labels[prefs.view]}
+                    </button>
+                  ) : (
+                    labels[prefs.view]
+                  )}
+                </h1>
+                {prefs.view === "projects" && prefs.projectOpen && (
+                  <>
+                    <ChevronRight />
+                    <button onClick={() => openProject(project.id)}>
+                      {project.title}
+                    </button>
+                  </>
+                )}
+                {artifact && (
+                  <>
+                    <ChevronRight />
+                    <strong>{artifact.title}</strong>
+                  </>
+                )}
+              </div>
+            )
+          )}
+          <div
+            className="page-toolbar-slot"
+            ref={setPageToolbarTarget}
+            hidden={applicationWorkspaceOpen || !!artifact}
+          >
+            {prefs.view === "inbox" && !artifact && (
               <>
-                <ChevronRight />
-                <button onClick={() => openProject(project.id)}>
-                  {project.title}
+                <div
+                  className="matter-filters"
+                  role="group"
+                  aria-label="事项状态"
+                >
+                  {(
+                    ["mine", "active", "waiting", "completed", "all"] as const
+                  ).map((filter) => (
+                    <button
+                      key={filter}
+                      aria-pressed={taskFilter === filter}
+                      onClick={() => setTaskFilter(filter)}
+                    >
+                      {
+                        {
+                          mine: "待我处理",
+                          active: "进行中",
+                          waiting: "等待",
+                          completed: "已完成",
+                          all: "全部",
+                        }[filter]
+                      }
+                    </button>
+                  ))}
+                </div>
+                <select
+                  className="matter-filter-select"
+                  aria-label="事项状态筛选"
+                  value={taskFilter}
+                  onChange={(e) =>
+                    setTaskFilter(e.target.value as typeof taskFilter)
+                  }
+                >
+                  <option value="mine">待我处理</option>
+                  <option value="active">进行中</option>
+                  <option value="waiting">等待</option>
+                  <option value="completed">已完成</option>
+                  <option value="all">全部</option>
+                </select>
+                <small className="toolbar-count">
+                  {visibleTasks.length} 项
+                </small>
+                <button
+                  aria-label="新建事项"
+                  title="新建事项"
+                  onClick={() => composeIntent("task")}
+                >
+                  <Plus />
+                  <span className="toolbar-action-label">新建事项</span>
                 </button>
               </>
             )}
-            {artifact && (
-              <>
-                <ChevronRight />
-                <strong>{artifact.title}</strong>
-              </>
-            )}
           </div>
+          <div
+            className="detail-toolbar-slot"
+            ref={setDetailToolbarTarget}
+            hidden={!artifact && creating !== "document"}
+          />
           <div className="top-actions">
+            {prefs.view === "projects" &&
+              prefs.projectOpen &&
+              selectedConversation && (
+                <ProjectConversations
+                  key={project.id}
+                  client={client}
+                  projectId={project.id}
+                  selected={selectedConversation}
+                  onSelect={selectConversation}
+                />
+              )}
             <details
               ref={spaceOptions}
               className="workspace-options"
@@ -840,73 +1160,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 </button>
               </div>
             </details>
-            <button
-              ref={toggle}
-              className="input-toggle"
-              aria-label={inputVisible ? "隐藏 AI 输入框" : "显示 AI 输入框"}
-              aria-expanded={inputVisible}
-              aria-controls="global-composer"
-              title={`AI 输入 · ${shortcut}`}
-              onClick={() => (inputVisible ? hideInput() : showInput())}
-            >
-              <MessageCircle />
-              <kbd>{shortcut}</kbd>
-            </button>
-            <div className="theme-wrap" ref={theme}>
-              <button
-                title="外观设置"
-                aria-label="外观设置"
-                aria-expanded={themeOpen}
-                onClick={() => setThemeOpen(!themeOpen)}
-              >
-                <Palette />
-              </button>
-              {themeOpen && (
-                <section className="theme-menu" aria-label="外观设置面板">
-                  <span className="section-label">外观模式</span>
-                  <div className="mode-options">
-                    {(["system", "light", "dark"] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        aria-pressed={prefs.appearance === mode}
-                        onClick={() => prefer({ appearance: mode })}
-                      >
-                        {
-                          { system: "跟随系统", light: "亮色", dark: "暗色" }[
-                            mode
-                          ]
-                        }
-                      </button>
-                    ))}
-                  </div>
-                  <span className="section-label">主题色</span>
-                  <div className="color-options">
-                    {(["cyan", "iris", "coral", "mono"] as const).map(
-                      (color) => (
-                        <button
-                          key={color}
-                          aria-pressed={prefs.accent === color}
-                          onClick={() => {
-                            prefer({ accent: color });
-                            setThemeOpen(false);
-                          }}
-                        >
-                          <span className={"swatch " + color} />
-                          {
-                            {
-                              cyan: "电光青",
-                              iris: "鸢尾紫",
-                              coral: "暖珊瑚",
-                              mono: "纯单色",
-                            }[color]
-                          }
-                        </button>
-                      ),
-                    )}
-                  </div>
-                </section>
-              )}
-            </div>
             {artifact && (
               <button
                 className="icon-button"
@@ -926,12 +1179,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           </div>
         </header>
         <div className="workspace-body">
-          <div className="primary-panel" data-interaction={interaction}>
-            <main ref={main} aria-label="主工作区" hidden={historyVisible}>
+          <div
+            className="primary-panel"
+            data-interaction={historyVisible ? "history" : interaction}
+          >
+            <main
+              ref={main}
+              className={
+                applicationWorkspaceOpen && creating !== "document"
+                  ? "application-canvas"
+                  : undefined
+              }
+              aria-label="主工作区"
+              hidden={historyVisible}
+            >
               {creating === "document" && (
                 <CreateDialog
                   key={project.id}
                   kind="document"
+                  toolbarTarget={detailToolbarTarget}
                   projectId={project.id}
                   client={client}
                   onClose={() => setCreating(null)}
@@ -943,18 +1209,26 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               )}
               <div className="object-surface" hidden={creating === "document"}>
                 <ApplicationHost
+                  toolbarTarget={toolbarTarget}
                   client={client}
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
                   activeId={activeId}
                   enabled={
                     prefs.view !== "inbox" &&
+                    prefs.view !== "dialogue" &&
                     (prefs.view !== "projects" || prefs.projectOpen)
                   }
                   onActivate={activateApplication}
                   onOpen={open}
                   onNotice={setNotice}
-                  onSaveProject={() => setCreating("save-project")}
+                  onSaveProject={() => {
+                    // The server creates the next blank desk before the command
+                    // receipt arrives. Keep this application mounted until the
+                    // completed save navigates to the same workspace as a project.
+                    savingWorkspace.current = project.id;
+                    setCreating("save-project");
+                  }}
                   onCompose={(text, artifactId) => {
                     if (artifactId) {
                       const target = state.artifacts.find(
@@ -963,7 +1237,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       );
                       if (!target) return;
                       prefer({ artifactId: target.id });
-                      const key = project.id + ":" + target.id;
+                      const key = conversationId + ":" + target.id;
                       setDraft(key, {
                         body: [drafts[key]?.body, text]
                           .filter(Boolean)
@@ -981,6 +1255,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 >
                   {artifact ? (
                     <ArtifactEditor
+                      titleInToolbar={
+                        !applicationWorkspaceOpen &&
+                        artifact.content.kind === "task"
+                      }
+                      toolbarTarget={
+                        creating === "document" ? null : detailToolbarTarget
+                      }
                       key={
                         artifact.id +
                         ":" +
@@ -993,6 +1274,21 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       client={client}
                       onOpen={open}
                       onNotice={setNotice}
+                      onTaskInput={(result) => {
+                        setDraft(contextKey, {
+                          ...draft,
+                          intent: undefined,
+                          selection: "",
+                          revision: artifact.revision,
+                          taskResult: result
+                            ? {
+                                taskId: artifact.id,
+                                revision: artifact.revision,
+                              }
+                            : undefined,
+                        });
+                        showInput();
+                      }}
                       initialRevision={prefs.artifactRevision}
                       initialPage={prefs.artifactPage}
                       onSelect={(quote, revision, page) => {
@@ -1006,52 +1302,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       }}
                     />
                   ) : prefs.view === "inbox" ? (
-                    <section className="collection">
-                      <div className="collection-title">
-                        <h1>事项</h1>
-                        <button
-                          className="outline"
-                          onClick={() => setCreating("task")}
-                        >
-                          <Plus />
-                          新建事项
-                        </button>
-                      </div>
-                      <p className="intro">
-                        指派给你的事项，以及接下来需要推进的工作。
-                      </p>
-                      <div
-                        className="matter-filters"
-                        role="group"
-                        aria-label="事项状态"
-                      >
-                        {(
-                          [
-                            "mine",
-                            "active",
-                            "waiting",
-                            "completed",
-                            "all",
-                          ] as const
-                        ).map((filter) => (
-                          <button
-                            key={filter}
-                            aria-pressed={taskFilter === filter}
-                            onClick={() => setTaskFilter(filter)}
-                          >
-                            {
-                              {
-                                mine: "待我处理",
-                                active: "进行中",
-                                waiting: "等待",
-                                completed: "已完成",
-                                all: "全部",
-                              }[filter]
-                            }
-                          </button>
-                        ))}
-                        <small>{visibleTasks.length} 项</small>
-                      </div>
+                    <section
+                      className="collection matter-collection"
+                      aria-label="事项列表"
+                    >
                       {visibleTasks.length ? (
                         visibleTasks.map((a) => (
                           <TaskRow
@@ -1078,13 +1332,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           <p>
                             交给你的工作会集中在这里。
                             <br />
-                            也可以新建事项，安排负责人和时间。
+                            告诉 Morphz 要做什么，它会整理事项并显示在这里。
                           </p>
                         </div>
                       )}
                     </section>
                   ) : prefs.view === "projects" && !prefs.projectOpen ? (
                     <ProjectDirectory
+                      toolbarTarget={pageToolbarTarget}
                       state={state}
                       onOpen={openProject}
                       onCreate={() => setCreating("project")}
@@ -1095,7 +1350,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       project={project}
                       objects={objects}
                       onOpen={open}
-                      onCreate={setCreating}
+                      onCreate={composeIntent}
+                      onWrite={() => setCreating("document")}
                       onImport={() => file.current?.click()}
                       importing={importing}
                     />
@@ -1103,223 +1359,381 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 </ApplicationHost>
               </div>
             </main>
-            {inputVisible && (
-              <div className="exchange-header">
-                <button
-                  aria-label={
-                    conversationVisible ? "收起交流记录" : "查看交流记录"
-                  }
-                  onClick={() =>
-                    setInteraction(conversationVisible ? "input" : "recent")
-                  }
-                >
-                  <History />
-                  {conversationVisible ? "收起交流" : "交流记录"}
-                  {inputs.length > 0 && <small>{inputs.length}</small>}
-                  {!conversationVisible && unseenReply && (
-                    <span className="unread-label">有新回复</span>
-                  )}
-                </button>
-                <span className="exchange-space">{project.title}</span>
-                {conversationVisible && (
-                  <button
-                    aria-label={
-                      historyVisible ? "返回工作内容" : "展开完整记录"
+            <div className="exchange-surface" ref={exchange}>
+              {conversationVisible && (
+                <Conversation
+                  key={conversationId}
+                  inputs={inputs}
+                  positions={exchangePositions.current}
+                  revealInputId={revealedInputs[conversationId] ?? null}
+                  state={state}
+                  runtime={client.boot!.runtime}
+                  projectId={project.id}
+                  conversationId={conversationId}
+                  client={client}
+                  onOpen={open}
+                  onRetry={async (id) => {
+                    try {
+                      await client.dispatchInput(id);
+                    } catch (error) {
+                      setNotice(
+                        error instanceof Error ? error.message : "发送失败。",
+                      );
                     }
-                    onClick={() =>
-                      setInteraction(historyVisible ? "recent" : "history")
-                    }
-                  >
-                    {historyVisible ? <Minimize2 /> : <Maximize2 />}
-                    {historyVisible ? "返回内容" : "展开"}
-                  </button>
-                )}
-              </div>
-            )}
-            {conversationVisible && (
-              <Conversation
-                key={project.id}
-                inputs={inputs}
-                positions={exchangePositions.current}
-                revealInputId={revealedInputs[project.id] ?? null}
-                state={state}
-                contextTitle={project.title}
-                runtime={client.boot!.runtime}
-                projectId={project.id}
-                artifactId={artifact?.id ?? null}
-                client={client}
-                onOpen={open}
-                onRetry={async (id) => {
-                  try {
-                    await client.dispatchInput(id);
-                  } catch (error) {
-                    setNotice(
-                      error instanceof Error ? error.message : "发送失败。",
-                    );
-                  }
-                }}
-              />
-            )}
-            <div className="composer-dock">
-              {inputVisible ? (
-                <section
-                  className="composer"
-                  id="global-composer"
-                  aria-label="AI 输入"
-                >
-                  <div className="composer-heading">
-                    {
-                      <span className="context-chip">
-                        <Link2 />
-                        {contextTitle}
-                        {draft.revision ? " · v" + draft.revision : ""}
-                      </span>
-                    }
+                  }}
+                />
+              )}
+              <div className="composer-dock">
+                {selectedConversation?.archivedAt ? (
+                  <div className="archived-conversation-note">
+                    <span>对话已归档，历史和后台工作仍保留。</span>
+                    {executionButton}
                     <button
-                      className="icon-button"
-                      aria-label="收起 AI 输入框"
-                      onClick={hideInput}
+                      onClick={() =>
+                        void client
+                          .execute({
+                            type: "update-conversation",
+                            conversationId,
+                            expectedRevision: selectedConversation.revision,
+                            archived: false,
+                          })
+                          .catch((e) => setNotice(e.message))
+                      }
                     >
-                      <ChevronDown />
+                      恢复对话
                     </button>
                   </div>
-                  {draft.selection && (
-                    <div className="selection-quote">
-                      <blockquote>{draft.selection}</blockquote>
-                      <button
-                        aria-label="移除引用"
-                        onClick={() =>
-                          setDraft(contextKey, { ...draft, selection: "" })
+                ) : inputVisible ? (
+                  <section
+                    className="composer"
+                    id="global-composer"
+                    aria-label="AI 输入"
+                  >
+                    {draft.selection && (
+                      <div className="selection-quote">
+                        <blockquote>{draft.selection}</blockquote>
+                        <button
+                          aria-label="移除引用"
+                          onClick={() =>
+                            setDraft(contextKey, { ...draft, selection: "" })
+                          }
+                        >
+                          <X />
+                        </button>
+                      </div>
+                    )}
+                    <div className="composer-writing">
+                      <textarea
+                        ref={input}
+                        aria-label="AI 输入内容"
+                        placeholder={
+                          draft.taskResult
+                            ? "写下结果；提交后将以你的身份完成这件事项…"
+                            : draft.intent
+                              ? inputIntents[draft.intent].placeholder
+                              : "提出想法，或让工作继续…"
                         }
-                      >
-                        <X />
-                      </button>
-                    </div>
-                  )}
-                  <textarea
-                    ref={input}
-                    aria-label="AI 输入内容"
-                    placeholder="提出想法，或让工作继续…"
-                    rows={2}
-                    maxLength={30000}
-                    value={draft.body}
-                    disabled={sending}
-                    onChange={(e) =>
-                      setDraft(contextKey, {
-                        ...draft,
-                        body: e.target.value,
-                        revision: artifact
-                          ? (draft.revision ?? artifact.revision)
-                          : null,
-                      })
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        !event.shiftKey &&
-                        !event.nativeEvent.isComposing &&
-                        event.keyCode !== 229
-                      ) {
-                        event.preventDefault();
-                        if (client.online) void send();
-                      }
-                    }}
-                  />
-                  <div className="composer-actions">
-                    <small className="model-status">
-                      <BrandMark />
-                      {client.boot!.runtime.configured
-                        ? client.boot!.runtime.connected
-                          ? client.boot!.runtime.model || "Morphz"
-                          : "连接中 · 消息将保留并排队"
-                        : "Agent 未连接 · 仅保存，不会回复"}
-                    </small>
-                    <div className="inline">
-                      <button
-                        aria-label="截图输入"
-                        disabled={sending || !client.online}
-                        onClick={() =>
-                          setCapture({
-                            projectId: project.id,
-                            ...(artifact
-                              ? {
-                                  artifactId: artifact.id,
-                                  artifactRevision:
-                                    draft.revision ??
-                                    prefs.artifactRevision ??
-                                    artifact.revision,
-                                }
-                              : {}),
+                        rows={2}
+                        maxLength={30000}
+                        value={draft.body}
+                        disabled={sending}
+                        onFocus={() => {
+                          if (!conversationVisible) setInteraction("recent");
+                        }}
+                        onChange={(e) =>
+                          setDraft(contextKey, {
+                            ...draft,
+                            body: e.target.value,
+                            revision: artifact
+                              ? (draft.revision ?? artifact.revision)
+                              : null,
                           })
                         }
-                      >
-                        <Scan />
-                      </button>
-                      <button
-                        aria-label="语音输入"
-                        disabled={sending || !client.online}
-                        onClick={() =>
-                          setSpeech({
-                            scope: {
+                        onKeyDown={(event) => {
+                          if (
+                            event.key === "Enter" &&
+                            !event.shiftKey &&
+                            !event.nativeEvent.isComposing &&
+                            event.keyCode !== 229
+                          ) {
+                            event.preventDefault();
+                            if (client.online) void send();
+                          }
+                        }}
+                      />
+                    </div>
+                    {inputErrors[contextKey] && (
+                      <p className="composer-error" role="alert">
+                        {inputErrors[contextKey]}
+                      </p>
+                    )}
+                    {(draft.taskResult ||
+                      !client.online ||
+                      !client.boot!.runtime.connected) && (
+                      <small className="model-status">
+                        {draft.taskResult
+                          ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
+                          : !client.online
+                            ? "工作中心已断开 · 草稿保留在本机"
+                            : client.boot!.runtime.configured
+                              ? "连接中 · 消息将保留并排队"
+                              : "Agent 未连接 · 仅保存，不会回复"}
+                      </small>
+                    )}
+                    <div className="composer-actions">
+                      <div className="composer-footer-info">
+                        <div className="composer-meta">
+                          {
+                            <span
+                              className="context-chip"
+                              title={
+                                contextTitle +
+                                (draft.revision ? " · v" + draft.revision : "")
+                              }
+                            >
+                              <Link2 />
+                              {contextTitle}
+                              {draft.revision ? " · v" + draft.revision : ""}
+                            </span>
+                          }
+                          {(draft.taskResult || draft.intent) && (
+                            <div
+                              className={
+                                "composer-intent" +
+                                (draft.taskResult ? " task-result-intent" : "")
+                              }
+                            >
+                              <span
+                                title={
+                                  draft.taskResult
+                                    ? "提交结果并完成事项"
+                                    : inputIntents[draft.intent!].label
+                                }
+                              >
+                                {draft.taskResult
+                                  ? `提交结果并完成 · v${draft.taskResult.revision}`
+                                  : inputIntents[draft.intent!].label}
+                              </span>
+                              <button
+                                className="icon-button"
+                                aria-label={
+                                  draft.taskResult
+                                    ? "改为普通输入"
+                                    : "移除输入意图"
+                                }
+                                title={
+                                  draft.taskResult
+                                    ? "改为普通输入，不完成事项"
+                                    : "移除输入意图"
+                                }
+                                onClick={() => {
+                                  const {
+                                    taskResult: _,
+                                    intent: __,
+                                    ...rest
+                                  } = draft;
+                                  setDraft(contextKey, rest);
+                                  input.current?.focus();
+                                }}
+                              >
+                                <X />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="inline composer-input-tools">
+                        <button
+                          className="icon-button"
+                          aria-label="截图输入"
+                          title="截图输入"
+                          disabled={sending || !client.online}
+                          onClick={() =>
+                            setCapture({
                               projectId: project.id,
                               ...(artifact
                                 ? {
                                     artifactId: artifact.id,
-                                    revision:
+                                    artifactRevision:
                                       draft.revision ??
                                       prefs.artifactRevision ??
                                       artifact.revision,
                                   }
                                 : {}),
-                            },
-                            title: contextTitle,
-                            key: contextKey,
-                            draft: { ...draft },
-                          })
-                        }
-                      >
-                        <Mic />
-                      </button>
-                      {draft.selection && (
+                            })
+                          }
+                        >
+                          <SquareBottomDashedScissors />
+                        </button>
                         <button
-                          aria-label="保存为批注"
+                          className="icon-button"
+                          aria-label="语音输入"
+                          title="语音输入"
+                          disabled={sending || !client.online}
+                          onClick={() =>
+                            setSpeech({
+                              scope: {
+                                projectId: project.id,
+                                ...(artifact
+                                  ? {
+                                      artifactId: artifact.id,
+                                      revision:
+                                        draft.revision ??
+                                        prefs.artifactRevision ??
+                                        artifact.revision,
+                                    }
+                                  : {}),
+                              },
+                              title: contextTitle,
+                              key: contextKey,
+                              draft: { ...draft },
+                            })
+                          }
+                        >
+                          <Mic />
+                        </button>
+                        {inputPinned && (
+                          <button
+                            className="icon-button composer-pin"
+                            aria-label="取消固定输入框"
+                            title="已固定 · 点击后恢复自动收起"
+                            aria-pressed={true}
+                            onClick={() => {
+                              keepExchangeOpen();
+                              prefer({
+                                pinnedInputs: { [conversationId]: false },
+                              });
+                            }}
+                          >
+                            <Pin />
+                          </button>
+                        )}
+                        <ComposerOptions
+                          key={contextKey}
+                          model={client.boot!.runtime.model || "未配置"}
+                          unread={!conversationVisible && unseenReply}
+                          options={[
+                            {
+                              label: "执行记录与审批",
+                              icon: <ListChecks />,
+                              onSelect: openExecutions,
+                              disabled: !client.boot!.runtime.configured,
+                              title: !client.boot!.runtime.configured
+                                ? "连接 Agent 后可查看执行记录与审批"
+                                : undefined,
+                            },
+                            ...(!dialogueCanvas
+                              ? [
+                                  {
+                                    label: conversationVisible
+                                      ? "收起交流记录"
+                                      : "查看交流记录",
+                                    icon: <History />,
+                                    onSelect: () =>
+                                      setInteraction(
+                                        conversationVisible
+                                          ? "input"
+                                          : "recent",
+                                      ),
+                                  },
+                                  ...(conversationVisible
+                                    ? [
+                                        {
+                                          label: historyVisible
+                                            ? "返回工作内容"
+                                            : "展开完整记录",
+                                          icon: historyVisible ? (
+                                            <Minimize2 />
+                                          ) : (
+                                            <Maximize2 />
+                                          ),
+                                          onSelect: () =>
+                                            setInteraction(
+                                              historyVisible
+                                                ? "recent"
+                                                : "history",
+                                            ),
+                                        },
+                                      ]
+                                    : []),
+                                ]
+                              : []),
+                            ...(!inputPinned
+                              ? [
+                                  {
+                                    label: "固定输入框",
+                                    icon: <Pin />,
+                                    pressed: false,
+                                    onSelect: () => {
+                                      keepExchangeOpen();
+                                      prefer({
+                                        pinnedInputs: {
+                                          [conversationId]: true,
+                                        },
+                                      });
+                                    },
+                                  },
+                                ]
+                              : []),
+                            ...(draft.selection
+                              ? [
+                                  {
+                                    label: "保存为批注",
+                                    icon: <MessageSquarePlus />,
+                                    disabled:
+                                      !draft.body.trim() ||
+                                      sending ||
+                                      !client.online,
+                                    onSelect: () => {
+                                      void send(true);
+                                    },
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
+                        <button
+                          className="icon-button"
+                          aria-label="收起 AI 输入框"
+                          title="收起 AI 输入框"
+                          onClick={hideInput}
+                        >
+                          <ChevronDown />
+                        </button>
+                        <button
+                          className="send"
+                          aria-label={
+                            draft.taskResult
+                              ? "提交结果并完成事项"
+                              : client.boot!.runtime.configured
+                                ? "发送消息"
+                                : "保存输入"
+                          }
                           disabled={
                             !draft.body.trim() || sending || !client.online
                           }
-                          onClick={() => void send(true)}
+                          onClick={() => void send()}
                         >
-                          <MessageSquarePlus />
-                          <span className="optional">批注</span>
+                          <ArrowUp />
                         </button>
-                      )}
-                      <span className="compose-hint">
-                        Enter 发送 · Shift+Enter 换行
-                      </span>
-                      <button
-                        className="send"
-                        aria-label={
-                          client.boot!.runtime.configured
-                            ? "发送消息"
-                            : "保存输入"
-                        }
-                        disabled={
-                          !draft.body.trim() || sending || !client.online
-                        }
-                        onClick={() => void send()}
-                      >
-                        <ArrowUp />
-                      </button>
+                      </div>
                     </div>
-                  </div>
-                </section>
-              ) : (
-                <button className="composer-reopen" onClick={showInput}>
-                  <MessageCircle />向 Morphz 输入<kbd>{shortcut}</kbd>
-                  {unseenReply && (
-                    <span className="unread-label">有新回复</span>
-                  )}
-                </button>
-              )}
+                  </section>
+                ) : (
+                  <button
+                    ref={toggle}
+                    className="composer-reopen"
+                    aria-controls="global-composer"
+                    aria-expanded={false}
+                    onClick={showInput}
+                  >
+                    <MessageCircle />向 Morphz 输入<kbd>{shortcut}</kbd>
+                    {unseenReply && (
+                      <span className="unread-label">有新回复</span>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           {collaborationVisible && (
@@ -1370,27 +1784,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </aside>
           )}
         </div>
-        {(notice || !client.online) && (
-          <footer className="statusbar">
-            <span role="status" aria-live="polite">
-              {notice ||
-                (client.online
-                  ? "本机中心已连接 · 修改保存在中心"
-                  : "与中心断开 · 草稿保留在本机")}
-            </span>
+        {notice && (
+          <div className="workspace-notice">
+            <span role="alert">{notice}</span>
             <button
-              onClick={() => void client.refresh()}
-              aria-label="同步工作空间"
+              className="icon-button"
+              aria-label="关闭提示"
+              onClick={() => setNotice("")}
             >
-              <RefreshCw />
-              {client.online ? "已同步" : "重新连接"}
+              <X />
             </button>
-            {client.online && (
-              <button aria-label="关闭状态提示" onClick={() => setNotice("")}>
-                <X />
-              </button>
-            )}
-          </footer>
+          </div>
         )}
       </div>
       <input
@@ -1411,7 +1815,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             setCreating(null);
             if (kind === "project" || kind === "save-project") openProject(id);
             else void openObject(project.id, id);
-            setNotice("已创建并保存到中心。");
           }}
         />
       )}
@@ -1443,11 +1846,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             });
             setSpeech(null);
             setInteraction("input");
-            setNotice(
-              saved.selection
-                ? "语音文字已放入输入框，可修改后保存为批注。"
-                : "语音文字已放入输入框，确认后再发送。",
-            );
             requestAnimationFrame(() => input.current?.focus());
           }}
         />
@@ -1460,6 +1858,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           onClose={() => setUnderstandingOpen(false)}
         />
       )}
+      {executions && (
+        <ExecutionDialog
+          key={executions.conversationId + ":" + executions.artifactId}
+          client={client}
+          scope={executions}
+          onClose={() => setExecutions(null)}
+          onOpen={open}
+        />
+      )}
       {capture && (
         <CaptureDialog
           client={client}
@@ -1469,7 +1876,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             const projectId = capture.projectId;
             setCapture(null);
             void openObject(projectId, id);
-            setNotice("截图已保存为对象，可围绕它继续输入。");
           }}
         />
       )}
@@ -1481,7 +1887,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           onQuote={(id, revision, quote, page) => {
             const target = state.artifacts.find((a) => a.id === id);
             if (!target) return;
-            const key = target.projectId + ":" + target.id;
+            const key = conversationKey(target.projectId) + ":" + target.id;
             setDraft(key, {
               ...(drafts[key] ?? emptyDraft),
               selection: quote,
@@ -1540,18 +1946,14 @@ function CreateDialog({
   client,
   onClose,
   onCreated,
+  toolbarTarget,
 }: {
-  kind:
-    | "document"
-    | "task"
-    | "project"
-    | "save-project"
-    | "website"
-    | "interactive";
+  kind: "document" | "project" | "save-project";
   projectId: string;
   client: ReturnType<typeof useWorkspace>;
   onClose: () => void;
   onCreated: (id: string, kind: string) => void;
+  toolbarTarget?: HTMLElement | null;
 }) {
   const [storage] = useState(() => scopedStorage());
   const alive = useRef(true);
@@ -1574,23 +1976,6 @@ function CreateDialog({
     [markdown, setMarkdown] = useState(cached.markdown),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const [task, setTask] = useState<TaskContent>({
-    kind: "task",
-    description: "",
-    assigneeId: client.boot!.actantId,
-    model: null,
-    priority: "normal",
-    dueDate: null,
-    assignment: "accepted",
-    execution: "planned",
-    delivery: "none",
-    resultIds: [],
-    runRequested: 0,
-    notBefore: null,
-    everySeconds: null,
-    dependsOnIds: [],
-    watchSourceIds: [],
-  });
   useModal(dialog);
   useEffect(() => {
     if (kind === "document") {
@@ -1616,14 +2001,7 @@ function CreateDialog({
                 type: "create-artifact",
                 projectId,
                 title,
-                content:
-                  kind === "document"
-                    ? { kind: "document", markdown }
-                    : kind === "website"
-                      ? { kind: "website", url: markdown, description: "" }
-                      : kind === "interactive"
-                        ? structuredClone(emptyInteractive)
-                        : task,
+                content: { kind: "document", markdown },
               },
       );
       if (kind === "document") {
@@ -1640,31 +2018,33 @@ function CreateDialog({
       setBusy(false);
     }
   }
+  const heading = (
+    <header className={kind === "document" ? "draft-toolbar" : undefined}>
+      <h2 id="create-title">
+        新建
+        {
+          {
+            document: "文档",
+            project: "项目",
+            "save-project": "项目（保留当前工作）",
+          }[kind]
+        }
+      </h2>
+      <button
+        type="button"
+        aria-label="关闭新建窗口"
+        disabled={busy}
+        onClick={onClose}
+      >
+        <X />
+      </button>
+    </header>
+  );
   const form = (
     <form onSubmit={(e) => void submit(e)}>
-      <header>
-        <h2 id="create-title">
-          新建
-          {
-            {
-              document: "文档",
-              task: "事项",
-              project: "项目",
-              "save-project": "项目（保留当前工作）",
-              website: "网站",
-              interactive: "交互产物",
-            }[kind]
-          }
-        </h2>
-        <button
-          type="button"
-          aria-label="关闭新建窗口"
-          disabled={busy}
-          onClick={onClose}
-        >
-          <X />
-        </button>
-      </header>
+      {kind === "document"
+        ? toolbarTarget && createPortal(heading, toolbarTarget)
+        : heading}
       <label className="field">
         标题
         <input
@@ -1685,28 +2065,6 @@ function CreateDialog({
             onChange={(e) => setMarkdown(e.target.value)}
             rows={8}
             placeholder="开始写作…"
-          />
-        </label>
-      )}
-      {kind === "task" && (
-        <TaskFields
-          value={task}
-          editable={!busy}
-          state={client.boot!.workspace}
-          projectId={projectId}
-          onChange={setTask}
-        />
-      )}
-      {kind === "website" && (
-        <label className="field">
-          网站地址
-          <input
-            aria-label="新网站地址"
-            type="url"
-            required
-            placeholder="https://"
-            value={markdown}
-            onChange={(e) => setMarkdown(e.target.value)}
           />
         </label>
       )}
@@ -1732,7 +2090,7 @@ function CreateDialog({
   return (
     <dialog
       ref={dialog}
-      className={"create-dialog" + (kind === "task" ? " task-dialog" : "")}
+      className="create-dialog"
       onCancel={(e) => {
         e.preventDefault();
         if (!busy) onClose();

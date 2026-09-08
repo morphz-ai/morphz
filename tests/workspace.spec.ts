@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
+import { openInput, composerAction } from "./interaction-helpers.js";
 test("真实对象、刷新恢复、引用批注、关联、事项和全局输入", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -7,15 +9,13 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(page.locator(".wordmark")).toHaveText("Morphz");
   await expect(page).toHaveTitle("工作台 — Morphz");
   await expect(
-    page
-      .locator(".breadcrumb")
-      .getByRole("button", { name: "工作台", exact: true }),
+    page.getByRole("button", { name: "应用启动台", exact: true }),
   ).toBeVisible();
   await page.locator(".project-link").filter({ hasText: "我的项目" }).click();
   await openLibrary(page);
   await page
-    .locator(".creation-actions")
-    .getByRole("button", { name: "新建文档", exact: true })
+    .locator(".library-authoring-options")
+    .getByRole("button", { name: "自己写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("并发工作说明");
   await page
@@ -48,7 +48,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(
     page.locator(".primary-panel .conversation-message p"),
   ).toHaveText("保留人和 Agent 的对等关系");
-  await page.getByLabel("收起交流记录").click();
+  await composerAction(page, "收起交流记录");
   await page
     .locator(".document-body p")
     .first()
@@ -61,7 +61,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     });
   await page.getByRole("button", { name: "围绕选中文本输入" }).click();
   await page.getByLabel("AI 输入内容").fill("这是核心机制。");
-  await page.getByRole("button", { name: "保存为批注" }).click();
+  await composerAction(page, "保存为批注");
   await expect(page.locator(".annotation blockquote")).toHaveText(
     "多条工作线共享上下文。",
   );
@@ -100,10 +100,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     })
     .click();
   await openLibrary(page);
-  await page.getByRole("button", { name: "新建事项", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("检查文章");
-  await page.getByLabel("工作要求").fill("核对术语与事实");
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await seedLibraryArtifact(page, "检查文章", humanTask("核对术语与事实"));
   await page.locator("nav").getByRole("button", { name: /^事项/ }).click();
   await expect(
     page.getByRole("heading", { name: "检查文章", exact: true }),
@@ -114,13 +111,11 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
       has: page.getByRole("heading", { name: "检查文章", exact: true }),
     })
     .click();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("button", { name: "手动编辑", exact: true }).click();
   await page.getByLabel("事项负责人").selectOption("morphz-agent");
   await page.getByLabel("执行模型", { exact: true }).fill("test-model");
   await page.getByRole("button", { name: "保存版本" }).click();
-  await expect(page.getByLabel("执行模型", { exact: true })).toHaveValue(
-    "test-model",
-  );
+  await expect(page.locator(".task-properties")).toContainText("test-model");
   await page.locator("nav").getByRole("button", { name: /^事项/ }).click();
   await expect(
     page.getByRole("button", { name: "打开事项", exact: true }).filter({
@@ -151,8 +146,8 @@ test("多端旧版本冲突不会覆盖中心，草稿刷新后恢复", async ({
   await page.goto("/");
   await openLibrary(page);
   await page
-    .locator(".creation-actions")
-    .getByRole("button", { name: "新建文档", exact: true })
+    .locator(".library-authoring-options")
+    .getByRole("button", { name: "自己写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("冲突测试文档");
   await page.getByLabel("新文档正文").fill("初始内容");
@@ -188,8 +183,8 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await page.goto("/");
   await openLibrary(page);
   await page
-    .locator(".creation-actions")
-    .getByRole("button", { name: "新建文档", exact: true })
+    .locator(".library-authoring-options")
+    .getByRole("button", { name: "自己写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("对话布局验证");
   await page.getByLabel("新文档正文").fill("这是对象的原始内容。");
@@ -208,15 +203,16 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     page.getByRole("complementary", { name: "对象批注" }),
   ).not.toContainText("请围绕这个对象继续讨论。");
   await page.getByRole("button", { name: "关闭批注栏" }).click();
-  await page.getByLabel("收起交流记录").click();
+  await openInput(page);
+  await composerAction(page, "收起交流记录");
   await expect(page.getByLabel("文档正文", { exact: true })).toHaveValue(
     "尚未保存的编辑内容",
   );
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
-  await page.getByLabel("查看交流记录").click();
+  await openInput(page);
   await page.reload();
   await expect(page.getByRole("region", { name: "当前对话" })).toBeVisible();
-  await page.getByLabel("展开完整记录").click();
+  await composerAction(page, "展开完整记录");
   for (const width of [1380, 760, 390, 320]) {
     await page.setViewportSize({ width, height: width < 500 ? 740 : 920 });
     await page
@@ -227,18 +223,27 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     await expect(latest).toContainText(`窗口宽度 ${width}`);
     await expect(latest).toBeInViewport({ ratio: 1 });
     const messageBox = (await latest.boundingBox())!;
+    const columnBox = (await page
+      .getByRole("log", { name: "对话消息" })
+      .boundingBox())!;
     const composerBox = (await page
       .getByRole("region", { name: "AI 输入", exact: true })
       .boundingBox())!;
     expect(messageBox.y + messageBox.height).toBeLessThanOrEqual(composerBox.y);
     expect(
       Math.abs(
-        messageBox.x +
-          messageBox.width / 2 -
+        columnBox.x +
+          columnBox.width / 2 -
           composerBox.x -
           composerBox.width / 2,
       ),
     ).toBeLessThan(12);
+    // The reading column stays centered; Human bubbles now align to its right.
+    expect(
+      Math.abs(messageBox.x + messageBox.width - columnBox.x - columnBox.width),
+    ).toBeLessThan(2);
+    expect(messageBox.x).toBeGreaterThanOrEqual(columnBox.x);
+    await expect(latest.locator(".message-author .avatar")).toHaveCount(0);
     expect(
       await page
         .locator(".app")
@@ -255,7 +260,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "项目", exact: true })
     .click();
-  await page.getByLabel("查看交流记录").click();
+  await openInput(page);
   await expect(page.getByRole("region", { name: "当前对话" })).toContainText(
     "请围绕这个对象继续讨论。",
   );
@@ -263,7 +268,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: /^事项/ })
     .click();
-  await page.getByLabel("查看交流记录").click();
+  await openInput(page);
   await expect(
     page.getByRole("region", { name: "当前对话" }),
   ).not.toContainText("请围绕这个对象继续讨论。");

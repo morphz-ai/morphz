@@ -68,6 +68,7 @@ type Port = {
   session(projectId: string, artifactId: string): Promise<string>;
   request(path: string, method?: string, body?: unknown): Promise<unknown>;
   enqueue(inputId: string): void;
+  conversation?(sessionId: string): string | undefined;
 };
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
 
@@ -375,6 +376,13 @@ export class Collaboration {
                     operation: {
                       type: "record-input",
                       projectId: task.projectId,
+                      ...(this.port.conversation?.(run.sessionId)
+                        ? {
+                            conversationId: this.port.conversation(
+                              run.sessionId,
+                            ),
+                          }
+                        : {}),
                       artifactId: task.id,
                       artifactRevision: task.revision,
                       selection: "",

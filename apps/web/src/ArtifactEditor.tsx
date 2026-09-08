@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import {
   Check,
@@ -29,6 +30,7 @@ import {
 } from "./client.js";
 const PdfReader = lazy(() => import("./PdfReader.js"));
 import { TaskRunPanel } from "./TaskRunPanel.js";
+import { TaskSummary } from "./TaskSummary.js";
 import { BrowserHost } from "./BrowserHost.js";
 import { InteractiveArtifact } from "./InteractiveArtifact.js";
 import { interactiveDraftSchema } from "../../../packages/core/src/interactive.js";
@@ -64,6 +66,9 @@ export function ArtifactEditor({
   onNotice,
   initialRevision,
   initialPage,
+  toolbarTarget,
+  onTaskInput,
+  titleInToolbar = false,
 }: {
   artifact: Artifact;
   state: Workspace;
@@ -73,6 +78,9 @@ export function ArtifactEditor({
   onNotice: (text: string) => void;
   initialRevision?: number | null;
   initialPage?: number | null;
+  toolbarTarget: HTMLElement | null;
+  onTaskInput: (result: boolean) => void;
+  titleInToolbar?: boolean;
 }) {
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
   const key = draftKey("edit:" + artifact.id);
@@ -146,7 +154,6 @@ export function ArtifactEditor({
         content: draft.content,
       });
       update(null);
-      onNotice("新版本已保存到中心。");
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败。");
     } finally {
@@ -171,9 +178,9 @@ export function ArtifactEditor({
         (a) => a.id === (r.fromId === artifact.id ? r.toId : r.fromId),
       )!,
     }));
-  return (
-    <>
-      <div className="object-toolbar">
+  const toolbar = (
+    <div className="object-toolbar">
+      {artifact.content.kind !== "task" && (
         <span>
           {kindLabel[artifact.content.kind]}{" "}
           <span className="muted">
@@ -182,65 +189,71 @@ export function ArtifactEditor({
             {old ? " · 历史版本" : ""}
           </span>
         </span>
-        <div className="inline">
-          {!draft &&
-            shown.content.kind !== "website" &&
-            shown.content.kind !== "image" && (
-              <button
-                aria-label="朗读对象"
-                onClick={() => {
-                  const full = contentText(shown.content),
-                    selected = window.getSelection()?.toString().trim() ?? "";
-                  setReading({
-                    text: selected && full.includes(selected) ? selected : full,
-                    revision: shown.revision,
-                    title: shown.title,
-                  });
-                }}
-              >
-                <Volume2 />
-                朗读
-              </button>
-            )}
-          <button
-            onClick={() => setHistory(history ? null : artifact.revision)}
-            aria-label="版本历史"
-          >
-            <History />
-            版本
-          </button>
-          {!draft &&
-            artifact.source?.mode !== "linked" &&
-            !(
-              artifact.content.kind === "document" &&
-              artifact.content.understanding
-            ) && (
-              <button onClick={start}>
-                <Pencil />
-                编辑
-              </button>
-            )}
-          {artifact.source?.mode === "linked" && (
+      )}
+      <div className="inline">
+        {!draft &&
+          shown.content.kind !== "task" &&
+          shown.content.kind !== "website" &&
+          shown.content.kind !== "image" && (
             <button
-              onClick={async () => {
-                try {
-                  const receipt = await client.execute({
-                    type: "create-artifact",
-                    projectId: artifact.projectId,
-                    title: shown.title.slice(0, 174) + "（副本）",
-                    content: shown.content,
-                  });
-                  onOpen(receipt.entityId);
-                } catch (e) {
-                  onNotice(e instanceof Error ? e.message : "创建副本失败。");
-                }
+              aria-label="朗读对象"
+              onClick={() => {
+                const full = contentText(shown.content),
+                  selected = window.getSelection()?.toString().trim() ?? "";
+                setReading({
+                  text: selected && full.includes(selected) ? selected : full,
+                  revision: shown.revision,
+                  title: shown.title,
+                });
               }}
             >
-              创建可编辑副本
+              <Volume2 />
+              朗读
             </button>
           )}
-        </div>
+        <button
+          onClick={() => setHistory(history ? null : artifact.revision)}
+          aria-label="版本历史"
+        >
+          <History />
+          版本
+        </button>
+        {!draft &&
+          artifact.source?.mode !== "linked" &&
+          !(
+            artifact.content.kind === "document" &&
+            artifact.content.understanding
+          ) && (
+            <button onClick={start}>
+              <Pencil />
+              {artifact.content.kind === "task" ? "手动编辑" : "编辑"}
+            </button>
+          )}
+        {artifact.source?.mode === "linked" && (
+          <button
+            onClick={async () => {
+              try {
+                const receipt = await client.execute({
+                  type: "create-artifact",
+                  projectId: artifact.projectId,
+                  title: shown.title.slice(0, 174) + "（副本）",
+                  content: shown.content,
+                });
+                onOpen(receipt.entityId);
+              } catch (e) {
+                onNotice(e instanceof Error ? e.message : "创建副本失败。");
+              }
+            }}
+          >
+            创建可编辑副本
+          </button>
+        )}
       </div>
+    </div>
+  );
+  return (
+    <>
+      {toolbarTarget && createPortal(toolbar, toolbarTarget)}
       {reading && (
         <ReadAloudDialog
           client={client}
@@ -327,7 +340,11 @@ export function ArtifactEditor({
       <article
         className={
           "object-paper " +
-          (artifact.content.kind === "image" ? "image-paper" : "")
+          (artifact.content.kind === "image"
+            ? "image-paper"
+            : artifact.content.kind === "task"
+              ? "task-paper"
+              : "")
         }
       >
         <div className="eyebrow">
@@ -344,18 +361,20 @@ export function ArtifactEditor({
               onChange={(e) => update({ ...draft, title: e.target.value })}
             />
           </label>
-        ) : (
+        ) : !titleInToolbar || old ? (
           <h1>{shown.title}</h1>
+        ) : null}
+        {shown.content.kind !== "task" && (
+          <div className="byline">
+            <span className="avatar">
+              {actorName(state, artifact.createdBy.actantId).slice(0, 1)}
+            </span>
+            {actorName(state, artifact.createdBy.actantId)}
+            <span>·</span>
+            <time>{new Date(shown.createdAt).toLocaleDateString("zh-CN")}</time>
+            <span>· v{shown.revision}</span>
+          </div>
         )}
-        <div className="byline">
-          <span className="avatar">
-            {actorName(state, artifact.createdBy.actantId).slice(0, 1)}
-          </span>
-          {actorName(state, artifact.createdBy.actantId)}
-          <span>·</span>
-          <time>{new Date(shown.createdAt).toLocaleDateString("zh-CN")}</time>
-          <span>· v{shown.revision}</span>
-        </div>
         {draft?.content.kind === "document" ? (
           <label className="field">
             正文 · Markdown
@@ -476,13 +495,30 @@ export function ArtifactEditor({
             />
           </Suspense>
         )}
-        {(draft?.content.kind === "task" || shown.content.kind === "task") && (
+        {draft?.content.kind === "task" ? (
           <TaskFields
-            value={(draft?.content ?? shown.content) as TaskContent}
-            editable={!!draft}
+            value={draft.content}
+            editable
             state={state}
             projectId={artifact.projectId}
             onChange={content}
+          />
+        ) : shown.content.kind === "task" ? (
+          <TaskSummary
+            value={shown.content}
+            artifact={artifact}
+            state={state}
+            revision={shown.revision}
+            onCompose={!old ? () => onTaskInput(false) : undefined}
+            onOpen={onOpen}
+          />
+        ) : null}
+        {artifact.content.kind === "task" && !draft && !old && (
+          <TaskRunPanel
+            artifact={artifact}
+            state={state}
+            client={client}
+            onRespond={() => onTaskInput(true)}
           />
         )}
         {draft && (
@@ -526,61 +562,76 @@ export function ArtifactEditor({
           ))}
         </section>
       )}
-      {artifact.content.kind === "task" && !draft && !old && (
-        <TaskRunPanel artifact={artifact} state={state} client={client} />
-      )}
-      <section className="relations">
-        <div className="section-label">
-          <Link2 />
-          关联对象
-        </div>
-        <div className="relation-list">
-          {related.map(({ relation, object }) => (
-            <button key={relation.id} onClick={() => onOpen(object.id)}>
-              <ObjectIcon kind={object.content.kind} />
-              {object.title}
-            </button>
-          ))}
-        </div>
-        <form
-          className="relation-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!link) return;
-            void client
-              .execute({
-                type: "link-artifacts",
-                fromId: artifact.id,
-                toId: link,
-                relation: "references",
-              })
-              .then(() => {
-                setLink("");
-                onNotice("对象已关联。");
-              })
-              .catch((e) => setError(e.message));
-          }}
-        >
-          <select
-            aria-label="要关联的对象"
-            value={link}
-            onChange={(e) => setLink(e.target.value)}
-          >
-            <option value="">选择同项目的对象…</option>
-            {state.artifacts
-              .filter(
-                (a) =>
-                  a.projectId === artifact.projectId && a.id !== artifact.id,
-              )
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.title}
-                </option>
+      {artifact.content.kind === "task" ? (
+        related.length > 0 && (
+          <section className="relations task-relations" aria-label="关联对象">
+            <div className="section-label">
+              <Link2 />
+              关联对象
+            </div>
+            <div className="relation-list">
+              {related.map(({ relation, object }) => (
+                <button key={relation.id} onClick={() => onOpen(object.id)}>
+                  <ObjectIcon kind={object.content.kind} />
+                  {object.title}
+                </button>
               ))}
-          </select>
-          <button disabled={!link}>添加关联</button>
-        </form>
-      </section>
+            </div>
+          </section>
+        )
+      ) : (
+        <section className="relations">
+          <div className="section-label">
+            <Link2 />
+            关联对象
+          </div>
+          <div className="relation-list">
+            {related.map(({ relation, object }) => (
+              <button key={relation.id} onClick={() => onOpen(object.id)}>
+                <ObjectIcon kind={object.content.kind} />
+                {object.title}
+              </button>
+            ))}
+          </div>
+          <form
+            className="relation-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!link) return;
+              void client
+                .execute({
+                  type: "link-artifacts",
+                  fromId: artifact.id,
+                  toId: link,
+                  relation: "references",
+                })
+                .then(() => {
+                  setLink("");
+                })
+                .catch((e) => setError(e.message));
+            }}
+          >
+            <select
+              aria-label="要关联的对象"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+            >
+              <option value="">选择同项目的对象…</option>
+              {state.artifacts
+                .filter(
+                  (a) =>
+                    a.projectId === artifact.projectId && a.id !== artifact.id,
+                )
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.title}
+                  </option>
+                ))}
+            </select>
+            <button disabled={!link}>添加关联</button>
+          </form>
+        </section>
+      )}
     </>
   );
 }

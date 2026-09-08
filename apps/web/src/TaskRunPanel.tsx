@@ -37,18 +37,20 @@ export function TaskRunPanel({
   artifact,
   state,
   client,
+  onRespond,
 }: {
   artifact: Artifact;
   state: Workspace;
   client: WorkspaceClient;
+  onRespond: () => void;
 }) {
   const [view, setView] = useState<z.infer<typeof schema>>({
       error: "",
       runs: [],
     }),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    [response, setResponse] = useState("");
+    [loadError, setLoadError] = useState(""),
+    [busy, setBusy] = useState(false);
   const task = artifact.content;
   useEffect(() => {
     let mounted = true;
@@ -56,10 +58,13 @@ export function TaskRunPanel({
       client
         .taskRuntime(artifact.id)
         .then((v) => {
-          if (mounted) setView(schema.parse(v));
+          if (mounted) {
+            setView(schema.parse(v));
+            setLoadError("");
+          }
         })
         .catch(() => {
-          if (mounted) setError("暂时无法核对执行状态。");
+          if (mounted) setLoadError("暂时无法核对执行状态。");
         });
     void refresh();
     const timer = setInterval(() => void refresh(), 2000);
@@ -79,6 +84,11 @@ export function TaskRunPanel({
     (record.interval_seconds !== null ||
       run.threadState === "open" ||
       (run.hasSourceWatch && !run.sourceStopped));
+  const responses = state.taskResponses.filter((r) => r.taskId === artifact.id);
+  const canRespond =
+    human &&
+    client.boot?.actantId === task.assigneeId &&
+    !["completed", "cancelled"].includes(task.execution);
   async function perform(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -93,56 +103,27 @@ export function TaskRunPanel({
   }
   return (
     <section className="task-run-panel" aria-label="实际执行与回应">
-      <div className="section-heading">
-        <h2>{human ? "回应这件事项" : "实际执行"}</h2>
-        <small>
-          {human ? "由当前负责人提交" : "安排由 Morphz Runtime 执行"}
-        </small>
-      </div>
       {human ? (
         <>
-          {state.taskResponses
-            .filter((r) => r.taskId === artifact.id)
-            .map((r) => (
-              <blockquote key={r.id}>
-                <p>{r.body}</p>
-                <small>
-                  {state.actants.find((a) => a.id === r.author.actantId)?.name}{" "}
-                  · 回应 v{r.taskRevision}
-                </small>
-              </blockquote>
-            ))}
-          {client.boot?.actantId === task.assigneeId &&
-            !["completed", "cancelled"].includes(task.execution) && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void perform(async () => {
-                    await client.execute({
-                      type: "respond-task",
-                      taskId: artifact.id,
-                      expectedRevision: artifact.revision,
-                      body: response,
-                    });
-                    setResponse("");
-                  });
-                }}
-              >
-                <textarea
-                  aria-label="事项回应"
-                  placeholder="补充结果、判断或需要 Agent 接续的信息…"
-                  value={response}
-                  onChange={(e) => setResponse(e.target.value)}
-                  maxLength={30000}
-                />
-                <button className="primary" disabled={busy || !response.trim()}>
-                  提交回应并继续协作
-                </button>
-              </form>
-            )}
+          {responses.length > 0 && <h2>处理结果</h2>}
+          {responses.map((r) => (
+            <blockquote key={r.id}>
+              <p>{r.body}</p>
+              <small>
+                {state.actants.find((a) => a.id === r.author.actantId)?.name} ·
+                回应 v{r.taskRevision}
+              </small>
+            </blockquote>
+          ))}
+          {canRespond && (
+            <button className="task-result-action" onClick={onRespond}>
+              提交结果并完成
+            </button>
+          )}
         </>
       ) : (
         <>
+          <h2>执行</h2>
           <p role="status">
             {record
               ? `第 ${run.run} 次安排 · ${run.controlPending ? "控制请求等待确认" : run.sourceStopped ? "后续触发已停止" : run.paused ? "后续触发已暂停" : record.status === "queued" ? "等待 Runtime 调度" : record.status === "paused" ? "后续触发已暂停" : record.status === "cancelled" ? "后续触发已停止" : run.threadState === "failed" ? "执行失败" : run.threadState === "completed" ? "本次处理已结束" : run.threadState === "cancelled" ? "本次处理已停止" : "正在处理"} · 使用安排版本 v${run.artifactRevision}`
@@ -202,14 +183,17 @@ export function TaskRunPanel({
                 </>
               )}
           </div>
-          <p className="muted">
-            修改负责人、模型或时间会保存为新安排版本；已提交的执行仍使用原版本。暂停和停止触发不会撤销已经发生的操作。
-          </p>
+          <details className="task-execution-note">
+            <summary>执行说明</summary>
+            <p className="muted">
+              修改负责人、模型或时间会保存为新安排版本；已提交的执行仍使用原版本。暂停和停止触发不会撤销已经发生的操作。
+            </p>
+          </details>
         </>
       )}
-      {(error || view.error || run?.error) && (
+      {(error || loadError || view.error || run?.error) && (
         <p className="delivery-error" role="alert">
-          {error || view.error || run?.error}
+          {error || loadError || view.error || run?.error}
         </p>
       )}
     </section>

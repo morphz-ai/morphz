@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { openInput, composerAction } from "./interaction-helpers.js";
 
 test("工作台与项目拥有独立空间；应用恢复、对话归属和多窗口尺寸保持一致", async ({
   page,
@@ -19,8 +20,8 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     ).toBeVisible();
     await openLibrary(page);
     await page
-      .locator(".creation-actions")
-      .getByRole("button", { name: "新建文档", exact: true })
+      .locator(".library-authoring-options")
+      .getByRole("button", { name: "自己写文档", exact: true })
       .click();
     await page.getByLabel("新对象标题", { exact: true }).fill(label + "文档");
     await page.getByLabel("新文档正文").fill(label + " 的独立内容。");
@@ -28,8 +29,12 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     await expect(page.locator(".object-paper > h1")).toHaveText(label + "文档");
     await page.getByLabel("AI 输入内容").fill(label + " 的对象消息");
     await page.getByRole("button", { name: "保存输入", exact: true }).click();
-    await expect(page.locator(".conversation-heading > span")).toHaveText(
-      label + "的交流",
+    await expect(page.locator(".conversation-heading")).toHaveCount(0);
+    await expect(page.locator(".composer .context-chip")).toContainText(
+      label + "文档",
+    );
+    await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
+      label + " 的对象消息",
     );
   }
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
@@ -52,11 +57,13 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     path: "test-results/workbench-dark.png",
     animations: "disabled",
   });
-  const project = (name: string) =>
-    page.locator(".project-link").filter({ hasText: name }).click();
+  const project = async (name: string) => {
+    await page.locator(".project-link").filter({ hasText: name }).click();
+    await openInput(page);
+  };
   await project("导航甲");
   await expect(page.locator(".object-paper > h1")).toHaveText("导航甲文档");
-  const conversation = () => page.getByLabel("查看交流记录").click();
+  const conversation = () => composerAction(page, "查看交流记录");
   if (await page.getByLabel("查看交流记录").isVisible()) await conversation();
   await expect(page.locator(".human-message")).toContainText(
     "导航甲 的对象消息",
@@ -74,6 +81,7 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await page.locator(".artifact-card").click();
   await expect(page.locator(".object-paper > h1")).toHaveText("导航甲文档");
+  await openInput(page);
   await page.getByLabel("AI 输入内容").fill("甲项目未发送的草稿");
   await project("导航乙");
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
@@ -84,6 +92,7 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   );
   for (const width of [1380, 1024, 760, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
+    await openInput(page);
     await expect(page.getByLabel("AI 输入内容")).toBeVisible();
     expect(
       await page

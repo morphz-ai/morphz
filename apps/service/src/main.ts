@@ -65,6 +65,7 @@ let stopping = false;
 function stop() {
   if (stopping) return;
   stopping = true;
+  server.closeStreams();
   server.close(() => {
     void (async () => {
       await runtime?.stop();

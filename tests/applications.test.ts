@@ -315,11 +315,12 @@ test("旧中心迁移一次性保留对象、旧命令和 Runtime 路由；每�
     const raw: Record<string, unknown> = { ...old };
     delete raw.applications;
     delete raw.applicationInstances;
+    delete raw.conversations;
     db.prepare("UPDATE workspace SET body=?").run(JSON.stringify(raw));
     db.exec("PRAGMA user_version=10");
     db.close();
     store = new WorkspaceStore(path);
-    assert.equal(store.snapshot().projects.length, 3);
+    assert.equal(store.snapshot().projects.length, 4);
     assert.deepEqual(store.runtimeState(), { legacy: "untouched" });
     const ids = store.snapshot().projects.map((p) => p.id);
     store.close();
@@ -341,7 +342,7 @@ test("旧中心迁移一次性保留对象、旧命令和 Runtime 路由；每�
       principalId: "alice",
       actantId: "alice-human",
     });
-    assert.equal(alice.projects.filter((p) => p.kind).length, 2);
+    assert.equal(alice.projects.filter((p) => p.kind).length, 3);
     assert.ok(
       alice.projects
         .filter((p) => p.kind)

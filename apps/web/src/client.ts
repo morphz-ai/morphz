@@ -365,6 +365,7 @@ export function useWorkspace() {
     const params = new URLSearchParams({
       projectId: scope.projectId,
       artifactId: scope.artifactId ?? "",
+      ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
     });
     return executionSnapshotSchema.parse(
       await checked(
@@ -401,6 +402,7 @@ export function useWorkspace() {
     const params = new URLSearchParams({
       projectId: scope.projectId,
       artifactId: scope.artifactId ?? "",
+      ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
       jobId,
     });
     return z

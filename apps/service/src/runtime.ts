@@ -3,9 +3,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { inputInstructions } from "./input-instructions.js";
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import {
   DomainError,
+  discussionId,
   type AccessContext,
 } from "../../../packages/core/src/model.js";
 import {
@@ -24,6 +26,8 @@ import type { WorkspaceStore } from "./store.js";
 import type { HostInvocation, ToolScope } from "./agent-tools.js";
 import type { IdentityCenter } from "./identity.js";
 import type { BrowserBroker } from "./browser.js";
+import { ConversationFeed } from "./conversation-feed.js";
+import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 
 const configSchema = z
   .object({
@@ -97,6 +101,7 @@ const storedSchema = z.object({
     z.object({
       id: z.string(),
       projectId: z.string(),
+      conversationId: z.string().optional(),
       artifactId: z.string().nullable(),
       cursor: z.number(),
       events: z.array(eventSchema),
@@ -161,6 +166,94 @@ export function settles(
   );
 }
 export class RuntimeBridge {
+  private feeds = new Set<ConversationFeed>();
+  observeConversation(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    changed: (value: ConversationStream) => void,
+    failed: () => void,
+  ) {
+    const authorize = () => {
+      checkProject(this.store.snapshot(), scope.projectId, access);
+      if (this.identity && !this.identity.allows(access))
+        throw new Error("身份已失效");
+      if (
+        !this.store
+          .snapshot()
+          .conversations.some(
+            (c) =>
+              c.id === scope.conversationId && c.projectId === scope.projectId,
+          )
+      )
+        throw new Error("对话不可用");
+    };
+    authorize();
+    const feed = new ConversationFeed({
+      authorize,
+      failed,
+      changed: (value) =>
+        changed({
+          ...value,
+          messages: value.messages.map((message) => {
+            // The WS may beat the POST receipt. Reconcile by the captured root,
+            // never by the currently selected conversation or newest input.
+            const matches = message.rootId
+              ? this.state.deliveries.filter(
+                  (d) =>
+                    d.rootId === message.rootId &&
+                    this.state.sessions[d.sessionId]?.projectId ===
+                      scope.projectId &&
+                    discussionId(this.state.sessions[d.sessionId]!) ===
+                      scope.conversationId,
+                )
+              : [];
+            return matches.length === 1
+              ? { ...message, inputId: matches[0]!.inputId }
+              : message;
+          }),
+        }),
+      url: this.config.url,
+      sessions: () =>
+        Object.values(this.state.sessions)
+          .filter(
+            (s) =>
+              s.projectId === scope.projectId &&
+              discussionId(s) === scope.conversationId,
+          )
+          .map((s) => s.id),
+      headers: () => ({
+        Authorization: `Bearer ${this.config.token}`,
+        ...(this.teamIdentity
+          ? { "X-Morphz-Principal": this.principalId(access.principalId) }
+          : {}),
+      }),
+      request: (path) => this.request(path, "GET", undefined, access),
+      route: (id, event) => {
+        const session = this.state.sessions[id]!;
+        const delivery = attributedDelivery(
+          id,
+          { ...event, sequence: event.sequence ?? 0 },
+          this.state.deliveries,
+          session.events,
+        );
+        return {
+          ...scope,
+          artifactId: session.artifactId,
+          inputId: delivery?.inputId ?? null,
+          rootId:
+            delivery?.rootId ??
+            (typeof event.payload.root_turn_id === "string"
+              ? event.payload.root_turn_id
+              : null),
+        };
+      },
+    });
+    this.feeds.add(feed);
+    return () => {
+      this.feeds.delete(feed);
+      feed.close();
+    };
+  }
   private browser?: BrowserBroker;
   attachBrowser(browser: BrowserBroker) {
     this.browser = browser;
@@ -212,7 +305,14 @@ export class RuntimeBridge {
       throw new Error("可信网关适配需要中心身份目录。");
     this.collaboration = new Collaboration(store, {
       session: async (projectId, artifactId) => {
-        const id = this.objectSession(projectId, artifactId);
+        const origin = this.store
+          .snapshot()
+          .artifacts.find((a) => a.id === artifactId)?.originConversationId;
+        const id = this.objectSession(
+          projectId,
+          artifactId,
+          origin ?? projectId,
+        );
         await this.ensureSession(id);
         if (!this.state.sessions[id]!.schedules)
           throw new Error("Runtime 未提供持久安排接口。");
@@ -222,6 +322,10 @@ export class RuntimeBridge {
       },
       request: (path, method, body) => this.request(path, method, body),
       enqueue: (id) => this.enqueue(id),
+      conversation: (id) =>
+        this.state.sessions[id]
+          ? discussionId(this.state.sessions[id]!)
+          : undefined,
     });
     this.executions = new ExecutionControls(
       async (path, method, body) => {
@@ -275,12 +379,21 @@ export class RuntimeBridge {
     const workspace = this.store.snapshot();
     checkProject(workspace, scope.projectId, this.actor());
     if (
+      scope.conversationId &&
+      !workspace.conversations.some(
+        (c) => c.id === scope.conversationId && c.projectId === scope.projectId,
+      )
+    )
+      throw new DomainError("forbidden", "对话不属于当前项目。");
+    if (
       scope.artifactId &&
       getArtifact(workspace, scope.artifactId).projectId !== scope.projectId
     )
       throw new DomainError("forbidden", "对象不属于这个项目。");
     const sessions = Object.values(this.state.sessions).filter(
-      (s) => s.projectId === scope.projectId,
+      (s) =>
+        s.projectId === scope.projectId &&
+        discussionId(s) === discussionId(scope),
     );
     const session =
       sessions.find((s) => s.scope === "workspace") ??
@@ -332,6 +445,7 @@ export class RuntimeBridge {
       throw new DomainError("forbidden", "调用身份已撤销。");
     return {
       projectId: session.projectId,
+      conversationId: discussionId(session),
       access: { principalId: "morphz-service", actantId: "morphz-agent" },
     };
   }
@@ -510,6 +624,9 @@ export class RuntimeBridge {
                   {
                     id: event.id,
                     projectId: session.projectId,
+                    conversationId: input
+                      ? discussionId(input)
+                      : discussionId(session),
                     artifactId: input?.artifactId ?? session.artifactId,
                     inputId: input?.id ?? null,
                     rootId: delivery?.rootId ?? null,
@@ -524,17 +641,28 @@ export class RuntimeBridge {
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     };
   }
-  private objectSession(projectId: string, _artifactId: string | null) {
+  private objectSession(
+    projectId: string,
+    _artifactId: string | null,
+    conversationId = projectId,
+  ) {
     // Reuse the original project-level route when possible. Object routes remain
     // in the ledger and are still polled; no in-flight delivery is rewritten.
     const key = createHash("sha256")
-      .update(JSON.stringify([projectId, null]))
+      .update(
+        JSON.stringify(
+          conversationId === projectId
+            ? [projectId, null]
+            : [projectId, null, conversationId],
+        ),
+      )
       .digest("hex")
       .slice(0, 24);
     const sessionId = `mw-${this.config.namespace.slice(0, 8)}-${key}`;
     this.state.sessions[sessionId] ??= {
       id: sessionId,
       projectId,
+      conversationId,
       artifactId: null,
       scope: "workspace",
       cursor: 0,
@@ -564,7 +692,11 @@ export class RuntimeBridge {
       }
       return;
     }
-    const sessionId = this.objectSession(input.projectId, input.artifactId);
+    const sessionId = this.objectSession(
+      input.projectId,
+      input.artifactId,
+      discussionId(input),
+    );
     const artifact = workspace.artifacts.find(
       (item) => item.id === input.artifactId,
     );
@@ -605,7 +737,7 @@ export class RuntimeBridge {
         context += content.alt;
       }
     }
-    const text = `MorphzWork 工作项目：${input.projectId}${input.artifactId ? `；当前对象 ID：${input.artifactId}，版本 ${input.artifactRevision}` : ""}。创建、查找和修改工作对象请使用 host_morphz_work 工具；如果工具未提供，请明确说明尚不能保存，不能声称已创建对象。\n\n${context ? `<work_object>\n${context}\n</work_object>\n\n` : ""}${input.selection ? `引用原文：\n${input.selection}\n\n` : ""}${input.body}`;
+    const text = `Morphz 工作空间：${input.projectId}${input.artifactId ? `；当前对象 ID：${input.artifactId}，版本 ${input.artifactRevision}` : ""}。\n${inputInstructions(input.author.actantId, input.intent)}\n\n${context ? `<work_object>\n${context}\n</work_object>\n\n` : ""}${input.selection ? `引用原文：\n${input.selection}\n\n` : ""}${input.body}`;
     this.state.deliveries.push({
       inputId,
       sessionId,
@@ -793,6 +925,8 @@ export class RuntimeBridge {
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
+    for (const feed of this.feeds) feed.close();
+    this.feeds.clear();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 20));
   }
   async tick() {
@@ -825,6 +959,8 @@ export class RuntimeBridge {
         this.save();
         try {
           await this.ensureSession(delivery.sessionId);
+          // Establish observers before the model can emit its first text chunk.
+          await Promise.all([...this.feeds].map((feed) => feed.sync()));
           const input = this.store
             .snapshot()
             .inputs.find((i) => i.id === delivery.inputId);
@@ -924,6 +1060,10 @@ export class RuntimeBridge {
                 : this.state.sessions[d.sessionId]?.projectId === projectId),
           ),
         (id) => this.enqueue(id),
+        (id) =>
+          id && this.state.sessions[id]
+            ? discussionId(this.state.sessions[id]!)
+            : undefined,
       );
     } catch (error) {
       this.state.connected = false;

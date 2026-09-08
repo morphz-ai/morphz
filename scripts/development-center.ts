@@ -287,10 +287,8 @@ try {
   console.log(`Independent data: ${directory}. Existing centers unchanged.`);
   if (process.argv.includes("--desktop"))
     launch(
-      resolve(
-        "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
-      ),
-      ["apps/desktop/main.cjs", `--center=http://127.0.0.1:${workPort}`],
+      process.execPath,
+      ["scripts/desktop-dev.mjs", `--center=http://127.0.0.1:${workPort}`],
       {
         ...env,
         MORPHZWORK_TEST_PROFILE: join(directory, "desktop"),

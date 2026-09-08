@@ -10,6 +10,7 @@ import {
   commandSchema,
   DomainError,
   initialWorkspace,
+  ensureDiscussions,
   stateSchema,
   localAccess,
   id,
@@ -32,11 +33,9 @@ export class WorkspaceStore {
     const version = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version > 11) {
+    if (version.user_version > 12) {
       this.db.close();
-      throw new Error(
-        "数据库版本高于当前应用支持范围，请使用更新的 Morphz。",
-      );
+      throw new Error("数据库版本高于当前应用支持范围，请使用更新的 Morphz。");
     }
     this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
@@ -67,7 +66,7 @@ export class WorkspaceStore {
         .run(JSON.stringify(migrated));
       this.index = new SearchIndex(this.db);
       this.index.sync(this.snapshot());
-      this.db.exec("PRAGMA user_version=11");
+      this.db.exec("PRAGMA user_version=12");
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.close();
@@ -88,7 +87,7 @@ export class WorkspaceStore {
         )
       )
         continue;
-      for (const kind of ["desk", "inbox"] as const) {
+      for (const kind of ["desk", "inbox", "dialogue"] as const) {
         if (
           state.projects.some(
             (p) => p.kind === kind && p.ownerPrincipalId === principal.id,
@@ -99,13 +98,14 @@ export class WorkspaceStore {
           id: randomUUID(),
           kind,
           ownerPrincipalId: principal.id,
-          title: kind === "desk" ? "工作台" : "事项",
+          title: { desk: "工作台", inbox: "事项", dialogue: "对话" }[kind],
           members: [principal.id, "morphz-service"],
           createdAt: new Date().toISOString(),
         });
         state.revision++;
       }
     }
+    ensureDiscussions(state);
   }
   identity(): string {
     return (
@@ -169,7 +169,9 @@ export class WorkspaceStore {
           if (
             member.enabled &&
             (member.projectIds.includes(project.id) ||
-              ((project.kind === "desk" || project.kind === "inbox") &&
+              ((project.kind === "desk" ||
+                project.kind === "inbox" ||
+                project.kind === "dialogue") &&
                 project.ownerPrincipalId === member.principalId))
           )
             project.members.push(member.principalId);

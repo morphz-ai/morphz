@@ -1,3 +1,4 @@
+import { composerAction } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
@@ -43,7 +44,7 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await expect(page.getByRole("dialog").getByText(/第 2 页/)).toBeVisible();
   await page.getByRole("button", { name: "引用并提问" }).click();
   await page.getByLabel("AI 输入内容").fill("这段原文需要进一步解释。");
-  await page.getByRole("button", { name: "保存为批注", exact: true }).click();
+  await composerAction(page, "保存为批注");
   const value = await page.request.get("/api/workspace").then((r) => r.json());
   expect(
     value.workspace.annotations.some(

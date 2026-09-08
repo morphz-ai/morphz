@@ -101,6 +101,8 @@ export class BrowserBroker {
   drain(
     ready: (projectId: string, sessionId?: string) => boolean,
     enqueue: (inputId: string) => void,
+    conversationFor: (sessionId?: string) => string | undefined = () =>
+      undefined,
   ) {
     this.expire();
     for (const r of this.receipts) {
@@ -127,6 +129,9 @@ export class BrowserBroker {
             operation: {
               type: "record-input",
               projectId: r.projectId,
+              ...(conversationFor(r.sourceSessionId)
+                ? { conversationId: conversationFor(r.sourceSessionId) }
+                : {}),
               artifactId: r.artifactId,
               artifactRevision: artifact.revision,
               selection: "",
