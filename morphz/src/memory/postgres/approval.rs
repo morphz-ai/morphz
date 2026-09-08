@@ -148,7 +148,7 @@ fn optional_time(row: &PgRow, column: &str) -> Result<Option<DateTime<Utc>>, Sto
         .transpose()
 }
 
-fn approval_from_row(row: &PgRow) -> Result<ApprovalRecord, StoreError> {
+pub(super) fn approval_from_row(row: &PgRow) -> Result<ApprovalRecord, StoreError> {
     Ok(ApprovalRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,

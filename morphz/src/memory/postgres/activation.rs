@@ -491,6 +491,7 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                   AND thread.generation = activation.generation
                 WHERE activation.session_id = current_session_id
                   AND activation.status = 'queued'
+                  AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = activation.id)
                   AND thread.kind = 'dialogue_turn'
                   AND COALESCE(
                     (SELECT payload ->> 'dispatch_mode' FROM events
@@ -524,6 +525,10 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                     ),
                     updated_at = p_now
               WHERE id = p_id AND revision = p_expected_revision
+                AND (p_status <> 'running' OR NOT EXISTS (
+                  SELECT 1 FROM activation_pending_approval_waits w
+                  WHERE w.activation_id = p_id
+                ))
               RETURNING id INTO updated_id;
              IF updated_id IS NULL THEN
                IF EXISTS (SELECT 1 FROM thread_activations WHERE id = p_id) THEN
@@ -2321,22 +2326,32 @@ impl ActivationStore for PostgresStore {
             r#"WITH raw_candidates AS (
                  (SELECT * FROM thread_activations
                   WHERE status = 'queued' AND admission_rank = 0
+                    AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                    WHERE w.activation_id = thread_activations.id)
                   ORDER BY created_at, id LIMIT $1)
                  UNION ALL
                  (SELECT * FROM thread_activations
                   WHERE status = 'queued' AND admission_rank = 1
+                    AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                    WHERE w.activation_id = thread_activations.id)
                   ORDER BY created_at, id LIMIT $1)
                  UNION ALL
                  (SELECT * FROM thread_activations
                   WHERE status = 'queued' AND admission_rank = 2
+                    AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                    WHERE w.activation_id = thread_activations.id)
                   ORDER BY created_at, id LIMIT $1)
                  UNION ALL
                  (SELECT * FROM thread_activations
                   WHERE status = 'queued' AND admission_rank = 3
+                    AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                    WHERE w.activation_id = thread_activations.id)
                   ORDER BY created_at, id LIMIT $1)
                  UNION ALL
                  (SELECT * FROM thread_activations
                   WHERE status = 'queued' AND admission_rank = 4
+                    AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                    WHERE w.activation_id = thread_activations.id)
                   ORDER BY created_at, id LIMIT $1)
                ), eligible AS (
                  SELECT activations.*
@@ -2381,6 +2396,7 @@ impl ActivationStore for PostgresStore {
                           AND older_thread.generation = older.generation
                          WHERE older.session_id = activations.session_id
                            AND older.status = 'queued'
+                           AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
                            AND COALESCE(
@@ -2451,6 +2467,7 @@ impl ActivationStore for PostgresStore {
     ) -> Result<bool, StoreError> {
         let runnable = sqlx::query_scalar::<_, bool>(
             r#"SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = candidate.id) THEN FALSE
                  WHEN candidate_thread.kind != 'dialogue_turn' THEN TRUE
                  WHEN COALESCE(root_event.payload ->> 'dispatch_mode', '') = 'parallel' THEN TRUE
                  WHEN EXISTS (
@@ -2486,6 +2503,7 @@ impl ActivationStore for PostgresStore {
                     AND older_thread.generation = older.generation
                    WHERE older.session_id = candidate.session_id
                      AND older.status = 'queued'
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
                      AND COALESCE(
@@ -2541,6 +2559,22 @@ impl ActivationStore for PostgresStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn suspend_thread_activation_for_approval(
+        &self,
+        request: crate::memory::ActivationApprovalWaitRequest,
+    ) -> Result<ThreadActivationMutation, StoreError> {
+        self.checkpoint_approval_wait(request).await
+    }
+
+    async fn get_thread_activation_approval_wait(
+        &self,
+        activation_id: &str,
+    ) -> Result<Option<crate::memory::ActivationApprovalWaitCheckpoint>, StoreError> {
+        let rows = sqlx::query_as("SELECT approval_id, assistant_call_event_id FROM activation_approval_waits WHERE activation_id = $1 ORDER BY approval_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        crate::memory::activation_approval_wait::checkpoint_from_rows(activation_id, rows)
     }
 
     async fn update_thread_activation(

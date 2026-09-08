@@ -87,6 +87,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+mod activation_approval_wait;
 mod agent_provider;
 mod plan_execution;
 
@@ -2013,6 +2014,27 @@ impl SqliteStore {
         migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
+        sqlx::query(super::activation_approval_wait::TABLE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(&format!(
+            "CREATE VIEW IF NOT EXISTS activation_pending_approval_waits AS {}",
+            super::activation_approval_wait::VIEW_QUERY
+        ))
+        .execute(&pool)
+        .await?;
+        // All Activation mutation paths (including aggregate Thread cancel)
+        // clear the checkpoint in the same transaction, not only direct CAS.
+        sqlx::query(
+            r#"CREATE TRIGGER IF NOT EXISTS activation_approval_wait_cleared
+            AFTER UPDATE OF status ON thread_activations
+            WHEN OLD.status = 'queued' AND NEW.status <> 'queued'
+            BEGIN
+                DELETE FROM activation_approval_waits WHERE activation_id = NEW.id;
+            END"#,
+        )
+        .execute(&pool)
+        .await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -12851,26 +12873,36 @@ impl ActivationStore for SqliteStore {
                  SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 0
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 1
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 2
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 3
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 4
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                ), eligible AS (
@@ -12916,6 +12948,7 @@ impl ActivationStore for SqliteStore {
                           AND older_thread.generation = older.generation
                          WHERE older.session_id = activations.session_id
                            AND older.status = 'queued'
+                           AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
                            AND COALESCE(
@@ -13010,6 +13043,7 @@ impl ActivationStore for SqliteStore {
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let runnable = sqlx::query_scalar::<_, i64>(
             r#"SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = candidate.id) THEN 0
                  WHEN candidate_thread.kind != 'dialogue_turn' THEN 1
                  WHEN COALESCE(json_extract(root_event.payload, '$.dispatch_mode'), '') = 'parallel' THEN 1
                  WHEN EXISTS (
@@ -13045,6 +13079,7 @@ impl ActivationStore for SqliteStore {
                     AND older_thread.generation = older.generation
                    WHERE older.session_id = candidate.session_id
                      AND older.status = 'queued'
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
                      AND COALESCE(
@@ -13101,6 +13136,25 @@ impl ActivationStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn suspend_thread_activation_for_approval(
+        &self,
+        request: crate::memory::ActivationApprovalWaitRequest,
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.checkpoint_approval_wait(request).await
+    }
+
+    async fn get_thread_activation_approval_wait(
+        &self,
+        activation_id: &str,
+    ) -> Result<
+        Option<crate::memory::ActivationApprovalWaitCheckpoint>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let rows = sqlx::query_as("SELECT approval_id, assistant_call_event_id FROM activation_approval_waits WHERE activation_id = ? ORDER BY approval_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        super::activation_approval_wait::checkpoint_from_rows(activation_id, rows)
     }
 
     async fn update_thread_activation(
@@ -13214,6 +13268,7 @@ impl ActivationStore for SqliteStore {
                             AND thread.generation = activation.generation
                            WHERE activation.session_id = ?
                              AND activation.status = 'queued'
+                             AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = activation.id)
                              AND thread.kind = 'dialogue_turn'
                              AND COALESCE(
                                json_extract((SELECT payload FROM events WHERE id = thread.root_turn_id), '$.dispatch_mode'),
@@ -13247,7 +13302,11 @@ impl ActivationStore for SqliteStore {
                    lease_expires_at = ?,
                    context_snapshot_version = COALESCE(?, context_snapshot_version),
                    updated_at = ?
-               WHERE id = ? AND revision = ?"#,
+               WHERE id = ? AND revision = ?
+                 AND (? <> 'running' OR NOT EXISTS (
+                   SELECT 1 FROM activation_pending_approval_waits w
+                   WHERE w.activation_id = thread_activations.id
+                 ))"#,
         )
         .bind(thread_activation_status_storage(status))
         .bind(claimed_by)
@@ -13256,6 +13315,7 @@ impl ActivationStore for SqliteStore {
         .bind(&now)
         .bind(id)
         .bind(expected_revision)
+        .bind(thread_activation_status_storage(status))
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {

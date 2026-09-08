@@ -1,9 +1,13 @@
+mod activation_approval_wait;
 pub mod lexical;
 pub mod postgres;
 #[cfg(feature = "remote-store")]
 pub mod remote;
 pub mod sqlite;
 
+pub use activation_approval_wait::{
+    ActivationApprovalWaitCheckpoint, ActivationApprovalWaitRequest,
+};
 pub use lexical::{
     recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
 };
@@ -6955,6 +6959,21 @@ pub trait ActivationStore: Send + Sync {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Checkpoint a drained assistant tool batch before releasing its local
+    /// execution stack. This is not a terminal outcome: pending Jobs, claimed
+    /// Signals and the immutable assistant call keep their original identity.
+    /// Any approval/Job change makes the same queued Activation eligible again.
+    /// Callers must join all started sibling futures before this boundary.
+    async fn suspend_thread_activation_for_approval(
+        &self,
+        request: ActivationApprovalWaitRequest,
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact persisted call identity for approval continuation recovery. Read
+    /// before re-claiming: entering Running clears the wait checkpoint.
+    async fn get_thread_activation_approval_wait(
+        &self,
+        activation_id: &str,
+    ) -> Result<Option<ActivationApprovalWaitCheckpoint>, Box<dyn std::error::Error + Send + Sync>>;
     /// Commit the one authoritative outcome boundary for a Thread Activation.
     ///
     /// A terminal outcome marks both Activation and Thread terminal. A

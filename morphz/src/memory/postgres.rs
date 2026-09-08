@@ -61,6 +61,7 @@ const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
 
 mod action_group;
 mod activation;
+mod activation_approval_wait;
 mod agent_provider;
 mod approval;
 mod delegation;
@@ -401,6 +402,12 @@ impl PostgresStore {
                 .run_versioned_migration("20260718_03_approvals", approval::migrate(&store.pool))
                 .await?;
             store
+                .run_versioned_migration(
+                    "20260908_01_activation_approval_waits",
+                    activation_approval_wait::migrate(&store.pool),
+                )
+                .await?;
+            store
                 .run_versioned_migration("20260718_04_threads", thread::migrate(&store.pool))
                 .await?;
             store
@@ -441,6 +448,12 @@ impl PostgresStore {
             store
                 .run_versioned_migration(
                     "20260901_01_scheduler_latency_fast_path_schema_isolation",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260908_02_activation_approval_wait_admission",
                     activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;

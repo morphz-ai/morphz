@@ -72,6 +72,11 @@ impl Replica {
             if name.starts_with("sqlite_") || kind == "shadow" {
                 continue;
             }
+            // This read-only readiness projection owns no rows. Its DDL is
+            // included in the schema hash below; all source tables are captured.
+            if kind == "view" && name == "activation_pending_approval_waits" {
+                continue;
+            }
             if kind == "virtual" && name == "recall_documents_fts" {
                 continue;
             }
