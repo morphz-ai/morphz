@@ -17230,8 +17230,11 @@ impl Orchestrator {
                     justification: requirement.justification.clone(),
                     pending_status: services.broker.pending_approval_status(),
                 };
-                let request_event =
-                    approval_request_event(&new_job, &new_approval, attempt_id, route);
+                let request_event = restore_approval_request_event(
+                    self.store.as_ref(),
+                    approval_request_event(&new_job, &new_approval, attempt_id, route),
+                )
+                .await?;
                 let (job, mut approval, created) = execution_approval_records(
                     services
                         .execution_approvals
@@ -21000,6 +21003,36 @@ fn infer_tool_status(text: &str) -> &'static str {
     }
 }
 
+/// Recovery re-evaluates the same durable tool call, not a new approval
+/// occurrence. Restore only its persisted occurrence metadata; every authority
+/// and route field must still match. The Store's immutable Event collision
+/// checks remain unchanged, including the atomic Job/Approval/Event commit.
+async fn restore_approval_request_event(
+    store: &dyn EventStore,
+    mut request_event: Event,
+) -> Result<Event, DynError> {
+    if let Some(persisted) = store
+        .query(QueryFilter {
+            event_id: Some(request_event.id.clone()),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .next()
+    {
+        request_event.timestamp = persisted.timestamp;
+        request_event.sequence = persisted.sequence;
+        if request_event != persisted {
+            return Err(format!(
+                "Approval request Event '{}' conflicts with its durable authority or route",
+                request_event.id
+            )
+            .into());
+        }
+    }
+    Ok(request_event)
+}
+
 fn approval_request_event(
     job: &NewExecutionJob,
     approval: &NewApprovalRequest,
@@ -22250,6 +22283,73 @@ mod tests {
         let runtime =
             model_binding_completion_error(ModelAttemptBindingError::runtime("store unavailable"));
         assert_eq!(runtime.origin, ModelCompletionErrorOrigin::RuntimeInternal);
+    }
+
+    #[tokio::test]
+    async fn approval_request_recovery_restores_occurrence_without_hiding_content_conflicts() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("approval-request-recovery.db");
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let mut original = Event::new(
+            "approval_requested_test".into(),
+            "System-ApprovalAuthority".into(),
+            "approval_requested".into(),
+            "runtime/approval_requested".into(),
+            json!({"approval_id":"test", "requested":{"write_roots":["/project"]},
+                "principal_id":"alice", "attempt_id":"activation-test"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        original.timestamp -= chrono::Duration::minutes(5);
+        assert_eq!(
+            super::restore_approval_request_event(&store, original.clone())
+                .await
+                .unwrap(),
+            original
+        );
+        store.append(original.clone()).await.unwrap();
+        drop(store);
+        let restarted = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let mut reconstructed = original.clone();
+        reconstructed.timestamp = chrono::Utc::now();
+        assert_ne!(reconstructed.timestamp, original.timestamp);
+        let restored = super::restore_approval_request_event(&restarted, reconstructed.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.timestamp, original.timestamp);
+        assert!(restored.sequence.is_some());
+        restarted.append(restored.clone()).await.unwrap();
+        let persisted = restarted
+            .query(QueryFilter {
+                event_id: Some(original.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(persisted, vec![restored]);
+        for (key, value) in [
+            ("requested", json!({"write_roots":["/"]})),
+            ("principal_id", json!("bob")),
+            ("attempt_id", json!("different-activation")),
+        ] {
+            let mut conflict = reconstructed.clone();
+            conflict.payload.insert(key.into(), value);
+            assert!(super::restore_approval_request_event(&restarted, conflict)
+                .await
+                .is_err());
+        }
+        for field in ["actor", "topic", "type"] {
+            let mut conflict = reconstructed.clone();
+            match field {
+                "actor" => conflict.actor = "different".into(),
+                "topic" => conflict.topic = "different".into(),
+                _ => conflict.event_type = "different".into(),
+            }
+            assert!(super::restore_approval_request_event(&restarted, conflict)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
