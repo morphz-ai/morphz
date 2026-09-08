@@ -15832,6 +15832,41 @@ impl ThreadStore for SqliteStore {
             .bind(&activation_id)
             .execute(&mut *tx)
             .await?;
+            // Close logical execution owners in the same transaction, before
+            // live futures are interrupted. Member results remain historical
+            // facts: cancelling a batch does not fabricate successful outputs.
+            sqlx::query(
+                r#"UPDATE action_groups
+                   SET revision = revision + 1, status = 'cancelled', updated_at = ?, settled_at = ?
+                   WHERE thread_id = ? AND status = 'running' AND activation_id IN (
+                     SELECT id FROM thread_activations WHERE root_turn_id = ? AND generation = ?
+                   )"#,
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(&current.id)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE plan_executions
+                   SET revision = revision + 1, status = 'cancelled', error = ?,
+                       pending_kind = NULL, pending_id = NULL, claimed_by = NULL,
+                       claim_token = NULL, lease_expires_at = NULL, updated_at = ?, finished_at = ?
+                   WHERE thread_id = ? AND status IN ('queued', 'running', 'waiting')
+                     AND activation_id IN (
+                       SELECT id FROM thread_activations WHERE root_turn_id = ? AND generation = ?
+                     )"#,
+            )
+            .bind(reason)
+            .bind(&now)
+            .bind(&now)
+            .bind(&current.id)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query(
                 r#"UPDATE thread_signals
                    SET status = 'acknowledged', acknowledged_at = ?
@@ -21208,13 +21243,25 @@ impl ActionGroupStore for SqliteStore {
             .map_err(|_| "Action Group Objective revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+            .bind(&group.thread_id)
+            .execute(&mut *tx)
+            .await?;
         let inserted = sqlx::query(
             r#"INSERT OR IGNORE INTO action_groups
                (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
                 assistant_call_event_id, objective_id, objective_evaluation_id,
                 objective_revision, status, member_count, terminal_member_count,
                 created_at, updated_at, settled_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, NULL)"#,
+               SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, NULL
+               WHERE EXISTS (
+                 SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id
+                 WHERE t.id = ? AND a.id = ? AND t.status = 'open'
+                   AND a.status IN ('queued', 'running') AND a.generation = t.generation
+                   AND t.agent_id = ? AND a.agent_id = t.agent_id
+                   AND t.context_id = ? AND a.context_id = t.context_id
+                   AND t.session_id = ? AND a.session_id = t.session_id
+               )"#,
         )
         .bind(&group.id)
         .bind(&group.activation_id)
@@ -21229,6 +21276,8 @@ impl ActionGroupStore for SqliteStore {
         .bind(member_count)
         .bind(&now)
         .bind(&now)
+        .bind(&group.thread_id).bind(&group.activation_id).bind(&group.agent_id)
+        .bind(&group.context_id).bind(&group.session_id)
         .execute(&mut *tx)
         .await?;
         if inserted.rows_affected() == 1 {
@@ -21254,8 +21303,9 @@ impl ActionGroupStore for SqliteStore {
         }
         let row = sqlx::query("SELECT * FROM action_groups WHERE id = ?")
             .bind(&group.id)
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or("ActionGroup requires a matching live owner Thread/Activation generation")?;
         let current = action_group_from_row(&row)?;
         let current_members = sqlx::query(
             "SELECT * FROM action_group_members WHERE group_id = ? ORDER BY ordinal, tool_call_id",
@@ -21478,7 +21528,10 @@ impl ActionGroupStore for SqliteStore {
                 existing: true,
             });
         }
-        if group.status != ActionGroupStatus::Running {
+        if !matches!(
+            group.status,
+            ActionGroupStatus::Running | ActionGroupStatus::Cancelled
+        ) {
             tx.rollback().await?;
             return Err(format!(
                 "Action Group '{}' 已是 {}，不能再接收成员结果",
@@ -21501,7 +21554,10 @@ impl ActionGroupStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         let terminal_member_count = group.terminal_member_count.saturating_add(1);
-        let settled_now = terminal_member_count == group.member_count;
+        // Cancellation ends the join, not the ability to record an already
+        // issued member's late physical result. Never wake/reopen that join.
+        let settled_now = group.status == ActionGroupStatus::Running
+            && terminal_member_count == group.member_count;
         if settled_now {
             append_event_idempotent_in_transaction(&mut tx, settled_event).await?;
             if settled_event
@@ -21556,7 +21612,7 @@ impl ActionGroupStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE action_groups
                    SET revision = revision + 1, terminal_member_count = ?, updated_at = ?
-                   WHERE id = ? AND status = 'running'"#,
+                   WHERE id = ? AND status IN ('running', 'cancelled')"#,
             )
             .bind(i64::try_from(terminal_member_count)?)
             .bind(&now)

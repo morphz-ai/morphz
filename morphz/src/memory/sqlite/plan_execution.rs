@@ -195,13 +195,28 @@ impl PlanExecutionStore for SqliteStore {
     ) -> Result<PlanExecutionRecord, StoreError> {
         validate_new(&execution)?;
         let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        // Serialize enrollment with Thread cancellation before reading its
+        // generation. Existing causal keys remain replayable after closure.
+        sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+            .bind(&execution.thread_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO plan_executions
                (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
                 initiating_principal_id, tool_call_id, objective_id, objective_evaluation_id,
                 harness_id, harness_version, source_artifact_hash, ir_schema_version,
                 program_json, state_json, budget_json, status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+               SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?
+               WHERE EXISTS (
+                 SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id
+                 WHERE t.id = ? AND a.id = ? AND t.status = 'open'
+                   AND a.status IN ('queued', 'running') AND a.generation = t.generation
+                   AND t.agent_id = ? AND a.agent_id = t.agent_id
+                   AND t.context_id = ? AND a.context_id = t.context_id
+                   AND t.session_id = ? AND a.session_id = t.session_id
+               )"#,
         )
         .bind(&execution.id)
         .bind(&execution.activation_id)
@@ -222,7 +237,12 @@ impl PlanExecutionStore for SqliteStore {
         .bind(serde_json::to_string(&execution.budget_json)?)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .bind(&execution.thread_id)
+        .bind(&execution.activation_id)
+        .bind(&execution.agent_id)
+        .bind(&execution.context_id)
+        .bind(&execution.session_id)
+        .execute(&mut *tx)
         .await?;
 
         let existing = sqlx::query(
@@ -230,8 +250,9 @@ impl PlanExecutionStore for SqliteStore {
         )
         .bind(&execution.activation_id)
         .bind(&execution.tool_call_id)
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or("PlanExecution requires a matching live owner Thread/Activation generation")?;
         let existing = record_from_row(&existing)?;
         if !same_immutable(&existing, &execution) {
             return Err(format!(
@@ -240,6 +261,7 @@ impl PlanExecutionStore for SqliteStore {
             )
             .into());
         }
+        tx.commit().await?;
         Ok(existing)
     }
 

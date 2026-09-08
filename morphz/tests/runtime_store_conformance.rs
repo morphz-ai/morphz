@@ -7479,7 +7479,13 @@ where
         )
         .await
         .unwrap();
-    assert!(final_commit.settled_now);
+    // Cancellation closes the join atomically. A late physical result remains
+    // durable, but cannot change its terminal outcome or create a wakeup.
+    assert!(!final_commit.settled_now);
+    assert_eq!(
+        final_commit.member.result_event_id.as_deref(),
+        Some(late_result("late-group-call-b").id.as_str())
+    );
     assert_eq!(
         store
             .get_action_group(&late_group.id)
@@ -7487,7 +7493,7 @@ where
             .unwrap()
             .unwrap()
             .status,
-        ActionGroupStatus::Settled
+        ActionGroupStatus::Cancelled
     );
     assert_eq!(
         store
@@ -7498,7 +7504,7 @@ where
             .await
             .unwrap()
             .len(),
-        1
+        0
     );
     assert!(store
         .list_context_thread_signals("conformance-context", None)

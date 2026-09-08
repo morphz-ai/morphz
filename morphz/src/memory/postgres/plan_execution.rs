@@ -262,6 +262,18 @@ async fn failed_mutation(
     })
 }
 
+async fn lock_plan_owner(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    plan_id: &str,
+) -> Result<(), StoreError> {
+    // Hand-offs insert children with owner foreign keys. Take the owner
+    // before the Plan, matching cancellation, rather than acquiring an FK
+    // owner lock while already holding a Plan row cancellation needs.
+    sqlx::query("SELECT t.id FROM threads t JOIN plan_executions p ON p.thread_id = t.id WHERE p.id = $1 FOR UPDATE OF t")
+        .bind(plan_id).fetch_optional(&mut **tx).await?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl PlanExecutionStore for PostgresStore {
     async fn create_plan_execution(
@@ -270,14 +282,29 @@ impl PlanExecutionStore for PostgresStore {
     ) -> Result<PlanExecutionRecord, StoreError> {
         validate_new(&execution)?;
         let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        // The same owner row lock is taken by Thread cancellation. A child
+        // either enrolls before cancellation or cannot be created afterwards.
+        sqlx::query("SELECT id FROM threads WHERE id = $1 FOR UPDATE")
+            .bind(&execution.thread_id)
+            .fetch_optional(&mut *tx)
+            .await?;
         sqlx::query(
             r#"INSERT INTO plan_executions
                (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
                 initiating_principal_id, tool_call_id, objective_id, objective_evaluation_id,
                 harness_id, harness_version, source_artifact_hash, ir_schema_version,
                 program_json, state_json, budget_json, status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                       $13, $14, $15, $16, $17, 'queued', $18, $19)
+               SELECT $1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                       $13, $14, $15, $16, $17, 'queued', $18, $19
+               WHERE EXISTS (
+                 SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id
+                 WHERE t.id = $3 AND a.id = $2 AND t.status = 'open'
+                   AND a.status IN ('queued', 'running') AND a.generation = t.generation
+                   AND t.agent_id = $4 AND a.agent_id = t.agent_id
+                   AND t.context_id = $5 AND a.context_id = t.context_id
+                   AND t.session_id = $6 AND a.session_id = t.session_id
+               )
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&execution.id)
@@ -299,7 +326,7 @@ impl PlanExecutionStore for PostgresStore {
         .bind(&execution.budget_json)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         let existing = sqlx::query(
@@ -307,8 +334,9 @@ impl PlanExecutionStore for PostgresStore {
         )
         .bind(&execution.activation_id)
         .bind(&execution.tool_call_id)
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or("PlanExecution requires a matching live owner Thread/Activation generation")?;
         let existing = record_from_row(&existing)?;
         if !same_immutable(&existing, &execution) {
             return Err(format!(
@@ -317,6 +345,7 @@ impl PlanExecutionStore for PostgresStore {
             )
             .into());
         }
+        tx.commit().await?;
         Ok(existing)
     }
 
@@ -592,6 +621,7 @@ impl PlanExecutionStore for PostgresStore {
             return Err("PlanExecution child Execution Job id 不能为空".into());
         }
         let mut tx = self.pool.begin().await?;
+        lock_plan_owner(&mut tx, plan_id).await?;
         let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = $1 FOR UPDATE")
             .bind(plan_id)
             .fetch_optional(&mut *tx)
@@ -692,6 +722,7 @@ impl PlanExecutionStore for PostgresStore {
             return Err("PlanExecution child Activation id 不能为空".into());
         }
         let mut tx = self.pool.begin().await?;
+        lock_plan_owner(&mut tx, plan_id).await?;
         let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = $1 FOR UPDATE")
             .bind(plan_id)
             .fetch_optional(&mut *tx)
@@ -832,6 +863,13 @@ impl PlanExecutionStore for PostgresStore {
         activation_id: &str,
     ) -> Result<Option<crate::memory::ThreadActivationRecord>, StoreError> {
         let mut tx = self.pool.begin().await?;
+        // Terminal child handoff locks the child Thread before publishing to
+        // its parent. Follow that order before taking any Plan/Activation row
+        // locks, so either parent's cancellation can finish atomically.
+        sqlx::query("SELECT t.id FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id WHERE a.id = $1 FOR SHARE OF t")
+            .bind(activation_id).fetch_optional(&mut *tx).await?;
+        sqlx::query("SELECT t.id FROM threads t JOIN plan_executions p ON p.thread_id = t.id WHERE p.id = $1 FOR SHARE OF t")
+            .bind(plan_id).fetch_optional(&mut *tx).await?;
         let plan_row = sqlx::query("SELECT * FROM plan_executions WHERE id = $1 FOR UPDATE")
             .bind(plan_id)
             .fetch_optional(&mut *tx)

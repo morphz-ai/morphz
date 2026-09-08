@@ -184,6 +184,32 @@ async fn run_parallel_approval_case(cancel: bool) {
                 .unwrap(),
             1
         );
+        let cancelled_plans = runtime
+            .inner
+            .store
+            .list_plan_executions(PlanExecutionFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(cancelled_plans.len(), 3);
+        assert!(
+            cancelled_plans.iter().all(|p| {
+                p.status == PlanExecutionStatus::Cancelled
+                    && p.pending_kind.is_none()
+                    && p.pending_id.is_none()
+                    && p.claimed_by.is_none()
+                    && p.claim_token.is_none()
+                    && p.lease_expires_at.is_none()
+                    && p.finished_at.is_some()
+            }),
+            "cancellation must close the parent and both child Plans durably: {:?}",
+            cancelled_plans
+                .iter()
+                .map(|p| (&p.id, p.status, p.pending_kind))
+                .collect::<Vec<_>>()
+        );
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while runtime.inner.orchestrator.active_plan_child_count() != 0
                 || !runtime.inner.human_approval_hub.pending().is_empty()
@@ -207,6 +233,20 @@ async fn run_parallel_approval_case(cancel: bool) {
             |j| j.status == ExecutionJobStatus::Cancelled && j.side_effect_started_at.is_none()
         ));
         assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        let groups = runtime
+            .inner
+            .store
+            .list_action_groups(ActionGroupFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!groups.is_empty());
+        assert!(
+            groups.iter().all(|g| g.status.is_terminal()),
+            "cancelled Plans must not strand their batch joins"
+        );
         return;
     }
     for approval in &approvals {

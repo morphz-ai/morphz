@@ -191,8 +191,8 @@ under eight repeated reconciliation passes. Successful approval produces two
 completed Jobs and three completed Plans with no model retry. Session
 cancellation releases both child stacks and human waiters, leaves both Jobs
 cancelled without starting their effects, and does not make another model call.
-The cancellation regression does **not** establish complete parent Plan terminal
-cleanup; that remains part of the nested continuation/lifecycle gate above.
+At this stage the cancellation regression checked stack cleanup only. The
+owner-cancellation follow-up below adds durable parent/child terminal assertions.
 
 This prerequisite's verification ran **60 distinct tests, all passing**: 49
 Plan-filtered library tests (including the five new regressions), six SQLite
@@ -210,3 +210,75 @@ The PostgreSQL and workerd conformance tests were not rerun for this
 process-local-only change; those two tests remain explicitly ignored without
 their isolated fixtures. The subprocess helper is again invoked by its parent.
 No external model requests, cloud resources, or production data were used.
+
+## Owner cancellation and late results
+
+The stronger Runtime regression reproduced a separate defect: immediately after
+Session cancellation returned, both child Plans still waited for Execution Jobs
+and the parent still waited for their ActionGroup. Stopping the execution stacks
+alone did not close these durable owners.
+
+Both native stores now close nonterminal Plans and running ActionGroups in the
+same transaction as explicit Thread cancellation. The affected set is the exact
+Thread and its cancelled Activation generation, not every Thread in the Session.
+Plan revisions advance, claim/lease and pending-child fields are cleared, and a
+terminal timestamp/reason is stored. Already-terminal Plans and completed
+results are unchanged. This does not depend on a later reconciliation pass.
+
+New Plan and ActionGroup enrollment takes the same owner lock as cancellation
+and requires a matching live Thread/Activation generation. Thus creation either
+commits before cancellation and is closed by it, or cannot create a late orphan.
+Replaying an existing causal identity still returns the existing record; it
+does not reopen it. No schema migration or existing-data rewrite is introduced.
+
+Cancelling an ActionGroup ends its join, but does not invent member results.
+Already-issued tools may still return: their immutable result Events and member
+counts are recorded, while the Group remains `cancelled`. No settled Event or
+new wake Signal is emitted. An already-settled Group remains settled. PostgreSQL
+member-result commits use the same Thread-before-Group lock order as cancellation
+because direct wake publication also locks the Thread. Physical and infer child
+creation take the owner before the Plan; infer reconciliation takes the child
+Thread and parent Thread before their Plan/Activation rows, matching terminal
+child handoff. This avoids acquiring an owner foreign-key lock while holding a
+row that cancellation needs.
+
+`morphz/tests/plan_owner_cancellation.rs` exercises the native contract without
+a running Runtime: queued/running Plans and all four wait kinds, stale claims,
+reopen, same-Session sibling isolation, exact replay, and creation/cancellation
+races. ActionGroup cases cover partial and late results plus concurrent final
+settlement versus cancellation. The actual parallel Runtime regression also
+requires all three Plans to be cancelled and every owned batch to be terminal.
+
+This is not proof of nested approval checkpointing, cancellation propagation to
+separate infer Threads, or actual hosted compute exit/wake. Physical Job
+cancellation still uses its existing mechanism; these changes do not declare a
+running physical command stopped, nor relax any hosted quiescence blockers.
+
+### Owner-cancellation verification
+
+The final native run passed **25 integration tests** with SQLite and a disposable
+loopback PostgreSQL 15 database:
+
+```sh
+cargo test -p morphz --features remote-store \
+  --test activation_approval_checkpoint --test approval_runtime_resume \
+  --test plan_infer_handoff --test plan_owner_cancellation \
+  --test runtime_store_conformance \
+  -- --include-ignored --skip approval_runtime_child \
+  --skip remote_approval_checkpoint_survives_two_empty_cache_restores \
+  --skip remote_runtime_store_satisfies_operational_conformance_and_restores
+```
+
+The six owner-cancellation tests include 120 paired creation, settlement,
+physical handoff, and infer-reconciliation/cancellation races across the two
+databases. Infer race assertions establish lock-order convergence, not cancellation
+propagation: existing generation-route validation may reject the cancelled
+child. The Runtime approval gate again executes its three subprocess stages.
+
+Library filters `plan`, `cancel`, and `action_group` passed 49, 34, and 2 tests,
+respectively (84 distinct tests after their single overlap). Default-feature
+`cargo check -p morphz --lib`, targeted `rustfmt --check`, and `git diff --check`
+also passed. An initial command inadvertently selected two opt-in workerd tests
+without their required fixture URL; both failed at fixture validation, before
+any transport call. The final command explicitly excludes them. This native
+change has **not** revalidated workerd restore or actual Cloud parking.

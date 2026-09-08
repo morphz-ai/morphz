@@ -189,14 +189,26 @@ impl ActionGroupStore for PostgresStore {
         let objective_revision = group.objective_revision.map(i64::try_from).transpose()?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT id FROM threads WHERE id = $1 FOR UPDATE")
+            .bind(&group.thread_id)
+            .fetch_optional(&mut *tx)
+            .await?;
         let inserted = sqlx::query(
             r#"INSERT INTO action_groups
                (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
                 assistant_call_event_id, objective_id, objective_evaluation_id,
                 objective_revision, status, member_count, terminal_member_count,
                 created_at, updated_at, settled_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                       'running', $11, 0, $12, $12, NULL)
+               SELECT $1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                       'running', $11, 0, $12, $12, NULL
+               WHERE EXISTS (
+                 SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id
+                 WHERE t.id = $3 AND a.id = $2 AND t.status = 'open'
+                   AND a.status IN ('queued', 'running') AND a.generation = t.generation
+                   AND t.agent_id = $4 AND a.agent_id = t.agent_id
+                   AND t.context_id = $5 AND a.context_id = t.context_id
+                   AND t.session_id = $6 AND a.session_id = t.session_id
+               )
                ON CONFLICT(id) DO NOTHING"#,
         )
         .bind(&group.id)
@@ -233,8 +245,9 @@ impl ActionGroupStore for PostgresStore {
         }
         let row = sqlx::query("SELECT * FROM action_groups WHERE id = $1 FOR UPDATE")
             .bind(&group.id)
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or("ActionGroup requires a matching live owner Thread/Activation generation")?;
         let current = group_from_row(&row)?;
         let current_members = sqlx::query(
             "SELECT * FROM action_group_members WHERE group_id = $1 ORDER BY ordinal, tool_call_id",
@@ -417,6 +430,15 @@ impl ActionGroupStore for PostgresStore {
             return Err("Action Group settled Event 的路由或 topic 不匹配".into());
         }
         let mut tx = self.pool.begin().await?;
+        // Settlement may publish a direct Signal, which locks the owner
+        // Thread. Match cancellation's Thread -> Group order before locking
+        // the Group; otherwise completion and cancellation can deadlock.
+        sqlx::query(
+            "SELECT t.id FROM threads t JOIN action_groups g ON g.thread_id = t.id WHERE g.id = $1 FOR UPDATE OF t",
+        )
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         let group_row = sqlx::query("SELECT * FROM action_groups WHERE id = $1 FOR UPDATE")
             .bind(group_id)
             .fetch_optional(&mut *tx)
@@ -451,7 +473,10 @@ impl ActionGroupStore for PostgresStore {
                 existing: true,
             });
         }
-        if group.status != ActionGroupStatus::Running {
+        if !matches!(
+            group.status,
+            ActionGroupStatus::Running | ActionGroupStatus::Cancelled
+        ) {
             tx.rollback().await?;
             return Err(format!(
                 "Action Group '{group_id}' 已是 {}，不能再接收成员结果",
@@ -476,7 +501,10 @@ impl ActionGroupStore for PostgresStore {
             return Err("Action Group member 的并发终态提交未命中".into());
         }
         let terminal_member_count = group.terminal_member_count.saturating_add(1);
-        let settled_now = terminal_member_count == group.member_count;
+        // Late member results remain auditable after cancellation, but cannot
+        // settle the cancelled batch or publish a new wakeup.
+        let settled_now = group.status == ActionGroupStatus::Running
+            && terminal_member_count == group.member_count;
         if settled_now {
             append_event_in_tx(&mut tx, settled_event).await?;
             if settled_event
@@ -526,7 +554,7 @@ impl ActionGroupStore for PostgresStore {
             sqlx::query(
                 r#"UPDATE action_groups
                    SET revision = revision + 1, terminal_member_count = $1, updated_at = $2
-                   WHERE id = $3 AND status = 'running'"#,
+                   WHERE id = $3 AND status IN ('running', 'cancelled')"#,
             )
             .bind(i64::try_from(terminal_member_count)?)
             .bind(&now)
