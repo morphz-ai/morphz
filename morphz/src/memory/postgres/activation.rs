@@ -1228,6 +1228,23 @@ impl ActivationStore for PostgresStore {
                 fresh_activation: false,
             });
         }
+        // Preserve directed input behind the exact live/approval-parked
+        // Objective owner instead of admitting and then discarding it.
+        if stored_signal.kind == "chat/steering" && sqlx::query_scalar::<_, i32>(
+            r#"SELECT 1 FROM objectives o JOIN threads t ON t.id = $1
+               WHERE t.kind = 'execution' AND t.supervisor_kind = 'objective'
+                 AND t.origin_evaluation_id IS NULL AND t.supervisor_id = o.id
+                 AND t.supervision_generation = o.generation
+                 AND t.agent_id = o.agent_id AND t.context_id = o.context_id
+                 AND t.session_id = o.coordinator_session_id
+                 AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                 AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > $2)"#,
+        ).bind(&thread.id).bind(&now).fetch_optional(&mut *tx).await?.is_some() {
+            tx.commit().await?;
+            return Ok(ThreadSignalBatchClaim {
+                activation: None, execution_path, fresh_activation: false,
+            });
+        }
         sqlx::query(
             r#"UPDATE thread_signals signals
                SET status = 'acknowledged', acknowledged_at = $1
@@ -1650,6 +1667,17 @@ impl ActivationStore for PostgresStore {
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND NOT EXISTS (
+                   SELECT 1 FROM objectives o
+                   WHERE signals.kind = 'chat/steering'
+                     AND thread.kind = 'execution' AND thread.supervisor_kind = 'objective'
+                     AND thread.origin_evaluation_id IS NULL AND thread.supervisor_id = o.id
+                     AND thread.supervision_generation = o.generation
+                     AND thread.agent_id = o.agent_id AND thread.context_id = o.context_id
+                     AND thread.session_id = o.coordinator_session_id
+                     AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                     AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > $2)
+                 )
+                 AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
                      AND activation.generation = thread.generation
@@ -1659,6 +1687,7 @@ impl ActivationStore for PostgresStore {
                LIMIT $1"#,
         )
         .bind(i64::try_from(limit)?)
+        .bind(now_text())
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(signal_from_row).collect()
@@ -3040,7 +3069,19 @@ impl ActivationStore for PostgresStore {
         let mut objective_is_terminal = false;
         if let Some(objective_id) = completion_objective_id {
             let row = sqlx::query(
-                r#"SELECT status, active_evaluation_id, completion_intent_json
+                r#"SELECT status, active_evaluation_id, completion_intent_json,
+                   EXISTS (
+                     SELECT 1 FROM threads target JOIN thread_signals input ON input.thread_id = target.id
+                     WHERE target.supervisor_id = objectives.id
+                       AND target.supervisor_kind = 'objective' AND target.kind = 'execution'
+                       AND target.origin_evaluation_id IS NULL
+                       AND target.supervision_generation = objectives.generation
+                       AND target.agent_id = objectives.agent_id AND target.context_id = objectives.context_id
+                       AND target.session_id = objectives.coordinator_session_id
+                       AND target.status = 'open' AND target.control_state = 'active'
+                       AND input.thread_generation = target.generation
+                       AND input.kind = 'chat/steering' AND input.status = 'pending'
+                   ) AS pending_directed_input
                    FROM objectives WHERE id = $1 FOR UPDATE"#,
             )
             .bind(objective_id)
@@ -3055,6 +3096,7 @@ impl ActivationStore for PostgresStore {
                 if !objective_is_terminal
                     && terminal_lifecycle == ThreadLifecycle::Completed
                     && status == ObjectiveStatus::Active.as_str()
+                    && !row.get::<bool, _>("pending_directed_input")
                 {
                     if let Some(intent_json) = intent_json {
                         let intent: ObjectiveCompletionIntent =

@@ -4478,6 +4478,81 @@ impl ObjectiveSupervisor {
         Ok(true)
     }
 
+    /// A creation-prelude Dialogue owns the first Evaluation but is not the
+    /// Objective's primary Thread. Only that coordinator may hand off here;
+    /// infer/child owners must deliver their real results to the coordinator.
+    pub(crate) async fn directed_input_thread(
+        &self,
+        activation: &crate::memory::ThreadActivationRecord,
+    ) -> Result<Option<crate::memory::ThreadRecord>, DynError> {
+        let Some(binding) = self.evaluations.get_for_activation(&activation.id) else {
+            return Ok(None);
+        };
+        let Some(threads) = &self.thread_store else {
+            return Ok(None);
+        };
+        let Some(source) = threads.get_thread_by_root(&activation.root_turn_id).await? else {
+            return Ok(None);
+        };
+        // A dialogue is promoted to Execution after selecting physical tools.
+        // Its immutable user root, not the display kind, identifies the
+        // coordinator. Attached/infer Threads must finish their real result.
+        if !matches!(
+            source.kind,
+            ThreadKind::DialogueTurn | ThreadKind::Execution
+        ) || source.executor_kind != "self"
+            || source.generation != activation.generation
+            || source.supervision.origin_evaluation_id.is_some()
+            || source.supervision.parent_thread_id.is_some()
+        {
+            return Ok(None);
+        }
+        let root_event = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(source.root_turn_id.clone()),
+                context_id: Some(source.context_id.clone()),
+                session_id: Some(source.session_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        if !root_event.is_some_and(|event| event.event_type == TYPE_USER_MESSAGE) {
+            return Ok(None);
+        }
+        let Some(objective) = self.store.get_objective(&binding.objective_id).await? else {
+            return Ok(None);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || objective.active_evaluation_id.as_deref() != Some(binding.evaluation_id.as_str())
+            || objective.agent_id != activation.agent_id
+            || objective.context_id != activation.context_id
+            || objective.coordinator_session_id != activation.session_id
+        {
+            return Ok(None);
+        }
+        let root =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let Some(target) = threads.get_thread_by_root(&root).await? else {
+            return Ok(None);
+        };
+        if target.kind != ThreadKind::Execution
+            || target.lifecycle != crate::memory::ThreadLifecycle::Open
+            || target.control_state != crate::memory::ThreadControlState::Active
+            || target.agent_id != objective.agent_id
+            || target.context_id != objective.context_id
+            || target.session_id != objective.coordinator_session_id
+            || target.supervision.supervisor_kind != ThreadSupervisorKind::Objective
+            || target.supervision.supervisor_id.as_deref() != Some(objective.id.as_str())
+            || target.supervision.generation != objective.generation
+            || target.supervision.origin_evaluation_id.is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(target))
+    }
+
     /// Release only the current cognitive slice at a side-effect-free model
     /// boundary. The already-durable input Signal owns the next activation;
     /// do not synthesize another continuation or cancel any physical Job.
@@ -4507,6 +4582,15 @@ impl ObjectiveSupervisor {
         publish_started: bool,
         pending_dependency_id: Option<&str>,
     ) -> Result<Option<ObjectiveRecord>, DynError> {
+        // Share the automatic scheduler's local claim lane. Its temporary
+        // binding must not suppress a routed input while its durable claim is
+        // about to lose to that same input's reservation.
+        let lock = self
+            .schedule_locks
+            .entry(objective.id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
         let evaluation_id = format!(
             "objective_eval_{}_{}_{}",
             objective.id,

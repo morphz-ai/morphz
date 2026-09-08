@@ -7239,6 +7239,14 @@ impl ObjectiveStore for PostgresStore {
                      AND dependency.owner_generation = objectives.generation
                      AND dependency.required = TRUE AND dependency.status = 'pending'
                  )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM threads input_thread
+                   JOIN thread_signals input ON input.thread_id = input_thread.id
+                   WHERE input_thread.root_turn_id = $6
+                     AND input.thread_generation = input_thread.generation
+                     AND input_thread.status = 'open'
+                     AND input.kind = 'chat/steering' AND input.status IN ('pending', 'claimed')
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
         )
         .bind(evaluation_id)
@@ -7246,6 +7254,7 @@ impl ObjectiveStore for PostgresStore {
         .bind(&now)
         .bind(id)
         .bind(i64::try_from(expected_revision)?)
+        .bind(&thread.root_turn_id)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {

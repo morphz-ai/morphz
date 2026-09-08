@@ -11853,6 +11853,30 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
 
+        // A directed Objective input is not a competing Evaluation. Keep its
+        // immutable Signal pending until the current owner reaches a safe
+        // boundary, including when approval suspension has retired its lease.
+        if stored_signal.kind == "chat/steering"
+            && sqlx::query_scalar::<_, i64>(
+                r#"SELECT 1 FROM objectives o JOIN threads t ON t.id = ?
+               WHERE t.kind = 'execution' AND t.supervisor_kind = 'objective'
+                 AND t.origin_evaluation_id IS NULL AND t.supervisor_id = o.id
+                 AND t.supervision_generation = o.generation
+                 AND t.agent_id = o.agent_id AND t.context_id = o.context_id
+                 AND t.session_id = o.coordinator_session_id
+                 AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                 AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > ?)"#,
+            )
+            .bind(&thread.id)
+            .bind(&now)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some()
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
         // Signals produced by a physical Activation belong to that exact
         // Evaluation generation.  A late tool result from an old generation
         // must never be folded into a restarted DialogueTurn.  Signals without
@@ -12304,6 +12328,17 @@ impl ActivationStore for SqliteStore {
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND NOT EXISTS (
+                   SELECT 1 FROM objectives o
+                   WHERE signals.kind = 'chat/steering'
+                     AND thread.kind = 'execution' AND thread.supervisor_kind = 'objective'
+                     AND thread.origin_evaluation_id IS NULL AND thread.supervisor_id = o.id
+                     AND thread.supervision_generation = o.generation
+                     AND thread.agent_id = o.agent_id AND thread.context_id = o.context_id
+                     AND thread.session_id = o.coordinator_session_id
+                     AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                     AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > ?)
+                 )
+                 AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
                      AND activation.generation = thread.generation
@@ -12312,6 +12347,7 @@ impl ActivationStore for SqliteStore {
                ORDER BY signals.sequence, signals.id
                LIMIT ?"#,
         )
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -13771,7 +13807,19 @@ impl ActivationStore for SqliteStore {
         let mut objective_is_terminal = false;
         if let Some(objective_id) = completion_objective_id {
             let row = sqlx::query(
-                r#"SELECT status, active_evaluation_id, completion_intent_json
+                r#"SELECT status, active_evaluation_id, completion_intent_json,
+                   EXISTS (
+                     SELECT 1 FROM threads target JOIN thread_signals input ON input.thread_id = target.id
+                     WHERE target.supervisor_id = objectives.id
+                       AND target.supervisor_kind = 'objective' AND target.kind = 'execution'
+                       AND target.origin_evaluation_id IS NULL
+                       AND target.supervision_generation = objectives.generation
+                       AND target.agent_id = objectives.agent_id AND target.context_id = objectives.context_id
+                       AND target.session_id = objectives.coordinator_session_id
+                       AND target.status = 'open' AND target.control_state = 'active'
+                       AND input.thread_generation = target.generation
+                       AND input.kind = 'chat/steering' AND input.status = 'pending'
+                   ) AS pending_directed_input
                    FROM objectives WHERE id = ?"#,
             )
             .bind(objective_id)
@@ -13786,6 +13834,7 @@ impl ActivationStore for SqliteStore {
                 if !objective_is_terminal
                     && terminal_lifecycle == ThreadLifecycle::Completed
                     && status == ObjectiveStatus::Active.as_str()
+                    && !row.get::<bool, _>("pending_directed_input")
                 {
                     if let Some(intent_json) = completion_intent_json {
                         let intent: ObjectiveCompletionIntent = serde_json::from_str(&intent_json)?;
@@ -20763,6 +20812,14 @@ impl ObjectiveStore for SqliteStore {
                      AND dependency.owner_generation = objectives.generation
                      AND dependency.required = 1 AND dependency.status = 'pending'
                  )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM threads input_thread
+                   JOIN thread_signals input ON input.thread_id = input_thread.id
+                   WHERE input_thread.root_turn_id = ?
+                     AND input.thread_generation = input_thread.generation
+                     AND input_thread.status = 'open'
+                     AND input.kind = 'chat/steering' AND input.status IN ('pending', 'claimed')
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= ?)"#,
         )
         .bind(evaluation_id)
@@ -20770,6 +20827,7 @@ impl ObjectiveStore for SqliteStore {
         .bind(&now)
         .bind(id)
         .bind(expected_revision)
+        .bind(&thread.root_turn_id)
         .bind(&now)
         .execute(&mut *tx)
         .await?;

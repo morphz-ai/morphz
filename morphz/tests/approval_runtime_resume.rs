@@ -6,7 +6,7 @@ use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::*;
 use morphz::permission::{PermissionMode, ReviewerKind};
-use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy};
+use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy, SessionMessageOptions};
 use morphz::secret_store::{HostEnvFileSecretBackend, SecretStore};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,27 @@ impl Client for ObjectiveFixtureClient {
                 tool_calls: vec![],
             });
         }
+        if self.inner.stage == "steer-objective-delivery"
+            && (!self.inner.infer || self.inner.calls.load(Ordering::SeqCst) > 0)
+        {
+            let signals = self
+                .native
+                .list_context_thread_signals("context-default", None)
+                .await?;
+            let inputs = signals
+                .iter()
+                .filter(|s| s.kind == "chat/steering")
+                .collect::<Vec<_>>();
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(
+                inputs[0].status,
+                ThreadSignalStatus::Claimed,
+                "the model must run under the admitted directed input, not the old owner; threads={:?}; objectives={:?}; activations={:?}",
+                self.native.list_context_threads("context-default", true).await?,
+                self.native.list_recoverable_objectives().await?,
+                self.native.list_context_thread_activations("context-default", false).await?
+            );
+        }
         messages
             .retain(|m| m.role != "tool" || m.tool_call_id.as_deref() != Some("create-objective"));
         let initial = matches!(self.inner.stage.as_str(), "initial" | "live")
@@ -85,7 +106,24 @@ impl Client for FixtureClient {
         _: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         let ordinal = self.calls.fetch_add(1, Ordering::SeqCst);
-        let (stage, call_index) = if self.stage == "live" {
+        if self.stage == "steer-objective-delivery" && (!self.infer || ordinal > 0) {
+            assert_eq!(ordinal, usize::from(self.infer), "directed input needs exactly one model request after the actual infer child result");
+            assert!(
+                messages.iter().any(|m| {
+                    m.role == "user" && m.content.contains(
+                "After the existing approval batch settles, report the synthetic results concisely"
+            )
+                }),
+                "the model must receive the queued Objective input"
+            );
+            return Ok(Response {
+                content: "checkpoint-batch-complete".into(),
+                tool_calls: vec![],
+            });
+        }
+        let (stage, call_index) = if self.stage == "steer-objective-delivery" {
+            ("final", ordinal)
+        } else if self.stage == "live" {
             if ordinal < 2 {
                 ("initial", ordinal)
             } else {
@@ -285,6 +323,203 @@ async fn approval_runtime_child() {
         .unwrap();
     let mut replies = runtime.subscribe("chat/reply", 8);
     runtime.start().await.unwrap();
+    if matches!(
+        stage.as_str(),
+        "steer-thread-pending" | "steer-objective-pending" | "steer-objective-delivery"
+    ) {
+        let objectives = native.list_recoverable_objectives().await.unwrap();
+        assert_eq!(objectives.len(), 1);
+        let held = &objectives[0];
+        let before = native
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 3);
+        let destination = if stage.starts_with("steer-objective-") {
+            morphz::steering::InputDestination::Objective {
+                objective_id: held.id.clone(),
+                generation: held.generation,
+                reply_to_request_id: None,
+            }
+        } else {
+            let threads = native
+                .list_context_threads(&held.context_id, false)
+                .await
+                .unwrap();
+            let parent = threads
+                .iter()
+                .find(|t| t.kind == ThreadKind::DialogueTurn)
+                .unwrap();
+            morphz::steering::InputDestination::Thread {
+                thread_id: parent.id.clone(),
+                generation: parent.generation,
+            }
+        };
+        let session = runtime
+            .ensure_session(NewSession {
+                id: held.coordinator_session_id.clone(),
+                agent_id: held.agent_id.clone(),
+                context_id: held.context_id.clone(),
+                parent_session_id: None,
+                title: "Synthetic approval checkpoint".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let receipt = session
+            .send_as_principal_with_options(
+                "After the existing approval batch settles, report the synthetic results concisely",
+                "Checkpoint-Test",
+                runtime.identity().principal_id.clone(),
+                Some("queued-correction".into()),
+                SessionMessageOptions {
+                    input_destination: Some(destination),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        for _ in 0..40 {
+            let signals = native
+                .list_context_thread_signals(&held.context_id, None)
+                .await
+                .unwrap();
+            let input = signals
+                .iter()
+                .find(|s| s.event_id == receipt.event_id)
+                .unwrap();
+            assert_eq!(
+                input.status,
+                ThreadSignalStatus::Pending,
+                "directed input must wait, not be claimed and discarded behind a parked Evaluation"
+            );
+            assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            native.get_objective(&held.id).await.unwrap().unwrap(),
+            *held
+        );
+        assert_eq!(
+            native
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+            before,
+            "steering must not decide approvals or cancel physical work"
+        );
+        if stage == "steer-objective-delivery" {
+            let pending = native
+                .list_approvals(ApprovalFilter {
+                    pending_only: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 2);
+            for approval in pending {
+                let job = native
+                    .get_execution_job(&approval.job_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let decision = if job.request["path"] == json!(root.join("outside/one.txt")) {
+                    morphz::approval::ApprovalDecision::AllowOnce {
+                        rationale: "synthetic exact read".into(),
+                        risk_tags: vec![],
+                    }
+                } else {
+                    morphz::approval::ApprovalDecision::Deny {
+                        rationale: "synthetic denial".into(),
+                        risk_tags: vec![],
+                    }
+                };
+                runtime
+                    .decide_approval(&approval.id, decision)
+                    .await
+                    .unwrap();
+            }
+            let delivered = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let current = native.get_objective(&held.id).await.unwrap().unwrap();
+                    let signals = native
+                        .list_context_thread_signals(&held.context_id, None)
+                        .await
+                        .unwrap();
+                    let input = signals
+                        .iter()
+                        .find(|s| s.event_id == receipt.event_id)
+                        .unwrap();
+                    if current.status == ObjectiveStatus::Completed
+                        && input.status == ThreadSignalStatus::Acknowledged
+                        && runtime.hosted_process_is_quiescent()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            assert!(delivered.is_ok(),
+                "queued Objective input did not settle; model_calls={}; objective={:?}; signals={:?}; activations={:?}",
+                client.calls.load(Ordering::SeqCst),
+                native.get_objective(&held.id).await.unwrap(),
+                native.list_context_thread_signals(&held.context_id, None).await.unwrap(),
+                native.list_context_thread_activations(&held.context_id, false).await.unwrap());
+            assert_eq!(
+                client.calls.load(Ordering::SeqCst),
+                1 + usize::from(client.infer)
+            );
+            let after = native
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(after.len(), before.len());
+            assert!(after.iter().all(|job| job.status.is_terminal()));
+            let approved = after
+                .iter()
+                .find(|j| j.request["path"] == json!(root.join("outside/one.txt")))
+                .unwrap();
+            assert_eq!(approved.status, ExecutionJobStatus::Succeeded);
+            let result = native
+                .query(QueryFilter {
+                    event_id: approved.result_event_id.clone(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.len(), 1);
+            assert!(result[0]
+                .payload
+                .get("text")
+                .and_then(|v| v.as_str())
+                .is_some_and(|text| text.contains("approved-fixture")));
+            let completed = before
+                .iter()
+                .find(|j| j.status == ExecutionJobStatus::Succeeded)
+                .unwrap();
+            assert_eq!(
+                after.iter().find(|j| j.id == completed.id).unwrap(),
+                completed
+            );
+            assert!(after
+                .iter()
+                .find(|j| j.request["path"] == json!(root.join("outside/two.txt")))
+                .unwrap()
+                .side_effect_started_at
+                .is_none());
+        }
+        return;
+    }
     if matches!(
         stage.as_str(),
         "pause-objective-commit"
@@ -889,6 +1124,52 @@ async fn cold_objective_pause_closes_approval_owners() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_objective_cancel_closes_approval_owners() {
     objective_cold_control_case("cancel-objective").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_input_remains_queued_while_objective_awaits_approval() {
+    let temp = prepare_fixture();
+    run_child_with_objective(temp.path(), "initial", false, false, true);
+    run_child_with_objective(temp.path(), "steer-thread-pending", false, false, true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_input_remains_queued_while_awaiting_approval() {
+    let temp = prepare_fixture();
+    run_child_with_objective(temp.path(), "initial", false, false, true);
+    run_child_with_objective(temp.path(), "steer-objective-pending", false, false, true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn objective_input_is_delivered_after_approval() {
+    for (nested, infer) in [(false, false), (true, false), (false, true)] {
+        let temp = prepare_fixture();
+        run_child_with_objective(temp.path(), "initial", nested, infer, true);
+        run_child_with_objective(temp.path(), "steer-objective-delivery", nested, infer, true);
+        let native = store(temp.path()).await;
+        let threads = native
+            .list_context_threads("context-default", true)
+            .await
+            .unwrap();
+        assert!(threads.iter().all(|t| t.lifecycle != ThreadLifecycle::Open),
+            "handoff must close the old Dialogue and the completed Objective, not leave an orphan Thread");
+        let handoffs = native
+            .query(QueryFilter {
+                topic: Some("chat/no_reply".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.payload["runtime_handoff"] == "directed_objective_input")
+            .collect::<Vec<_>>();
+        assert_eq!(handoffs.len(), 1);
+        assert!(
+            handoffs[0].payload["objective_evaluation_id"].is_string(),
+            "the durable handoff must retain the old Evaluation's exact route for crash recovery"
+        );
+        run_child_with_objective(temp.path(), "verify-stopped-objective", nested, infer, true);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

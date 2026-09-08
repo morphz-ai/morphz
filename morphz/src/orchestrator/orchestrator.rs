@@ -11288,6 +11288,63 @@ impl Orchestrator {
             )
             .await?;
         if !pending.iter().any(|signal| signal.kind == "chat/steering") {
+            if let Some(supervisor) = &self.objective_supervisor {
+                if let Some(target) = supervisor.directed_input_thread(activation).await? {
+                    let pending = store
+                        .list_context_thread_signals_for_threads(
+                            &activation.context_id,
+                            std::slice::from_ref(&target.id),
+                            Some(crate::memory::ThreadSignalStatus::Pending),
+                        )
+                        .await?;
+                    if pending.iter().any(|signal| {
+                        signal.kind == "chat/steering"
+                            && signal.thread_generation == target.generation
+                    }) {
+                        // Close the source Dialogue with a Runtime handoff,
+                        // not a fabricated model response or a cancelled Job.
+                        // Finalize its Evaluation only after the terminal
+                        // receipt is durable, so crash recovery can finish it.
+                        Box::pin(self.publish_no_reply_with_attributes(
+                            &activation.session_id,
+                            &activation.id,
+                            None,
+                            vec![
+                                ("runtime_handoff".into(), json!("directed_objective_input")),
+                                ("handoff_thread_id".into(), json!(target.id)),
+                            ],
+                        ))
+                        .await?;
+                        // An unsettled Group can defer that terminal receipt.
+                        // In that case the owner remains bound and must keep
+                        // servicing its existing dependency, not disappear.
+                        if store
+                            .get_thread_activation(&activation.id)
+                            .await?
+                            .is_some_and(|current| current.status.is_terminal())
+                        {
+                            // The pending input belongs to a different root,
+                            // so the normal source-Thread completion refill
+                            // will not notify it. Reuse its durable Event.
+                            self.dispatch_next_pending_thread_signal(&target.root_turn_id)
+                                .await?;
+                            return Ok(true);
+                        }
+                        // A same-Thread input may also have won the terminal
+                        // commit race. Its existing handoff keeps this Thread
+                        // open, but still ends the old model request.
+                        return Ok(store
+                            .list_context_thread_signals_for_threads(
+                                &activation.context_id,
+                                &[thread_id.to_owned()],
+                                Some(crate::memory::ThreadSignalStatus::Pending),
+                            )
+                            .await?
+                            .iter()
+                            .any(|signal| signal.kind == "chat/steering"));
+                    }
+                }
+            }
             return Ok(false);
         }
         if let Some(supervisor) = &self.objective_supervisor {

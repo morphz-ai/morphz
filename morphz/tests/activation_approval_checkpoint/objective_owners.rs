@@ -1,5 +1,216 @@
 use super::*;
 
+async fn directed_input(
+    store: &dyn RuntimeStore,
+    o: &ObjectiveRecord,
+    suffix: &str,
+) -> (NewThreadSignal, NewThreadActivation) {
+    let thread = store
+        .ensure_thread(morphz::steering::objective_thread(o))
+        .await
+        .unwrap();
+    let id = format!("objective-input-{suffix}");
+    let mut input = event(
+        id.clone(),
+        "chat/user_message",
+        "user_message",
+        json!({
+            "context_id":o.context_id,"session_id":o.coordinator_session_id,
+            "text":"Synthetic directed input; keep existing approval decisions unchanged",
+        }),
+    );
+    morphz::steering::route(
+        &mut input,
+        &morphz::steering::InputDestination::Objective {
+            objective_id: o.id.clone(),
+            generation: o.generation,
+            reply_to_request_id: None,
+        },
+        &thread,
+        Some(o),
+    )
+    .unwrap();
+    store.append(input).await.unwrap();
+    let sequence = store
+        .query(QueryFilter {
+            event_id: Some(id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0)
+        .sequence
+        .unwrap();
+    (
+        NewThreadSignal {
+            id: stable_thread_signal_id(&id),
+            thread_id: thread.id,
+            thread_generation: thread.generation,
+            event_id: id.clone(),
+            principal_id: None,
+            sequence,
+            kind: "chat/steering".into(),
+            parent_activation_id: None,
+        },
+        NewThreadActivation {
+            id: format!("input-activation-{suffix}"),
+            agent_id: o.agent_id.clone(),
+            context_id: o.context_id.clone(),
+            session_id: o.coordinator_session_id.clone(),
+            initiating_principal_id: None,
+            trigger_event_id: id,
+            trigger_sequence: sequence,
+            trigger_kind: "chat/steering".into(),
+            parent_activation_id: None,
+            root_turn_id: thread.root_turn_id,
+        },
+    )
+}
+
+async fn directed_input_ownership_contract(store: &dyn RuntimeStore) {
+    for parked in [false, true] {
+        let label = if parked { "input-parked" } else { "input-live" };
+        let mut batch = seed(store, label).await;
+        let owner = objective(store, &batch, label).await;
+        bind(store, &mut batch, &owner, false).await;
+        if parked {
+            checkpoint(store, &batch).await;
+        }
+        let held = store.get_objective(&owner.id).await.unwrap().unwrap();
+        let (input, activation) = directed_input(store, &held, label).await;
+        for _ in 0..2 {
+            assert!(store
+                .claim_thread_signal_batch(input.clone(), activation.clone(), 32)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(!store
+                .list_runnable_pending_thread_signals(128)
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == input.id));
+            let signals = store
+                .list_context_thread_signals(&held.context_id, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                signals.iter().find(|s| s.id == input.id).unwrap().status,
+                ThreadSignalStatus::Pending
+            );
+            assert_eq!(store.get_objective(&owner.id).await.unwrap().unwrap(), held);
+            for job in &batch.jobs {
+                assert_eq!(
+                    store.get_execution_job(&job.id).await.unwrap().unwrap(),
+                    *job
+                );
+            }
+        }
+        // A different Objective in the exact same Session is not fenced by
+        // this owner's live lease or human-approval checkpoint.
+        let other = store
+            .create_objective(NewObjective {
+                id: format!("unrelated-{label}"),
+                agent_id: held.agent_id.clone(),
+                context_id: held.context_id.clone(),
+                coordinator_session_id: held.coordinator_session_id.clone(),
+                delivery_session_id: held.delivery_session_id.clone(),
+                parent_objective_id: None,
+                source_event_id: held.source_event_id.clone(),
+                initiating_principal_id: None,
+                stated_objective: "Independent synthetic work".into(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let (other_input, other_activation) =
+            directed_input(store, &other, &format!("other-{label}")).await;
+        assert!(store
+            .claim_thread_signal_batch(other_input, other_activation, 32)
+            .await
+            .unwrap()
+            .is_some());
+        if !parked {
+            let remaining = (held.evaluation_lease_expires_at.unwrap() - Utc::now())
+                .to_std()
+                .unwrap_or_default();
+            tokio::time::sleep(remaining + std::time::Duration::from_millis(25)).await;
+            let next = morphz::steering::objective_thread(&held);
+            let continuation = event(
+                format!("continuation-{label}"),
+                "chat/objective_continue",
+                "objective_continue",
+                json!({
+                    "context_id":held.context_id,"session_id":held.coordinator_session_id,
+                    "objective_id":held.id,"objective_evaluation_id":"must-not-overtake-input",
+                    "root_turn_id":next.root_turn_id,
+                }),
+            );
+            let attempt = || {
+                store.claim_objective_evaluation_with_signal(
+                    &held.id,
+                    held.revision,
+                    "must-not-overtake-input",
+                    Utc::now() + Duration::seconds(30),
+                    &continuation,
+                    &next,
+                )
+            };
+            assert!(
+                matches!(attempt().await.unwrap(), ObjectiveMutation::Conflict { .. }),
+                "an automatic continuation must not overtake already-pending user input"
+            );
+            assert!(store
+                .list_runnable_pending_thread_signals(128)
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == input.id));
+            assert!(store
+                .claim_thread_signal_batch(input, activation, 32)
+                .await
+                .unwrap()
+                .is_some());
+            assert!(
+                matches!(attempt().await.unwrap(), ObjectiveMutation::Conflict { .. }),
+                "a claimed user Signal reserves admission before its Evaluation is acquired"
+            );
+            assert!(
+                store
+                    .query(QueryFilter {
+                        event_id: Some(continuation.id),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "a losing automatic claim must not publish its Event"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sqlite_directed_objective_input_waits_for_exact_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::new(temp.path().join("directed.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    directed_input_ownership_contract(&store).await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated MORPHZ_TEST_POSTGRES_URL"]
+async fn postgres_directed_objective_input_waits_for_exact_owner() {
+    let store = morphz::memory::postgres::PostgresStore::new(
+        &std::env::var("MORPHZ_TEST_POSTGRES_URL").unwrap(),
+        4,
+    )
+    .await
+    .unwrap();
+    directed_input_ownership_contract(&store).await;
+}
+
 async fn infer_admission_contract(store: std::sync::Arc<dyn RuntimeStore>) {
     use morphz::scheduler::{SchedulerDependencyFilter, SchedulerDependencyOwnerKind};
     let mut parent = seed(store.as_ref(), "objective-infer-admission").await;

@@ -205,11 +205,63 @@ The additional same-Objective replacement-Evaluation preservation fixture has
 not been added or run: its write was interrupted by automatic permission-review
 transport failure and timeout. Do not count that boundary as verified.
 
-Still required before hosted acceptance: directed-input and dependency
-replacement while an Objective is actually approval-checkpointed in a real
-Runtime; pause/resume, replacement-Evaluation preservation and terminal-anchor
-recovery. The control-commit crash seam above is now covered, but not every
-possible control or dependency replacement interleaving.
+### Directed input across approval suspension
+
+The real-process directed-input gate first reproduced an acknowledged but
+unconsumed `@Objective` message. The creation-prelude owner and the Objective's
+primary Thread have different roots. Claiming the latter during the former's
+held Evaluation lost the routed Evaluation claim and suppressed the input.
+`@Thread` stayed pending correctly. Preserving `@Objective` as pending alone
+was insufficient: the resumed source did not hand off or notify the other root.
+
+SQLite and PostgreSQL now keep that exact primary-Thread Signal pending while
+its Objective has a live or approval-parked Evaluation. Genuine expired leases
+remain recoverable, and unrelated Objectives in the same Session are unaffected.
+An automatic continuation cannot overtake pending or claimed directed input.
+Routed and automatic claims share the existing local Objective scheduling lock;
+the native transaction remains authoritative.
+
+At a model-safe boundary, the coordinator verifies its immutable user root,
+current Evaluation and exact target supervision. A dialogue can already have
+been promoted to Execution, so display kind alone is not ownership proof.
+Attached/infer children must deliver their real result first. The coordinator
+commits a Runtime `no_reply` handoff retaining the old Evaluation route, then
+finalizes that Evaluation and notifies the target's existing Event. It does not
+create another message, fabricate model output or cancel physical Jobs. The
+source's durable terminal state, not its deliberately retained in-memory route,
+decides whether the old model loop must stop. An unsettled Group can still defer
+the terminal outcome. A pending exact Objective input also prevents an old
+completion intent from completing the Objective during terminal commit.
+
+The process-level gate passes for direct tools, a parallel Plan and nested
+infer. It asserts pending input/no model calls before approval, one allowed read
+and one rejected read, a genuinely claimed input visible in the model request,
+unchanged completed siblings, no duplicate physical Job, terminal source/target
+Threads, one durable routed handoff and no work revived on another restart.
+The native gate passes on both SQLite and disposable PostgreSQL, including
+expired leases and automatic-continuation priority before and after Signal
+claim. These are synthetic local gates, not hosted acceptance.
+
+Final directed-input source verification (2026-09-09): **1331 library cases
+passed, 8 explicitly ignored; 43 local integration cases passed** (13 SQLite
+checkpoint, 18 real-process resume/control/input, 5 infer handoff and 7 owner
+cancellation). All **10 PostgreSQL cases passed** in separate disposable
+databases, including the new directed-input ownership/priority contract. The
+temporary PostgreSQL instance was stopped and its synthetic data removed.
+The first unrestricted-concurrency library run failed three existing cases;
+each passed with the same binary in isolation, and the complete final-source
+run passed with `--test-threads=2`. No assertions, security checks or existing
+test deadlines were relaxed to obtain that result.
+Clippy for the library and all four integration targets passes with
+`-D warnings`; the default-feature library build, formatting and diff checks
+also pass.
+
+Still required before hosted acceptance: dependency replacement while an
+Objective is actually approval-checkpointed; pause/resume,
+replacement-Evaluation preservation and terminal-anchor recovery. The directed
+input gate above does not exhaust crash injection at every handoff instruction
+or every concurrent terminal/input commit interleaving. The control-commit
+crash seam is covered, but not every possible control/dependency replacement.
 Hosted ingress,
 Provider/Edge, actual Cloudflare parking and the other five deployment closures
 remain separate acceptance requirements. No quiescence predicate is relaxed.
