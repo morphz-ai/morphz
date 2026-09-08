@@ -4,6 +4,7 @@
 use super::*;
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use std::collections::{HashMap, HashSet};
+mod plan_graph;
 
 #[derive(Debug, Clone)]
 pub struct ActivationApprovalWaitRequest {
@@ -64,6 +65,19 @@ pub(super) const TABLE: &str = r#"CREATE TABLE IF NOT EXISTS activation_approval
     PRIMARY KEY (activation_id, approval_id)
 )"#;
 
+pub(super) const PLAN_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS activation_approval_plan_waits (
+    activation_id TEXT NOT NULL REFERENCES thread_activations(id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL REFERENCES plan_executions(id),
+    plan_revision BIGINT NOT NULL CHECK(plan_revision >= 1),
+    plan_status TEXT NOT NULL,
+    group_id TEXT REFERENCES action_groups(id),
+    group_revision BIGINT,
+    group_status TEXT,
+    CHECK ((group_id IS NULL AND group_revision IS NULL AND group_status IS NULL)
+        OR (group_id IS NOT NULL AND group_revision >= 1 AND group_status IS NOT NULL)),
+    PRIMARY KEY (activation_id, plan_id)
+)"#;
+
 // Resume on ANY change, including denial, cancellation or permission-policy
 // re-evaluation. Waiting for ALL approvals would prevent the first approved
 // command from running. Missing dependencies also require reconciliation;
@@ -72,6 +86,30 @@ pub(super) const VIEW_QUERY: &str = r#"
     SELECT w.activation_id FROM activation_approval_waits w
     LEFT JOIN approval_requests a ON a.id = w.approval_id
     LEFT JOIN execution_jobs j ON j.id = w.job_id
+    WHERE NOT EXISTS (
+        SELECT 1 FROM activation_approval_plan_waits pw
+        LEFT JOIN plan_executions p ON p.id = pw.plan_id
+        LEFT JOIN action_groups g ON g.id = pw.group_id
+        WHERE pw.activation_id = w.activation_id AND
+            (p.id IS NULL OR p.activation_id <> pw.activation_id
+             OR p.revision <> pw.plan_revision OR p.status <> pw.plan_status
+             OR (pw.group_id IS NOT NULL AND (g.id IS NULL
+                 OR g.revision <> pw.group_revision OR g.status <> pw.group_status)))
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM plan_executions p
+        WHERE p.activation_id = w.activation_id
+          AND p.status NOT IN ('succeeded', 'failed', 'cancelled')
+          AND NOT EXISTS (SELECT 1 FROM activation_approval_plan_waits pw
+              WHERE pw.activation_id = w.activation_id AND pw.plan_id = p.id)
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM execution_jobs j
+        WHERE j.activation_id = w.activation_id
+          AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')
+          AND NOT EXISTS (SELECT 1 FROM activation_approval_waits jw
+              WHERE jw.activation_id = w.activation_id AND jw.job_id = j.id)
+    )
     GROUP BY w.activation_id
     HAVING MIN(CASE WHEN a.status = 'pending_human'
         AND a.revision = w.approval_revision AND a.job_id = w.job_id
@@ -81,6 +119,7 @@ pub(super) const VIEW_QUERY: &str = r#"
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn validate(
     request: &ActivationApprovalWaitRequest,
     activation: &ThreadActivationRecord,
@@ -89,7 +128,9 @@ pub(super) fn validate(
     jobs: &[ExecutionJobRecord],
     approvals: &[ApprovalRecord],
     outputs: &[Event],
-) -> Result<(), Error> {
+    plans: &[PlanExecutionRecord],
+    groups: &[ActionGroupRecord],
+) -> Result<Vec<plan_graph::Snapshot>, Error> {
     if activation.status != ThreadActivationStatus::Running
         || activation.claimed_by.as_deref() != Some(request.claimed_by.as_str())
         || request.claimed_by.trim().is_empty()
@@ -155,6 +196,7 @@ pub(super) fn validate(
         );
     }
     let mut pending_jobs = HashSet::new();
+    let mut direct_jobs = HashSet::new();
     for approval in approvals {
         let job = jobs
             .iter()
@@ -168,9 +210,15 @@ pub(super) fn validate(
             || job.claim_token.is_some()
             || job.side_effect_started_at.is_some()
             || !pending_jobs.insert(job.id.as_str())
-            || remaining.remove(job.tool_call_id.as_str()) != Some(job.tool_name.as_str())
         {
             return Err("Approval checkpoint contains changed, claimed or unrelated work".into());
+        }
+        if let Some(name) = remaining.get(job.tool_call_id.as_str()) {
+            if *name != job.tool_name {
+                return Err("Approval checkpoint direct Job tool differs from its batch".into());
+            }
+            remaining.remove(job.tool_call_id.as_str());
+            direct_jobs.insert(job.id.clone());
         }
         if approval.status != ApprovalStatus::PendingHuman
             || job.status != ExecutionJobStatus::WaitingApproval
@@ -193,12 +241,24 @@ pub(super) fn validate(
             );
         }
     }
-    if !remaining.is_empty()
+    let (snapshots, plan_jobs) = plan_graph::validate(
+        &mut remaining,
+        activation,
+        thread,
+        plans,
+        groups,
+        jobs,
+        &pending_jobs,
+    )?;
+    if pending_jobs
+        .iter()
+        .any(|id| !direct_jobs.contains(*id) && !plan_jobs.contains(*id))
+        || !remaining.is_empty()
         || jobs
             .iter()
             .any(|j| !j.status.is_terminal() && !pending_jobs.contains(j.id.as_str()))
     {
         return Err("Approval checkpoint cannot suspend unfinished sibling work".into());
     }
-    Ok(())
+    Ok(snapshots)
 }

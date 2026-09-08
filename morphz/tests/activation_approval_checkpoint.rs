@@ -7,6 +7,9 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::*;
 use serde_json::json;
 
+#[path = "activation_approval_checkpoint/nested_plans.rs"]
+mod nested_plans;
+
 struct Batch {
     request: ActivationApprovalWaitRequest,
     jobs: Vec<ExecutionJobRecord>,

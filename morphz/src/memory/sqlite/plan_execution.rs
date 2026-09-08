@@ -83,7 +83,7 @@ fn validate_infer_event_route(
     Ok(())
 }
 
-fn record_from_row(row: &SqliteRow) -> Result<PlanExecutionRecord, StoreError> {
+pub(super) fn record_from_row(row: &SqliteRow) -> Result<PlanExecutionRecord, StoreError> {
     Ok(PlanExecutionRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,

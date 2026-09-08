@@ -102,7 +102,7 @@ fn optional_time(row: &PgRow, column: &str) -> Result<Option<DateTime<Utc>>, Sto
         .transpose()
 }
 
-fn group_from_row(row: &PgRow) -> Result<ActionGroupRecord, StoreError> {
+pub(super) fn group_from_row(row: &PgRow) -> Result<ActionGroupRecord, StoreError> {
     Ok(ActionGroupRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,

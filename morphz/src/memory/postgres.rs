@@ -402,18 +402,6 @@ impl PostgresStore {
                 .run_versioned_migration("20260718_03_approvals", approval::migrate(&store.pool))
                 .await?;
             store
-                .run_versioned_migration(
-                    "20260908_01_activation_approval_waits",
-                    activation_approval_wait::migrate(&store.pool),
-                )
-                .await?;
-            store
-                .run_versioned_migration(
-                    "20260908_03_retain_approval_resume_boundary",
-                    activation_approval_wait::migrate(&store.pool),
-                )
-                .await?;
-            store
                 .run_versioned_migration("20260718_04_threads", thread::migrate(&store.pool))
                 .await?;
             store
@@ -434,6 +422,26 @@ impl PostgresStore {
                     activation::migrate(&store.pool),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20260726_01_plan_executions",
+                    plan_execution::migrate(&store.pool),
+                )
+                .await?;
+            // The checkpoint view references Plans and is used by admission
+            // functions below. Both dependencies must exist on a fresh store.
+            for version in [
+                "20260908_01_activation_approval_waits",
+                "20260908_03_retain_approval_resume_boundary",
+                "20260908_04_nested_plan_approval_waits",
+            ] {
+                store
+                    .run_versioned_migration(
+                        version,
+                        activation_approval_wait::migrate(&store.pool),
+                    )
+                    .await?;
+            }
             store
                 .run_versioned_migration(
                     "20260816_01_thread_signal_notifications",
@@ -461,12 +469,6 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260908_02_activation_approval_wait_admission",
                     activation::migrate_latency_fast_paths(&store.pool),
-                )
-                .await?;
-            store
-                .run_versioned_migration(
-                    "20260726_01_plan_executions",
-                    plan_execution::migrate(&store.pool),
                 )
                 .await?;
             store

@@ -29,10 +29,14 @@ SQLite and PostgreSQL validate, within the write transaction:
 - every other normalized continuation tool call has a durable output on the
   same causal route, including the Objective creation prelude; deduplicated
   raw provider calls are not fictitious unfinished siblings;
-- no nonterminal sibling Job or unfinished Yao Plan is silently discarded.
+- each unfinished Yao Plan is reachable from an `eval` in that exact batch,
+  through deterministic parallel branches or a Program child, and every live
+  leaf waits on one of the supplied pending-human Approval/Job dependencies;
+- no nonterminal sibling Job or unreachable unfinished Plan is discarded.
 
-The transaction writes `activation_approval_waits`, records the Approval/Job
-revisions and assistant-call Event reference, requeues the same Activation,
+The transaction writes `activation_approval_waits` and, for nested continuations,
+`activation_approval_plan_waits`. It records Approval/Job and Plan/parallel-Group
+revisions, statuses and the assistant-call Event reference, requeues the same Activation,
 clears its execution owner and lease, and cancels its activation-lease Timer.
 It does not acknowledge its Thread Signals, finish the Thread, consume a
 capability grant, or create replacement Jobs.
@@ -48,7 +52,9 @@ before every per-class admission LIMIT, from per-Session oldest-dialogue
 selection, from the direct runnable probe, and from the final running CAS.
 It remains live for ownership, recovery, cancellation and operator inspection.
 
-Any one Approval or Job revision/status change makes it eligible again. No
+Any one Approval, Job, enrolled Plan or parallel Group revision/status change
+makes it eligible again. Newly enrolled unfinished Plans or Jobs outside the
+checkpoint also invalidate the wait. No
 process-local notification is required to establish readiness. In particular:
 
 - a decision before checkpoint commit prevents the stale checkpoint;
@@ -85,15 +91,18 @@ not an execution failure. The same handler replays the exact persisted call.
 Ordinary live decisions wake admission; startup recovers from the same durable
 rows. Existing output IDs and grant-claim fences prevent sibling re-execution.
 
-Custom callback reviewers still run their callback. Nested Plan, infer-child,
-and active Objective Evaluation stacks are not covered by this direct-batch
-boundary; they retain their existing live wait and continue to block parking.
+Custom callback reviewers still run their callback. The native Store can now
+validate a nested Plan frontier, but Runtime has not yet propagated the deferred
+outcome through nested Plan stacks. Those stacks, infer-child waits and active
+Objective Evaluation waits still retain their existing live wait and block
+parking. Native checkpoint tests are not proof of whole-process suspension.
 
 ## Remaining integration gates
 
-1. Extend continuation checkpoints to nested Yao Plans and parent waits. The
-   current Store method rejects unfinished Plans deliberately; this is an
-   unimplemented gate, not a narrower definition of complete Cloud support.
+1. Connect the native Plan-frontier checkpoint to Runtime stack release and
+   resumption; extend it to infer-child and active Objective parent waits.
+   Unsupported wait forms remain rejected by the Store. These are required
+   integration gates, not a narrower definition of complete Cloud support.
 2. Only after the above may quiescence recognize checkpointed owners and their
    exact Signals/Jobs/ActionGroups. In-flight model requests, physical commands,
    observers and uncheckpointed stacks must still prevent parking.
@@ -106,6 +115,44 @@ workerd Cell transport. Its cache-restore tests do not by themselves prove
 whole-process safe parking or completion of the six Cloud deployment goals.
 
 ## Verified on 2026-09-08
+
+### Native nested frontier gate (subsequent extension)
+
+`activation_approval_checkpoint` now passes **11 tests** on SQLite and a fresh,
+isolated PostgreSQL 15 database (the workerd cache-restore test excluded).
+The new fixtures use the real Yao parser, PlanMachine and Plan coordinator,
+with a mixed outer batch, serial reads and parallel branches including a
+completed constant branch. They verify:
+
+- rejection of unstarted Plans, incomplete wait sets and invalid claimant;
+- identical waits after closing/reopening SQLite;
+- sixteen concurrent nested leaf decision/checkpoint races, eight per backend;
+- wake on Plan cancellation, Group revision change and late Plan/Job enrollment;
+- dependency foreign keys and checkpoint cleanup when the owning Thread closes;
+- cancelled physical Jobs refill their branch Plans, settle the parallel Group
+  once, and fail the parent without duplicate results on replay, on both stores.
+
+This gate exposed a PostgreSQL-only parallel enrollment defect: the ActionGroup
+referenced a deterministic request Event ID without persisting the Event. The
+coordinator now persists the actual immutable `runtime/plan_parallel_request`
+control intent before enrolling the Group. Its ID, payload and timestamp remain
+stable across a reclaimed Plan. No physical effect or Thread Signal is emitted
+by recording the intent. PostgreSQL foreign keys remain enforced.
+
+The new PostgreSQL migration runs after Plan/Activation schema creation and
+before admission function installation. No production storage was migrated.
+
+The final regression run passed **116 distinct tests**: 84 library tests
+(`plan`, `cancel`, `action_group`, with one overlap removed) and 32 integration
+tests from `activation_approval_checkpoint`, `approval_runtime_resume`,
+`plan_infer_handoff`, `plan_owner_cancellation`, and `runtime_store_conformance`.
+Both PostgreSQL conformance tests used the disposable loopback database, not
+Supabase or a hosted pooler. The three-process approval test still covers the
+direct batch; it does not cover nested Runtime stack suspension. The two
+workerd/remote-restore tests and the subprocess entrypoint were explicitly
+excluded. Default-feature `cargo check` is verified separately.
+
+### Earlier direct-batch / transport gate
 
 Integration gate: **14 passed, 0 failed, 0 ignored** using the independent native
 worktree, an isolated local PostgreSQL 15 cluster with a fresh database, and

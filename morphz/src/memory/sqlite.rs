@@ -2017,16 +2017,22 @@ impl SqliteStore {
         sqlx::query(super::activation_approval_wait::TABLE)
             .execute(&pool)
             .await?;
-        sqlx::query(&format!(
-            "CREATE VIEW IF NOT EXISTS activation_pending_approval_waits AS {}",
-            super::activation_approval_wait::VIEW_QUERY
-        ))
-        .execute(&pool)
-        .await?;
+        sqlx::query(super::activation_approval_wait::PLAN_TABLE)
+            .execute(&pool)
+            .await?;
         // Retain the exact assistant-call identity across claim and a second
         // crash. Terminal mutation (including aggregate Thread cancellation)
         // removes it atomically; re-suspension replaces its dependency set.
         let mut checkpoint_schema = pool.begin().await?;
+        sqlx::query("DROP VIEW IF EXISTS activation_pending_approval_waits")
+            .execute(&mut *checkpoint_schema)
+            .await?;
+        sqlx::query(&format!(
+            "CREATE VIEW activation_pending_approval_waits AS {}",
+            super::activation_approval_wait::VIEW_QUERY
+        ))
+        .execute(&mut *checkpoint_schema)
+        .await?;
         sqlx::query("DROP TRIGGER IF EXISTS activation_approval_wait_cleared")
             .execute(&mut *checkpoint_schema)
             .await?;
@@ -2036,6 +2042,7 @@ impl SqliteStore {
             WHEN NEW.status IN ('completed', 'failed', 'cancelled')
             BEGIN
                 DELETE FROM activation_approval_waits WHERE activation_id = NEW.id;
+                DELETE FROM activation_approval_plan_waits WHERE activation_id = NEW.id;
             END"#,
         )
         .execute(&mut *checkpoint_schema)

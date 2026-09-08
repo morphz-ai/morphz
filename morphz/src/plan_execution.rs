@@ -438,6 +438,13 @@ impl PlanExecutionCoordinator {
                             parallel_group_request(&running, &effect, &group_id)?;
                         let existed_before =
                             self.store.get_action_group(&group_id).await?.is_some();
+                        // The join references a real immutable control request,
+                        // not merely an invented Event ID. PostgreSQL enforces
+                        // this foreign key. Persist before enrolling the Group:
+                        // a crash here replays the same intent without effects.
+                        self.store
+                            .append(parallel_request_event(&running, &effect, &group)?)
+                            .await?;
                         let group = self.store.create_action_group(group, members).await?;
                         let mutation = self
                             .store
@@ -2828,6 +2835,39 @@ fn parallel_group_request(
         },
         members,
     ))
+}
+
+fn parallel_request_event(
+    plan: &PlanExecutionRecord,
+    effect: &PlanEffect,
+    group: &NewActionGroup,
+) -> PlanExecutionResult<Event> {
+    let PlanEffect::Parallel { sequence, branches } = effect else {
+        return Err("Only a parallel effect can publish a join request".into());
+    };
+    let mut event = Event::new(
+        group.assistant_call_event_id.clone(),
+        "Runtime-Yao".into(),
+        "runtime_control".into(),
+        "runtime/plan_parallel_request".into(),
+        serde_json::json!({
+            "context_id": plan.context_id,
+            "session_id": plan.session_id,
+            "attempt_id": plan.activation_id,
+            "thread_id": plan.thread_id,
+            "plan_execution_id": plan.id,
+            "action_group_id": group.id,
+            "effect_sequence": sequence,
+            "branches": branches.iter().map(|branch| &branch.name).collect::<Vec<_>>(),
+        })
+        .as_object()
+        .expect("control request object")
+        .clone(),
+    );
+    // Creation time, unlike the current claim time, remains stable across a
+    // lease loss between intent persistence and Plan suspension.
+    event.timestamp = plan.created_at;
+    Ok(event)
 }
 
 fn parallel_branch_result_event(

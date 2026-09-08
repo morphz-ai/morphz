@@ -68,7 +68,22 @@ impl SqliteStore {
                     .ok_or("Approval checkpoint sibling output is not durable")?,
             );
         }
-        activation_approval_wait::validate(
+        let plans =
+            sqlx::query("SELECT * FROM plan_executions WHERE activation_id = ? ORDER BY id")
+                .bind(&activation.id)
+                .fetch_all(&mut *tx)
+                .await?
+                .iter()
+                .map(plan_execution::record_from_row)
+                .collect::<Result<Vec<_>, _>>()?;
+        let groups = sqlx::query("SELECT * FROM action_groups WHERE activation_id = ? ORDER BY id")
+            .bind(&activation.id)
+            .fetch_all(&mut *tx)
+            .await?
+            .iter()
+            .map(action_group_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let plan_snapshots = activation_approval_wait::validate(
             &request,
             &activation,
             &thread,
@@ -76,21 +91,30 @@ impl SqliteStore {
             &jobs,
             &approvals,
             &outputs,
+            &plans,
+            &groups,
         )?;
-        // A parent Plan needs its own explicit continuation checkpoint. A
-        // direct assistant-batch marker cannot stand in for a live Yao stack.
-        let plans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_executions WHERE activation_id = ? AND status IN ('queued','running','waiting')")
-            .bind(&activation.id).fetch_one(&mut *tx).await?;
-        if plans != 0 {
-            return Err(
-                "Approval checkpoint must not discard an unfinished Plan continuation".into(),
-            );
-        }
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query("DELETE FROM activation_approval_waits WHERE activation_id = ?")
             .bind(&activation.id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM activation_approval_plan_waits WHERE activation_id = ?")
+            .bind(&activation.id)
+            .execute(&mut *tx)
+            .await?;
+        for snapshot in plan_snapshots {
+            let (group_id, group_revision, group_status) = match snapshot.group {
+                Some((id, revision, status)) => {
+                    (Some(id), Some(i64::try_from(revision)?), Some(status))
+                }
+                None => (None, None, None),
+            };
+            sqlx::query("INSERT INTO activation_approval_plan_waits (activation_id, plan_id, plan_revision, plan_status, group_id, group_revision, group_status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                .bind(&activation.id).bind(snapshot.id).bind(i64::try_from(snapshot.revision)?).bind(snapshot.status)
+                .bind(group_id).bind(group_revision).bind(group_status)
+                .execute(&mut *tx).await?;
+        }
         for approval in &approvals {
             let job = jobs
                 .iter()
