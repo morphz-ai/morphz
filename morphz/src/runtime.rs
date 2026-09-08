@@ -4835,7 +4835,8 @@ impl MorphzRuntime {
         side_effect_started: bool,
         progress: Option<String>,
     ) -> Result<EdgeCommandMutation, RuntimeError> {
-        self.inner
+        let mutation = self
+            .inner
             .store
             .heartbeat_edge_command(
                 job_id,
@@ -4845,7 +4846,28 @@ impl MorphzRuntime {
                 side_effect_started,
                 progress,
             )
-            .await
+            .await?;
+        // The ExecutionJob is the durable cancellation authority. Thread,
+        // Objective and Session control can cancel it without going through
+        // the single-Job API, and the original tool future may already have
+        // been dropped. Every still-owning Edge heartbeat must observe that
+        // intent, including the first heartbeat before local execution and
+        // heartbeats after Runtime recovery.
+        if matches!(&mutation, EdgeCommandMutation::Updated(command)
+            if command.status == EdgeCommandStatus::Claimed)
+            && self
+                .inner
+                .store
+                .get_execution_job(job_id)
+                .await?
+                .is_some_and(|job| job.cancel_requested_at.is_some())
+        {
+            if let Some(current) = self.inner.store.request_edge_command_cancel(job_id).await? {
+                return Ok(EdgeCommandMutation::Conflict { current });
+            }
+            return Ok(EdgeCommandMutation::NotFound);
+        }
+        Ok(mutation)
     }
 
     pub async fn finish_edge_command(
@@ -19204,6 +19226,228 @@ mod tests {
             leases[0].scope,
             crate::memory::CapabilityLeaseScope::Session
         );
+    }
+
+    #[tokio::test]
+    async fn edge_heartbeat_observes_job_cancellation_after_runtime_recovery() {
+        use crate::memory::{
+            NewEdgeCommand, NewExecutionJob, NewNodePairingCode, PairExecutionNode,
+        };
+
+        for cancel_before_command in [None, Some(true), Some(false)] {
+            let database = NamedTempFile::new().unwrap();
+            let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+                .database_path(database.path().to_string_lossy())
+                .build()
+                .await
+                .unwrap();
+            let store = &runtime.inner.store;
+            runtime
+                .ensure_agent(NewAgent {
+                    id: runtime.identity().agent_id.clone(),
+                    title: "Synthetic cancel gate".to_string(),
+                    root_context_id: runtime.identity().context_id.clone(),
+                })
+                .await
+                .unwrap();
+            runtime
+                .ensure_context(NewCognitiveContext {
+                    id: runtime.identity().context_id.clone(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    title: "Synthetic cancel gate".to_string(),
+                })
+                .await
+                .unwrap();
+            runtime
+                .ensure_session(NewSession {
+                    id: "cancel-gate-session".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "Synthetic cancellation".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+            store
+                .ensure_thread(NewThread {
+                    id: "cancel-gate-thread".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    root_turn_id: "cancel-gate-root".to_string(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+            store
+                .ensure_thread_activation(NewThreadActivation {
+                    id: "cancel-gate-activation".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    trigger_event_id: "cancel-gate-trigger".to_string(),
+                    trigger_sequence: 1,
+                    trigger_kind: "synthetic".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: "cancel-gate-root".to_string(),
+                })
+                .await
+                .unwrap();
+            store
+                .create_node_pairing_code(NewNodePairingCode {
+                    code_hash: "cancel-gate-pairing".to_string(),
+                    owner_principal_id: runtime.identity().principal_id.clone(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                })
+                .await
+                .unwrap();
+            store
+                .pair_execution_node(PairExecutionNode {
+                    code_hash: "cancel-gate-pairing".to_string(),
+                    node_id: "cancel-gate-node".to_string(),
+                    name: "Synthetic cancel gate".to_string(),
+                    device_key_fingerprint: "synthetic-fingerprint".to_string(),
+                    device_public_key: "00112233".to_string(),
+                    protocol_version: 1,
+                    platform: Some("linux-x86_64".to_string()),
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                })
+                .await
+                .unwrap();
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: "cancel-gate-target".to_string(),
+                    owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                    provider_node_id: Some("cancel-gate-node".to_string()),
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: "Synthetic cancel gate".to_string(),
+                    status: crate::memory::ExecutionTargetStatus::Online,
+                    platform: Some("linux-x86_64".to_string()),
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                    policy_digest: "synthetic-policy".to_string(),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+            let job = store
+                .create_execution_job(NewExecutionJob {
+                    id: "cancel-gate-job".to_string(),
+                    activation_id: "cancel-gate-activation".to_string(),
+                    thread_id: "cancel-gate-thread".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    target_id: "cancel-gate-target".to_string(),
+                    tool_call_id: "cancel-gate-call".to_string(),
+                    tool_name: "exec".to_string(),
+                    request: json!({"command": "synthetic-never-executed"}),
+                    retry_safety: crate::memory::ExecutionRetrySafety::AtMostOnce,
+                    requires_approval: false,
+                })
+                .await
+                .unwrap();
+            if cancel_before_command == Some(true) {
+                store
+                    .request_cancel_execution_job(
+                        &job.id,
+                        job.revision,
+                        Some("cancel before Edge publication"),
+                    )
+                    .await
+                    .unwrap();
+            }
+            store
+                .create_edge_command(NewEdgeCommand {
+                    job_id: job.id.clone(),
+                    target_id: job.target_id.clone(),
+                    provider_node_id: "cancel-gate-node".to_string(),
+                    tool_name: "exec".to_string(),
+                    arguments: job.request.to_string(),
+                    route: json!({}),
+                })
+                .await
+                .unwrap();
+            let lease = chrono::Utc::now() + chrono::Duration::seconds(90);
+            let command = runtime
+                .claim_edge_command("cancel-gate-node", "worker", "claim", lease, 1)
+                .await
+                .unwrap()
+                .unwrap();
+            if cancel_before_command == Some(false) {
+                store
+                    .request_cancel_execution_job(
+                        &job.id,
+                        job.revision,
+                        Some("cancel during execution"),
+                    )
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                store
+                    .get_edge_command(&job.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                EdgeCommandStatus::Claimed
+            );
+            drop(runtime);
+            // No process-local cancellation signal or original tool future.
+            let recovered = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+                .database_path(database.path().to_string_lossy())
+                .build()
+                .await
+                .unwrap();
+            let wrong_owner = recovered
+                .heartbeat_edge_command(
+                    &job.id,
+                    command.revision,
+                    "wrong-claim",
+                    lease,
+                    false,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(wrong_owner, EdgeCommandMutation::Conflict { current } if current.status == EdgeCommandStatus::Claimed)
+            );
+            let result = recovered
+                .heartbeat_edge_command(&job.id, command.revision, "claim", lease, false, None)
+                .await
+                .unwrap();
+            if cancel_before_command.is_some() {
+                let EdgeCommandMutation::Conflict { current } = result else {
+                    panic!("expected durable cancellation")
+                };
+                assert_eq!(current.status, EdgeCommandStatus::CancelRequested);
+                assert_eq!(current.claim_token.as_deref(), Some("claim"));
+                assert!(
+                    current.finished_at.is_none(),
+                    "intent must not pretend physical exit"
+                );
+                assert!(
+                    matches!(recovered.finish_edge_command(&job.id, current.revision, "claim", EdgeCommandStatus::Cancelled, None, None)
+                    .await.unwrap(), EdgeCommandMutation::Updated(terminal) if terminal.status == EdgeCommandStatus::Cancelled)
+                );
+            } else {
+                assert!(
+                    matches!(result, EdgeCommandMutation::Updated(current) if current.status == EdgeCommandStatus::Claimed)
+                );
+            }
+        }
     }
 
     #[tokio::test]

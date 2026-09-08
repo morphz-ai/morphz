@@ -8067,13 +8067,14 @@ async fn handle_cancel_session(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    if let Err(error) = state
+    let session = match state
         .sdk
         .get_session(&principal.principal_id, &session_id)
         .await
     {
-        return sdk_error_response(error);
-    }
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
     let cancelled_threads = match state
         .runtime
         .cancel_session_durable(&session_id, "Session cancelled from Dashboard")
@@ -8086,7 +8087,9 @@ async fn handle_cancel_session(
     };
     let was_running = cancelled_threads > 0;
     let payload = vec![
+        ("context_id".to_string(), json!(session.context_id)),
         ("session_id".to_string(), json!(session_id)),
+        ("principal_id".to_string(), json!(principal.principal_id)),
         ("status".to_string(), json!("cancelled")),
         ("was_running".to_string(), json!(was_running)),
         (
@@ -14532,6 +14535,43 @@ account = "xai-account"
             consumed.consumed_event_id.as_deref(),
             Some(user_events[0].id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn session_cancel_notification_preserves_authorized_context_route() {
+        let (state, runtime) = test_state().await;
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "api-cancel-route".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Cancellation route".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut events = runtime.subscribe("chat/cancelled", 4);
+        let response = handle_cancel_session(
+            State(state),
+            Path(session.id().to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["context_id"], runtime.identity().context_id);
+        assert_eq!(event.payload["session_id"], session.id());
+        assert_eq!(
+            event.payload["principal_id"],
+            runtime.identity().principal_id
+        );
+        assert_eq!(event.payload["was_running"], false);
     }
 
     #[tokio::test]

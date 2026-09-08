@@ -458,3 +458,28 @@ passed. No production database, cloud resource or real Provider was used.
 
 Builds use a separate temporary target with incremental/debug artifacts disabled;
 the verification cache is approximately 6 GiB, not a full-size debug target.
+
+### Edge cancellation authority (2026-09-08)
+
+An ExecutionJob's persisted cancellation intent is authoritative for its Edge
+command, regardless of whether the request came from Job, Thread, Objective or
+Session control. On every valid owner heartbeat, the Runtime checks that intent
+and projects it to `EdgeCommand::CancelRequested`. This includes the first
+heartbeat before local execution and a heartbeat after rebuilding the Runtime;
+it does not rely on the original tool future or a process-local notification.
+
+The ordinary Edge revision/claim check runs first. A wrong claimant cannot
+advance the command, and an unchanged command is not cancelled without a Job
+intent. The owning device receives the existing cancellation receipt protocol,
+terminates its managed execution and commits the actual terminal result. Merely
+requesting cancellation does not set `finished_at` or claim physical success.
+Session cancellation notifications carry the authorized Session's Context and
+Principal route so that observers do not receive a route-less event.
+
+The real `mini-m2.local` Edge gate passed in 118 seconds: cancel pending approval,
+rebuild the Runtime without its cache, verify the cancelled grant cannot execute,
+cancel a running bounded process, independently probe its PID and stopped heartbeat,
+observe the cancelled Job, then execute a fresh user message. Local library tests
+passed **1,317 / 8 ignored** and Clippy all targets (`-D warnings`) passed. Windows
+revealed a separate parent-directory metadata ACL failure before its workload
+started; it is not covered by the Mac result and requires its own native gate.
