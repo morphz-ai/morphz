@@ -30,6 +30,47 @@ fn required(name: &str) -> Result<String, StoreError> {
 
 #[tokio::main]
 async fn main() {
+    let options: Vec<_> = std::env::args().skip(1).collect();
+    // Maintenance validation branches BEFORE config, HOME, credentials, HTTP
+    // clients and Runtime startup. Only stdin and an in-memory SQLite replica.
+    if options.as_slice() == ["--verify-recovery"] {
+        match morphz::memory::remote::recovery::verify_stream(tokio::io::BufReader::new(
+            tokio::io::stdin(),
+        ))
+        .await
+        {
+            Ok(report) => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&report).expect("static recovery report")
+                );
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if options.as_slice() == ["--recovery-schema"] {
+        match morphz::memory::remote::recovery::native_schema().await {
+            Ok(schema) => {
+                println!(
+                    "{}",
+                    serde_json::json!({ "protocol": morphz::memory::remote::recovery::RECOVERY_PROTOCOL, "schema": schema })
+                );
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if !options.is_empty() {
+        eprintln!("unknown hosted Runtime option");
+        std::process::exit(2);
+    }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

@@ -6,6 +6,7 @@ mod lease;
 mod observer_tests;
 pub mod protocol;
 mod quiescence;
+pub mod recovery;
 mod replica;
 
 use super::*;

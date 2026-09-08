@@ -393,5 +393,52 @@ precision, bounded pagination and capacity errors.
   production credentials or paid model calls. Full product observer/Edge/approval
   integration and actual Linux/cloud deployment remain unverified.
 
+### Offline recovery validation (2026-09-08)
+
+`morphz-runtime-host --recovery-schema` prints the current native schema identity.
+`morphz-runtime-host --verify-recovery` reads bounded NDJSON from stdin and validates
+a staged backup in a fresh in-memory `Replica`. Both modes branch before HOME,
+configuration, credentials, HTTP clients, lease acquisition and Runtime startup.
+They neither replace an existing database nor execute imported work.
+
+The `morphz-native-recovery/1` input is exactly one `header`, nonempty `page`
+frames, one `end`, then EOF. A frame including its newline is at most 4 MiB;
+each page has at most 500 records, the complete import at most 250,000 records
+and 64 MiB of encoded record tuples. Tagged i64/blob values remain strings.
+The header carries the schema, backup fingerprint, record count and SHA-256
+chain. The initial digest is UTF-8 JSON `[protocol,schema,fingerprint]`; each
+record extends it with `[previous,[table,key,values]]`. Object key order does
+not participate in this contract.
+
+Validation uses the existing native schema/migration identity, typed parameter
+bindings and foreign-key checks. A partial page failure invalidates the verifier;
+bad schema, migration set, digest, count, types, duplicates or trailing input
+cannot produce a successful report. Diagnostics are fixed codes, not SQL or
+imported data. Success is one JSON report on stdout (exit 0); failure has no
+success report and exits 2. An initialized native schema is required; a Cell
+that never ran a Runtime is not silently bootstrapped from an empty backup.
+
+The report includes native quiescence observations (`capturedWork`,
+`nextWakeAtMs`), always `executionAuthority: "none"` and
+`requiresReconciliation: true`. Due timers are reported, never fired. These
+observations are made at validation time; they are neither proof of effects after
+the recovery point nor an authorization token. Safe publication must separately
+reconcile later input/cancellation/revocation/effects, fence obsolete owners,
+validate credentials/files and rebuild derived indexes. This is not yet an
+operator command for restoring a running Agent or replaying old Jobs.
+
+The matching Cloud private maintenance RPC emits these frames from a fully
+staged recovery, without resolving plaintext credentials or contacting compute.
+The cross-repository gate exercises the actual compiled CLI with no HOME,
+endpoint or token, a native-generated Store, independent encrypted backup and
+workerd staging; it verifies matching digests, rejection of tampering, no source
+Cell change and no Provider requests. This is local synthetic evidence, not
+live Cloud deployment or disaster-recovery completion.
+
+Verification: **6 native recovery tests passed**; full library **1,313 passed,
+8 existing ignored**. Cloud **176 passed / 24 files**, including all **5** real
+native host gates. Clippy all targets (`-D warnings`), TypeScript, formatting/diff checks and hosted Worker dry-run
+passed. No production database, cloud resource or real Provider was used.
+
 Builds use a separate temporary target with incremental/debug artifacts disabled;
 the verification cache is approximately 6 GiB, not a full-size debug target.
