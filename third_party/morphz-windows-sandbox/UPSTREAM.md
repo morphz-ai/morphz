@@ -18,6 +18,23 @@ Morphz-specific changes are intentionally limited to:
 - Morphz dependency wiring and telemetry isolation;
 - diagnostics and fixes required by Morphz's native Windows regression suite.
 
+The setup helper grants metadata/traversal on exact ancestors of approved roots
+when the sandbox identity cannot resolve a permitted descendant (for example,
+Node.js resolving its entry point). This is not read/list/write authority over
+siblings. The ACE is non-inheritable, existing denies are retained, and paths
+are opened without following junctions or creating missing ancestors. The
+mutation uses `NtSetSecurityObject` on the same held `READ_CONTROL | WRITE_DAC`
+handle, avoiding the Win32 inheritance propagation walk through the user's
+directory tree. It does not request `MAXIMUM_ALLOWED`, which can conflict with
+the sharing mode of handles already open on a live profile. See Microsoft's
+[native security-object contract](https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwsetsecurityobject).
+The DACL builder preserves every existing ACE verbatim: `SetEntriesInAcl` with
+`GRANT_ACCESS` is deliberately not used here because it can remove overlapping
+deny bits. Native tests cover deny preservation, non-inheritance, existing
+directory handles without delete sharing, and final/ancestor junction rejection.
+No setup-version or identity migration is required: the existing command path
+always refreshes root ACLs through this helper, including for provisioned users.
+
 The old `CodexSandbox*` operating-system resources are not automatically
 deleted during migration because they may belong to a real Codex installation.
 Morphz provisions and owns a disjoint `MorphzSandbox*` resource set.

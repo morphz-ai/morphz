@@ -47,10 +47,16 @@ use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::ACE_HEADER;
 use windows_sys::Win32::Security::ACL;
+use windows_sys::Win32::Security::ACL_SIZE_INFORMATION;
+use windows_sys::Win32::Security::AclSizeInformation;
+use windows_sys::Win32::Security::AddAccessAllowedAceEx;
+use windows_sys::Win32::Security::AddAce;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
 use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
+use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
 use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
 use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
 use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
@@ -59,11 +65,142 @@ use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
 use windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::GetAce;
+use windows_sys::Win32::Security::GetAclInformation;
+use windows_sys::Win32::Security::GetLengthSid;
+use windows_sys::Win32::Security::INHERITED_ACE;
+use windows_sys::Win32::Security::InitializeAcl;
 use windows_sys::Win32::Security::OBJECT_INHERIT_ACE;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::FILE_TRAVERSE;
+use windows_sys::Win32::System::Memory::LPTR;
+use windows_sys::Win32::System::Memory::LocalAlloc;
+
+const ANCESTOR_METADATA_MASK: u32 = FILE_READ_ATTRIBUTES | FILE_TRAVERSE;
+
+fn approved_root_ancestors(payload: &Payload) -> Vec<PathBuf> {
+    let mut ancestors = payload
+        .read_roots
+        .iter()
+        .chain(&payload.write_roots)
+        .flat_map(|root| root.ancestors().skip(1).map(Path::to_path_buf))
+        .collect::<Vec<_>>();
+    ancestors.sort();
+    ancestors.dedup();
+    ancestors
+}
+
+fn ensure_ancestor_metadata_acl(
+    path: &Path,
+    sid: *mut c_void,
+    readers: &[*mut c_void],
+) -> Result<()> {
+    if path_mask_allows(path, readers, ANCESTOR_METADATA_MASK, true)?
+        || path_mask_allows(path, &[sid], ANCESTOR_METADATA_MASK, true)?
+    {
+        return Ok(());
+    }
+    // Avoid unnecessary mutation handles for already-readable system ancestors.
+    let directory = no_reparse_dir::open_existing_for_metadata(path)?;
+    let mut descriptor: *mut c_void = std::ptr::null_mut();
+    let mut existing: *mut ACL = std::ptr::null_mut();
+    let mut updated: *mut ACL = std::ptr::null_mut();
+    let result = (|| unsafe {
+        let code = GetSecurityInfo(
+            directory.as_raw_handle() as _,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut existing,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        );
+        anyhow::ensure!(code == 0, "read ancestor ACL failed: {code}");
+        // A null DACL already permits access. Never replace it with a narrower
+        // ACL or accidentally install a null ACL on a restricted directory.
+        if existing.is_null() {
+            return Ok(());
+        }
+        // SetEntriesInAcl(GRANT_ACCESS) can remove overlapping denied bits for
+        // this SID. Instead copy every existing ACE verbatim, inserting our
+        // exact non-inherited allow after explicit ACEs and before inherited
+        // ACEs. Existing denies (including metadata denies) remain authoritative.
+        let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+        anyhow::ensure!(
+            GetAclInformation(
+                existing,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation
+            ) != 0,
+            "read ancestor ACL size: {}",
+            std::io::Error::last_os_error()
+        );
+        let size = info.AclBytesInUse as usize
+            + std::mem::size_of::<ACE_HEADER>()
+            + std::mem::size_of::<u32>()
+            + GetLengthSid(sid) as usize;
+        anyhow::ensure!(
+            size <= usize::from(u16::MAX),
+            "ancestor ACL capacity exceeded"
+        );
+        updated = LocalAlloc(LPTR, size) as *mut ACL;
+        anyhow::ensure!(!updated.is_null(), "allocate ancestor ACL failed");
+        let revision = u32::from((*existing).AclRevision);
+        anyhow::ensure!(
+            InitializeAcl(updated, size as u32, revision) != 0,
+            "initialize ancestor ACL: {}",
+            std::io::Error::last_os_error()
+        );
+        let insert_allow = || -> Result<()> {
+            anyhow::ensure!(
+                AddAccessAllowedAceEx(updated, revision, 0, ANCESTOR_METADATA_MASK, sid) != 0,
+                "insert ancestor metadata ACE: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(())
+        };
+        let mut inserted = false;
+        for index in 0..info.AceCount {
+            let mut ace = std::ptr::null_mut();
+            anyhow::ensure!(
+                GetAce(existing, index, &mut ace) != 0,
+                "read ancestor ACE: {}",
+                std::io::Error::last_os_error()
+            );
+            let header = &*ace.cast::<ACE_HEADER>();
+            if !inserted && u32::from(header.AceFlags) & INHERITED_ACE != 0 {
+                insert_allow()?;
+                inserted = true;
+            }
+            anyhow::ensure!(
+                AddAce(updated, revision, u32::MAX, ace, u32::from(header.AceSize)) != 0,
+                "copy ancestor ACE: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        if !inserted {
+            insert_allow()?;
+        }
+        // Keep the validated no-reparse handle open through the mutation.
+        no_reparse_dir::set_directory_dacl_only(&directory, updated)?;
+        Ok(())
+    })();
+    unsafe {
+        if !updated.is_null() {
+            LocalFree(updated as HLOCAL);
+        }
+        if !descriptor.is_null() {
+            LocalFree(descriptor as HLOCAL);
+        }
+    }
+    result
+}
 
 const DENY_ACCESS: i32 = 3;
 #[cfg(test)]
@@ -813,6 +950,30 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         )?;
     }
 
+    // Opening an approved descendant does not imply that its parent ACL lets
+    // the sandbox identity stat each component (Node's realpath is one example).
+    // Grant only metadata/traversal on the exact ancestors, synchronously before
+    // launch. No listing, content read, writes or inheritance into siblings;
+    // the deny-read ACEs above remain authoritative.
+    // Avoid rewriting platform ancestors already readable by sandbox users.
+    let mut readers = Vec::new();
+    let metadata_result = (|| -> Result<()> {
+        for name in ["Users", "Authenticated Users", "Everyone"] {
+            readers.push(sid_bytes_to_psid(&resolve_sid(name)?)?);
+        }
+        for ancestor in approved_root_ancestors(payload) {
+            ensure_ancestor_metadata_acl(&ancestor, sandbox_group_psid, &readers)
+                .with_context(|| format!("ancestor metadata ACL for {}", ancestor.display()))?;
+        }
+        Ok(())
+    })();
+    for sid in readers {
+        unsafe {
+            LocalFree(sid as HLOCAL);
+        }
+    }
+    metadata_result?;
+
     if payload.read_roots.is_empty() {
         log_line(log, "no read roots to grant; skipping read ACL helper")?;
     } else {
@@ -1061,6 +1222,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::fs;
+    use std::path::PathBuf;
     use windows_sys::Win32::Foundation::HLOCAL;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
@@ -1084,6 +1246,130 @@ mod tests {
         let payload: Payload = serde_json::from_value(payload_json()).expect("payload");
 
         assert_eq!(payload.otel, None);
+    }
+
+    #[test]
+    fn approved_root_ancestors_are_deduplicated_exact_paths() {
+        let mut value = payload_json();
+        value["read_roots"] = json!([r"C:\project\source", r"C:\project\source\file.js"]);
+        value["write_roots"] = json!([r"C:\project\build"]);
+        let payload: Payload = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            super::approved_root_ancestors(&payload),
+            vec![
+                PathBuf::from(r"C:\"),
+                PathBuf::from(r"C:\project"),
+                PathBuf::from(r"C:\project\source"),
+            ]
+        );
+    }
+
+    #[test]
+    fn ancestor_metadata_acl_neither_lists_nor_inherits_into_children() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+        use windows_sys::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+        use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        // Model a live profile directory with an existing handle that does not
+        // share DELETE. MAXIMUM_ALLOWED would fail here with sharing violation.
+        let _in_use = fs::OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&parent)
+            .unwrap();
+        let sid = workspace_write_cap_sid_for_root(temp.path(), &child, &child).unwrap();
+        let psid = unsafe { convert_string_sid_to_sid(&sid).unwrap() };
+        super::ensure_ancestor_metadata_acl(&parent, psid, &[]).unwrap();
+        super::ensure_ancestor_metadata_acl(&parent, psid, &[]).unwrap();
+        assert!(
+            super::path_mask_allows(&parent, &[psid], super::ANCESTOR_METADATA_MASK, true).unwrap()
+        );
+        assert!(!super::path_mask_allows(&parent, &[psid], FILE_LIST_DIRECTORY, true).unwrap());
+        assert!(!super::path_mask_allows(&parent, &[psid], FILE_GENERIC_WRITE, false).unwrap());
+        assert!(
+            !super::path_mask_allows(&child, &[psid], super::ANCESTOR_METADATA_MASK, false)
+                .unwrap()
+        );
+        unsafe {
+            LocalFree(psid as HLOCAL);
+        }
+    }
+
+    #[test]
+    fn ancestor_metadata_acl_preserves_existing_denies() {
+        use morphz_windows_sandbox::add_deny_read_ace;
+        use morphz_windows_sandbox::fetch_dacl_handle;
+        use windows_sys::Win32::Security::ACE_HEADER;
+        use windows_sys::Win32::Security::GetAce;
+        let temp = tempfile::tempdir().unwrap();
+        let sid = workspace_write_cap_sid_for_root(temp.path(), temp.path(), temp.path()).unwrap();
+        let psid = unsafe { convert_string_sid_to_sid(&sid).unwrap() };
+        unsafe { add_deny_read_ace(temp.path(), psid).unwrap() };
+        let denies = || unsafe {
+            let (dacl, descriptor) = fetch_dacl_handle(temp.path()).unwrap();
+            let mut result = Vec::new();
+            for index in 0..(*dacl).AceCount {
+                let mut ace = std::ptr::null_mut();
+                assert_ne!(GetAce(dacl, u32::from(index), &mut ace), 0);
+                let header = &*ace.cast::<ACE_HEADER>();
+                if header.AceType == 1 {
+                    // ACCESS_DENIED_ACE_TYPE
+                    result.push(
+                        std::slice::from_raw_parts(ace.cast::<u8>(), usize::from(header.AceSize))
+                            .to_vec(),
+                    );
+                }
+            }
+            LocalFree(descriptor as HLOCAL);
+            result
+        };
+        let before = denies();
+        assert!(!before.is_empty());
+        super::ensure_ancestor_metadata_acl(temp.path(), psid, &[]).unwrap();
+        assert_eq!(denies(), before);
+        unsafe {
+            LocalFree(psid as HLOCAL);
+        }
+    }
+
+    #[test]
+    fn ancestor_metadata_acl_does_not_repropagate_existing_inheritable_aces() {
+        use morphz_windows_sandbox::fetch_dacl_handle;
+        use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let seed = workspace_write_cap_sid_for_root(temp.path(), &parent, &parent).unwrap();
+        let sid = workspace_write_cap_sid_for_root(temp.path(), &child, &child).unwrap();
+        let seed_psid = unsafe { convert_string_sid_to_sid(&seed).unwrap() };
+        let psid = unsafe { convert_string_sid_to_sid(&sid).unwrap() };
+        unsafe {
+            // Leave an existing child with its original ACL while the parent
+            // has an inheritable ACE. A Win32 propagation walk would re-add it.
+            let (original, descriptor) = fetch_dacl_handle(&child).unwrap();
+            ensure_allow_mask_aces(&parent, &[seed_psid], FILE_GENERIC_READ).unwrap();
+            assert!(path_mask_allows(&child, &[seed_psid], FILE_GENERIC_READ, true).unwrap());
+            let handle = super::no_reparse_dir::open_existing_for_metadata(&child).unwrap();
+            super::no_reparse_dir::set_directory_dacl_only(&handle, original).unwrap();
+            LocalFree(descriptor as HLOCAL);
+        }
+        assert!(!path_mask_allows(&child, &[seed_psid], FILE_GENERIC_READ, false).unwrap());
+        super::ensure_ancestor_metadata_acl(&parent, psid, &[]).unwrap();
+        assert!(path_mask_allows(&parent, &[seed_psid], FILE_GENERIC_READ, true).unwrap());
+        assert!(!path_mask_allows(&child, &[seed_psid], FILE_GENERIC_READ, false).unwrap());
+        unsafe {
+            LocalFree(seed_psid as HLOCAL);
+            LocalFree(psid as HLOCAL);
+        }
     }
 
     #[test]

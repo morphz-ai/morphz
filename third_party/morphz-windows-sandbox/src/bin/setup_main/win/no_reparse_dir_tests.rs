@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::Result;
 
+use super::open_existing_for_metadata;
 use super::open_or_create_no_reparse;
 
 fn create_directory_junction(target: &Path, alias: &Path) -> Result<()> {
@@ -44,6 +45,8 @@ fn rejects_final_directory_junction() -> Result<()> {
 
     let _ =
         open_or_create_no_reparse(&alias).expect_err("final directory junction must be rejected");
+    let _ = open_existing_for_metadata(&alias)
+        .expect_err("metadata access must not follow a final junction");
     fs::remove_dir(&alias)?;
     Ok(())
 }
@@ -59,6 +62,17 @@ fn rejects_ancestor_directory_junction() -> Result<()> {
 
     let _ = open_or_create_no_reparse(&alias_home.join(".sandbox-bin"))
         .expect_err("ancestor directory junction must be rejected");
+    let _ = open_existing_for_metadata(&alias_home.join(".sandbox-bin"))
+        .expect_err("metadata access must not follow an ancestor junction");
     fs::remove_dir(&alias_home)?;
+    Ok(())
+}
+
+#[test]
+fn ancestor_metadata_open_never_creates_missing_directory() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let missing = temporary.path().join("missing");
+    assert!(open_existing_for_metadata(&missing).is_err());
+    assert!(!missing.exists());
     Ok(())
 }

@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::path::Component;
@@ -17,6 +18,11 @@ use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::NTSTATUS;
 use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
 use windows_sys::Win32::Foundation::UNICODE_STRING;
+use windows_sys::Win32::Security::ACL;
+use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::InitializeSecurityDescriptor;
+use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
+use windows_sys::Win32::Security::SetSecurityDescriptorDacl;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -27,8 +33,10 @@ use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK_0;
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::System::Kernel::OBJ_DONT_REPARSE;
+use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 
 const FILE_OPEN_IF: u32 = 3;
+const FILE_OPEN: u32 = 1;
 const FILE_DIRECTORY_FILE: u32 = 1;
 const STATUS_REPARSE_POINT_ENCOUNTERED: NTSTATUS = 0xC000_050B_u32 as i32;
 
@@ -57,6 +65,12 @@ unsafe extern "system" {
         ea_buffer: *const c_void,
         ea_length: u32,
     ) -> NTSTATUS;
+
+    fn NtSetSecurityObject(
+        handle: HANDLE,
+        security_information: u32,
+        security_descriptor: *const c_void,
+    ) -> NTSTATUS;
 }
 
 /// Opens or creates the final directory without following a reparse point in
@@ -67,6 +81,56 @@ unsafe extern "system" {
 /// The returned handle must remain open through any security mutation so the
 /// mutation stays bound to the directory that passed this validation.
 pub(super) fn open_or_create_no_reparse(path: &Path) -> Result<OwnedHandle> {
+    open_no_reparse(path, FILE_OPEN_IF, READ_CONTROL | WRITE_DAC)
+}
+
+/// Opens an existing ancestor with only the rights needed for its DACL.
+/// In particular, do not request DELETE or file-content access: live profile
+/// directories can have handles whose sharing modes prohibit those rights.
+pub(super) fn open_existing_for_metadata(path: &Path) -> Result<OwnedHandle> {
+    open_no_reparse(path, FILE_OPEN, READ_CONTROL | WRITE_DAC)
+}
+
+/// Replaces only this held directory's DACL, without walking descendants to
+/// propagate existing inheritable ACEs. SetSecurityInfo performs that walk even
+/// when the new ACE is non-inheritable; its MAXIMUM_ALLOWED workaround can fail
+/// on an in-use profile directory. The native operation needs only WRITE_DAC.
+///
+/// # Safety
+/// `dacl` must remain a valid, non-null ACL for the duration of this call.
+pub(super) unsafe fn set_directory_dacl_only(
+    directory: &OwnedHandle,
+    dacl: *const ACL,
+) -> Result<()> {
+    ensure!(!dacl.is_null(), "refusing to install a null ancestor DACL");
+    let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast::<c_void>();
+    ensure!(
+        unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) } != 0,
+        "initialize ancestor security descriptor: {}",
+        std::io::Error::last_os_error()
+    );
+    ensure!(
+        unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, dacl, 0) } != 0,
+        "set ancestor security descriptor DACL: {}",
+        std::io::Error::last_os_error()
+    );
+    let status = unsafe {
+        NtSetSecurityObject(
+            directory.as_raw_handle() as _,
+            DACL_SECURITY_INFORMATION,
+            descriptor_ptr,
+        )
+    };
+    if status < 0 {
+        let error = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(error as i32))
+            .context("set ancestor directory DACL");
+    }
+    Ok(())
+}
+
+fn open_no_reparse(path: &Path, disposition: u32, access: u32) -> Result<OwnedHandle> {
     ensure!(
         path.is_absolute(),
         "sandbox ACL path must be absolute: {}",
@@ -119,13 +183,13 @@ pub(super) fn open_or_create_no_reparse(path: &Path) -> Result<OwnedHandle> {
         // SetSecurityInfo can reject a WRITE_DAC-only directory handle.
         NtCreateFile(
             &mut handle,
-            READ_CONTROL | WRITE_DAC,
+            access,
             &object_attributes,
             &mut io_status_block,
             ptr::null(),
             FILE_ATTRIBUTE_NORMAL,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_OPEN_IF,
+            disposition,
             FILE_DIRECTORY_FILE,
             ptr::null(),
             /*ea_length*/ 0,
