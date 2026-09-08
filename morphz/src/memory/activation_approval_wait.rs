@@ -126,7 +126,7 @@ pub(crate) async fn plan_approval_frontier(
     store: &dyn RuntimeStore,
     root: &PlanExecutionRecord,
 ) -> Result<Option<PlanApprovalFrontier>, Error> {
-    if root.status != PlanExecutionStatus::Waiting || root.objective_evaluation_id.is_some() {
+    if root.status != PlanExecutionStatus::Waiting {
         return Ok(None);
     }
     let Some(activation) = store.get_thread_activation(&root.activation_id).await? else {
@@ -192,6 +192,9 @@ pub(crate) async fn plan_approval_frontier(
         &pending_jobs,
         &infer_children,
         false,
+        root.objective_id
+            .as_deref()
+            .zip(root.objective_evaluation_id.as_deref()),
     ) else {
         return Ok(None);
     };
@@ -507,6 +510,10 @@ pub(super) fn validate(
         &pending_jobs,
         infer_children,
         true,
+        super::objective_approval_wait::binding_event(call, outputs)?
+            .map(super::objective_approval_wait::route)
+            .transpose()?
+            .flatten(),
     )?;
     if frontier.infer_activation_ids.len() != infer_children.len()
         || pending_jobs

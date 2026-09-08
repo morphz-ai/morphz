@@ -34,6 +34,7 @@ use crate::memory::{
     TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
     WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
 };
+use crate::memory::{ObjectiveActivationAdmission, ObjectiveApprovalWait};
 use crate::observability::Observability;
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -68,6 +69,7 @@ mod delegation;
 mod delivery;
 mod edge;
 mod execution;
+mod objective_approval_wait;
 mod plan_execution;
 mod schedule;
 mod scheduler;
@@ -435,6 +437,7 @@ impl PostgresStore {
                 "20260908_03_retain_approval_resume_boundary",
                 "20260908_04_nested_plan_approval_waits",
                 "20260908_05_infer_parent_approval_waits",
+                "20260908_06_objective_approval_waits",
             ] {
                 store
                     .run_versioned_migration(
@@ -6596,8 +6599,8 @@ impl ObjectiveStore for PostgresStore {
                  COALESCE(SUM(CASE WHEN objective.status = 'active'
                    AND NOT (
                      objective.active_evaluation_id IS NOT NULL
-                     AND objective.evaluation_lease_expires_at IS NOT NULL
-                     AND objective.evaluation_lease_expires_at > $1
+                     AND (objective.evaluation_lease_expires_at IS NULL
+                       OR objective.evaluation_lease_expires_at > $1)
                    )
                    AND NOT EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
@@ -6609,8 +6612,8 @@ impl ObjectiveStore for PostgresStore {
                    ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
                  COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
                    (objective.active_evaluation_id IS NOT NULL
-                    AND objective.evaluation_lease_expires_at IS NOT NULL
-                    AND objective.evaluation_lease_expires_at > $1)
+                    AND (objective.evaluation_lease_expires_at IS NULL
+                      OR objective.evaluation_lease_expires_at > $1))
                    OR EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
                      WHERE dependency.owner_kind = 'objective'
@@ -7025,6 +7028,22 @@ impl ObjectiveStore for PostgresStore {
         })
     }
 
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>> {
+        self.objective_approval_wait(objective_id).await
+    }
+
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.admit_approval_objective(request)
+            .await
+            .map_err(objective_approval_wait::ownership_error)
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -7287,7 +7306,8 @@ impl ObjectiveStore for PostgresStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = $1, updated_at = $2
                WHERE id = $3 AND status = 'active' AND wait_condition_json IS NULL
-                 AND active_evaluation_id = $4"#,
+                 AND active_evaluation_id = $4
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)"#,
         )
         .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .bind(now_text())
@@ -7328,6 +7348,7 @@ impl ObjectiveStore for PostgresStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = $1, updated_at = $2
                WHERE id = $3 AND status = 'active' AND active_evaluation_id = $4
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)
                  AND EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency
                    WHERE dependency.id = $5

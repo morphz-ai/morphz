@@ -2565,7 +2565,9 @@ impl ActivationStore for PostgresStore {
         &self,
         request: crate::memory::ActivationApprovalWaitRequest,
     ) -> Result<ThreadActivationMutation, StoreError> {
-        self.checkpoint_approval_wait(request).await
+        self.checkpoint_approval_wait(request)
+            .await
+            .map_err(super::objective_approval_wait::ownership_error)
     }
 
     async fn get_thread_activation_approval_wait(

@@ -6,6 +6,9 @@ use crate::memory::activation_approval_wait;
 use crate::memory::{ActivationApprovalWaitRequest, ThreadActivationMutation};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
+    sqlx::query(crate::memory::objective_approval_wait::TABLE)
+        .execute(pool)
+        .await?;
     sqlx::query(activation_approval_wait::TABLE)
         .execute(pool)
         .await?;
@@ -58,6 +61,18 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     .execute(&mut *checkpoint_schema)
     .await?;
     checkpoint_schema.commit().await?;
+    sqlx::query(&format!(r#"CREATE OR REPLACE FUNCTION {schema}.morphz_clear_objective_approval_wait()
+        RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN
+        DELETE FROM {schema}.objective_approval_waits WHERE objective_id = NEW.id
+          AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL
+               OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation);
+        RETURN NEW; END $body$"#)).execute(pool).await?;
+    sqlx::query(&format!(
+        "DROP TRIGGER IF EXISTS objective_approval_wait_invalidated ON {schema}.objectives"
+    ))
+    .execute(pool)
+    .await?;
+    sqlx::query(&format!("CREATE TRIGGER objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON {schema}.objectives FOR EACH ROW EXECUTE FUNCTION {schema}.morphz_clear_objective_approval_wait()")).execute(pool).await?;
     Ok(())
 }
 
@@ -75,9 +90,44 @@ impl PostgresStore {
             return Err("Approval checkpoint must contain a bounded nonempty wait set".into());
         }
         let mut tx = self.pool.begin().await?;
-        // Match Thread cancellation's lock order; Approval writers lock Job
-        // before Approval, which is also the order used below.
-        sqlx::query("SELECT t.id FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id WHERE a.id = $1 FOR UPDATE OF t")
+        sqlx::query("SET LOCAL lock_timeout = '100ms'")
+            .execute(&mut *tx)
+            .await?;
+        // All Objective admissions and final-owner parking take this lock
+        // before Activation/Thread locks. A new input cannot slip through a
+        // previously observed physical lease while the last owner parks.
+        if let Some(context) = sqlx::query_scalar::<_, String>(
+            "SELECT context_id FROM thread_activations WHERE id = $1",
+        )
+        .bind(&request.activation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if let Some(call) =
+                stored_event_in_tx(&mut tx, &request.assistant_call_event_id, &context).await?
+            {
+                let mut outputs = Vec::new();
+                for id in &request.completed_output_event_ids {
+                    if let Some(output) = stored_event_in_tx(&mut tx, id, &context).await? {
+                        outputs.push(output);
+                    }
+                }
+                if let Some(binding) =
+                    crate::memory::objective_approval_wait::binding_event(&call, &outputs)?
+                {
+                    let (id, _) = crate::memory::objective_approval_wait::route(binding)?
+                        .expect("validated binding");
+                    sqlx::query("SELECT id FROM objectives WHERE id = $1 FOR UPDATE")
+                        .bind(id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                }
+            }
+        }
+        // Cancellation can hold Thread before Objective. Never wait here
+        // while retaining the Objective lock: rollback/replay on contention.
+        // Approval writers lock Job before Approval, matching the order below.
+        sqlx::query("SELECT t.id FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id WHERE a.id = $1 FOR UPDATE OF t NOWAIT")
             .bind(&request.activation_id).fetch_optional(&mut *tx).await?;
         let Some(row) = sqlx::query("SELECT * FROM thread_activations WHERE id = $1 FOR UPDATE")
             .bind(&request.activation_id)
@@ -154,6 +204,16 @@ impl PostgresStore {
                     .ok_or("Approval checkpoint sibling output is not durable")?,
             );
         }
+        let trigger = stored_event_in_tx(
+            &mut tx,
+            &activation.trigger_event_id,
+            &activation.context_id,
+        )
+        .await?
+        .ok_or("Approval checkpoint trigger is not durable")?;
+        crate::memory::objective_approval_wait::validate_trigger_binding(
+            &trigger, &call, &outputs,
+        )?;
         // Child state is sampled without taking descendant row locks: that
         // would invert cancellation's owner -> Group -> Plan lock order. Any
         // concurrent decision/change invalidates the stored revision edge in
@@ -249,6 +309,12 @@ impl PostgresStore {
             .bind(&now).bind(&activation.id).execute(&mut *tx).await?;
         sqlx::query("UPDATE runtime_timers SET status = 'cancelled', claimed_by = NULL, claim_expires_at = NULL, updated_at = $1 WHERE kind = 'activation_lease' AND owner_id = $2 AND status IN ('pending','claimed')")
             .bind(&now).bind(&activation.id).execute(&mut *tx).await?;
+        if let Some(binding) =
+            crate::memory::objective_approval_wait::binding_event(&call, &outputs)?
+        {
+            super::objective_approval_wait::park_if_covered(&mut tx, &activation, binding, &now)
+                .await?;
+        }
         let row = sqlx::query("SELECT * FROM thread_activations WHERE id = $1")
             .bind(&activation.id)
             .fetch_one(&mut *tx)

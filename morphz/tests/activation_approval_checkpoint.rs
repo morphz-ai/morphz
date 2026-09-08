@@ -11,6 +11,8 @@ use serde_json::json;
 mod infer_children;
 #[path = "activation_approval_checkpoint/nested_plans.rs"]
 mod nested_plans;
+#[path = "activation_approval_checkpoint/objective_owners.rs"]
+mod objective_owners;
 
 struct Batch {
     request: ActivationApprovalWaitRequest,
@@ -144,7 +146,7 @@ async fn seed_running_batch(
             agent_id: agent.clone(),
             context_id: context.clone(),
             session_id: session.clone(),
-            initiating_principal_id: None,
+            initiating_principal_id: running.initiating_principal_id.clone(),
             target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.into(),
             tool_call_id: format!("exec-{i}"),
             tool_name: "exec".into(),
@@ -173,7 +175,7 @@ async fn seed_running_batch(
             "approval_requested",
             json!({
                 "approval_id":approval.id,"job_id":job.id,"request_digest":approval.request_digest,"policy_digest":approval.policy_digest,
-                "activation_id":activation,"thread_id":thread,"context_id":context,"session_id":session,"tool_call_id":job.tool_call_id,
+                "activation_id":activation,"thread_id":thread,"context_id":context,"session_id":session,"tool_call_id":job.tool_call_id,"principal_id":running.initiating_principal_id,
                 "action":approval.action,"requested":approval.requested,"justification":approval.justification
             }),
         );

@@ -200,6 +200,10 @@ Plan join as a malformed assistant call.
 
 ## Remaining integration gates
 
+The native Objective ownership prerequisite is now described in
+[Objective approval ownership checkpoint](agent_cell_objective_approval_wait.md).
+Its native tests do not yet enable live Objective suspension or Cloud parking.
+
 1. Extend the Plan-frontier checkpoint to active Objective-owned waits, retaining
    their Evaluation lease and objective transaction boundaries correctly.
    Unsupported wait forms remain rejected by the Store. These are required

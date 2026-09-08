@@ -70,6 +70,7 @@ use crate::memory::{
     WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
+use crate::memory::{ObjectiveActivationAdmission, ObjectiveApprovalWait};
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyMutation,
@@ -89,6 +90,7 @@ use tokio::sync::Notify;
 
 mod activation_approval_wait;
 mod agent_provider;
+mod objective_approval_wait;
 mod plan_execution;
 
 pub struct SqliteStore {
@@ -2026,6 +2028,9 @@ impl SqliteStore {
         sqlx::query(super::activation_approval_wait::INFER_INDEX)
             .execute(&pool)
             .await?;
+        sqlx::query(super::objective_approval_wait::TABLE)
+            .execute(&pool)
+            .await?;
         // Retain the exact assistant-call identity across claim and a second
         // crash. Terminal mutation (including aggregate Thread cancellation)
         // removes it atomically; re-suspension replaces its dependency set.
@@ -2055,6 +2060,8 @@ impl SqliteStore {
         .execute(&mut *checkpoint_schema)
         .await?;
         checkpoint_schema.commit().await?;
+        sqlx::query("CREATE TRIGGER IF NOT EXISTS objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON objectives BEGIN DELETE FROM objective_approval_waits WHERE objective_id = NEW.id AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation); END")
+            .execute(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -20088,8 +20095,8 @@ impl ObjectiveStore for SqliteStore {
                  COALESCE(SUM(CASE WHEN objective.status = 'active'
                    AND NOT (
                      objective.active_evaluation_id IS NOT NULL
-                     AND objective.evaluation_lease_expires_at IS NOT NULL
-                     AND objective.evaluation_lease_expires_at > ?
+                     AND (objective.evaluation_lease_expires_at IS NULL
+                       OR objective.evaluation_lease_expires_at > ?)
                    )
                    AND NOT EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
@@ -20101,8 +20108,8 @@ impl ObjectiveStore for SqliteStore {
                    ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
                  COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
                    (objective.active_evaluation_id IS NOT NULL
-                    AND objective.evaluation_lease_expires_at IS NOT NULL
-                    AND objective.evaluation_lease_expires_at > ?)
+                    AND (objective.evaluation_lease_expires_at IS NULL
+                      OR objective.evaluation_lease_expires_at > ?))
                    OR EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
                      WHERE dependency.owner_kind = 'objective'
@@ -20526,6 +20533,20 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>> {
+        self.objective_approval_wait(objective_id).await
+    }
+
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.admit_approval_objective(request).await
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -20825,7 +20846,8 @@ impl ObjectiveStore for SqliteStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = ?, updated_at = ?
                WHERE id = ? AND status = 'active' AND wait_condition_json IS NULL
-                 AND active_evaluation_id = ?"#,
+                 AND active_evaluation_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)"#,
         )
         .bind(lease_expires_at)
         .bind(now)
@@ -20870,6 +20892,7 @@ impl ObjectiveStore for SqliteStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = ?, updated_at = ?
                WHERE id = ? AND status = 'active' AND active_evaluation_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)
                  AND EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency
                    WHERE dependency.id = ?

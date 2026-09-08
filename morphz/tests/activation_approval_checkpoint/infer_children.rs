@@ -23,6 +23,16 @@ async fn child(
     label: &str,
     successor: bool,
 ) -> Batch {
+    child_with_objective(store, parent, label, successor, None).await
+}
+
+pub(super) async fn child_with_objective(
+    store: Arc<dyn RuntimeStore>,
+    parent: &mut Batch,
+    label: &str,
+    successor: bool,
+    objective: Option<(&ObjectiveRecord, &str)>,
+) -> Batch {
     let a = store
         .get_thread_activation(&parent.request.activation_id)
         .await
@@ -46,14 +56,15 @@ async fn child(
         .ensure(
             PlanExecutionRoute {
                 activation_id: a.id.clone(),
-                thread_id: t.id,
+                thread_id: t.id.clone(),
                 agent_id: a.agent_id.clone(),
                 context_id: a.context_id.clone(),
                 session_id: a.session_id.clone(),
                 initiating_principal_id: None,
                 tool_call_id: "infer-plan".into(),
-                objective_id: None,
-                objective_evaluation_id: None,
+                objective_id: objective.map(|(o, _)| o.id.clone()),
+                objective_evaluation_id: objective
+                    .and_then(|(o, _)| o.active_evaluation_id.clone()),
             },
             &program,
             PlanArtifactBinding::default(),
@@ -76,6 +87,23 @@ async fn child(
     }));
     parent.request.assistant_call_event_id = call.id.clone();
     store.append(call).await.unwrap();
+    if let Some((o, dependency)) = objective {
+        store
+            .append(event(
+                format!("selection-{label}"),
+                "runtime/tool_calls_selected",
+                "runtime_event",
+                json!({
+                    "context_id":a.context_id,"session_id":a.session_id,
+                    "activation_id":a.id,"attempt_id":a.id,"thread_id":t.id,
+                    "objective_id":o.id,"objective_evaluation_id":o.active_evaluation_id,
+                    "objective_revision":o.revision,"objective_evaluation_started_at":Utc::now(),
+                    "objective_pending_dependency_id":dependency
+                }),
+            ))
+            .await
+            .unwrap();
+    }
     let (request, child_id) = match coordinator
         .drive_once(
             &queued.id,

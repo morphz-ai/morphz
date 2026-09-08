@@ -228,8 +228,17 @@ pub struct SchedulerDependencyFilter {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ObjectiveReadiness {
     Runnable,
-    Waiting { dependency_ids: Vec<String> },
-    Leased { evaluation_id: String },
+    Waiting {
+        dependency_ids: Vec<String>,
+    },
+    Leased {
+        evaluation_id: String,
+    },
+    /// Logical Evaluation ownership was handed to a durable checkpoint.
+    /// It is neither new runnable work nor a live physical lease.
+    Suspended {
+        evaluation_id: String,
+    },
     Paused,
     Blocked,
     Terminal,
@@ -252,10 +261,12 @@ pub fn derive_objective_readiness(
         }
     }
 
-    if let (Some(evaluation_id), Some(expires_at)) = (
-        objective.active_evaluation_id.as_ref(),
-        objective.evaluation_lease_expires_at,
-    ) {
+    if let Some(evaluation_id) = objective.active_evaluation_id.as_ref() {
+        let Some(expires_at) = objective.evaluation_lease_expires_at else {
+            return ObjectiveReadiness::Suspended {
+                evaluation_id: evaluation_id.clone(),
+            };
+        };
         if expires_at > now {
             return ObjectiveReadiness::Leased {
                 evaluation_id: evaluation_id.clone(),
@@ -775,6 +786,13 @@ mod tests {
             derive_objective_readiness(&objective, &[], now),
             ObjectiveReadiness::Leased {
                 evaluation_id: "evaluation-1".into()
+            }
+        );
+        objective.evaluation_lease_expires_at = None;
+        assert_eq!(
+            derive_objective_readiness(&objective, &[], now),
+            ObjectiveReadiness::Suspended {
+                evaluation_id: "evaluation-1".into(),
             }
         );
     }

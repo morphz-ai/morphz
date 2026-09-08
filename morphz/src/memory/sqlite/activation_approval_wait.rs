@@ -70,6 +70,16 @@ impl SqliteStore {
                     .ok_or("Approval checkpoint sibling output is not durable")?,
             );
         }
+        let trigger = stored_event_in_transaction(
+            &mut tx,
+            &activation.trigger_event_id,
+            &activation.context_id,
+        )
+        .await?
+        .ok_or("Approval checkpoint trigger is not durable")?;
+        crate::memory::objective_approval_wait::validate_trigger_binding(
+            &trigger, &call, &outputs,
+        )?;
         let plans =
             sqlx::query("SELECT * FROM plan_executions WHERE activation_id = ? ORDER BY id")
                 .bind(&activation.id)
@@ -181,6 +191,12 @@ impl SqliteStore {
             .bind(&now).bind(&activation.id).execute(&mut *tx).await?;
         sqlx::query("UPDATE runtime_timers SET status = 'cancelled', claimed_by = NULL, claim_expires_at = NULL, updated_at = ? WHERE kind = 'activation_lease' AND owner_id = ? AND status IN ('pending','claimed')")
             .bind(&now).bind(&activation.id).execute(&mut *tx).await?;
+        if let Some(binding) =
+            crate::memory::objective_approval_wait::binding_event(&call, &outputs)?
+        {
+            super::objective_approval_wait::park_if_covered(&mut tx, &activation, binding, &now)
+                .await?;
+        }
         let row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
             .bind(&activation.id)
             .fetch_one(&mut *tx)

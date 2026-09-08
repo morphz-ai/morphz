@@ -7897,22 +7897,56 @@ impl Orchestrator {
         } else {
             self.bind_embedded_objective_route(&activation.id, &event);
         }
+        // An ordinary dialogue can create/adopt its Objective after its
+        // immutable trigger was written. On approval recovery, the saved
+        // assistant batch carries the durable late binding.
+        if self
+            .objective_evaluations
+            .get_for_activation(&activation.id)
+            .is_none()
+        {
+            if let Some(wait) = self
+                .context_engine
+                .session_store()
+                .ok_or("Approval recovery requires SessionStore")?
+                .get_thread_activation_approval_wait(&activation.id)
+                .await?
+            {
+                if let Some(call) = self
+                    .context_engine
+                    .find_event(&activation.context_id, &wait.assistant_call_event_id)
+                    .await?
+                {
+                    let outputs = self
+                        .store
+                        .query(QueryFilter {
+                            context_id: Some(activation.context_id.clone()),
+                            activation_id: Some(activation.id.clone()),
+                            topic: Some("chat/tool_output".into()),
+                            ..Default::default()
+                        })
+                        .await?;
+                    if let Some(binding) =
+                        crate::memory::approval_checkpoint_objective_binding(&call, &outputs)?
+                    {
+                        self.bind_embedded_objective_route(&activation.id, binding);
+                    }
+                }
+            }
+        }
         let schedule_receipt_dependency = if let Some(supervisor) = &self.objective_supervisor {
             supervisor.schedule_receipt_dependency(&event).await?
         } else {
             None
         };
-        if let (Some(supervisor), Some(objective_id), Some(evaluation_id)) = (
-            self.objective_supervisor.as_ref(),
-            event
-                .payload
-                .get("objective_id")
-                .and_then(|value| value.as_str()),
-            event
-                .payload
-                .get("objective_evaluation_id")
-                .and_then(|value| value.as_str()),
-        ) {
+        let objective_route = self
+            .objective_evaluations
+            .get_for_activation(&activation.id);
+        if let (Some(supervisor), Some(objective_route)) =
+            (self.objective_supervisor.as_ref(), objective_route.as_ref())
+        {
+            let objective_id = &objective_route.objective_id;
+            let evaluation_id = &objective_route.evaluation_id;
             let objective_control_receipt = event
                 .payload
                 .get("tool_name")
@@ -7924,6 +7958,7 @@ impl Orchestrator {
                     evaluation_id,
                     objective_control_receipt,
                     &activation.id,
+                    &self.runtime_claimant_id,
                 )
                 .await?
                 && schedule_receipt_dependency.is_none()
@@ -18469,18 +18504,18 @@ impl Orchestrator {
         // A physical Plan leaf propagates its wait to the enclosing immutable
         // batch. An infer child's own batch uses the same checkpoint and its
         // existing dedicated tool-output handoff on resume. This does not
-        // release the parent waiting for the infer result. Objective leases
-        // remain live until a separate atomic parent checkpoint is available.
+        // release the parent waiting for the infer result. The last native
+        // Objective owner hands off its shared lease in the checkpoint commit.
         let mut defer_human = (options.plan_execution_id.is_some() || options.wake_on_output)
             && activation_route.is_some()
             && self
-                .durable_approvals
-                .as_ref()
-                .is_some_and(|services| services.durable_human_decisions)
-            && self
                 .objective_evaluations
                 .get_for_activation(attempt_id)
-                .is_none();
+                .is_none()
+            && self
+                .durable_approvals
+                .as_ref()
+                .is_some_and(|services| services.durable_human_decisions);
         if defer_human {
             if let Some(plan_id) = options.plan_execution_id.as_deref() {
                 defer_human = Box::pin(self.can_defer_persisted_plan_approval(plan_id)).await?;

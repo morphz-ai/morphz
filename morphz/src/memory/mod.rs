@@ -1,5 +1,10 @@
 mod activation_approval_wait;
+mod objective_approval_wait;
 pub(crate) use activation_approval_wait::plan_approval_frontier;
+pub(crate) use objective_approval_wait::binding_event as approval_checkpoint_objective_binding;
+pub use objective_approval_wait::{
+    ApprovalOwnershipContended, ObjectiveActivationAdmission, ObjectiveApprovalWait,
+};
 pub mod lexical;
 pub mod postgres;
 #[cfg(feature = "remote-store")]
@@ -7897,7 +7902,7 @@ pub trait ObjectiveStore: Send + Sync {
                     && objective.active_evaluation_id.is_some()
                     && objective
                         .evaluation_lease_expires_at
-                        .is_some_and(|expires_at| expires_at > now)
+                        .is_none_or(|expires_at| expires_at > now)
             })
             .count();
         Ok(ObjectiveReadinessCounts {
@@ -7981,6 +7986,18 @@ pub trait ObjectiveStore: Send + Sync {
         expected_revision: u64,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Returns retained Evaluation ownership, including after an approval has
+    /// changed but before a physical Activation has reacquired the lease.
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Reacquire an approval-suspended Evaluation for an already claimed,
+    /// durably routed Activation. Does not grant or consume tool permissions.
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Claim an event-driven Evaluation while preserving the Objective's
     /// current required wait. The exact dependency ID is fenced in the store:

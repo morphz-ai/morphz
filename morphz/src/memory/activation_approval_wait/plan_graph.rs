@@ -33,6 +33,7 @@ pub(super) fn validate(
     pending_jobs: &HashSet<&str>,
     infer_children: &[InferApprovalDependency],
     require_all_plans: bool,
+    objective_route: Option<(&str, &str)>,
 ) -> Result<ValidatedFrontier, Error> {
     let by_id: HashMap<_, _> = plans.iter().map(|p| (p.id.as_str(), p)).collect();
     let roots = remaining
@@ -61,7 +62,8 @@ pub(super) fn validate(
                 || plan.context_id != activation.context_id
                 || plan.session_id != activation.session_id
                 || plan.initiating_principal_id != activation.initiating_principal_id
-                || plan.objective_evaluation_id.is_some()
+                || plan.objective_id.as_deref() != objective_route.map(|(id, _)| id)
+                || plan.objective_evaluation_id.as_deref() != objective_route.map(|(_, id)| id)
                 || expected_program
                     .as_ref()
                     .is_some_and(|program| program != &plan.program_json)
@@ -171,6 +173,9 @@ pub(super) fn validate(
                         || group.agent_id != activation.agent_id
                         || group.context_id != activation.context_id
                         || group.session_id != activation.session_id
+                        || group.objective_id.as_deref() != objective_route.map(|(id, _)| id)
+                        || group.objective_evaluation_id.as_deref()
+                            != objective_route.map(|(_, id)| id)
                         || group.member_count != branches.len() as u64
                     {
                         return Err("Approval checkpoint parallel join route differs".into());
