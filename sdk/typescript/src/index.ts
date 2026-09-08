@@ -69,6 +69,33 @@ export interface MessageReceipt {
   client_message_id: string;
 }
 
+export type ApprovalScope = "once" | "thread" | "objective" | "session";
+export interface SessionApprovalCommand {
+  expected_revision: number;
+  decision: "allow_once" | "allow_thread" | "allow_objective" | "allow_session" | "deny";
+}
+export interface SessionApproval {
+  id: string;
+  revision: number;
+  status: "pending_auto" | "pending_human" | "allowed" | "denied" | "cancelled";
+  action: { kind: "shell"; command: string; cwd: string }
+    | { kind: "tool_operation"; tool: string; operation: string; target: string | null };
+  requested: { network: boolean; read_roots: string[]; write_roots: string[]; secret_env: string[] };
+  justification: string;
+  thread_id: string;
+  target_id: string;
+  objective_id: string | null;
+  requested_scope: ApprovalScope;
+  available_scopes: ApprovalScope[];
+  lease_expires_at: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+export interface SessionApprovalPage {
+  approvals: SessionApproval[];
+  truncated: boolean;
+}
+
 export type MessageAttachmentStageStatus = "uploading" | "ready" | "consumed";
 
 export interface MessageAttachmentStage {
@@ -230,6 +257,19 @@ export class MorphzClient {
       principal,
       { method: "POST", body: JSON.stringify(input) },
     );
+  }
+
+  sessionPendingApprovals(principal: MorphzPrincipal, sessionId: string): Promise<SessionApprovalPage> {
+    return this.call(`/api/sessions/${encodeURIComponent(sessionId)}/approvals`, principal);
+  }
+
+  sessionApproval(principal: MorphzPrincipal, sessionId: string, approvalId: string): Promise<SessionApproval> {
+    return this.call(`/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`, principal);
+  }
+
+  decideSessionApproval(principal: MorphzPrincipal, sessionId: string, approvalId: string, command: SessionApprovalCommand): Promise<SessionApproval> {
+    return this.call(`/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`, principal,
+      { method: "POST", body: JSON.stringify({ expected_revision: command.expected_revision, decision: command.decision }) });
   }
 
   getMessageAttachmentStage(

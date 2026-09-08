@@ -999,6 +999,20 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ApprovalStore for MutableApprovalStore {
+        async fn get_principal_approval(
+            &self,
+            _authority: &crate::memory::ApprovalDecisionAuthority,
+            _id: &str,
+        ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+            Err("this test store has no Session authority".into())
+        }
+        async fn list_principal_pending_approvals(
+            &self,
+            _authority: &crate::memory::ApprovalDecisionAuthority,
+            _limit: usize,
+        ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+            Err("this test store has no Session authority".into())
+        }
         async fn ensure_approval_request(
             &self,
             _request: NewApprovalRequest,
@@ -1030,12 +1044,16 @@ mod tests {
             Ok(vec![self.record.lock().unwrap().clone()])
         }
 
-        async fn commit_approval_decision(
+        async fn commit_authorized_approval_decision(
             &self,
             _id: &str,
             _expected_revision: u64,
             decision: ApprovalResolution,
+            authority: Option<crate::memory::ApprovalDecisionAuthority>,
         ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+            if authority.is_some() {
+                return Err("this test store has no Session authority".into());
+            }
             let mut record = self.record.lock().unwrap();
             record.revision += 1;
             record.status = decision.status();

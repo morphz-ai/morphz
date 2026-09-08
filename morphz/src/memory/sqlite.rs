@@ -24418,6 +24418,52 @@ async fn approval_job_in_transaction(
 
 #[async_trait::async_trait]
 impl ApprovalStore for SqliteStore {
+    async fn get_principal_approval(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               WHERE a.id = ? AND s.id = ? AND b.principal_id = ?
+                 AND b.unbound_at IS NULL AND s.status = 'active'
+                 AND j.initiating_principal_id = b.principal_id"#,
+        )
+        .bind(id)
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(approval_from_row).transpose()
+    }
+    async fn list_principal_pending_approvals(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               JOIN threads t ON t.id = j.thread_id
+               JOIN thread_activations activation ON activation.id = j.activation_id
+               WHERE s.id = ? AND b.principal_id = ? AND b.unbound_at IS NULL
+                 AND j.initiating_principal_id = b.principal_id AND s.status = 'active'
+                 AND a.status = 'pending_human' AND j.status = 'waiting_approval'
+                 AND t.status = 'open' AND activation.status IN ('queued', 'running')
+               ORDER BY a.created_at, a.id LIMIT ?"#,
+        )
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
     async fn ensure_approval_request(
         &self,
         request: NewApprovalRequest,
@@ -24687,11 +24733,12 @@ impl ApprovalStore for SqliteStore {
         })
     }
 
-    async fn commit_approval_decision(
+    async fn commit_authorized_approval_decision(
         &self,
         id: &str,
         expected_revision: u64,
         decision: ApprovalResolution,
+        authority: Option<crate::memory::ApprovalDecisionAuthority>,
     ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
         let rationale = decision.rationale().trim();
         if rationale.is_empty() {
@@ -24709,6 +24756,30 @@ impl ApprovalStore for SqliteStore {
         // commits between those statements. Acquire SQLite's writer slot
         // before the first read so the replay observes one serial history.
         let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
+        if let Some(authority) = &authority {
+            let authorized: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM approval_requests a
+                   JOIN execution_jobs j ON j.id = a.job_id
+                   JOIN sessions s ON s.id = j.session_id
+                   JOIN session_principal_bindings b ON b.session_id = s.id
+                   WHERE a.id = ? AND s.id = ? AND b.principal_id = ?
+                     AND b.unbound_at IS NULL AND s.status = 'active'
+                     AND j.initiating_principal_id = b.principal_id)"#,
+            )
+            .bind(id)
+            .bind(&authority.session_id)
+            .bind(&authority.principal_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !authorized {
+                tx.commit().await?;
+                return Ok(ApprovalAuditCommit {
+                    mutation: ApprovalMutation::NotFound,
+                    event_created: false,
+                    event: None,
+                });
+            }
+        }
         let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -24722,6 +24793,17 @@ impl ApprovalStore for SqliteStore {
             });
         };
         let current = approval_from_row(&row)?;
+        if authority.is_some() && current.status == ApprovalStatus::PendingAuto {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Rejected {
+                    current,
+                    reason: "Approval is not awaiting a human decision".into(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
         let exact_replay = current.status == target_status
             && current.rationale.as_deref() == Some(rationale.as_str())
             && current.risk_tags == risk_tags;
@@ -24757,6 +24839,29 @@ impl ApprovalStore for SqliteStore {
                 event_created: false,
                 event: None,
             });
+        }
+        if authority.is_some() {
+            let waiting: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM execution_jobs j
+                   JOIN threads t ON t.id = j.thread_id
+                   JOIN thread_activations activation ON activation.id = j.activation_id
+                   WHERE j.id = ? AND j.status = 'waiting_approval'
+                     AND t.status = 'open' AND activation.status IN ('queued', 'running'))"#,
+            )
+            .bind(&current.job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !waiting {
+                tx.commit().await?;
+                return Ok(ApprovalAuditCommit {
+                    mutation: ApprovalMutation::Rejected {
+                        current,
+                        reason: "The approving execution is no longer waiting".into(),
+                    },
+                    event_created: false,
+                    event: None,
+                });
+            }
         }
         let grant_id = if target_status == ApprovalStatus::Allowed {
             Some(stable_grant_id(

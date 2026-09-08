@@ -4487,6 +4487,14 @@ pub struct ApprovalFilter {
     pub limit: Option<usize>,
 }
 
+/// Public approval decisions must be fenced to both the immutable initiating
+/// Principal and the Session's current participation, inside the commit.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionAuthority {
+    pub principal_id: String,
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApprovalMutation {
     Created(ApprovalRecord),
@@ -6165,6 +6173,16 @@ pub trait ApprovalStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_principal_pending_approvals(
+        &self,
+        authority: &ApprovalDecisionAuthority,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_principal_approval(
+        &self,
+        authority: &ApprovalDecisionAuthority,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_approvals(
         &self,
         filter: ApprovalFilter,
@@ -6243,6 +6261,18 @@ pub trait ApprovalStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         decision: ApprovalResolution,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        self.commit_authorized_approval_decision(id, expected_revision, decision, None)
+            .await
+    }
+    /// `None` is the trusted internal/operator path. Public callers supply an
+    /// authority; implementations must authorize before exact replay as well.
+    async fn commit_authorized_approval_decision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        decision: ApprovalResolution,
+        authority: Option<ApprovalDecisionAuthority>,
     ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically cancels a still-pending request (or an unconsumed allowed
     /// grant) and appends the same immutable authority audit Event. Denied and

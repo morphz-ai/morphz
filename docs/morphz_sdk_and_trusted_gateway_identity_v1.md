@@ -100,6 +100,46 @@ Session 与初始 Principal 在同一个数据库事务中创建。带 `parent_s
 
 当前机器码为 `invalid_argument`、`unauthorized`、`forbidden`、`not_found`、`conflict`、`internal`。
 
+### 3.1 Session 内的人工审批（2026-09-08）
+
+普通 Gateway 用户使用原生 Session 接口，不代理 Dashboard 的管理员审批列表：
+
+- `GET /api/sessions/:session_id/approvals`：最多返回 100 个本人发起、仍可处理的
+  人工审批，附带 `truncated`。解决旧请求后，后续请求会进入这批列表。
+- `GET /api/sessions/:session_id/approvals/:approval_id`：取得当前请求或已决定回执。
+- `POST /api/sessions/:session_id/approvals/:approval_id`：提交
+  `{ "expected_revision": 1, "decision": "allow_once" }`。
+
+决定为 `allow_once`、`allow_thread`、`allow_objective`、`allow_session` 或 `deny`。
+客户端展示原生 `action`、`requested`、`justification`、Target、作用域及租约截止时间，
+只提供 `available_scopes` 中的允许选项。不接受自定义路径、权限、风险标签或身份字段；
+审批不会改变 Session 的权限预设，也没有 `allow_all` / `full_access` 选项。
+目标作用域需要 Job 的真实因果 Objective；显式 once 请求不产生可复用租约。
+
+HTTP 先认证服务凭证，然后 SDK 校验 Session 参与关系；Store 在决定事务内再次确认
+Session 活跃、参与关系未撤销、Principal 与 Job 发起人一致。仅共享 Session 不代表
+可以批准他人的请求。即使是重复请求，也必须先通过当前参与关系校验。
+非精确重复使用原始 `expected_revision` 做 CAS；同内容重试返回既有决定，拒绝、取消
+或不同决定不可覆盖。自动审批中的请求不会通过该人工接口被抢先决定。
+
+决定和审计 Event 在同一事务持久化，随后复用原生事件投递及审批等待者唤醒；进程内
+等待者消失不丢失已提交的决定。网络失败或 503 时重试**同一个 ID、版本与决定**，
+409 时刷新，不把旧页面的选择覆盖到新版本。数据库中仍等待的审批可以在重启后读取。
+
+SQLite 和 PostgreSQL 共用上述语义；RemoteRuntimeStore 自动覆盖新增 Store 方法，
+其远端确认仍是成功回执的前置条件。Rust SDK 和 TypeScript SDK 均提供列表、详情和
+提交三个方法。Cloud 产品路由从可信目录选择用户的 `primarySessionId`，不接受查询
+参数指定其他 Session。网站已实现审批收件箱，本机真实 Edge 跨进程门禁通过；
+真实云端休眠/唤醒和三平台设备验收仍需单独完成。
+
+恢复相同 Tool Call 时，审批请求 Event 必须沿用持久化的发生时间与序号；权限、身份、
+路由或内容变化仍拒绝。重放决定不重复消费 Grant，且 Session 租约只覆盖批准目录，
+不改变权限预设、也不覆盖 Edge 设备所有者独立的本机权限。
+
+回归入口：`cargo test -p morphz --lib --features remote-store session_approval`；
+PostgreSQL 使用显式隔离测试库运行 `session_approval_postgres_contract -- --ignored`，
+不把未配置时跳过当作已通过。TypeScript SDK：`cd sdk/typescript && npm test`。
+
 ## 4. 旧 Session 的显式认领
 
 旧网站数据库已经保存 `users.id → morphz_session_id`，但旧 Runtime 可能没有 Principal 绑定。可信 Gateway 在读到该权威映射后调用：

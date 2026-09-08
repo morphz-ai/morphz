@@ -2,6 +2,29 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MorphzClient, MorphzHttpError } from "../src/index.ts";
 
+test("Session approval methods use the same Principal and preserve the exact decision on retry", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new MorphzClient({ baseUrl: "https://runtime.example", serviceToken: "test-gateway", fetch: async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ id: "approval/one", revision: 8, status: "allowed" });
+  } });
+  const principal = { id: "alice" };
+  await client.sessionPendingApprovals(principal, "session/a");
+  await client.sessionApproval(principal, "session/a", "approval/one");
+  const command = { expected_revision: 7, decision: "allow_session" as const, principal_id: "forged" };
+  await client.decideSessionApproval(principal, "session/a", "approval/one", command);
+  await client.decideSessionApproval(principal, "session/a", "approval/one", command);
+  assert.equal(new URL(calls[0].url).pathname, "/api/sessions/session%2Fa/approvals");
+  assert.equal(new URL(calls[1].url).pathname, "/api/sessions/session%2Fa/approvals/approval%2Fone");
+  assert.equal(calls[2].init?.body, calls[3].init?.body);
+  assert.deepEqual(JSON.parse(String(calls[2].init?.body)), { expected_revision: 7, decision: "allow_session" });
+  for (const call of calls) {
+    assert.equal(new Headers(call.init?.headers).get("x-morphz-principal"), "alice");
+    assert.equal(new Headers(call.init?.headers).get("authorization"), "Bearer test-gateway");
+    assert.notEqual(new URL(call.url).pathname, "/api/approvals");
+  }
+});
+
 test("every Session request carries the trusted Principal separately from content", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const client = new MorphzClient({

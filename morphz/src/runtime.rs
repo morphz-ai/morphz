@@ -4,6 +4,8 @@ use crate::approval::{
     CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
+
+mod session_approval;
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
@@ -110,6 +112,10 @@ use crate::tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+pub use session_approval::{
+    SessionApprovalChoice, SessionApprovalCommand, SessionApprovalError, SessionApprovalPage,
+    SessionApprovalView,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -6792,80 +6798,9 @@ impl MorphzRuntime {
                 tracing::error!(event_code = "runtime.approval.capability_delta_decode_failed", approval_id = %record.id, "Failed to decode the pending approval capability delta");
                 continue;
             };
-            let requested_scope = job
-                .request
-                .get("approval_scope")
-                .cloned()
-                .map(serde_json::from_value::<ApprovalScope>)
-                .transpose()
-                .unwrap_or_else(|error| {
-                    tracing::error!(event_code = "runtime.approval.scope_decode_failed", approval_id = %record.id, %error, "Failed to decode the pending approval scope");
-                    None
-                })
-                .unwrap_or_default();
-            let lease_offer = if self.inner.config.edge_execution.capability_leases_enabled
-                && self
-                    .inner
-                    .config
-                    .edge_execution
-                    .capability_lease_ttl
-                    .as_secs()
-                    > 0
-            {
-                match (
-                    job.initiating_principal_id.as_ref(),
-                    self.inner.store.get_thread(&job.thread_id).await,
-                    self.inner.store.get_execution_target(&job.target_id).await,
-                ) {
-                    (Some(principal_id), Ok(Some(thread)), Ok(Some(target)))
-                        if thread.lifecycle == crate::memory::ThreadLifecycle::Open
-                            && requested_scope.lease_scope().is_some() =>
-                    {
-                        let scope = requested_scope
-                            .lease_scope()
-                            .expect("lease scope was checked above");
-                        let scope_id = match scope {
-                            CapabilityLeaseScope::Thread => Some(job.thread_id.clone()),
-                            CapabilityLeaseScope::Objective => job
-                                .request
-                                .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string),
-                            CapabilityLeaseScope::Session => Some(job.session_id.clone()),
-                        };
-                        scope_id.map(|scope_id| CapabilityLeaseOffer {
-                            principal_id: principal_id.clone(),
-                            agent_id: job.agent_id.clone(),
-                            session_id: job.session_id.clone(),
-                            thread_id: job.thread_id.clone(),
-                            scope,
-                            scope_id,
-                            target_id: job.target_id.clone(),
-                            capability: action.lease_capability(),
-                            capabilities: reusable_capabilities(&action, &requested),
-                            requested: requested.clone(),
-                            policy_digest: capability_lease_policy_digest(
-                                &self.inner.permissions.policy_digest(),
-                                &target.policy_digest,
-                            ),
-                            expires_at: record.created_at
-                                + chrono::Duration::seconds(
-                                    i64::try_from(
-                                        self.inner
-                                            .config
-                                            .edge_execution
-                                            .capability_lease_ttl
-                                            .as_secs(),
-                                    )
-                                    .unwrap_or(i64::MAX),
-                                ),
-                        })
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let lease_offer = self
+                .approval_lease_offer(&record, &job, &action, &requested)
+                .await;
             pending.push(PendingHumanApproval {
                 request: crate::approval::ApprovalRequest {
                     approval_id: record.id,
@@ -6983,8 +6918,19 @@ impl MorphzRuntime {
                 return Err("approval decision returned an impossible Created state".to_string());
             }
         };
-        if commit.event_created {
-            let event = commit.event.ok_or_else(|| {
+        self.publish_approval_decision(approval_id, decision, commit.event_created, commit.event)
+            .await
+    }
+
+    async fn publish_approval_decision(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+        event_created: bool,
+        event: Option<Event>,
+    ) -> Result<(), String> {
+        if event_created {
+            let event = event.ok_or_else(|| {
                 "Approval audit Event was created atomically, but the Store did not return its persisted projection"
                     .to_string()
             })?;
@@ -18984,13 +18930,27 @@ mod tests {
         assert!(jobs[0].started_at.is_none());
         assert!(!observed_result.load(Ordering::SeqCst));
 
-        runtime
-            .allow_approval_session_capability(
-                &approval_id,
-                "human approved this capability boundary for the owning Session".to_string(),
-            )
+        let sdk = crate::sdk::MorphzSdk::new(runtime.clone());
+        let principal = sdk.default_principal();
+        let page = sdk
+            .session_pending_approvals(&principal.principal_id, &session.id)
             .await
             .unwrap();
+        assert_eq!(page.approvals.len(), 1);
+        assert!(page.approvals[0]
+            .available_scopes
+            .contains(&ApprovalScope::Session));
+        sdk.decide_session_approval(
+            &principal,
+            &session.id,
+            &approval_id,
+            SessionApprovalCommand {
+                expected_revision: page.approvals[0].revision,
+                decision: SessionApprovalChoice::AllowSession,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
             runtime
                 .get_session(&session.id)

@@ -1359,6 +1359,14 @@ impl Server {
                 post(handle_send_message),
             )
             .route(
+                "/api/sessions/:session_id/approvals",
+                get(handle_session_pending_approvals),
+            )
+            .route(
+                "/api/sessions/:session_id/approvals/:approval_id",
+                get(handle_session_approval).post(handle_session_approval_decision),
+            )
+            .route(
                 "/api/sessions/:session_id/attachment-stages",
                 get(handle_list_message_attachment_stages)
                     .post(handle_create_message_attachment_stage),
@@ -3469,6 +3477,73 @@ async fn handle_update_inference(
         "persistent": true,
     }))
     .into_response()
+}
+
+async fn handle_session_pending_approvals(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_pending_approvals(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_session_approval(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_approval(&principal.principal_id, &session_id, &approval_id)
+        .await
+    {
+        Ok(approval) => Json(approval).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_session_approval_decision(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<crate::runtime::SessionApprovalCommand>,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .decide_session_approval(&principal, &session_id, &approval_id, command)
+        .await
+    {
+        Ok(approval) => Json(approval).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
 }
 
 async fn handle_list_approvals(
@@ -9302,6 +9377,130 @@ mod tests {
         let path = tmp.path().to_path_buf();
         drop(tmp);
         test_state_at(&path).await
+    }
+
+    #[tokio::test]
+    async fn session_approval_http_requires_gateway_auth_before_principal_assertion() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, runtime) =
+            test_state_at_with_workers(&dir.path().join("store.sqlite"), false).await;
+        let state_mut = Arc::get_mut(&mut state).unwrap();
+        state_mut.auth_token = Some("test-admin".into());
+        state_mut.gateway_token = Some("test-gateway".into());
+        state_mut.identity.mode = ServerIdentityMode::TrustedGateway;
+        runtime
+            .ensure_agent(crate::memory::NewAgent {
+                id: "agent-test".into(),
+                title: "Test".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: "context-test".into(),
+                agent_id: "agent-test".into(),
+                title: "Test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .create_session_for_principal(
+                NewSession {
+                    id: "approval-http-session".into(),
+                    agent_id: "agent-test".into(),
+                    context_id: "context-test".into(),
+                    title: "Test".into(),
+                    parent_session_id: None,
+                    mount_kind: SessionMountKind::ExistingContext,
+                },
+                PrincipalAssertion {
+                    principal_id: "alice".into(),
+                    provider_id: "test".into(),
+                    assurance: "test".into(),
+                    display_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-morphz-principal", "alice".parse().unwrap());
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_session_approval(
+                State(state.clone()),
+                Path(("approval-http-session".into(), "any-approval".into())),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_session_approval_decision(
+                State(state.clone()),
+                Path(("approval-http-session".into(), "any-approval".into())),
+                headers.clone(),
+                Json(crate::runtime::SessionApprovalCommand {
+                    expected_revision: 1,
+                    decision: crate::runtime::SessionApprovalChoice::AllowOnce
+                })
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-gateway".parse().unwrap(),
+        );
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        // A user gateway still cannot access the operator-wide list.
+        assert_eq!(
+            handle_list_approvals(
+                State(state.clone()),
+                headers.clone(),
+                Query(AuthQuery {
+                    token: None,
+                    principal_id: None,
+                    session_id: None,
+                    observe_model_requests: false,
+                })
+            )
+            .await
+            .into_response()
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        headers.insert("x-morphz-principal", "bob".parse().unwrap());
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     async fn routed_completion_for_session(
