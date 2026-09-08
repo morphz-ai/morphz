@@ -1,7 +1,8 @@
 //! Direct tool batches release their live evaluation stack before the Store
 //! commits the approval checkpoint. Nested Plan stacks propagate a distinct
-//! control outcome; they do not fabricate terminal tool results. Infer-child
-//! and Objective Evaluation parent waits remain separate integration gates.
+//! control outcome; they do not fabricate terminal tool results. Infer child
+//! batches can checkpoint independently; the infer/Objective parent waits
+//! remain separate integration gates and still prevent whole-host parking.
 use super::*;
 use crate::memory::{ActivationApprovalWaitChanged, ActivationApprovalWaitRequest};
 
@@ -57,9 +58,7 @@ impl Orchestrator {
                 .objective_evaluations
                 .get_for_activation(&plan.activation_id)
                 .is_none()
-            && self
-                .activation_route(&plan.activation_id)
-                .is_some_and(|r| !r.internal_child_handoff)
+            && self.activation_route(&plan.activation_id).is_some()
     }
 
     /// All descendant stacks must have returned before their parent releases

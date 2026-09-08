@@ -4725,7 +4725,7 @@ impl Orchestrator {
                             event_code = "orchestrator.activation.expired_lease_reclaimed",
                             "Reclaimed a zombie Activation with an expired lease at runtime"
                         );
-                        self.bus.dispatch_persisted(trigger).await?;
+                        self.dispatch_recovered_activation(&queued, trigger).await?;
                     }
                     RestoreQueuedOutcome::AlreadyTracked
                     | RestoreQueuedOutcome::DeferredWindowFull => {
@@ -6389,6 +6389,26 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Recover through the same child lane as a live infer handoff. A waiting
+    /// parent can occupy the last EventBus permit even after it releases its
+    /// Activation admission slot. Event payload flags and approval state do
+    /// not determine this lane: only the owning durable Thread does.
+    async fn dispatch_recovered_activation(
+        &self,
+        activation: &ThreadActivationRecord,
+        trigger: Event,
+    ) -> Result<(), DynError> {
+        let thread = self
+            .context_engine
+            .session_store()
+            .ok_or("Activation recovery requires a persistent SessionStore")?
+            .get_thread_by_root(&activation.root_turn_id)
+            .await?
+            .ok_or("Activation recovery is missing its durable Thread")?;
+        let child = plan_children::recovery_uses_child_handoff(activation, &thread)?;
+        dispatch_persisted_tool_handoff(self.bus.as_ref(), trigger, child).await
+    }
+
     /// Fill newly available in-memory scheduling positions from SQLite.  Only
     /// rows actually entering the window are re-dispatched; overflow remains a
     /// durable queued fact and never becomes a synthetic failure reply.
@@ -6450,7 +6470,8 @@ impl Orchestrator {
                             json!(&activation.id),
                         );
                     }
-                    self.bus.dispatch_persisted(trigger).await?;
+                    self.dispatch_recovered_activation(&activation, trigger)
+                        .await?;
                     dispatched = dispatched.saturating_add(1);
                 }
                 RestoreQueuedOutcome::AlreadyTracked | RestoreQueuedOutcome::DeferredWindowFull => {
@@ -6544,7 +6565,8 @@ impl Orchestrator {
                 match activation.status {
                     ThreadActivationStatus::Queued => {
                         if self.activation_admission.contains(&activation.id) {
-                            self.bus.dispatch_persisted(trigger).await?;
+                            self.dispatch_recovered_activation(&activation, trigger)
+                                .await?;
                         }
                     }
                     ThreadActivationStatus::Running => {
@@ -6573,7 +6595,8 @@ impl Orchestrator {
                                         activation_admission_key(&queued, &trigger),
                                     )? == RestoreQueuedOutcome::Restored
                                     {
-                                        self.bus.dispatch_persisted(trigger).await?;
+                                        self.dispatch_recovered_activation(&queued, trigger)
+                                            .await?;
                                     }
                                 }
                                 ThreadActivationMutation::Conflict { .. }
@@ -18422,9 +18445,12 @@ impl Orchestrator {
             .transpose()?;
 
         // A physical Plan leaf propagates its wait to the enclosing immutable
-        // batch. Infer/Objective parent continuations are not checkpointed yet.
+        // batch. An infer child's own batch uses the same checkpoint and its
+        // existing dedicated tool-output handoff on resume. This does not
+        // release the parent waiting for the infer result. Objective leases
+        // remain live until a separate atomic parent checkpoint is available.
         let mut defer_human = (options.plan_execution_id.is_some() || options.wake_on_output)
-            && !internal_child_handoff
+            && activation_route.is_some()
             && self
                 .durable_approvals
                 .as_ref()

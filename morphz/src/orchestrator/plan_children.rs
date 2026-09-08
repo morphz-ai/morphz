@@ -4,6 +4,31 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+pub(super) fn recovery_uses_child_handoff(
+    activation: &crate::memory::ThreadActivationRecord,
+    thread: &crate::memory::ThreadRecord,
+) -> Result<bool, super::DynError> {
+    if thread.root_turn_id != activation.root_turn_id
+        || thread.agent_id != activation.agent_id
+        || thread.context_id != activation.context_id
+        || thread.session_id != activation.session_id
+        || thread.initiating_principal_id != activation.initiating_principal_id
+    {
+        return Err("Activation recovery and durable Thread routes differ".into());
+    }
+    if thread.executor_kind != "plan_infer" {
+        return Ok(false);
+    }
+    if thread
+        .executor_id
+        .as_ref()
+        .is_none_or(|id| id.trim().is_empty())
+    {
+        return Err("Recovered infer Thread is missing its parent Plan identity".into());
+    }
+    Ok(true)
+}
+
 /// Parallel Plan joins use branch-result Events and their Plan coordinator,
 /// not the ordinary assistant/tool-output batch recovery protocol. Classify
 /// from the persisted control intent, with exact identity and route checks;
@@ -92,6 +117,60 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Barrier;
+
+    #[test]
+    fn recovery_child_lane_comes_only_from_the_matching_durable_thread() {
+        use crate::memory::{ThreadActivationRecord, ThreadRecord, ThreadSupervision};
+        use serde_json::json;
+        let now = chrono::Utc::now();
+        let activation: ThreadActivationRecord = serde_json::from_value(json!({
+            "id": "activation", "revision": 2, "generation": 1,
+            "agent_id": "agent", "context_id": "context", "session_id": "session",
+            "initiating_principal_id": "principal", "root_turn_id": "root",
+            "trigger_event_id": "output", "trigger_sequence": 2,
+            "trigger_kind": "chat/tool_output", "status": "queued",
+            "created_at": now, "updated_at": now,
+        }))
+        .unwrap();
+        let thread: ThreadRecord = serde_json::from_value(json!({
+            "id": "thread", "revision": 1, "generation": 1,
+            "agent_id": "agent", "context_id": "context", "session_id": "session",
+            "initiating_principal_id": "principal", "root_turn_id": "root",
+            "kind": "execution", "lifecycle": "open", "control_state": "active",
+            "executor_kind": "plan_infer", "executor_id": "parent-plan",
+            "supervision": ThreadSupervision::runtime("test"),
+            "delivery_status": "none", "created_at": now, "updated_at": now,
+        }))
+        .unwrap();
+        // Continuation inputs need not themselves be infer-request Events.
+        assert!(recovery_uses_child_handoff(&activation, &thread).unwrap());
+        let mut ordinary = thread.clone();
+        ordinary.executor_kind = "self".into();
+        let mut infer_named = activation.clone();
+        infer_named.id = "infer_request_looks_like_a_child".into();
+        infer_named.trigger_kind = "chat/infer_request".into();
+        assert!(!recovery_uses_child_handoff(&infer_named, &ordinary).unwrap());
+        for key in [
+            "root_turn_id",
+            "agent_id",
+            "context_id",
+            "session_id",
+            "initiating_principal_id",
+        ] {
+            let mut wrong = serde_json::to_value(&thread).unwrap();
+            wrong[key] = json!("unrelated");
+            assert!(
+                recovery_uses_child_handoff(&activation, &serde_json::from_value(wrong).unwrap())
+                    .is_err(),
+                "{key}"
+            );
+        }
+        for id in [None, Some("".to_string()), Some("   ".to_string())] {
+            let mut wrong = thread.clone();
+            wrong.executor_id = id;
+            assert!(recovery_uses_child_handoff(&activation, &wrong).is_err());
+        }
+    }
 
     #[test]
     fn plan_group_recovery_requires_the_exact_durable_intent() {

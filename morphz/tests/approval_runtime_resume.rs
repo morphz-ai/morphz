@@ -18,6 +18,7 @@ struct FixtureClient {
     root: PathBuf,
     stage: String,
     nested: bool,
+    infer: bool,
     calls: AtomicUsize,
 }
 
@@ -31,12 +32,67 @@ impl Client for FixtureClient {
         messages: Vec<Message>,
         _: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        let ordinal = self.calls.fetch_add(1, Ordering::SeqCst);
+        let (stage, call_index) = if self.stage == "live" {
+            if ordinal < 2 {
+                ("initial", ordinal)
+            } else {
+                ("final", ordinal - 2)
+            }
+        } else {
+            (self.stage.as_str(), ordinal)
+        };
+        if self.infer && stage == "cancel" {
+            assert_eq!(call_index, 0, "cancellation must not re-evaluate the child");
+            let tools = messages
+                .iter()
+                .filter(|m| m.role == "tool")
+                .collect::<Vec<_>>();
+            assert_eq!(tools.len(), 1);
+            assert!(
+                tools[0].content.contains("cancelled"),
+                "{}",
+                tools[0].content
+            );
+            return Ok(Response {
+                content: "checkpoint-batch-complete".into(),
+                tool_calls: Vec::new(),
+            });
+        }
+        if self.infer && stage == "initial" && call_index == 0 {
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "eval-infer".into(),
+                    r#type: "function".into(),
+                    func_name: "eval".into(),
+                    arguments: json!({"program": format!(
+                        "(eval (requires (tools read)) (infer (returns String) (seq (call read (path {})) (call read (path {})) (call read (path {})) \"return the synthetic summary\")))",
+                        json!(self.root.join("workspace/free.txt")),
+                        json!(self.root.join("outside/one.txt")),
+                        json!(self.root.join("outside/two.txt")),
+                    )}).to_string(),
+                }],
+            });
+        }
+        if self.infer && stage == "final" && call_index == 1 {
+            let tools = messages
+                .iter()
+                .filter(|m| m.role == "tool")
+                .collect::<Vec<_>>();
+            assert_eq!(tools.len(), 1);
+            assert!(tools[0].content.contains("infer-checkpoint-value"));
+            return Ok(Response {
+                content: "checkpoint-batch-complete".into(),
+                tool_calls: Vec::new(),
+            });
+        }
         assert_eq!(
-            self.calls.fetch_add(1, Ordering::SeqCst),
-            0,
+            call_index,
+            usize::from(self.infer && stage == "initial"),
             "unexpected extra model request"
         );
-        if self.stage == "initial" {
+        if stage == "initial" {
             let mut calls = vec![ToolCallRepr {
                 id: "read-0".into(),
                 r#type: "function".into(),
@@ -70,7 +126,7 @@ impl Client for FixtureClient {
             })
         } else {
             assert_eq!(
-                self.stage, "final",
+                stage, "final",
                 "resuming a partial batch must not call a model"
             );
             let tools = messages
@@ -99,7 +155,12 @@ impl Client for FixtureClient {
             }
             assert!(!content.contains("must-not-be-read"));
             Ok(Response {
-                content: "checkpoint-batch-complete".into(),
+                content: if self.infer {
+                    "\"infer-checkpoint-value\""
+                } else {
+                    "checkpoint-batch-complete"
+                }
+                .into(),
                 tool_calls: Vec::new(),
             })
         }
@@ -128,11 +189,17 @@ async fn approval_runtime_child() {
         root: root.clone(),
         stage: stage.clone(),
         nested: std::env::var("MORPHZ_APPROVAL_FIXTURE_NESTED").as_deref() == Ok("1"),
+        infer: std::env::var("MORPHZ_APPROVAL_FIXTURE_INFER").as_deref() == Ok("1"),
         calls: AtomicUsize::new(0),
     });
     let mut config = AppConfig::default();
     config.orchestrator.activation_admission.max_in_flight = 1;
     config.orchestrator.event_bus.max_in_flight = 1;
+    // A deliberately short real lease lets the crash-only infer fixture
+    // recover its still-live parent without editing durable ownership rows.
+    if client.infer {
+        config.orchestrator.activation_lease_secs = 3;
+    }
     config.permissions.mode = PermissionMode::Custom;
     config.permissions.reviewer = ReviewerKind::User;
     config.permissions.read_only_outside_workspace = false;
@@ -156,7 +223,35 @@ async fn approval_runtime_child() {
         .unwrap();
     let mut replies = runtime.subscribe("chat/reply", 8);
     runtime.start().await.unwrap();
-    if stage == "initial" {
+    if stage == "cancel" {
+        let jobs = native
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let child = native
+            .get_thread(&jobs[0].thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.executor_kind, "plan_infer");
+        assert!(matches!(
+            runtime
+                .control_thread(
+                    &child.context_id,
+                    &child.id,
+                    child.revision,
+                    ThreadControlAction::Cancel,
+                    "synthetic cancelled infer approval",
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+    }
+    if stage == "initial" || stage == "live" {
         let session = runtime
             .ensure_session(NewSession {
                 id: "approval-process-session".into(),
@@ -177,7 +272,71 @@ async fn approval_runtime_child() {
             .await
             .unwrap();
     }
-    if stage == "final" {
+    if stage == "live" {
+        // Exercise ordinary decision -> live queue refill while the parent
+        // still occupies the sole EventBus handler. Restart recovery uses a
+        // different dispatch call site and is not sufficient to prove this.
+        for expected in [2, 1] {
+            let pending = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let pending = native
+                        .list_approvals(ApprovalFilter {
+                            pending_only: true,
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap();
+                    if pending.len() == expected {
+                        let job = native
+                            .get_execution_job(&pending[0].job_id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        if native
+                            .get_thread_activation_approval_wait(&job.activation_id)
+                            .await
+                            .unwrap()
+                            .is_some_and(|wait| wait.approval_ids.len() == expected)
+                        {
+                            break pending;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the live infer batch must checkpoint after each decision");
+            assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+            let mut selected = None;
+            for approval in pending {
+                let job = native
+                    .get_execution_job(&approval.job_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if expected == 1 || job.request["path"] == json!(root.join("outside/one.txt")) {
+                    selected = Some(approval.id);
+                    break;
+                }
+            }
+            let decision = if expected == 2 {
+                morphz::approval::ApprovalDecision::AllowOnce {
+                    rationale: "synthetic exact read".into(),
+                    risk_tags: vec![],
+                }
+            } else {
+                morphz::approval::ApprovalDecision::Deny {
+                    rationale: "synthetic denial".into(),
+                    risk_tags: vec![],
+                }
+            };
+            runtime
+                .decide_approval(&selected.unwrap(), decision)
+                .await
+                .unwrap();
+        }
+    }
+    if matches!(stage.as_str(), "final" | "cancel" | "live") {
         let reply = match tokio::time::timeout(Duration::from_secs(15), replies.recv()).await {
             Ok(reply) => reply.unwrap(),
             Err(error) => {
@@ -228,7 +387,10 @@ async fn approval_runtime_child() {
                 })
                 .await
                 .unwrap();
-            if jobs.len() == 3 && runtime.hosted_process_is_quiescent() {
+            if jobs.len() == 3
+                && (runtime.hosted_process_is_quiescent()
+                    || (client.infer && matches!(stage.as_str(), "initial" | "partial")))
+            {
                 let wait = native
                     .get_thread_activation_approval_wait(&jobs[0].activation_id)
                     .await
@@ -239,6 +401,40 @@ async fn approval_runtime_child() {
                     _ => 0,
                 };
                 if wait.as_ref().map_or(0, |wait| wait.approval_ids.len()) == expected {
+                    if client.infer && matches!(stage.as_str(), "initial" | "partial") {
+                        assert!(
+                            !runtime.hosted_process_is_quiescent(),
+                            "the uncheckpointed infer parent must still block parking"
+                        );
+                        let plan = native
+                            .list_plan_executions(PlanExecutionFilter {
+                                include_terminal: true,
+                                ..Default::default()
+                            })
+                            .await
+                            .unwrap()
+                            .pop()
+                            .unwrap();
+                        assert_eq!(plan.status, PlanExecutionStatus::Waiting);
+                        assert_eq!(plan.pending_kind, Some(PlanExecutionWaitKind::Evaluation));
+                        assert_eq!(
+                            plan.pending_id.as_deref(),
+                            Some(jobs[0].activation_id.as_str())
+                        );
+                        assert!(native
+                            .get_thread_activation_approval_wait(&plan.activation_id)
+                            .await
+                            .unwrap()
+                            .is_none());
+                        let child = native
+                            .get_thread_activation(&jobs[0].activation_id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(child.status, ThreadActivationStatus::Queued);
+                        assert!(child.claimed_by.is_none());
+                        assert!(child.lease_expires_at.is_none());
+                    }
                     assert_eq!(
                         jobs.iter()
                             .filter(|j| j.status == ExecutionJobStatus::WaitingApproval)
@@ -298,11 +494,20 @@ async fn approval_runtime_child() {
     }
     assert_eq!(
         client.calls.load(Ordering::SeqCst),
-        usize::from(stage != "partial")
+        if stage == "live" {
+            4
+        } else {
+            usize::from(stage != "partial")
+                * if client.infer && stage != "cancel" {
+                    2
+                } else {
+                    1
+                }
+        }
     );
 }
 
-fn run_child(root: &Path, stage: &str, nested: bool) {
+fn run_child(root: &Path, stage: &str, nested: bool, infer: bool) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -315,6 +520,10 @@ fn run_child(root: &Path, stage: &str, nested: bool) {
         .env(
             "MORPHZ_APPROVAL_FIXTURE_NESTED",
             if nested { "1" } else { "0" },
+        )
+        .env(
+            "MORPHZ_APPROVAL_FIXTURE_INFER",
+            if infer { "1" } else { "0" },
         )
         .env_remove("RUST_MIN_STACK")
         .output()
@@ -334,15 +543,21 @@ fn run_child(root: &Path, stage: &str, nested: bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approval_batch_resumes_across_real_process_exits() {
-    approval_process_case(false).await;
+    approval_process_case(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_plan_approval_resumes_across_real_process_exits() {
-    approval_process_case(true).await;
+    approval_process_case(true, false).await;
 }
 
-async fn approval_process_case(nested: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn infer_child_approval_resumes_across_real_process_exits() {
+    // This proves child checkpoint/crash recovery, not safe parent parking.
+    approval_process_case(false, true).await;
+}
+
+fn prepare_fixture() -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir(root.join("workspace")).unwrap();
@@ -350,7 +565,109 @@ async fn approval_process_case(nested: bool) {
     std::fs::write(root.join("workspace/free.txt"), "free-fixture").unwrap();
     std::fs::write(root.join("outside/one.txt"), "approved-fixture").unwrap();
     std::fs::write(root.join("outside/two.txt"), "must-not-be-read").unwrap();
-    run_child(root, "initial", nested);
+    temp
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_infer_approval_refill_uses_child_handoff() {
+    let temp = prepare_fixture();
+    run_child(temp.path(), "live", false, true);
+    let native = store(temp.path()).await;
+    let jobs = native
+        .list_execution_jobs(ExecutionJobFilter {
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 3);
+    assert!(jobs.iter().all(|job| job.status.is_terminal()));
+    assert!(jobs
+        .iter()
+        .find(|job| job.request["path"] == json!(temp.path().join("outside/two.txt")))
+        .unwrap()
+        .side_effect_started_at
+        .is_none());
+    let approvals = native
+        .list_approvals(ApprovalFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(
+        approvals
+            .iter()
+            .filter(|a| a.grant_consumed_at.is_some())
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_checkpointed_infer_child_after_restart_closes_parent() {
+    let temp = prepare_fixture();
+    let root = temp.path();
+    run_child(root, "initial", false, true);
+    let native = store(root).await;
+    let jobs = native
+        .list_execution_jobs(ExecutionJobFilter {
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let free = jobs
+        .iter()
+        .find(|j| j.tool_call_id == "read-0")
+        .unwrap()
+        .clone();
+    drop(native);
+    run_child(root, "cancel", false, true);
+    let native = store(root).await;
+    assert_eq!(
+        native.get_execution_job(&free.id).await.unwrap().unwrap(),
+        free
+    );
+    let jobs = native
+        .list_execution_jobs(ExecutionJobFilter {
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 3);
+    for job in jobs.iter().filter(|j| j.id != free.id) {
+        assert_eq!(job.status, ExecutionJobStatus::Cancelled);
+        assert!(job.side_effect_started_at.is_none());
+    }
+    assert!(native
+        .get_thread_activation_approval_wait(&free.activation_id)
+        .await
+        .unwrap()
+        .is_none());
+    let child = native.get_thread(&free.thread_id).await.unwrap().unwrap();
+    assert_eq!(child.lifecycle, ThreadLifecycle::Cancelled);
+    let plans = native
+        .list_plan_executions(PlanExecutionFilter {
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].status, PlanExecutionStatus::Failed);
+    assert!(plans[0].error.as_deref().unwrap().contains("cancelled"));
+    assert!(native
+        .list_approvals(ApprovalFilter::default())
+        .await
+        .unwrap()
+        .iter()
+        .all(|a| a.grant_consumed_at.is_none()));
+}
+
+async fn approval_process_case(nested: bool, infer: bool) {
+    let temp = prepare_fixture();
+    let root = temp.path();
+    run_child(root, "initial", nested, infer);
     let native = store(root).await;
     let before = native
         .list_execution_jobs(ExecutionJobFilter {
@@ -396,7 +713,7 @@ async fn approval_process_case(nested: bool) {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "partial", nested);
+    run_child(root, "partial", nested, infer);
     let native = store(root).await;
     let remaining = native
         .get_thread_activation_approval_wait(&free.activation_id)
@@ -443,7 +760,7 @@ async fn approval_process_case(nested: bool) {
         .await
         .unwrap();
     drop(native);
-    run_child(root, "final", nested);
+    run_child(root, "final", nested, infer);
     let native = store(root).await;
     assert_eq!(
         native.get_execution_job(&free.id).await.unwrap().unwrap(),
@@ -475,7 +792,7 @@ async fn approval_process_case(nested: bool) {
         })
         .await
         .unwrap();
-    assert_eq!(outputs.len(), if nested { 4 } else { 3 });
+    assert_eq!(outputs.len(), if nested || infer { 4 } else { 3 });
     let rejected = outputs
         .iter()
         .find(|e| e.payload["tool_status"] == "rejected")

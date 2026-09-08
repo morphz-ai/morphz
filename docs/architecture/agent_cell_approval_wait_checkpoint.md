@@ -1,7 +1,7 @@
 # Agent Cell approval-wait checkpoint
 
 Status: native Store boundary, direct tool-batch suspension and nested physical
-Plan approval suspension implemented. Infer-child/Objective parent waits and
+Plan approval suspension and infer-child tool batches implemented. Infer/Objective parent waits and
 real Cloud parking integration remain incomplete.
 This document does not authorize
 deploying the checkpoint path or relaxing the existing quiescence gate.
@@ -93,8 +93,10 @@ Ordinary live decisions wake admission; startup recovers from the same durable
 rows. Existing output IDs and grant-claim fences prevent sibling re-execution.
 
 Custom callback reviewers still run their callback and block parking until it
-returns. Infer-child waits and active Objective Evaluation waits retain their
-existing live waits; they are not made eligible by this change.
+returns. An infer child's own physical tool batch can checkpoint through the
+same boundary. The parent waiting for that child's typed terminal result and
+active Objective Evaluation waits retain their live waits; they are not made
+eligible for whole-host parking by this change.
 
 ## Nested physical Plan execution
 
@@ -126,7 +128,7 @@ Plan join as a malformed assistant call.
 
 ## Remaining integration gates
 
-1. Extend the Plan-frontier checkpoint to infer-child and active Objective
+1. Extend the Plan-frontier checkpoint to infer-result and active Objective
    parent waits.
    Unsupported wait forms remain rejected by the Store. These are required
    integration gates, not a narrower definition of complete Cloud support.
@@ -142,6 +144,48 @@ workerd Cell transport. Its cache-restore tests do not by themselves prove
 whole-process safe parking or completion of the six Cloud deployment goals.
 
 ## Verified on 2026-09-08
+
+### Infer child checkpoint and recovery dispatch
+
+The native process fixture covers an infer child with one completed read and
+two human-approval reads. Before this extension it stopped at the first human
+callback: the child retained its stack and never recorded a batch checkpoint.
+Allowing the child to use the existing checkpoint then exposed a second defect:
+on restart its queued Activation was dispatched behind the still-waiting
+parent's sole EventBus handler, despite a free Activation admission slot.
+
+Activation recovery now selects the existing dedicated child-handoff channel
+from the matching durable Thread's `executor_kind` and nonempty parent Plan
+identity. It verifies the root, Agent, Context, Session and Principal route;
+neither an Event type, ID prefix nor model-supplied payload flag selects it.
+This applies to startup, live queue refill and lease-expiry recovery. It changes
+only the EventBus handler channel, not the child's own bounded Activation
+admission, Thread gate, permission checks, persistence or de-duplication.
+
+The infer fixture performs actual host exits before an allow and a later deny.
+Each child re-checkpoint uses the same assistant-call Event, already completed
+reads stay unchanged, and the typed infer value reaches the original parent.
+It also asserts the distinction that matters for safe Cloud parking: the child
+is queued with no claimant or lease, but the uncheckpointed parent still makes
+`hosted_process_is_quiescent()` false. No ownership rows are manually expired or
+rewritten to make recovery pass. This is a native crash-recovery gate, **not**
+proof that the parent can park or that the real Cell gateway is integrated.
+
+Separate cases exercise live approval decisions while the parent remains in
+the sole EventBus handler, and cancellation of the checkpointed child after
+restart. Cancellation closes the unstarted Jobs and child's checkpoint, does
+not re-evaluate the child model, and refills the parent's failed infer outcome.
+The five process cases passed ten consecutive rounds (120 child-process
+lifetimes) without increasing the default native thread stack.
+
+The final source passed 149 distinct targeted tests: 133 library tests across
+`plan`, `cancel`, `action_group`, `activation` and `recovery` (de-duplicated),
+plus 16 integration tests across `approval_runtime_resume`, `plan_infer_handoff`
+and the SQLite cases of `plan_owner_cancellation`. The subprocess entrypoint
+was excluded from direct invocation; the two PostgreSQL owner tests remained
+ignored in this run. No database schema, hosted quiescence predicate, EventBus
+global limit or physical permission policy was changed.
+Default-feature `cargo check -p morphz`, formatting and diff checks passed.
 
 ### Native Runtime nested-stack gate
 
