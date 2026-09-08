@@ -418,7 +418,9 @@ test("cognitive OS articles are discoverable, bilingual, and readable without Ja
     const root = `${prefix}/blog`;
     const index = await (await render(root)).text();
     const cards = index.match(/<div class="blog-index__list">([\s\S]*?)<\/section>/)?.[1] ?? "";
-    assert.equal(cards.match(/href="([^"]+)"/)?.[1], `${root}/${slug}`);
+    const current = cards.indexOf(`href="${root}/${slug}"`);
+    const previous = cards.indexOf(`href="${root}/one-agent-multiple-threads"`);
+    assert.ok(current >= 0 && previous > current, "cognitive OS article precedes the older concurrency article");
     const response = await render(`${root}/${slug}`);
     assert.equal(response.status, 200);
     const article = await response.text();
@@ -430,6 +432,45 @@ test("cognitive OS articles are discoverable, bilingual, and readable without Ja
     assert.match(prose, /\(retire @e42\)/);
     assert.ok(prose.includes(`<h2 id="${finalHeading}">`));
     assert.ok(prose.includes(`/images/articles/cognitive-operating-system-${locale}-v1.svg`));
+    assert.doesNotMatch(prose, /motion-reveal|opacity:\s*0|visibility:\s*hidden/);
+    assert.ok(article.includes(`rel="canonical" href="https://morphz.ai${root}/${slug}"`));
+    const languageSwitch = article.match(/<a\b[^>]*class="language-switch"[^>]*>/)?.[0] ?? "";
+    assert.ok(languageSwitch.includes(`href="${otherPrefix}/blog/${slug}"`));
+  }
+  const sitemap = await (await render("/sitemap.xml")).text();
+  for (const prefix of ["", "/en"]) assert.ok(sitemap.includes(`https://morphz.ai${prefix}/blog/${slug}`));
+});
+
+test("tool-execution articles are discoverable and serve complete bilingual content without JavaScript", async () => {
+  const slug = "separating-decisions-from-execution";
+  for (const [prefix, otherPrefix, title, finalHeading] of [
+    ["", "/en", "决策与执行分离：Morphz 是如何调用工具的", "从单机程序到-agent-服务"],
+    ["/en", "", "Separating Decisions from Execution: How Morphz Calls Tools", "from-a-single-machine-program-to-an-agent-service"],
+  ]) {
+    const root = `${prefix}/blog`;
+    const index = await (await render(root)).text();
+    const cards = index.match(/<div class="blog-index__list">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    const current = cards.indexOf(`href="${root}/${slug}"`);
+    const previous = cards.indexOf(`href="${root}/cognitive-operating-system"`);
+    assert.ok(current >= 0 && previous > current, "execution article precedes the older cognitive OS article");
+    const response = await render(`${root}/${slug}`);
+    assert.equal(response.status, 200);
+    const article = await response.text();
+    assert.ok(article.includes(`<h1>${title}</h1>`));
+    const prose = article.match(/<div class="doc-prose blog-prose">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(prose, /<p>/);
+    assert.match(prose, /<pre><code class="language-json">/);
+    assert.match(prose, /target-linux-tests/);
+    const locale = prefix ? "en" : "zh";
+    assert.ok(prose.includes(`/images/articles/decision-execution-${locale}-v2.png`));
+    assert.match(prose, /<figure class="article-figure">[\s\S]*?<figcaption>/);
+    for (const tool of ["list_targets", "inspect_target", "resolve_target", "exec", "morphz-edge"]) {
+      assert.ok(prose.includes(`<code>${tool}</code>`));
+    }
+    assert.ok(prose.includes(`<h2 id="${finalHeading}">`));
+    for (const related of ["execution-targets", "sessions-and-concurrency", "execution-lifecycle"]) {
+      assert.ok(prose.includes(`href="${prefix}/docs/${related}"`));
+    }
     assert.doesNotMatch(prose, /motion-reveal|opacity:\s*0|visibility:\s*hidden/);
     assert.ok(article.includes(`rel="canonical" href="https://morphz.ai${root}/${slug}"`));
     const languageSwitch = article.match(/<a\b[^>]*class="language-switch"[^>]*>/)?.[0] ?? "";

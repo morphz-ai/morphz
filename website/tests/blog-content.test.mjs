@@ -25,6 +25,38 @@ test("requires publication metadata for every blog post", async () => {
   }
 });
 
+test("tool-execution articles keep examples and execution boundaries aligned", async () => {
+  const slug = "separating-decisions-from-execution.md";
+  const sources = await Promise.all(["zh", "en"].map((locale) =>
+    readFile(new URL(`${locale}/${slug}`, contentRoot), "utf8"),
+  ));
+  const examples = sources.map((source) => source.match(/```json\n([\s\S]*?)\n```/)?.[1]);
+  assert.ok(examples[0], "article includes a concrete physical tool request");
+  assert.equal(examples[0], examples[1], "both languages show the same request");
+  assert.deepEqual(JSON.parse(examples[0]), {
+    target: "target-linux-tests",
+    command: "cargo test",
+    cwd: "/srv/project",
+  });
+  for (const [index, prefix] of ["", "/en"].entries()) {
+    const source = sources[index];
+    for (const term of ["list_targets", "inspect_target", "resolve_target", "target", "exec", "morphz-edge"]) {
+      assert.ok(source.includes(`\`${term}\``), `article identifies ${term}`);
+    }
+    for (const related of ["/docs/execution-targets", "/docs/execution-lifecycle"]) {
+      assert.ok(source.includes(`](${prefix}${related})`), "related reading uses the same locale");
+    }
+  }
+  assert.match(sources[0], /代码也已准备/);
+  assert.match(sources[0], /执行节点（Execution Target）/);
+  assert.doesNotMatch(sources[0], /执行目标/);
+  assert.match(sources[1], /code to test already available/);
+  assert.match(sources[0], /不会把正在执行的线程悄悄切换/);
+  assert.match(sources[1], /does not silently move an executing thread/);
+  assert.match(sources[0], /不负责调用模型/);
+  assert.match(sources[1], /does not call a model/);
+});
+
 test("cognitive OS articles explain observation, frame, and session residency in both languages", async () => {
   const sources = await Promise.all(["zh", "en"].map((locale) =>
     readFile(new URL(`${locale}/cognitive-operating-system.md`, contentRoot), "utf8"),

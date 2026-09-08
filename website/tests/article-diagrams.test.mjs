@@ -74,3 +74,29 @@ test("article figures scale to the reading column without a JavaScript reveal", 
   assert.doesNotMatch(rule, /opacity:\s*0|visibility:\s*hidden|display:\s*none/);
   assert.match(css, /\.blog-prose \.article-figure > a:focus-visible/);
 });
+
+test("execution article illustrations are localized PNGs with full-size links and text alternatives", async () => {
+  for (const locale of ["zh", "en"]) {
+    const markdown = await readFile(new URL(`../content/blog/${locale}/separating-decisions-from-execution.md`, import.meta.url), "utf8");
+    const figures = [...markdown.matchAll(/<figure class="article-figure">([\s\S]*?)<\/figure>/g)];
+    assert.equal(figures.length, 1, `${locale}: one overview illustration`);
+    const figure = figures[0][1];
+    const src = `/images/articles/decision-execution-${locale}-v2.png`;
+    assert.ok(figure.includes(`href="${src}"`));
+    assert.ok(figure.includes(`src="${src}"`));
+    assert.match(figure, /target="_blank" rel="noopener noreferrer" aria-label="[^"]+"/);
+    assert.match(figure, /loading="lazy" decoding="async"/);
+    assert.match(figure, /<figcaption>[^<]+/);
+    const alt = figure.match(/\balt="([^"]+)"/)?.[1] ?? "";
+    assert.ok(alt.length > 50, "explain the mechanism without requiring the image");
+    if (locale === "zh") assert.match(alt, /[\u4e00-\u9fff]/);
+    else assert.doesNotMatch(alt, /[\u4e00-\u9fff]/);
+    const png = await readFile(new URL(`../public${src}`, import.meta.url));
+    assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.equal(png.toString("ascii", 12, 16), "IHDR");
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    assert.ok(width >= 1024 && height >= 768, "labels remain readable in full-size view");
+    assert.ok(figure.includes(`width="${width}" height="${height}"`), "reserve the actual image aspect ratio");
+  }
+});
