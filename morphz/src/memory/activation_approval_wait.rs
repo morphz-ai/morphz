@@ -22,6 +22,18 @@ pub struct ActivationApprovalWaitCheckpoint {
     pub approval_ids: Vec<String>,
 }
 
+/// A decision or cancellation won before the checkpoint transaction. The
+/// caller must replay the durable batch, not fail its owning Activation.
+#[derive(Debug)]
+pub struct ActivationApprovalWaitChanged;
+
+impl std::fmt::Display for ActivationApprovalWaitChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Approval checkpoint dependencies changed before suspension")
+    }
+}
+impl std::error::Error for ActivationApprovalWaitChanged {}
+
 pub(super) fn checkpoint_from_rows(
     activation_id: &str,
     rows: Vec<(String, String)>,
@@ -114,7 +126,8 @@ pub(super) fn validate(
     }
     let calls: Vec<crate::llm::ToolCall> = serde_json::from_value(
         call.payload
-            .get("tool_calls")
+            .get("continuation_tool_calls")
+            .or_else(|| call.payload.get("tool_calls"))
             .cloned()
             .ok_or("Approval checkpoint has no tool batch")?,
     )?;
@@ -147,9 +160,7 @@ pub(super) fn validate(
             .iter()
             .find(|j| j.id == approval.job_id)
             .ok_or("Approval checkpoint Job is missing")?;
-        if approval.status != ApprovalStatus::PendingHuman
-            || job.status != ExecutionJobStatus::WaitingApproval
-            || job.activation_id != activation.id
+        if job.activation_id != activation.id
             || job.thread_id != thread.id
             || job.context_id != activation.context_id
             || job.session_id != activation.session_id
@@ -160,6 +171,11 @@ pub(super) fn validate(
             || remaining.remove(job.tool_call_id.as_str()) != Some(job.tool_name.as_str())
         {
             return Err("Approval checkpoint contains changed, claimed or unrelated work".into());
+        }
+        if approval.status != ApprovalStatus::PendingHuman
+            || job.status != ExecutionJobStatus::WaitingApproval
+        {
+            return Err(ActivationApprovalWaitChanged.into());
         }
     }
     for output in outputs {

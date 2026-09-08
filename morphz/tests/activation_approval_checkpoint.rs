@@ -434,12 +434,17 @@ async fn assert_resumable(store: &dyn RuntimeStore, batch: &Batch) {
             .unwrap(),
         ThreadActivationMutation::Updated(_)
     ));
+    // A second crash after claim must still recover the exact Model Attempt.
     // Admission did not consume a grant or create a replacement Job.
-    assert!(store
-        .get_thread_activation_approval_wait(id)
-        .await
-        .unwrap()
-        .is_none());
+    assert_eq!(
+        store
+            .get_thread_activation_approval_wait(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assistant_call_event_id,
+        batch.request.assistant_call_event_id
+    );
     for job in &batch.jobs {
         assert_eq!(
             store.get_execution_job(&job.id).await.unwrap().unwrap(),
@@ -665,6 +670,48 @@ async fn assert_thread_cancel_clears_checkpoint(store: &dyn RuntimeStore, label:
     );
 }
 
+async fn assert_every_terminal_status_clears_checkpoint(store: &dyn RuntimeStore, label: &str) {
+    for status in [
+        ThreadActivationStatus::Succeeded,
+        ThreadActivationStatus::Failed,
+        ThreadActivationStatus::Cancelled,
+    ] {
+        let batch = seed(store, &format!("{label}-{}", status.as_str())).await;
+        checkpoint(store, &batch).await;
+        resolve(store, &batch, "allow").await;
+        assert_resumable(store, &batch).await;
+        let current = store
+            .get_thread_activation(&batch.request.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            store
+                .update_thread_activation(&current.id, current.revision, status, None, None, None)
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Updated(a) if a.status == status
+        ));
+        assert!(
+            store
+                .get_thread_activation_approval_wait(&current.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "terminal {status:?} retained its checkpoint"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_approval_checkpoint_clears_on_every_terminal_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::new(temp.path().join("terminal.sqlite").to_str().unwrap())
+        .await
+        .unwrap();
+    assert_every_terminal_status_clears_checkpoint(&store, "terminal").await;
+}
+
 #[tokio::test]
 async fn sqlite_approval_checkpoint_honors_earlier_decisions_and_later_job_cancellation() {
     let temp = tempfile::tempdir().unwrap();
@@ -704,6 +751,90 @@ async fn postgres_approval_checkpoint_matches_sqlite() {
     assert_decision_before_checkpoint(&store, &format!("pg-before-{suffix}")).await;
     assert_job_cancellation_wakes_checkpoint(&store, &format!("pg-job-cancel-{suffix}")).await;
     assert_thread_cancel_clears_checkpoint(&store, &format!("pg-thread-cancel-{suffix}")).await;
+    assert_every_terminal_status_clears_checkpoint(&store, &format!("pg-terminal-{suffix}")).await;
+    normalized_batch_retains_model_attempt_boundary(&store, &format!("pg-normalized-{suffix}"))
+        .await;
+}
+
+async fn normalized_batch_retains_model_attempt_boundary(store: &dyn RuntimeStore, label: &str) {
+    let mut batch = seed(store, label).await;
+    let mut call = store
+        .query(QueryFilter {
+            event_id: Some(batch.request.assistant_call_event_id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    call.id = format!("call_model_attempt_{label}");
+    call.sequence = None;
+    call.payload.insert(
+        "continuation_tool_calls".into(),
+        call.payload["tool_calls"].clone(),
+    );
+    call.payload
+        .get_mut("tool_calls")
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id":"deduplicated-call", "type":"function", "function":{"name":"read","arguments":"{}"}
+        }));
+    store.append(call.clone()).await.unwrap();
+    batch.request.assistant_call_event_id = call.id.clone();
+    checkpoint(store, &batch).await;
+    resolve(store, &batch, "allow").await;
+    assert_resumable(store, &batch).await;
+    // Simulate another owner loss after claim, before physical execution.
+    let current = store
+        .get_thread_activation(&batch.request.activation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .update_thread_activation(
+            &current.id,
+            current.revision,
+            ThreadActivationStatus::Queued,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_thread_activation_approval_wait(&current.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assistant_call_event_id,
+        call.id
+    );
+    assert!(store
+        .dialogue_turn_activation_runnable(&current.id)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn sqlite_approval_checkpoint_uses_normalized_batch_and_keeps_second_crash_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("normalized.sqlite");
+    let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+    normalized_batch_retains_model_attempt_boundary(&store, "normalized").await;
+    drop(store);
+    let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        store
+            .get_thread_activation_approval_wait("activation-normalized")
+            .await
+            .unwrap()
+            .unwrap()
+            .assistant_call_event_id,
+        "call_model_attempt_normalized"
+    );
 }
 
 #[cfg(feature = "remote-store")]
@@ -788,4 +919,31 @@ async fn remote_approval_checkpoint_survives_two_empty_cache_restores() {
         duplicate,
         ExecutionApprovalMutation::Conflict { .. }
     ));
+    // Trigger-produced deletes must also be journaled, not only the CAS row.
+    let activation = resumed
+        .get_thread_activation(&batch.request.activation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        resumed
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Failed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+    drop(resumed);
+    let terminal = connect().await.unwrap();
+    assert!(terminal
+        .get_thread_activation_approval_wait(&activation.id)
+        .await
+        .unwrap()
+        .is_none());
 }

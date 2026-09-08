@@ -2023,18 +2023,24 @@ impl SqliteStore {
         ))
         .execute(&pool)
         .await?;
-        // All Activation mutation paths (including aggregate Thread cancel)
-        // clear the checkpoint in the same transaction, not only direct CAS.
+        // Retain the exact assistant-call identity across claim and a second
+        // crash. Terminal mutation (including aggregate Thread cancellation)
+        // removes it atomically; re-suspension replaces its dependency set.
+        let mut checkpoint_schema = pool.begin().await?;
+        sqlx::query("DROP TRIGGER IF EXISTS activation_approval_wait_cleared")
+            .execute(&mut *checkpoint_schema)
+            .await?;
         sqlx::query(
             r#"CREATE TRIGGER IF NOT EXISTS activation_approval_wait_cleared
             AFTER UPDATE OF status ON thread_activations
-            WHEN OLD.status = 'queued' AND NEW.status <> 'queued'
+            WHEN NEW.status IN ('completed', 'failed', 'cancelled')
             BEGIN
                 DELETE FROM activation_approval_waits WHERE activation_id = NEW.id;
             END"#,
         )
-        .execute(&pool)
+        .execute(&mut *checkpoint_schema)
         .await?;
+        checkpoint_schema.commit().await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.

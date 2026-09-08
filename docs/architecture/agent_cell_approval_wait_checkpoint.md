@@ -1,7 +1,8 @@
 # Agent Cell approval-wait checkpoint
 
-Status: native Store boundary implemented; Orchestrator suspension and Cloud
-parking integration remain incomplete. This document does not authorize
+Status: native Store boundary and direct tool-batch Orchestrator suspension
+implemented; nested parent waits and Cloud parking integration remain incomplete.
+This document does not authorize
 deploying the checkpoint path or relaxing the existing quiescence gate.
 
 ## Why a separate checkpoint is needed
@@ -25,7 +26,9 @@ SQLite and PostgreSQL validate, within the write transaction:
 - the immutable assistant-call Event belongs to that Activation and Session;
 - each pending tool call has an unclaimed `waiting_approval` Job and exact
   `pending_human` Approval;
-- every other tool call has a durable output on the same causal route;
+- every other normalized continuation tool call has a durable output on the
+  same causal route, including the Objective creation prelude; deduplicated
+  raw provider calls are not fictitious unfinished siblings;
 - no nonterminal sibling Job or unfinished Yao Plan is silently discarded.
 
 The transaction writes `activation_approval_waits`, records the Approval/Job
@@ -58,27 +61,43 @@ process-local notification is required to establish readiness. In particular:
 
 The checkpoint references restrict individual dependency deletion. Deleting
 one wait member via a foreign-key cascade could incorrectly shrink the wait
-set and lose a wakeup. Claim or terminal Activation mutation removes the
-checkpoint; deleting the owning Activation removes the whole set.
+set and lose a wakeup. Terminal Activation mutation removes the checkpoint;
+claim deliberately retains its exact assistant-call identity so a second crash
+cannot lose a Model Attempt boundary. Re-suspension replaces the dependency
+set; deleting the owning Activation removes the whole set.
+
+## Direct batch execution
+
+For direct batches using the built-in durable human reviewer, physical preflight
+returns `DeferredHuman` without attaching an in-memory review future. Automatic
+review still runs normally; escalation can reach the same deferred boundary.
+Started siblings finish and persist their existing Job/output/ActionGroup facts.
+The batch returns an explicit control outcome to its owning Activation handler.
+
+Only after the evaluation future has returned does that handler commit the
+checkpoint, outside its cancellation select. This prevents its own requeue from
+being mistaken for lease/owner revocation. It releases the local admission,
+dialogue gate, cancellation route and EventBus stack without committing a
+success/error outcome or acknowledging the Thread's Signals.
+
+A decision racing ahead of checkpoint validation is a typed dependency change,
+not an execution failure. The same handler replays the exact persisted call.
+Ordinary live decisions wake admission; startup recovers from the same durable
+rows. Existing output IDs and grant-claim fences prevent sibling re-execution.
+
+Custom callback reviewers still run their callback. Nested Plan, infer-child,
+and active Objective Evaluation stacks are not covered by this direct-batch
+boundary; they retain their existing live wait and continue to block parking.
 
 ## Remaining integration gates
 
-1. Physical preflight must return an explicit deferred-human result, drain
-   already-started siblings, and call this boundary instead of awaiting an
-   in-memory approval future.
-2. Propagate a typed suspended outcome through the enclosing Activation
-   handler. Release admission, EventBus dispatch and local cancellation owners
-   without running success/error terminalization.
-3. Resume using `get_thread_activation_approval_wait` before the running CAS,
-   including Model Attempt IDs rather than assuming every call Event is named
-   after the Activation. The getter is implemented; its caller is not yet wired.
-4. Extend continuation checkpoints to nested Yao Plans and parent waits. The
+1. Extend continuation checkpoints to nested Yao Plans and parent waits. The
    current Store method rejects unfinished Plans deliberately; this is an
    unimplemented gate, not a narrower definition of complete Cloud support.
-5. Only after the above may quiescence recognize checkpointed owners and their
+2. Only after the above may quiescence recognize checkpointed owners and their
    exact Signals/Jobs/ActionGroups. In-flight model requests, physical commands,
    observers and uncheckpointed stacks must still prevent parking.
-6. Verify actual host exit, human decision, wake, single physical execution,
+3. Verify actual host exit, human decision, wake, single physical execution,
    terminal Job/Thread, and empty-cache recovery through the real Cell gateway.
 
 `morphz/tests/activation_approval_checkpoint.rs` exercises the native transaction
@@ -88,7 +107,7 @@ whole-process safe parking or completion of the six Cloud deployment goals.
 
 ## Verified on 2026-09-08
 
-Final gate: **11 passed, 0 failed, 0 ignored** using the independent native
+Integration gate: **14 passed, 0 failed, 0 ignored** using the independent native
 worktree, an isolated local PostgreSQL 15 cluster with a fresh database, and
 the existing real workerd conformance server. No external Provider requests
 or paid cloud resources were used.
@@ -98,21 +117,49 @@ those disposable fixtures:
 
 ```sh
 cargo test -p morphz --features remote-store \
-  --test activation_approval_checkpoint --test remote_store_recovery \
-  -- --include-ignored
+  --test activation_approval_checkpoint --test approval_runtime_resume \
+  --test remote_store_recovery \
+  -- --include-ignored --skip approval_runtime_child
 ```
 
-- Six new conformance tests: decisions across reopen, twelve decision/checkpoint
+- Eight Store conformance tests: decisions across reopen, twelve decision/checkpoint
   races, forty waits ahead of a one-slot admission window, earlier decisions
-  and later Job/Thread cancellation, PostgreSQL parity, and two empty-cache
-  Cell restores followed by exactly one grant claim.
+  and later Job/Thread cancellation, normalized Model Attempt identity across a
+  second crash, every terminal status, PostgreSQL parity, and empty-cache Cell
+  restores followed by exactly one grant claim and persisted checkpoint removal.
+- One full Runtime test runs **three separate OS processes** with the default
+  Rust thread stack (no `RUST_MIN_STACK` override). The initial process executes
+  one permitted read and checkpoints two human approvals. After one durable
+  approval, the second process executes that read without another model request
+  and checkpoints the remaining approval. After denial, the third process
+  delivers the complete batch and final reply. Completed Job records are
+  unchanged; the denied read never starts; exactly three tool outputs exist;
+  all three processes release their execution stacks before exiting.
 - Five existing RemoteRuntimeStore gates: ambiguous/cancelled commit fencing,
   new Rust process recovery, full Runtime startup/delivery, credential refresh
   fencing, and owner renewal during a blocked operation spanning the lease.
-- `cargo check -p morphz --features remote-store --lib`, formatting checks and
-  `git diff --check` also passed.
 
-The new test initially caught PostgreSQL's rejection of SQLite-style
-`CREATE VIEW IF NOT EXISTS`; each backend now uses its proper DDL around the
-same readiness SELECT. Final verification used a fresh PostgreSQL database,
-not a manually repaired prior fixture.
+The subprocess test caught two implementation defects before commit: an
+oversized inline Evaluation future overflowed the default Tokio worker stack,
+and checkpoint cleanup confused the public `Succeeded` spelling with the native
+stored `completed` value. The inner future is now heap-pinned; both databases
+use their stored terminal statuses. Success, failure and cancellation cleanup
+are verified through the Store API, not by writing the expected SQL in a test.
+
+The subprocess child is excluded from direct discovery because its parent
+invokes it with stage-specific isolated fixture paths; it is executed three
+times, not skipped as an unverified platform gate. This proves direct-batch
+continuation, **not** nested Plan suspension or real Cloud compute parking.
+
+Existing-behavior gate: **48 passed, 0 failed**, for **62 passing tests** overall:
+
+- 45 approval-filtered library tests, including the otherwise opt-in disposable
+  PostgreSQL Session-approval contract;
+- the macOS Seatbelt execution-budget test, run separately outside the outer
+  development sandbox so the operating system can apply its own sandbox;
+- targeted Runtime cancellation of a checkpointed human wait and automatic
+  reviewer failure handing the same Job to human review.
+
+`cargo check -p morphz --features remote-store --lib`, targeted `rustfmt --check`,
+and `git diff --check` also passed. The local PostgreSQL cluster and workerd
+fixture are disposable; existing data and deployed services are not modified.

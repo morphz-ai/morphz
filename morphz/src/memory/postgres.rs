@@ -408,6 +408,12 @@ impl PostgresStore {
                 )
                 .await?;
             store
+                .run_versioned_migration(
+                    "20260908_03_retain_approval_resume_boundary",
+                    activation_approval_wait::migrate(&store.pool),
+                )
+                .await?;
+            store
                 .run_versioned_migration("20260718_04_threads", thread::migrate(&store.pool))
                 .await?;
             store

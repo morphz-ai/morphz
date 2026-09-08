@@ -6,7 +6,7 @@ pub mod remote;
 pub mod sqlite;
 
 pub use activation_approval_wait::{
-    ActivationApprovalWaitCheckpoint, ActivationApprovalWaitRequest,
+    ActivationApprovalWaitChanged, ActivationApprovalWaitCheckpoint, ActivationApprovalWaitRequest,
 };
 pub use lexical::{
     recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
@@ -6968,8 +6968,8 @@ pub trait ActivationStore: Send + Sync {
         &self,
         request: ActivationApprovalWaitRequest,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Exact persisted call identity for approval continuation recovery. Read
-    /// before re-claiming: entering Running clears the wait checkpoint.
+    /// Exact persisted call identity for approval continuation recovery. This
+    /// survives re-claim and a second crash; terminalization clears it.
     async fn get_thread_activation_approval_wait(
         &self,
         activation_id: &str,

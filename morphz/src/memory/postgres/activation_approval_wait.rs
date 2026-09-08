@@ -19,6 +19,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         .fetch_one(pool)
         .await?;
     let schema = format!("\"{}\"", schema.replace('"', "\"\""));
+    let mut checkpoint_schema = pool.begin().await?;
     // Fully qualify both the trigger function and its target table. A caller's
     // search_path must never route cleanup into a neighboring Runtime schema.
     sqlx::query(&format!(
@@ -30,21 +31,22 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         END
         $body$"#
     ))
-    .execute(pool)
+    .execute(&mut *checkpoint_schema)
     .await?;
     sqlx::query(&format!(
         "DROP TRIGGER IF EXISTS activation_approval_wait_cleared ON {schema}.thread_activations"
     ))
-    .execute(pool)
+    .execute(&mut *checkpoint_schema)
     .await?;
     sqlx::query(&format!(
         r#"CREATE TRIGGER activation_approval_wait_cleared
         AFTER UPDATE OF status ON {schema}.thread_activations FOR EACH ROW
-        WHEN (OLD.status = 'queued' AND NEW.status <> 'queued')
+        WHEN (NEW.status IN ('completed', 'failed', 'cancelled'))
         EXECUTE FUNCTION {schema}.morphz_clear_activation_approval_wait()"#
     ))
-    .execute(pool)
+    .execute(&mut *checkpoint_schema)
     .await?;
+    checkpoint_schema.commit().await?;
     Ok(())
 }
 

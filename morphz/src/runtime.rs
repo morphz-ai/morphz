@@ -1377,6 +1377,7 @@ impl MorphzRuntimeBuilder {
         } else {
             None
         };
+        let durable_human_decisions = self.approval_provider.is_none();
         let (automatic_approval, human_approval) = match self.approval_provider {
             Some(provider) => (Arc::clone(&provider), provider),
             None => {
@@ -1748,6 +1749,7 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&store) as Arc<dyn ExecutionApprovalStore>,
                 Arc::clone(&store) as Arc<dyn crate::memory::CapabilityLeaseStore>,
                 human_approval_hub.clone(),
+                durable_human_decisions,
                 self.config.edge_execution.capability_leases_enabled,
                 self.config.edge_execution.capability_lease_ttl.as_secs(),
             )),
@@ -6969,6 +6971,11 @@ impl MorphzRuntime {
         {
             tracing::warn!(event_code = "runtime.approval.waiter_closed", approval_id, %error, "Approval was persisted after its in-process waiter had closed");
         }
+        self.inner
+            .orchestrator
+            .wake_approval_waits()
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -7056,7 +7063,23 @@ impl MorphzRuntime {
     }
 
     pub fn cancel_session(&self, session_id: &str) -> bool {
-        self.inner.orchestrator.cancel_session(session_id)
+        let requested_at = chrono::Utc::now();
+        let active = self.inner.orchestrator.cancel_session(session_id);
+        // A checkpointed waiter has no live evaluation future to observe the
+        // process-local signal. Keep this convenience API nonblocking, but
+        // route cancellation through the same durable Thread control as UI/API.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let runtime = self.clone();
+            let session_id = session_id.to_owned();
+            handle.spawn(async move {
+                if let Err(error) = runtime.cancel_session_threads_before(&session_id, "Session cancelled by the user", requested_at).await {
+                    tracing::error!(%session_id, %error, event_code = "runtime.session.cancel_failed",
+                        "Could not persist requested Session cancellation");
+                }
+            });
+            return true;
+        }
+        active
     }
 
     /// Persistently cancel every open Thread in one Session. The legacy
@@ -7068,7 +7091,18 @@ impl MorphzRuntime {
         session_id: &str,
         reason: &str,
     ) -> Result<usize, RuntimeError> {
+        let requested_at = chrono::Utc::now();
         self.inner.orchestrator.cancel_session(session_id);
+        self.cancel_session_threads_before(session_id, reason, requested_at)
+            .await
+    }
+
+    async fn cancel_session_threads_before(
+        &self,
+        session_id: &str,
+        reason: &str,
+        requested_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize, RuntimeError> {
         let Some(session) = self.inner.store.get_session(session_id).await? else {
             return Ok(0);
         };
@@ -7078,7 +7112,7 @@ impl MorphzRuntime {
             .list_context_threads(&session.context_id, false)
             .await?
             .into_iter()
-            .filter(|thread| thread.session_id == session_id)
+            .filter(|thread| thread.session_id == session_id && thread.created_at <= requested_at)
             .collect::<Vec<_>>();
         let mut cancelled = 0usize;
         for mut current in threads {
@@ -18664,9 +18698,26 @@ mod tests {
             .list_context_thread_activations(&runtime.identity().context_id, true)
             .await
             .unwrap();
-        assert!(waiting_activations
-            .iter()
-            .any(|activation| activation.status == crate::memory::ThreadActivationStatus::Running));
+        assert!(waiting_activations.iter().any(|activation| {
+            activation.status == crate::memory::ThreadActivationStatus::Queued
+                && activation.claimed_by.is_none()
+                && activation.lease_expires_at.is_none()
+        }));
+        assert!(runtime.inner.human_approval_hub.pending().is_empty());
+        let checkpoint = runtime
+            .inner
+            .store
+            .get_thread_activation_approval_wait(&waiting_jobs[0].activation_id)
+            .await
+            .unwrap()
+            .expect("the real execution stack must commit its checkpoint");
+        assert_eq!(checkpoint.approval_ids, vec![approval_id.clone()]);
+        assert!(runtime
+            .inner
+            .orchestrator
+            .activation_admission_snapshot()
+            .in_flight_activation_ids
+            .is_empty());
         assert!(waiting_activations
             .iter()
             .all(|activation| activation.status != crate::memory::ThreadActivationStatus::Failed));
@@ -19504,12 +19555,21 @@ mod tests {
         let approval_id = request.payload["approval_id"].as_str().unwrap().to_string();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
+                let job_id = request.payload["job_id"].as_str().unwrap();
+                let job = runtime
+                    .inner
+                    .store
+                    .get_execution_job(job_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 if runtime
                     .inner
-                    .human_approval_hub
-                    .pending()
-                    .iter()
-                    .any(|pending| pending.request.approval_id == approval_id)
+                    .store
+                    .get_thread_activation_approval_wait(&job.activation_id)
+                    .await
+                    .unwrap()
+                    .is_some()
                 {
                     break;
                 }
@@ -19517,7 +19577,7 @@ mod tests {
             }
         })
         .await
-        .expect("human waiter should attach before cancellation");
+        .expect("durable human wait should checkpoint before cancellation");
 
         assert!(session.cancel());
         let terminal = tokio::time::timeout(std::time::Duration::from_secs(3), async {
