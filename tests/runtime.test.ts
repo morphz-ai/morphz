@@ -17,7 +17,12 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
   const sessions = new Map<string, { id: string; context_id: string }>();
   const received = new Map<
     string,
-    { text: string; root: string; sessionId: string }
+    {
+      text: string;
+      object: { artifact_id: string; revision: number };
+      root: string;
+      sessionId: string;
+    }
   >();
   let attempts = 0;
   const fake = createServer(async (request, response) => {
@@ -58,12 +63,18 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
         context_id: sessions.get(id)!.context_id,
       });
     if (path.endsWith("/messages")) {
-      assert.equal(body.model_alias, "other-model", "显式选择只绑定这条输入");
+      assert.equal(
+        body.activation.model_alias,
+        "other-model",
+        "显式选择只绑定这条输入",
+      );
+      assert.ok(path.endsWith("/io/messages"));
       attempts++;
       const previous = received.get(body.client_message_id);
       if (!previous) {
         received.set(body.client_message_id, {
-          text: body.text,
+          text: body.message.content.value.text,
+          object: body.message.content.value.object,
           root: "root-" + body.client_message_id,
           sessionId: id,
         });
@@ -71,7 +82,8 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
           error: "Simulated lost acknowledgement after accept",
         });
       }
-      assert.equal(body.text, previous.text);
+      assert.equal(body.message.content.value.text, previous.text);
+      assert.deepEqual(body.message.content.value.object, previous.object);
       return send(200, {
         accepted: true,
         duplicate: true,
@@ -181,8 +193,11 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
     await bridge.tick();
     assert.equal(received.size, 1);
     assert.equal(attempts, 2);
-    assert.match([...received.values()][0]!.text, /版本一/);
-    assert.doesNotMatch([...received.values()][0]!.text, /版本二/);
+    assert.equal([...received.values()][0]!.text, "请解读");
+    assert.deepEqual([...received.values()][0]!.object, {
+      artifact_id: artifact.entityId,
+      revision: 1,
+    });
     assert.equal(bridge.snapshot().deliveries[0]!.state, "completed");
     assert.equal(bridge.snapshot().messages[0]!.text, "真实接口返回的测试回复");
     assert.equal(bridge.snapshot().messages[0]!.inputId, input.entityId);

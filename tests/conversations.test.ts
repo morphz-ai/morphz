@@ -253,7 +253,7 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
         context_id: sessions.get(id)!.context_id,
       });
     if (path.endsWith("/messages")) {
-      assert.equal(body.dispatch_mode, "parallel");
+      assert.equal(body.activation.dispatch_mode, "parallel");
       received.push({ id: body.client_message_id, session: id });
       return send(200, {
         accepted: true,

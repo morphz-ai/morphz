@@ -256,6 +256,7 @@ try {
       MORPHZ_STORAGE_SQLITE_PATH: join(runtimeHome, "runtime.sqlite"),
       MORPHZ_DASHBOARD_TOKEN: config.token,
       MORPHZ_HOST_TOOLS_FILE: host.path,
+      MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,
     },
     "Runtime",

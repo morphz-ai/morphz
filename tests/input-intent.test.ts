@@ -47,25 +47,42 @@ test("输入意图持久化并进入 Runtime，普通输入享有相同工具行
     assert.equal(saved.inputs.length, 5);
     assert.equal(saved.inputs[1]!.intent, "task");
     const runtime = store.runtimeState() as {
-      deliveries: { request: { text: string }; sessionId: string }[];
+      deliveries: {
+        request: {
+          io_version: string;
+          message: {
+            content: {
+              value: {
+                text: string;
+                author_actant_id: string;
+                intent?: string;
+              };
+            };
+          };
+        };
+        sessionId: string;
+      }[];
     };
     assert.equal(new Set(runtime.deliveries.map((d) => d.sessionId)).size, 1);
     for (const delivery of runtime.deliveries) {
-      assert.match(
-        delivery.request.text,
-        /当前输入者的 Actant ID：local-human/,
+      assert.equal(delivery.request.io_version, "1");
+      assert.equal(
+        delivery.request.message.content.value.author_actant_id,
+        "local-human",
       );
-      assert.match(delivery.request.text, /不要要求用户再去填新建表单/);
-      assert.match(delivery.request.text, /不能声称已保存/);
-      assert.match(delivery.request.text, /runRequested=0/);
+      assert.equal(
+        delivery.request.message.content.value.text,
+        "帮我记下检查文案，由我来做，先不执行",
+      );
+      assert.equal("text" in delivery.request, false);
     }
-    assert.match(
-      runtime.deliveries[1]!.request.text,
-      /用户选择的输入意图：安排事项/,
+    assert.equal(
+      runtime.deliveries[1]!.request.message.content.value.intent,
+      "task",
     );
-    assert.doesNotMatch(
-      runtime.deliveries[0]!.request.text,
-      /用户选择的输入意图/,
+    assert.equal(
+      runtime.deliveries[0]!.request.message.content.value.intent,
+      undefined,
     );
     assert.throws(() =>
       operationSchema.parse({

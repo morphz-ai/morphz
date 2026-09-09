@@ -3,7 +3,8 @@
  * or project .env. Live calls are excluded from default test suites.
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer } from "node:http";
 import {
   chromium,
@@ -78,6 +79,8 @@ const source = store.execute(
 const namespace = randomUUID(),
   runtimeToken = randomBytes(32).toString("hex");
 let stage = 0,
+  imagePhase = false,
+  sawOriginalImage = false,
   taskPhase = false,
   revisionPhase = false,
   understandingRound = 0,
@@ -87,6 +90,15 @@ const provider = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(chunk);
   const input = JSON.parse(Buffer.concat(chunks).toString());
+  if (imagePhase) {
+    sawOriginalImage = JSON.stringify(input.messages).includes(
+      `data:image/png;base64,${imageBase64}`,
+    );
+    assert.ok(
+      sawOriginalImage,
+      "The model must receive the original image bytes through typed IO",
+    );
+  }
   providerCalls++;
   assert.ok(
     input.tools?.some(
@@ -98,7 +110,9 @@ const provider = createServer(async (request, response) => {
   const result = store.snapshot().artifacts.find((a) => a.title === "测试交付");
   let args: unknown;
   let toolName = "host_morphz_work";
-  if (taskPhase) {
+  if (imagePhase) {
+    args = undefined;
+  } else if (taskPhase) {
     args =
       stage++ === 0
         ? { action: "list" }
@@ -307,6 +321,8 @@ async function freePort() {
 }
 const runtimePort = await freePort(),
   workPort = await freePort();
+const imageBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=";
 const manifest = prepareHostTools(workDirectory, workPort, namespace);
 const configFile = join(runtimeDirectory, "morphz.toml");
 writeFileSync(
@@ -337,6 +353,7 @@ const runtime = spawn(
       MORPHZ_STORAGE_SQLITE_PATH: join(runtimeDirectory, "runtime.sqlite"),
       MORPHZ_DASHBOARD_TOKEN: runtimeToken,
       MORPHZ_HOST_TOOLS_FILE: manifest.path,
+      MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       MORPHZWORK_TEST_KEY: testKey,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -386,6 +403,29 @@ try {
       return false;
     }
   }, "Runtime start");
+  if (process.argv.includes("--storage-fence")) {
+    // This path belongs exclusively to the fresh mkdtemp fixture above.
+    // Never infer a fence target from a saved center or user configuration.
+    const { stdout } = await promisify(execFile)(
+      binary,
+      [
+        "storage",
+        "session-io-fence",
+        "--sqlite",
+        join(runtimeDirectory, "runtime.sqlite"),
+        "--install",
+        "--acknowledge-write-block",
+      ],
+      {
+        cwd: runtimeDirectory,
+        env: { PATH: process.env.PATH, MORPHZ_HOME: runtimeDirectory },
+      },
+    );
+    assert.equal(JSON.parse(stdout).installed, true);
+    console.log(
+      "PASS: explicitly installed writer fence in fresh isolated Runtime database.",
+    );
+  }
   bridge.start();
   if (!live && process.argv.includes("--stream-ui")) {
     const env = {
@@ -450,6 +490,31 @@ try {
         throw new Error(delivery.error ?? "Runtime turn failed");
       return delivery?.state === "completed";
     }, "tool turn");
+    const ledger = store.runtimeState() as {
+      deliveries: { inputId: string; sessionId: string; rootId: string }[];
+    };
+    const delivery = ledger.deliveries.find(
+      (d) => d.inputId === receipt.entityId,
+    )!;
+    const stored = await (
+      await fetch(
+        `http://127.0.0.1:${runtimePort}/api/sessions/${delivery.sessionId}/io/events`,
+        {
+          headers: { Authorization: `Bearer ${runtimeToken}` },
+        },
+      )
+    ).json();
+    const accepted = stored.events.find(
+      (e: { event_id: string }) => e.event_id === delivery.rootId,
+    );
+    assert.equal(accepted.message.format.id, "morphzwork.input");
+    assert.equal(
+      accepted.message.content.value.text,
+      body,
+      "User input must not include host instructions",
+    );
+    assert.equal(accepted.message.content.value.input_id, receipt.entityId);
+    return { accepted, delivery };
   }
   await send(
     "请用 host_morphz_work 搜索‘蝴蝶’，阅读授权资料，创建标题严格为‘测试交付’的文档并用 references 关联来源。正文需包含‘蝴蝶是测试主题’。只使用工作空间对象工具，不执行 Shell 或其他外部动作。保存完成后回复。",
@@ -864,6 +929,47 @@ try {
     );
     console.log(
       "PASS: separate project conversation → real Runtime Session with shared Context → real Host-created task with conversation provenance → correctly scoped reply and executions.",
+    );
+    imagePhase = true;
+    const { assetId } = store.addAsset(Buffer.from(imageBase64, "base64"));
+    const image = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "create-artifact",
+          projectId: "first-project",
+          title: "Typed IO image",
+          content: {
+            kind: "image",
+            assetId,
+            alt: "Synthetic single-pixel fixture",
+          },
+        },
+      },
+      localAccess,
+    );
+    const { accepted, delivery } = await send(
+      "Check this synthetic image without modifying it.",
+      image.entityId,
+      c,
+    );
+    assert.ok(sawOriginalImage);
+    assert.equal(accepted.message.content.value.attachments.length, 1);
+    assert.ok(accepted.message.content.value.attachments[0].stage_id);
+    const ref = accepted.binding.resources[0].resource_id;
+    const download = await fetch(
+      `http://127.0.0.1:${runtimePort}/api/sessions/${delivery.sessionId}/io/resources/${encodeURIComponent(ref)}`,
+      {
+        headers: { Authorization: `Bearer ${runtimeToken}` },
+      },
+    );
+    assert.equal(download.status, 200);
+    assert.deepEqual(
+      Buffer.from(await download.arrayBuffer()),
+      Buffer.from(imageBase64, "base64"),
+    );
+    console.log(
+      "PASS: real Desktop input → resumable attachment stage → typed Work envelope → unchanged native model image → authenticated immutable resource download.",
     );
   }
 } catch (error) {

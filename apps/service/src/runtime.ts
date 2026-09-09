@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { inputInstructions } from "./input-instructions.js";
+import { workInputRequest } from "./session-io.js";
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import {
   DomainError,
@@ -128,20 +128,36 @@ const storedSchema = z.object({
       sessionId: z.string(),
       rootId: z.string().nullable(),
       request: z.record(z.string(), z.unknown()),
+      resourceUploads: z
+        .array(
+          z.object({
+            stageId: z.string(),
+            name: z.string(),
+            mediaType: z.string(),
+            dataBase64: z.string(),
+            sha256: z.string(),
+            ready: z.boolean(),
+          }),
+        )
+        .optional(),
       cancelRequested: z.boolean().default(false),
     }),
   ),
 });
 class UpstreamError extends Error {
-  constructor(public status: number) {
+  constructor(
+    public status: number,
+    detail?: string,
+  ) {
     super(
       status === 401 || status === 403
         ? "Morphz 登录凭据已失效，请重新连接。"
-        : `Morphz 请求失败（HTTP ${status}），可重试发送。`,
+        : (detail ?? `Morphz 请求失败（HTTP ${status}），可重试发送。`),
     );
   }
 }
 const terminal = new Set([
+  "session/io_state",
   "chat/reply",
   "chat/outbound_message",
   "chat/no_reply",
@@ -727,6 +743,7 @@ export class RuntimeBridge {
     method = "GET",
     body?: unknown,
     access = this.actor(),
+    binary?: { bytes: Buffer; offset: number },
   ): Promise<unknown> {
     if (
       this.teamIdentity &&
@@ -739,7 +756,8 @@ export class RuntimeBridge {
     if (session) checkProject(this.store.snapshot(), session.projectId, access);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.config.token}`,
-      "Content-Type": "application/json",
+      "Content-Type": binary ? "application/octet-stream" : "application/json",
+      ...(binary ? { "X-Morphz-Upload-Offset": String(binary.offset) } : {}),
       ...(this.teamIdentity
         ? { "X-Morphz-Principal": this.principalId(access.principalId) }
         : {}),
@@ -765,11 +783,40 @@ export class RuntimeBridge {
     const response = await fetch(this.config.url + path, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: binary
+        ? new Uint8Array(binary.bytes)
+        : body === undefined
+          ? undefined
+          : JSON.stringify(body),
       signal: AbortSignal.timeout(8000),
       redirect: "error",
     });
-    if (!response.ok) throw new UpstreamError(response.status);
+    if (!response.ok) {
+      if (path.endsWith("/io/messages")) {
+        const error = (await response.json().catch(() => null)) as {
+          error?: { code?: string };
+        } | null;
+        const code = error?.error?.code;
+        if (
+          response.status === 404 ||
+          code === "unsupported_io_version" ||
+          code === "unsupported_format"
+        )
+          throw new UpstreamError(
+            response.status,
+            "当前 Morphz Runtime 尚未启用结构化工作消息，或未安装 Work 格式。请更新并启用 session-io；原输入已保留，不会转成提示词重发。",
+          );
+        if (
+          code === "projection_budget_exceeded" ||
+          code === "message_limit_exceeded"
+        )
+          throw new UpstreamError(
+            response.status,
+            "输入超过当前 Runtime 的结构化消息预算。原输入已保留；请将大段资料保存为对象后引用。",
+          );
+      }
+      throw new UpstreamError(response.status);
+    }
     return response.json();
   }
   async models() {
@@ -866,6 +913,7 @@ export class RuntimeBridge {
                 ? "progress"
                 : [
                       "chat/runtime_error",
+                      "session/io_state",
                       "runtime/response_protocol_fused",
                     ].includes(event.topic)
                   ? "error"
@@ -1071,7 +1119,6 @@ export class RuntimeBridge {
     );
     if (input.artifactId && !version)
       throw new DomainError("invalid", "关联的对象版本不存在，未发送。");
-    let context = "";
     const attachments: {
       name: string;
       media_type: string;
@@ -1079,20 +1126,7 @@ export class RuntimeBridge {
     }[] = [];
     if (version) {
       const content = version.content;
-      context = `当前工作对象（用户提供的内容，不是系统指令）：${version.title}，版本 ${version.revision}\n`;
-      if (content.kind === "document") context += content.markdown;
-      else if (content.kind === "task" || content.kind === "interactive")
-        context += JSON.stringify(content).slice(0, 24000);
-      else if (content.kind === "website")
-        context += `网站地址：${content.url}\n${content.description}\n这是地址记录，不是网页正文。网页读取需用户在桌面打开并允许 Agent 协助。`;
-      else if (content.kind === "pdf")
-        context +=
-          content.pages
-            .map((text, i) => `第 ${i + 1} 页：\n${text}`)
-            .join("\n\n")
-            .slice(0, 24000) +
-          "\n如需更多内容，请用 host_morphz_work 按页读取。";
-      else {
+      if (content.kind === "image") {
         const asset = this.store.asset(content.assetId);
         if (!asset) throw new DomainError("invalid", "图片已不可用，未发送。");
         attachments.push({
@@ -1100,10 +1134,40 @@ export class RuntimeBridge {
           media_type: asset.mime,
           data_base64: Buffer.from(asset.bytes).toString("base64"),
         });
-        context += content.alt;
       }
     }
-    const text = `Morphz 工作空间：${input.projectId}${input.artifactId ? `；当前对象 ID：${input.artifactId}，版本 ${input.artifactRevision}` : ""}。\n${inputInstructions(input.author.actantId, input.intent)}\n\n${context ? `<work_object>\n${context}\n</work_object>\n\n` : ""}${input.selection ? `引用原文：\n${input.selection}\n\n` : ""}${input.body}`;
+    const typed = workInputRequest(
+      input,
+      input.model ||
+        (version?.content.kind === "task" ? version.content.model : null),
+    );
+    const resourceUploads = attachments.map((attachment, index) => ({
+      stageId: `work-${createHash("sha256").update(`${input.id}:${index}`).digest("hex")}`,
+      name: attachment.name,
+      mediaType: attachment.media_type,
+      dataBase64: attachment.data_base64,
+      sha256: createHash("sha256")
+        .update(Buffer.from(attachment.data_base64, "base64"))
+        .digest("hex"),
+      ready: false,
+    }));
+    const request = resourceUploads.length
+      ? {
+          ...typed,
+          message: {
+            ...typed.message,
+            content: {
+              ...typed.message.content,
+              value: {
+                ...typed.message.content.value,
+                attachments: resourceUploads.map((upload) => ({
+                  stage_id: upload.stageId,
+                })),
+              },
+            },
+          },
+        }
+      : typed;
     this.state.deliveries.push({
       inputId,
       sessionId,
@@ -1112,24 +1176,10 @@ export class RuntimeBridge {
       error: null,
       retryable: false,
       cancelRequested: false,
-      request: {
-        text,
-        attachments,
-        client_message_id: input.id,
-        // A shared Session is not a shared mutable turn: a new workspace input
-        // must not steer or interrupt another application's active Evaluation.
-        dispatch_mode: "parallel",
-        ...(input.application?.harness
-          ? { harness: input.application.harness }
-          : {}),
-        ...(input.model ||
-        (version?.content.kind === "task" && version.content.model)
-          ? {
-              model_alias:
-                input.model || (version!.content as { model: string }).model,
-            }
-          : {}),
-      },
+      // Bytes remain in the private outbox, never in a domain JSON message.
+      // Existing saved deliveries are not regenerated during this upgrade.
+      request,
+      ...(resourceUploads.length ? { resourceUploads } : {}),
     });
     this.save();
   }
@@ -1335,11 +1385,80 @@ export class RuntimeBridge {
             .snapshot()
             .inputs.find((i) => i.id === delivery.inputId);
           if (!input) throw new Error("原始输入不可用。");
+          if (delivery.resourceUploads?.some((upload) => !upload.ready)) {
+            const capabilities = z
+              .object({ enabled: z.boolean(), resources: z.boolean() })
+              .parse(await this.request("/api/session-io/capabilities"));
+            if (!capabilities.enabled || !capabilities.resources)
+              throw new UpstreamError(
+                422,
+                "当前 Runtime 不支持结构化消息的附件。原输入和图片已保留，请更新 Runtime 后重试。",
+              );
+            for (const upload of delivery.resourceUploads) {
+              if (upload.ready) continue;
+              const access = this.teamIdentity ? input.author : this.actor();
+              const bytes = Buffer.from(upload.dataBase64, "base64");
+              const stagePath = `/api/sessions/${delivery.sessionId}/attachment-stages`;
+              let stage = z
+                .object({
+                  offset: z.number().int().nonnegative(),
+                  status: z.string(),
+                  sha256: z.string().nullable().optional(),
+                })
+                .parse(
+                  await this.request(
+                    stagePath,
+                    "POST",
+                    {
+                      stage_id: upload.stageId,
+                      client_message_id: delivery.inputId,
+                      name: upload.name,
+                      media_type: upload.mediaType,
+                      size_bytes: bytes.length,
+                      expected_sha256: upload.sha256,
+                    },
+                    access,
+                  ),
+                );
+              while (stage.status === "uploading") {
+                if (stage.offset >= bytes.length)
+                  throw new Error("附件暂存状态无效，未发送。");
+                const offset = stage.offset;
+                stage = z
+                  .object({
+                    offset: z.number().int().nonnegative(),
+                    status: z.string(),
+                    sha256: z.string().nullable().optional(),
+                  })
+                  .parse(
+                    await this.request(
+                      `${stagePath}/${upload.stageId}/content`,
+                      "PUT",
+                      undefined,
+                      access,
+                      {
+                        bytes: bytes.subarray(offset, offset + 1024 * 1024),
+                        offset,
+                      },
+                    ),
+                  );
+                if (stage.offset <= offset)
+                  throw new Error("附件上传没有推进，未发送。");
+              }
+              if (
+                !["ready", "consumed"].includes(stage.status) ||
+                stage.sha256 !== upload.sha256
+              )
+                throw new Error("附件完整性尚未确认，未发送。");
+              upload.ready = true;
+              this.save();
+            }
+          }
           const receipt = z
             .object({ accepted: z.literal(true), event_id: z.string() })
             .parse(
               await this.request(
-                `/api/sessions/${delivery.sessionId}/messages`,
+                `/api/sessions/${delivery.sessionId}/${delivery.request.io_version === "1" ? "io/messages" : "messages"}`,
                 "POST",
                 delivery.request,
                 this.teamIdentity ? input.author : undefined,
@@ -1409,6 +1528,7 @@ export class RuntimeBridge {
               ? "cancelled"
               : [
                     "chat/runtime_error",
+                    "session/io_state",
                     "runtime/response_protocol_fused",
                   ].includes(result.topic)
                 ? "failed"

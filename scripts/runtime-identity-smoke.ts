@@ -120,7 +120,8 @@ writeFileSync(
   { mode: 0o600 },
 );
 const runtime = spawn(
-  resolve("../Morphz/target/debug/morphz"),
+  process.env.MORPHZWORK_RUNTIME_BINARY ||
+    resolve("../Morphz/target/debug/morphz"),
   [
     "serve",
     "--bind",
@@ -140,6 +141,7 @@ const runtime = spawn(
       MORPHZ_HOME: root,
       MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime.sqlite"),
       MORPHZ_HOST_TOOLS_FILE: manifest.path,
+      MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       MORPHZ_DASHBOARD_TOKEN: randomBytes(32).toString("hex"),
       TEST_GATEWAY_TOKEN: gateway,
       TEST_MODEL_KEY: "synthetic",

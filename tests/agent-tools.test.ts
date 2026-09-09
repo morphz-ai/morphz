@@ -277,6 +277,8 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.equal(lstatSync(first.path).mode & 0o077, 0);
   const data = JSON.parse(readFileSync(first.path, "utf8"));
   assert.equal(data.tools[0].definition.name, "host_morphz_work");
+  assert.equal(data.formats[0].id, "morphzwork.input");
+  assert.equal(JSON.stringify(data.formats).includes(first.token), false);
   assert.equal(
     JSON.stringify(data.tools[0].definition).includes(first.token),
     false,

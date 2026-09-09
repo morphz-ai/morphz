@@ -79,8 +79,10 @@ test("同空间跨应用与对象共用 Session，各输入固定 Harness，并�
         inputId: string;
         sessionId: string;
         request: {
-          harness?: { id: string; version: string };
-          dispatch_mode: string;
+          activation: {
+            harness?: { id: string; version: string };
+            dispatch_mode: string;
+          };
         };
       }[];
     };
@@ -99,14 +101,16 @@ test("同空间跨应用与对象共用 Session，各输入固定 Harness，并�
       before.deliveries[3]!.sessionId,
     );
     assert.deepEqual(
-      before.deliveries.slice(0, 2).map((d) => d.request.harness),
+      before.deliveries.slice(0, 2).map((d) => d.request.activation.harness),
       [
         { id: "writing", version: "1.2.3" },
         { id: "editing", version: "1.2.3" },
       ],
     );
     assert.ok(
-      before.deliveries.every((d) => d.request.dispatch_mode === "parallel"),
+      before.deliveries.every(
+        (d) => d.request.activation.dispatch_mode === "parallel",
+      ),
     );
     run({
       type: "save-workspace-as-project",
