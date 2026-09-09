@@ -11366,12 +11366,10 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
-        // The fresh-turn path used to read the assistant-call boundary, final
-        // boundary, trigger Event, and root Event serially. They are immutable
-        // Event facts and therefore safe to resolve concurrently. Reuse the
-        // resulting snapshots throughout activation policy and prompt setup;
-        // repeated point reads add no authority but are very expensive for a
-        // remote PostgreSQL store.
+        // Resolve the approval-owned assistant identity first, then fetch the
+        // immutable recovery boundary with the existing exact-ID batch query.
+        // One bounded Store snapshot replaces separate assistant/final/trigger/
+        // root/parent reads without caching authority or weakening recovery.
         let approval_checkpoint = self
             .context_engine
             .session_store()
@@ -11387,14 +11385,26 @@ impl Orchestrator {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("call_{}", activation.id));
         let final_response_event_id = format!("call_{}_final", activation.id);
-        let (mut persisted_assistant_call, persisted_final_response, trigger_event) = tokio::try_join!(
-            self.context_engine
-                .find_event(&activation.context_id, &assistant_call_event_id),
-            self.context_engine
-                .find_event(&activation.context_id, &final_response_event_id),
-            self.context_engine
-                .find_event(&activation.context_id, &activation.trigger_event_id),
-        )?;
+        let parent_call_event_id = activation
+            .parent_activation_id
+            .as_ref()
+            .map(|id| format!("call_{id}"));
+        let mut boundary_ids = vec![
+            assistant_call_event_id.as_str(),
+            final_response_event_id.as_str(),
+            activation.trigger_event_id.as_str(),
+            activation.root_turn_id.as_str(),
+        ];
+        if let Some(id) = parent_call_event_id.as_deref() {
+            boundary_ids.push(id);
+        }
+        let boundary = self
+            .context_engine
+            .find_events_by_ids(&activation.context_id, &boundary_ids)
+            .await?;
+        let mut persisted_assistant_call = boundary.get(&assistant_call_event_id).cloned();
+        let persisted_final_response = boundary.get(&final_response_event_id).cloned();
+        let trigger_event = boundary.get(&activation.trigger_event_id).cloned();
         // Preserve this Activation's own recovery boundary before resolving a
         // parent assistant plan for continuation semantics. Recovery used to
         // perform the same two point reads again inside
@@ -11402,23 +11412,12 @@ impl Orchestrator {
         let persisted_current_boundary = persisted_final_response
             .clone()
             .or_else(|| persisted_assistant_call.clone());
-        let root_event = if activation.root_turn_id == activation.trigger_event_id {
-            trigger_event.clone()
-        } else {
-            self.context_engine
-                .find_event(&activation.context_id, &activation.root_turn_id)
-                .await?
-        };
+        let root_event = boundary.get(&activation.root_turn_id).cloned();
         if persisted_assistant_call.is_none() {
-            if let Some(parent_activation_id) = activation.parent_activation_id.as_deref() {
-                persisted_assistant_call = self
-                    .context_engine
-                    .find_event(
-                        &activation.context_id,
-                        &format!("call_{parent_activation_id}"),
-                    )
-                    .await?;
-            }
+            persisted_assistant_call = parent_call_event_id
+                .as_ref()
+                .and_then(|id| boundary.get(id))
+                .cloned();
         }
         // A durable continuation does not always retain the originating
         // Activation as its direct parent. Action Group settlement is the

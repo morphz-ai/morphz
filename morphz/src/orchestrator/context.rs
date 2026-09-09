@@ -4998,6 +4998,45 @@ impl ContextEngine {
         });
     }
 
+    /// Resolve a small, exact set of durable Event identities in one Store
+    /// snapshot. Runtime recovery uses physical IDs, not model-facing @e
+    /// references. An empty set must never become an unconstrained query.
+    pub(crate) async fn find_events_by_ids(
+        &self,
+        context_id: &str,
+        event_ids: &[&str],
+    ) -> Result<HashMap<String, Event>, DynError> {
+        if event_ids.len() > 16
+            || event_ids
+                .iter()
+                .any(|id| id.is_empty() || id.starts_with(EVENT_REFERENCE_PREFIX))
+        {
+            return Err("Event boundary lookup requires at most 16 physical Event IDs".into());
+        }
+        if event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut ids = event_ids
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        let events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_owned()),
+                top_k: Some(ids.len()),
+                event_ids: ids,
+                ..Default::default()
+            })
+            .await?;
+        Ok(events
+            .into_iter()
+            .map(|event| (event.id.clone(), event))
+            .collect())
+    }
+
     pub async fn find_event(
         &self,
         context_id: &str,
@@ -12733,7 +12772,7 @@ mod tests {
     use crate::event::TYPE_AGENT_CALL;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore as _, ContextActivationCausalitySnapshot,
+        ActivationStore as _, AttentionAcknowledgementRecord, ContextActivationCausalitySnapshot,
         ContextExecutionResourcesSnapshot, ContextRuntimeDirectorySnapshot,
         ContextRuntimeSchedulerSnapshot, DeliveryIngressStore as _, NewAgent, NewCognitiveContext,
         NewPrincipal, NewSession, NewThread, NewThreadActivation, NewWorkAssignment,
@@ -12744,6 +12783,155 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
     use tokio::sync::Barrier;
+
+    struct BoundaryQueryStore {
+        inner: Arc<SqliteStore>,
+        queries: AtomicUsize,
+        fail: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for BoundaryQueryStore {
+        async fn append(&self, event: Event) -> Result<(), DynError> {
+            self.inner.append(event).await
+        }
+        async fn append_to_thread(&self, event: Event, thread_id: &str) -> Result<(), DynError> {
+            self.inner.append_to_thread(event, thread_id).await
+        }
+        async fn append_batch(&self, entries: Vec<EventAppend>) -> Result<(), DynError> {
+            self.inner.append_batch(entries).await
+        }
+        async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, DynError> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
+            assert!(filter.context_id.is_some());
+            assert!(!filter.event_ids.is_empty());
+            assert_eq!(filter.top_k, Some(filter.event_ids.len()));
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("synthetic boundary read failure".into());
+            }
+            self.inner.query(filter).await
+        }
+        async fn list_attention_acknowledgements(
+            &self,
+            context_id: &str,
+        ) -> Result<Vec<AttentionAcknowledgementRecord>, DynError> {
+            self.inner.list_attention_acknowledgements(context_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_event_boundary_is_one_exact_context_scoped_query() {
+        let tmp = TempDir::new().unwrap();
+        let inner = Arc::new(
+            SqliteStore::new(tmp.path().join("boundary.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let store = Arc::new(BoundaryQueryStore {
+            inner: Arc::clone(&inner),
+            queries: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        for (id, context) in [
+            ("trigger", "boundary"),
+            ("root", "boundary"),
+            ("call", "boundary"),
+            ("final", "boundary"),
+            ("parent", "boundary"),
+            ("other-context", "other"),
+            ("unrelated", "boundary"),
+        ] {
+            inner
+                .append(Event::new(
+                    id.into(),
+                    "test".into(),
+                    TYPE_AGENT_CALL.into(),
+                    "chat/assistant_call".into(),
+                    serde_json::Map::from_iter([("context_id".into(), serde_json::json!(context))]),
+                ))
+                .await
+                .unwrap();
+        }
+        let found = engine
+            .find_events_by_ids(
+                "boundary",
+                &[
+                    "parent",
+                    "trigger",
+                    "root",
+                    "call",
+                    "final",
+                    "trigger",
+                    "missing",
+                    "other-context",
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(found.len(), 5);
+        for id in ["trigger", "root", "call", "final", "parent"] {
+            assert_eq!(found[id].id, id);
+        }
+        assert!(!found.contains_key("other-context"));
+        assert!(!found.contains_key("unrelated"));
+        assert!(!found.contains_key("missing"));
+        // No memoization of absent events: a later durable boundary is visible.
+        inner
+            .append(Event::new(
+                "missing".into(),
+                "test".into(),
+                TYPE_AGENT_CALL.into(),
+                "chat/assistant_call".into(),
+                serde_json::Map::from_iter([("context_id".into(), serde_json::json!("boundary"))]),
+            ))
+            .await
+            .unwrap();
+        assert!(engine
+            .find_events_by_ids("boundary", &["missing"])
+            .await
+            .unwrap()
+            .contains_key("missing"));
+        assert_eq!(store.queries.load(Ordering::SeqCst), 2);
+        store.fail.store(true, Ordering::SeqCst);
+        assert!(engine
+            .find_events_by_ids("boundary", &["call"])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic boundary read failure"));
+    }
+
+    #[tokio::test]
+    async fn recovery_event_boundary_rejects_unbounded_or_symbolic_lookups_without_querying() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(BoundaryQueryStore {
+            inner: Arc::new(
+                SqliteStore::new(tmp.path().join("boundary.db").to_str().unwrap())
+                    .await
+                    .unwrap(),
+            ),
+            queries: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        assert!(engine
+            .find_events_by_ids("boundary", &[])
+            .await
+            .unwrap()
+            .is_empty());
+        for ids in [vec![""], vec!["@e1"], vec!["event"; 17]] {
+            assert!(engine.find_events_by_ids("boundary", &ids).await.is_err());
+        }
+        assert_eq!(store.queries.load(Ordering::SeqCst), 0);
+    }
 
     struct CountingRuntimeSnapshotStore {
         inner: Arc<SqliteStore>,
