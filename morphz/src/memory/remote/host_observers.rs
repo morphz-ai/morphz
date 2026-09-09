@@ -1,20 +1,109 @@
-//! Pure local observer delivery state. No URL, credential, socket or HTTP client
-//! lives here. The embedding must provide an authorized transport separately.
+//! Bounded process-local observer feed and delivery state. No URL, credential,
+//! socket or HTTP client lives here; the embedding supplies the transport.
 use super::protocol::{Fence, StoreError};
 use crate::{
-    event::Event,
+    event::{Event, InMemoryEventBus},
     memory::{sqlite::SqliteStore, EventStore, QueryFilter},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 pub const MAX_OBSERVER_BATCH_BYTES: usize = 128 * 1024;
 const MAX_EVENTS: usize = 64;
 const MAX_SAFE_COUNTER: u64 = (1 << 53) - 1;
+
+#[derive(Default)]
+struct InboxState {
+    drafts: Vec<Event>,
+    bytes: usize,
+    durable_changed: bool,
+    reset: bool,
+}
+#[derive(Default)]
+struct Inbox {
+    state: Mutex<InboxState>,
+    changed: tokio::sync::Notify,
+}
+impl Inbox {
+    fn push(&self, event: Event) {
+        if event.event_type == "runtime_ephemeral" && !visible(&event) {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if event.event_type != "runtime_ephemeral" {
+            // Only the durable Store can certify an append sequence. A bus
+            // notification is a coalesced hint, never a second copy of truth.
+            state.durable_changed = true;
+        } else if !state.reset {
+            let bytes = serde_json::to_vec(&event).map_or(usize::MAX, |bytes| bytes.len());
+            if state.drafts.len() == MAX_EVENTS
+                || bytes > MAX_OBSERVER_BATCH_BYTES.saturating_sub(state.bytes)
+            {
+                state.drafts.clear();
+                state.bytes = 0;
+                state.reset = true;
+            } else {
+                state.bytes += bytes;
+                state.drafts.push(event);
+            }
+        }
+        drop(state);
+        self.changed.notify_one();
+    }
+}
+
+/// An explicitly selected hosted observer never backpressures EventBus or
+/// silently loses drafts. Overflow coalesces to a reset; facts are reread.
+pub struct HostObserverFeed {
+    inbox: Arc<Inbox>,
+    bus: Weak<InMemoryEventBus>,
+    subscription_id: String,
+}
+impl HostObserverFeed {
+    pub(crate) fn new(bus: &Arc<InMemoryEventBus>) -> Self {
+        let inbox = Arc::new(Inbox::default());
+        let target = inbox.clone();
+        let subscription_id = bus.subscribe(
+            "*".into(),
+            Arc::new(move |event| {
+                target.push(event);
+                Box::pin(async { Ok(()) })
+            }),
+        );
+        Self {
+            inbox,
+            bus: Arc::downgrade(bus),
+            subscription_id,
+        }
+    }
+    pub async fn changed(&self) {
+        self.inbox.changed.notified().await;
+    }
+    pub fn take(&self) -> (Vec<Event>, bool, bool) {
+        let state = std::mem::take(
+            &mut *self
+                .inbox
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        (state.drafts, state.reset, state.durable_changed)
+    }
+}
+impl Drop for HostObserverFeed {
+    fn drop(&mut self) {
+        if let Some(bus) = self.bus.upgrade() {
+            bus.unsubscribe(&self.subscription_id);
+        }
+    }
+}
 
 #[derive(Default)]
 struct ProgressState {
@@ -340,6 +429,51 @@ fn visible(event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn hosted_feed_never_backpressures_and_overflow_requires_reset() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let feed = HostObserverFeed::new(&bus);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            for _ in 0..100 {
+                bus.publish_ephemeral(event(None, "draft")).await.unwrap();
+            }
+        })
+        .await
+        .expect("a full observer must not hold EventBus");
+        let (drafts, reset, durable) = feed.take();
+        assert!(drafts.is_empty());
+        assert!(reset);
+        assert!(!durable);
+        bus.publish_ephemeral(event(None, "new draft"))
+            .await
+            .unwrap();
+        assert_eq!(feed.take().0.len(), 1);
+    }
+    #[test]
+    fn hosted_feed_excludes_diagnostics_and_keeps_only_a_durable_hint() {
+        let inbox = Inbox::default();
+        let mut diagnostic = event(None, "not part of session observation");
+        diagnostic.topic = "runtime/model_request_snapshot".into();
+        inbox.push(diagnostic);
+        inbox.push(event(
+            Some(1),
+            "a durable payload is not retained in the inbox",
+        ));
+        let state = inbox.state.lock().unwrap();
+        assert!(state.drafts.is_empty());
+        assert_eq!(state.bytes, 0);
+        assert!(!state.reset);
+        assert!(state.durable_changed);
+    }
+    #[test]
+    fn hosted_feed_has_a_byte_limit_as_well_as_an_event_limit() {
+        let inbox = Inbox::default();
+        inbox.push(event(None, &"x".repeat(MAX_OBSERVER_BATCH_BYTES)));
+        let state = inbox.state.lock().unwrap();
+        assert!(state.reset);
+        assert!(state.drafts.is_empty());
+        assert_eq!(state.bytes, 0);
+    }
     fn queue(epoch: u64, through: u64) -> ObserverQueue {
         ObserverQueue::new(
             Fence {

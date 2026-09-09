@@ -1393,6 +1393,10 @@ impl Server {
                 get(handle_get_session_events),
             )
             .route(
+                "/api/sessions/:session_id/observation-snapshot",
+                get(handle_get_session_observation_snapshot),
+            )
+            .route(
                 "/api/sessions/:session_id/events/:event_id/attachments/:attachment_id",
                 get(handle_get_session_event_attachment),
             )
@@ -7110,6 +7114,44 @@ async fn handle_get_session(
     {
         Ok(session) => Json(session).into_response(),
         Err(error) => sdk_error_response(error),
+    }
+}
+
+/// Native Session authorization remains authoritative when a hosted gateway
+/// moves the long-lived read-only socket away from the compute process.
+async fn handle_get_session_observation_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    match model_attempt_snapshot_event(&state.runtime, &session_id).await {
+        Ok(mut snapshot) => {
+            // Attempt state is not a text-prefix snapshot. A reconnecting
+            // client must not append suffixes to an unknowable active draft.
+            snapshot
+                .payload
+                .insert("draft_recovery".into(), json!("discard_until_durable"));
+            ([(header::CACHE_CONTROL, "no-store")], Json(snapshot)).into_response()
+        }
+        Err(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Observation snapshot is unavailable",
+        ),
     }
 }
 

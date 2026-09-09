@@ -6690,6 +6690,15 @@ impl MorphzRuntime {
         }
     }
 
+    /// Explicit hosted observation: bounded drafts, coalesced durable hints,
+    /// and overflow reset without adding EventBus backpressure.
+    #[cfg(feature = "remote-store")]
+    pub fn subscribe_host_observer(
+        &self,
+    ) -> crate::memory::remote::host_observers::HostObserverFeed {
+        crate::memory::remote::host_observers::HostObserverFeed::new(&self.inner.bus)
+    }
+
     /// Wait for the durable Assistant reply belonging to exactly one
     /// DialogueTurn.
     ///

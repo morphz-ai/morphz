@@ -11,6 +11,78 @@ pub struct HttpRemoteStoreTransport {
     authorization: reqwest::header::HeaderValue,
 }
 
+/// Same operator-selected HTTPS/private-binding policy as the Runtime Store,
+/// but a separate protocol. It can publish observations, never grant readers.
+pub struct HttpObserverTransport(HttpRemoteStoreTransport);
+impl HttpObserverTransport {
+    pub fn new(endpoint: &str, token: &str, private: bool) -> Result<Self, StoreError> {
+        Ok(Self(if private {
+            HttpRemoteStoreTransport::private_gateway(endpoint, token)?
+        } else {
+            HttpRemoteStoreTransport::new(endpoint, token)?
+        }))
+    }
+
+    pub async fn publish(
+        &self,
+        fence: &Fence,
+        batch: &super::host_observers::ObserverBatch,
+    ) -> Result<super::host_observers::ObserverReceipt, StoreError> {
+        use futures_util::StreamExt;
+        let body = serde_json::to_vec(&json!({
+            "protocol": "morphz-host-observers/1", "fence": fence, "batch": batch
+        }))?;
+        if body.len() > super::host_observers::MAX_OBSERVER_BATCH_BYTES + 4096 {
+            return Err("observer request exceeds capacity".into());
+        }
+        for attempt in 0..3 {
+            let response = self
+                .0
+                .client
+                .post(self.0.endpoint.clone())
+                .header(reqwest::header::AUTHORIZATION, self.0.authorization.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone())
+                .send()
+                .await;
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    let mut stream = response.bytes_stream();
+                    let mut bytes = Vec::new();
+                    let mut interrupted = false;
+                    while let Some(chunk) = stream.next().await {
+                        let Ok(chunk) = chunk else {
+                            interrupted = true;
+                            break;
+                        };
+                        if bytes.len() + chunk.len() > 4096 {
+                            return Err("observer receipt exceeds capacity".into());
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    if !interrupted {
+                        return serde_json::from_slice(&bytes)
+                            .map_err(|_| "invalid observer receipt".into());
+                    }
+                }
+                Ok(response) if !response.status().is_server_error() => {
+                    // No URL, gateway response body, event or credential in errors.
+                    return Err(format!(
+                        "observer publication rejected (HTTP {})",
+                        response.status().as_u16()
+                    )
+                    .into());
+                }
+                _ => {}
+            }
+            if attempt < 2 {
+                tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
+            }
+        }
+        Err("observer receipt unavailable; exact batch remains unacknowledged".into())
+    }
+}
+
 impl HttpRemoteStoreTransport {
     pub fn new(endpoint: &str, token: &str) -> Result<Self, StoreError> {
         Self::build(endpoint, token, false)
@@ -197,5 +269,143 @@ impl RemoteStoreLeaseTransport for HttpRemoteStoreTransport {
     async fn complete_recovery(&self, fence: &Fence) -> Result<(), StoreError> {
         let _: Value = self.rpc("recovered", fence, json!({})).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod observer_tests {
+    use super::*;
+    use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+    use std::sync::{Arc, Mutex};
+
+    type Requests = Arc<Mutex<Vec<Vec<u8>>>>;
+    type ServerState = (Requests, Arc<Vec<(StatusCode, String)>>);
+    async fn server(
+        replies: Vec<(StatusCode, String)>,
+    ) -> (String, Requests, tokio::task::JoinHandle<()>) {
+        let requests: Requests = Arc::default();
+        let state = (requests.clone(), Arc::new(replies));
+        let router = Router::new()
+            .route(
+                "/observe",
+                post(
+                    |State((seen, replies)): State<ServerState>, body: Bytes| async move {
+                        let mut seen = seen.lock().unwrap();
+                        let index = seen.len();
+                        seen.push(body.to_vec());
+                        replies[index.min(replies.len() - 1)].clone()
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/observe", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (url, requests, task)
+    }
+    fn batch() -> super::super::host_observers::ObserverBatch {
+        super::super::host_observers::ObserverBatch {
+            sequence: 3,
+            events: vec![],
+            reset: false,
+        }
+    }
+    fn fence() -> Fence {
+        Fence {
+            owner_id: "synthetic-owner".into(),
+            epoch: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_http_retries_identical_serialized_batch_after_lost_ack() {
+        let (url, seen, task) = server(vec![
+            (StatusCode::BAD_GATEWAY, "lost receipt".into()),
+            (StatusCode::OK, r#"{"epoch":2,"sequence":3}"#.into()),
+        ])
+        .await;
+        let transport = HttpObserverTransport::new(&url, "synthetic-token", false).unwrap();
+        let receipt = transport.publish(&fence(), &batch()).await.unwrap();
+        assert_eq!((receipt.epoch, receipt.sequence), (2, 3));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], seen[1]);
+        let body: Value = serde_json::from_slice(&seen[0]).unwrap();
+        assert_eq!(body["protocol"], "morphz-host-observers/1");
+        assert_eq!(body["fence"]["ownerId"], "synthetic-owner");
+        task.abort();
+    }
+    #[tokio::test]
+    async fn observer_http_does_not_retry_or_expose_denial_body() {
+        let (url, seen, task) = server(vec![(
+            StatusCode::FORBIDDEN,
+            "private diagnostic must not appear".into(),
+        )])
+        .await;
+        let error = HttpObserverTransport::new(&url, "synthetic-token", false)
+            .unwrap()
+            .publish(&fence(), &batch())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "observer publication rejected (HTTP 403)"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        task.abort();
+    }
+    #[tokio::test]
+    async fn observer_http_receipt_is_bounded_and_malformed_payload_is_not_logged() {
+        for (body, expected) in [
+            ("x".repeat(4097), "observer receipt exceeds capacity"),
+            (
+                r#"{"private-field":"do not log"}"#.into(),
+                "invalid observer receipt",
+            ),
+        ] {
+            let (url, seen, task) = server(vec![(StatusCode::OK, body)]).await;
+            let error = HttpObserverTransport::new(&url, "synthetic-token", false)
+                .unwrap()
+                .publish(&fence(), &batch())
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(seen.lock().unwrap().len(), 1);
+            task.abort();
+        }
+    }
+    #[tokio::test]
+    async fn observer_http_unavailable_remains_unacknowledged_after_bounded_retries() {
+        let (url, seen, task) =
+            server(vec![(StatusCode::SERVICE_UNAVAILABLE, "synthetic".into())]).await;
+        let error = HttpObserverTransport::new(&url, "synthetic-token", false)
+            .unwrap()
+            .publish(&fence(), &batch())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "observer receipt unavailable; exact batch remains unacknowledged"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen.windows(2).all(|pair| pair[0] == pair[1]));
+        task.abort();
+    }
+    #[test]
+    fn observer_http_requires_operator_selected_secure_transport() {
+        assert!(
+            HttpObserverTransport::new("http://external.invalid/observe", "synthetic", false)
+                .is_err()
+        );
+        assert!(HttpObserverTransport::new(
+            "https://user:password@external.invalid/observe",
+            "synthetic",
+            false
+        )
+        .is_err());
+        assert!(HttpObserverTransport::new("https://external.invalid/observe", "", false).is_err());
     }
 }
