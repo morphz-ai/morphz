@@ -1,6 +1,7 @@
 //! Backend-independent, fenced remote persistence for the complete RuntimeStore.
 //! The local SQLite instance only computes transactions. A remote failure never
 //! acknowledges an operation or silently promotes that disposable replica.
+pub mod compute_policy;
 mod lease;
 #[cfg(test)]
 mod observer_tests;

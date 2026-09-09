@@ -275,6 +275,33 @@ reject its stale outcomes regardless of that monitor's timing.
 
 ## Embedding
 
+`morphz-runtime-host` accepts the deployment-only `MORPHZ_HOST_COMPUTE_MODE`:
+`on_demand` (default) retains idle parking; `always_on` keeps an already-started
+process resident instead of parking for inactivity. `MORPHZ_HOST_IDLE_SECONDS`
+remains a positive integer (default 60), not a second mode switch. Invalid
+configuration fails before HOME restoration or acquiring any remote ownership.
+The chosen mode is included in the fixed `host.ready` log.
+
+Always-on does not change Store fences, lease renewal, expiry/revocation shutdown,
+maintenance, cancellation or physical execution authority. It is not an uptime
+guarantee or automatic pre-warming: first start, crash/reclaim and platform
+replacement still need recovery. It adds no native keepalive request or fake work.
+Existing SQLite/PostgreSQL startup and production deployment defaults are unchanged.
+
+The new policy passes all 51 remote-store tests, including default preservation
+and invalid configuration. The actual Host/workerd gate also passes both new
+cases (46.34 seconds): an idle resident Host with a one-second idle threshold
+remains alive across 32 seconds without Host requests or Provider work, renews
+its real 30-second lease under the same epoch, then exits with code 1 after a
+maintenance fence. An explicit on-demand replacement subsequently parks normally.
+Four malformed startup configurations fail before any HOME/endpoint/token is
+provided. Cloud deployment-mode/admission/outbound-registration tests (14) and
+the hosted dry-run pass. The complete native library suite passes 1,355 tests
+(8 ignored, 126.72 seconds); all-target Clippy passes. The full Cloud suite with
+the rebuilt Host and real Edge passes 247 tests in 40 files (392.02 seconds).
+These do not demonstrate a deployed always-on Container or authorize continuous
+cloud spend.
+
 Build with `--features remote-store`. Construct an `HttpRemoteStoreTransport`
 using an operator-supplied HTTPS URL and credential, then call
 `RemoteRuntimeStore::connect_owned`. Inject the resulting `Arc` using the existing

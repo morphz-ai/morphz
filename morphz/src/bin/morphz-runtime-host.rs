@@ -2,6 +2,7 @@
 //! backend, uploads a HOME, or adopts hosted credentials implicitly.
 use morphz::config::{self, ServerIdentityMode};
 use morphz::llm::Client;
+use morphz::memory::remote::compute_policy::HostComputePolicy;
 use morphz::memory::remote::host_configuration::HostConfiguration;
 use morphz::memory::remote::host_credentials::HostCredentialBackend;
 use morphz::memory::remote::host_lifecycle::HostRequestGate;
@@ -85,6 +86,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), StoreError> {
+    let compute_policy = HostComputePolicy::from_env()?;
     let home = PathBuf::from(required("MORPHZ_HOME")?);
     if !home.is_absolute() {
         return Err("hosted MORPHZ_HOME must be an absolute, empty cache directory".into());
@@ -203,13 +205,6 @@ async fn run() -> Result<(), StoreError> {
     store.ensure_session(initial_session).await?;
     store.complete_recovery().await?;
     let bind = required("MORPHZ_BIND")?;
-    let idle_seconds: u64 = std::env::var("MORPHZ_HOST_IDLE_SECONDS")
-        .unwrap_or_else(|_| "60".into())
-        .parse()
-        .map_err(|_| "MORPHZ_HOST_IDLE_SECONDS must be a positive integer")?;
-    if idle_seconds == 0 {
-        return Err("MORPHZ_HOST_IDLE_SECONDS must be positive".into());
-    }
     let gate = Arc::new(HostRequestGate::default());
     Server::new(runtime.clone(), defaults)
         .with_identity(gateway_identity)
@@ -218,18 +213,24 @@ async fn run() -> Result<(), StoreError> {
         .await?;
     tracing::info!(
         event_code = "host.ready",
+        compute_mode = compute_policy.name(),
         "Hosted Runtime restored and ready"
     );
-    let mut next_park_probe = Instant::now() + Duration::from_secs(idle_seconds);
+    let mut last_park_probe = Instant::now();
+    let mut park_probe_interval = compute_policy.idle_timeout();
     loop {
         tokio::select! {
             result = tokio::signal::ctrl_c() => { result?; return Ok(()); },
             () = tokio::time::sleep(Duration::from_millis(100)) => {
                 if store.ownership_lost() { return Err("compute ownership lost; process must be replaced".into()); }
                 // A busy native owner must not cause a Store scan every 100ms.
-                if Instant::now() >= next_park_probe {
-                    next_park_probe = Instant::now() + Duration::from_secs(5);
-                    if let Some(attempt) = gate.begin_park(Duration::from_secs(idle_seconds)) {
+                // Always-on only disables automatic idle park. The ownership
+                // check above still stops obsolete or administratively fenced
+                // compute, and the independent Store lease still renews.
+                if park_probe_interval.is_some_and(|interval| last_park_probe.elapsed() >= interval) {
+                    last_park_probe = Instant::now();
+                    park_probe_interval = Some(Duration::from_secs(5));
+                    if let Some(attempt) = gate.begin_park(compute_policy.idle_timeout().expect("on-demand park")) {
                         if store.try_park(|| runtime.hosted_process_is_quiescent()).await? {
                             attempt.commit();
                             tracing::info!(event_code = "host.parked", "Runtime quiescence and next deadline committed; exiting idle compute");
