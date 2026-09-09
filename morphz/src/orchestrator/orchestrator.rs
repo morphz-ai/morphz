@@ -11248,16 +11248,21 @@ impl Orchestrator {
                 // Keep the large Evaluation state machine out of this outer
                 // retry future's inline layout. Recovery can enter it directly
                 // from a Tokio worker with the default native thread stack.
-                match Box::pin(self.run_attempt_inner(
+                let attempt = Box::pin(self.run_attempt_inner(
                     session_id,
                     activation,
                     refresh_context_snapshot,
                     fresh_activation,
                     schedule_receipt,
                     approval_resume_event_id,
-                ))
-                .await
-                {
+                ));
+                #[cfg(feature = "remote-store")]
+                let attempt = crate::memory::remote::observe_attempt(
+                    Arc::clone(&self.observability),
+                    &activation.root_turn_id,
+                    attempt,
+                );
+                match attempt.await {
                     Err(error)
                         if error
                             .downcast_ref::<RefreshContextAfterConcurrentMaintenance>()

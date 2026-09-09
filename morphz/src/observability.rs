@@ -53,6 +53,11 @@ pub struct TurnTraceRecord {
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub stages: Vec<TurnStageRecord>,
+    /// Explicitly scoped remote Store calls only; not ingress, detached workers
+    /// or a sum of wall-clock latency. Disabled unless Store diagnostics are on.
+    #[cfg(feature = "remote-store")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_store: Option<crate::memory::remote::TurnStoreProfile>,
 }
 
 #[derive(Debug)]
@@ -191,6 +196,8 @@ impl Observability {
                     started_at: now,
                     updated_at: now,
                     stages: Vec::new(),
+                    #[cfg(feature = "remote-store")]
+                    remote_store: None,
                 },
                 started: Instant::now(),
                 checkpoints: HashMap::new(),
@@ -206,6 +213,26 @@ impl Observability {
             .turns
             .get(root_turn_id)
             .map(|turn| turn.started.elapsed())
+    }
+
+    #[cfg(feature = "remote-store")]
+    pub(crate) fn record_remote_store_operation(
+        &self,
+        root_turn_id: &str,
+        record: &crate::memory::remote::OperationTimingRecord,
+    ) {
+        let mut store = self
+            .turns
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A late completion must not resurrect an evicted/discarded trace or
+        // displace a newer user turn. No durable writes or metric ID labels.
+        if let Some(turn) = store.turns.get_mut(root_turn_id) {
+            turn.record
+                .remote_store
+                .get_or_insert_with(Default::default)
+                .record(record);
+        }
     }
 
     /// Remember a process-local boundary for a later adjacent-stage

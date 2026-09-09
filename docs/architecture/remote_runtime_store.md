@@ -154,6 +154,22 @@ Cancellation/error drops record the incomplete operation without acknowledging
 its speculative state. Process kills cannot report futures that never drop.
 Connect/initial restoration and `try_park` are outside this method-level scope.
 
+The same opt-in diagnostic switch also attributes calls made inside an explicitly
+awaited Activation attempt to the existing operator-only turn timeline. Its
+`remote_store` projection contains at most 128 method groups per retained turn,
+with counts, unvalidated counts and summed phase microseconds; overflow is counted
+in `dropped`. The existing bounded 512-turn retention applies. No new durable
+records, metric ID labels, log payloads or Store wire fields are introduced.
+
+Task-local scope is captured when the operation starts, so cancellation outside
+that scope still belongs to the original turn. Concurrent roots remain separate;
+detached Tokio tasks do not inherit a parent's attribution. Ingress, background
+scans, spawned tool/evaluation workers and unscoped operations are **not** covered
+by this attempt-only projection. Missing attribution is not evidence that work
+was background, and cumulative method time is not a critical-path or wall-clock
+total. Evicted/discarded turns are not recreated by late completions. With the
+diagnostic target disabled no scope or per-call clock is installed.
+
 The Cloud repository's `hosted-runtime.test.mjs` supports explicit numerical-only
 profiling with `MORPHZ_TEST_STORE_PROFILE=/absolute/new-report.json`. Its optional
 `MORPHZ_TEST_STORE_LATENCY_MS=60` delays the real loopback authority requests;

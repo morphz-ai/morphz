@@ -11,6 +11,8 @@ mod read_barrier;
 pub mod recovery;
 mod replica;
 mod timing;
+pub(crate) use timing::{observe_attempt, Record as OperationTimingRecord};
+pub use timing::{TurnStoreOperation, TurnStoreProfile};
 
 use super::*;
 use crate::event::Event;
