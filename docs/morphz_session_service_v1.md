@@ -4,6 +4,8 @@
 
 > 当前实现索引：[Morphz Runtime 核心实现状态总览](./morphz_runtime_core_implementation_status_v1.md)
 
+> 后续设计提案：[Session 通用消息 IO 协议 v0.1](./morphz_session_message_protocol_v0_1.md)。定义标准聊天、自定义 JSON 消息、能力发现、请求 / 订阅级契约与类型化 Context 投影，不要求发送类型预登记或独立协商 ID；内部 Context Encoding 继续使用 S-Expr，不要求客户端采用相同表示。新增协议尚未实现，不改变本文对既有实现状态的说明。
+
 ## 1. 已确定的对象层级
 
 Morphz 当前采用以下所有权关系：
