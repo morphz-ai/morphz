@@ -39,7 +39,7 @@ use crate::memory::{
     ExecutionTargetRegistration, ExecutionTargetStatus, NewCognitiveContext,
     NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective,
     NewSession, NodePairingCodeError, ObjectiveRecord, PairExecutionNode, QueryFilter,
-    SessionRecord, SessionUpdate, ThreadControlAction, ThreadMutation,
+    SessionRecord, SessionUpdate, ThreadControlAction, ThreadMutation, ThreadRecord,
 };
 use crate::orchestrator::context::{
     ContextCommit, ContextTokenBudget, ContextView, MindProjectionAudit,
@@ -630,6 +630,7 @@ pub struct CancelEdgeBackgroundExecutionCommand {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionJobQuery {
     pub context_id: Option<String>,
+    pub session_id: Option<String>,
     pub thread_id: Option<String>,
     pub target_id: Option<String>,
     pub status: Option<ExecutionJobStatus>,
@@ -733,6 +734,18 @@ impl SessionEventStream {
 }
 
 /// A cloneable, transport-neutral application facade.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionScheduleRequest {
+    pub id: String,
+    pub intent: String,
+    pub model_alias: Option<String>,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub dependency_thread_ids: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct MorphzSdk {
     runtime: MorphzRuntime,
@@ -897,6 +910,124 @@ impl MorphzSdk {
     ) -> SdkResult<AttentionAcknowledgement> {
         self.runtime
             .acknowledge_attention(context_id, command)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn create_session_schedule(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        request: SessionScheduleRequest,
+    ) -> SdkResult<crate::memory::ScheduleRecord> {
+        let session = self.get_session(principal_id, session_id).await?;
+        if request.id.is_empty()
+            || request.id.len() > 100
+            || !request
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || request.intent.trim().is_empty()
+            || request.intent.len() > 30_000
+            || request
+                .interval_seconds
+                .is_some_and(|n| !(60..=31_536_000).contains(&n))
+            || request.dependency_thread_ids.len() > 100
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Invalid schedule request",
+            ));
+        }
+        if let Some(model) = &request.model_alias {
+            let options = self
+                .runtime
+                .inference_model_options()
+                .await
+                .map_err(SdkError::internal)?;
+            if !options.iter().any(|option| &option.id == model) {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    "Unknown model route; no fallback performed",
+                ));
+            }
+        }
+        for dependency in &request.dependency_thread_ids {
+            let thread = self
+                .runtime
+                .thread_detail(&session.context_id, dependency)
+                .await
+                .map_err(SdkError::internal)?
+                .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Dependency not found"))?;
+            self.get_session(principal_id, &thread.snapshot.thread.session_id)
+                .await?;
+        }
+        self.runtime
+            .create_session_schedule(&session, principal_id, request)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn session_schedule(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        schedule_id: &str,
+    ) -> SdkResult<crate::memory::ScheduleRecord> {
+        let session = self.get_session(principal_id, session_id).await?;
+        let schedule = self
+            .runtime
+            .inspect_schedule(schedule_id)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Schedule not found"))?;
+        let thread = self
+            .runtime
+            .thread_detail(&session.context_id, &schedule.thread_id)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Schedule not found"))?;
+        if thread.snapshot.thread.session_id != session_id {
+            return Err(SdkError::new(
+                SdkErrorCode::Forbidden,
+                "Schedule belongs to another Session",
+            ));
+        }
+        Ok(schedule)
+    }
+
+    pub async fn session_thread(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> SdkResult<ThreadRecord> {
+        self.get_session(principal_id, session_id).await?;
+        self.runtime
+            .session_thread_by_root(session_id, root_turn_id)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "This Session turn has no Thread"))
+    }
+
+    pub async fn cancel_session_thread(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        root_turn_id: &str,
+        expected_revision: u64,
+    ) -> SdkResult<ThreadMutation> {
+        let thread = self
+            .session_thread(principal_id, session_id, root_turn_id)
+            .await?;
+        self.runtime
+            .control_thread(
+                &thread.context_id,
+                &thread.id,
+                expected_revision,
+                ThreadControlAction::Cancel,
+                "The user stopped this MorphzWork input",
+            )
             .await
             .map_err(SdkError::internal)
     }
@@ -3663,6 +3794,7 @@ impl MorphzSdk {
             .runtime
             .list_execution_jobs(ExecutionJobFilter {
                 context_id: query.context_id,
+                session_id: query.session_id,
                 thread_id: query.thread_id,
                 target_id: query.target_id,
                 status: query.status,
@@ -3741,6 +3873,28 @@ impl MorphzSdk {
             ));
         }
         Ok(job)
+    }
+
+    pub async fn inspect_execution_job_result(
+        &self,
+        principal_id: &str,
+        job_id: &str,
+    ) -> SdkResult<Option<Event>> {
+        let job = self.inspect_execution_job(principal_id, job_id).await?;
+        let Some(event_id) = job.result_event_id else {
+            return Ok(None);
+        };
+        let events = self
+            .runtime
+            .query_events(QueryFilter {
+                event_id: Some(event_id),
+                session_id: Some(job.session_id),
+                context_id: Some(job.context_id),
+                ..Default::default()
+            })
+            .await
+            .map_err(SdkError::internal)?;
+        Ok(events.into_iter().next())
     }
 
     pub async fn cancel_execution_job(

@@ -212,10 +212,22 @@ async fn main() -> Result<(), AppError> {
     if dispatch_config_command(&invocation, &resolved)? {
         return Ok(());
     }
-    let protected_config_paths = resolved
+    let mut protected_config_paths = resolved
         .loaded_paths()
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
+    // This opt-in comes only from the host environment, never project config.
+    let host_tools_path = std::env::var_os("MORPHZ_HOST_TOOLS_FILE").map(PathBuf::from);
+    let host_tools = if let Some(path) = host_tools_path.as_ref() {
+        let tools = morphz::host_tools::load(path)?;
+        protected_config_paths.push(path.clone());
+        if let Some(parent) = path.parent().filter(|p| p.parent().is_some()) {
+            protected_config_paths.push(parent.to_path_buf());
+        }
+        tools
+    } else {
+        Vec::new()
+    };
     let mut app_config = resolved.config;
     let explicit_sqlite_path = std::env::var("MORPHZ_STORAGE_SQLITE_PATH")
         .ok()
@@ -259,11 +271,13 @@ async fn main() -> Result<(), AppError> {
     let client = build_client(&invocation, &app_config, needs_workers)?;
     let trusted_gateway_serve = invocation.command_path() == ["serve"]
         && app_config.server.identity.mode == config::ServerIdentityMode::TrustedGateway;
-    let runtime = MorphzRuntime::builder(app_config.clone(), client)
+    let mut runtime_builder = MorphzRuntime::builder(app_config.clone(), client)
         .identity(identity)
-        .principal_first_seen_cues(trusted_gateway_serve)
-        .build()
-        .await?;
+        .principal_first_seen_cues(trusted_gateway_serve);
+    for tool in host_tools {
+        runtime_builder = runtime_builder.extra_tool(tool);
+    }
+    let runtime = runtime_builder.build().await?;
     if needs_workers {
         runtime.start().await?;
     } else {

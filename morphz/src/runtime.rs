@@ -3691,6 +3691,88 @@ impl MorphzRuntime {
         self.inner.thread_scheduler.inspect(id).await
     }
 
+    /// Persist a host-requested schedule through the same Kernel transaction as
+    /// schedule_tx. Authorization belongs to the SDK; no client timer owns it.
+    pub async fn create_session_schedule(
+        &self,
+        session: &SessionRecord,
+        principal_id: &str,
+        request: crate::sdk::SessionScheduleRequest,
+    ) -> Result<ScheduleRecord, RuntimeError> {
+        let root = format!("client-schedule-{}", request.id);
+        let thread_id = crate::memory::stable_thread_id(&root);
+        let request_fingerprint = crate::scheduler::stable_command_id(
+            "client-schedule",
+            &serde_json::to_string(&request)?,
+        );
+        if let Some(existing) = self.inspect_schedule(&request.id).await? {
+            let owner = self
+                .inner
+                .store
+                .get_thread(&existing.thread_id)
+                .await?
+                .ok_or("Schedule owner missing")?;
+            if owner.session_id != session.id
+                || owner.initiating_principal_id.as_deref() != Some(principal_id)
+                || existing.thread_id != thread_id
+                || existing.intent != request.intent
+                || existing.model_alias != request.model_alias
+                || owner.supervision.supervisor_id.as_deref() != Some(request_fingerprint.as_str())
+            {
+                return Err("Schedule identity already belongs to another request".into());
+            }
+            return Ok(existing);
+        }
+        let thread = NewThread {
+            id: thread_id.clone(),
+            agent_id: session.agent_id.clone(),
+            context_id: session.context_id.clone(),
+            session_id: session.id.clone(),
+            initiating_principal_id: Some(principal_id.to_string()),
+            root_turn_id: root.clone(),
+            kind: crate::memory::ThreadKind::Execution,
+            executor_kind: "self".into(),
+            executor_id: None,
+            target_id: session.default_target_id.clone(),
+            supervision: crate::memory::ThreadSupervision::runtime(request_fingerprint),
+        };
+        let schedule = crate::memory::NewSchedule {
+            id: request.id.clone(),
+            thread_id,
+            source_turn_id: root.clone(),
+            intent: request.intent,
+            model_alias: request.model_alias,
+            not_before: Some(request.not_before),
+            interval_seconds: request.interval_seconds,
+            dependency_thread_ids: request.dependency_thread_ids,
+        };
+        let result = self
+            .inner
+            .scheduler_kernel
+            .execute(crate::controllers::PlanController::spawn_supervised_group(
+                crate::scheduler::SpawnSupervisedGroupCommand {
+                    objectives: vec![],
+                    objective_waits: vec![],
+                    threads: vec![thread],
+                    schedules: vec![schedule],
+                    groups: vec![],
+                },
+                &request.id,
+                &root,
+                principal_id,
+            ))
+            .await?;
+        let KernelResult::SupervisedGroupSpawned { schedules } = result else {
+            return Err("Unexpected schedule result".into());
+        };
+        let schedule = schedules
+            .into_iter()
+            .next()
+            .ok_or("Missing schedule receipt")?;
+        self.inner.thread_scheduler.arm(schedule.clone()).await?;
+        Ok(schedule)
+    }
+
     pub async fn pause_schedule(
         &self,
         id: &str,
@@ -8823,6 +8905,17 @@ impl MorphzRuntime {
                 .collect(),
             next_before_sequence,
         })
+    }
+
+    /// Exact Session/root read for client-owned turn controls. Does not traverse
+    /// another Session or expose the global scheduler projection.
+    pub async fn session_thread_by_root(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<crate::memory::ThreadRecord>, RuntimeError> {
+        let thread = self.inner.store.get_thread_by_root(root_turn_id).await?;
+        Ok(thread.filter(|thread| thread.session_id == session_id))
     }
 
     pub async fn thread_detail(

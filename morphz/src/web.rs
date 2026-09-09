@@ -517,6 +517,11 @@ struct ControlThreadRequest {
     expected_revision: u64,
     reason: Option<String>,
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelSessionTurnRequest {
+    expected_revision: u64,
+}
 
 #[derive(serde::Deserialize)]
 struct SupersedeThreadRequest {
@@ -579,6 +584,7 @@ struct ExecutionJobHttpQuery {
     token: Option<String>,
     principal_id: Option<String>,
     context_id: Option<String>,
+    session_id: Option<String>,
     thread_id: Option<String>,
     target_id: Option<String>,
     status: Option<crate::memory::ExecutionJobStatus>,
@@ -1230,6 +1236,10 @@ impl Server {
             )
             .route("/api/execution-jobs", get(handle_list_execution_jobs))
             .route(
+                "/api/execution-jobs/:job_id/result",
+                get(handle_execution_job_result),
+            )
+            .route(
                 "/api/execution-jobs/:job_id",
                 get(handle_inspect_execution_job),
             )
@@ -1365,7 +1375,19 @@ impl Server {
             )
             .route(
                 "/api/sessions/:session_id/principal",
-                post(handle_bind_session_principal),
+                get(handle_get_session_principal).post(handle_bind_session_principal),
+            )
+            .route(
+                "/api/sessions/:session_id/turns/:root_turn_id/thread",
+                get(handle_session_turn_thread).post(handle_cancel_session_turn_thread),
+            )
+            .route(
+                "/api/sessions/:session_id/schedules",
+                post(handle_create_session_schedule),
+            )
+            .route(
+                "/api/sessions/:session_id/schedules/:schedule_id",
+                get(handle_session_schedule).post(handle_control_session_schedule),
             )
             .route(
                 "/api/sessions/:session_id/events",
@@ -5178,6 +5200,7 @@ async fn handle_list_execution_jobs(
             &principal.principal_id,
             ExecutionJobQuery {
                 context_id: query.context_id,
+                session_id: query.session_id,
                 thread_id: query.thread_id,
                 target_id: query.target_id,
                 status: query.status,
@@ -5287,6 +5310,29 @@ async fn handle_inspect_execution_job(
         .await
     {
         Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_execution_job_result(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .inspect_execution_job_result(&principal.principal_id, &job_id)
+        .await
+    {
+        Ok(event) => Json(json!({ "job_id": job_id, "event": event })).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -7642,6 +7688,37 @@ async fn handle_retry_dialogue_turn(
     }
 }
 
+/// The authenticated caller of this connection, not the sole "owner" of a
+/// Session (which can contain several Principals). Never uses operator bypass.
+async fn handle_get_session_principal(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => Json(json!({
+            "principal_id": principal.principal_id,
+            "session_id": session.id,
+            "context_id": session.context_id,
+            "capabilities": ["session_turn_control", "session_schedules"],
+        }))
+        .into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_bind_session_principal(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -7913,6 +7990,180 @@ async fn handle_get_session_context_encoding(
         }))
         .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+fn session_turn_thread_view(thread: &crate::memory::ThreadRecord) -> Value {
+    json!({"thread_id": thread.id, "session_id": thread.session_id,
+        "root_turn_id": thread.root_turn_id, "revision": thread.revision, "lifecycle": thread.lifecycle})
+}
+
+async fn handle_create_session_schedule(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<crate::sdk::SessionScheduleRequest>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .create_session_schedule(&principal.principal_id, &session_id, request)
+        .await
+    {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_session_schedule(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, schedule_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_schedule(&principal.principal_id, &session_id, &schedule_id)
+        .await
+    {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_control_session_schedule(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, schedule_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<MutateScheduleRequest>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    if let Err(error) = state
+        .sdk
+        .session_schedule(&principal.principal_id, &session_id, &schedule_id)
+        .await
+    {
+        return sdk_error_response(error);
+    }
+    let result = match request.action.as_str() {
+        "pause" => {
+            state
+                .runtime
+                .pause_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        "resume" => {
+            state
+                .runtime
+                .resume_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        "cancel" => {
+            state
+                .runtime
+                .cancel_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Only pause, resume and cancel are supported",
+            )
+        }
+    };
+    match result {
+        Ok(ScheduleMutation::Updated(record)) => Json(record).into_response(),
+        Ok(ScheduleMutation::Conflict { current })
+        | Ok(ScheduleMutation::Rejected { current, .. }) => {
+            (StatusCode::CONFLICT, Json(current)).into_response()
+        }
+        Ok(ScheduleMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Schedule not found")
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_session_turn_thread(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, root_turn_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_thread(&principal.principal_id, &session_id, &root_turn_id)
+        .await
+    {
+        Ok(thread) => Json(session_turn_thread_view(&thread)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_cancel_session_turn_thread(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, root_turn_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<CancelSessionTurnRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .cancel_session_thread(
+            &principal.principal_id,
+            &session_id,
+            &root_turn_id,
+            request.expected_revision,
+        )
+        .await
+    {
+        Ok(ThreadMutation::Updated(thread)) => {
+            Json(session_turn_thread_view(&thread)).into_response()
+        }
+        Ok(ThreadMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(session_turn_thread_view(&current)),
+        )
+            .into_response(),
+        Ok(ThreadMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Session Thread does not exist")
+        }
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -10617,6 +10868,61 @@ mod tests {
         .await
         .into_response();
         assert_eq!(operator_session.status(), StatusCode::OK);
+        // A read-only connection identity must not turn operator visibility
+        // into membership, nor disclose another participant's identity.
+        for (headers, expected) in [
+            (gateway_headers(Some("site-user-1")), StatusCode::OK),
+            (gateway_headers(Some("site-user-2")), StatusCode::FORBIDDEN),
+            (dashboard_headers(), StatusCode::FORBIDDEN),
+            (HeaderMap::new(), StatusCode::UNAUTHORIZED),
+        ] {
+            let response = handle_get_session_principal(
+                State(Arc::clone(&state)),
+                Path("gateway-session-a".to_string()),
+                headers,
+                Query(AuthQuery::default()),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let body = axum::body::to_bytes(response.into_body(), 16_384)
+                    .await
+                    .unwrap();
+                let value: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(value["principal_id"], "site-user-1");
+                assert_eq!(value["session_id"], "gateway-session-a");
+            }
+        }
+        for (headers, expected) in [
+            (gateway_headers(Some("site-user-1")), StatusCode::NOT_FOUND),
+            (gateway_headers(Some("site-user-2")), StatusCode::FORBIDDEN),
+            (dashboard_headers(), StatusCode::FORBIDDEN),
+            (HeaderMap::new(), StatusCode::UNAUTHORIZED),
+        ] {
+            let path = ("gateway-session-a".to_string(), "missing-root".to_string());
+            let read = handle_session_turn_thread(
+                State(Arc::clone(&state)),
+                Path(path.clone()),
+                headers.clone(),
+                Query(AuthQuery::default()),
+            )
+            .await
+            .into_response();
+            assert_eq!(read.status(), expected);
+            let write = handle_cancel_session_turn_thread(
+                State(Arc::clone(&state)),
+                Path(path),
+                headers,
+                Query(AuthQuery::default()),
+                Json(CancelSessionTurnRequest {
+                    expected_revision: 1,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(write.status(), expected);
+        }
         let projection = handle_get_session_context_projection(
             State(Arc::clone(&state)),
             Path("gateway-session-a".to_string()),
@@ -15217,6 +15523,178 @@ account = "xai-account"
         assert_eq!(value["totals"]["output_tokens"], json!(4));
         assert_eq!(value["totals"]["total_tokens"], json!(14));
         assert_eq!(value["cost_totals"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn session_turn_cancel_is_root_scoped_and_revision_fenced() {
+        use crate::memory::sqlite::SqliteStore;
+        use crate::memory::{NewThread, ThreadKind};
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "scoped-cancel".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Scoped cancel".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore::new(runtime.sqlite_database_path().unwrap())
+            .await
+            .unwrap();
+        for suffix in ["a", "b"] {
+            store
+                .ensure_thread(NewThread {
+                    id: format!("thread-{suffix}"),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "scoped-cancel".into(),
+                    initiating_principal_id: None,
+                    root_turn_id: format!("root-{suffix}"),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+        }
+        let thread = runtime
+            .session_thread_by_root("scoped-cancel", "root-a")
+            .await
+            .unwrap()
+            .unwrap();
+        let path = ("scoped-cancel".into(), "root-a".into());
+        for (revision, status) in [
+            (thread.revision + 99, StatusCode::CONFLICT),
+            (thread.revision, StatusCode::OK),
+            (thread.revision, StatusCode::CONFLICT),
+        ] {
+            let response = handle_cancel_session_turn_thread(
+                State(Arc::clone(&state)),
+                Path(path.clone()),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(CancelSessionTurnRequest {
+                    expected_revision: revision,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), status);
+        }
+        let other = runtime
+            .session_thread_by_root("scoped-cancel", "root-b")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(other.lifecycle).unwrap(),
+            json!("open")
+        );
+        assert!(runtime
+            .session_thread_by_root("unrelated-session", "root-b")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn session_schedule_uses_kernel_idempotency_and_live_dispatch() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "work-schedule-session".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Work schedule".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let request = crate::sdk::SessionScheduleRequest {
+            id: "work-once".into(),
+            intent: "execute one persisted work request".into(),
+            model_alias: None,
+            not_before: chrono::Utc::now() + chrono::Duration::hours(1),
+            interval_seconds: None,
+            dependency_thread_ids: vec![],
+        };
+        let principal = "principal-web-test";
+        let first = state
+            .sdk
+            .create_session_schedule(principal, "work-schedule-session", request.clone())
+            .await
+            .unwrap();
+        let again = state
+            .sdk
+            .create_session_schedule(principal, "work-schedule-session", request.clone())
+            .await
+            .unwrap();
+        assert_eq!(first, again);
+        let mut changed = request.clone();
+        changed.interval_seconds = Some(60);
+        assert!(state
+            .sdk
+            .create_session_schedule(principal, "work-schedule-session", changed)
+            .await
+            .is_err());
+        assert!(state
+            .sdk
+            .session_schedule("another-user", "work-schedule-session", &first.id)
+            .await
+            .is_err());
+        let paused = runtime
+            .pause_schedule(&first.id, first.revision)
+            .await
+            .unwrap();
+        let ScheduleMutation::Updated(paused) = paused else {
+            panic!("pause failed")
+        };
+        assert_eq!(
+            state
+                .sdk
+                .create_session_schedule(principal, "work-schedule-session", request)
+                .await
+                .unwrap()
+                .status,
+            crate::memory::ScheduleStatus::Paused
+        );
+        let resumed = runtime
+            .resume_schedule(&first.id, paused.revision)
+            .await
+            .unwrap();
+        let ScheduleMutation::Updated(resumed) = resumed else {
+            panic!("resume failed")
+        };
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime
+            .reschedule(
+                &first.id,
+                resumed.revision,
+                Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
+                None,
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["session_id"], "work-schedule-session");
+        assert_eq!(
+            runtime
+                .inspect_schedule(&first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::ScheduleStatus::Dispatched
+        );
     }
 
     #[tokio::test]
