@@ -25,6 +25,9 @@ struct Authority {
     park_entered: Notify,
     park_release: Notify,
     head_calls: AtomicUsize,
+    head_mode: AtomicU8,
+    head_entered: Notify,
+    head_release: Notify,
     commit_calls: AtomicUsize,
     commit_mode: AtomicU8,
     commit_entered: Notify,
@@ -50,6 +53,9 @@ impl Authority {
             park_entered: Notify::new(),
             park_release: Notify::new(),
             head_calls: AtomicUsize::new(0),
+            head_mode: AtomicU8::new(0),
+            head_entered: Notify::new(),
+            head_release: Notify::new(),
             commit_calls: AtomicUsize::new(0),
             commit_mode: AtomicU8::new(0),
             commit_entered: Notify::new(),
@@ -71,7 +77,20 @@ impl Authority {
 impl RemoteStoreTransport for Authority {
     async fn head(&self, fence: &Fence) -> Result<Head, StoreError> {
         self.head_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self.owned(fence).await?.head.clone())
+        let mode = self.head_mode.swap(0, Ordering::SeqCst);
+        if mode == 1 || mode == 3 {
+            self.head_entered.notify_one();
+            self.head_release.notified().await;
+        }
+        if mode == 3 {
+            return Err("test authority: read receipt lost".into());
+        }
+        let head = self.owned(fence).await?.head.clone();
+        if mode == 2 {
+            self.head_entered.notify_one();
+            self.head_release.notified().await;
+        }
+        Ok(head)
     }
     async fn page(
         &self,
@@ -534,4 +553,203 @@ async fn remote_execution_never_delivers_a_read_under_a_changed_schema() {
         .await;
     assert!(result.unwrap_err().to_string().contains("schema mismatch"));
     assert!(store.replica.lock().await.is_none());
+}
+
+async fn held_read(
+    authority: &Authority,
+    store: &Arc<RemoteRuntimeStore>,
+    mode: u8,
+) -> tokio::task::JoinHandle<Result<Vec<Event>, StoreError>> {
+    authority.head_mode.store(mode, Ordering::SeqCst);
+    let reader = store.clone();
+    let read = tokio::spawn(async move { reader.query(QueryFilter::default()).await });
+    tokio::time::timeout(Duration::from_secs(5), authority.head_entered.notified())
+        .await
+        .unwrap();
+    read
+}
+
+#[tokio::test]
+async fn independent_cached_reads_validate_concurrently_without_sharing_authority() {
+    let (authority, store, _queue) = setup().await;
+    authority.head_calls.store(0, Ordering::SeqCst);
+    let first = held_read(&authority, &store, 1).await;
+    let second = tokio::time::timeout(Duration::from_secs(1), store.query(QueryFilter::default()))
+        .await
+        .expect("a blocked read validation must not serialize an independent read")
+        .unwrap();
+    assert!(second.is_empty());
+    assert!(!first.is_finished());
+    assert_eq!(
+        authority.head_calls.load(Ordering::SeqCst),
+        2,
+        "each read validates independently"
+    );
+    authority.head_release.notify_one();
+    assert!(first.await.unwrap().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_write_waits_for_read_validation_before_advancing_the_snapshot() {
+    let (authority, store, _queue) = setup().await;
+    authority.commit_calls.store(0, Ordering::SeqCst);
+    let read = held_read(&authority, &store, 2).await;
+    let computed = Arc::new(Notify::new());
+    let done = computed.clone();
+    let writer = store.clone();
+    let write = tokio::spawn(async move {
+        writer
+            .execute("test", |local| async move {
+                local.append(event("after-read")).await.unwrap();
+                done.notify_one();
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), computed.notified())
+        .await
+        .unwrap();
+    assert!(!write.is_finished());
+    assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 0);
+    authority.head_release.notify_one();
+    assert!(read.await.unwrap().unwrap().is_empty());
+    write.await.unwrap().unwrap();
+    assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store.query(QueryFilter::default()).await.unwrap()[0].id,
+        "after-read"
+    );
+}
+
+#[tokio::test]
+async fn read_failure_or_cancellation_invalidates_a_speculative_waiting_writer() {
+    for mode in [1, 2, 3] {
+        let (authority, store, _queue) = setup().await;
+        authority.commit_calls.store(0, Ordering::SeqCst);
+        let read = held_read(&authority, &store, mode).await;
+        let computed = Arc::new(Notify::new());
+        let done = computed.clone();
+        let writer = store.clone();
+        let write = tokio::spawn(async move {
+            writer
+                .execute("test", |local| async move {
+                    local.append(event("uncommitted-writer")).await.unwrap();
+                    done.notify_one();
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), computed.notified())
+            .await
+            .unwrap();
+        if mode == 3 {
+            authority.head_release.notify_one();
+            assert!(read
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("receipt lost"));
+        } else {
+            read.abort();
+            assert!(read.await.unwrap_err().is_cancelled());
+        }
+        assert!(write
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("invalidated"));
+        assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 0);
+        assert!(store.replica.lock().await.is_none());
+        assert!(store
+            .query(QueryFilter::default())
+            .await
+            .unwrap()
+            .is_empty());
+        store.append(event("fresh-writer")).await.unwrap();
+        assert_eq!(store.query(QueryFilter::default()).await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_read_validation_rejects_revocation_revision_and_schema_changes() {
+    for mutation in ["owner", "revision", "schema"] {
+        let (authority, store, _queue) = setup().await;
+        let read = held_read(&authority, &store, 1).await;
+        // A second call does not reuse the first call's old or pending receipt.
+        {
+            let mut state = authority.state.lock().await;
+            match mutation {
+                "owner" => state.owner = None,
+                "revision" => state.head.revision += 1,
+                "schema" => state.head.schema = Some("changed-schema".into()),
+                _ => unreachable!(),
+            }
+        }
+        assert!(store.query(QueryFilter::default()).await.is_err());
+        authority.head_release.notify_one();
+        assert!(read.await.unwrap().is_err());
+        assert!(store.replica.lock().await.is_none());
+    }
+}
+
+#[tokio::test]
+async fn restore_drains_read_validation_after_a_cancelled_local_write() {
+    let (authority, store, _queue) = setup().await;
+    authority.head_calls.store(0, Ordering::SeqCst);
+    let read = held_read(&authority, &store, 1).await;
+    let computed = Arc::new(Notify::new());
+    let done = computed.clone();
+    let writer = store.clone();
+    let write = tokio::spawn(async move {
+        writer
+            .execute("test", |local| async move {
+                local.append(event("cancelled-local-write")).await.unwrap();
+                done.notify_one();
+                std::future::pending::<()>().await;
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), computed.notified())
+        .await
+        .unwrap();
+    write.abort();
+    assert!(write.await.unwrap_err().is_cancelled());
+    assert!(store.replica.lock().await.is_none());
+    let restored = store.query(QueryFilter::default());
+    tokio::pin!(restored);
+    assert!(poll_fn(|cx| Poll::Ready(restored.as_mut().poll(cx).is_pending())).await);
+    assert_eq!(
+        authority.head_calls.load(Ordering::SeqCst),
+        1,
+        "no restore may overlap a pending read"
+    );
+    authority.head_release.notify_one();
+    assert!(read.await.unwrap().unwrap().is_empty());
+    assert!(restored.await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn park_drains_read_validation_and_can_be_cancelled_before_its_decision() {
+    for cancel in [false, true] {
+        let (authority, store, mut queue) = setup().await;
+        ack(&mut queue, store.compute_fence().epoch);
+        let read = held_read(&authority, &store, 1).await;
+        let mut park = Box::pin(store.try_park(|| true));
+        assert!(poll_fn(|cx| Poll::Ready(park.as_mut().poll(cx).is_pending())).await);
+        assert_eq!(authority.park_calls.load(Ordering::SeqCst), 0);
+        if cancel {
+            // Drop the owning future, not just its Pin reference.
+            drop(park);
+            authority.head_release.notify_one();
+            assert!(read.await.unwrap().unwrap().is_empty());
+            assert!(!store.ownership_lost());
+            assert_eq!(authority.park_calls.load(Ordering::SeqCst), 0);
+            store.append(event("after-cancelled-park")).await.unwrap();
+            continue;
+        }
+        authority.head_release.notify_one();
+        assert!(read.await.unwrap().unwrap().is_empty());
+        assert!(park.await.unwrap());
+        assert!(store.ownership_lost());
+    }
 }

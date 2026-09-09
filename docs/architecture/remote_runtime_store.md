@@ -169,7 +169,11 @@ exactly one physical command, and native sandbox enforcement. The baseline
 overlapped Clippy, so these are diagnostic observations, not controlled CPU/SLO
 benchmarks. Input-to-approval was 1.789 versus 26.522 seconds; decision-to-command
 was 1.677 versus 12.334 seconds. The respective 1,270 and 1,483 operation samples
-contained zero rejected/unknown/unvalidated records. Local SQLite work summed to
+contained zero rejected/unknown records. Rechecking the retained aggregates found
+zero versus two unvalidated records (both `undecided` Activation reads); the
+earlier claim that both runs had zero unvalidated records was incorrect. Aggregate
+diagnostics cannot identify whether an incomplete operation was cancelled or
+failed, and must not count it as a validated result. Local SQLite work summed to
 654/908 ms; authority phases summed to 3,355/96,889 ms and queue phases to
 2,282/169,504 ms. Concurrent queue durations overlap: their sum is not wall time.
 
@@ -182,12 +186,82 @@ This confirms sensitivity to serialized remote latency; counts alone do not
 identify a specific caller or justify removing an authority check. Online
 performance acceptance and the other full deployment gates remain outstanding.
 
+## Concurrent validation of clean reads
+
+Native SQLite computation and journal inspection remain serialized. Once an
+operation has completed with an empty canonical journal, its owned result may
+wait for its **own** live-fenced head outside the replica mutex. Every read still
+validates the exact schema, revision and owner sequence it computed against.
+There is no shared receipt, read-result cache, TTL authorization or omitted RPC.
+A read's authority decision is still its linearization point; two readers may
+receive independent decisions for the same committed snapshot.
+
+A bounded read barrier admits at most 32 in-flight validations. A writer can
+compute speculatively while older reads wait for the network, but retains the
+FIFO replica mutex and drains every older read before its final CAS. This keeps
+the snapshot stable at those reads' authority decisions. Holding the mutex also
+prevents new readers from starving the waiting writer. Restoration and park
+likewise drain the barrier before resetting a cache or releasing compute.
+
+A failed/cancelled validation poisons the snapshot and best-effort clears its
+slot without awaiting the replica mutex. The poison flag is required when a
+writer already holds that mutex: the writer must discard its speculative delta,
+not commit it after a failed reader. A successful sibling cannot clear poison.
+Only after every reader has dropped, under the replica mutex, may restoration
+reset it. Reader completion does not acquire that mutex, avoiding a writer/drain
+deadlock. Cancelling park before its RPC still does not falsely release ownership.
+
+The deterministic regression holds one real native read at its transport boundary
+and requires a second read to finish using a separate head. The unchanged
+`e816525f` implementation fails this assertion (1.14 seconds, exit 101); the first
+candidate passes it together with write ordering, cancellation before/after a
+read decision, lost receipts, revocation/revision/schema changes, restore after a
+cancelled write, and park/cancel races (46 targeted tests). The bounded candidate
+passes all 48 targeted tests (6.21 seconds), including capacity, drain notification
+ordering and failure poison surviving a successful sibling. Hosted measurements
+and full-suite results are recorded separately; targeted tests are not online
+latency acceptance.
+
+The bounded candidate passes the full native library suite (**1,352 passed /
+8 ignored**, 159.90 seconds), all-targets Clippy with `-D warnings`, and the full
+Cloud suite with actual Host/Edge (**40 files / 243 passed**, 333.87 seconds).
+All nine hosted cases ran; conditional external PostgreSQL evidence remains a
+separate requirement. The native suite and Cloud functional suite overlapped;
+their durations are not controlled performance benchmarks.
+
+The separate real workerd endpoint also passes the complete remote operational
+contract plus restore (2.55 seconds) and all five recovery/fault tests (32.34
+seconds): cancellation/ambiguous commits, native Runtime recovery/delivery,
+credential generation CAS, new-process reconstruction, and independent lease
+renewal while a Store operation exceeds 30 seconds. The test endpoint was then
+stopped through its own cleanup handler; this is not an external PostgreSQL run.
+
+Before those suites, the same isolated native Host/workerd/sandboxed Edge canary
+with 60 ms injected authority latency passed in 133.82 seconds (one selected test,
+eight skipped). Cold-message-to-pending-approval fell from 26.522 to 12.326 seconds,
+decision-to-physical-command from 12.334 to 8.872 seconds, and command-end-to-park
+from 18.141 to 11.580 seconds. These are single test comparisons, not cloud
+percentiles or LLM first-token timings. The fixed synthetic Provider does not
+perform model inference. The command ran once with native sandbox enforcement.
+
+The new report has 1,372 samples, zero rejected/unknown records and one unvalidated
+`undecided` Event query. Summed queue phases fell from 169,504 to 15,545 ms while
+authority phases remained 96,889 versus 89,203 ms. These concurrent phase sums
+are not wall time; each read still pays for its own head RPC. The retained report
+is `/private/tmp/morphz-native-store-profile.BLm7F6/concurrent-read-delay60.json`.
+Host SHA-256 is
+`441c7ac32cd484a9529588fbd6f2335231739192dbcc1a909ce7fae78f347108`;
+the Edge remains `8d73728100620fb1a59062ae4d647d7d1b99b8fdf4281b709342c66f15ae89cf`.
+No new cloud resource, production change or Linux image is implied by this result.
+
 ## Cancellation and recovery
 
-An operation takes its replica out of the shared slot. Only a confirmed operation
-puts it back. Cancellation, transport failure, failed capacity validation, a
-conflicting head or ambiguous commit therefore leaves no reusable speculative
-state. The next operation reconstructs from the remote authority. The client
+Local computation takes its replica out of the shared slot. Only a confirmed
+write puts its changed state back; a journal-empty read can return the unchanged
+replica while its cancellation/validation guard remains active as described
+above. Cancellation, transport failure, failed capacity validation, a conflicting
+head or ambiguous commit leaves no reusable speculative state. The next
+operation reconstructs from the remote authority after pending reads drain. The client
 retries retryable HTTP failures with the **same serialized request**, never by
 rerunning the business operation. It never replays physical tool effects.
 

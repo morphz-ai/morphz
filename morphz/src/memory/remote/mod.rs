@@ -6,6 +6,7 @@ mod lease;
 mod observer_tests;
 pub mod protocol;
 mod quiescence;
+mod read_barrier;
 pub mod recovery;
 mod replica;
 mod timing;
@@ -34,6 +35,7 @@ pub struct RemoteRuntimeStore {
     transport: Arc<dyn RemoteStoreTransport>,
     fence: Fence,
     replica: Mutex<Option<Replica>>,
+    reads: read_barrier::ReadBarrier,
     lost: Arc<AtomicBool>,
     lease_control: Option<Arc<dyn protocol::RemoteStoreLeaseTransport>>,
     _lease_guard: Option<lease::LeaseGuard>,
@@ -68,6 +70,7 @@ impl RemoteRuntimeStore {
             transport,
             fence,
             replica: Mutex::new(None),
+            reads: read_barrier::ReadBarrier::default(),
             lost: Arc::new(AtomicBool::new(false)),
             lease_control: None,
             _lease_guard: None,
@@ -108,6 +111,7 @@ impl RemoteRuntimeStore {
             transport: transport.clone(),
             fence: claimed.fence(),
             replica: Mutex::new(None),
+            reads: read_barrier::ReadBarrier::default(),
             lost,
             lease_control: Some(transport),
             _lease_guard: Some(guard),
@@ -171,6 +175,12 @@ impl RemoteRuntimeStore {
         if !process_idle() {
             return Ok(false);
         }
+        self.reads.wait().await;
+        self.ensure_owned()?;
+        if self.reads.invalidated() {
+            *slot = None;
+        }
+        self.reads.reset()?;
         let mut replica = match slot.take() {
             Some(replica) => replica,
             None => self.restore().await?,
@@ -301,8 +311,17 @@ impl RemoteRuntimeStore {
     {
         let mut timing = timing::OperationTiming::start(name);
         let mut slot = self.replica.lock().await;
+        if self.reads.at_capacity() {
+            self.reads.wait().await;
+        }
         timing.mark(timing::Stage::Restore);
         self.ensure_owned()?;
+        if slot.is_none() || self.reads.invalidated() {
+            self.reads.wait().await;
+            self.ensure_owned()?;
+            *slot = None;
+            self.reads.reset()?;
+        }
         // Taking ownership is a cancellation guard: any dropped future leaves
         // None. A speculative or ambiguously committed cache is never reused.
         let mut replica = match slot.take() {
@@ -322,14 +341,22 @@ impl RemoteRuntimeStore {
         if changes.is_empty() {
             // Reads must not create durable writes merely to prove ownership.
             // The live-fenced head validates the exact snapshot used above.
+            // Local computation stays serialized. Only journal-empty results
+            // release the slot while their independent head RPCs are pending.
+            // A write, restore or park must drain them before proceeding.
             timing.read();
+            let mut validation = self.reads.begin(&self.replica)?;
+            let (schema, revision, sequence) =
+                (replica.schema.clone(), replica.revision, replica.sequence);
+            *slot = Some(replica);
+            drop(slot);
             timing.mark(timing::Stage::Authority);
             let head = self.transport.head(&self.fence).await?;
-            self.validate_head(&head, &replica.schema)?;
-            if head.revision != replica.revision || head.sequence != replica.sequence {
+            self.validate_head(&head, &schema)?;
+            if head.revision != revision || head.sequence != sequence {
                 return Err("remote RuntimeStore changed during read".into());
             }
-            *slot = Some(replica);
+            validation.validated();
             timing.validated();
             return Ok(result);
         }
@@ -351,6 +378,12 @@ impl RemoteRuntimeStore {
         // Native operations returning Err may have deliberately persisted bookkeeping;
         // their delta must be committed before returning that original result.
         timing.commit();
+        timing.mark(timing::Stage::Queue);
+        self.reads.wait().await;
+        self.ensure_owned()?;
+        if self.reads.invalidated() {
+            return Err("remote RuntimeStore write snapshot was invalidated by a read".into());
+        }
         timing.mark(timing::Stage::Authority);
         let head = self.transport.commit(&self.fence, &commit).await?;
         self.validate_head(&head, &replica.schema)?;
