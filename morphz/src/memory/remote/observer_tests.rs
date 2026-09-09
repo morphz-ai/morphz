@@ -24,6 +24,11 @@ struct Authority {
     park_calls: AtomicUsize,
     park_entered: Notify,
     park_release: Notify,
+    head_calls: AtomicUsize,
+    commit_calls: AtomicUsize,
+    commit_mode: AtomicU8,
+    commit_entered: Notify,
+    commit_release: Notify,
 }
 impl Authority {
     fn new() -> Arc<Self> {
@@ -44,6 +49,11 @@ impl Authority {
             park_calls: AtomicUsize::new(0),
             park_entered: Notify::new(),
             park_release: Notify::new(),
+            head_calls: AtomicUsize::new(0),
+            commit_calls: AtomicUsize::new(0),
+            commit_mode: AtomicU8::new(0),
+            commit_entered: Notify::new(),
+            commit_release: Notify::new(),
         })
     }
     async fn owned(
@@ -60,6 +70,7 @@ impl Authority {
 #[async_trait::async_trait]
 impl RemoteStoreTransport for Authority {
     async fn head(&self, fence: &Fence) -> Result<Head, StoreError> {
+        self.head_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.owned(fence).await?.head.clone())
     }
     async fn page(
@@ -78,9 +89,18 @@ impl RemoteStoreTransport for Authority {
         })
     }
     async fn commit(&self, fence: &Fence, request: &Commit) -> Result<Head, StoreError> {
+        self.commit_calls.fetch_add(1, Ordering::SeqCst);
+        let mode = self.commit_mode.swap(0, Ordering::SeqCst);
+        if mode == 1 {
+            self.commit_entered.notify_one();
+            self.commit_release.notified().await;
+        }
         let mut state = self.owned(fence).await?;
-        assert_eq!(state.head.revision, request.base_revision);
-        assert_eq!(state.head.sequence + 1, request.sequence);
+        if state.head.revision != request.base_revision
+            || state.head.sequence + 1 != request.sequence
+        {
+            return Err("test authority: snapshot conflict".into());
+        }
         for change in &request.changes {
             let key = (change.table.clone(), change.key.clone());
             if change.values.is_some() {
@@ -92,7 +112,16 @@ impl RemoteStoreTransport for Authority {
         state.head.schema = Some(request.schema.clone());
         state.head.revision += 1;
         state.head.sequence = request.sequence;
-        Ok(state.head.clone())
+        let head = state.head.clone();
+        drop(state);
+        if mode == 2 {
+            self.commit_entered.notify_one();
+            self.commit_release.notified().await;
+        }
+        if mode == 3 {
+            return Err("test authority: commit receipt lost".into());
+        }
+        Ok(head)
     }
 }
 #[async_trait::async_trait]
@@ -377,4 +406,132 @@ async fn barrier_cannot_certify_a_different_compute_owner_or_epoch() {
     }
     let queue = ObserverQueue::new(fence, 0).unwrap();
     store.install_observer_progress(queue.progress()).unwrap();
+}
+
+// These execute the actual SQLite operation and journal. Only transport
+// receipts are injected; no result/lease is synthesized by a model or UI.
+#[tokio::test]
+async fn remote_execution_uses_one_authority_roundtrip_per_cached_operation() {
+    let (authority, store, _queue) = setup().await;
+    authority.head_calls.store(0, Ordering::SeqCst);
+    authority.commit_calls.store(0, Ordering::SeqCst);
+    store.append(event("committed")).await.unwrap();
+    assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(authority.head_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.query(QueryFilter::default()).await.unwrap().len(), 1);
+    assert_eq!(authority.head_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn remote_execution_does_not_deliver_locally_computed_results_after_revocation() {
+    for write in [false, true] {
+        let (authority, store, _queue) = setup().await;
+        store.append(event("existing")).await.unwrap();
+        let revoked = authority.clone();
+        let result = store
+            .execute(|local| async move {
+                let result = local.query(QueryFilter::default()).await.unwrap();
+                if write {
+                    local.append(event("must-not-escape")).await.unwrap();
+                }
+                revoked.state.lock().await.owner = None;
+                result
+            })
+            .await;
+        assert!(result.unwrap_err().to_string().contains("fenced"));
+        assert!(store.replica.lock().await.is_none());
+        let replacement = RemoteRuntimeStore::connect_owned(authority).await.unwrap();
+        let events = replacement.query(QueryFilter::default()).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "existing");
+    }
+}
+
+#[tokio::test]
+async fn remote_execution_validates_the_exact_read_snapshot_and_write_base() {
+    for write in [false, true] {
+        let (authority, store, _queue) = setup().await;
+        let other = RemoteRuntimeStore::connect(authority.clone(), store.compute_fence())
+            .await
+            .unwrap();
+        let result = store
+            .execute(|local| async move {
+                let result = local.query(QueryFilter::default()).await.unwrap();
+                if write {
+                    local.append(event("rejected-local-write")).await.unwrap();
+                }
+                other
+                    .append(event("concurrent-authority-write"))
+                    .await
+                    .unwrap();
+                result
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(store.replica.lock().await.is_none());
+        let events = store.query(QueryFilter::default()).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "concurrent-authority-write");
+    }
+}
+
+#[tokio::test]
+async fn remote_execution_cancellation_and_lost_receipts_never_promote_speculation() {
+    for mode in [1, 2, 3] {
+        let (authority, store, _queue) = setup().await;
+        authority.commit_mode.store(mode, Ordering::SeqCst);
+        let writer = store.clone();
+        let task = tokio::spawn(async move { writer.append(event("uncertain")).await });
+        if mode != 3 {
+            tokio::time::timeout(Duration::from_secs(5), authority.commit_entered.notified())
+                .await
+                .unwrap();
+            assert!(!task.is_finished());
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            assert!(task.await.unwrap().is_err());
+        }
+        assert!(store.replica.lock().await.is_none());
+        let events = store.query(QueryFilter::default()).await.unwrap();
+        assert_eq!(events.len(), usize::from(mode != 1));
+        store.append(event("next")).await.unwrap();
+        assert_eq!(
+            store.query(QueryFilter::default()).await.unwrap().len(),
+            usize::from(mode != 1) + 1
+        );
+    }
+}
+
+#[tokio::test]
+async fn remote_execution_commits_bookkeeping_before_returning_a_domain_error() {
+    let (authority, store, _queue) = setup().await;
+    authority.commit_calls.store(0, Ordering::SeqCst);
+    let result: Result<Result<(), StoreError>, StoreError> = store
+        .execute(|local| async move {
+            local.append(event("domain-error-bookkeeping")).await?;
+            Err("expected domain error".into())
+        })
+        .await;
+    assert_eq!(
+        result.unwrap().unwrap_err().to_string(),
+        "expected domain error"
+    );
+    assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(store.query(QueryFilter::default()).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn remote_execution_never_delivers_a_read_under_a_changed_schema() {
+    let (authority, store, _queue) = setup().await;
+    let result = store
+        .execute(|local| async move {
+            let result = local.query(QueryFilter::default()).await.unwrap();
+            authority.state.lock().await.head.schema = Some("incompatible-schema".into());
+            result
+        })
+        .await;
+    assert!(result.unwrap_err().to_string().contains("schema mismatch"));
+    assert!(store.replica.lock().await.is_none());
 }

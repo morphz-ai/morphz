@@ -76,6 +76,67 @@ head after reading their computation snapshot. A native operation returning an
 error may have deliberately persisted bookkeeping; that delta is committed before
 returning the original error, just as for a successful result.
 
+### Cached-operation validation (2026-09-09)
+
+The Cloud canary measured thousands of serialized remote `head` requests. After
+removing the gateway's redundant immutable Host identity lookup, a head still
+averaged 64.071 ms; input-to-approval remained 78 seconds. Functional success is
+not latency acceptance. The Rust adapter previously issued a head before every
+SQLite operation as well as a final head/commit afterwards.
+
+A valid cached replica now computes locally without that preliminary head. The
+result is speculative and remains inside `execute`: a read is returned only
+after a live-fenced head confirms the exact schema/revision/owner sequence; a
+write is returned only after the authority's atomic fenced CAS and validated
+receipt. The final authority decision is the linearization point. A preliminary
+head cannot protect the interval after it, so it did not replace either final
+check. No cached authorization, asynchronous write acknowledgement, protocol
+version, data migration, physical command replay or lease-policy change is added.
+
+If another writer changes the snapshot, validation rejects this operation and
+discards the local replica; the next operation restores the authoritative state.
+It does not silently rerun a consumed business closure. Missing replicas, initial
+connection, restoration and quiescent park retain their existing fenced checks.
+This reduces a successful cached operation to one remote authority decision,
+not zero; restoration can still require multiple requests.
+
+Deterministic regressions execute the real SQLite/journal against a faultable
+authority. The unmodified baseline fails the one-roundtrip assertion and passes
+the other five cases: revocation after local computation, concurrent snapshot
+change, cancellation before/after commit and lost receipts, persisted domain-error
+bookkeeping, and changed schema. Final native/workerd and hosted gate results
+must be recorded separately; unit request counts are not an online latency SLA.
+
+Verification after the change:
+
+- All **1,341 native library tests passed / 8 ignored** (133.61 seconds), including
+  all six new regressions. The first outer-sandbox run had 9 Seatbelt nesting
+  failures (`sandbox_apply: Operation not permitted`) and 3 timeout failures;
+  the complete rerun outside that wrapper with two test threads passed without
+  changes to product sandbox policy or those unrelated tests.
+- The actual workerd conformance server passed the full remote RuntimeStore
+  operational/restore case and all **5 recovery/fault cases** (33.22 seconds),
+  including the real 30-second lease while an operation is blocked. The other
+  conformance binary reported 8 passes, but its two conditional PostgreSQL cases
+  had no external URL and are not PostgreSQL deployment evidence.
+- `cargo clippy -p morphz --features remote-store --all-targets -- -D warnings`,
+  formatting and diff validation passed. Existing low-debug build cache reused;
+  no new Docker environment or cloud compute was started for these tests.
+
+The newly built Host passed all **9 actual hosted end-to-end tests** in 323.08
+seconds: product/Provider setup and Edge execution, approval park/restore, idle
+Edge, backup staging, maintenance, SIGKILL/R2 recovery, real deadline/alarm wake,
+ingress racing park and committed-message receipt loss. These use loopback
+workerd, synthetic credentials/Provider and actual local native processes; test
+temporary data is removed by the fixture. Host SHA-256 is
+`fbbcc02f059111b455423b691513057a9c330c3184f080b39f9393bccaf6b1dc`;
+Edge SHA-256 is
+`8d73728100620fb1a59062ae4d647d7d1b99b8fdf4281b709342c66f15ae89cf`.
+
+Linux/online latency comparison remains a separate gate. The previously
+published `905a3cd5` image does not contain this optimization and cannot be used
+as evidence for it. No production store or Provider was changed in these runs.
+
 ## Cancellation and recovery
 
 An operation takes its replica out of the shared slot. Only a confirmed operation

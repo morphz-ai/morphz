@@ -306,17 +306,17 @@ impl RemoteRuntimeStore {
             Some(replica) => replica,
             None => self.restore().await?,
         };
-        let head = self.transport.head(&self.fence).await?;
-        self.validate_head(&head, &replica.schema)?;
-        if head.revision != replica.revision || head.sequence != replica.sequence {
-            replica = self.restore().await?;
-        }
+        // Compute speculatively against the last acknowledged replica. Nothing
+        // escapes this method until the live-fenced head (read) or atomic CAS
+        // receipt (write) validates it below. A pre-read cannot protect that
+        // interval and only adds a serialized network roundtrip. Any conflict
+        // or lost receipt leaves the slot empty, so the next call restores.
         let result = operation(replica.store.clone()).await;
         self.ensure_owned()?;
         let changes = replica.changes().await?;
         if changes.is_empty() {
             // Reads must not create durable writes merely to prove ownership.
-            // A second fenced head validates the exact snapshot used above.
+            // The live-fenced head validates the exact snapshot used above.
             let head = self.transport.head(&self.fence).await?;
             self.validate_head(&head, &replica.schema)?;
             if head.revision != replica.revision || head.sequence != replica.sequence {
