@@ -25,7 +25,7 @@ impl std::fmt::Display for SExpr {
                 Task::Value(SExpr::Atom(s)) => {
                     // Quote and escape values containing whitespace, parentheses, double quotes,
                     // newlines, or other syntax-sensitive characters.
-                    if s.contains(' ')
+                    if s.chars().any(char::is_whitespace)
                         || s.contains('(')
                         || s.contains(')')
                         || s.contains('\'')

@@ -65,6 +65,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "coordination-mesh",
     "to",
     "update-version",
+    "sqlite",
+    "postgres-url-env",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -78,6 +80,8 @@ const SWITCH_OPTIONS: &[&str] = &[
     "include-user-content",
     "allow-training",
     "allow-downgrade",
+    "install",
+    "acknowledge-write-block",
 ];
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
@@ -2344,6 +2348,15 @@ fn storage_command(locale: Locale) -> Command {
             "Inspect and migrate Runtime storage authority",
             "检查并迁移运行时存储权威",
         ))
+        .subcommand(
+            Command::new("session-io-fence")
+                .about("Inspect or explicitly install the experimental Session IO writer fence")
+                .arg(Arg::new("sqlite").long("sqlite").value_name("EXISTING_PATH").required_unless_present("postgres-url-env").conflicts_with("postgres-url-env").help("Existing SQLite database to inspect or explicitly fence"))
+                .arg(Arg::new("postgres-url-env").long("postgres-url-env").value_name("ENV").help("Environment variable containing the dedicated PostgreSQL URL"))
+                .arg(Arg::new("install").long("install").action(ArgAction::SetTrue).requires("acknowledge-write-block").help("Install permanent compatibility guards in one transaction"))
+                .arg(Arg::new("acknowledge-write-block").long("acknowledge-write-block").action(ArgAction::SetTrue).requires("install").help("Acknowledge blocking incompatible writers and backup-only downgrade"))
+                .after_help("Read-only inspection is the default. Installation blocks all incompatible writers, including already connected processes. Back up first. There is no in-place removal; downgrade by restoring the pre-IO backup."),
+        )
         .subcommands([output_examples(
             locale,
             Command::new("migrate-cognitive-store")

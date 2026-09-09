@@ -117,6 +117,32 @@ async fn main() -> Result<(), AppError> {
         generate_completion(&invocation)?;
         return Ok(());
     }
+    if invocation.command_path() == ["storage", "session-io-fence"] {
+        if let Some(cwd) = option_value(&invocation, "cwd") {
+            std::env::set_current_dir(cwd)?;
+        }
+        let install = invocation.has_option("install");
+        let status = if let Some(path) = option_value(&invocation, "sqlite") {
+            let path = std::path::Path::new(path);
+            if install {
+                morphz::session_io::fence::install_sqlite(path).await?
+            } else {
+                morphz::session_io::fence::sqlite_status(path).await?
+            }
+        } else {
+            let name = option_value(&invocation, "postgres-url-env")
+                .ok_or("An explicit database target is required")?;
+            let url = std::env::var(name)
+                .map_err(|_| format!("Missing database URL environment variable: {name}"))?;
+            if install {
+                morphz::session_io::fence::install_postgres(&url).await?
+            } else {
+                morphz::session_io::fence::postgres_status(&url).await?
+            }
+        };
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        return Ok(());
+    }
     if morphz::update::handle(&invocation, locale).await? {
         return Ok(());
     }
@@ -219,16 +245,23 @@ async fn main() -> Result<(), AppError> {
     // This opt-in comes only from the host environment, never project config.
     let host_tools_path = std::env::var_os("MORPHZ_HOST_TOOLS_FILE").map(PathBuf::from);
     let host_tools = if let Some(path) = host_tools_path.as_ref() {
-        let tools = morphz::host_tools::load(path)?;
+        let tools = morphz::host_tools::load_extensions(path)?;
         protected_config_paths.push(path.clone());
         if let Some(parent) = path.parent().filter(|p| p.parent().is_some()) {
             protected_config_paths.push(parent.to_path_buf());
         }
         tools
     } else {
-        Vec::new()
+        morphz::host_tools::HostExtensions {
+            tools: Vec::new(),
+            formats: Vec::new(),
+        }
     };
     let mut app_config = resolved.config;
+    app_config
+        .experimental
+        .session_io_formats
+        .extend(host_tools.formats);
     let explicit_sqlite_path = std::env::var("MORPHZ_STORAGE_SQLITE_PATH")
         .ok()
         .filter(|path| !path.trim().is_empty());
@@ -274,7 +307,7 @@ async fn main() -> Result<(), AppError> {
     let mut runtime_builder = MorphzRuntime::builder(app_config.clone(), client)
         .identity(identity)
         .principal_first_seen_cues(trusted_gateway_serve);
-    for tool in host_tools {
+    for tool in host_tools.tools {
         runtime_builder = runtime_builder.extra_tool(tool);
     }
     let runtime = runtime_builder.build().await?;

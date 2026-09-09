@@ -19,6 +19,13 @@ const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 struct Manifest {
     protocol: u32,
     tools: Vec<Registration>,
+    #[serde(default)]
+    formats: Vec<crate::session_io::Descriptor>,
+}
+
+pub struct HostExtensions {
+    pub tools: Vec<Arc<dyn Tool>>,
+    pub formats: Vec<crate::session_io::Descriptor>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +55,13 @@ struct HostTool {
 }
 
 fn validate(manifest: &Manifest) -> Result<(), Error> {
+    if manifest.formats.len() > 32 {
+        return Err("too many host format definitions".into());
+    }
+    let mut formats = crate::session_io::Registry::default();
+    for format in &manifest.formats {
+        formats.register(format.clone())?;
+    }
     if manifest.protocol != 1 || manifest.tools.is_empty() || manifest.tools.len() > 16 {
         return Err("invalid host tool manifest version or count".into());
     }
@@ -107,6 +121,10 @@ fn validate(manifest: &Manifest) -> Result<(), Error> {
 /// Only the embedding host/CLI calls this, with an explicit absolute path.
 /// The caller must protect this file and its private parent from Agent file access.
 pub fn load(path: &Path) -> Result<Vec<Arc<dyn Tool>>, Error> {
+    Ok(load_extensions(path)?.tools)
+}
+
+pub fn load_extensions(path: &Path) -> Result<HostExtensions, Error> {
     if !path.is_absolute() {
         return Err("host tool manifest path must be absolute".into());
     }
@@ -133,7 +151,7 @@ pub fn load(path: &Path) -> Result<Vec<Arc<dyn Tool>>, Error> {
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(20))
         .build()?;
-    Ok(manifest
+    let tools = manifest
         .tools
         .into_iter()
         .map(|registration| {
@@ -142,7 +160,11 @@ pub fn load(path: &Path) -> Result<Vec<Arc<dyn Tool>>, Error> {
                 client: client.clone(),
             }) as Arc<dyn Tool>
         })
-        .collect())
+        .collect();
+    Ok(HostExtensions {
+        tools,
+        formats: manifest.formats,
+    })
 }
 
 #[async_trait::async_trait]
@@ -246,6 +268,7 @@ mod tests {
         let mut manifest = Manifest {
             protocol: 1,
             tools: vec![tool],
+            formats: vec![],
         };
         assert!(validate(&manifest).is_ok());
         for prefix in [
@@ -264,6 +287,7 @@ mod tests {
         let mut manifest = Manifest {
             protocol: 1,
             tools: vec![registration()],
+            formats: vec![],
         };
         assert!(validate(&manifest).is_ok());
         for endpoint in [

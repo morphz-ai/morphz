@@ -146,6 +146,49 @@ impl SqliteStore {
         db_path: &str,
         config: &SqliteStorageConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::connect_with_config(db_path, config, false).await
+    }
+
+    /// Opens an explicitly selected Runtime writer. This never installs a fence.
+    pub async fn new_for_runtime(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+        cognitive_store: CognitiveStoreBackend,
+        session_io: bool,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(not(feature = "context-db"))]
+        if cognitive_store == CognitiveStoreBackend::ContextDb {
+            return Err(
+                "storage.cognitive_store=context_db requires a ContextDB-enabled binary".into(),
+            );
+        }
+        let store = Self::connect_with_config(db_path, config, session_io).await?;
+        #[cfg(feature = "context-db")]
+        {
+            let mut store = store;
+            let context_db =
+                crate::context_db_runtime::ContextDbRuntimeAdapter::attach(store.pool.clone())
+                    .await?;
+            store
+                .validate_cognitive_store_selection(&context_db, cognitive_store)
+                .await?;
+            if cognitive_store == CognitiveStoreBackend::ContextDb {
+                store.context_db = Some(context_db);
+            }
+            Ok(store)
+        }
+        #[cfg(not(feature = "context-db"))]
+        Ok(store)
+    }
+
+    async fn connect_with_config(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+        session_io: bool,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        if session_io && !cfg!(feature = "experimental-session-io") {
+            return Err("Session IO writer requires experimental-session-io".into());
+        }
         let options = SqliteConnectOptions::new()
             .filename(db_path)
             .create_if_missing(true)
@@ -160,8 +203,15 @@ impl SqliteStore {
 
         // Enable connection-pool concurrency to use WAL's single-writer, multiple-reader model.
         let pool = runtime_sqlite_pool_options(config.max_connections)
+            .after_connect(move |connection, _| {
+                Box::pin(crate::session_io::fence::sqlite_writer(
+                    connection, session_io,
+                ))
+            })
             .connect_with(options)
             .await?;
+
+        crate::session_io::fence::sqlite_check(&mut *pool.acquire().await?, session_io).await?;
 
         let sqlite_version: String = sqlx::query_scalar("SELECT sqlite_version()")
             .fetch_one(&pool)
@@ -2672,7 +2722,7 @@ async fn migrate_bounded_read_model(
             r#"UPDATE thread_activations AS activation
                SET admission_rank = COALESCE((
                  SELECT CASE
-                   WHEN event.type = 'user_message' THEN 0
+                   WHEN event.type IN ('user_message', 'session_message') THEN 0
                    WHEN activation.trigger_kind = 'chat/thread_completion_ready' THEN 1
                    WHEN event.objective_id IS NOT NULL
                      OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
@@ -3803,7 +3853,7 @@ async fn migrate_session_projections(
              AND (session_id IS NOT NULL
                   OR (topic = 'chat/context_observation'
                       AND json_extract(payload, '$.context_wide') = 1))
-             AND type IN ('user_message', 'tool_output', 'agent_call', 'exception', 'file_change')
+             AND type IN ('user_message', 'session_message', 'tool_output', 'agent_call', 'exception', 'file_change')
              AND topic NOT IN ('chat/assistant_call', 'chat/progress', 'chat/no_reply',
                                'chat/context_inspect', 'chat/context_tx_committed',
                                'chat/runtime_error')
@@ -7978,7 +8028,9 @@ async fn append_dialogue_signal_in_transaction(
 
     // Prefer the already-queued next DialogueTurn.  Its model input has not
     // started, so a consecutive user message belongs to that same batch.
-    let queued = if dispatch_mode == MessageDispatchMode::Interrupt {
+    let queued = if dispatch_mode == MessageDispatchMode::Interrupt
+        && event.event_type == crate::event::TYPE_USER_MESSAGE
+    {
         sqlx::query(
             r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
                   thread.generation AS thread_generation
@@ -8033,7 +8085,9 @@ async fn append_dialogue_signal_in_transaction(
         // There may be a durable next batch whose Event+Signal committed just
         // before EventBus created its Activation. Fold into that oldest batch
         // rather than racing a second DialogueTurn into existence.
-        let pending = if dispatch_mode == MessageDispatchMode::Interrupt {
+        let pending = if dispatch_mode == MessageDispatchMode::Interrupt
+            && event.event_type == crate::event::TYPE_USER_MESSAGE
+        {
             sqlx::query(
                 r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
                FROM threads thread
@@ -11940,7 +11994,7 @@ impl ActivationStore for SqliteStore {
                 admission_rank, status, created_at, updated_at)
                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                  COALESCE((SELECT CASE
-                   WHEN event.type = 'user_message' THEN 0
+                   WHEN event.type IN ('user_message', 'session_message') THEN 0
                    WHEN ? = 'chat/thread_completion_ready' THEN 1
                    WHEN event.objective_id IS NOT NULL
                      OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
@@ -12435,7 +12489,7 @@ impl ActivationStore for SqliteStore {
                 admission_rank, status, created_at, updated_at)
                VALUES (?, 1, (SELECT generation FROM threads WHERE root_turn_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?,
                  COALESCE((SELECT CASE
-                   WHEN event.type = 'user_message' THEN 0
+                   WHEN event.type IN ('user_message', 'session_message') THEN 0
                    WHEN ? = 'chat/thread_completion_ready' THEN 1
                    WHEN event.objective_id IS NOT NULL
                      OR json_type(event.payload, '$.objective_evaluation_id') IS NOT NULL
@@ -13317,6 +13371,18 @@ impl ActivationStore for SqliteStore {
             .bind(thread_id)
             .execute(&mut *tx)
             .await?;
+        if event.payload.contains_key("io_message") {
+            let principal = event
+                .payload
+                .get("principal_id")
+                .and_then(JsonValue::as_str)
+                .ok_or("Typed output has no initiating Principal")?;
+            let authorized: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_principal_bindings b JOIN sessions s ON s.id=b.session_id WHERE b.session_id=? AND b.principal_id=? AND b.unbound_at IS NULL AND s.status <> 'archived')")
+                .bind(session_id).bind(principal).fetch_one(&mut *tx).await?;
+            if authorized == 0 {
+                return Err("Typed delivery revoked before commit".into());
+            }
+        }
         let activation_route = sqlx::query(
             r#"SELECT activation.generation AS activation_generation,
                       activation.status AS activation_status,
@@ -18080,6 +18146,64 @@ impl ScheduleStore for SqliteStore {
 
 #[async_trait::async_trait]
 impl DeliveryIngressStore for SqliteStore {
+    async fn commit_io_output(
+        &self,
+        event: &Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let field = |name| {
+            event
+                .payload
+                .get(name)
+                .and_then(JsonValue::as_str)
+                .ok_or("Typed output route is incomplete")
+        };
+        let session = field("session_id")?;
+        let principal = field("principal_id")?;
+        let thread = field("thread_id")?;
+        let activation = field("activation_id")?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE threads SET revision=revision WHERE id=?")
+            .bind(thread)
+            .execute(&mut *tx)
+            .await?;
+        let authorized: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_principal_bindings b JOIN sessions s ON s.id=b.session_id WHERE b.session_id=? AND b.principal_id=? AND b.unbound_at IS NULL AND s.status <> 'archived')").bind(session).bind(principal).fetch_one(&mut *tx).await?;
+        if authorized == 0 {
+            return Err("Principal no longer has access to this Session".into());
+        }
+        let previous: Option<String> = sqlx::query_scalar("SELECT payload FROM events WHERE id=?")
+            .bind(&event.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(previous) = previous {
+            let previous: JsonValue = serde_json::from_str(&previous)?;
+            for key in ["session_id", "principal_id", "root_turn_id", "io_message"] {
+                if previous.get(key) != event.payload.get(key) {
+                    return Err(
+                        "idempotency_conflict: delivery_id already identifies different content"
+                            .into(),
+                    );
+                }
+            }
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let active: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id=t.root_turn_id AND a.generation=t.generation WHERE t.id=? AND t.session_id=? AND a.id=? AND t.status='open' AND t.control_state='active' AND a.status='running' AND NOT EXISTS(SELECT 1 FROM thread_outcomes o WHERE o.root_turn_id=t.root_turn_id))").bind(thread).bind(session).bind(activation).fetch_one(&mut *tx).await?;
+        if active == 0 {
+            return Err("delivery_aborted: activation is cancelled, terminal or superseded".into());
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+    async fn message_event_id(
+        &self,
+        session_id: &str,
+        client_message_id: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar("SELECT event_id FROM session_message_requests WHERE session_id = ? AND client_message_id = ?")
+            .bind(session_id).bind(client_message_id).fetch_optional(&self.pool).await?)
+    }
+
     async fn commit_thread_delivery(
         &self,
         thread_ids: &[String],

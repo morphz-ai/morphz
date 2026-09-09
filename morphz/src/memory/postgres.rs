@@ -54,7 +54,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 // Stable database-scoped lock for schema installation. It is held on a
 // dedicated connection so a Store configured with a one-connection pool can
 // still migrate without deadlocking itself.
-const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
+pub(crate) const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
 const COGNITIVE_STORE_SWITCH_LOCK: i64 = 0x4D4F_5250_485A_0002_i64;
 const THREAD_SIGNAL_NOTIFY_CHANNEL: &str = "morphz_thread_signal_change";
 const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
@@ -235,6 +235,56 @@ impl PostgresStore {
         max_connections: u32,
         observability: Arc<Observability>,
     ) -> Result<Self, StoreError> {
+        Self::connect_for_runtime(database_url, max_connections, observability, false).await
+    }
+
+    /// Opens a compatible writer only when Session IO is explicitly enabled.
+    /// The operator, not this constructor, installs the database fence.
+    pub async fn new_for_runtime(
+        database_url: &str,
+        max_connections: u32,
+        observability: Arc<Observability>,
+        cognitive_store: CognitiveStoreBackend,
+        session_io: bool,
+    ) -> Result<Self, StoreError> {
+        #[cfg(not(feature = "context-db"))]
+        if cognitive_store == CognitiveStoreBackend::ContextDb {
+            return Err(
+                "storage.cognitive_store=context_db requires a ContextDB-enabled binary".into(),
+            );
+        }
+        let store =
+            Self::connect_for_runtime(database_url, max_connections, observability, session_io)
+                .await?;
+        #[cfg(feature = "context-db")]
+        {
+            let mut store = store;
+            let context_db =
+                crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+                    store.pool.clone(),
+                )
+                .await?;
+            store
+                .validate_cognitive_store_selection(&context_db, cognitive_store)
+                .await?;
+            if cognitive_store == CognitiveStoreBackend::ContextDb {
+                store.context_db = Some(context_db);
+            }
+            Ok(store)
+        }
+        #[cfg(not(feature = "context-db"))]
+        Ok(store)
+    }
+
+    async fn connect_for_runtime(
+        database_url: &str,
+        max_connections: u32,
+        observability: Arc<Observability>,
+        session_io: bool,
+    ) -> Result<Self, StoreError> {
+        if session_io && !cfg!(feature = "experimental-session-io") {
+            return Err("Session IO writer requires experimental-session-io".into());
+        }
         let options = database_url
             .parse::<PgConnectOptions>()?
             // As with SQLite, query events are dormant unless an explicit
@@ -255,12 +305,19 @@ impl PostgresStore {
             },
         );
         let mut migration_lock = migration_lock?;
+        crate::session_io::fence::postgres_writer(&mut migration_lock, session_io).await?;
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(SCHEMA_MIGRATION_LOCK)
             .execute(&mut migration_lock)
             .await?;
+        crate::session_io::fence::postgres_check(&mut migration_lock, session_io).await?;
         let pool_connect_started = std::time::Instant::now();
         let pool = PgPoolOptions::new()
+            .after_connect(move |connection, _| {
+                Box::pin(crate::session_io::fence::postgres_writer(
+                    connection, session_io,
+                ))
+            })
             .max_connections(max_connections.max(1))
             // Keep pool admission observable without producing normal service
             // noise: an explicit TRACE subscriber can measure every acquire,

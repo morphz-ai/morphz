@@ -1215,7 +1215,7 @@ fn required_cognitive_coordination_response(
     root: &Event,
     root_turn_id: &str,
 ) -> Option<crate::llm::Response> {
-    if root.event_type != TYPE_USER_MESSAGE
+    if !crate::event::is_input_event(root)
         || root
             .payload
             .get("coordination_mode")
@@ -2926,7 +2926,7 @@ fn prompt_cache_structured_delta(
         .get("text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let form = delta_list(
+    let mut form = delta_list(
         "context-delta",
         vec![
             delta_list(
@@ -2962,6 +2962,13 @@ fn prompt_cache_structured_delta(
             ),
         ],
     );
+    if let Some(definitions) =
+        super::context::render_session_io_definitions(std::slice::from_ref(observation))
+    {
+        if let crate::sexpr::SExpr::List(fields) = &mut form {
+            fields.push(definitions);
+        }
+    }
     Some(PromptCacheStructuredDelta {
         source_sequence: observation.sequence,
         observation_id: observation.id.clone(),
@@ -7580,7 +7587,7 @@ impl Orchestrator {
             }
             return Ok(());
         }
-        if event.event_type != TYPE_USER_MESSAGE
+        if !crate::event::is_input_event(&event)
             && event.event_type != TYPE_SESSION_SIGNAL
             && event.event_type != TYPE_RUNTIME_WAKE
             && event.event_type != TYPE_TOOL_OUTPUT
@@ -7750,7 +7757,10 @@ impl Orchestrator {
         if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
             if matches!(
                 event.event_type.as_str(),
-                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
+                TYPE_USER_MESSAGE
+                    | crate::event::TYPE_SESSION_MESSAGE
+                    | TYPE_SESSION_SIGNAL
+                    | TYPE_RUNTIME_WAKE
             ) && event.timestamp > cancelled_at
             {
                 // A later directed user or internal coordination message
@@ -8214,7 +8224,7 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Thread Activation requires a persistent SessionStore")?;
-        let asserted_principal_id = (event.event_type == TYPE_USER_MESSAGE)
+        let asserted_principal_id = (crate::event::is_input_event(event))
             .then(|| {
                 event
                     .payload
@@ -8243,7 +8253,7 @@ impl Orchestrator {
         // adapters can publish Events directly.  Legacy/system-generated user
         // Events without a Principal remain readable as unattributed facts;
         // an explicit, conflicting Principal is never evaluated.
-        if event.event_type == TYPE_USER_MESSAGE {
+        if crate::event::is_input_event(event) {
             if let Some(principal_id) = asserted_principal_id {
                 if !principal_verified {
                     return Err(format!(
@@ -8318,7 +8328,7 @@ impl Orchestrator {
             }
         }
 
-        if event.event_type != TYPE_USER_MESSAGE {
+        if !crate::event::is_input_event(event) {
             session_store
                 .touch_session(session_id, event.timestamp)
                 .await?;
@@ -8439,7 +8449,7 @@ impl Orchestrator {
         // never inferred from a process-local gate.
         let existing_thread = session_store.get_thread_by_root(&root_turn_id).await?;
         let thread_preexisted = existing_thread.is_some();
-        let requested_target_id = if event.event_type == TYPE_USER_MESSAGE {
+        let requested_target_id = if crate::event::is_input_event(event) {
             event
                 .payload
                 .get("target_id")
@@ -8558,7 +8568,7 @@ impl Orchestrator {
                 return Ok(None);
             }
             existing
-        } else if event.event_type == TYPE_USER_MESSAGE {
+        } else if crate::event::is_input_event(event) {
             // Normal user ingress creates the root Thread in the same durable
             // transaction as the Event. Re-running `ensure_thread` here was a
             // redundant database round trip. The scheduler may trust that
@@ -13447,7 +13457,7 @@ impl Orchestrator {
                         .context_engine
                         .find_event(&activation.context_id, &activation.root_turn_id)
                         .await?
-                        .is_some_and(|root| root.event_type == TYPE_USER_MESSAGE);
+                        .is_some_and(|root| crate::event::is_input_event(&root));
                     if answers_a_waiting_user {
                         self.publish_reply_for_model_attempt(
                             session_id,
@@ -13652,7 +13662,7 @@ impl Orchestrator {
             .context_engine
             .find_event(&activation.context_id, &activation.root_turn_id)
             .await?;
-        if root.is_none_or(|event| event.event_type != TYPE_USER_MESSAGE) {
+        if root.is_none_or(|event| !crate::event::is_input_event(&event)) {
             return Ok(false);
         }
         let store = self
@@ -14393,13 +14403,14 @@ impl Orchestrator {
         }
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
-        let event = Event::new(
+        let mut event = Event::new(
             format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/reply".to_string(),
             payload.into_iter().collect(),
         );
+        self.prepare_io_outcome(&mut event).await?;
         if self.commit_and_dispatch_outcome(attempt_id, &event).await? {
             self.finalize_objective_outcome(event.clone()).await?;
         }
@@ -14863,11 +14874,168 @@ impl Orchestrator {
             .collect())
     }
 
+    async fn prepare_io_outcome(&self, event: &mut Event) -> Result<(), DynError> {
+        use crate::session_io::{AcceptedInput, Content, Limits, Message};
+        if !matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply")
+            || event.payload.contains_key("io_message")
+            || event.payload.contains_key("io_delivery_error")
+        {
+            return Ok(());
+        }
+        let Some(root_id) = event
+            .payload
+            .get("root_turn_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Ok(());
+        };
+        let root = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(root_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        let Some(io) = root
+            .as_ref()
+            .and_then(|root| root.payload.get("session_io"))
+        else {
+            return Ok(());
+        };
+        let input: AcceptedInput = serde_json::from_value(io.clone())?;
+        let initiating_principal = root
+            .as_ref()
+            .and_then(|root| root.payload.get("principal_id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Typed input is missing its authenticated Principal")?;
+        let session_id = event
+            .payload
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Typed delivery is missing its Session")?;
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Typed IO requires a Session store")?;
+        if !session_store
+            .verify_session_principal(session_id, initiating_principal)
+            .await?
+        {
+            event.topic = "session/io_state".into();
+            event
+                .payload
+                .insert("terminal_kind".into(), json!("failed"));
+            event.payload.insert("io_delivery_error".into(), json!({"code":"forbidden","message":"The initiating Principal no longer has access to this Session"}));
+            event.payload.remove("text");
+            return Ok(());
+        }
+        event
+            .payload
+            .insert("principal_id".into(), json!(initiating_principal));
+        // Failure/cancellation control is always available, even when the caller
+        // permits only a domain format. It must not masquerade as a Chat delivery.
+        let failed = event
+            .payload
+            .get("terminal_kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind == "failed" || kind == "cancelled")
+            || event.payload.contains_key("runtime_failure_kind");
+        if failed {
+            event.topic = "session/io_state".into();
+            return Ok(());
+        }
+        let mut outputs: Vec<Message> = self
+            .store
+            .query(QueryFilter {
+                root_turn_id: Some(root_id),
+                topic: Some("session/io_output".into()),
+                after_sequence: Some(0),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter_map(|event| event.payload.get("io_message").cloned())
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()?;
+        let mut error = None;
+        let mut text_message = None;
+        if event.topic == "chat/reply" {
+            let text = event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let mut message = Message::chat(text.clone());
+            if let Some(binding) =
+                input.binding.accept_formats.iter().find(|format| {
+                    format.format.id == "morphz.chat" && format.format.version == "1"
+                })
+            {
+                if binding.format.encoding == "utf8" {
+                    message.content = Content::Utf8 { value: text };
+                }
+            }
+            match crate::session_io::output::validate_output(&input, &message, &Limits::default()) {
+                Ok(()) => {
+                    outputs.push(message.clone());
+                    text_message = Some(message);
+                }
+                Err(failure) => error = Some(failure),
+            }
+        }
+        if error.is_none() && crate::session_io::output::missing_required(&input, &outputs) {
+            error = Some(crate::session_io::IoError::new("required_output_missing", "Required structured output was not committed; physical operations were not retried"));
+        }
+        if let Some(error) = error {
+            event.topic = "session/io_state".into();
+            event
+                .payload
+                .insert("terminal_kind".into(), json!("failed"));
+            event
+                .payload
+                .insert("io_delivery_error".into(), json!(error));
+            event.payload.insert("text".into(), json!(error.message));
+        } else if let Some(message) = text_message {
+            let output_binding = input
+                .binding
+                .accept_formats
+                .iter()
+                .find(|format| {
+                    format.format.id == message.format.id
+                        && format.format.version == message.format.version
+                        && format.format.encoding == message.content.encoding()
+                })
+                .expect("validated output binding");
+            event
+                .payload
+                .insert("io_format_binding".into(), json!(output_binding));
+            let output_id = event
+                .payload
+                .get("model_attempt_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|id| format!("io_text_{id}"))
+                .unwrap_or_else(|| event.id.clone());
+            event.payload.insert("output_id".into(), json!(output_id));
+            event.payload.insert("io_message".into(), json!(message));
+            event
+                .payload
+                .insert("io_limits".into(), json!(input.binding.limits));
+        }
+        Ok(())
+    }
+
     async fn commit_and_dispatch_outcome(
         &self,
         attempt_id: &str,
         event: &Event,
     ) -> Result<bool, DynError> {
+        let mut typed_event = event.clone();
+        self.prepare_io_outcome(&mut typed_event).await?;
+        let event = &typed_event;
         let Some(route) = self.activation_route(attempt_id) else {
             self.bus.publish(event.clone()).await?;
             return Ok(true);
@@ -20400,7 +20568,7 @@ fn activation_admission_key(activation: &ThreadActivationRecord, trigger: &Event
 }
 
 fn activation_admission_class(trigger: &Event) -> AdmissionClass {
-    if trigger.event_type == TYPE_USER_MESSAGE {
+    if crate::event::is_input_event(trigger) {
         AdmissionClass::InteractiveControl
     } else if trigger.topic == "chat/thread_completion_ready" {
         AdmissionClass::Delivery
@@ -22054,7 +22222,10 @@ fn is_dialogue_trigger(event: &Event) -> bool {
     }
     matches!(
         event.event_type.as_str(),
-        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
+        TYPE_USER_MESSAGE
+            | crate::event::TYPE_SESSION_MESSAGE
+            | TYPE_SESSION_SIGNAL
+            | TYPE_RUNTIME_WAKE
     ) || event.topic == "chat/dialogue_retry"
 }
 

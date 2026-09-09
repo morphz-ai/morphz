@@ -477,6 +477,18 @@ struct SnapshotMindRecovery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub io_resources: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_page: Option<crate::session_io::Data>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_limits: Option<crate::session_io::Limits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_message: Option<crate::session_io::Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_format_binding: Option<crate::session_io::FormatBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_io: Option<crate::session_io::AcceptedInput>,
     pub id: String,
     /// Deterministic short reference derived from Event sequence in the current Context, e.g. `@e27`.
     pub reference: String,
@@ -665,6 +677,8 @@ pub struct ActivationFocus {
     /// `root_turn_id` for scheduled Threads, whose stable route ID is
     /// deliberately synthetic.
     pub root_event_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_input_format: Option<crate::session_io::Format>,
     pub thread_kind: String,
     pub root_kind: String,
     pub root_preview: String,
@@ -1349,6 +1363,7 @@ fn select_session_working_set(
 /// Context transactions are validated, committed, and persisted as Events under each
 /// Cognitive Context's mutex. The Orchestrator and `context_tx` tool share the same instance.
 pub struct ContextEngine {
+    typed_chat: bool,
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
     context_store: Option<Arc<dyn ContextStore>>,
@@ -1508,6 +1523,7 @@ impl ContextEngine {
         };
         Self {
             store,
+            typed_chat: false,
             session_store: None,
             context_store: None,
             session_projection_store: None,
@@ -1540,6 +1556,11 @@ impl ContextEngine {
         observability: Arc<crate::observability::Observability>,
     ) -> Self {
         self.observability = observability;
+        self
+    }
+
+    pub fn with_typed_chat(mut self, enabled: bool) -> Self {
+        self.typed_chat = enabled;
         self
     }
 
@@ -3843,7 +3864,7 @@ impl ContextEngine {
                 .iter()
                 .rev()
                 .find(|event| {
-                    event.event_type == TYPE_USER_MESSAGE
+                    crate::event::is_input_event(event)
                         && event_session(event) == Some(active_session_id)
                 })
                 .and_then(event_principal)
@@ -4339,8 +4360,17 @@ impl ContextEngine {
                 .sum::<usize>()
                 + candidate_observations
                     .iter()
-                    .map(|observation| estimate_text_tokens(&observation.preview) + 128)
+                    .map(|observation| {
+                        if observation.session_io.is_some() || observation.io_message.is_some() {
+                            estimate_text_tokens(&render_inbox_observation(observation).to_string())
+                        } else {
+                            estimate_text_tokens(&observation.preview) + 128
+                        }
+                    })
                     .sum::<usize>()
+                + render_session_io_definitions(&candidate_observations)
+                    .map(|definitions| estimate_text_tokens(&definitions.to_string()))
+                    .unwrap_or_default()
                 + 1_000;
             let work_budget = budget_config
                 .context_hard_token_limit
@@ -5696,7 +5726,7 @@ impl ContextEngine {
                     context_id: Some(context_id.to_string()),
                     session_ids: session_ids.to_vec(),
                     include_context_wide: true,
-                    topic: Some("chat/*".to_string()),
+                    topic: Some("chat/*".into()),
                     excluded_topics: vec![
                         "chat/context_inspect".to_string(),
                         "chat/context_tx_committed".to_string(),
@@ -5710,7 +5740,10 @@ impl ContextEngine {
                         context_id: Some(context_id.to_string()),
                         session_ids: session_ids.to_vec(),
                         include_context_wide: true,
-                        topic: Some("context/projected_observation".to_string()),
+                        topics: vec![
+                            "context/projected_observation".into(),
+                            "session/io_output".into(),
+                        ],
                         ..Default::default()
                     })
                     .await?,
@@ -5730,7 +5763,7 @@ impl ContextEngine {
             .store
             .query(QueryFilter {
                 context_id: Some(context_id.to_string()),
-                topic: Some("chat/*".to_string()),
+                topic: Some("chat/*".into()),
                 // Context inspection is a diagnostic artifact containing a
                 // rendered snapshot, not cognitive input. Loading it here used
                 // to recursively materialize hundreds of historical prompts.
@@ -5751,7 +5784,10 @@ impl ContextEngine {
             self.store
                 .query(QueryFilter {
                     context_id: Some(context_id.to_string()),
-                    topic: Some("context/projected_observation".to_string()),
+                    topics: vec![
+                        "context/projected_observation".into(),
+                        "session/io_output".into(),
+                    ],
                     ..Default::default()
                 })
                 .await?,
@@ -5824,11 +5860,24 @@ impl ContextEngine {
                 })
                 .as_deref()
                 == Some("full-event-chunk");
-        let (preview, truncated) = if full_recall_chunk {
-            (text, false)
-        } else {
-            preview_text(&text, self.config.observation_preview_chars)
-        };
+        let recalled = full_recall_chunk
+            .then(|| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .flatten();
+        let standard_chat = self
+            .typed_chat
+            .then(|| crate::session_io::standard_chat_event(event))
+            .flatten();
+        let standard_binding = standard_chat.as_ref().and_then(|message| {
+            crate::session_io::Registry::default()
+                .resolve(&message.format, message.content.encoding(), "registered")
+                .ok()
+        });
+        let (preview, truncated) =
+            if crate::session_io::event_message(event).is_some() || full_recall_chunk {
+                (text, false)
+            } else {
+                preview_text(&text, self.config.observation_preview_chars)
+            };
         let visible_chars = preview.chars().count();
         let representation = if full_recall_chunk {
             "recalled-chunk"
@@ -5838,6 +5887,50 @@ impl ContextEngine {
             "full"
         };
         ContextObservation {
+            io_resources: if self.typed_chat {
+                crate::session_io::resources::event_resources(event)
+            } else {
+                Vec::new()
+            },
+            io_page: recalled
+                .as_ref()
+                .and_then(|value| value.get("typed_page"))
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            io_limits: event
+                .payload
+                .get("io_limits")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            io_message: event
+                .payload
+                .get("io_message")
+                .or_else(|| {
+                    recalled
+                        .as_ref()
+                        .and_then(|value| value.get("typed_message"))
+                        .filter(|value| !value.is_null())
+                })
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .or(standard_chat),
+            io_format_binding: event
+                .payload
+                .get("io_format_binding")
+                .or_else(|| {
+                    recalled
+                        .as_ref()
+                        .and_then(|value| value.get("format_binding"))
+                        .filter(|value| !value.is_null())
+                })
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .or(standard_binding),
+            session_io: event
+                .payload
+                .get("session_io")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
             id: event.id.clone(),
             reference: self.event_reference(event),
             session_id: if event.event_type == TYPE_SESSION_SIGNAL {
@@ -6193,7 +6286,10 @@ fn observation_metadata(
     for event in events {
         if matches!(
             event.event_type.as_str(),
-            TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
+            TYPE_USER_MESSAGE
+                | crate::event::TYPE_SESSION_MESSAGE
+                | TYPE_SESSION_SIGNAL
+                | TYPE_RUNTIME_WAKE
         ) {
             current_turn += 1;
             current_attempt = 0;
@@ -8463,6 +8559,23 @@ struct ContextRenderInput<'a> {
     references: &'a ContextReferences,
 }
 
+fn render_root_input(evaluation: &ActivationFocus, references: &ContextReferences) -> SExpr {
+    if let Some(format) = &evaluation.root_input_format {
+        list(
+            "root-input",
+            vec![
+                pair(
+                    "observation-ref",
+                    atom(references.display(&evaluation.root_event_id)),
+                ),
+                list("format", vec![atom(&format.id), atom(&format.version)]),
+            ],
+        )
+    } else {
+        pair("root-input", atom(&evaluation.root_preview))
+    }
+}
+
 fn render_current_activation(
     evaluation: &ActivationFocus,
     references: &ContextReferences,
@@ -8710,7 +8823,7 @@ fn render_evaluation_directive(
                 ],
             ),
             pair("root-kind", atom(&evaluation.root_kind)),
-            pair("root-input", atom(&evaluation.root_preview)),
+            render_root_input(evaluation, references),
             pair(
                 "identity-boundary",
                 atom("interpret first-person root-input and address the current interlocutor only as activation.principal. Do not transfer another Principal's names, preferences, relationships, permissions, or past statements to this Principal; when attribution is absent or ambiguous, use neutral wording"),
@@ -9900,6 +10013,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         session_directory,
         SExpr::List(kernel),
     ];
+    if let Some(definitions) = render_session_io_definitions(observations) {
+        context.push(definitions);
+    }
     if let Some(capabilities) = render_cognitive_capabilities(capability_bindings) {
         context.push(capabilities);
     }
@@ -9963,7 +10079,91 @@ pub(crate) fn render_context_delta_observation(observation: &ContextObservation)
     render_inbox_observation(observation)
 }
 
+pub(crate) fn render_session_io_definitions(observations: &[ContextObservation]) -> Option<SExpr> {
+    let mut definitions = std::collections::BTreeMap::new();
+    for binding in observations
+        .iter()
+        .filter_map(|observation| observation.io_format_binding.as_ref())
+    {
+        definitions
+            .entry(crate::session_io::hash(binding))
+            .or_insert(binding);
+    }
+    for io in observations
+        .iter()
+        .filter_map(|observation| observation.session_io.as_ref())
+    {
+        for binding in std::iter::once(&io.binding.input).chain(&io.binding.accept_formats) {
+            definitions
+                .entry(crate::session_io::hash(binding))
+                .or_insert(binding);
+        }
+    }
+    if definitions.is_empty() {
+        return None;
+    }
+    Some(list(
+        "application-format-definitions",
+        definitions
+            .into_iter()
+            .map(|(id, definition)| {
+                list(
+                    "format-definition",
+                    vec![
+                        pair("ref", atom(id)),
+                        crate::session_io::Data::from_value(&serde_json::json!(definition))
+                            .expression(),
+                    ],
+                )
+            })
+            .collect(),
+    ))
+}
+
 fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
+    let content = if let Some(page) = &observation.io_page {
+        list("typed-page", vec![page.expression()])
+    } else if let Some(io) = &observation.session_io {
+        let definitions = crate::session_io::projection::input_overhead(&io.binding);
+        crate::session_io::projection::render(
+            &io.request.message,
+            &observation.reference,
+            Some(&io.binding.input),
+            io.binding
+                .limits
+                .max_projection_bytes
+                .saturating_sub(definitions),
+        )
+    } else if let Some(message) = &observation.io_message {
+        let limits = observation.io_limits.clone().unwrap_or_default();
+        crate::session_io::projection::render(
+            message,
+            &observation.reference,
+            observation.io_format_binding.as_ref(),
+            limits
+                .max_projection_bytes
+                .saturating_sub(crate::session_io::projection::resource_bytes(
+                    &observation.io_resources,
+                ))
+                .saturating_sub(
+                    observation
+                        .io_format_binding
+                        .as_ref()
+                        .map(crate::session_io::projection::definition_bytes)
+                        .unwrap_or_default(),
+                ),
+        )
+    } else {
+        list(
+            "content",
+            vec![
+                pair("representation", atom(&observation.representation)),
+                pair("visible-chars", atom(observation.visible_chars.to_string())),
+                pair("total-chars", atom(observation.total_chars.to_string())),
+                pair("text", atom(&observation.preview)),
+            ],
+        )
+    };
     let mut fields = vec![
         pair("ref", atom(&observation.reference)),
         pair("seq", atom(observation.sequence.to_string())),
@@ -9994,16 +10194,66 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
                 &observation.timestamp,
             )),
         ),
-        list(
-            "content",
-            vec![
-                pair("representation", atom(&observation.representation)),
-                pair("visible-chars", atom(observation.visible_chars.to_string())),
-                pair("total-chars", atom(observation.total_chars.to_string())),
-                pair("text", atom(&observation.preview)),
-            ],
-        ),
+        content,
     ]);
+    let resources = observation
+        .session_io
+        .as_ref()
+        .map(|io| &io.binding.resources)
+        .unwrap_or(&observation.io_resources);
+    if !resources.is_empty() {
+        fields.push(list(
+            "resources",
+            vec![crate::session_io::Data::from_value(&serde_json::json!(resources)).expression()],
+        ));
+    }
+    if let Some(io) = &observation.session_io {
+        fields.push(list(
+            "format",
+            vec![
+                atom(&io.binding.input.format.id),
+                atom(&io.binding.input.format.version),
+            ],
+        ));
+        fields.push(pair(
+            "format-binding",
+            atom(crate::session_io::hash(&io.binding.input)),
+        ));
+        fields.push(list(
+            "delivery",
+            vec![
+                list(
+                    "accept",
+                    io.binding
+                        .accept_formats
+                        .iter()
+                        .map(|format| atom(crate::session_io::hash(format)))
+                        .collect(),
+                ),
+                list(
+                    "required",
+                    io.binding
+                        .required_formats
+                        .iter()
+                        .map(|format| {
+                            crate::session_io::Data::from_value(&serde_json::json!(format))
+                                .expression()
+                        })
+                        .collect(),
+                ),
+            ],
+        ));
+    }
+    if let Some(binding) = &observation.io_format_binding {
+        fields.push(list(
+            "format",
+            vec![atom(&binding.format.id), atom(&binding.format.version)],
+        ));
+        fields.push(pair(
+            "format-binding",
+            atom(crate::session_io::hash(binding)),
+        ));
+    }
     if let Some(tool_status) = &observation.tool_status {
         fields.push(pair("tool-status", atom(tool_status)));
     }
@@ -10824,7 +11074,10 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         .rposition(|event| {
             matches!(
                 event.event_type.as_str(),
-                TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE
+                TYPE_USER_MESSAGE
+                    | crate::event::TYPE_SESSION_MESSAGE
+                    | TYPE_SESSION_SIGNAL
+                    | TYPE_RUNTIME_WAKE
             )
         })
         .map(|index| &events[index + 1..])
@@ -10889,7 +11142,7 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
 
 fn wake_for(events: &[Event]) -> WakeSignal {
     let latest = events.iter().rev().find(|event| {
-        event.event_type == TYPE_USER_MESSAGE
+        crate::event::is_input_event(event)
             || event.event_type == TYPE_SESSION_SIGNAL
             || event.event_type == TYPE_RUNTIME_WAKE
             || event.event_type == TYPE_TOOL_OUTPUT
@@ -10912,7 +11165,7 @@ fn wake_for_event(event: &Event) -> WakeSignal {
         .get("tool_name")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
-    let cause = if event.event_type == TYPE_USER_MESSAGE {
+    let cause = if crate::event::is_input_event(event) {
         "user-message"
     } else if event.event_type == TYPE_SESSION_SIGNAL {
         "session-signal"
@@ -11921,7 +12174,16 @@ fn activation_focus(
     } else {
         "execution"
     };
-    let root_preview = if root_kind == "chat/user_message" {
+    let root_input_format = effective_root
+        .and_then(|event| event.payload.get("session_io"))
+        .and_then(|io| io.get("request"))
+        .and_then(|request| request.get("message"))
+        .and_then(|message| message.get("format"))
+        .cloned()
+        .and_then(|format| serde_json::from_value(format).ok());
+    let root_preview = if root_input_format.is_some() {
+        String::new()
+    } else if root_kind == "chat/user_message" {
         dialogue_input_batch_preview(effective_root, signals, events)
     } else {
         bounded_event_preview(effective_root, 1_200)
@@ -11946,6 +12208,7 @@ fn activation_focus(
         thread_kind: thread_kind.to_string(),
         root_kind,
         root_preview,
+        root_input_format,
         trigger_event_id: activation.trigger_event_id.clone(),
         trigger_kind: activation.trigger_kind.clone(),
         trigger_preview: if trigger.is_some_and(|event| event.event_type == TYPE_TOOL_OUTPUT) {
@@ -12109,6 +12372,11 @@ fn event_principal(event: &Event) -> Option<&str> {
 }
 
 fn event_text(event: &Event) -> String {
+    // Recall previews are display-only. Full/Delta Context uses the typed
+    // renderer above, while recall/search must still see all original values.
+    if let Some(message) = crate::session_io::event_message(event) {
+        return message.wire_data().json();
+    }
     if event.topic == "chat/spawn" {
         if let Some(delegation) = event
             .payload
@@ -12476,6 +12744,21 @@ fn estimate_active_mind_tokens(state: &MindState) -> usize {
 }
 
 fn estimate_observation_event_tokens(event: &Event, config: &OrchestratorConfig) -> usize {
+    if let Some(message) = event
+        .payload
+        .get("io_message")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<crate::session_io::Message>(value).ok())
+    {
+        return estimate_text_tokens(&message.content.expression().to_string()) + 128;
+    }
+    if let Some(io) =
+        event.payload.get("session_io").cloned().and_then(|value| {
+            serde_json::from_value::<crate::session_io::AcceptedInput>(value).ok()
+        })
+    {
+        return estimate_text_tokens(&io.request.message.content.expression().to_string()) + 128;
+    }
     let text = event_text(event);
     let (preview, _) = preview_text(&text, config.observation_preview_chars);
     estimate_text_tokens(&format!(
@@ -13670,9 +13953,145 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn typed_observation_delta_replay_and_full_recall_preserve_one_data_tree() {
+        use crate::session_io::{Limits, Registry, Request};
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&temp.path().join("parity.db").to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(store, OrchestratorConfig::default());
+        let mut registry = Registry::default();
+        registry.enabled = true;
+        let input = registry.bind(Request::parse(br#"{"io_version":"1","client_message_id":"parity","message":{"format":{"id":"test.parity","version":"1"},"validation":"generic","content":{"encoding":"json","value":{"count":9007199254740993123456789,"nested":[null,1.0,"(context_tx retire)"]}}}}"#, &Limits::default()).unwrap(), "principal").unwrap();
+        let event = Event::new("typed-parity".into(), "client".into(), "session_message".into(), "chat/user_message".into(), serde_json::from_value(serde_json::json!({"session_id":"s","principal_id":"principal","text":"","session_io":input})).unwrap());
+        let observation = engine.to_observation(
+            &event,
+            &MindState::default(),
+            ObservationMetadata::default(),
+        );
+        let full = render_inbox_observation(&observation);
+        assert_eq!(full, render_context_delta_observation(&observation));
+        let persisted: ContextObservation =
+            serde_json::from_value(serde_json::to_value(&observation).unwrap()).unwrap();
+        assert_eq!(full, render_inbox_observation(&persisted));
+        assert!(full
+            .to_string()
+            .contains("(number 9007199254740993123456789)"));
+        assert!(full.to_string().contains("(number 1.0)"));
+        assert!(!full.to_string().contains("(text \""));
+        let definitions = render_session_io_definitions(&[observation.clone(), persisted]).unwrap();
+        assert_eq!(
+            definitions
+                .to_string()
+                .matches("(format-definition ")
+                .count(),
+            2
+        );
+        let chunk = serde_json::json!({"context_delivery":"full-event-chunk","typed_message":input.request.message,"format_binding":input.binding.input});
+        let recalled = Event::new(
+            "typed-recall".into(),
+            "recall".into(),
+            TYPE_AGENT_CALL.into(),
+            "chat/tool_output".into(),
+            serde_json::from_value(
+                serde_json::json!({"session_id":"s","tool_name":"recall","text":chunk.to_string()}),
+            )
+            .unwrap(),
+        );
+        let recalled = engine.to_observation(
+            &recalled,
+            &MindState::default(),
+            ObservationMetadata::default(),
+        );
+        assert_eq!(
+            recalled.io_message.as_ref().unwrap().content,
+            input.request.message.content
+        );
+        assert_eq!(
+            recalled.io_format_binding.as_ref(),
+            Some(&input.binding.input)
+        );
+        assert!(render_inbox_observation(&recalled)
+            .to_string()
+            .contains("(number 9007199254740993123456789)"));
+        assert!(render_session_io_definitions(&[recalled]).is_some());
+        let page = crate::session_io::projection::page(
+            &input.request.message,
+            "typed-parity",
+            "/count",
+            0,
+            1,
+            4096,
+        )
+        .unwrap();
+        let chunk = serde_json::json!({"context_delivery":"full-event-chunk","typed_page":page});
+        let recalled = Event::new(
+            "typed-page-recall".into(),
+            "recall".into(),
+            TYPE_AGENT_CALL.into(),
+            "chat/tool_output".into(),
+            serde_json::from_value(
+                serde_json::json!({"tool_name":"recall","text":chunk.to_string()}),
+            )
+            .unwrap(),
+        );
+        let observation = engine.to_observation(
+            &recalled,
+            &MindState::default(),
+            ObservationMetadata::default(),
+        );
+        assert_eq!(observation.io_page, Some(page));
+        let full = render_inbox_observation(&observation);
+        assert!(full
+            .to_string()
+            .contains("(number 9007199254740993123456789)"));
+        assert_eq!(full, render_context_delta_observation(&observation));
+        let restored: ContextObservation =
+            serde_json::from_value(serde_json::to_value(&observation).unwrap()).unwrap();
+        assert_eq!(full, render_inbox_observation(&restored));
+        let legacy = Event::new(
+            "old-chat".into(),
+            "Human".into(),
+            TYPE_USER_MESSAGE.into(),
+            "chat/user_message".into(),
+            serde_json::from_value(
+                serde_json::json!({"text":"Keep this original message","session_id":"s"}),
+            )
+            .unwrap(),
+        );
+        assert!(engine
+            .to_observation(
+                &legacy,
+                &MindState::default(),
+                ObservationMetadata::default()
+            )
+            .io_message
+            .is_none());
+        let engine = engine.with_typed_chat(true);
+        let normalized = engine.to_observation(
+            &legacy,
+            &MindState::default(),
+            ObservationMetadata::default(),
+        );
+        assert_eq!(
+            normalized.io_message.unwrap().summary(),
+            "Keep this original message"
+        );
+        assert!(!legacy.payload.contains_key("session_io"));
+    }
+
     #[test]
     fn default_observation_projection_state_is_an_implicit_overlay() {
         let mut observation = ContextObservation {
+            io_resources: Vec::new(),
+            io_page: None,
+            io_limits: None,
+            io_message: None,
+            io_format_binding: None,
+            session_io: None,
             id: "event-1".to_string(),
             reference: "@e1".to_string(),
             session_id: Some("session-1".to_string()),
@@ -15898,6 +16317,12 @@ mod tests {
             id_to_alias: HashMap::from([("user:1".to_string(), "@e7".to_string())]),
         };
         let observations = vec![ContextObservation {
+            io_resources: Vec::new(),
+            io_page: None,
+            io_limits: None,
+            io_message: None,
+            io_format_binding: None,
+            session_io: None,
             id: "user:1".to_string(),
             reference: "@e7".to_string(),
             session_id: Some("s1".to_string()),
@@ -15932,6 +16357,7 @@ mod tests {
             principal_encounter_id: None,
             root_turn_id: "user:1".to_string(),
             root_event_id: "user:1".to_string(),
+            root_input_format: None,
             thread_kind: "dialogue_turn".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "先回答我".to_string(),
@@ -16305,6 +16731,7 @@ mod tests {
             principal_encounter_id: None,
             root_turn_id: "message-new".to_string(),
             root_event_id: "message-new".to_string(),
+            root_input_format: None,
             thread_kind: "dialogue_turn".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "人呢？".to_string(),
@@ -16366,6 +16793,7 @@ mod tests {
             principal_encounter_id: None,
             root_turn_id: "message-resume".to_string(),
             root_event_id: "message-resume".to_string(),
+            root_input_format: None,
             // The physical route began as a user message, but the durable
             // Objective claim promotes its responsibility to Execution.
             thread_kind: "execution".to_string(),
@@ -16434,6 +16862,7 @@ mod tests {
             principal_encounter_id: Some("principal_encounter_event-new".to_string()),
             root_turn_id: "event-new".to_string(),
             root_event_id: "event-new".to_string(),
+            root_input_format: None,
             thread_kind: "dialogue_turn".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "hello".to_string(),
@@ -16757,6 +17186,7 @@ mod tests {
             principal_encounter_id: None,
             root_turn_id: "user:root".to_string(),
             root_event_id: "user:root".to_string(),
+            root_input_format: None,
             thread_kind: "execution".to_string(),
             root_kind: "chat/user_message".to_string(),
             root_preview: "continue".to_string(),
@@ -19935,7 +20365,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter(|event| event.event_type == TYPE_USER_MESSAGE)
+            .filter(|event| crate::event::is_input_event(&event))
             .map(|event| event.id)
             .collect::<BTreeSet<_>>();
         let expected_active_observation_ids = (0..12)

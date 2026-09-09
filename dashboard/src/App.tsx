@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next'
 import { BrandMark } from './BrandMark'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
+import { SessionIoMessage } from './components/SessionIoMessage'
+import { inspectIoMessage } from './app/sessionIo'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -5076,6 +5078,7 @@ export default function App() {
             ? event.payload.activation_id
             : typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
           const resolvesLiveAttempt = event.topic === 'chat/reply'
+            || event.topic === 'session/io_state'
             || event.topic === 'chat/no_reply'
             || event.topic === 'chat/cancelled'
             || event.topic === 'chat/runtime_error'
@@ -8529,7 +8532,7 @@ export default function App() {
                       )}
                       <div className="message-body">
                         {event.topic === 'chat/steering' && <small className="message-input-queue-state" title={String(event.payload.thread_id ?? '')}>@{shortId(String(event.payload.thread_id ?? ''))}</small>}
-                        {typeof event.payload.text === 'string' && event.payload.text.trim()
+                        {inspectIoMessage(event.payload)?.chat === false ? <SessionIoMessage payload={event.payload} /> : typeof event.payload.text === 'string' && event.payload.text.trim()
                           ? <MarkdownBody text={event.payload.text} />
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
                         <RuntimeFailureDetails payload={event.payload} />
@@ -8807,7 +8810,7 @@ export default function App() {
                               />
                             )}
                             <div className="message-body">
-                              {typeof event.payload.text === 'string' && event.payload.text.trim()
+                              {inspectIoMessage(event.payload)?.chat === false ? <SessionIoMessage payload={event.payload} /> : typeof event.payload.text === 'string' && event.payload.text.trim()
                                 ? <MarkdownBody text={event.payload.text} />
                                 : t('conversation.noText')}
                               <RuntimeFailureDetails payload={event.payload} />

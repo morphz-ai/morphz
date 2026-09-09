@@ -1,4 +1,6 @@
-use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+#[cfg(test)]
+use crate::event::TYPE_USER_MESSAGE;
+use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
 use crate::harness::{ExactHarnessRef, HarnessRegistry};
 use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
@@ -1076,7 +1078,7 @@ impl Tool for ObjectiveAmendTool {
         if thread.kind != ThreadKind::DialogueTurn
             || thread.context_id != context_id
             || thread.session_id != session_id
-            || trigger.event_type != TYPE_USER_MESSAGE
+            || !crate::event::is_input_event(&trigger)
         {
             return Err(
                 "objective_amend may only be called by a DialogueTurn triggered by the current user message"
@@ -3257,6 +3259,19 @@ impl ObjectiveSupervisor {
                 .get("objective_generation")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or("Objective interrupt Event is missing objective_generation")?;
+            // An exact reply releases a wait and claims its routed Evaluation.
+            // Keep reconciliation/scheduling out of that intermediate state;
+            // ordinary interrupts still preserve the wait and do not need it.
+            let _reply_guard = if event
+                .payload
+                .get("reply_to_request_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            {
+                Some(self.lock_schedule(objective_id).await)
+            } else {
+                None
+            };
             let Some(objective) = self.store.get_objective(objective_id).await? else {
                 return Ok(RoutedObjectiveEventDisposition::Suppressed);
             };
@@ -3911,7 +3926,12 @@ impl ObjectiveSupervisor {
                     }
                     ObjectiveReadiness::Runnable => {
                         if objective.wait_condition.is_some() {
-                            let mutation = self
+                            let mutation = {
+                                // A routed reply may just have satisfied this
+                                // dependency but not yet claimed its Evaluation.
+                                // Do not clear its wait or race its revision.
+                                let _guard = self.lock_schedule(&objective.id).await;
+                                self
                                 .transition_objective(
                                     &objective,
                                     ObjectiveStatus::Active,
@@ -3922,7 +3942,8 @@ impl ObjectiveSupervisor {
                                     "dependency-terminal",
                                     "ObjectiveSupervisor",
                                 )
-                                .await?;
+                                .await?
+                            };
                             match mutation {
                                 ObjectiveMutation::Updated(updated) => {
                                     Box::pin(self.reconcile(updated)).await?;
@@ -4439,13 +4460,17 @@ impl ObjectiveSupervisor {
         Ok(Some(claimed))
     }
 
-    async fn schedule(self: &Arc<Self>, objective_id: String) -> Result<(), DynError> {
+    async fn lock_schedule(&self, objective_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = self
             .schedule_locks
-            .entry(objective_id.clone())
+            .entry(objective_id.to_owned())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard = lock.lock().await;
+        lock.lock_owned().await
+    }
+
+    async fn schedule(self: &Arc<Self>, objective_id: String) -> Result<(), DynError> {
+        let _guard = self.lock_schedule(&objective_id).await;
         let Some(objective) = self.store.get_objective(&objective_id).await? else {
             return Ok(());
         };
@@ -5183,7 +5208,7 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
             session_id,
             request_id,
         } => {
-            event.event_type == crate::event::TYPE_USER_MESSAGE
+            crate::event::is_input_event(event)
                 && payload_str("session_id") == Some(session_id.as_str())
                 && request_id
                     .as_deref()
@@ -5904,10 +5929,38 @@ mod tests {
             json!(crate::steering::input_request_id(&waiting).unwrap()),
         );
         store.append(wake.clone()).await.unwrap();
-        assert_eq!(
-            supervisor
-                .prepare_routed_event(&wake, "activation-user-wake")
+        // The reply must share the scheduler's critical section until its
+        // exact Activation owns the Evaluation. Otherwise reconciliation can
+        // observe a cleared wait and claim an unrelated continuation first.
+        let schedule_lock = supervisor
+            .schedule_locks
+            .entry(waiting.id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let scheduling = schedule_lock.lock().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut routing = {
+            let supervisor = supervisor.clone();
+            tokio::spawn(async move {
+                let _ = started.send(());
+                supervisor
+                    .prepare_routed_event(&wake, "activation-user-wake")
+                    .await
+            })
+        };
+        ready.await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut routing)
                 .await
+                .is_err(),
+            "An exact reply must not cross a concurrent scheduling critical section"
+        );
+        drop(scheduling);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), routing)
+                .await
+                .unwrap()
+                .unwrap()
                 .unwrap(),
             RoutedObjectiveEventDisposition::Admitted
         );
@@ -5927,6 +5980,125 @@ mod tests {
         let unchanged = store.get_objective(&sibling.id).await.unwrap().unwrap();
         assert_eq!(unchanged.wait_condition, sibling_wait);
         assert!(unchanged.active_evaluation_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_does_not_steal_a_reply_between_dependency_and_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let created = seed_objective_bundle(&store, "reply-reconcile-race").await;
+        let wait = ObjectiveWaitCondition::UserInput {
+            session_id: created.coordinator_session_id.clone(),
+            request_id: Some("exact-question".into()),
+        };
+        let ObjectiveMutation::Updated(waiting) = store
+            .update_objective_state(
+                &created.id,
+                created.revision,
+                ObjectiveStatus::Active,
+                Some(wait.clone()),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Failed to seed pending question")
+        };
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                store.clone() as Arc<dyn ObjectiveStore>,
+                store.clone() as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_scheduler_dependency_store(store.clone() as Arc<dyn SchedulerDependencyStore>),
+        );
+        // Drive reconciliation explicitly so the reply's intermediate state
+        // can be inspected without relying on a background sweep's timing.
+        supervisor.started.store(true, Ordering::Release);
+        store.append(Event::new(
+            "reply".into(), "User".into(), TYPE_USER_MESSAGE.into(), "chat/steering".into(),
+            serde_json::from_value(json!({"context_id": waiting.context_id,
+                "session_id": waiting.coordinator_session_id, "text": "Answer to the pending question"})).unwrap(),
+        )).await.unwrap();
+        let reply_guard = supervisor.lock_schedule(&waiting.id).await;
+        assert!(supervisor
+            .satisfy_wait_dependency(&waiting, &wait, "reply")
+            .await
+            .unwrap());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut reconciliation = {
+            let supervisor = supervisor.clone();
+            let waiting = waiting.clone();
+            tokio::spawn(async move {
+                let _ = started.send(());
+                supervisor.reconcile(waiting).await
+            })
+        };
+        ready.await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut reconciliation)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .get_objective(&waiting.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .wait_condition,
+            Some(wait),
+            "Reconciliation must not clear the reply's wait while it owns scheduling"
+        );
+        let ObjectiveMutation::Updated(woken) = supervisor
+            .transition_objective(
+                &waiting,
+                ObjectiveStatus::Active,
+                None,
+                None,
+                "reply",
+                "ObjectiveSupervisor",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Reconciliation raced the reply's revision")
+        };
+        let claimed = supervisor
+            .claim_routed_evaluation(&woken, "reply", Some("exact-reply-activation"), false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(reply_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(5), reconciliation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .get_objective(&waiting.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .active_evaluation_id,
+            claimed.active_evaluation_id
+        );
+        assert_eq!(
+            supervisor
+                .evaluations
+                .get_for_activation("exact-reply-activation")
+                .unwrap()
+                .evaluation_id,
+            claimed.active_evaluation_id.unwrap()
+        );
     }
 
     #[tokio::test]

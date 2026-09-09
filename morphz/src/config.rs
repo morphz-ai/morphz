@@ -1488,6 +1488,8 @@ pub struct UiConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentalConfig {
     pub enabled: BTreeSet<String>,
+    /// Trusted operator-installed Session IO descriptors, never client input.
+    pub session_io_formats: Vec<crate::session_io::Descriptor>,
     /// Experimental Cognitive Coordination participant and Mesh settings.
     /// Empty configuration keeps the feature visible but fail-closed.
     pub cognitive_coordination: CognitiveCoordinationConfig,
