@@ -430,7 +430,7 @@ async fn remote_execution_does_not_deliver_locally_computed_results_after_revoca
         store.append(event("existing")).await.unwrap();
         let revoked = authority.clone();
         let result = store
-            .execute(|local| async move {
+            .execute("test", |local| async move {
                 let result = local.query(QueryFilter::default()).await.unwrap();
                 if write {
                     local.append(event("must-not-escape")).await.unwrap();
@@ -456,7 +456,7 @@ async fn remote_execution_validates_the_exact_read_snapshot_and_write_base() {
             .await
             .unwrap();
         let result = store
-            .execute(|local| async move {
+            .execute("test", |local| async move {
                 let result = local.query(QueryFilter::default()).await.unwrap();
                 if write {
                     local.append(event("rejected-local-write")).await.unwrap();
@@ -509,7 +509,7 @@ async fn remote_execution_commits_bookkeeping_before_returning_a_domain_error() 
     let (authority, store, _queue) = setup().await;
     authority.commit_calls.store(0, Ordering::SeqCst);
     let result: Result<Result<(), StoreError>, StoreError> = store
-        .execute(|local| async move {
+        .execute("test", |local| async move {
             local.append(event("domain-error-bookkeeping")).await?;
             Err("expected domain error".into())
         })
@@ -526,7 +526,7 @@ async fn remote_execution_commits_bookkeeping_before_returning_a_domain_error() 
 async fn remote_execution_never_delivers_a_read_under_a_changed_schema() {
     let (authority, store, _queue) = setup().await;
     let result = store
-        .execute(|local| async move {
+        .execute("test", |local| async move {
             let result = local.query(QueryFilter::default()).await.unwrap();
             authority.state.lock().await.head.schema = Some("incompatible-schema".into());
             result

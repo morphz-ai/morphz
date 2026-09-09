@@ -137,6 +137,51 @@ Linux/online latency comparison remains a separate gate. The previously
 published `905a3cd5` image does not contain this optimization and cannot be used
 as evidence for it. No production store or Provider was changed in these runs.
 
+## Opt-in operation profiling
+
+`RUST_LOG=warn,morphz::remote_store_timing=debug` enables native operation timing.
+Without that DEBUG target, the instrumentation allocates no record and reads no
+clock. The generated forwarding layer labels calls from the actual RuntimeStore
+trait graph; it does not maintain a separate hand-written method registry.
+
+Each record contains exactly ten fields: the closed operation name, read/commit/
+undecided mode, a validated-receipt flag, six phase durations (queue, restore,
+local SQLite, journal, authority, finalize), and total microseconds. Unknown
+labels become `unknown`. Arguments, IDs, paths, event content, credentials and
+error text are never part of this record. A validated receipt is not necessarily
+a successful business result: native error bookkeeping can be committed too.
+Cancellation/error drops record the incomplete operation without acknowledging
+its speculative state. Process kills cannot report futures that never drop.
+Connect/initial restoration and `try_park` are outside this method-level scope.
+
+The Cloud repository's `hosted-runtime.test.mjs` supports explicit numerical-only
+profiling with `MORPHZ_TEST_STORE_PROFILE=/absolute/new-report.json`. Its optional
+`MORPHZ_TEST_STORE_LATENCY_MS=60` delays the real loopback authority requests;
+it is test-only, bounded to 0–100 ms, and requires an output profile. It does not
+replace the authority, relax fencing or alter production configuration. Reports
+must not already exist. The collector keeps bounded, separate process streams,
+rejects nonconforming records and persists aggregates, not raw Host logs.
+
+On 2026-09-09, the actual native Host + workerd + sandboxed Edge product canary
+passed both without injected latency (104.67 seconds) and with 60 ms injected
+per authority request (161.02 seconds). Each run verified four product gates,
+exactly one physical command, and native sandbox enforcement. The baseline
+overlapped Clippy, so these are diagnostic observations, not controlled CPU/SLO
+benchmarks. Input-to-approval was 1.789 versus 26.522 seconds; decision-to-command
+was 1.677 versus 12.334 seconds. The respective 1,270 and 1,483 operation samples
+contained zero rejected/unknown/unvalidated records. Local SQLite work summed to
+654/908 ms; authority phases summed to 3,355/96,889 ms and queue phases to
+2,282/169,504 ms. Concurrent queue durations overlap: their sum is not wall time.
+
+The instrumented revision passed all **1,344 native library tests / 8 ignored**
+(122.69 seconds), all 40 targeted remote-store tests, and all-targets Clippy with
+`-D warnings`. These include existing ownership/cancellation/error regressions;
+the instrumentation has not changed the remote-store protocol or schema.
+
+This confirms sensitivity to serialized remote latency; counts alone do not
+identify a specific caller or justify removing an authority check. Online
+performance acceptance and the other full deployment gates remain outstanding.
+
 ## Cancellation and recovery
 
 An operation takes its replica out of the shared slot. Only a confirmed operation

@@ -21,6 +21,7 @@ pub fn generate() {
     let mut pending = vec!["RuntimeStore".to_owned()];
     let mut visited = BTreeSet::new();
     let mut implementations = Vec::new();
+    let mut operation_names = Vec::new();
     while let Some(name) = pending.pop() {
         if !visited.insert(name.clone()) {
             continue;
@@ -69,8 +70,10 @@ pub fn generate() {
                             },
                         })
                         .collect();
+                    let operation_name = format!("{name}::{method_name}");
+                    operation_names.push(operation_name.clone());
                     quote! {
-                        self.execute(|store| async move {
+                        self.execute(#operation_name, |store| async move {
                             #name::#method_name(&*store, #(#args),*).await
                         }).await?
                     }
@@ -97,9 +100,10 @@ pub fn generate() {
                 .join("\n")
         ));
     }
+    let names = quote! { const REMOTE_STORE_OPERATION_NAMES: &[&str] = &[#(#operation_names),*]; };
     std::fs::write(
         std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("remote_store_impls.rs"),
-        implementations.join("\n"),
+        format!("{names}\n{}", implementations.join("\n")),
     )
     .expect("write remote Store implementations");
 }

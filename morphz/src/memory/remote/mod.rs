@@ -8,6 +8,7 @@ pub mod protocol;
 mod quiescence;
 pub mod recovery;
 mod replica;
+mod timing;
 
 use super::*;
 use crate::event::Event;
@@ -292,13 +293,15 @@ impl RemoteRuntimeStore {
         Ok(replica)
     }
 
-    async fn execute<T, F, Fut>(&self, operation: F) -> Result<T, StoreError>
+    async fn execute<T, F, Fut>(&self, name: &'static str, operation: F) -> Result<T, StoreError>
     where
         T: Send,
         F: FnOnce(Arc<sqlite::SqliteStore>) -> Fut + Send,
         Fut: Future<Output = T> + Send,
     {
+        let mut timing = timing::OperationTiming::start(name);
         let mut slot = self.replica.lock().await;
+        timing.mark(timing::Stage::Restore);
         self.ensure_owned()?;
         // Taking ownership is a cancellation guard: any dropped future leaves
         // None. A speculative or ambiguously committed cache is never reused.
@@ -311,18 +314,23 @@ impl RemoteRuntimeStore {
         // receipt (write) validates it below. A pre-read cannot protect that
         // interval and only adds a serialized network roundtrip. Any conflict
         // or lost receipt leaves the slot empty, so the next call restores.
+        timing.mark(timing::Stage::Local);
         let result = operation(replica.store.clone()).await;
         self.ensure_owned()?;
+        timing.mark(timing::Stage::Journal);
         let changes = replica.changes().await?;
         if changes.is_empty() {
             // Reads must not create durable writes merely to prove ownership.
             // The live-fenced head validates the exact snapshot used above.
+            timing.read();
+            timing.mark(timing::Stage::Authority);
             let head = self.transport.head(&self.fence).await?;
             self.validate_head(&head, &replica.schema)?;
             if head.revision != replica.revision || head.sequence != replica.sequence {
                 return Err("remote RuntimeStore changed during read".into());
             }
             *slot = Some(replica);
+            timing.validated();
             return Ok(result);
         }
         let commit = Commit {
@@ -342,15 +350,19 @@ impl RemoteRuntimeStore {
         }
         // Native operations returning Err may have deliberately persisted bookkeeping;
         // their delta must be committed before returning that original result.
+        timing.commit();
+        timing.mark(timing::Stage::Authority);
         let head = self.transport.commit(&self.fence, &commit).await?;
         self.validate_head(&head, &replica.schema)?;
         if head.revision != replica.revision + 1 || head.sequence != commit.sequence {
             return Err("invalid remote RuntimeStore commit receipt".into());
         }
+        timing.mark(timing::Stage::Finalize);
         replica.clear_journal().await?;
         replica.revision = head.revision;
         replica.sequence = head.sequence;
         *slot = Some(replica);
+        timing.validated();
         Ok(result)
     }
 }
