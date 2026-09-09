@@ -1,0 +1,19 @@
+(manifest
+  (id file-review)
+  (version "1.0.0")
+  (title "File Review")
+  (capabilities (tools read)))
+
+(contract
+  (purpose "Review the supplied file for concrete issues.")
+  (output "Explain each issue and its impact. Do not invent test results."))
+
+(eval
+  (requires (tools read))
+  (seq
+    (bind document
+      (call read (path "README.md")))
+    (infer
+      (captures document)
+      (returns String)
+      "Review this document using the current contract.")))
