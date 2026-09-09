@@ -11,15 +11,15 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.getByLabel("新对象标题").fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "导入资料", exact: true }).click();
+  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "导入资料" });
   await dialog
     .getByLabel("选择资料文件")
     .setInputFiles(
       fileURLToPath(new URL("./fixtures/reader.pdf", import.meta.url)),
     );
-  await dialog.getByRole("button", { name: "导入 1 篇资料" }).click();
-  await expect(dialog.getByRole("status")).toHaveText("已导入 1 篇");
+  await dialog.getByRole("button", { name: "导入 1 份资料" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("已导入 1 份");
   await dialog.getByRole("button", { name: "打开", exact: true }).click();
   await expect(page.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
   await expect(page.locator(".pdf-text-layer")).toContainText("合成测试资料");
@@ -38,7 +38,7 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page
     .locator(".pdf-page")
     .screenshot({ path: "test-results/pdf-page.png" });
-  await page.getByRole("button", { name: "搜索工作空间", exact: true }).click();
+  await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   await page.getByLabel("全文搜索").fill("durable butterfly");
   await page.getByLabel("搜索项目范围").selectOption({ label: title });
   await expect(page.getByRole("dialog").getByText(/第 2 页/)).toBeVisible();

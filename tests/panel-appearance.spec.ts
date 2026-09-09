@@ -6,7 +6,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page
     .getByLabel("新对象标题", { exact: true })
     .fill("整理品牌与产品资料");
@@ -26,7 +26,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       await page.getByRole("button", { name: appearance, exact: true }).click();
       await page.getByRole("button", { name: color, exact: true }).click();
       await page.keyboard.press("Control+k");
-      const search = page.getByRole("dialog", { name: "搜索工作空间" });
+      const search = page.getByRole("dialog", { name: "搜索资料" });
       const field = page.getByLabel("全文搜索");
       await expect(field).toBeFocused();
       await expect(search.locator(".search-field")).toHaveCSS(
@@ -62,7 +62,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         "2px",
       );
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "通知", exact: true }).click();
+      await page.getByRole("button", { name: /^通知(?:，|$)/ }).click();
       const notifications = page.getByRole("dialog", {
         name: "通知",
         exact: true,

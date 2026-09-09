@@ -63,19 +63,21 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     .getByRole("button", { name: "更多输入选项" });
   await page.getByLabel("AI 输入内容").fill("打开执行记录时保留的草稿");
   await composerAction(page, "执行记录与审批");
-  const dialog = page.getByRole("dialog", { name: "执行记录", exact: true });
+  const dialog = page.getByRole("complementary", {
+    name: "执行面板",
+    exact: true,
+  });
+  await dialog.getByText("其他后台执行与审批", { exact: true }).click();
   await expect(dialog.getByText("需要你的批准")).toBeVisible();
   for (const width of [1440, 1000, 760, 390]) {
     await page.setViewportSize({ width, height: 800 });
     const bounds = (await dialog.boundingBox())!;
     const workspace = (await page.locator(".workspace").boundingBox())!;
     expect(
-      Math.abs(bounds.x + bounds.width / 2 - workspace.x - workspace.width / 2),
-    ).toBeLessThan(1);
-    expect(Math.abs(bounds.y + bounds.height / 2 - 400)).toBeLessThan(1);
-    expect(bounds.x).toBeGreaterThanOrEqual(workspace.x + 19);
-    expect(bounds.y).toBeGreaterThanOrEqual(23);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(777);
+      Math.abs(bounds.x + bounds.width - workspace.x - workspace.width),
+    ).toBeLessThan(2);
+    expect(bounds.x).toBeGreaterThanOrEqual(workspace.x);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(800);
     await expect(
       dialog.getByRole("button", { name: "仅允许这一次" }),
     ).toBeVisible();
@@ -99,16 +101,14 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await page.screenshot({ path: "test-results/execution-dialog.png" });
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
-  await expect(trigger).toBeFocused();
-  await expect(page.getByLabel("AI 输入内容")).toHaveValue(
-    "打开执行记录时保留的草稿",
-  );
+  await expect(page.getByLabel("查看执行面板", { exact: true })).toBeFocused();
+  await expect(await openInput(page)).toHaveValue("打开执行记录时保留的草稿");
   await page.getByLabel("隐藏侧边栏").click();
   // Losing focus has hidden the unpinned exchange; reopen it explicitly.
   await openInput(page);
   await composerAction(page, "执行记录与审批");
   const collapsed = (await dialog.boundingBox())!;
-  expect(Math.abs(collapsed.x + collapsed.width / 2 - 720)).toBeLessThan(1);
+  expect(Math.abs(collapsed.x + collapsed.width - 1440)).toBeLessThan(2);
   await page.keyboard.press("Escape");
   for (const width of [760, 390, 320]) {
     await page.setViewportSize({ width, height: 800 });

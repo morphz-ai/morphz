@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import { openLibrary } from "./application-helpers.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
+import { humanTask } from "./artifact-fixtures.js";
+import type { Boot } from "../apps/web/src/client.js";
 
 test("保存回执和断线不增设底栏或挤动页面；关键信息留在消息和连接入口", async ({
   page,
@@ -55,10 +58,9 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   const input = await openInput(page);
   await input.fill("这段草稿不能被入口覆盖");
   for (const [button, intent] of [
-    ["新建事项", "安排事项"],
-    ["新建文档", "创作文档"],
+    ["让 Morphz 起草", "创作文档"],
     ["添加网站", "添加网站"],
-    ["新建交互产物", "制作表格或报告"],
+    ["制作表格或报告", "制作表格或报告"],
   ] as const) {
     await page
       .locator(".creation-actions")
@@ -111,7 +113,7 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   expect(after.workspace.inputs.length).toBe(initial.workspace.inputs.length);
   await page.screenshot({ path: "test-results/agent-first-composer.png" });
   await page.getByLabel("收起 AI 输入框").click();
-  await page.getByLabel("关闭应用 资料", { exact: true }).click();
+  await page.getByLabel("关闭应用 内容", { exact: true }).click();
 });
 
 test("事项意图按空间保存；请求失败留草稿，未连接不冒充创建", async ({
@@ -162,10 +164,100 @@ test("事项意图按空间保存；请求失败留草稿，未连接不冒充�
       (p: { id: string }) => p.id === recorded.projectId,
     ).kind,
   ).toBe("inbox");
+  expect(recorded.conversationId).toBe("local-dialogue");
   expect(saved.workspace.artifacts.length).toBe(
     initial.workspace.artifacts.length,
   );
   expect(saved.workspace.inputs.length).toBe(
     initial.workspace.inputs.length + 1,
+  );
+});
+
+test("关联跟随当前视图和事项，只作用于新输入，不切换持续会话或改写旧输入", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const initial: Boot = await (await page.request.get("/api/workspace")).json();
+  const title = "下一次输入的关联事项";
+  const created = await page.request.post("/api/commands", {
+    headers: {
+      "X-MorphzWork-Token": initial.csrfToken,
+      Origin: "http://127.0.0.1:65421",
+    },
+    data: {
+      commandId: randomUUID(),
+      operation: {
+        type: "create-artifact",
+        projectId: "first-project",
+        conversationId: "local-dialogue",
+        title,
+        content: humanTask("用于验证对象关联，不执行"),
+      },
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const { entityId } = await created.json();
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  const savedInputs: Boot["workspace"]["inputs"] = [];
+  const saveInput = async (
+    body: string,
+    projectId: string,
+    artifactId: string | null = null,
+  ) => {
+    await (await openInput(page)).fill(body);
+    await page.getByRole("button", { name: "保存输入", exact: true }).click();
+    await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
+    const boot: Boot = await (await page.request.get("/api/workspace")).json();
+    const recorded = boot.workspace.inputs.find((i) => i.body === body)!;
+    expect(recorded).toMatchObject({
+      projectId,
+      conversationId: "local-dialogue",
+      artifactId,
+      artifactRevision: artifactId ? 1 : null,
+    });
+    for (const previous of savedInputs)
+      expect(boot.workspace.inputs.find((i) => i.id === previous.id)).toEqual(
+        previous,
+      );
+    savedInputs.push(recorded);
+  };
+  for (const [label, kind] of [
+    ["对话", "dialogue"],
+    ["事项", "inbox"],
+    ["工作台", "desk"],
+  ] as const) {
+    await nav
+      .getByRole("button", {
+        name: label === "事项" ? /^事项/ : label,
+        exact: label !== "事项",
+      })
+      .click();
+    await openInput(page);
+    await expect(page.locator(".composer .context-chip")).toHaveText(label);
+    const space = initial.workspace.projects.find((p) => p.kind === kind)!;
+    await saveInput(`在${label}保存的关联测试`, space.id);
+  }
+  await nav.getByRole("button", { name: /^事项/ }).click();
+  await page
+    .getByRole("button", { name: "打开事项", exact: true })
+    .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
+    .click();
+  await openInput(page);
+  await expect(page.locator(".composer .context-chip")).toHaveText(title);
+  await expect(
+    page
+      .getByRole("banner", { name: "事项工具栏" })
+      .getByRole("button", { name: "事项", exact: true }),
+  ).toBeVisible();
+  await saveInput("围绕这件事项补充信息", "first-project", entityId);
+  await page
+    .locator(".composer")
+    .screenshot({ path: "test-results/task-input-association.png" });
+  await nav.getByRole("button", { name: /^事项/ }).click();
+  await openInput(page);
+  await expect(page.locator(".composer .context-chip")).toHaveText("事项");
+  await saveInput(
+    "回到事项列表后不沿用对象",
+    initial.workspace.projects.find((p) => p.kind === "inbox")!.id,
   );
 });

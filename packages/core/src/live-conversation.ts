@@ -11,6 +11,8 @@ export const liveMessageSchema = z.object({
   text: z.string(),
   kind: z.enum(["reply", "progress", "error", "tool"]),
   streaming: z.boolean().optional(),
+  publicationKey: z.string().optional(),
+  threadId: z.string().optional(),
   tool: z
     .object({
       name: z.string(),
@@ -74,6 +76,12 @@ export class LiveConversationProjection {
       ...this.route(e),
       id: e.id,
       createdAt: e.timestamp,
+      ...(typeof e.payload.attempt_id === "string"
+        ? { publicationKey: e.payload.attempt_id }
+        : {}),
+      ...(typeof e.payload.thread_id === "string"
+        ? { threadId: e.payload.thread_id }
+        : {}),
       text: "",
       kind: "reply",
     };
@@ -133,7 +141,10 @@ export class LiveConversationProjection {
       }
       const a = this.attempts.get(attemptId);
       if (!a) return; // Reconnect suffixes must never masquerade as complete prefixes.
-      if (kind === "text_delta") a.message.text += str(s.text);
+      if (kind === "text_delta") {
+        if (!a.message.text) a.message.createdAt = e.timestamp;
+        a.message.text += str(s.text);
+      }
       const index = typeof s.index === "number" ? s.index : -1;
       if (kind === "tool_call_started")
         a.tools.set(index, {

@@ -7,7 +7,7 @@ test("导入资料、搜索正文、引用提问与旧版本打开", async ({ pa
   await page.getByLabel("新对象标题").fill(name);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "导入资料", exact: true }).click();
+  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "导入资料" });
   await dialog.getByLabel("选择资料文件").setInputFiles([
     {
@@ -26,14 +26,14 @@ test("导入资料、搜索正文、引用提问与旧版本打开", async ({ pa
   await expect(
     dialog.getByText("隐藏文件、依赖目录和构建产物不作为资料导入。"),
   ).toBeVisible();
-  await dialog.getByRole("button", { name: "导入 1 篇资料" }).click();
-  await expect(dialog.getByRole("status")).toHaveText("已导入 1 篇");
+  await dialog.getByRole("button", { name: "导入 1 份资料" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("已导入 1 份");
   await dialog.getByRole("button", { name: "打开", exact: true }).click();
   await expect(page.locator(".source-strip")).toContainText("产品说明.md");
-  await page.getByRole("button", { name: "搜索工作空间", exact: true }).click();
+  await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   await page.getByLabel("全文搜索").fill("蝴蝶资料检索");
   await page.getByLabel("搜索项目范围").selectOption({ label: name });
-  const search = page.getByRole("dialog", { name: "搜索工作空间" });
+  const search = page.getByRole("dialog", { name: "搜索资料" });
   await expect(search.getByText("找到 1 项内容")).toBeVisible();
   await expect(
     search.locator(".workspace-search-results article > p"),

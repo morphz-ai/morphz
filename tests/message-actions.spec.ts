@@ -48,7 +48,10 @@ test("已完成的人类消息不为隐藏操作留出空行，悬停操作在�
       await expect(message.locator(".message-peek")).toHaveCSS("opacity", "1");
       expect((await message.boundingBox())!.height).toBe(bubble.height);
       const actions = (await message.locator(".message-peek").boundingBox())!;
-      expect(Math.abs(actions.y - bubble.y - bubble.height)).toBeLessThan(1);
+      const afterHover = (await message.boundingBox())!;
+      expect(
+        Math.abs(actions.y - afterHover.y - afterHover.height),
+      ).toBeLessThan(1);
       const column = (await page
         .getByRole("log", { name: "对话消息" })
         .boundingBox())!;

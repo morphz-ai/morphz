@@ -21,13 +21,13 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     await openLibrary(page);
     await page
       .locator(".library-authoring-options")
-      .getByRole("button", { name: "自己写文档", exact: true })
+      .getByRole("button", { name: "手动写文档", exact: true })
       .click();
     await page.getByLabel("新对象标题", { exact: true }).fill(label + "文档");
     await page.getByLabel("新文档正文").fill(label + " 的独立内容。");
     await page.getByRole("button", { name: "创建", exact: true }).click();
     await expect(page.locator(".object-paper > h1")).toHaveText(label + "文档");
-    await page.getByLabel("AI 输入内容").fill(label + " 的对象消息");
+    await (await openInput(page)).fill(label + " 的对象消息");
     await page.getByRole("button", { name: "保存输入", exact: true }).click();
     await expect(page.locator(".conversation-heading")).toHaveCount(0);
     await expect(page.locator(".composer .context-chip")).toContainText(
@@ -38,6 +38,8 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     );
   }
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  await openLibrary(page);
+  await expect(page.getByLabel("内容范围", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("region", { name: "认知应用工作空间" }),
   ).not.toContainText("导航甲文档");
@@ -65,16 +67,19 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   await expect(page.locator(".object-paper > h1")).toHaveText("导航甲文档");
   const conversation = () => composerAction(page, "查看交流记录");
   if (await page.getByLabel("查看交流记录").isVisible()) await conversation();
-  await expect(page.locator(".human-message")).toContainText(
-    "导航甲 的对象消息",
-  );
-  await expect(page.locator(".human-message")).not.toContainText("导航乙");
+  await expect(
+    page.locator(".human-message").filter({ hasText: "导航甲 的对象消息" }),
+  ).toHaveCount(1);
+  await expect(
+    page.locator(".human-message").filter({ hasText: "导航乙 的对象消息" }),
+  ).toHaveCount(1);
   await nav.getByRole("button", { name: "项目", exact: true }).click();
   await expect(page.getByRole("region", { name: "项目目录" })).toBeVisible();
   await page.getByLabel("搜索项目", { exact: true }).fill("导航甲");
   await expect(page.locator(".project-card")).toHaveCount(1);
   await page.locator(".project-card").click();
   await openLibrary(page);
+  await expect(page.getByLabel("内容范围", { exact: true })).toHaveCount(0);
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await expect(page.locator(".artifact-card")).toContainText("导航甲文档");
   await page.reload();

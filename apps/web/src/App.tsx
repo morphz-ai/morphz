@@ -8,11 +8,14 @@ import {
 import { createPortal } from "react-dom";
 import {
   ArrowUp,
+  ArrowLeft,
+  ArrowRight,
   ChevronDown,
   Inbox,
   Layers2,
+  Library,
   MessageCircle,
-  PanelRight,
+  MessageSquareText,
   Palette,
   PanelsTopLeft,
   Plus,
@@ -20,7 +23,6 @@ import {
   Link2,
   MessageSquarePlus,
   RefreshCw,
-  Folder,
   ChevronRight,
   PanelLeft,
   CircleCheck,
@@ -39,7 +41,7 @@ import {
 import {
   inboxFor,
   spaceKind,
-  discussionId,
+  inConversation,
   type Artifact,
   type TaskContent,
 } from "../../../packages/core/src/model.js";
@@ -51,12 +53,15 @@ import {
   storageScope,
 } from "./client.js";
 import { ArtifactEditor } from "./ArtifactEditor.js";
+import { ModelPicker } from "./ModelPicker.js";
+import { ConnectionDetails } from "./ConnectionDetails.js";
 import {
   inputIntents,
   type InputIntent,
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
-import { ExecutionDialog } from "./ExecutionDialog.js";
+import { ExecutionSidebar } from "./ExecutionSidebar.js";
+import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
 import { ComposerOptions } from "./ComposerOptions.js";
@@ -75,8 +80,10 @@ import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
 import { useExchangeFocus } from "./useExchangeFocus.js";
 
-type View = "dialogue" | "inbox" | "desk" | "projects";
+type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type Preferences = {
+  executionPinned?: boolean;
+  executionWidth?: number;
   accent: "cyan" | "iris" | "coral" | "mono";
   appearance: "system" | "light" | "dark";
   view: View;
@@ -95,6 +102,7 @@ type Preferences = {
   selectedConversations?: Record<string, string>;
 };
 type InputDraft = {
+  model?: string;
   body: string;
   intent?: InputIntent;
   taskResult?: { taskId: string; revision: number };
@@ -102,6 +110,16 @@ type InputDraft = {
   revision: number | null;
   page?: number;
 };
+type NavigationPlace = Pick<
+  Preferences,
+  | "view"
+  | "projectId"
+  | "projectOpen"
+  | "artifactId"
+  | "artifactRevision"
+  | "artifactPage"
+  | "applications"
+>;
 const defaultPrefs: Preferences = {
   accent: "cyan",
   appearance: "system",
@@ -119,6 +137,7 @@ const emptyDraft: InputDraft = { body: "", selection: "", revision: null };
 const labels: Record<View, string> = {
   dialogue: "对话",
   inbox: "事项",
+  content: "内容",
   desk: "工作台",
   projects: "项目",
 };
@@ -206,12 +225,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       accent: ["cyan", "iris", "coral", "mono"].includes(p.accent ?? "")
         ? p.accent!
         : defaultPrefs.accent,
-      view: ["dialogue", "inbox", "desk", "projects"].includes(p.view ?? "")
+      view: ["dialogue", "inbox", "content", "desk", "projects"].includes(
+        p.view ?? "",
+      )
         ? p.view!
         : defaultPrefs.view,
     };
   });
   const [notice, setNotice] = useState(""),
+    [connectionOpen, setConnectionOpen] = useState(false),
     [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
     [taskFilter, setTaskFilter] = useState<
       "mine" | "active" | "waiting" | "completed" | "all"
@@ -228,7 +250,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactRevision?: number;
     } | null>(null),
     [importOpen, setImportOpen] = useState(false),
-    [executions, setExecutions] = useState<ExecutionScope | null>(null),
+    [executions, setExecutions] = useState<ExecutionScope | null>(() =>
+      prefs.executionPinned
+        ? {
+            projectId: state!.projects.find(
+              (p) =>
+                p.kind === "dialogue" &&
+                p.ownerPrincipalId === client.boot!.principalId,
+            )!.id,
+            artifactId: null,
+          }
+        : null,
+    ),
     [understandingOpen, setUnderstandingOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
     [themeOpen, setThemeOpen] = useState(false),
@@ -246,6 +279,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [drafts, setDrafts] = useState<Record<string, InputDraft>>(() =>
     readLocal(draftKey("inputs"), {}),
   );
+  const [openingObject, setOpeningObject] = useState(false);
+  const [restoredPlace, setRestoredPlace] = useState<NavigationPlace | null>(
+    null,
+  );
+  const trail = useRef<{ places: NavigationPlace[]; index: number }>({
+    places: [],
+    index: -1,
+  });
+  const [trailVersion, setTrailVersion] = useState(0);
+  const restoring = useRef(false);
+  const [websiteIntent, setWebsiteIntent] = useState<string | null>(null);
   const savingWorkspace = useRef<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null),
     exchange = useRef<HTMLDivElement>(null),
@@ -273,12 +317,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     state?.projects.find(
       (p) => p.kind === kind && p.ownerPrincipalId === client.boot!.principalId,
     );
-  const project =
+  const navigationProject =
     creating === "save-project" && savingWorkspace.current
       ? state?.projects.find((p) => p.id === savingWorkspace.current)
       : prefs.view === "dialogue"
         ? personalSpace("dialogue")
         : prefs.view === "desk" ||
+            prefs.view === "content" ||
             (prefs.view === "projects" && !prefs.projectOpen)
           ? personalSpace("desk")
           : prefs.view === "inbox"
@@ -288,6 +333,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               ) ??
               state?.projects.find((p) => spaceKind(p) === "project") ??
               personalSpace("desk"));
+  // Association scopes the next input, not the shared conversation or its
+  // in-flight activations. An open object wins; otherwise use the visible space.
+  const project =
+    state?.projects.find(
+      (p) =>
+        p.id ===
+        state.artifacts.find((a) => a.id === prefs.artifactId)?.projectId,
+    ) ?? navigationProject;
+  const sharedDefault = !client.boot!.capabilities.teamAuthentication;
+  const defaultConversation = sharedDefault
+    ? personalSpace("dialogue")?.id
+    : navigationProject?.id;
   const applicationWorkspaceOpen =
     prefs.view === "desk" || (prefs.view === "projects" && prefs.projectOpen);
   const activeId =
@@ -308,28 +365,47 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     (a) =>
       a.projectId === project?.id &&
       a.id ===
-        (prefs.artifactId ??
-          (prefs.view !== "inbox" &&
-          activeInstance?.applicationId === objectsApplication.id
-            ? activeInstance.state.artifactId
-            : null)),
+        (restoredPlace
+          ? restoredPlace.artifactId
+          : (prefs.artifactId ??
+            (prefs.view !== "inbox" &&
+            activeInstance?.applicationId === objectsApplication.id
+              ? activeInstance.state.artifactId
+              : null))),
   );
   const selectedConversation =
     state?.conversations.find(
       (c) =>
-        c.projectId === project?.id &&
-        c.id === prefs.selectedConversations?.[project?.id ?? ""],
-    ) ?? state?.conversations.find((c) => c.id === project?.id);
+        prefs.view === "projects" &&
+        prefs.projectOpen &&
+        c.projectId === navigationProject?.id &&
+        c.id === prefs.selectedConversations?.[navigationProject?.id ?? ""] &&
+        (!sharedDefault || c.id !== navigationProject?.id),
+    ) ?? state?.conversations.find((c) => c.id === defaultConversation);
   const conversationId = selectedConversation?.id ?? project?.id ?? "";
+  const conversationProjectId =
+    selectedConversation?.projectId ?? project?.id ?? "";
   function conversationKey(workspaceId: string) {
     return workspaceId === project?.id
       ? conversationId
-      : (prefs.selectedConversations?.[workspaceId] ?? workspaceId);
+      : (prefs.selectedConversations?.[workspaceId] ??
+          defaultConversation ??
+          workspaceId);
   }
   const contextKey =
-    conversationId + ":" + (artifact?.id ?? activeInstance?.id ?? prefs.view);
+    conversationId +
+    ":" +
+    (artifact?.id ??
+      activeInstance?.id ??
+      (navigationProject?.id ?? "") + ":" + prefs.view);
+  const exchangeKey =
+    conversationId === defaultConversation
+      ? prefs.view === "content"
+        ? `${navigationProject?.id ?? conversationId}:content`
+        : (navigationProject?.id ?? conversationId)
+      : conversationId;
   const dialogueCanvas = prefs.view === "dialogue" && !artifact;
-  const interaction = prefs.interactions?.[conversationId] ?? "input";
+  const interaction = prefs.interactions?.[exchangeKey] ?? "input";
   const inputVisible = interaction !== "hidden";
   const conversationVisible =
     dialogueCanvas ||
@@ -337,10 +413,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     interaction === "recent" ||
     interaction === "history";
   const historyVisible = dialogueCanvas || interaction === "history";
-  const inputPinned = !!prefs.pinnedInputs?.[conversationId];
+  const inputPinned = !!prefs.pinnedInputs?.[exchangeKey];
   const keepExchangeOpen = useExchangeFocus({
     root: exchange,
-    scope: conversationId,
+    scope: exchangeKey,
     visible: inputVisible,
     pinned: inputPinned,
     suspended:
@@ -355,10 +431,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     {},
   );
   const [seenReplies, setSeenReplies] = useState<Record<string, string>>({});
-  const replies = client.boot!.runtime.messages.filter(
-    (m) => m.projectId === project?.id && discussionId(m) === conversationId,
+  const inputs =
+    state?.inputs.filter((i) =>
+      inConversation(state!, conversationId, i, sharedDefault),
+    ) ?? [];
+  const replies = client.boot!.runtime.messages.filter((m) =>
+    inConversation(state!, conversationId, m, sharedDefault),
   );
-  const replyVersion = replies.map((m) => m.id + ":" + m.text.length).join("|");
+  const replyVersion = [
+    ...replies.map((m) => m.id + ":" + m.text.length),
+    ...(client.boot?.outputs ?? [])
+      .filter((o) => inputs.some((i) => i.id === o.inputId))
+      .map((o) => o.commandId),
+  ].join("|");
   const unseenReply =
     !!replyVersion && replyVersion !== seenReplies[conversationId];
   useEffect(() => {
@@ -371,7 +456,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   useLayoutEffect(() => {
     const element =
       main.current?.querySelector<HTMLElement>(
-        ".application-pane:not([hidden]) .library-results, .application-pane:not([hidden]):not(:has(.library-results))",
+        ".object-surface > .library-collection .library-results, .application-pane:not([hidden]) .library-results, .application-pane:not([hidden]):not(:has(.library-results))",
       ) ?? main.current;
     element?.scrollTo({ top: positions.current.get(contextKey) ?? 0 });
     return () => {
@@ -383,10 +468,93 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }, [artifact?.title, project?.title, prefs.view, prefs.projectOpen]);
   const currentContext = useRef(contextKey);
   currentContext.current = contextKey;
+  const place: NavigationPlace = {
+    view: prefs.view,
+    projectId: navigationProject?.id ?? prefs.projectId,
+    projectOpen: prefs.projectOpen,
+    artifactId: artifact?.id ?? null,
+    artifactRevision: prefs.artifactRevision,
+    artifactPage: prefs.artifactPage,
+    applications: prefs.applications,
+  };
+  const placeKey = JSON.stringify(place);
+  useLayoutEffect(() => {
+    if (openingObject) return;
+    if (restoring.current) {
+      restoring.current = false;
+      return;
+    }
+    const current = trail.current;
+    if (JSON.stringify(current.places[current.index]) === placeKey) return;
+    current.places = [
+      ...current.places.slice(0, current.index + 1),
+      place,
+    ].slice(-100);
+    current.index = current.places.length - 1;
+    setTrailVersion((v) => v + 1);
+  }, [placeKey, openingObject]);
+  function travel(direction: number) {
+    const current = trail.current,
+      index = current.index + direction,
+      next = current.places[index];
+    if (!next) return;
+    if (
+      !state?.projects.some((p) => p.id === next.projectId) ||
+      (next.artifactId &&
+        !state.artifacts.some((a) => a.id === next.artifactId))
+    ) {
+      setNotice("原位置已不可用或无访问权限。");
+      return;
+    }
+    navigationGeneration.current++;
+    setOpeningObject(false);
+    setCreating(null);
+    setWebsiteIntent(null);
+    if (!prefs.executionPinned) setExecutions(null);
+    current.index = index;
+    restoring.current = true;
+    setRestoredPlace(next);
+    setPrefs((previous) => ({ ...previous, ...next }));
+    setTrailVersion((v) => v + 1);
+  }
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof Element &&
+        e.target.closest(
+          "input, textarea, [contenteditable=true], dialog[open]",
+        )
+      )
+        return;
+      const direction =
+        (e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")
+          ? -1
+          : (e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")
+            ? 1
+            : 0;
+      if (direction) {
+        e.preventDefault();
+        travel(direction);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [trailVersion, placeKey]);
   const navigationGeneration = useRef(0);
   const collaborationVisible =
-    !!artifact && (compact ? mobileCollaboration : prefs.collaboration);
-  const draft = drafts[contextKey] ?? emptyDraft;
+    !executions &&
+    !!artifact &&
+    (compact ? mobileCollaboration : prefs.collaboration);
+  const legacyContextKey =
+    (navigationProject?.id ?? "") +
+    ":" +
+    (artifact?.id ?? activeInstance?.id ?? prefs.view);
+  const draft =
+    drafts[contextKey] ??
+    (conversationId === defaultConversation
+      ? drafts[legacyContextKey]
+      : undefined) ??
+    emptyDraft;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
@@ -396,8 +564,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       "artifactId" in change ||
       "applications" in change ||
       "selectedConversations" in change
-    )
+    ) {
       navigationGeneration.current++;
+      setRestoredPlace(null);
+      setOpeningObject(false);
+    }
     setPrefs((previous) => {
       const next = {
         ...previous,
@@ -436,8 +607,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return next;
     });
   }
-  function setInteraction(mode: InteractionMode, id = project?.id) {
-    if (id) prefer({ interactions: { [conversationKey(id)]: mode } });
+  function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
+    if (id)
+      prefer({
+        interactions: {
+          [id === navigationProject?.id ? exchangeKey : id]: mode,
+        },
+      });
   }
   function setDraft(key: string, value: InputDraft) {
     setDrafts((previous) => {
@@ -452,7 +628,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }
   function open(id: string, revision?: number, page?: number) {
     const a = state?.artifacts.find((x) => x.id === id);
+    setWebsiteIntent(null);
     if (a) void openObject(a.projectId, id, revision, page);
+  }
+  // Only first-party, explicit user navigation opens a network page. Application
+  // bridge requests and restored views do not grant that browser intent.
+  async function openUser(id: string, revision?: number, page?: number) {
+    const generation = ++navigationGeneration.current;
+    const a =
+      state?.artifacts.find((x) => x.id === id) ??
+      (await client.resolveArtifact(id));
+    if (generation !== navigationGeneration.current) return;
+    if (!a) {
+      setNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
+      return;
+    }
+    setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
+    void openObject(a.projectId, id, revision, page);
   }
   async function openObject(
     workspaceId: string,
@@ -461,74 +653,117 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     page?: number,
   ) {
     const generation = ++navigationGeneration.current;
+    setOpeningObject(true);
     try {
-      const result = await client.execute({
-        type: "launch-application",
-        workspaceId,
-        applicationId: objectsApplication.id,
-        applicationVersion: objectsApplication.version,
-        artifactId: id,
-      });
+      // Catalog and task navigation are views, not application launches.
+      // Keep the workspace's current application intact when reading from them.
+      const result = applicationWorkspaceOpen
+        ? await client.execute({
+            type: "launch-application",
+            workspaceId,
+            applicationId: objectsApplication.id,
+            applicationVersion: objectsApplication.version,
+            artifactId: id,
+          })
+        : null;
       // A slow open must not undo a later navigation or object selection.
       if (generation !== navigationGeneration.current) return;
       setCreating(null);
-      const owner = state?.projects.find((p) => p.id === workspaceId);
       prefer({
-        view:
-          owner && spaceKind(owner) === "project"
-            ? "projects"
-            : owner?.kind === "inbox"
-              ? "inbox"
-              : owner?.kind === "dialogue"
-                ? "dialogue"
-                : "desk",
-        projectOpen: !!owner && spaceKind(owner) === "project",
-        projectId: workspaceId,
         artifactId: id,
         artifactRevision: revision ?? null,
         artifactPage: page ?? null,
-        ...(prefs.interactions?.[conversationKey(workspaceId)] === "history"
+        ...(prefs.interactions?.[exchangeKey] === "history"
           ? {
               interactions: {
-                [conversationKey(workspaceId)]: "recent" as const,
+                [exchangeKey]: "recent" as const,
               },
             }
           : {}),
-        applications: { ...prefs.applications, [workspaceId]: result.entityId },
+        ...(result
+          ? {
+              applications: {
+                ...prefs.applications,
+                [workspaceId]: result.entityId,
+              },
+            }
+          : {}),
       });
     } catch (e) {
       setNotice((e as Error).message);
+    } finally {
+      if (generation === navigationGeneration.current) setOpeningObject(false);
     }
   }
   function activateApplication(id: string | null) {
     if (!project) return;
+    setWebsiteIntent(null);
     setCreating(null);
     prefer({
       applications: { ...prefs.applications, [project.id]: id },
       artifactId: null,
       ...(historyVisible
-        ? { interactions: { [conversationId]: "recent" as const } }
+        ? { interactions: { [exchangeKey]: "recent" as const } }
         : {}),
     });
   }
   function navigate(view: View) {
+    setWebsiteIntent(null);
     setCreating(null);
+    if (!prefs.executionPinned) setExecutions(null);
     prefer({ view, artifactId: null, projectOpen: false });
   }
-  function selectConversation(id: string) {
-    if (!project) return;
+  function selectConversation(workspaceId: string, id: string, focus = false) {
+    setWebsiteIntent(null);
+    const sameProject =
+      prefs.view === "projects" &&
+      prefs.projectOpen &&
+      navigationProject?.id === workspaceId;
+    const selectedExchange =
+      id === (sharedDefault ? defaultConversation : workspaceId)
+        ? workspaceId
+        : id;
+    setCreating(null);
+    if (!prefs.executionPinned) setExecutions(null);
     prefer({
+      view: "projects",
+      projectId: workspaceId,
+      projectOpen: true,
+      ...(!sameProject ? { artifactId: null } : {}),
       selectedConversations: {
-        ...prefs.selectedConversations,
-        [project.id]: id,
+        [workspaceId]: id,
       },
       interactions: {
-        [id]: prefs.interactions?.[id] === "history" ? "history" : "recent",
+        [selectedExchange]:
+          prefs.interactions?.[selectedExchange] === "history"
+            ? "history"
+            : "recent",
       },
     });
+    if (focus) requestAnimationFrame(() => input.current?.focus());
+  }
+  async function createProjectConversation(workspaceId: string, title: string) {
+    // Creating a conversation is a new navigation intent too. An older object
+    // open must not complete later and prevent this explicit selection.
+    const generation = ++navigationGeneration.current;
+    setOpeningObject(false);
+    // Leaving a pending manual creation also invalidates its completion
+    // navigation. The persisted object remains in the project library.
+    setCreating(null);
+    setWebsiteIntent(null);
+    const receipt = await client.execute({
+      type: "create-conversation",
+      projectId: workspaceId,
+      title,
+    });
+    // A late creation receipt must not pull the user away from newer navigation.
+    if (generation === navigationGeneration.current)
+      selectConversation(workspaceId, receipt.entityId, true);
   }
   function openProject(id: string) {
+    setWebsiteIntent(null);
     setCreating(null);
+    if (!prefs.executionPinned) setExecutions(null);
     prefer({
       view: "projects",
       projectId: id,
@@ -601,6 +836,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           e.preventDefault();
           setMobileCollaboration(false);
         } else if (
+          executions &&
+          !input.current?.contains(document.activeElement)
+        ) {
+          e.preventDefault();
+          setExecutions(null);
+          prefer({ executionPinned: false });
+          requestAnimationFrame(() =>
+            document
+              .querySelector<HTMLButtonElement>(".execution-panel-toggle")
+              ?.focus(),
+          );
+        } else if (
           inputVisible &&
           input.current?.contains(document.activeElement)
         ) {
@@ -618,6 +865,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     themeOpen,
     spaceMenu,
     mobileCollaboration,
+    executions,
   ]);
   useEffect(() => {
     function outside(e: PointerEvent) {
@@ -671,6 +919,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         const receipt = await client.execute(
           {
             type: "record-input",
+            ...(captured.model ? { model: captured.model } : {}),
             projectId: project.id,
             conversationId,
             ...(activeInstance
@@ -748,8 +997,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         )}
       </div>
     );
-  const tasks = inboxFor(state, client.boot!.principalId),
-    objects = state.artifacts.filter((a) => a.projectId === project.id);
+  const tasks = inboxFor(state, client.boot!.principalId);
   const visibleTasks =
     taskFilter === "mine"
       ? tasks
@@ -771,9 +1019,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               b.updatedAt.localeCompare(a.updatedAt)
             );
           });
-  const inputs = state.inputs.filter(
-    (i) => i.projectId === project.id && discussionId(i) === conversationId,
-  );
   const annotations = artifact
     ? state.annotations.filter((a) => a.artifactId === artifact.id)
     : [];
@@ -781,11 +1026,34 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const openExecutions = () => {
     keepExchangeOpen();
     setExecutions({
-      projectId: project.id,
+      projectId: conversationProjectId,
       conversationId,
-      artifactId: artifact?.id ?? null,
+      artifactId: null,
     });
   };
+  const inspectExecution = (id: string) => {
+    const source = state.inputs.find((i) => i.id === id);
+    if (!source) return;
+    keepExchangeOpen();
+    setExecutions({
+      projectId: source.projectId,
+      conversationId: source.conversationId ?? source.projectId,
+      artifactId: source.artifactId,
+      inputId: source.id,
+    });
+  };
+  const activeExecutionCount = new Set([
+    ...client
+      .boot!.runtime.deliveries.filter(
+        (d) =>
+          state.inputs.some((i) => i.id === d.inputId) &&
+          ["queued", "sending", "running"].includes(d.state),
+      )
+      .map((d) => d.inputId),
+    ...(client.boot!.runtime.activity?.threads ?? []).map(
+      (t) => t.inputId ?? t.rootId,
+    ),
+  ]).size;
   const executionButton = (
     <button
       className="icon-button composer-executions"
@@ -885,39 +1153,42 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 </section>
               )}
             </div>
-            <Notifications client={client} onOpen={open} />
+            <Notifications client={client} onOpen={openUser} />
           </div>
         </div>
         <div className="space-label">{state.name}</div>
         <button
           className="sidebar-search"
           onClick={() => setSearchOpen(true)}
-          aria-label="搜索工作空间"
+          aria-label="搜索资料"
         >
           <Search />
           <span>搜索</span>
           <kbd>{mac ? "⌘K" : "Ctrl+K"}</kbd>
         </button>
         <nav aria-label="主导航">
-          {(["dialogue", "inbox", "desk", "projects"] as View[]).map((view) => {
-            const Icon = {
-              dialogue: MessageCircle,
-              inbox: Inbox,
-              desk: PanelsTopLeft,
-              projects: Layers2,
-            }[view];
-            return (
-              <button
-                key={view}
-                aria-current={prefs.view === view ? "page" : undefined}
-                onClick={() => navigate(view)}
-              >
-                <Icon />
-                {labels[view]}
-                {view === "inbox" && <small>{tasks.length}</small>}
-              </button>
-            );
-          })}
+          {(["dialogue", "inbox", "content", "desk", "projects"] as View[]).map(
+            (view) => {
+              const Icon = {
+                dialogue: MessageCircle,
+                inbox: Inbox,
+                content: Library,
+                desk: PanelsTopLeft,
+                projects: Layers2,
+              }[view];
+              return (
+                <button
+                  key={view}
+                  aria-current={prefs.view === view ? "page" : undefined}
+                  onClick={() => navigate(view)}
+                >
+                  <Icon />
+                  {labels[view]}
+                  {view === "inbox" && <small>{tasks.length}</small>}
+                </button>
+              );
+            },
+          )}
         </nav>
         <div className="sidebar-section">
           <div className="section-label">
@@ -932,21 +1203,31 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           {state.projects
             .filter((p) => spaceKind(p) === "project")
             .map((p) => (
-              <button
-                className="project-link"
+              <ProjectConversations
                 key={p.id}
-                aria-current={
+                client={client}
+                projectId={p.id}
+                title={p.title}
+                active={
                   prefs.view === "projects" &&
                   prefs.projectOpen &&
-                  project.id === p.id
-                    ? "true"
-                    : undefined
+                  navigationProject?.id === p.id
                 }
-                onClick={() => openProject(p.id)}
-              >
-                <Folder />
-                <span>{p.title}</span>
-              </button>
+                selectedId={
+                  prefs.selectedConversations?.[p.id] &&
+                  (!sharedDefault || prefs.selectedConversations[p.id] !== p.id)
+                    ? prefs.selectedConversations[p.id]!
+                    : sharedDefault
+                      ? defaultConversation!
+                      : p.id
+                }
+                defaultConversationId={
+                  sharedDefault ? defaultConversation! : p.id
+                }
+                onOpen={() => openProject(p.id)}
+                onSelect={(id) => selectConversation(p.id, id)}
+                onCreate={(title) => createProjectConversation(p.id, title)}
+              />
             ))}
         </div>
         <div className="sidebar-bottom">
@@ -955,7 +1236,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             {actorName(state, client.boot!.actantId)}
             <small>
               <span className="presence-dot" data-online={client.online} />
-              {client.online ? "工作中心已连接" : "工作中心已断开"}
+              <button
+                className="connection-summary"
+                aria-label="连接详情"
+                onClick={() => setConnectionOpen(true)}
+              >
+                {client.online ? "工作中心已连接" : "工作中心已断开"}
+              </button>
               {!client.online && (
                 <button
                   className="icon-button"
@@ -999,6 +1286,30 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           >
             <PanelLeft />
           </button>
+          <div
+            className="navigation-history"
+            role="group"
+            aria-label="浏览位置"
+          >
+            <button
+              className="icon-button"
+              aria-label="返回上一位置"
+              title="后退 · ⌘[ / Alt+←"
+              disabled={trail.current.index <= 0}
+              onClick={() => travel(-1)}
+            >
+              <ArrowLeft />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="前往下一位置"
+              title="前进 · ⌘] / Alt+→"
+              disabled={trail.current.index >= trail.current.places.length - 1}
+              onClick={() => travel(1)}
+            >
+              <ArrowRight />
+            </button>
+          </div>
           <div
             className="application-toolbar-slot"
             ref={setToolbarTarget}
@@ -1104,20 +1415,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           <div
             className="detail-toolbar-slot"
             ref={setDetailToolbarTarget}
-            hidden={!artifact && creating !== "document"}
+            hidden={openingObject || (!artifact && creating !== "document")}
           />
           <div className="top-actions">
-            {prefs.view === "projects" &&
-              prefs.projectOpen &&
-              selectedConversation && (
-                <ProjectConversations
-                  key={project.id}
-                  client={client}
-                  projectId={project.id}
-                  selected={selectedConversation}
-                  onSelect={selectConversation}
-                />
+            <button
+              className="icon-button execution-panel-toggle"
+              aria-label="查看执行面板"
+              aria-expanded={!!executions}
+              title="查看后台执行"
+              onClick={() =>
+                executions ? setExecutions(null) : openExecutions()
+              }
+            >
+              <ListChecks />
+              {activeExecutionCount > 0 && (
+                <small>{activeExecutionCount}</small>
               )}
+            </button>
             <details
               ref={spaceOptions}
               className="workspace-options"
@@ -1128,6 +1442,34 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 <MoreHorizontal />
               </summary>
               <div className="workspace-options-menu">
+                {prefs.view === "content" && !artifact && (
+                  <>
+                    {(
+                      [
+                        ["interactive", "制作表格或报告"],
+                        ["website", "添加网站"],
+                      ] as const
+                    ).map(([intent, title]) => (
+                      <button
+                        key={intent}
+                        onClick={() => {
+                          setSpaceMenu(false);
+                          composeIntent(intent);
+                        }}
+                      >
+                        {title}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => {
+                        setSpaceMenu(false);
+                        setCreating("document");
+                      }}
+                    >
+                      手动写文档
+                    </button>
+                  </>
+                )}
                 <button
                   title="核对项目当前理解"
                   aria-label="当前理解"
@@ -1145,8 +1487,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 </button>
                 <button
                   className="icon-button"
-                  aria-label="导入资料"
-                  title="导入资料"
+                  aria-label="资料导入与来源"
+                  title="资料导入与来源"
                   onClick={() => {
                     spaceOptions.current
                       ?.querySelector<HTMLElement>("summary")
@@ -1156,7 +1498,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   }}
                 >
                   <FileUp />
-                  导入资料
+                  资料导入与来源
                 </button>
               </div>
             </details>
@@ -1173,12 +1515,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     : prefer({ collaboration: !prefs.collaboration })
                 }
               >
-                <PanelRight />
+                <MessageSquareText />
               </button>
             )}
           </div>
         </header>
-        <div className="workspace-body">
+        <div
+          className="workspace-body"
+          data-execution-open={!!executions || undefined}
+          style={
+            executions
+              ? {
+                  gridTemplateColumns: `minmax(0, 1fr) ${prefs.executionWidth ?? 340}px`,
+                }
+              : undefined
+          }
+        >
           <div
             className="primary-panel"
             data-interaction={historyVisible ? "history" : interaction}
@@ -1186,7 +1538,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             <main
               ref={main}
               className={
-                applicationWorkspaceOpen && creating !== "document"
+                (applicationWorkspaceOpen ||
+                  (prefs.view === "content" && !artifact)) &&
+                creating !== "document"
                   ? "application-canvas"
                   : undefined
               }
@@ -1214,11 +1568,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
                   activeId={activeId}
-                  enabled={
-                    prefs.view !== "inbox" &&
-                    prefs.view !== "dialogue" &&
-                    (prefs.view !== "projects" || prefs.projectOpen)
-                  }
+                  enabled={applicationWorkspaceOpen}
                   onActivate={activateApplication}
                   onOpen={open}
                   onNotice={setNotice}
@@ -1255,6 +1605,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 >
                   {artifact ? (
                     <ArtifactEditor
+                      autoOpenWebsite={websiteIntent === artifact.id}
                       titleInToolbar={
                         !applicationWorkspaceOpen &&
                         artifact.content.kind === "task"
@@ -1272,7 +1623,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       artifact={artifact}
                       state={state}
                       client={client}
-                      onOpen={open}
+                      onOpen={openUser}
                       onNotice={setNotice}
                       onTaskInput={(result) => {
                         setDraft(contextKey, {
@@ -1311,7 +1662,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           <TaskRow
                             key={a.id}
                             artifact={a}
-                            onOpen={open}
+                            onOpen={openUser}
                             assignee={
                               a.content.kind === "task"
                                 ? actorName(state, a.content.assigneeId)
@@ -1346,13 +1697,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     />
                   ) : (
                     <ObjectCollection
-                      key={project.id}
+                      key={
+                        prefs.view === "content"
+                          ? "content-catalog"
+                          : project.id
+                      }
                       project={project}
-                      objects={objects}
-                      onOpen={open}
+                      projects={state.projects}
+                      objects={state.artifacts}
+                      catalog={prefs.view === "content"}
+                      toolbarTarget={
+                        prefs.view === "content" ? pageToolbarTarget : null
+                      }
+                      onOpen={openUser}
                       onCreate={composeIntent}
                       onWrite={() => setCreating("document")}
-                      onImport={() => file.current?.click()}
+                      onImport={() => setImportOpen(true)}
                       importing={importing}
                     />
                   )}
@@ -1366,12 +1726,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   inputs={inputs}
                   positions={exchangePositions.current}
                   revealInputId={revealedInputs[conversationId] ?? null}
+                  onInspect={inspectExecution}
                   state={state}
                   runtime={client.boot!.runtime}
-                  projectId={project.id}
+                  projectId={conversationProjectId}
                   conversationId={conversationId}
                   client={client}
-                  onOpen={open}
+                  onOpen={openUser}
                   onRetry={async (id) => {
                     try {
                       await client.dispatchInput(id);
@@ -1478,6 +1839,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             : client.boot!.runtime.configured
                               ? "连接中 · 消息将保留并排队"
                               : "Agent 未连接 · 仅保存，不会回复"}
+                        {!draft.taskResult && (
+                          <button
+                            className="text-button"
+                            onClick={() => setConnectionOpen(true)}
+                          >
+                            连接详情
+                          </button>
+                        )}
                       </small>
                     )}
                     <div className="composer-actions">
@@ -1601,7 +1970,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             onClick={() => {
                               keepExchangeOpen();
                               prefer({
-                                pinnedInputs: { [conversationId]: false },
+                                pinnedInputs: { [exchangeKey]: false },
                               });
                             }}
                           >
@@ -1610,6 +1979,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         )}
                         <ComposerOptions
                           key={contextKey}
+                          modelControl={
+                            <ModelPicker
+                              value={draft.model}
+                              disabled={
+                                !client.online ||
+                                !client.boot!.runtime.connected ||
+                                !!draft.taskResult
+                              }
+                              onChange={(model) =>
+                                setDraft(contextKey, {
+                                  ...draft,
+                                  model: model || undefined,
+                                })
+                              }
+                            />
+                          }
                           model={client.boot!.runtime.model || "未配置"}
                           unread={!conversationVisible && unseenReply}
                           options={[
@@ -1668,7 +2053,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                       keepExchangeOpen();
                                       prefer({
                                         pinnedInputs: {
-                                          [conversationId]: true,
+                                          [exchangeKey]: true,
                                         },
                                       });
                                     },
@@ -1736,6 +2121,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               </div>
             </div>
           </div>
+          {executions && (
+            <ExecutionSidebar
+              key={executions.threadId ?? executions.inputId ?? "overview"}
+              client={client}
+              scope={executions}
+              pinned={!!prefs.executionPinned}
+              width={prefs.executionWidth ?? 340}
+              onResize={(executionWidth) => prefer({ executionWidth })}
+              onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
+              onClose={() => {
+                setExecutions(null);
+                prefer({ executionPinned: false });
+                requestAnimationFrame(() =>
+                  document
+                    .querySelector<HTMLButtonElement>(".execution-panel-toggle")
+                    ?.focus(),
+                );
+              }}
+              onSelect={setExecutions}
+              onOpen={openUser}
+            />
+          )}
           {collaborationVisible && (
             <aside className="collaboration" aria-label="对象批注">
               <header>
@@ -1818,12 +2225,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           }}
         />
       )}
+      {connectionOpen && (
+        <ConnectionDetails
+          client={client}
+          onClose={() => setConnectionOpen(false)}
+        />
+      )}
       {importOpen && (
         <ImportDocuments
           client={client}
           project={project}
           onClose={() => setImportOpen(false)}
-          onOpen={open}
+          onOpen={openUser}
         />
       )}
       {speech && (
@@ -1854,17 +2267,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <UnderstandingDialog
           client={client}
           projectId={project.id}
-          onOpen={open}
+          onOpen={openUser}
           onClose={() => setUnderstandingOpen(false)}
-        />
-      )}
-      {executions && (
-        <ExecutionDialog
-          key={executions.conversationId + ":" + executions.artifactId}
-          client={client}
-          scope={executions}
-          onClose={() => setExecutions(null)}
-          onOpen={open}
         />
       )}
       {capture && (
@@ -1883,7 +2287,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <SearchDocuments
           client={client}
           onClose={() => setSearchOpen(false)}
-          onOpen={open}
+          onOpen={openUser}
           onQuote={(id, revision, quote, page) => {
             const target = state.artifacts.find((a) => a.id === id);
             if (!target) return;
@@ -1895,8 +2299,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               page,
             });
             void openObject(target.projectId, id, revision, page).then(() => {
-              setInteraction("input", target.projectId);
-              requestAnimationFrame(() => input.current?.focus());
+              setInteraction("recent");
+              requestAnimationFrame(() => {
+                if (!exchange.current?.contains(document.activeElement))
+                  input.current?.focus();
+              });
             });
           }}
         />

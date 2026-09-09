@@ -13,6 +13,7 @@ import type {
 } from "../../../packages/core/src/retrieval.js";
 import {
   conversationRuntimeSchema,
+  artifactOutputSchema,
   disconnectedRuntime,
 } from "../../../packages/core/src/conversation.js";
 import {
@@ -24,6 +25,7 @@ import {
 const bootSchema = z.object({
   centerId: z.string().uuid(),
   workspace: stateSchema,
+  outputs: z.array(artifactOutputSchema).default([]),
   csrfToken: z.string(),
   principalId: z.string(),
   actantId: z.string(),
@@ -151,6 +153,15 @@ export function useWorkspace() {
       }
     })();
     return refreshing.current;
+  }
+  async function resolveArtifact(id: string) {
+    if (!current.current?.workspace.artifacts.some((a) => a.id === id)) {
+      await refresh();
+      // An in-flight poll may predate the object returned by search.
+      if (!current.current?.workspace.artifacts.some((a) => a.id === id))
+        await refresh();
+    }
+    return current.current?.workspace.artifacts.find((a) => a.id === id);
   }
   async function login(token: string) {
     await checked(
@@ -334,6 +345,18 @@ export function useWorkspace() {
     await refresh();
     await refresh();
   }
+  async function verifyArtifact(id: string) {
+    const data = bootSchema.parse(
+      await checked(
+        await fetch("/api/workspace", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(6000),
+        }),
+      ),
+    );
+    if (!data.workspace.artifacts.some((a) => a.id === id))
+      throw new Error("事项不可用或已无访问权限。");
+  }
   async function cancelInput(inputId: string) {
     if (!current.current) throw new Error("请先连接中心。");
     await checked(
@@ -366,6 +389,8 @@ export function useWorkspace() {
       projectId: scope.projectId,
       artifactId: scope.artifactId ?? "",
       ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
+      ...(scope.inputId ? { inputId: scope.inputId } : {}),
+      ...(scope.threadId ? { threadId: scope.threadId } : {}),
     });
     return executionSnapshotSchema.parse(
       await checked(
@@ -403,7 +428,9 @@ export function useWorkspace() {
       projectId: scope.projectId,
       artifactId: scope.artifactId ?? "",
       ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
+      ...(scope.inputId ? { inputId: scope.inputId } : {}),
       jobId,
+      ...(scope.threadId ? { threadId: scope.threadId } : {}),
     });
     return z
       .object({
@@ -519,10 +546,12 @@ export function useWorkspace() {
     online,
     error,
     refresh,
+    resolveArtifact,
     execute,
     upload,
     importPdf,
     dispatchInput,
+    verifyArtifact,
     cancelInput,
     search,
     executionSnapshot,

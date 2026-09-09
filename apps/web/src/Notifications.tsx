@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useModal } from "./useModal.js";
 import { Bell, X } from "lucide-react";
 import { z } from "zod";
-import type { WorkspaceClient } from "./client.js";
+import { RequestError, scopedStorage, type WorkspaceClient } from "./client.js";
 const schema = z.object({
   mode: z.enum(["all", "high", "off"]),
   unread: z.number(),
@@ -36,24 +36,63 @@ export function Notifications({
     }),
     [open, setOpen] = useState(false),
     [error, setError] = useState("");
+  const storage = useState(() => scopedStorage())[0];
+  const pendingReads = useRef(
+    new Set(
+      z
+        .array(z.string().regex(/^[a-f0-9]{64}$/))
+        .max(200)
+        .catch([])
+        .parse(storage.readLocal("notification-reads", [])),
+    ),
+  );
+  function rememberReads() {
+    try {
+      storage.writeLocal(
+        "notification-reads",
+        [...pendingReads.current].slice(-200),
+      );
+    } catch {
+      /* Reading a task never depends on local receipt persistence. */
+    }
+  }
   const dialog = useRef<HTMLDialogElement>(null),
     heading = useRef<HTMLHeadingElement>(null),
     current = useRef(client);
   current.current = client;
   useEffect(() => {
     let alive = true;
-    const refresh = () =>
-      void current.current
+    const refresh = async () => {
+      if (pendingReads.current.size) {
+        const ids = [...pendingReads.current];
+        try {
+          await current.current.notifications({
+            action: "read",
+            ids,
+          });
+          for (const id of ids) pendingReads.current.delete(id);
+          rememberReads();
+        } catch {
+          /* Retain pending acknowledgments for the next connected refresh. */
+        }
+      }
+      return current.current
         .notifications()
         .then((v) => {
           if (alive) {
-            setView(schema.parse(v));
+            const next = schema.parse(v);
+            const visible = new Set(next.items.map((i) => i.id));
+            for (const id of pendingReads.current)
+              if (!visible.has(id)) pendingReads.current.delete(id);
+            rememberReads();
+            setView(next);
             setError("");
           }
         })
         .catch(() => {
           if (alive) setError("暂时无法同步通知。");
         });
+    };
     refresh();
     const timer = setInterval(refresh, 3000);
     return () => {
@@ -141,9 +180,27 @@ export function Notifications({
                 data-unread={!i.read}
                 aria-label={`${i.read ? "" : "未读，"}${i.title}，${i.priority === "high" ? "高优先级，" : ""}${i.reason}`}
                 onClick={async () => {
-                  if (await change({ action: "read", ids: [i.id] })) {
+                  try {
+                    // Navigation must not wait on a read receipt. Refresh first
+                    // only to revalidate the current authorized workspace.
+                    await current.current.verifyArtifact(i.artifactId);
+                    pendingReads.current.add(i.id);
+                    rememberReads();
                     setOpen(false);
                     onOpen(i.artifactId);
+                    void current.current
+                      .notifications({ action: "read", ids: [i.id] })
+                      .then(() => {
+                        pendingReads.current.delete(i.id);
+                        rememberReads();
+                      })
+                      .catch(() => setError("事项已打开，已读状态待同步。"));
+                  } catch (e) {
+                    setError(
+                      e instanceof RequestError && [401, 403].includes(e.status)
+                        ? "请重新登录或检查事项权限。"
+                        : "暂时无法确认事项权限，请重试。",
+                    );
                   }
                 }}
               >

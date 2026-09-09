@@ -18,7 +18,7 @@ test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({
   ).toBeLessThanOrEqual(1);
   const assertCentered = async () => {
     const panel = (await page
-      .getByRole("dialog", { name: "搜索工作空间" })
+      .getByRole("dialog", { name: "搜索资料" })
       .boundingBox())!;
     const content = (await page.locator(".workspace").boundingBox())!;
     expect(panel.x + panel.width / 2).toBeCloseTo(
@@ -34,7 +34,7 @@ test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({
     );
     await expect(page.getByLabel("全文搜索")).toBeFocused();
   };
-  await page.getByLabel("搜索工作空间", { exact: true }).click();
+  await page.getByLabel("搜索资料", { exact: true }).click();
   await assertCentered();
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 760, height: 540 });
@@ -69,7 +69,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   const toolbar = page.locator(".topbar");
   const tabs = toolbar.getByRole("tablist", { name: "已打开的应用" });
   await expect(
-    tabs.getByRole("tab", { name: "资料", exact: true }),
+    tabs.getByRole("tab", { name: "内容", exact: true }),
   ).toBeVisible();
   await expect(
     page.locator(".application-host .application-strip"),
@@ -117,7 +117,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   }
   await page.reload();
   await expect(page.locator(".artifact-card")).toHaveCount(25);
-  const results = page.getByRole("region", { name: "资料列表", exact: true });
+  const results = page.getByRole("region", { name: "内容列表", exact: true });
   await results.evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
@@ -181,7 +181,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   await expect(
     page.locator(".sidebar-header").getByLabel("外观设置", { exact: true }),
   ).toBeVisible();
-  await tabs.getByRole("tab", { name: "资料", exact: true }).click();
+  await tabs.getByRole("tab", { name: "内容", exact: true }).click();
   await page.locator(".composer-reopen").click();
   await page.getByLabel("AI 输入内容").fill("紧凑界面仍保留草稿");
   await page.getByLabel("AI 输入内容").press("Control+j");

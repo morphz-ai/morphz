@@ -151,10 +151,10 @@ try {
       await page.evaluate(() => window.morphzDesktop.sources.list()),
     ),
   );
-  await page.getByRole("listitem", { name: "资料 1.0.0" }).dblclick();
+  await page.getByRole("button", { name: "查看本空间内容", exact: true }).click();
   await page
     .locator(".library-authoring-options")
-    .getByRole("button", { name: "自己写文档", exact: true })
+    .getByRole("button", { name: "手动写文档", exact: true })
     .click();
   await page
     .getByLabel("新对象标题", { exact: true })

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import Markdown from "react-markdown";
+import { SafeMarkdown } from "./SafeMarkdown.js";
+import { ModelPicker } from "./ModelPicker.js";
 import {
   Check,
   Pencil,
@@ -43,7 +44,7 @@ export const kindLabel = {
   task: "事项",
   pdf: "PDF",
   website: "网站",
-  interactive: "交互产物",
+  interactive: "表格与报告",
 };
 export function ObjectIcon({ kind }: { kind: Content["kind"] }) {
   const Icon = {
@@ -69,6 +70,7 @@ export function ArtifactEditor({
   toolbarTarget,
   onTaskInput,
   titleInToolbar = false,
+  autoOpenWebsite = false,
 }: {
   artifact: Artifact;
   state: Workspace;
@@ -81,6 +83,7 @@ export function ArtifactEditor({
   toolbarTarget: HTMLElement | null;
   onTaskInput: (result: boolean) => void;
   titleInToolbar?: boolean;
+  autoOpenWebsite?: boolean;
 }) {
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
   const key = draftKey("edit:" + artifact.id);
@@ -390,19 +393,9 @@ export function ArtifactEditor({
         ) : shown.content.kind === "document" ? (
           <>
             <div className="document-body">
-              <Markdown
-                skipHtml
-                components={{
-                  a: ({ children }) => (
-                    <span className="document-link">{children}</span>
-                  ),
-                  img: ({ alt }) => (
-                    <span className="muted">[图片：{alt}]</span>
-                  ),
-                }}
-              >
+              <SafeMarkdown state={state} onOpen={onOpen}>
                 {shown.content.markdown || "尚未填写正文。"}
-              </Markdown>
+              </SafeMarkdown>
             </div>
             <button className="annotation-action" onClick={select}>
               <MessageSquarePlus />
@@ -483,7 +476,11 @@ export function ArtifactEditor({
           ) : old ? (
             <p>历史网站地址：{shown.content.url}。打开当前版本后可访问网页。</p>
           ) : (
-            <BrowserHost key={artifact.id} artifact={artifact} />
+            <BrowserHost
+              key={artifact.id}
+              artifact={artifact}
+              autoOpen={autoOpenWebsite}
+            />
           ))}
         {shown.content.kind === "pdf" && (
           <Suspense fallback={<p role="status">正在准备 PDF 阅读器…</p>}>
@@ -687,20 +684,14 @@ export function TaskFields({
             ))}
         </select>
       </label>
-      <label className="field">
-        执行模型
-        <input
-          aria-label="执行模型"
-          disabled={!editable || assignee?.kind !== "agent"}
-          placeholder={
-            assignee?.kind === "agent" ? "自动选择" : "人工事项不使用模型"
-          }
+      {assignee?.kind === "agent" && (
+        <ModelPicker
+          label="执行模型"
           value={value.model ?? ""}
-          onChange={(e) =>
-            onChange({ ...value, model: e.target.value || null })
-          }
+          disabled={!editable}
+          onChange={(model) => onChange({ ...value, model: model || null })}
         />
-      </label>
+      )}
       <label className="field">
         优先级
         <select

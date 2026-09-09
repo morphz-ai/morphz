@@ -1,0 +1,305 @@
+import { test, expect, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { openLibrary } from "./application-helpers.js";
+import { openInput } from "./interaction-helpers.js";
+import { humanTask } from "./artifact-fixtures.js";
+import type { Command } from "../packages/core/src/model.js";
+import type { Boot } from "../apps/web/src/client.js";
+
+test("模型列表按实际目录选择，只发送所选模型；失败保留输入与选择", async ({
+  page,
+}) => {
+  let submitted: any = null;
+  await page.route("**/api/workspace", async (route) => {
+    const response = await route.fetch({
+      headers: { ...route.request().headers(), "if-none-match": "" },
+    });
+    const boot: Boot = await response.json();
+    boot.runtime.configured = true;
+    boot.runtime.connected = true;
+    boot.runtime.model = "model-a";
+    await route.fulfill({ response, json: boot });
+  });
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        current: "model-a",
+        options: [
+          { id: "model-a", label: "模型 A" },
+          { id: "model-b", label: "模型 B" },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/messages", (route) => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({
+      status: 503,
+      json: { message: "隔离测试发送失败" },
+    });
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("指定下一次模型");
+  await page.getByLabel("更多输入选项").click();
+  const select = page.getByLabel("本次输入模型");
+  await expect(select).toBeEnabled();
+  await select.selectOption("model-b");
+  await expect(select).toHaveValue("model-b");
+  await expect(
+    page.getByText("仅用于下一次发送，不改变其他工作。"),
+  ).toBeVisible();
+  await select.press("Escape");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect.poll(() => submitted?.operation?.model).toBe("model-b");
+  await expect(input).toHaveValue("指定下一次模型");
+  await page.getByLabel("更多输入选项").click();
+  await expect(page.getByLabel("本次输入模型")).toHaveValue("model-b");
+  await page.screenshot({ path: "test-results/audit-model-picker.png" });
+});
+
+async function command(page: Page, operation: Command["operation"]) {
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const res = await page.request.post("/api/commands", {
+    headers: {
+      "X-MorphzWork-Token": boot.csrfToken,
+      Origin: "http://127.0.0.1:65421",
+    },
+    data: { commandId: randomUUID(), operation },
+  });
+  expect(res.ok(), await res.text()).toBe(true);
+  return (await res.json()).entityId as string;
+}
+async function desk(page: Page) {
+  await page.goto("/");
+  const title = "审计场景-" + randomUUID();
+  const id = await command(page, { type: "create-project", title });
+  await page.getByRole("button", { name: title, exact: true }).click();
+  await openLibrary(page);
+  return id;
+}
+
+test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不切换会话", async ({
+  page,
+}) => {
+  const projectId = await desk(page);
+  const b = await command(page, {
+    type: "create-artifact",
+    projectId,
+    title: "返回测试 B",
+    content: { kind: "document", markdown: "B 的正文" },
+  });
+  await command(page, {
+    type: "create-artifact",
+    projectId,
+    title: "返回测试 A",
+    content: {
+      kind: "document",
+      markdown: "[打开 B](artifact:" + b + ")\n\nA 的正文",
+    },
+  });
+  await page.getByLabel("搜索内容标题").fill("返回测试 A");
+  await page
+    .locator(".artifact-card")
+    .filter({ hasText: "返回测试 A" })
+    .click();
+  const input = await openInput(page);
+  await input.fill("A 的未发送草稿");
+  await page.getByRole("button", { name: "打开 B", exact: true }).click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("返回测试 B");
+  await page.getByLabel("返回上一位置").click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("返回测试 A");
+  await openInput(page);
+  await expect(input).toHaveValue("A 的未发送草稿");
+  await page.getByLabel("返回上一位置").click();
+  await expect(page.getByLabel("搜索内容标题")).toHaveValue("返回测试 A");
+  await expect(page.locator(".artifact-card")).toHaveCount(1);
+  await page.getByLabel("前往下一位置").click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("返回测试 A");
+  await expect(
+    page.locator(".project-conversation-row[aria-current=true]"),
+  ).toHaveCount(0);
+  await page.screenshot({ path: "test-results/audit-navigation.png" });
+});
+
+test("资料页直接导入文档与图片，凭据文件仍被拒绝", async ({ page }) => {
+  await desk(page);
+  await page.getByRole("button", { name: "导入资料", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "导入资料", exact: true });
+  await dialog.getByLabel("选择资料文件").setInputFiles([
+    {
+      name: "审计资料.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# 资料\n导入内容"),
+    },
+    {
+      name: "审计图片.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    },
+    {
+      name: ".env.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("not-an-image"),
+    },
+  ]);
+  await expect(dialog.getByText(/隐藏文件、依赖目录/)).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "导入 2 份资料", exact: true })
+    .click();
+  await expect(dialog.getByRole("status")).toHaveText("已导入 2 份");
+  await dialog
+    .getByRole("button", { name: "打开", exact: true })
+    .last()
+    .click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("审计图片");
+});
+
+test("标记通知已读失败不阻止打开，恢复后补记；失去权限时拒绝读取", async ({
+  page,
+}) => {
+  const projectId = await desk(page);
+  const id = await command(page, {
+    type: "create-artifact",
+    projectId,
+    title: "通知故障测试",
+    content: humanTask(),
+  });
+  let fail = true,
+    acknowledged = false,
+    deny = false;
+  await page.route("**/api/notifications", async (route) => {
+    if (
+      route.request().method() === "POST" &&
+      route.request().postDataJSON().action === "read"
+    ) {
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: { message: "test-only read failure" },
+        });
+      acknowledged = true;
+    }
+    return route.continue();
+  });
+  await page.locator(".notification-trigger").click();
+  await page
+    .locator(".notification-dialog")
+    .getByRole("button", { name: /通知故障测试/ })
+    .click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("通知故障测试");
+  expect(acknowledged).toBe(false);
+  fail = false;
+  await expect.poll(() => acknowledged, { timeout: 7000 }).toBe(true);
+  await page.route("**/api/workspace", async (route) => {
+    if (deny)
+      return route.fulfill({
+        status: 403,
+        json: { message: "已撤销访问权限" },
+      });
+    return route.continue();
+  });
+  await page.locator(".notification-trigger").click();
+  deny = true;
+  await page
+    .locator(".notification-dialog")
+    .getByRole("button", { name: /通知故障测试/ })
+    .click();
+  await expect(page.locator(".notification-dialog [role=alert]")).toContainText(
+    /权限|身份/,
+  );
+  expect(id).toBeTruthy();
+});
+
+test("过时 blur 不覆盖最新输入焦点；关闭弹窗反复恢复草稿", async ({ page }) => {
+  await desk(page);
+  const input = await openInput(page);
+  await input.fill("焦点保留");
+  for (let n = 0; n < 4; n++) {
+    await page.getByRole("button", { name: "新建项目", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await openInput(page);
+    await page.evaluate(async () => {
+      if (!document.hasFocus()) throw new Error("test browser has no focus");
+      window.dispatchEvent(new Event("blur"));
+      await new Promise<void>((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r())),
+      );
+    });
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("焦点保留");
+  }
+  const b = (await page.locator(".composer").boundingBox())!;
+  await page.mouse.click(b.x - 12, b.y + 12);
+  await expect(input).toHaveCount(0);
+});
+
+test("交付回执直接打开准确版本；没有回执时不猜测产物", async ({ page }) => {
+  const projectId = await desk(page);
+  const artifactId = await command(page, {
+    type: "create-artifact",
+    projectId,
+    title: "交付入口测试",
+    content: { kind: "document", markdown: "真正保存的正文" },
+  });
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const box = await openInput(page);
+  await box.fill("audit-output-request");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  const boot: Boot = await (await page.request.get("/api/workspace")).json();
+  const input = boot.workspace.inputs.find(
+    (i) => i.body === "audit-output-request",
+  )!;
+  let delivered = false;
+  await page.route("**/api/workspace", async (route) => {
+    const response = await route.fetch({
+      headers: { ...route.request().headers(), "if-none-match": "" },
+    });
+    const data: Boot = await response.json();
+    data.outputs = delivered
+      ? [
+          {
+            commandId: "fixture-output",
+            inputId: input.id,
+            projectId: input.projectId,
+            artifactId,
+            revision: 1,
+            createdAt: new Date().toISOString(),
+          },
+        ]
+      : [];
+    await route.fulfill({ response, json: data });
+  });
+  await expect(page.getByLabel("打开交付：交付入口测试")).toHaveCount(0);
+  delivered = true;
+  await page.getByLabel("打开交付：交付入口测试").click();
+  await expect(page.locator(".object-paper > h1")).toHaveText("交付入口测试");
+  await expect(page.getByLabel("查看版本")).toHaveValue("1");
+  await page.screenshot({ path: "test-results/audit-delivery.png" });
+});
+
+test("只保留紧凑连接提示；详情区分中心与 Agent，模型故障不能伪装可选", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openInput(page);
+  await expect(page.locator(".runtime-notice")).toHaveCount(0);
+  await page
+    .locator(".model-status")
+    .getByRole("button", { name: "连接详情", exact: true })
+    .click();
+  await expect(page.getByRole("dialog", { name: "连接详情" })).toContainText(
+    "尚未配置",
+  );
+  await page.screenshot({ path: "test-results/audit-connection.png" });
+  await page.keyboard.press("Escape");
+  await openInput(page);
+  await page.getByLabel("更多输入选项").click();
+  await expect(page.getByLabel("本次输入模型")).toBeDisabled();
+});

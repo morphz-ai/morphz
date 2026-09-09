@@ -6,10 +6,10 @@ test("正常关闭应用不产生常驻提示，关闭失败仍显示错误且�
   page,
 }) => {
   await page.goto("/");
-  const card = page.getByRole("button", { name: "资料 1.0.0", exact: true });
-  const tab = page.getByRole("tab", { name: "资料", exact: true });
+  const card = page.getByRole("button", { name: "查看本空间内容", exact: true });
+  const tab = page.getByRole("tab", { name: "内容", exact: true });
   const close = page.getByRole("button", {
-    name: "关闭应用 资料",
+    name: "关闭应用 内容",
     exact: true,
   });
   await card.click();
@@ -77,7 +77,7 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
       body: JSON.stringify({ message: "应用暂时无法打开，请重试。" }),
     });
   });
-  const tile = page.getByRole("button", { name: "资料 1.0.0", exact: true });
+  const tile = page.getByRole("button", { name: "查看本空间内容", exact: true });
   await tile.click();
   await expect(tile).toBeDisabled();
   await expect(page.getByRole("list", { name: "应用列表" })).toHaveAttribute(
@@ -97,15 +97,15 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
   await expect(tile).toBeEnabled();
   await tile.click();
   await expect(
-    page.getByRole("tab", { name: "资料", exact: true }),
+    page.getByRole("tab", { name: "内容", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await expect(page.locator(".creation-actions")).toBeVisible();
   expect(attempts).toBe(2);
   await expect(
-    page.getByRole("tab", { name: "资料", exact: true }),
+    page.getByRole("tab", { name: "内容", exact: true }),
   ).toHaveCount(1);
   await page
-    .getByRole("button", { name: "关闭应用 资料", exact: true })
+    .getByRole("button", { name: "关闭应用 内容", exact: true })
     .click();
   await expect(tile).toBeVisible();
 });
@@ -121,10 +121,10 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   const originalId = boot.workspace.projects.find(
     (p: { kind: string }) => p.kind === "desk",
   ).id;
-  await page.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
+  await page.getByRole("button", { name: "查看本空间内容", exact: true }).click();
   await page
     .locator(".library-authoring-options")
-    .getByRole("button", { name: "自己写文档", exact: true })
+    .getByRole("button", { name: "手动写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("空间原文");
   await page.getByLabel("新文档正文").fill("应用共享的版本化对象。");
@@ -162,7 +162,11 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     "我的应用状态：保留这段文字。",
   );
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect(page.locator(".human-message")).toHaveCount(2);
+  await expect(
+    page
+      .locator(".human-message")
+      .filter({ hasText: /围绕原文的消息|我的应用状态：保留这段文字/ }),
+  ).toHaveCount(2);
   await content();
   await page.getByRole("button", { name: "关闭应用 工作便笺" }).click();
   await page
@@ -225,7 +229,11 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     after.workspace.inputs.filter(
       (i: { projectId: string }) => i.projectId === originalId,
     ),
-  ).toHaveLength(2);
+  ).toHaveLength(
+    boot.workspace.inputs.filter(
+      (i: { projectId: string }) => i.projectId === originalId,
+    ).length + 2,
+  );
   await page.screenshot({
     path: "test-results/application-workspace.png",
     animations: "disabled",
@@ -239,7 +247,11 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toBeVisible();
   await expect(page.getByRole("tab")).toHaveCount(0);
   await composerAction(page, "查看交流记录");
-  await expect(page.locator(".human-message")).toHaveCount(0);
+  await expect(
+    page
+      .locator(".human-message")
+      .filter({ hasText: /围绕原文的消息|我的应用状态：保留这段文字/ }),
+  ).toHaveCount(2);
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: /^事项/ })

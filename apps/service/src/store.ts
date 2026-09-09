@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { pdfContentSchema } from "../../../packages/core/src/pdf.js";
 import { SearchIndex } from "./search-index.js";
 import type { SearchRequest } from "../../../packages/core/src/retrieval.js";
+import type { ArtifactOutput } from "../../../packages/core/src/conversation.js";
 import {
   applyCommand,
   commandSchema,
@@ -40,6 +41,7 @@ export class WorkspaceStore {
     this.db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS artifact_outputs (command_id TEXT PRIMARY KEY REFERENCES commands(id), input_id TEXT NOT NULL, project_id TEXT NOT NULL, artifact_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS asset_owners (asset_id TEXT NOT NULL REFERENCES assets(id), principal_id TEXT NOT NULL, PRIMARY KEY(asset_id,principal_id));
       CREATE TABLE IF NOT EXISTS pdf_metadata (asset_id TEXT PRIMARY KEY REFERENCES assets(id), pages TEXT NOT NULL);
@@ -235,7 +237,35 @@ export class WorkspaceStore {
       throw error;
     }
   }
-  execute(raw: unknown, access: AccessContext): Receipt {
+  artifactOutputs(access: AccessContext): ArtifactOutput[] {
+    const state = this.snapshot();
+    const projects = new Set(
+      state.projects
+        .filter((p) => p.members.includes(access.principalId))
+        .map((p) => p.id),
+    );
+    return (
+      this.db
+        .prepare(
+          "SELECT command_id AS commandId,input_id AS inputId,project_id AS projectId,artifact_id AS artifactId,revision,created_at AS createdAt FROM artifact_outputs ORDER BY created_at,command_id",
+        )
+        .all() as ArtifactOutput[]
+    ).filter(
+      (o) =>
+        projects.has(o.projectId) &&
+        state.inputs.some(
+          (i) => i.id === o.inputId && i.projectId === o.projectId,
+        ) &&
+        state.artifacts.some(
+          (a) => a.id === o.artifactId && a.projectId === o.projectId,
+        ),
+    );
+  }
+  execute(
+    raw: unknown,
+    access: AccessContext,
+    originInputId?: string,
+  ): Receipt {
     const command = commandSchema.parse(raw);
     const fingerprint = createHash("sha256")
       .update(JSON.stringify({ command, access }))
@@ -249,6 +279,11 @@ export class WorkspaceStore {
       if (previous) {
         if (previous.fingerprint !== fingerprint)
           throw new DomainError("conflict", "这个操作标识已经用于另一项请求。");
+        const output = this.db
+          .prepare("SELECT input_id FROM artifact_outputs WHERE command_id=?")
+          .get(command.commandId) as { input_id: string } | undefined;
+        if (output && originInputId && output.input_id !== originInputId)
+          throw new DomainError("conflict", "交付回执不能改绑到另一条输入。");
         this.db.exec("COMMIT");
         return JSON.parse(previous.receipt) as Receipt;
       }
@@ -288,6 +323,18 @@ export class WorkspaceStore {
       )
         throw new DomainError("invalid", "图片尚未上传或已经不可用。");
       const { state, receipt } = applyCommand(this.snapshot(), command, access);
+      const output =
+        originInputId &&
+        (op.type === "create-artifact" || op.type === "revise-artifact")
+          ? state.artifacts.find((a) => a.id === receipt.entityId)
+          : undefined;
+      if (
+        output &&
+        !state.inputs.some(
+          (i) => i.id === originInputId && i.projectId === output.projectId,
+        )
+      )
+        throw new DomainError("forbidden", "交付对象不属于原始输入的项目。");
       this.index.sync(state);
       this.db
         .prepare("UPDATE workspace SET body=? WHERE id=1")
@@ -295,6 +342,17 @@ export class WorkspaceStore {
       this.db
         .prepare("INSERT INTO commands(id,fingerprint,receipt) VALUES(?,?,?)")
         .run(command.commandId, fingerprint, JSON.stringify(receipt));
+      if (output)
+        this.db
+          .prepare("INSERT INTO artifact_outputs VALUES(?,?,?,?,?,?)")
+          .run(
+            command.commandId,
+            originInputId!,
+            output.projectId,
+            output.id,
+            output.revision,
+            output.updatedAt,
+          );
       this.db.exec("COMMIT");
       return receipt;
     } catch (error) {

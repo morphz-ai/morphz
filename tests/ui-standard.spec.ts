@@ -9,7 +9,7 @@ test("搜索无关闭按钮，外部点击关闭且不误触背后的页面", as
   const originalTitle = await page.title();
   await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(2, 5));
   await input.press("Control+k");
-  const dialog = page.getByRole("dialog", { name: "搜索工作空间" });
+  const dialog = page.getByRole("dialog", { name: "搜索资料" });
   await expect(dialog.getByRole("button", { name: /关闭/ })).toHaveCount(0);
   await page.getByLabel("全文搜索").fill("暂时的搜索词");
   const field = (await page.getByLabel("全文搜索").boundingBox())!;
@@ -64,7 +64,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("快速打开验证");
   await page.getByLabel("新文档正文").fill("搜索需要保持输入的连续性。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
@@ -79,7 +79,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
     ]),
   ).toEqual([2, 6]);
   await input.press("Control+k");
-  const search = page.getByRole("dialog", { name: "搜索工作空间" });
+  const search = page.getByRole("dialog", { name: "搜索资料" });
   await expect(page.getByLabel("全文搜索")).toBeFocused();
   expect((await search.boundingBox())!.width).toBeLessThanOrEqual(642);
   await page.keyboard.press("Escape");
@@ -106,7 +106,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   await page.screenshot({ path: "test-results/quick-search-760.png" });
   await page.keyboard.press("Escape");
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "导入资料", exact: true }).click();
+  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "导入资料" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("工作空间选项")).toBeFocused();
@@ -117,7 +117,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
     page.getByRole("region", { name: "新建文档编辑区" }),
@@ -125,7 +125,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
   await page.getByLabel("新对象标题", { exact: true }).fill("尚未创建的草稿");
   await page.getByLabel("新文档正文").fill("离开画布也不能丢掉这段文字。");
   await page.getByRole("button", { name: "取消", exact: true }).click();
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByLabel("新文档正文")).toHaveValue(
     "离开画布也不能丢掉这段文字。",
   );
@@ -142,7 +142,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
     .click();
   await page.reload();
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByLabel("新对象标题", { exact: true })).toHaveValue(
     "尚未创建的草稿",
   );

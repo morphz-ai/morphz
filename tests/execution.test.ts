@@ -3,6 +3,140 @@ import assert from "node:assert/strict";
 import { ExecutionControls } from "../apps/service/src/execution.js";
 const scope = { projectId: "first-project", artifactId: null };
 const binding = { sessionId: "session-1", contextId: "context-1" };
+
+test("单个分支的查看和停止不包含同根的其他分支，停止须核对版本", async () => {
+  const scoped = { ...scope, threadId: "thread-1" };
+  const writes: unknown[] = [];
+  const controls = new ExecutionControls(
+    async (path, method, body) => {
+      if (method === "POST") {
+        writes.push(body);
+        return {
+          updated: true,
+          thread: { id: "thread-1", lifecycle: "cancelled" },
+        };
+      }
+      if (path === "/api/approvals")
+        return {
+          approvals: ["thread-1", "thread-2"].map((thread_id) => ({
+            ...approval,
+            request: { ...approval.request, thread_id, root_turn_id: "root-1" },
+          })),
+        };
+      if (path.includes("/threads/"))
+        return {
+          snapshot: {
+            thread: {
+              id: path.split("/").at(-1),
+              context_id: binding.contextId,
+              session_id: binding.sessionId,
+              root_turn_id: "root-1",
+              revision: 7,
+            },
+          },
+        };
+      if (path.includes("?"))
+        return {
+          jobs: [job, { ...job, id: "sibling", thread_id: "thread-2" }],
+        };
+      return { ...job, id: "sibling", thread_id: "thread-2" };
+    },
+    () => ({ ...binding, rootId: "root-1", threadId: "thread-1" }),
+  );
+  const snapshot = await controls.snapshot(scoped);
+  assert.deepEqual(
+    snapshot.jobs.map((j) => j.id),
+    [job.id],
+  );
+  assert.equal(snapshot.approvals.length, 1);
+  await assert.rejects(controls.result(scoped, "sibling"), /不属于/);
+  await assert.rejects(
+    controls.control({
+      scope: scoped,
+      action: { type: "cancel-thread", threadId: "thread-2", revision: 7 },
+    }),
+    /不一致/,
+  );
+  await assert.rejects(
+    controls.control({
+      scope: scoped,
+      action: { type: "cancel-thread", threadId: "thread-1", revision: 6 },
+    }),
+    /已变化/,
+  );
+  assert.equal(writes.length, 0);
+  await controls.control({
+    scope: scoped,
+    action: { type: "cancel-thread", threadId: "thread-1", revision: 7 },
+  });
+  assert.deepEqual(writes, [
+    {
+      action: "cancel",
+      expected_revision: 7,
+      reason: "用户在 Morphz 停止此执行分支",
+    },
+  ]);
+});
+
+test("共享 Session 的执行详情、结果与审批必须限定到原始工作根", async () => {
+  const jobs = [
+    { ...job, id: "job-a", thread_id: "thread-a" },
+    { ...job, id: "job-b", thread_id: "thread-b" },
+  ];
+  let writes = 0;
+  const controls = new ExecutionControls(
+    async (path, method) => {
+      if (method === "POST") writes++;
+      if (path === "/api/approvals")
+        return {
+          approvals: ["a", "b"].map((key) => ({
+            requested_at: "2026-09-09T00:00:00Z",
+            request: {
+              approval_id: "approve-" + key,
+              session_id: binding.sessionId,
+              context_id: binding.contextId,
+              root_turn_id: "root-" + key,
+              justification: key,
+              action: {},
+              requested: {},
+            },
+          })),
+        };
+      if (path.includes("/threads/"))
+        return {
+          snapshot: {
+            thread: {
+              id: path.endsWith("thread-a") ? "thread-a" : "thread-b",
+              session_id: binding.sessionId,
+              context_id: binding.contextId,
+              root_turn_id: path.endsWith("thread-a") ? "root-a" : "root-b",
+            },
+          },
+        };
+      if (path.includes("?")) return { jobs };
+      return jobs.find((j) => path.endsWith(j.id));
+    },
+    () => ({ ...binding, rootId: "root-a" }),
+  );
+  const value = await controls.snapshot(scope);
+  assert.deepEqual(
+    value.jobs.map((j) => j.id),
+    ["job-a"],
+  );
+  assert.deepEqual(
+    value.approvals.map((a) => a.request.approval_id),
+    ["approve-a"],
+  );
+  await assert.rejects(controls.result(scope, "job-b"), /不属于/);
+  await assert.rejects(
+    controls.control({
+      scope,
+      action: { type: "cancel-job", jobId: "job-b", revision: job.revision },
+    }),
+    /不属于/,
+  );
+  assert.equal(writes, 0);
+});
 const job = {
   id: "job-1",
   revision: 7,

@@ -3,6 +3,11 @@ import { openInput } from "./interaction-helpers.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 
 type Delivery = ConversationRuntime["deliveries"][number];
+test.afterEach(async ({ page }) => {
+  // Drain snapshot fixtures before Playwright closes their request context.
+  // Keep genuine request errors visible instead of ignoring route exceptions.
+  await page.unrouteAll({ behavior: "wait" });
+});
 async function fixture(page: Page) {
   const entries = new Map<
     string,
@@ -117,7 +122,7 @@ test("中间投递状态不占气泡空间，停止仅在对应的回复区域",
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "停止这次处理", exact: true }),
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   for (const theme of ["dark", "light"]) {
     await page
       .locator(".app")
@@ -164,9 +169,20 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   page,
 }) => {
   const { entries, ids, input, add } = await fixture(page);
-  const first = await add("并发工作 A", "queued");
+  await add("并发工作 A", "queued");
   const second = await add("并发工作 B", "running", ["B 的部分回复"]);
   await input.fill("继续讨论的草稿");
+  await page.route("**/api/executions?*", (route) =>
+    route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
+  );
+  await page
+    .locator(".human-message")
+    .filter({ hasText: "并发工作 A" })
+    .getByRole("button", { name: "查看这项正在处理的工作" })
+    .click();
+  const first = page
+    .getByRole("complementary", { name: "执行面板" })
+    .locator(".response-controls");
   const calls: string[] = [];
   let release: (() => void) | undefined;
   let fail = true;
@@ -242,6 +258,9 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
     .getByRole("button", { name: "工作台", exact: true })
     .click();
   await openInput(page);
-  await expect(page.locator(".response-controls")).toHaveCount(0);
+  await expect(
+    page.getByRole("complementary", { name: "执行面板" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".response-controls")).toHaveCount(1);
   expect(calls).toHaveLength(2);
 });

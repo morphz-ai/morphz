@@ -14,7 +14,7 @@ export async function seedLibraryArtifact(
     .getAttribute("aria-label");
   const boot = await (await page.request.get("/api/workspace")).json();
   const project = boot.workspace.projects.find(
-    (p: { title: string }) => label === `${p.title}的资料`,
+    (p: { title: string }) => label === `${p.title}的内容`,
   );
   expect(project, "The fixture must use the visible workspace").toBeTruthy();
   const response = await page.request.post("/api/commands", {
@@ -33,11 +33,27 @@ export async function seedLibraryArtifact(
     },
   });
   expect(response.ok(), await response.text()).toBeTruthy();
-  await page
-    .locator(".artifact-card")
-    .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
-    .click();
-  await expect(page.locator(".object-paper > h1")).toHaveText(title);
+  if (content.kind === "task") {
+    // Task interaction fixtures follow the normal live-object entry. Search
+    // intentionally opens the indexed revision rather than a live task.
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: /^事项/ })
+      .click();
+    await page
+      .getByLabel("事项列表")
+      .getByRole("button")
+      .filter({ hasText: title })
+      .click();
+  } else {
+    await page
+      .locator(".artifact-card")
+      .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
+      .click();
+  }
+  await expect(
+    page.getByRole("heading", { name: title, exact: true }),
+  ).toBeVisible();
 }
 
 export function humanTask(description = "") {

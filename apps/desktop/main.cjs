@@ -6,6 +6,7 @@ const {
   session,
   ipcMain,
   systemPreferences,
+  shell,
 } = require("electron");
 const { join, isAbsolute } = require("node:path");
 const {
@@ -164,6 +165,8 @@ else {
       microphone.cancel();
     });
     for (const name of [
+      // Browser operations stay object-scoped; external links have a separate,
+      // scheme-limited handler and never expose an arbitrary shell command.
       "open",
       "navigate",
       "control",
@@ -177,6 +180,19 @@ else {
         return browser[name](...args);
       });
     }
+    ipcMain.handle("open-external", async (event, value) => {
+      requireMain(event);
+      if (typeof value !== "string" || value.length > 8192)
+        throw new Error("链接地址无效。");
+      const parsed = new URL(value);
+      if (
+        !["https:", "http:"].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password
+      )
+        throw new Error("只能打开不含登录凭据的 HTTP 或 HTTPS 链接。");
+      await shell.openExternal(parsed.href);
+    });
     const { DesktopSources } =
       await import("../../dist/service/apps/service/src/desktop-sources.js");
     sources = new DesktopSources(

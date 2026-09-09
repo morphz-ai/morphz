@@ -38,6 +38,10 @@ export function useExchangeFocus(options: {
         // leave callback win over the user's newer intent to compose.
         if (generation !== openGeneration.current) return;
         const current = latest.current;
+        // Native dialogs / out-of-process frames may deliver a window blur
+        // after the main window has regained focus. Do not hide fresh input
+        // because of that stale notification.
+        if (windowBlur && document.hasFocus()) return;
         if (
           snapshot.pinned ||
           snapshot.suspended ||

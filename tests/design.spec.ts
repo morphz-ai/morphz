@@ -25,6 +25,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
       .filter({ hasText: "设计工作室" })
       .click();
     await openLibrary(page);
+    await expect(page.getByLabel("内容范围", { exact: true })).toHaveCount(0);
   };
   const docs: [string, string][] = [
     [
@@ -44,7 +45,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
     await projects();
     await page
       .locator(".library-authoring-options")
-      .getByRole("button", { name: "自己写文档", exact: true })
+      .getByRole("button", { name: "手动写文档", exact: true })
       .click();
     await page.getByLabel("新对象标题", { exact: true }).fill(title);
     await page.getByLabel("新文档正文").fill(body);
@@ -57,7 +58,9 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   ] as const) {
     await projects();
     await seedLibraryArtifact(page, title, humanTask(body));
-    await expect(page.locator(".object-paper > h1")).toHaveText(title);
+    await expect(
+      page.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
   }
   await projects();
   for (const appearance of ["亮色", "暗色"]) {
@@ -79,7 +82,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
       });
     }
   }
-  await page.getByLabel("搜索项目内容").fill("产品交互笔记");
+  await page.getByLabel("搜索内容标题").fill("产品交互笔记");
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await page.getByLabel("清除搜索", { exact: true }).click();
   await page
@@ -89,12 +92,18 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   await expect(page.locator(".artifact-card")).toHaveCount(3);
   await page.getByRole("button", { name: "列表视图", exact: true }).click();
   await expect(page.locator(".artifact-list .artifact-card")).toHaveCount(3);
-  await page.getByLabel("搜索项目内容").fill("no-such-object");
+  await page.getByLabel("搜索内容标题").fill("no-such-object");
   await expect(
     page.getByRole("heading", { name: "没有找到匹配的内容" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "显示全部内容", exact: true }).click();
-  await expect(page.locator(".artifact-list .artifact-card")).toHaveCount(5);
+  await expect(page.locator(".artifact-list .artifact-card")).toHaveCount(3);
+  await expect(page.locator(".artifact-list")).not.toContainText(
+    "审阅交互方案",
+  );
+  await expect(page.locator(".artifact-list")).not.toContainText(
+    "整理发布素材",
+  );
   await page.screenshot({
     animations: "disabled",
     path: "test-results/library-list.png",
@@ -127,7 +136,11 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   await page.getByRole("button", { name: "取消编辑", exact: true }).click();
   await page.getByLabel("AI 输入内容").fill("请帮我梳理这份文档的重点。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect(page.locator(".human-message")).toContainText("请帮我梳理");
+  await expect(
+    page
+      .locator(".human-message")
+      .filter({ hasText: "请帮我梳理这份文档的重点。" }),
+  ).toHaveCount(1);
   await page.screenshot({
     animations: "disabled",
     path: "test-results/conversation-light.png",
@@ -136,7 +149,10 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: /^事项/ })
     .click();
-  await expect(page.locator(".task-row")).toHaveCount(2);
+  // The inbox is global; other tests' authorized tasks remain visible.
+  await expect(
+    page.locator(".task-row").filter({ hasText: /审阅交互方案|整理发布素材/ }),
+  ).toHaveCount(2);
   await page.screenshot({
     animations: "disabled",
     path: "test-results/inbox-light.png",
@@ -166,8 +182,15 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   }
   await page.setViewportSize({ width: 1380, height: 920 });
   for (const title of ["审阅交互方案", "整理发布素材"]) {
-    await projects();
-    await page.locator(".artifact-card").filter({ hasText: title }).click();
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: /^事项/ })
+      .click();
+    await page
+      .getByLabel("事项列表")
+      .getByRole("button")
+      .filter({ hasText: title })
+      .click();
     await page.getByRole("button", { name: "手动编辑", exact: true }).click();
     await page.getByLabel("事项负责人").selectOption("morphz-agent");
     await page.getByRole("button", { name: "保存版本", exact: true }).click();

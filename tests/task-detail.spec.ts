@@ -4,7 +4,7 @@ import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
 
 test.afterEach(async ({ page }) => {
   const close = page.getByRole("button", {
-    name: "关闭应用 资料",
+    name: "关闭应用 内容",
     exact: true,
   });
   if (await close.isVisible()) await close.click();

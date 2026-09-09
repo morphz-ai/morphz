@@ -32,6 +32,11 @@ export async function composerAction(page: Page, name: string) {
   // Native popovers above an out-of-process app frame can enter the DOM before
   // Chromium presents their hit-test surface. Capture the visible menu before
   // sending a physical mouse click, rather than bypassing it with dispatchEvent.
-  await page.getByRole("group", { name: "输入选项", exact: true }).screenshot();
+  if (
+    await page.getByRole("group", { name: "输入选项", exact: true }).isVisible()
+  )
+    await page
+      .getByRole("group", { name: "输入选项", exact: true })
+      .screenshot();
   await action.click();
 }

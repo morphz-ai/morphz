@@ -169,6 +169,52 @@ export function discussionId(value: {
 }) {
   return value.conversationId ?? value.projectId;
 }
+/** A conversation organizes exchanges; the work project still owns every input and artifact. */
+export function checkConversation(
+  state: Workspace,
+  projectId: string,
+  conversationId: string,
+  access: AccessContext,
+) {
+  const project = checkProject(state, projectId, access);
+  const conversation = state.conversations.find((c) => c.id === conversationId);
+  if (!conversation) throw new DomainError("not_found", "对话不存在。");
+  const owner = checkProject(state, conversation.projectId, access);
+  if (
+    owner.id !== project.id &&
+    !(
+      owner.kind === "dialogue" &&
+      conversation.id === owner.id &&
+      owner.ownerPrincipalId &&
+      project.members.includes(owner.ownerPrincipalId) &&
+      (owner.ownerPrincipalId === access.principalId ||
+        access.principalId === "morphz-service")
+    )
+  )
+    throw new DomainError("forbidden", "对话不属于当前项目或当前身份。");
+  return conversation;
+}
+
+/** Legacy default histories stay readable without rewriting persisted inputs or deliveries. */
+export function inConversation(
+  state: Workspace,
+  conversationId: string,
+  value: { projectId: string; conversationId?: string },
+  sharedDefault = false,
+) {
+  if (discussionId(value) === conversationId) return true;
+  if (!sharedDefault || discussionId(value) !== value.projectId) return false;
+  const owner = state.projects.find(
+    (p) => p.id === conversationId && p.kind === "dialogue",
+  );
+  return (
+    !!owner?.ownerPrincipalId &&
+    !!state.projects.find(
+      (p) =>
+        p.id === value.projectId && p.members.includes(owner.ownerPrincipalId!),
+    )
+  );
+}
 export function ensureDiscussions(state: Workspace) {
   for (const project of state.projects) {
     if (!state.conversations.some((c) => c.id === project.id))
@@ -258,6 +304,7 @@ export const stateSchema = z
           targetActantId: id,
           status: z.literal("recorded"),
           intent: inputIntentSchema.optional(),
+          model: z.string().trim().min(1).max(256).optional(),
           application: z
             .object({
               instanceId: id,
@@ -433,6 +480,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      model: z.string().trim().min(1).max(256).optional(),
       conversationId: id.optional(),
       intent: inputIntentSchema.optional(),
       applicationInstanceId: id.optional(),
@@ -1008,14 +1056,8 @@ export function applyCommand(
     op.type === "import-pdf"
   ) {
     checkProject(state, op.projectId, access);
-    if (
-      op.type === "create-artifact" &&
-      op.conversationId &&
-      !state.conversations.some(
-        (c) => c.id === op.conversationId && c.projectId === op.projectId,
-      )
-    )
-      throw new DomainError("forbidden", "产物的来源对话不属于当前项目。");
+    if (op.type === "create-artifact" && op.conversationId)
+      checkConversation(state, op.projectId, op.conversationId, access);
     if (op.type === "import-document") {
       const issue =
         documentImportIssue(op.relativePath) ?? documentTextIssue(op.text);
@@ -1163,11 +1205,12 @@ export function applyCommand(
   } else if (op.type === "record-input") {
     const project = checkProject(state, op.projectId, access);
     const conversationId = discussionId(op);
-    const conversation = state.conversations.find(
-      (c) => c.id === conversationId && c.projectId === project.id,
+    const conversation = checkConversation(
+      state,
+      project.id,
+      conversationId,
+      access,
     );
-    if (!conversation)
-      throw new DomainError("not_found", "对话不存在或不属于当前项目。");
     if (conversation.archivedAt && actor.kind === "human")
       throw new DomainError(
         "conflict",
@@ -1218,6 +1261,7 @@ export function applyCommand(
       targetActantId: op.targetActantId,
       status: "recorded",
       ...(op.intent ? { intent: op.intent } : {}),
+      ...(op.model ? { model: op.model } : {}),
       ...(app && instance
         ? {
             application: {

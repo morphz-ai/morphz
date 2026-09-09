@@ -13,11 +13,15 @@ export function ExecutionDialog({
   scope,
   onClose,
   onOpen,
+  embedded = false,
+  hideEmpty = false,
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
   onClose: () => void;
   onOpen: (id: string) => void;
+  embedded?: boolean;
+  hideEmpty?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     api = useRef(client),
@@ -50,7 +54,7 @@ export function ExecutionDialog({
       loading.current = false;
     }
   }
-  useModal(dialog);
+  useModal(dialog, undefined, !embedded);
   useEffect(() => {
     mounted.current = true;
 
@@ -62,7 +66,13 @@ export function ExecutionDialog({
     };
   }, []);
   async function control(action: ExecutionControl["action"]) {
-    setBusy(action.type === "cancel-job" ? action.jobId : action.approvalId);
+    setBusy(
+      action.type === "cancel-job"
+        ? action.jobId
+        : action.type === "cancel-thread"
+          ? action.threadId
+          : action.approvalId,
+    );
     setNotice("");
     try {
       await api.current.controlExecution({ scope, action });
@@ -114,27 +124,21 @@ export function ExecutionDialog({
       /* Ordinary tool output need not be JSON. */
     }
   }
-  return (
-    <dialog
-      ref={dialog}
-      className="create-dialog library-dialog execution-dialog"
-      aria-labelledby="execution-title"
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-    >
-      <header>
-        <div>
-          <h2 id="execution-title">执行记录</h2>
-          <p className="muted">
-            当前对话 · 最近 {snapshot?.limit ?? 100} 项执行
-          </p>
-        </div>
-        <button onClick={onClose} aria-label="关闭执行记录">
-          <X />
-        </button>
-      </header>
+  const content = (
+    <>
+      {!embedded && (
+        <header>
+          <div>
+            <h2 id="execution-title">执行记录</h2>
+            <p className="muted">
+              当前对话 · 最近 {snapshot?.limit ?? 100} 项执行
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="关闭执行记录">
+            <X />
+          </button>
+        </header>
+      )}
       {error && (
         <p role="alert" className="delivery-error">
           {error}
@@ -145,12 +149,17 @@ export function ExecutionDialog({
           {notice}
         </p>
       )}
-      <div className="execution-dialog-toolbar">
-        <span className="muted">审批只授权本次操作，不会开启完全访问。</span>
-        <button aria-label="刷新执行记录" onClick={() => void refresh()}>
-          <RefreshCw />
-        </button>
-      </div>
+      {(!embedded ||
+        error ||
+        !!snapshot?.jobs.length ||
+        !!snapshot?.approvals.length) && (
+        <div className="execution-dialog-toolbar">
+          <span className="muted">审批只授权本次操作，不会开启完全访问。</span>
+          <button aria-label="刷新执行记录" onClick={() => void refresh()}>
+            <RefreshCw />
+          </button>
+        </div>
+      )}
       {!snapshot && !error && <p className="muted">正在读取 Runtime…</p>}
       <div className="execution-list">
         {snapshot?.approvals.map((approval) => (
@@ -208,7 +217,7 @@ export function ExecutionDialog({
         ))}
         {snapshot && !snapshot.jobs.length && !snapshot.approvals.length && (
           <p className="muted execution-empty">
-            还没有工具执行记录。模型回复本身不会被当成执行记录。
+            {hideEmpty ? null : "暂无工具执行记录。"}
           </p>
         )}
         {snapshot?.jobs.map((job) => (
@@ -227,6 +236,15 @@ export function ExecutionDialog({
               </span>
             </header>
             <small className="muted">
+              {new Set(snapshot.jobs.map((j) => j.thread_id)).size > 1 && (
+                <>
+                  分支{" "}
+                  {[...new Set(snapshot.jobs.map((j) => j.thread_id))].indexOf(
+                    job.thread_id,
+                  ) + 1}{" "}
+                  ·{" "}
+                </>
+              )}
               {new Date(job.created_at).toLocaleString("zh-CN")} ·{" "}
               {job.target_id}
             </small>
@@ -292,6 +310,23 @@ export function ExecutionDialog({
           </section>
         ))}
       </div>
+    </>
+  );
+  return embedded ? (
+    <section className="execution-details" aria-label="工具执行与审批">
+      {content}
+    </section>
+  ) : (
+    <dialog
+      ref={dialog}
+      className="create-dialog library-dialog execution-dialog"
+      aria-labelledby="execution-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+    >
+      {content}
     </dialog>
   );
 }

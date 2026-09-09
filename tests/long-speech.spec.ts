@@ -108,7 +108,7 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
   });
   await page.goto("/");
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "导入资料", exact: true }).click();
+  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
   const importer = page.getByRole("dialog", { name: "导入资料", exact: true });
   await importer.getByLabel("选择资料文件").setInputFiles({
     name: "百万字朗读.txt",
@@ -116,9 +116,9 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
     buffer: Buffer.from(source),
   });
   await importer
-    .getByRole("button", { name: "导入 1 篇资料", exact: true })
+    .getByRole("button", { name: "导入 1 份资料", exact: true })
     .click();
-  await expect(importer.getByRole("status")).toHaveText("已导入 1 篇", {
+  await expect(importer.getByRole("status")).toHaveText("已导入 1 份", {
     timeout: 20000,
   });
   await importer.getByRole("button", { name: "打开", exact: true }).click();

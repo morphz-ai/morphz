@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { scopedStorage } from "./client.js";
 import {
   FilePlus2,
-  ImagePlus,
-  CircleCheck,
+  FileUp,
   Search,
   LayoutGrid,
   List,
@@ -15,27 +16,77 @@ import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
 
 export function ObjectCollection({
   project,
+  projects,
   objects,
   onOpen,
   onCreate,
   onWrite,
   onImport,
   importing,
+  catalog = false,
+  toolbarTarget,
 }: {
-  project: { title: string };
+  project: { id: string; title: string };
+  projects: { id: string; title: string }[];
   objects: Artifact[];
   onOpen: (id: string) => void;
   onCreate: (kind: "document" | "task" | "website" | "interactive") => void;
   onWrite: () => void;
   onImport: () => void;
   importing: boolean;
+  catalog?: boolean;
+  toolbarTarget?: HTMLElement | null;
 }) {
-  const [filter, setFilter] = useState<"all" | Artifact["content"]["kind"]>(
-    "all",
+  const storage = useState(() => scopedStorage())[0];
+  const key = "library-view:" + (catalog ? "all-content" : project.id);
+  const saved = useState(() =>
+    storage.readLocal<{
+      filter?: "all" | Artifact["content"]["kind"];
+      query?: string;
+      layout?: "grid" | "list";
+      scope?: string;
+    }>(key, {}),
+  )[0];
+  const [requestedFilter, setFilter] = useState<
+    "all" | Artifact["content"]["kind"]
+  >(
+    ["all", "document", "pdf", "image", "website", "interactive"].includes(
+      saved?.filter ?? "",
+    )
+      ? saved.filter!
+      : "all",
   );
-  const [query, setQuery] = useState("");
-  const [layout, setLayout] = useState<"grid" | "list">("grid");
-  const visible = [...objects]
+  // Also normalize a task filter retained by a live UI hot update.
+  const filter = requestedFilter === "task" ? "all" : requestedFilter;
+  const [query, setQuery] = useState(
+    typeof saved?.query === "string" ? saved.query : "",
+  );
+  const [layout, setLayout] = useState<"grid" | "list">(
+    saved?.layout === "list" ? "list" : "grid",
+  );
+  // Only the global catalog spans authorized spaces. Project/desk content
+  // is a local projection of the same objects, not a second global catalog.
+  const [requestedScope, setScope] = useState(saved?.scope ?? "all");
+  const scope = !catalog
+    ? project.id
+    : projects.some((p) => p.id === requestedScope)
+      ? requestedScope
+      : "all";
+  // Artifacts share storage, but tasks have their own action-oriented entry.
+  // Filter before counts, search, scope and empty states are calculated.
+  const contentObjects = objects.filter((a) => a.content.kind !== "task");
+  const scopedObjects = contentObjects.filter(
+    (a) => scope === "all" || a.projectId === scope,
+  );
+  const ownerTitles = new Map(projects.map((p) => [p.id, p.title]));
+  useEffect(() => {
+    try {
+      storage.writeLocal(key, { filter, query, layout, scope });
+    } catch {
+      /* Browsing remains available without local persistence. */
+    }
+  }, [key, filter, query, layout, scope]);
+  const visible = [...scopedObjects]
     .filter(
       (a) =>
         (filter === "all" || a.content.kind === filter) &&
@@ -45,59 +96,84 @@ export function ObjectCollection({
   return (
     <section
       className="collection library-collection"
-      aria-label={`${project.title}的资料`}
+      aria-label={catalog ? "全部内容" : `${project.title}的内容`}
     >
-      <div className="library-chrome">
-        <div className="creation-actions" role="group" aria-label="创建资料">
-          <button
-            aria-label="新建交互产物"
-            onClick={() => onCreate("interactive")}
-          >
-            <span className="creation-icon">
-              <List />
-            </span>
-            <span>
-              <strong>交互产物</strong>
-            </span>
-          </button>
-          <button aria-label="添加网站" onClick={() => onCreate("website")}>
-            <span className="creation-icon">
-              <Globe />
-            </span>
-            <span>
-              <strong>添加网站</strong>
-            </span>
-          </button>
-          <button aria-label="新建文档" onClick={() => onCreate("document")}>
-            <span className="creation-icon">
+      {catalog &&
+        toolbarTarget &&
+        createPortal(
+          <div className="content-actions" role="group" aria-label="创建内容">
+            <button
+              aria-label="让 Morphz 起草"
+              title={`新内容保存到${project.title}`}
+              onClick={() => onCreate("document")}
+            >
               <FilePlus2 />
-            </span>
-            <span>
-              <strong>新建文档</strong>
-            </span>
-          </button>
-          <button aria-label="导入图片" onClick={onImport} disabled={importing}>
-            <span className="creation-icon">
-              <ImagePlus />
-            </span>
-            <span>
-              <strong>{importing ? "导入中…" : "导入图片"}</strong>
-            </span>
-          </button>
-          <button aria-label="新建事项" onClick={() => onCreate("task")}>
-            <span className="creation-icon">
-              <CircleCheck />
-            </span>
-            <span>
-              <strong>新建事项</strong>
-            </span>
-          </button>
-          <span className="library-authoring-options">
-            <button className="text-button" onClick={onWrite}>
-              自己写文档
+              <span className="toolbar-action-label">让 Morphz 起草</span>
             </button>
-          </span>
-        </div>
+            <button
+              aria-label="导入资料"
+              title={`导入到${project.title}`}
+              onClick={onImport}
+              disabled={importing}
+            >
+              <FileUp />
+              <span className="toolbar-action-label">导入</span>
+            </button>
+          </div>,
+          toolbarTarget,
+        )}
+      <div className="library-chrome">
+        {!catalog && (
+          <div className="creation-actions" role="group" aria-label="创建内容">
+            <button
+              aria-label="制作表格或报告"
+              onClick={() => onCreate("interactive")}
+            >
+              <span className="creation-icon">
+                <List />
+              </span>
+              <span>
+                <strong>制作表格或报告</strong>
+              </span>
+            </button>
+            <button aria-label="添加网站" onClick={() => onCreate("website")}>
+              <span className="creation-icon">
+                <Globe />
+              </span>
+              <span>
+                <strong>添加网站</strong>
+              </span>
+            </button>
+            <button
+              aria-label="让 Morphz 起草"
+              onClick={() => onCreate("document")}
+            >
+              <span className="creation-icon">
+                <FilePlus2 />
+              </span>
+              <span>
+                <strong>让 Morphz 起草</strong>
+              </span>
+            </button>
+            <button
+              aria-label="导入资料"
+              onClick={onImport}
+              disabled={importing}
+            >
+              <span className="creation-icon">
+                <FileUp />
+              </span>
+              <span>
+                <strong>{importing ? "导入中…" : "导入资料"}</strong>
+              </span>
+            </button>
+            <span className="library-authoring-options">
+              <button className="text-button" onClick={onWrite}>
+                手动写文档
+              </button>
+            </span>
+          </div>
+        )}
         <div className="library-toolbar">
           <div className="filter-tabs" role="group" aria-label="内容类型">
             {(
@@ -106,7 +182,6 @@ export function ObjectCollection({
                 "document",
                 "pdf",
                 "image",
-                "task",
                 "website",
                 "interactive",
               ] as const
@@ -117,16 +192,32 @@ export function ObjectCollection({
                 onClick={() => setFilter(kind)}
               >
                 {kind === "all" ? "全部" : kindLabel[kind]}
-                {kind === "all" && <small>{objects.length}</small>}
+                {kind === "all" && <small>{scopedObjects.length}</small>}
               </button>
             ))}
           </div>
           <div className="library-controls">
+            {catalog && (
+              <select
+                className="library-scope"
+                aria-label="内容范围"
+                title="筛选内容的所属空间，不切换对话或更改新内容的保存位置"
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+              >
+                <option value="all">全部工作空间</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title}
+                  </option>
+                ))}
+              </select>
+            )}
             <label className="search-field">
               <Search />
               <input
-                aria-label="搜索项目内容"
-                placeholder="搜索内容"
+                aria-label="搜索内容标题"
+                placeholder="搜索标题"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
@@ -161,7 +252,7 @@ export function ObjectCollection({
         className="library-results"
         tabIndex={0}
         role="region"
-        aria-label="资料列表"
+        aria-label="内容列表"
       >
         {visible.length ? (
           <>
@@ -208,6 +299,7 @@ export function ObjectCollection({
                     <span>
                       {a.title}
                       <small>
+                        {ownerTitles.get(a.projectId) ?? "所属空间不可用"} ·{" "}
                         {kindLabel[a.content.kind]} · v{a.revision}
                       </small>
                     </span>
@@ -225,22 +317,32 @@ export function ObjectCollection({
         ) : (
           <div className="empty-state">
             <span className="empty-icon">
-              {objects.length ? <Search /> : <FolderOpen />}
+              {scopedObjects.length ? <Search /> : <FolderOpen />}
             </span>
             <h2>
-              {objects.length ? "没有找到匹配的内容" : "让第一个想法落地"}
+              {scopedObjects.length
+                ? "没有找到匹配的内容"
+                : "这个范围内还没有内容"}
             </h2>
             <p>
-              {objects.length
+              {scopedObjects.length
                 ? "试试其他关键词，或切换内容类型。"
-                : "描述你要做的事，或导入已有素材。"}
+                : scope === "all"
+                  ? "创建、生成或导入的内容都会显示在这里。"
+                  : catalog
+                    ? "可以切换到全部工作空间，查看其他地方保存的内容。"
+                    : "在这里创作或导入；跨空间查找请使用侧栏的“内容”。"}
             </p>
-            {objects.length > 0 && (
+            {(contentObjects.length > 0 ||
+              (catalog && scope !== "all") ||
+              query ||
+              filter !== "all") && (
               <button
                 className="outline"
                 onClick={() => {
                   setFilter("all");
                   setQuery("");
+                  if (!scopedObjects.length) setScope("all");
                 }}
               >
                 显示全部内容

@@ -306,7 +306,17 @@
 }
 .topbar .application-tabs {
   flex: 0 1 auto;
+  min-width: 0;
   scrollbar-width: thin;
+}
+.topbar .application-strip > button {
+  flex-shrink: 0;
+}
+.topbar .application-strip {
+  min-width: 0;
+}
+.topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
+  min-width: 200px;
 }
 .topbar .application-tabs + button {
   margin-left: auto;
@@ -323,6 +333,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+@container (max-width: 640px) {
+  .topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
+    min-width: 48px;
+  }
+  .topbar .application-strip {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .topbar .application-tabs {
+    flex-shrink: 0;
+  }
+  .topbar .detail-toolbar-slot {
+    min-width: 32px;
+  }
+}
 .app[data-desktop="mac"] .application-tabs,
 .app[data-desktop="mac"] .workspace-options {
   -webkit-app-region: no-drag;
@@ -336,6 +361,20 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+.application-canvas .object-surface > .library-collection {
+  height: 100%;
+}
+.content-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+}
+.workspace-content svg {
+  width: 16px;
+  height: 16px;
 }
 .application-canvas .application-host {
   height: 100%;
@@ -413,6 +452,28 @@
 .library-chrome .filter-tabs button {
   padding: 6px 8px;
 }
+.library-chrome .library-controls {
+  min-width: 0;
+  max-width: 100%;
+}
+.app .library-scope {
+  width: auto;
+  max-width: 160px;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--line);
+  text-overflow: ellipsis;
+}
+.library-controls .search-field {
+  flex: 1 1 140px;
+}
+.library-controls .layout-switch {
+  flex-shrink: 0;
+}
 .library-results {
   overflow: auto;
   overscroll-behavior: contain;
@@ -489,52 +550,84 @@
   flex: 0 1 auto;
   min-height: 0;
 }
-.project-conversations {
-  position: relative;
+.sidebar-project {
   min-width: 0;
+  margin-top: 2px;
   -webkit-app-region: no-drag;
 }
-.app .conversation-switch {
+.sidebar-project-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 230px;
-  font-size: 12px;
-  padding: 5px 7px;
+  min-height: 36px;
+  border-radius: var(--ui-radius-control);
+  padding-right: 4px;
 }
-.conversation-switch > span {
+.sidebar-project-heading[data-active="true"],
+.sidebar-project-heading:hover {
+  background: var(--hover);
+}
+/* The row owns its surface. Child controls must not paint a second hover tile. */
+.app .sidebar-project-heading > button:hover:not(:disabled),
+.app .project-conversation-row > button:hover:not(:disabled) {
+  background: transparent;
+}
+.app .project-link {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+}
+.app .project-link[aria-current="true"] {
+  color: var(--ink);
+}
+.project-link > span,
+.conversation-choice > span:not(.conversation-running) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conversation-switch > svg {
-  width: 15px;
-  height: 15px;
+.project-link > svg {
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
 }
-.project-conversation-menu {
-  position: absolute;
-  z-index: 35;
-  right: 0;
-  top: calc(100% + 8px);
-  width: min(340px, calc(100vw - 48px));
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 12px 40px var(--shadow);
+.app .sidebar-project-heading .icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 6px;
-  -webkit-app-region: no-drag;
+  color: var(--muted);
 }
-.project-conversation-menu header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 6px 6px;
-  font-size: 12px;
+.app .sidebar-project-heading .icon-button:hover {
+  color: var(--ink);
 }
-.project-conversation-menu .conversation-list {
-  max-height: 320px;
-  overflow: auto;
+.sidebar-project-heading .project-new-conversation {
+  opacity: 0;
+}
+.sidebar-project-heading:hover .project-new-conversation,
+.sidebar-project-heading:has(:focus-visible) .project-new-conversation {
+  opacity: 1;
+}
+@media (hover: none) {
+  .sidebar-project-heading .project-new-conversation {
+    opacity: 1;
+  }
+}
+.sidebar-project-heading .icon-button > svg {
+  width: 16px;
+  height: 16px;
+}
+.project-disclosure[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.project-conversation-list {
+  padding: 2px 0 4px 22px;
 }
 .project-conversation-row,
 .project-conversation-row form {
@@ -545,50 +638,65 @@
 }
 .project-conversation-row {
   border-radius: 6px;
-  padding: 2px;
+  min-height: 32px;
+  padding-right: 3px;
 }
-.project-conversation-row[data-selected="true"] {
+.project-conversation-row[data-selected="true"],
+.project-conversation-row:hover {
   background: var(--hover);
-}
-.app .project-conversation-menu button {
-  font-size: 12px;
-  padding: 6px;
-  gap: 5px;
-}
-.app .project-conversation-menu svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-.app .project-conversation-menu .icon-button {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
 }
 .app .conversation-choice {
   flex: 1;
   min-width: 0;
+  min-height: 32px;
+  padding: 5px 7px;
+  gap: 7px;
+  font-size: 12px;
   text-align: left;
   justify-content: flex-start;
-}
-.conversation-choice > span {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.project-conversation-menu small {
-  font-size: 11px;
   color: var(--muted);
 }
-.project-conversation-menu footer {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 6px;
-  border-top: 1px solid var(--hairline);
-  margin-top: 4px;
+.app .conversation-choice[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 550;
+}
+.conversation-choice > span:not(.conversation-running) {
+  flex: 1;
+}
+.conversation-choice > svg,
+.project-conversation-row form svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.conversation-choice > small {
+  font-size: 10px;
+  white-space: nowrap;
+}
+.conversation-running {
+  width: 5px;
+  height: 5px;
+  background: var(--muted);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.app .project-conversation-row > .composer-more {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 5px;
+  color: var(--muted);
+  opacity: 0;
+}
+.project-conversation-row:hover > .composer-more,
+.project-conversation-row:focus-within > .composer-more,
+.project-conversation-row[data-selected="true"] > .composer-more {
+  opacity: 1;
+}
+@media (hover: none) {
+  .app .project-conversation-row > .composer-more {
+    opacity: 1;
+  }
 }
 .project-conversation-row form {
   flex: 1;
@@ -598,6 +706,20 @@
   min-width: 0;
   padding: 5px 7px;
   font-size: 12px;
+}
+.project-conversation-row form button {
+  padding: 5px;
+}
+.app .project-archived-toggle {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 5px 7px;
+}
+.project-conversation-error {
+  font-size: 12px;
+  margin: 4px 8px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .archived-conversation-note {
   max-width: var(--ui-reading-width);
@@ -830,7 +952,8 @@
   .reply-content
   > pre:last-child
   > code::after,
-.conversation-message[data-stream-active="true"] .tool-name::after {
+.conversation-message[data-stream-active="true"] .tool-name::after,
+.execution-live-calls [data-stream-active="true"] .tool-name::after {
   content: "";
   display: inline-block;
   width: 2px;
@@ -851,7 +974,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .conversation-message[data-stream-active="true"] .reply-content ::after {
+  .conversation-message[data-stream-active="true"] .reply-content ::after,
+  .execution-live-calls [data-stream-active="true"] .tool-name::after {
     animation: none !important;
     opacity: 0.65;
   }
@@ -1044,6 +1168,158 @@
 }
 .composer-model > span:first-child {
   flex-shrink: 0;
+}
+.navigation-history {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.app .navigation-history .icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+}
+.navigation-history button:disabled {
+  opacity: 0.25;
+}
+.app .delivery-object {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(100%, 540px);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  border-radius: 8px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--ink);
+}
+.delivery-object > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.delivery-object > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.delivery-object > small {
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.delivery-object:hover {
+  background: var(--hover);
+}
+.delivery-message {
+  padding-block: 4px;
+}
+.app .inline-object-link {
+  display: inline;
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.reply-content img,
+.document-body img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 6px;
+  margin-block: 10px;
+}
+.model-picker {
+  min-width: 0;
+  padding: 8px;
+  font-size: 12px;
+}
+.model-picker label {
+  display: grid;
+  gap: 6px;
+}
+.model-picker select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 7px;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.model-picker small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.model-picker small button {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+}
+.composer-options > .model-picker {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.task-fields .model-picker {
+  padding: 0;
+}
+.app .connection-summary {
+  justify-content: flex-start;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.app .model-status > button {
+  display: inline;
+  margin-left: 7px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.connection-dialog {
+  inset: 0 0 0 var(--workspace-offset, 0px);
+  margin: auto;
+  width: min(460px, calc(100vw - var(--workspace-offset, 0px) - 32px));
+}
+.connection-facts {
+  display: grid;
+  grid-template-columns: 75px minmax(0, 1fr);
+  gap: 12px 16px;
+  margin: 12px 0 18px;
+  font-size: 13px;
+}
+.connection-facts dt {
+  color: var(--muted);
+}
+.connection-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.connection-dialog > p {
+  font-size: 12px;
+  line-height: 1.6;
 }
 .conversation {
   scrollbar-width: none;

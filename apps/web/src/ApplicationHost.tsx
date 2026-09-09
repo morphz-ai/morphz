@@ -8,6 +8,7 @@ import {
   Globe,
   Grid2X2,
   FolderPlus,
+  FolderOpen,
   Layers2,
   Upload,
   X,
@@ -76,16 +77,13 @@ export function ApplicationHost({
     (i) => i.workspaceId === workspaceId && i.status === "open",
   );
   const active = instances.find((i) => i.id === activeId);
-  const applications = [
-    objectsApplication,
-    ...state.applications.filter(
-      (a) =>
-        a.installedBy === client.boot!.principalId ||
-        instances.some(
-          (i) => i.applicationId === a.id && i.applicationVersion === a.version,
-        ),
-    ),
-  ];
+  const applications = state.applications.filter(
+    (a) =>
+      a.installedBy === client.boot!.principalId ||
+      instances.some(
+        (i) => i.applicationId === a.id && i.applicationVersion === a.version,
+      ),
+  );
   const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
   const launching = useRef(false);
@@ -134,6 +132,20 @@ export function ApplicationHost({
         <Grid2X2 />
       </button>
       {!active && <h1 className="toolbar-title">{space.title}</h1>}
+      {active?.applicationId !== objectsApplication.id && (
+        <button
+          className="workspace-content"
+          aria-label="查看本空间内容"
+          title={`查看${space.title}的内容`}
+          disabled={busy}
+          onClick={() => void launch(objectsApplication)}
+        >
+          <FolderOpen />
+          <span>
+            {spaceKind(space) === "project" ? "项目内容" : "工作台内容"}
+          </span>
+        </button>
+      )}
       <div
         role="tablist"
         aria-label="已打开的应用"
@@ -198,7 +210,7 @@ export function ApplicationHost({
               }
             }}
           >
-            所有资料
+            所有内容
           </button>
         )}
       {spaceKind(space) === "desk" && (

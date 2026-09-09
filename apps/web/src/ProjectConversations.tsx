@@ -3,62 +3,83 @@ import {
   Archive,
   ArchiveRestore,
   Check,
-  ChevronDown,
+  ChevronRight,
+  Folder,
   MessageCircle,
   Pencil,
-  Plus,
+  SquarePen,
 } from "lucide-react";
 import {
   discussionId,
   type Discussion,
 } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
+import { ComposerOptions } from "./ComposerOptions.js";
 
-/** Conversation management stays inside the project, not in global navigation. */
+/** Project-local conversations live next to the project they belong to. */
 export function ProjectConversations({
   client,
   projectId,
-  selected,
+  title: projectTitle,
+  active,
+  selectedId,
+  onOpen,
   onSelect,
+  onCreate,
+  defaultConversationId,
 }: {
   client: WorkspaceClient;
   projectId: string;
-  selected: Discussion;
+  title: string;
+  active: boolean;
+  selectedId: string;
+  onOpen: () => void;
   onSelect: (id: string) => void;
+  onCreate: (title: string) => Promise<void>;
+  defaultConversationId: string;
 }) {
-  const [open, setOpen] = useState(false),
-    [archived, setArchived] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null),
-    [title, setTitle] = useState("");
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
-  const root = useRef<HTMLDivElement>(null),
-    trigger = useRef<HTMLButtonElement>(null);
+  const [expanded, setExpanded] = useState(active);
+  const [archived, setArchived] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const pending = useRef(false);
+  const root = useRef<HTMLDivElement>(null);
   const state = client.boot!.workspace;
-  const conversations = state.conversations.filter(
-    (c) => c.projectId === projectId,
-  );
+  const conversations = state.conversations
+    .filter((c) => c.projectId === projectId)
+    .map((c) =>
+      c.id === projectId && defaultConversationId !== projectId
+        ? { ...c, id: defaultConversationId, title: "持续对话" }
+        : c,
+    );
+  const hasNamed = conversations.some((c) => c.id !== defaultConversationId);
+  const archivedCount = conversations.filter((c) => c.archivedAt).length;
   useEffect(() => {
-    const outside = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("pointerdown", outside);
-    return () => window.removeEventListener("pointerdown", outside);
-  }, []);
+    if (active) setExpanded(true);
+  }, [active, selectedId]);
+  function focusChoice(id: string) {
+    requestAnimationFrame(() =>
+      root.current
+        ?.querySelector<HTMLButtonElement>(
+          '[data-conversation-id="' + id + '"] .conversation-choice',
+        )
+        ?.focus(),
+    );
+  }
   async function create() {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setError("");
     try {
-      const receipt = await client.execute({
-        type: "create-conversation",
-        projectId,
-        title: `对话 ${conversations.length + 1}`,
-      });
-      onSelect(receipt.entityId);
-      setOpen(false);
+      await onCreate("对话 " + (conversations.length + 1));
+      setExpanded(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
@@ -66,6 +87,8 @@ export function ProjectConversations({
     c: Discussion,
     change: { title?: string; archived?: boolean },
   ) {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setError("");
     try {
@@ -76,159 +99,183 @@ export function ProjectConversations({
         ...change,
       });
       setEditing(null);
-      if (change.archived !== undefined && c.id === selected.id) setOpen(false);
+      if (change.archived) setArchived(true);
+      focusChoice(c.id);
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
   return (
     <div
-      className="project-conversations"
       ref={root}
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && open) {
-          e.stopPropagation();
-          setOpen(false);
-          trigger.current?.focus();
-        }
-      }}
+      className="sidebar-project"
+      data-project-id={projectId}
+      data-active={active}
+      aria-label={projectTitle + "的会话"}
+      role="group"
     >
-      <button
-        ref={trigger}
-        className="conversation-switch"
-        aria-label="项目对话"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen(!open);
-          setError("");
-          setEditing(null);
-        }}
-      >
-        <MessageCircle />
-        <span>{selected.title}</span>
-        {selected.archivedAt && <small>已归档</small>}
-        <ChevronDown />
-      </button>
-      {open && (
-        <section
-          className="project-conversation-menu"
-          aria-label="项目对话列表"
+      <div className="sidebar-project-heading" data-active={active}>
+        <button
+          className="project-link"
+          aria-current={active ? "true" : undefined}
+          onClick={() => {
+            setExpanded(true);
+            onOpen();
+          }}
+          title={projectTitle}
         >
-          <header>
-            <strong>项目对话</strong>
-            <button
-              aria-label="新建项目对话"
-              disabled={busy || !client.online}
-              onClick={() => void create()}
-            >
-              <Plus />
-              新对话
-            </button>
-          </header>
-          <div className="conversation-list">
-            {conversations
-              .filter((c) => !!c.archivedAt === archived)
-              .map((c) => {
-                const pending = client.boot!.runtime.deliveries.some(
-                  (d) =>
-                    ["queued", "sending", "running"].includes(d.state) &&
-                    state.inputs.some(
-                      (i) => i.id === d.inputId && discussionId(i) === c.id,
-                    ),
-                );
-                return (
-                  <div
-                    className="project-conversation-row"
-                    key={c.id}
-                    data-selected={c.id === selected.id}
-                  >
-                    {editing === c.id ? (
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          if (title.trim()) void update(c, { title });
-                        }}
+          <Folder />
+          <span>{projectTitle}</span>
+        </button>
+        {hasNamed && (
+          <button
+            className="project-disclosure icon-button"
+            aria-label={
+              (expanded ? "收起" : "展开") + "项目会话：" + projectTitle
+            }
+            aria-expanded={expanded}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <ChevronRight />
+          </button>
+        )}
+        <button
+          className="project-new-conversation icon-button"
+          aria-label={"新建项目对话：" + projectTitle}
+          title="新建会话"
+          disabled={busy || !client.online}
+          onClick={() => void create()}
+        >
+          <SquarePen />
+        </button>
+      </div>
+      {hasNamed && expanded && (
+        <div className="project-conversation-list">
+          {conversations
+            .filter((c) => !c.archivedAt || archived)
+            .map((c) => {
+              const running = client.boot!.runtime.deliveries.some(
+                (d) =>
+                  ["queued", "sending", "running"].includes(d.state) &&
+                  state.inputs.some(
+                    (i) => i.id === d.inputId && discussionId(i) === c.id,
+                  ),
+              );
+              return (
+                <div
+                  key={c.id}
+                  className="project-conversation-row"
+                  data-conversation-id={c.id}
+                  data-selected={active && c.id === selectedId}
+                >
+                  {editing === c.id ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (title.trim()) void update(c, { title });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.stopPropagation();
+                          setEditing(null);
+                          focusChoice(c.id);
+                        }
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        aria-label="对话名称"
+                        value={title}
+                        maxLength={180}
+                        onChange={(e) => setTitle(e.target.value)}
+                      />
+                      <button
+                        aria-label="保存对话名称"
+                        disabled={busy || !title.trim()}
                       >
-                        <input
-                          autoFocus
-                          aria-label="对话名称"
-                          value={title}
-                          maxLength={180}
-                          onChange={(e) => setTitle(e.target.value)}
-                        />
-                        <button
-                          aria-label="保存对话名称"
-                          disabled={busy || !title.trim()}
-                        >
-                          <Check />
-                        </button>
-                      </form>
-                    ) : (
-                      <>
-                        <button
-                          className="conversation-choice"
-                          aria-label={`打开对话：${c.title}`}
-                          aria-current={
-                            c.id === selected.id ? "true" : undefined
-                          }
-                          onClick={() => {
-                            onSelect(c.id);
-                            setOpen(false);
-                          }}
-                        >
-                          <span>{c.title}</span>
-                          {pending && <small>进行中</small>}
-                          {c.id === selected.id && <Check />}
-                        </button>
-                        <button
-                          className="icon-button"
-                          aria-label={`重命名：${c.title}`}
-                          disabled={busy}
-                          onClick={() => {
-                            setEditing(c.id);
-                            setTitle(c.title);
-                          }}
-                        >
-                          <Pencil />
-                        </button>
-                        {c.id !== projectId && (
-                          <button
-                            className="icon-button"
-                            aria-label={`${c.archivedAt ? "恢复" : "归档"}：${c.title}`}
-                            disabled={busy || !client.online}
-                            onClick={() =>
-                              void update(c, { archived: !c.archivedAt })
-                            }
-                          >
-                            {c.archivedAt ? <ArchiveRestore /> : <Archive />}
-                          </button>
+                        <Check />
+                      </button>
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        className="conversation-choice"
+                        aria-label={"打开对话：" + c.title}
+                        title={c.title}
+                        aria-current={
+                          active && c.id === selectedId ? "true" : undefined
+                        }
+                        onClick={() => onSelect(c.id)}
+                      >
+                        <MessageCircle />
+                        <span>{c.title}</span>
+                        {running && (
+                          <span
+                            className="conversation-running"
+                            role="img"
+                            aria-label="进行中"
+                            title="进行中"
+                          />
                         )}
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            {!conversations.some((c) => !!c.archivedAt === archived) && (
-              <p className="muted">没有已归档的对话</p>
-            )}
-          </div>
-          {error && <p role="alert">{error}</p>}
-          <footer>
+                        {c.archivedAt && <small>已归档</small>}
+                      </button>
+                      {c.id !== defaultConversationId && (
+                        <ComposerOptions
+                          label={"对话操作：" + c.title}
+                          menuLabel="对话选项"
+                          below
+                          options={[
+                            {
+                              label: "重命名：" + c.title,
+                              text: "重命名",
+                              icon: <Pencil />,
+                              disabled: busy || !client.online,
+                              onSelect: () => {
+                                setEditing(c.id);
+                                setTitle(c.title);
+                              },
+                            },
+                            {
+                              label:
+                                (c.archivedAt ? "恢复" : "归档") +
+                                "：" +
+                                c.title,
+                              text: c.archivedAt ? "恢复" : "归档",
+                              icon: c.archivedAt ? (
+                                <ArchiveRestore />
+                              ) : (
+                                <Archive />
+                              ),
+                              disabled: busy || !client.online,
+                              onSelect: () =>
+                                void update(c, { archived: !c.archivedAt }),
+                            },
+                          ]}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          {archivedCount > 0 && (
             <button
-              onClick={() => {
-                setArchived(!archived);
-                setEditing(null);
-              }}
+              className="project-archived-toggle"
+              aria-expanded={archived}
+              onClick={() => setArchived(!archived)}
             >
-              {archived
-                ? "返回对话列表"
-                : `已归档 · ${conversations.filter((c) => c.archivedAt).length}`}
+              {archived ? "收起已归档" : "已归档 · " + archivedCount}
             </button>
-            <small>共享项目资料，分别保留交流记录</small>
-          </footer>
-        </section>
+          )}
+        </div>
+      )}
+      {error && (
+        <p className="project-conversation-error" role="alert">
+          {error}
+        </p>
       )}
     </div>
   );

@@ -12,6 +12,8 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 const directory = mkdtempSync(join(tmpdir(), "morphzwork-browser-test-"));
+const workPort = Number(process.env.MORPHZWORK_BROWSER_TEST_PORT ?? 65426);
+const workURL = "http://127.0.0.1:" + workPort;
 const store = new WorkspaceStore(join(directory, "workspace.sqlite")),
   broker = new BrowserBroker(store);
 let submits = 0;
@@ -55,18 +57,18 @@ const tools = new AgentTools(
   broker,
 );
 const server = createAppServer(store, {
-  port: 65419,
+  port: workPort,
   webRoot: resolve("dist/web"),
   browser: broker,
   agentTools: tools,
 });
 await new Promise<void>((r, j) => {
   server.once("error", j);
-  server.listen(65419, "127.0.0.1", r);
+  server.listen(workPort, "127.0.0.1", r);
 });
 let app: Awaited<ReturnType<typeof _electron.launch>> | undefined;
 async function call(browser: unknown) {
-  const response = await fetch("http://127.0.0.1:65419/api/host-tools/call", {
+  const response = await fetch(workURL + "/api/host-tools/call", {
     method: "POST",
     headers: {
       Authorization: "Bearer fixture-token",
@@ -112,7 +114,7 @@ try {
   };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
-    args: ["apps/desktop/main.cjs", "--development"],
+    args: ["apps/desktop/main.cjs", "--center=" + workURL],
     env,
   });
   const ui = await app.firstWindow();
@@ -121,14 +123,15 @@ try {
   await ui.getByRole("heading", { name: "工作台", exact: true }).waitFor();
   console.log("Browser test: app loaded");
   await ui.locator(".project-link").filter({ hasText: "我的项目" }).click();
-  await ui.getByRole("listitem", { name: "资料 1.0.0" }).dblclick();
+  await ui.getByRole("button", { name: "查看本空间内容", exact: true }).click();
   await ui
     .locator(".artifact-card")
     .filter({ hasText: "内置浏览器验证" })
     .first()
     .click();
   await expect(ui.locator(".object-paper > h1")).toHaveText("内置浏览器验证");
-  await ui.getByRole("button", { name: "打开内置浏览器", exact: true }).click();
+  // Explicitly opening a website object enters its browser without a second
+  // launch button. This still does not grant the Agent access.
   await expect(
     ui.getByRole("button", { name: "允许 Agent 协助", exact: true }),
   ).toBeVisible();
@@ -286,7 +289,7 @@ try {
     await ui.evaluate(() => window.morphzDesktop!.browser.state()),
     null,
   );
-  await ui.getByRole("button", { name: "打开内置浏览器", exact: true }).click();
+  await ui.getByRole("button", { name: "打开网站", exact: true }).click();
   await expect
     .poll(async () =>
       app!.evaluate(async ({ webContents }, url) => {

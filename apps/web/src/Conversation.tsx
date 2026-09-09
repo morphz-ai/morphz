@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
-import { discussionId } from "../../../packages/core/src/model.js";
+import { inConversation } from "../../../packages/core/src/model.js";
 import {
   conversationGroups,
+  conversationTimeline,
   type ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import { shouldFollow } from "./interaction.js";
@@ -13,6 +14,7 @@ import { useConversationStream } from "./useConversationStream.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
+import { ObjectIcon } from "./ArtifactEditor.js";
 
 export type ExchangePosition = {
   top: number;
@@ -33,6 +35,7 @@ export function Conversation({
   onOpen,
   positions,
   revealInputId,
+  onInspect,
 }: {
   inputs: Workspace["inputs"];
   state: Workspace;
@@ -41,9 +44,10 @@ export function Conversation({
   conversationId: string;
   onRetry: (id: string) => Promise<void>;
   client: WorkspaceClient;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, revision?: number) => void;
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
+  onInspect?: (inputId: string) => void;
 }) {
   const [stopStates, setStopStates] = useState<
     Record<string, { pending: boolean; error: string }>
@@ -83,15 +87,29 @@ export function Conversation({
   );
   const messages = new Map<string, LiveMessage>();
   for (const m of runtime.messages)
-    if (m.projectId === projectId && discussionId(m) === conversationId)
+    if (
+      inConversation(
+        state,
+        conversationId,
+        m,
+        !client.boot!.capabilities.teamAuthentication,
+      )
+    )
       messages.set(m.id, {
         ...m,
-        conversationId,
+        conversationId: m.conversationId ?? m.projectId,
         inputId: m.inputId ?? null,
         rootId: m.rootId ?? null,
       });
   for (const m of stream.messages)
-    if (m.projectId === projectId && m.conversationId === conversationId)
+    if (
+      inConversation(
+        state,
+        conversationId,
+        m,
+        !client.boot!.capabilities.teamAuthentication,
+      )
+    )
       messages.set(m.id, m);
   const groups = conversationGroups(inputs, [...messages.values()]);
   // Keep cancellation with the corresponding response, including before its
@@ -107,26 +125,54 @@ export function Conversation({
         !(delivery.cancellable || delivery.cancelRequested)
       )
         return [];
-      return [[group.messages.at(-1)?.id ?? group.id, delivery] as const];
+      return [
+        [
+          group.messages
+            .filter((m) => m.kind === "reply" || m.kind === "error")
+            .at(-1)?.id ?? group.id,
+          delivery,
+        ] as const,
+      ];
     }),
   );
-  const items = groups.flatMap((group) => [
-    ...inputs
-      .filter((input) => input.id === group.inputId)
-      .map((input) => ({
-        id: input.id,
-        createdAt: input.createdAt,
-        input,
-        reply: null,
-      })),
-    ...group.messages.map((reply) => ({
-      id: reply.id,
-      createdAt: reply.createdAt,
-      input: null,
-      reply,
+  const items = conversationTimeline(
+    groups.flatMap((group) => [
+      ...inputs
+        .filter((input) => input.id === group.inputId)
+        .map((input) => ({
+          id: input.id,
+          createdAt: input.createdAt,
+          input,
+          reply: null,
+        })),
+      ...group.messages
+        .filter((m) => !onInspect || m.kind === "reply" || m.kind === "error")
+        .map((reply) => ({
+          id: reply.id,
+          createdAt: reply.createdAt,
+          input: null,
+          reply,
+        })),
+    ]),
+  );
+  const outputs = (client.boot?.outputs ?? []).filter((o) =>
+    inputs.some((i) => i.id === o.inputId),
+  );
+  const deliveryItems = outputs.map((o) => ({
+    id: "output:" + o.commandId,
+    createdAt: o.createdAt,
+    input: null,
+    reply: null,
+    output: o,
+  }));
+  const timeline = conversationTimeline([
+    ...items.map((item) => ({
+      ...item,
+      output: null as (typeof outputs)[number] | null,
     })),
+    ...deliveryItems,
   ]);
-  const contentVersion = items
+  const contentVersion = timeline
     .map(
       (item) =>
         item.id +
@@ -191,23 +237,7 @@ export function Conversation({
         if (following.current) setUnread(false);
       }}
     >
-      {(!runtime.connected || runtime.error) && (
-        <div className="runtime-notice" role="note">
-          <span className="connection-dot" />
-          <div>
-            <strong>
-              {runtime.configured ? "正在重新连接 Morphz" : "Agent 尚未连接"}
-            </strong>
-            <p>
-              {runtime.error ||
-                (runtime.configured
-                  ? "消息已保留，连接恢复后将继续发送。"
-                  : "输入会保存在这里，但目前不会发送给 Morphz，也不会收到回复。")}
-            </p>
-          </div>
-        </div>
-      )}
-      {items.length ? (
+      {timeline.length ? (
         <div
           className="conversation-messages"
           role="log"
@@ -215,128 +245,212 @@ export function Conversation({
           aria-live="polite"
           aria-relevant="additions"
         >
-          {items.map(({ input: item, reply, id, createdAt }) => {
-            const delivery = item
-              ? runtime.deliveries.find((d) => d.inputId === item.id)
-              : undefined;
-            const status = !delivery
-              ? "已保存 · 未发送"
-              : {
-                  queued: "",
-                  sending: "",
-                  running: "",
-                  completed: "",
-                  failed: "执行失败",
-                  cancelled: "已取消",
-                }[delivery.state];
-            const control = responseControls.get(id);
-            const stopControl = control && (
-              <StopResponse
-                key={control.inputId}
-                delivery={control}
-                stopping={stopStates[control.inputId]?.pending ?? false}
-                error={stopStates[control.inputId]?.error ?? ""}
-                onStop={stopResponse}
-              />
-            );
-            return (
-              <Fragment key={id}>
-                <article
-                  className={
-                    "message conversation-message" +
-                    (reply ? " agent-reply " + reply.kind : " human-message")
-                  }
-                  key={id}
-                  data-input-id={item?.id ?? reply?.inputId ?? undefined}
-                  data-message-id={id}
-                  data-streaming={reply?.streaming || undefined}
-                  data-stream-active={
-                    (stream.connected &&
-                      reply?.streaming &&
-                      (!reply.tool || reply.tool.status === "generating")) ||
-                    undefined
-                  }
-                >
-                  {item?.intent && (
-                    <small className="message-intent">
-                      {inputIntents[item.intent].label}
-                    </small>
-                  )}
-                  {item?.selection && <blockquote>{item.selection}</blockquote>}
-                  {item?.artifactId && (
+          {timeline.map(
+            ({ input: item, reply, output, id, createdAt }, index) => {
+              if (output) {
+                const artifact = state.artifacts.find(
+                  (a) => a.id === output.artifactId,
+                );
+                const version = artifact?.versions.find(
+                  (v) => v.revision === output.revision,
+                );
+                return (
+                  <article
+                    key={id}
+                    className="conversation-message agent-message delivery-message"
+                  >
                     <button
-                      className="message-object-link"
-                      onClick={() => onOpen(item.artifactId!)}
+                      className="delivery-object"
+                      disabled={!version}
+                      aria-label={
+                        "打开交付：" + (version?.title ?? "对象不可用")
+                      }
+                      onClick={() => onOpen(output.artifactId, output.revision)}
                     >
-                      {state.artifacts.find((a) => a.id === item.artifactId)
-                        ?.title ?? "关联对象"}{" "}
-                      · v{item.artifactRevision}
+                      {artifact && <ObjectIcon kind={artifact.content.kind} />}
+                      <span>{version?.title ?? "对象不存在或无访问权限"}</span>
+                      <small>v{output.revision}</small>
+                      <ChevronRight size={14} />
                     </button>
-                  )}
-                  {item ? (
-                    <p>{item.body}</p>
-                  ) : (
-                    <div className="reply-content">
-                      {reply?.tool ? (
-                        <ToolMessage message={reply} />
-                      ) : reply?.kind === "progress" ? (
-                        <details className="message-progress">
-                          <summary>执行进度</summary>
-                          <p>{reply.text}</p>
-                        </details>
-                      ) : (
-                        <>
-                          <Markdown
-                            skipHtml
-                            components={{
-                              a: ({ children }) => <span>{children}</span>,
-                              img: ({ alt }) => <span>{alt || "图片"}</span>,
-                            }}
-                          >
-                            {reply!.text}
-                          </Markdown>
-                        </>
-                      )}
-                    </div>
-                  )}
-                  {(reply?.kind !== "tool" || stopControl) && (
-                    <div className="message-meta">
-                      {reply && stopControl}
-                      {item &&
-                        item.author.actantId !== client.boot?.actantId && (
-                          <span>{actorName(state, item.author.actantId)}</span>
-                        )}
-                      {item && status && <span>{status}</span>}
-                      {reply?.kind !== "tool" && (
-                        <MessageActions
-                          createdAt={createdAt}
-                          text={item?.body ?? reply!.text}
-                        />
-                      )}
-                    </div>
-                  )}
-                  {delivery?.error && (
-                    <div className="delivery-error" role="alert">
-                      {delivery.error}
-                    </div>
-                  )}
-                  {item &&
-                    runtime.configured &&
-                    (!delivery || delivery.retryable) && (
+                  </article>
+                );
+              }
+              const delivery = item
+                ? runtime.deliveries.find((d) => d.inputId === item.id)
+                : undefined;
+              const activeBranch =
+                item &&
+                runtime.activity?.available &&
+                runtime.activity.threads.some(
+                  (t) =>
+                    t.inputId === item.id &&
+                    (t.lifecycle === "open" || t.phase !== "idle"),
+                );
+              const workPending =
+                !!activeBranch ||
+                (!!delivery &&
+                  ["queued", "sending", "running"].includes(delivery.state));
+              const status = !delivery
+                ? "已保存 · 未发送"
+                : {
+                    queued: "",
+                    sending: "",
+                    running: "",
+                    completed: "",
+                    failed: "执行失败",
+                    cancelled: "已取消",
+                  }[delivery.state];
+              const control = responseControls.get(id);
+              const stopControl = control && (
+                <StopResponse
+                  key={control.inputId}
+                  delivery={control}
+                  stopping={stopStates[control.inputId]?.pending ?? false}
+                  error={stopStates[control.inputId]?.error ?? ""}
+                  onStop={stopResponse}
+                />
+              );
+              return (
+                <Fragment key={id}>
+                  <article
+                    className={
+                      "message conversation-message" +
+                      (reply ? " agent-reply " + reply.kind : " human-message")
+                    }
+                    key={id}
+                    data-input-id={item?.id ?? reply?.inputId ?? undefined}
+                    data-message-id={id}
+                    data-streaming={reply?.streaming || undefined}
+                    data-stream-active={
+                      (stream.connected &&
+                        reply?.streaming &&
+                        (!reply.tool || reply.tool.status === "generating")) ||
+                      undefined
+                    }
+                  >
+                    {item && onInspect && delivery && (
                       <button
-                        className="retry-input"
-                        onClick={() => void onRetry(item.id)}
+                        className="message-run-indicator"
+                        aria-label={
+                          workPending
+                            ? "查看这项正在处理的工作"
+                            : "查看这项工作的执行记录"
+                        }
+                        title={
+                          runtime.connected
+                            ? activeBranch || delivery.state === "running"
+                              ? "后台正在执行 · 点击查看过程"
+                              : "查看执行过程"
+                            : "连接中断，状态待确认"
+                        }
+                        data-running={
+                          (runtime.connected &&
+                            (activeBranch || delivery.state === "running")) ||
+                          undefined
+                        }
+                        data-pending={workPending || undefined}
+                        onClick={() => onInspect(item.id)}
                       >
-                        {delivery ? "重试发送" : "发送这条消息"}
+                        <span />
+                        <ChevronRight size={12} />
                       </button>
                     )}
-                </article>
-                {item && stopControl && (
-                  <div className="response-placeholder">{stopControl}</div>
-                )}
-              </Fragment>
-            );
-          })}
+                    {reply?.inputId &&
+                      onInspect &&
+                      (timeline[index - 1]?.input?.id ??
+                        timeline[index - 1]?.reply?.inputId ??
+                        timeline[index - 1]?.output?.inputId) !==
+                        reply.inputId && (
+                        <button
+                          className="message-source"
+                          onClick={() => onInspect(reply.inputId!)}
+                        >
+                          关于：
+                          {inputs
+                            .find((i) => i.id === reply.inputId)
+                            ?.body.slice(0, 50) ?? "之前的工作"}
+                          <ChevronRight size={12} />
+                        </button>
+                      )}
+                    {item?.intent && (
+                      <small className="message-intent">
+                        {inputIntents[item.intent].label}
+                      </small>
+                    )}
+                    {item?.selection && (
+                      <blockquote>{item.selection}</blockquote>
+                    )}
+                    {item?.artifactId && (
+                      <button
+                        className="message-object-link"
+                        onClick={() => onOpen(item.artifactId!)}
+                      >
+                        {state.artifacts.find((a) => a.id === item.artifactId)
+                          ?.title ?? "关联对象"}{" "}
+                        · v{item.artifactRevision}
+                      </button>
+                    )}
+                    {item ? (
+                      <p>{item.body}</p>
+                    ) : (
+                      <div className="reply-content">
+                        {reply?.tool ? (
+                          <ToolMessage message={reply} />
+                        ) : reply?.kind === "progress" ? (
+                          <details className="message-progress">
+                            <summary>执行进度</summary>
+                            <p>{reply.text}</p>
+                          </details>
+                        ) : (
+                          <>
+                            <SafeMarkdown state={state} onOpen={onOpen}>
+                              {reply!.text}
+                            </SafeMarkdown>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {(reply?.kind !== "tool" || stopControl) && (
+                      <div className="message-meta">
+                        {reply && stopControl}
+                        {item &&
+                          item.author.actantId !== client.boot?.actantId && (
+                            <span>
+                              {actorName(state, item.author.actantId)}
+                            </span>
+                          )}
+                        {item && status && <span>{status}</span>}
+                        {reply?.kind !== "tool" && (
+                          <MessageActions
+                            createdAt={createdAt}
+                            text={item?.body ?? reply!.text}
+                          />
+                        )}
+                      </div>
+                    )}
+                    {delivery?.error && (
+                      <div className="delivery-error" role="alert">
+                        {delivery.error}
+                      </div>
+                    )}
+                    {item &&
+                      runtime.configured &&
+                      (!delivery || delivery.retryable) && (
+                        <button
+                          className="retry-input"
+                          onClick={() => void onRetry(item.id)}
+                        >
+                          {delivery ? "重试发送" : "发送这条消息"}
+                        </button>
+                      )}
+                  </article>
+                  {item && stopControl && !onInspect && (
+                    <div className="response-placeholder">{stopControl}</div>
+                  )}
+                </Fragment>
+              );
+            },
+          )}
         </div>
       ) : (
         <div className="conversation-empty">
@@ -360,7 +474,7 @@ export function Conversation({
   );
 }
 
-function StopResponse({
+export function StopResponse({
   delivery,
   stopping,
   error,
@@ -492,7 +606,7 @@ async function copyMessage(text: string) {
   }
 }
 
-function ToolMessage({ message }: { message: LiveMessage }) {
+export function ToolMessage({ message }: { message: LiveMessage }) {
   const tool = message.tool!;
   const status =
     (

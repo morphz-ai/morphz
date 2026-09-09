@@ -5,6 +5,8 @@ export const executionScopeSchema = z
     projectId: id,
     artifactId: id.nullable(),
     conversationId: id.optional(),
+    inputId: id.optional(),
+    threadId: id.optional(),
   })
   .strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
@@ -39,6 +41,8 @@ export const approvalSchema = z.object({
     approval_id: z.string(),
     session_id: z.string(),
     context_id: z.string(),
+    root_turn_id: z.string().optional(),
+    thread_id: z.string().optional(),
     justification: z.string(),
     action: z.record(z.string(), z.unknown()),
     requested: z.record(z.string(), z.unknown()),
@@ -54,6 +58,13 @@ export const executionControlSchema = z
   .object({
     scope: executionScopeSchema,
     action: z.discriminatedUnion("type", [
+      z
+        .object({
+          type: z.literal("cancel-thread"),
+          threadId: id,
+          revision: z.number().int().positive(),
+        })
+        .strict(),
       z
         .object({
           type: z.literal("cancel-job"),

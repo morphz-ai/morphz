@@ -33,7 +33,31 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       messages: [],
       deliveries: [],
     };
-    body.workspace.inputs = [];
+    body.workspace.inputs = [
+      {
+        id: "fixture-input",
+        projectId: body.workspace.projects.find(
+          (p: { kind: string }) => p.kind === "desk",
+        ).id,
+        conversationId: "local-dialogue",
+        artifactId: null,
+        artifactRevision: null,
+        author: { actantId: "local-human", principalId: "local-owner" },
+        selection: "",
+        body: "流式交互验收",
+        status: "recorded",
+        targetActantId: "morphz-agent",
+        createdAt: "2026-09-09T00:00:00Z",
+      },
+    ];
+    body.runtime.deliveries = [
+      {
+        inputId: "fixture-input",
+        state: "running",
+        cancellable: true,
+        error: null,
+      },
+    ];
     await route.fulfill({ response, json: body });
   });
   await page.goto("/");
@@ -63,7 +87,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
                 id: "stream:fixture",
                 projectId: params.get("projectId"),
                 conversationId: params.get("conversationId"),
-                inputId: null,
+                inputId: "fixture-input",
                 rootId: null,
                 artifactId: null,
                 createdAt: "2026-09-09T00:00:00Z",
@@ -118,6 +142,15 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       paragraph.evaluate((el) => getComputedStyle(el, "::after").content),
     )
     .toBe("none");
+  await page.route("**/api/executions?*", (route) =>
+    route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
+  );
+  await page
+    .getByRole("button", { name: "查看这项正在处理的工作", exact: true })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__streamSources.size))
+    .toBe(1);
   await emit({ toolStatus: "generating" });
   await expect(message).toHaveAttribute("data-stream-active", "true");
   await expect

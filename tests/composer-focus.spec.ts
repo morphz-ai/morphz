@@ -1,5 +1,54 @@
 import { test, expect } from "@playwright/test";
 import { openInput, composerAction } from "./interaction-helpers.js";
+import { randomUUID } from "node:crypto";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    const events: unknown[] = [];
+    (window as any).__focusTrace = events;
+    const describe = (e: EventTarget | null) =>
+      e instanceof Element
+        ? e.tagName + ":" + (e.getAttribute("aria-label") ?? e.className)
+        : String(e);
+    for (const name of [
+      "focusin",
+      "focusout",
+      "pointerdown",
+      "click",
+      "blur",
+      "focus",
+    ]) {
+      window.addEventListener(
+        name,
+        (e) => {
+          events.push({
+            time: performance.now(),
+            type: name,
+            target: describe(e.target),
+            related: describe((e as FocusEvent).relatedTarget),
+            active: describe(document.activeElement),
+            mode: document
+              .querySelector(".primary-panel")
+              ?.getAttribute("data-interaction"),
+          });
+          if (events.length > 160) events.shift();
+        },
+        true,
+      );
+    }
+  });
+});
+test.afterEach(async ({ page }, info) => {
+  if (info.status !== info.expectedStatus)
+    await info.attach("focus-events", {
+      body: JSON.stringify(
+        await page.evaluate(() => (window as any).__focusTrace),
+        null,
+        2,
+      ),
+      contentType: "application/json",
+    });
+});
 
 test("聚焦展开记录，离开自动收起；固定按空间保存且不影响手动收起", async ({
   page,
@@ -66,6 +115,13 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await page.goto("/");
   const input = page.getByLabel("AI 输入内容");
   await input.fill("在控件与弹窗之间保留输入");
+  // This disconnected fixture exposes an actionable connection notice.
+  await page.keyboard.press("Tab");
+  await expect(
+    page
+      .locator(".model-status")
+      .getByRole("button", { name: "连接详情", exact: true }),
+  ).toBeFocused();
   // Text goes straight to common bottom-row actions; keyboard users can also
   // open More and reach every low-frequency action without leaving the input.
   for (const name of ["截图输入", "语音输入", "更多输入选项"]) {
@@ -119,10 +175,10 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(page.getByRole("main", { name: "主工作区" })).toBeHidden();
   await composerAction(page, "返回工作内容");
   await expect(page.getByRole("main", { name: "主工作区" })).toBeVisible();
-  await page.getByRole("button", { name: "搜索工作空间", exact: true }).focus();
+  await page.getByRole("button", { name: "搜索资料", exact: true }).focus();
   await expect(input).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "搜索工作空间", exact: true }),
+    page.getByRole("button", { name: "搜索资料", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("Control+j");
   await expect(input).toBeFocused();
@@ -147,11 +203,17 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
   // Other tests legitimately leave messages in the shared test center.
   // Create an empty workspace instead of assuming the workbench is empty.
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("空记录布局验收");
+  const projectName = "空记录布局验收-" + randomUUID();
+  await page.getByLabel("新对象标题", { exact: true }).fill(projectName);
   await page.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(page.getByLabel("项目对话", { exact: true })).toHaveText(
-    "默认对话",
-  );
+  await page
+    .getByLabel("新建项目对话：" + projectName, { exact: true })
+    .click();
+  await expect(
+    page
+      .getByLabel(projectName + "的会话")
+      .getByLabel("打开对话：对话 2", { exact: true }),
+  ).toHaveAttribute("aria-current", "true");
   for (const width of [1440, 760]) {
     await page.setViewportSize({ width, height: 800 });
     await page.getByLabel("AI 输入内容").focus();

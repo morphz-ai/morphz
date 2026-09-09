@@ -12,6 +12,7 @@ import {
   localAccess as localIdentity,
   commandSchema,
   checkProject,
+  checkConversation,
   applicationFor,
 } from "../../../packages/core/src/model.js";
 import { z } from "zod";
@@ -244,6 +245,12 @@ export function createAppServer(
           ...(url.searchParams.get("conversationId")
             ? { conversationId: url.searchParams.get("conversationId") }
             : {}),
+          ...(url.searchParams.get("inputId")
+            ? { inputId: url.searchParams.get("inputId") }
+            : {}),
+          ...(url.searchParams.get("threadId")
+            ? { threadId: url.searchParams.get("threadId") }
+            : {}),
         });
         const jobId = url.searchParams.get("jobId");
         checkProject(store.snapshot(), scope.projectId, localAccess);
@@ -338,6 +345,22 @@ export function createAppServer(
         res.end(manifest.ui.html);
         return;
       }
+      if (req.method === "GET" && url.pathname === "/api/models") {
+        assertIdentity();
+        if (!options.runtime)
+          throw new DomainError(
+            "invalid",
+            "Agent 尚未连接，暂时无法读取可用模型。",
+          );
+        json(
+          res,
+          200,
+          await options.runtime.as(localAccess, () =>
+            options.runtime!.models(),
+          ),
+        );
+        return;
+      }
       if (req.method === "GET" && url.pathname === "/api/workspace") {
         const workspace = workspaceFor(store.snapshot(), localAccess),
           etag = `"workspace-${workspace.revision}-${requestToken.slice(0, 8)}"`;
@@ -349,6 +372,7 @@ export function createAppServer(
         }
         json(res, 200, {
           workspace,
+          outputs: store.artifactOutputs(localAccess),
           centerId: store.identity(),
           csrfToken: requestToken,
           principalId: localAccess.principalId,
@@ -370,16 +394,16 @@ export function createAppServer(
           })
           .parse(Object.fromEntries(url.searchParams));
         checkProject(store.snapshot(), scope.projectId, localAccess);
-        if (
-          !store
-            .snapshot()
-            .conversations.some(
-              (c) =>
-                c.id === scope.conversationId &&
-                c.projectId === scope.projectId,
-            )
-        )
+        try {
+          checkConversation(
+            store.snapshot(),
+            scope.projectId,
+            scope.conversationId,
+            localAccess,
+          );
+        } catch {
           throw new DomainError("not_found", "对话不存在。");
+        }
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "X-Accel-Buffering": "no",
@@ -690,10 +714,37 @@ export function createAppServer(
             json(res, 415, { message: "需要 JSON 请求。" });
             return;
           }
-          const command = JSON.parse(
-            (await body(req, 16 * 1024 * 1024)).toString(),
+          const command = commandSchema.parse(
+            JSON.parse((await body(req, 16 * 1024 * 1024)).toString()),
           );
           assertIdentity();
+          const op = command.operation;
+          const chosen =
+            op.type === "record-input"
+              ? op.model
+              : (op.type === "create-artifact" ||
+                    op.type === "revise-artifact") &&
+                  op.content.kind === "task"
+                ? op.content.model
+                : null;
+          const previousModel =
+            op.type === "revise-artifact"
+              ? store.snapshot().artifacts.find((a) => a.id === op.artifactId)
+                  ?.content
+              : null;
+          if (
+            chosen &&
+            !(previousModel?.kind === "task" && previousModel.model === chosen)
+          ) {
+            if (!options.runtime)
+              throw new DomainError(
+                "invalid",
+                "Agent 尚未连接，无法确认所选模型。",
+              );
+            await options.runtime.as(localAccess, () =>
+              options.runtime!.validateModel(chosen),
+            );
+          }
           json(res, 200, store.execute(command, localAccess));
           return;
         }
@@ -712,6 +763,11 @@ export function createAppServer(
           if (command.operation.type !== "record-input")
             throw new DomainError("invalid", "消息入口只接受输入。");
           assertIdentity();
+          const model = command.operation.model;
+          if (model)
+            await options.runtime.as(localAccess, () =>
+              options.runtime!.validateModel(model),
+            );
           const receipt = store.execute(command, localAccess);
           options.runtime.as(localAccess, () =>
             options.runtime!.enqueue(receipt.entityId),

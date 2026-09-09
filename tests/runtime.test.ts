@@ -34,6 +34,15 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
       response.end(JSON.stringify(data));
     };
     if (path === "/api/status") return send(200, { model: "test-model" });
+    if (path === "/api/runtime/inference")
+      return send(200, {
+        model: "test-model",
+        models: ["test-model", "other-model"],
+        model_options: [
+          { id: "test-model", label: "当前模型" },
+          { id: "other-model", label: "另一模型" },
+        ],
+      });
     if (path === "/api/sessions" && request.method === "POST") {
       if (!sessions.size && body.mount.type === "existing_context")
         return send(404, { error: "Context does not exist" });
@@ -49,6 +58,7 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
         context_id: sessions.get(id)!.context_id,
       });
     if (path.endsWith("/messages")) {
+      assert.equal(body.model_alias, "other-model", "显式选择只绑定这条输入");
       attempts++;
       const previous = received.get(body.client_message_id);
       if (!previous) {
@@ -132,12 +142,22 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
           artifactRevision: 1,
           selection: "",
           body: "请解读",
+          model: "other-model",
           targetActantId: "morphz-agent",
         },
       },
       localAccess,
     );
     bridge.enqueue(input.entityId);
+    assert.deepEqual(await bridge.models(), {
+      current: "test-model",
+      options: [
+        { id: "test-model", label: "当前模型" },
+        { id: "other-model", label: "另一模型" },
+      ],
+    });
+    await bridge.validateModel("other-model");
+    await assert.rejects(() => bridge.validateModel("made-up-model"));
     store.execute(
       {
         commandId: randomUUID(),

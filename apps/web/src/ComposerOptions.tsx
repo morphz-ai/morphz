@@ -9,6 +9,7 @@ import { MoreHorizontal } from "lucide-react";
 
 type Option = {
   label: string;
+  text?: string;
   icon: ReactNode;
   onSelect: () => void;
   disabled?: boolean;
@@ -21,10 +22,18 @@ export function ComposerOptions({
   model,
   unread,
   options,
+  label = "更多输入选项",
+  menuLabel = "输入选项",
+  below = false,
+  modelControl,
 }: {
-  model: string;
-  unread: boolean;
+  model?: string;
+  unread?: boolean;
   options: Option[];
+  label?: string;
+  menuLabel?: string;
+  below?: boolean;
+  modelControl?: ReactNode;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -38,10 +47,10 @@ export function ComposerOptions({
     element.showPopover();
     const position = () => {
       const anchor = trigger.current!.getBoundingClientRect();
-      element.style.maxHeight = `${Math.max(80, anchor.top - 16)}px`;
+      element.style.maxHeight = `${Math.max(80, (below ? innerHeight : anchor.top) - 16)}px`;
       const bounds = element.getBoundingClientRect();
       element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, innerWidth - bounds.width - 8))}px`;
-      element.style.top = `${Math.max(8, anchor.top - bounds.height - 8)}px`;
+      element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, innerHeight - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
     };
     position();
     element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
@@ -63,7 +72,7 @@ export function ComposerOptions({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open]);
+  }, [open, below]);
 
   function closeToTrigger() {
     // Modal hooks capture the stable trigger, never a disappearing menu item.
@@ -76,8 +85,8 @@ export function ComposerOptions({
       <button
         ref={trigger}
         className="icon-button composer-more"
-        aria-label="更多输入选项"
-        title="更多输入选项"
+        aria-label={label}
+        title={label}
         aria-controls={id}
         aria-expanded={open}
         aria-describedby={unread ? `${id}-unread` : undefined}
@@ -96,14 +105,18 @@ export function ComposerOptions({
         popover="manual"
         className="composer-options"
         role="group"
-        aria-label="输入选项"
+        aria-label={menuLabel}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
             closeToTrigger();
           } else if (
-            ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+            ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) &&
+            !(
+              event.target instanceof Element &&
+              event.target.matches("select,input,textarea")
+            )
           ) {
             event.preventDefault();
             const buttons = Array.from(
@@ -140,13 +153,16 @@ export function ComposerOptions({
             }}
           >
             {option.icon}
-            <span>{option.label}</span>
+            <span>{option.text ?? option.label}</span>
           </button>
         ))}
-        <div className="composer-model">
-          <span>当前模型</span>
-          <span>{model}</span>
-        </div>
+        {open && modelControl}
+        {model && !modelControl && (
+          <div className="composer-model">
+            <span>当前模型</span>
+            <span>{model}</span>
+          </div>
+        )}
       </div>
     </>
   );

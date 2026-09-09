@@ -10,7 +10,7 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
   let uploads = 0; page.on("request", (request) => { if (request.url().endsWith("/api/assets") && request.method() === "POST") uploads++; });
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("截图关联来源");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByRole("button", { name: "截图输入", exact: true }).click();

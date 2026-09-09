@@ -15,6 +15,14 @@ test("全宽输入、轻量意图和更多菜单在明暗与窄窗口中可用",
     };
     await route.fulfill({ response, json: body });
   });
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        current: "fixture-model",
+        options: [{ id: "fixture-model", label: "fixture-model" }],
+      },
+    }),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -61,7 +69,11 @@ test("全宽输入、轻量意图和更多菜单在明暗与窄窗口中可用",
       });
       await page.getByLabel("更多输入选项").click();
       const menu = page.getByRole("group", { name: "输入选项" });
-      await expect(menu.getByText("fixture-model")).toBeVisible();
+      await expect(menu.getByLabel("本次输入模型")).toBeEnabled();
+      await expect(menu.getByLabel("本次输入模型")).toHaveValue("");
+      await expect(menu.getByLabel("本次输入模型")).toContainText(
+        "fixture-model",
+      );
       const bounds = (await menu.boundingBox())!;
       expect(bounds.x).toBeGreaterThanOrEqual(8);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width - 8);

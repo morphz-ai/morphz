@@ -18,6 +18,7 @@ test("通知可打开事项，已读与提醒范围刷新后保留", async ({ pa
     dialog.getByRole("radio", { name: "不提示", exact: true }),
   ).toBeChecked();
   await dialog.getByRole("button", { name: /通知设置验证/ }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "通知设置验证", exact: true }),
   ).toBeVisible();

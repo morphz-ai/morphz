@@ -97,7 +97,7 @@ test("页面标题与操作共用顶栏，内容无第二层标题区；窄窗�
     });
   }
   await openLibrary(page);
-  await page.getByRole("button", { name: "自己写文档", exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(
     bar.getByRole("heading", { name: "新建文档", exact: true }),
   ).toBeVisible();

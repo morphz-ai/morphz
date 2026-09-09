@@ -104,6 +104,7 @@ const envelopeSchema = z
 export type ToolScope = {
   projectId: string;
   conversationId?: string;
+  inputId?: string;
   access: AccessContext;
 };
 
@@ -200,7 +201,9 @@ export class AgentTools {
   constructor(
     private store: WorkspaceStore,
     private token: string,
-    private resolveScope: (route: HostInvocation) => ToolScope,
+    private resolveScope: (
+      route: HostInvocation,
+    ) => ToolScope | Promise<ToolScope>,
     private readUnderstanding?: (
       route: HostInvocation,
       scope: ToolScope,
@@ -223,6 +226,14 @@ export class AgentTools {
   call(raw: unknown): unknown {
     const envelope = envelopeSchema.parse(raw);
     const scope = this.resolveScope(envelope.invocation);
+    return scope instanceof Promise
+      ? scope.then((resolved) => this.callScoped(envelope, resolved))
+      : this.callScoped(envelope, scope);
+  }
+  private callScoped(
+    envelope: z.infer<typeof envelopeSchema>,
+    scope: ToolScope,
+  ): unknown {
     const args = envelope.arguments;
     if (
       args.action === "list-applications" ||
@@ -273,6 +284,7 @@ export class AgentTools {
           },
         },
         scope.access,
+        scope.inputId,
       );
       return {
         ok: true,
@@ -321,6 +333,7 @@ export class AgentTools {
           operation,
         },
         scope.access,
+        scope.inputId,
       );
       return { artifactId: receipt.entityId, receipt };
     }
@@ -349,6 +362,7 @@ export class AgentTools {
           },
         },
         scope.access,
+        scope.inputId,
       );
       return {
         artifactId: receipt.entityId,
@@ -414,6 +428,7 @@ export class AgentTools {
         const receipt = this.store.execute(
           { commandId, operation },
           scope.access,
+          scope.inputId,
         );
         return { ok: true, receipt, artifactId: receipt.entityId };
       });
@@ -649,7 +664,11 @@ export class AgentTools {
       scope.conversationId !== scope.projectId
     )
       operation.conversationId = scope.conversationId;
-    const receipt = this.store.execute({ commandId, operation }, scope.access);
+    const receipt = this.store.execute(
+      { commandId, operation },
+      scope.access,
+      scope.inputId,
+    );
     return {
       ok: true,
       receipt,

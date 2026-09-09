@@ -77,12 +77,41 @@ try {
     nodeIntegration: false,
     contextIsolation: true,
   });
-  await window.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
+  // Exercise the real preload and main-process gate, but do not launch a user's
+  // browser during the isolated test.
+  await app.evaluate(({ shell }) => {
+    globalThis.__auditOpenedURLs = [];
+    shell.openExternal = async (url) => {
+      globalThis.__auditOpenedURLs.push(url);
+    };
+  });
+  await window.evaluate(async () => {
+    await window.morphzDesktop.openExternal("https://example.com/audit");
+    for (const url of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "https://user:secret@example.com",
+    ]) {
+      let rejected = false;
+      try {
+        await window.morphzDesktop.openExternal(url);
+      } catch {
+        rejected = true;
+      }
+      if (!rejected) throw new Error("Unsafe external link accepted");
+    }
+  });
+  assert.deepEqual(await app.evaluate(() => globalThis.__auditOpenedURLs), [
+    "https://example.com/audit",
+  ]);
   await window
-    .getByRole("button", { name: "关闭应用 资料", exact: true })
+    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .click();
+  await window
+    .getByRole("button", { name: "关闭应用 内容", exact: true })
     .click();
   await expect(
-    window.getByRole("button", { name: "资料 1.0.0", exact: true }),
+    window.getByRole("button", { name: "查看本空间内容", exact: true }),
   ).toBeVisible();
   await expect(window.locator(".statusbar")).toHaveCount(0);
   await window.getByLabel("AI 输入内容").fill("桌面快捷键检查");
@@ -143,7 +172,9 @@ try {
     });
   }, sourceDir);
   await window.getByLabel("工作空间选项").click();
-  await window.getByRole("button", { name: "导入资料", exact: true }).click();
+  await window
+    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .click();
   const importer = window.getByRole("dialog", { name: "导入资料" });
   await importer.getByRole("button", { name: "连接来源", exact: true }).click();
   await importer.getByRole("button", { name: "选择目录", exact: true }).click();
@@ -335,7 +366,7 @@ try {
   await window.getByLabel("AI 输入内容").press("Control+k");
   await expect(window.getByLabel("全文搜索")).toBeFocused();
   const searchBounds = await window
-    .getByRole("dialog", { name: "搜索工作空间" })
+    .getByRole("dialog", { name: "搜索资料" })
     .boundingBox();
   const viewport = await window.evaluate(() => ({
     width: innerWidth,
@@ -438,17 +469,24 @@ try {
   await window.getByRole("button", { name: "新建项目", exact: true }).click();
   await window.getByLabel("新对象标题", { exact: true }).fill("原生多对话验收");
   await window.getByRole("button", { name: "创建", exact: true }).click();
-  await window.getByRole("button", { name: "资料 1.0.0", exact: true }).click();
-  await window.getByLabel("项目对话", { exact: true }).click();
-  await window.getByLabel("新建项目对话").click();
-  await expect(window.getByLabel("项目对话", { exact: true })).toHaveText(
-    "对话 2",
-  );
+  await window
+    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .click();
+  await window
+    .getByLabel("新建项目对话：原生多对话验收", { exact: true })
+    .click();
+  const projectChats = window.getByRole("group", {
+    name: "原生多对话验收的会话",
+    exact: true,
+  });
   await expect(
-    window.getByLabel("关闭应用 资料", { exact: true }),
+    projectChats.getByLabel("打开对话：对话 2", { exact: true }),
+  ).toHaveAttribute("aria-current", "true");
+  await expect(
+    window.getByLabel("关闭应用 内容", { exact: true }),
   ).toBeVisible();
   await window.getByLabel("AI 输入内容").fill("第二对话草稿，不发送");
-  await window.getByLabel("项目对话", { exact: true }).click();
+  await projectChats.getByLabel("对话操作：对话 2", { exact: true }).click();
   await window.getByLabel("归档：对话 2", { exact: true }).click();
   await expect(window.getByLabel("AI 输入内容")).toHaveCount(0);
   await window.getByRole("button", { name: "恢复对话", exact: true }).click();
@@ -457,10 +495,7 @@ try {
   await expect(window.getByLabel("AI 输入内容")).toHaveValue(
     "第二对话草稿，不发送",
   );
-  await window.getByLabel("项目对话", { exact: true }).click();
-  await expect(
-    window.getByLabel("项目对话列表", { exact: true }),
-  ).toBeVisible();
+  await expect(projectChats).toBeVisible();
   await window.evaluate(
     () =>
       new Promise((resolve) =>
@@ -486,6 +521,76 @@ try {
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   console.log(
     "PASS: native fixed global dialogue, project conversations, preserved application, archive/restore and independent drafts.",
+  );
+  // The global content view reuses actual objects without launching a library
+  // application or moving their workspace/conversation ownership.
+  const beforeContent = await (await fetch(`${origin}/api/workspace`)).json();
+  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await expect(window).toHaveTitle("内容 — Morphz");
+  await expect(window.getByLabel("内容范围", { exact: true })).toHaveValue(
+    "all",
+  );
+  await expect(
+    window.getByRole("tablist", { name: "已打开的应用" }),
+  ).toHaveCount(0);
+  const catalog = window.getByRole("region", { name: "全部内容", exact: true });
+  await expect(catalog.locator(".artifact-card").first()).toBeVisible();
+  for (const width of [1200, 760]) {
+    await app.evaluate(
+      ({ BrowserWindow }, width) =>
+        BrowserWindow.getAllWindows()[0].setSize(width, 820),
+      width,
+    );
+    await window.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const image = await app.evaluate(async ({ BrowserWindow }) =>
+      (await BrowserWindow.getAllWindows()[0].capturePage())
+        .toPNG()
+        .toString("base64"),
+    );
+    writeFileSync(
+      `test-results/desktop-content-${width}.png`,
+      Buffer.from(image, "base64"),
+    );
+    assert.equal(
+      await window.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+  }
+  await catalog.locator(".artifact-card").first().click();
+  await expect(window.locator(".breadcrumb")).toContainText("内容");
+  await expect(window.locator(".object-paper")).toBeVisible();
+  await window
+    .locator(".breadcrumb")
+    .getByRole("button", { name: "内容", exact: true })
+    .click();
+  await expect(catalog.locator(".artifact-card").first()).toBeVisible();
+  const afterContent = await (await fetch(`${origin}/api/workspace`)).json();
+  assert.deepEqual(
+    afterContent.workspace.applicationInstances,
+    beforeContent.workspace.applicationInstances,
+  );
+  assert.deepEqual(
+    afterContent.workspace.artifacts,
+    beforeContent.workspace.artifacts,
+  );
+  assert.deepEqual(
+    afterContent.workspace.inputs,
+    beforeContent.workspace.inputs,
+  );
+  assert.deepEqual(
+    afterContent.workspace.conversations,
+    beforeContent.workspace.conversations,
+  );
+  await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  console.log(
+    "PASS: native global content catalog, narrow layout, object opening/return and unchanged ownership, inputs and Sessions.",
   );
   if (process.platform === "darwin") {
     await app.evaluate(({ BrowserWindow }) =>

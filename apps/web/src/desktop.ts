@@ -21,6 +21,7 @@ export type BrowserView = {
 declare global {
   interface Window {
     morphzDesktop?: {
+      openExternal?(url: string): Promise<void>;
       capture: {
         select(): Promise<{ mime: "image/png"; data: string } | null>;
         cancel(): Promise<void>;

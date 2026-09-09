@@ -20,6 +20,8 @@ import SourceConnections from "./SourceConnections.js";
 import { useModal } from "./useModal.js";
 import { maxPdfBytes, pdfImportIssue } from "../../../packages/core/src/pdf.js";
 
+const isImage = (path: string) => /\.(png|jpe?g|webp)$/i.test(path);
+
 type Selection = {
   file: File;
   path: string;
@@ -61,15 +63,18 @@ export function ImportDocuments({
         file,
         path,
         done: false,
-        issue: /\.pdf$/i.test(path)
-          ? (pdfImportIssue(path) ??
-            (file.size > maxPdfBytes ? "PDF 超过 20 MB。" : null))
-          : (documentImportIssue(path) ??
-            (file.size > maxDocumentBytes ? "文件超过 8 MB。" : null)),
+        issue: isImage(path)
+          ? (documentImportIssue(path.replace(/\.[^.]+$/, ".txt")) ??
+            (file.size > 6 * 1024 * 1024 ? "图片超过 6 MB。" : null))
+          : /\.pdf$/i.test(path)
+            ? (pdfImportIssue(path) ??
+              (file.size > maxPdfBytes ? "PDF 超过 20 MB。" : null))
+            : (documentImportIssue(path) ??
+              (file.size > maxDocumentBytes ? "文件超过 8 MB。" : null)),
       };
     });
     if (next.filter((item) => !item.issue).length > maxImportFiles) {
-      setError(`每次最多导入 ${maxImportFiles} 篇资料，请缩小选择范围。`);
+      setError(`每次最多导入 ${maxImportFiles} 份资料，请缩小选择范围。`);
       return;
     }
     setSelection(next);
@@ -83,6 +88,23 @@ export function ImportDocuments({
         if (stop.current) break;
         const item = selection[i]!;
         if (item.issue || item.done) continue;
+        if (isImage(item.path)) {
+          const { assetId } = await client.upload(item.file);
+          if (stop.current) break;
+          const receipt = await client.execute({
+            type: "create-artifact",
+            projectId: project.id,
+            title:
+              item.file.name.replace(/\.[^.]+$/, "").slice(0, 180) || "图片",
+            content: { kind: "image", assetId, alt: "" },
+          });
+          setSelection((previous) =>
+            previous.map((x, j) =>
+              j === i ? { ...x, done: true, artifactId: receipt.entityId } : x,
+            ),
+          );
+          continue;
+        }
         if (/\.pdf$/i.test(item.path)) {
           const receipt = await client.importPdf(
             item.file,
@@ -184,7 +206,7 @@ export function ImportDocuments({
       ) : (
         <>
           <p className="import-explanation">
-            导入 Markdown、UTF-8 文本或 PDF
+            导入 Markdown、UTF-8 文本、PDF 或图片
             副本。原文件不会被修改；后续编辑只更新工作空间中的版本。
           </p>
           <div className="import-choices">
@@ -209,7 +231,7 @@ export function ImportDocuments({
             ref={files}
             type="file"
             multiple
-            accept=".md,.markdown,.txt,.pdf"
+            accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.webp"
             className="hidden-file"
             aria-label="选择资料文件"
             onChange={(e) => {
@@ -230,8 +252,8 @@ export function ImportDocuments({
             }}
           />
           <p className="muted">
-            每次最多 100 篇；文本不超过 1 MB，PDF 不超过 20 MB／300
-            页。隐藏文件、凭据、依赖目录和构建产物会被跳过。PDF
+            每次最多 100 份；文本不超过 8 MB，图片不超过 6 MB，PDF 不超过 20
+            MB／300 页。隐藏文件、凭据、依赖目录和构建产物会被跳过。PDF
             提取文字后可引用，扫描件暂不做 OCR。
           </p>
           {selection.length > 0 && (
@@ -277,7 +299,7 @@ export function ImportDocuments({
           <footer>
             <span role="status" className="muted">
               {completed
-                ? `已导入 ${completed} 篇`
+                ? `已导入 ${completed} 份`
                 : "选择的文件会先列出，确认后再保存"}
             </span>
             {busy ? (
@@ -294,7 +316,7 @@ export function ImportDocuments({
                 disabled={!pending || !client.online}
                 onClick={() => void start()}
               >
-                导入 {pending} 篇资料
+                导入 {pending} 份资料
               </button>
             )}
           </footer>
@@ -387,7 +409,7 @@ export function SearchDocuments({
     <dialog
       ref={dialog}
       className="search-dialog"
-      aria-label="搜索工作空间"
+      aria-label="搜索资料"
       onPointerDown={(e) => {
         backdropPointer.current =
           e.button === 0 &&

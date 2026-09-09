@@ -230,6 +230,13 @@ const provider = createServer(async (request, response) => {
               { index: 0, function: { arguments: args.slice(0, cut) } },
             ],
           });
+          await streamWindow
+            .getByRole("button", {
+              name: "查看这项正在处理的工作",
+              exact: true,
+            })
+            .last()
+            .click();
           const row = streamWindow
             .locator('.message-tool[data-tool-status="generating"]')
             .first();
@@ -446,11 +453,25 @@ try {
   }
   await send(
     "请用 host_morphz_work 搜索‘蝴蝶’，阅读授权资料，创建标题严格为‘测试交付’的文档并用 references 关联来源。正文需包含‘蝴蝶是测试主题’。只使用工作空间对象工具，不执行 Shell 或其他外部动作。保存完成后回复。",
+    null,
+    "local-dialogue",
   );
   const artifact = store
     .snapshot()
     .artifacts.find((a) => a.title === "测试交付");
   assert.ok(artifact, "实际工具调用应创建对象");
+  const outputs = store
+    .artifactOutputs(localAccess)
+    .filter((o) => o.artifactId === artifact.id);
+  assert.equal(outputs.length, 1, "真实 Host 工具回执必须持久关联准确输入");
+  assert.equal(outputs[0]!.revision, 1);
+  assert.ok(
+    store
+      .snapshot()
+      .inputs.some(
+        (i) => i.id === outputs[0]!.inputId && i.body.includes("标题严格为"),
+      ),
+  );
   if (streamWindow) {
     if (streamFailure) throw streamFailure;
     assert.ok(
@@ -487,13 +508,66 @@ try {
     await streamWindow.screenshot({
       path: join(directory, "desktop-conversation-final.png"),
     });
+    await streamWindow
+      .getByLabel("打开交付：测试交付", { exact: true })
+      .click();
+    await expect(streamWindow.locator(".object-paper > h1")).toHaveText(
+      "测试交付",
+    );
+    await streamWindow.getByLabel("返回上一位置").click();
     await streamWindow.reload();
-    await expect(streamWindow.locator(".message-tool")).not.toHaveCount(0);
+    await streamWindow
+      .getByRole("button", { name: "查看这项工作的执行记录", exact: true })
+      .last()
+      .click();
+    await expect(streamWindow.locator(".execution-job")).not.toHaveCount(0);
     await expect(
       streamWindow
         .locator(".agent-reply.reply")
         .filter({ hasText: "已在工作空间保存测试交付。" }),
     ).toHaveCount(1);
+    const executionPanel = streamWindow.getByRole("complementary", {
+      name: "执行面板",
+    });
+    await executionPanel
+      .getByRole("button", { name: "固定执行面板", exact: true })
+      .click();
+    const resize = executionPanel.getByRole("separator");
+    await resize.focus();
+    await resize.press("ArrowLeft");
+    await expect(resize).toHaveAttribute("aria-valuenow", "356");
+    for (const appearance of ["light", "dark"] as const) {
+      await streamWindow.emulateMedia({ colorScheme: appearance });
+      await streamWindow.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      await streamWindow.screenshot({
+        path: join(directory, `desktop-execution-${appearance}.png`),
+        animations: "disabled",
+      });
+    }
+    await streamApp!.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(760, 540),
+    );
+    await expect.poll(() => streamWindow!.evaluate(() => innerWidth)).toBe(760);
+    assert.ok(
+      (await executionPanel.boundingBox())!.width <= 340,
+      "窄桌面执行面板不挤压为三条窄列",
+    );
+    await expect(
+      executionPanel.getByRole("button", { name: "关闭执行面板", exact: true }),
+    ).toBeVisible();
+    await streamWindow.screenshot({
+      path: join(directory, "desktop-execution-narrow.png"),
+      animations: "disabled",
+    });
+    await executionPanel
+      .getByRole("button", { name: "关闭执行面板", exact: true })
+      .click();
+    await expect(executionPanel).toHaveCount(0);
     console.log(
       "PASS: real Electron → center SSE → Runtime WebSocket: partial text and tool arguments visible before provider completion; final deduplication, two-sided layout and reload history. Screenshots:",
       directory,

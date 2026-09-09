@@ -3,7 +3,13 @@ import { ArrowLeft, RotateCw, Hand, Globe, ShieldCheck } from "lucide-react";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { BrowserView } from "./desktop.js";
 
-export function BrowserHost({ artifact }: { artifact: Artifact }) {
+export function BrowserHost({
+  artifact,
+  autoOpen = false,
+}: {
+  artifact: Artifact;
+  autoOpen?: boolean;
+}) {
   const desktop = window.morphzDesktop?.browser;
   const slot = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<BrowserView | null>(null),
@@ -73,6 +79,35 @@ export function BrowserHost({ artifact }: { artifact: Artifact }) {
       void desktop.layout(id, null).catch(() => {});
     };
   }, [desktop, page?.pageId]);
+  const pending = useRef(false);
+  const openedFromIntent = useRef(false);
+  async function start() {
+    if (!desktop || pending.current) return;
+    pending.current = true;
+    setOpening(true);
+    try {
+      const p = await desktop.open(artifact.id);
+      if (!mounted.current) {
+        await desktop.close(p.pageId);
+        return;
+      }
+      active.current = p.pageId;
+      setPage(p);
+      setURL(p.url);
+    } catch (e) {
+      if (mounted.current)
+        setError(e instanceof Error ? e.message : "打开失败。");
+    } finally {
+      pending.current = false;
+      if (mounted.current) setOpening(false);
+    }
+  }
+  useEffect(() => {
+    if (autoOpen && desktop && !openedFromIntent.current) {
+      openedFromIntent.current = true;
+      void start();
+    }
+  }, [autoOpen, desktop]);
   async function control(
     action: "grant" | "takeover" | "back" | "reload" | "approve" | "reject",
   ) {
@@ -99,31 +134,15 @@ export function BrowserHost({ artifact }: { artifact: Artifact }) {
           <button
             className="primary"
             disabled={!desktop || opening}
-            onClick={async () => {
-              if (!desktop) return;
-              setOpening(true);
-              try {
-                const p = await desktop.open(artifact.id);
-                if (!mounted.current) {
-                  await desktop.close(p.pageId);
-                  return;
-                }
-                active.current = p.pageId;
-                setPage(p);
-                setURL(p.url);
-              } catch (e) {
-                if (mounted.current)
-                  setError(e instanceof Error ? e.message : "打开失败。");
-              } finally {
-                if (mounted.current) setOpening(false);
-              }
-            }}
+            onClick={() => void start()}
           >
             {!desktop
               ? "请在桌面应用中打开网站"
               : opening
                 ? "打开中…"
-                : "打开内置浏览器"}
+                : autoOpen
+                  ? "重新打开网站"
+                  : "打开网站"}
           </button>
         </div>
       ) : (

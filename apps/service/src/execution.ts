@@ -18,6 +18,9 @@ type Binding = {
   sessionId: string;
   contextId: string;
   legacySessionIds?: string[];
+  rootId?: string;
+  threadId?: string;
+  rootsBySession?: Record<string, string[]>;
 } | null;
 const sessionIds = (binding: NonNullable<Binding>) => [
   ...new Set([binding.sessionId, ...(binding.legacySessionIds ?? [])]),
@@ -40,6 +43,20 @@ export class ExecutionControls {
           sessionIds(binding).includes(a.request.session_id) &&
           a.request.context_id === binding.contextId,
       )
+      .filter(
+        (a) => !binding.rootId || a.request.root_turn_id === binding.rootId,
+      )
+      .filter(
+        (a) => !binding.threadId || a.request.thread_id === binding.threadId,
+      )
+      .filter(
+        (a) =>
+          !binding.rootsBySession?.[a.request.session_id] ||
+          (!!a.request.root_turn_id &&
+            binding.rootsBySession[a.request.session_id]!.includes(
+              a.request.root_turn_id,
+            )),
+      )
       .map((a) => ({ ...a, fingerprint: fingerprint(a) }));
   }
   private async job(binding: NonNullable<Binding>, jobId: string) {
@@ -51,7 +68,36 @@ export class ExecutionControls {
       !sessionIds(binding).includes(job.session_id)
     )
       throw new DomainError("forbidden", "执行不属于当前工作对话。");
+    if (!(await this.belongsToRoot(binding, job)))
+      throw new DomainError("forbidden", "执行不属于选中的工作。");
     return job;
+  }
+  private async belongsToRoot(
+    binding: NonNullable<Binding>,
+    job: z.infer<typeof jobSchema>,
+  ) {
+    if (binding.threadId && binding.threadId !== job.thread_id) return false;
+    const roots = binding.rootsBySession?.[job.session_id];
+    if (!binding.rootId && !roots) return true;
+    const data = z
+      .object({
+        snapshot: z.object({
+          thread: z.object({
+            id: z.literal(job.thread_id),
+            session_id: z.literal(job.session_id),
+            context_id: z.literal(binding.contextId),
+            root_turn_id: z.string(),
+          }),
+        }),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${encodeURIComponent(binding.contextId)}/threads/${encodeURIComponent(job.thread_id)}`,
+        ),
+      );
+    return binding.rootId
+      ? data.snapshot.thread.root_turn_id === binding.rootId
+      : roots!.includes(data.snapshot.thread.root_turn_id);
   }
   async snapshot(scope: ExecutionScope): Promise<ExecutionSnapshot> {
     const binding = this.binding(scope);
@@ -76,13 +122,17 @@ export class ExecutionControls {
     const jobs = data.flatMap(
       (value) => z.object({ jobs: z.array(jobSchema) }).parse(value).jobs,
     );
+    const scoped = jobs.filter(
+      (j) =>
+        sessionIds(binding).includes(j.session_id) &&
+        j.context_id === binding.contextId,
+    );
+    const matches = await Promise.all(
+      scoped.map((j) => this.belongsToRoot(binding, j)),
+    );
     return {
-      jobs: jobs
-        .filter(
-          (j) =>
-            sessionIds(binding).includes(j.session_id) &&
-            j.context_id === binding.contextId,
-        )
+      jobs: scoped
+        .filter((_, i) => matches[i])
         .sort(
           (a, b) =>
             b.created_at.localeCompare(a.created_at) ||
@@ -129,6 +179,48 @@ export class ExecutionControls {
     const { scope, action } = executionControlSchema.parse(raw);
     const binding = this.binding(scope);
     if (!binding) throw new DomainError("not_found", "工作对话不存在。");
+    if (action.type === "cancel-thread") {
+      if (scope.threadId !== action.threadId)
+        throw new DomainError("forbidden", "停止目标与查看的执行不一致。");
+      const path = `/api/contexts/${encodeURIComponent(binding.contextId)}/threads/${encodeURIComponent(action.threadId)}`;
+      const current = z
+        .object({
+          snapshot: z.object({
+            thread: z.object({
+              id: z.literal(action.threadId),
+              session_id: z.string(),
+              context_id: z.literal(binding.contextId),
+              root_turn_id: z.string(),
+              revision: z.number(),
+            }),
+          }),
+        })
+        .parse(await this.request(path));
+      const thread = current.snapshot.thread;
+      if (
+        !sessionIds(binding).includes(thread.session_id) ||
+        thread.root_turn_id !== binding.rootId
+      )
+        throw new DomainError("forbidden", "执行不属于选中的工作。");
+      if (thread.revision !== action.revision)
+        throw new DomainError("conflict", "执行状态已变化，请刷新后重新决定。");
+      const result = z
+        .object({
+          updated: z.literal(true),
+          thread: z.object({
+            id: z.literal(action.threadId),
+            lifecycle: z.string(),
+          }),
+        })
+        .parse(
+          await this.request(path, "POST", {
+            action: "cancel",
+            expected_revision: action.revision,
+            reason: "用户在 Morphz 停止此执行分支",
+          }),
+        );
+      return { accepted: true, status: result.thread.lifecycle };
+    }
     if (action.type === "cancel-job") {
       const job = await this.job(binding, action.jobId);
       if (job.revision !== action.revision)

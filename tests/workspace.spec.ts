@@ -7,6 +7,8 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
   await expect(page.locator(".wordmark")).toHaveText("Morphz");
+  // Application restoration may reopen an object left by an earlier test.
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(page).toHaveTitle("工作台 — Morphz");
   await expect(
     page.getByRole("button", { name: "应用启动台", exact: true }),
@@ -15,7 +17,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await openLibrary(page);
   await page
     .locator(".library-authoring-options")
-    .getByRole("button", { name: "自己写文档", exact: true })
+    .getByRole("button", { name: "手动写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("并发工作说明");
   await page
@@ -38,7 +40,9 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(page.getByRole("region", { name: "当前对话" })).toBeVisible();
   await expect(
-    page.locator(".primary-panel .conversation-message p"),
+    page
+      .locator(".primary-panel .conversation-message p")
+      .filter({ hasText: "保留人和 Agent 的对等关系" }),
   ).toHaveText("保留人和 Agent 的对等关系");
   await expect(page.locator("aside .conversation-message")).toHaveCount(0);
   await page.reload();
@@ -46,7 +50,9 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     page.getByRole("heading", { name: "并发工作说明", exact: true }),
   ).toBeVisible();
   await expect(
-    page.locator(".primary-panel .conversation-message p"),
+    page
+      .locator(".primary-panel .conversation-message p")
+      .filter({ hasText: "保留人和 Agent 的对等关系" }),
   ).toHaveText("保留人和 Agent 的对等关系");
   await composerAction(page, "收起交流记录");
   await page
@@ -113,9 +119,10 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     .click();
   await page.getByRole("button", { name: "手动编辑", exact: true }).click();
   await page.getByLabel("事项负责人").selectOption("morphz-agent");
-  await page.getByLabel("执行模型", { exact: true }).fill("test-model");
+  // This isolated center has no Runtime. Do not invent an available model.
+  await expect(page.getByLabel("执行模型", { exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "保存版本" }).click();
-  await expect(page.locator(".task-properties")).toContainText("test-model");
+  await expect(page.locator(".task-properties")).toContainText("Morphz");
   await page.locator("nav").getByRole("button", { name: /^事项/ }).click();
   await expect(
     page.getByRole("button", { name: "打开事项", exact: true }).filter({
@@ -147,7 +154,7 @@ test("多端旧版本冲突不会覆盖中心，草稿刷新后恢复", async ({
   await openLibrary(page);
   await page
     .locator(".library-authoring-options")
-    .getByRole("button", { name: "自己写文档", exact: true })
+    .getByRole("button", { name: "手动写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("冲突测试文档");
   await page.getByLabel("新文档正文").fill("初始内容");
@@ -184,7 +191,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await openLibrary(page);
   await page
     .locator(".library-authoring-options")
-    .getByRole("button", { name: "自己写文档", exact: true })
+    .getByRole("button", { name: "手动写文档", exact: true })
     .click();
   await page.getByLabel("新对象标题", { exact: true }).fill("对话布局验证");
   await page.getByLabel("新文档正文").fill("这是对象的原始内容。");
@@ -197,7 +204,8 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await expect(
     page.locator(".primary-panel").getByRole("log", { name: "对话消息" }),
   ).toContainText("请围绕这个对象继续讨论。");
-  await expect(page.getByRole("note")).toContainText("Agent 尚未连接");
+  await expect(page.locator(".model-status")).toContainText("Agent 未连接");
+  await expect(page.locator(".runtime-notice")).toHaveCount(0);
   await page.getByRole("button", { name: "展开批注栏" }).click();
   await expect(
     page.getByRole("complementary", { name: "对象批注" }),
@@ -269,7 +277,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     .getByRole("button", { name: /^事项/ })
     .click();
   await openInput(page);
-  await expect(
-    page.getByRole("region", { name: "当前对话" }),
-  ).not.toContainText("请围绕这个对象继续讨论。");
+  await expect(page.getByRole("region", { name: "当前对话" })).toContainText(
+    "请围绕这个对象继续讨论。",
+  );
 });

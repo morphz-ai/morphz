@@ -1,4 +1,33 @@
 import { z } from "zod";
+export const artifactOutputSchema = z.object({
+  commandId: z.string(),
+  inputId: z.string(),
+  projectId: z.string(),
+  artifactId: z.string(),
+  revision: z.number().int().positive(),
+  createdAt: z.string(),
+});
+export type ArtifactOutput = z.infer<typeof artifactOutputSchema>;
+export const activitySchema = z.object({
+  available: z.boolean(),
+  truncated: z.boolean().default(false),
+  threads: z.array(
+    z.object({
+      id: z.string(),
+      projectId: z.string(),
+      conversationId: z.string(),
+      inputId: z.string().nullable(),
+      rootId: z.string(),
+      sessionId: z.string(),
+      title: z.string(),
+      phase: z.string(),
+      lifecycle: z.string(),
+      revision: z.number(),
+      updatedAt: z.string(),
+    }),
+  ),
+});
+export type ExecutionActivity = z.infer<typeof activitySchema>;
 export const deliverySchema = z.object({
   inputId: z.string(),
   state: z.enum([
@@ -15,6 +44,7 @@ export const deliverySchema = z.object({
   cancelRequested: z.boolean().optional(),
 });
 export const conversationRuntimeSchema = z.object({
+  activity: activitySchema.optional(),
   configured: z.boolean(),
   connected: z.boolean(),
   model: z.string(),
@@ -61,6 +91,16 @@ export function conversationGroups<
   for (const group of groups)
     group.messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return groups.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** Presentation order is independent of causal ownership. Never reinsert a late reply under its input. */
+export function conversationTimeline<
+  T extends { id: string; createdAt: string },
+>(items: T[]): T[] {
+  return [...items].sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  );
 }
 export const disconnectedRuntime: ConversationRuntime = {
   configured: false,
