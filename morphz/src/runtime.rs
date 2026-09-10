@@ -3119,6 +3119,11 @@ impl MorphzRuntime {
                 .queue_depth
                 == 0
             && !self.inner.bus.has_hosted_in_flight_dispatch()
+            && !self
+                .inner
+                .provider_auth_manager
+                .has_active_logins()
+                .unwrap_or(true)
     }
 
     #[cfg(feature = "experimental-cognitive-coordination")]

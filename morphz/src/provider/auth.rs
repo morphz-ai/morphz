@@ -1353,6 +1353,20 @@ impl ProviderAuthManager {
             .contains_key(login_id))
     }
 
+    /// An unexpired login owns process-local state, including the bounded
+    /// retry window after token exchange but before catalog commit. Hosted
+    /// compute must not park while that state is still needed. Expired or
+    /// explicitly finished/cancelled attempts do not keep compute alive.
+    pub(crate) fn has_active_logins(&self) -> Result<bool, String> {
+        let now = Utc::now();
+        Ok(self
+            .pending_logins
+            .read()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .values()
+            .any(|pending| pending.expires_at > now))
+    }
+
     pub async fn materialize_authorization(
         &self,
         account_id: &str,
@@ -4499,7 +4513,9 @@ mod tests {
             .register_transient_account("attempt-only", oauth_account(CODEX_ADAPTER_ID))
             .unwrap();
 
+        assert!(!manager.has_active_logins().unwrap());
         let challenge = manager.start_login("attempt-only").await.unwrap();
+        assert!(manager.has_active_logins().unwrap());
         assert!(manager.has_login(&challenge.login_id).unwrap());
         assert!(manager.account("attempt-only").is_some());
         assert!(secret_store
@@ -4514,12 +4530,61 @@ mod tests {
             .is_none());
 
         assert!(manager.cancel_login(&challenge.login_id).unwrap());
+        assert!(!manager.has_active_logins().unwrap());
         assert!(!manager.has_login(&challenge.login_id).unwrap());
         assert!(manager.account("attempt-only").is_none());
         assert!(secret_store
             .resolve("MORPHZ_TEST_OAUTH_TOKEN", SecretUseContext::default())
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn hosted_login_owner_expires_and_keeps_uncommitted_completion_alive() {
+        let (_directory, manager, _) = test_manager(
+            oauth_account(CODEX_ADAPTER_ID),
+            AuthAdapterRegistry::default(),
+        )
+        .await;
+        let mut pending = PendingLoginEnvelope {
+            account_id: "oauth-account".into(),
+            adapter_id: CODEX_ADAPTER_ID.into(),
+            expires_at: Utc::now() + ChronoDuration::minutes(5),
+            callback_state: None,
+            state: json!({}),
+            completed_account: None,
+        };
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("test-login".into(), pending.clone());
+        assert!(manager.has_active_logins().unwrap());
+        assert!(!manager.finish_login("test-login").unwrap());
+        assert!(manager.has_active_logins().unwrap());
+        pending.completed_account =
+            Some(held_token("synthetic", false).public_metadata("oauth-account"));
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("test-login".into(), pending.clone());
+        assert!(
+            manager.has_active_logins().unwrap(),
+            "catalog commit may still need a retry"
+        );
+        assert!(manager.finish_login("test-login").unwrap());
+        assert!(!manager.has_active_logins().unwrap());
+        pending.expires_at = Utc::now() - ChronoDuration::seconds(1);
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("expired-login".into(), pending);
+        assert!(
+            !manager.has_active_logins().unwrap(),
+            "abandoned logins must not prevent idle park forever"
+        );
     }
 
     fn oauth_account(adapter: &str) -> AuthAccountConfig {
