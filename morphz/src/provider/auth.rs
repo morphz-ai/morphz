@@ -2092,7 +2092,7 @@ struct CodexDeviceTokenResponse {
     code_verifier: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct OAuthTokenResponse {
     #[serde(default)]
     access_token: String,
@@ -2337,6 +2337,12 @@ fn codex_token_set(
     version: &str,
     response: OAuthTokenResponse,
 ) -> Result<OAuthTokenSet, String> {
+    if !response.error.is_empty() {
+        return Err(format!(
+            "Codex OAuth Token Endpoint rejected authorization: {}",
+            safe_oauth_error_code(&response.error)
+        ));
+    }
     if response.access_token.trim().is_empty() {
         return Err("Codex OAuth Token Endpoint returned an empty Access Token".to_string());
     }
@@ -4003,18 +4009,79 @@ async fn post_token_form(
         .bytes()
         .await
         .map_err(|error| format!("failed to read OAuth Token response: {error}"))?;
-    let parsed: OAuthTokenResponse = serde_json::from_slice(&body)
-        .map_err(|error| format!("failed to parse OAuth Token response: {error}"))?;
+    parse_oauth_token_response(status, &body)
+}
+
+fn safe_oauth_error_code(code: &str) -> &str {
+    match code {
+        "invalid_request"
+        | "invalid_client"
+        | "invalid_grant"
+        | "unauthorized_client"
+        | "unsupported_grant_type"
+        | "invalid_scope"
+        | "access_denied"
+        | "authorization_pending"
+        | "slow_down"
+        | "expired_token"
+        | "server_error"
+        | "temporarily_unavailable"
+        | "unsupported_country_region_territory" => code,
+        _ => "unknown_oauth_error",
+    }
+}
+
+fn parse_oauth_token_response(
+    status: reqwest::StatusCode,
+    body: &[u8],
+) -> Result<OAuthTokenResponse, String> {
+    let value = serde_json::from_slice::<Value>(body).ok();
     // RFC 8628 commonly returns pending with HTTP 400, while Kimi currently
     // returns 200. Preserve the structured OAuth error for either behavior.
-    if !status.is_success() && parsed.error.is_empty() {
+    if !status.is_success() {
+        if let Some(error) = value
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(Value::as_str)
+        {
+            if matches!(error, "authorization_pending" | "slow_down") {
+                return Ok(OAuthTokenResponse {
+                    error: error.to_string(),
+                    error_description: value
+                        .as_ref()
+                        .and_then(|value| value.get("error_description"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+        // Error objects and HTML are not successful token envelopes. Preserve
+        // the HTTP status instead of obscuring rejection as a serde failure.
+        // Emit only a closed OAuth category; no provider body/code/URL/token.
+        let code = value
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .filter(|error| error.is_string())
+                    .or_else(|| value.pointer("/error/code"))
+            })
+            .and_then(Value::as_str)
+            .map(safe_oauth_error_code)
+            .unwrap_or("unknown_oauth_error");
         return Err(format!(
-            "OAuth Token Endpoint returned HTTP {}: {}",
-            status,
-            safe_error_body(&body)
+            "OAuth Token Endpoint returned HTTP {status}: {code}; response_format={}",
+            if value.is_some() { "json" } else { "non_json" },
         ));
     }
-    Ok(parsed)
+    serde_json::from_slice(body).map_err(|_| {
+        format!(
+            "failed to parse OAuth Token response (HTTP {status}; response_format={})",
+            if value.is_some() { "json" } else { "non_json" },
+        )
+    })
 }
 
 fn to_header_map(values: &BTreeMap<String, String>) -> Result<reqwest::header::HeaderMap, String> {
@@ -4105,6 +4172,56 @@ fn validate_secret_alias(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_endpoint_errors_preserve_status_without_response_secrets() {
+        for (status, body, expected) in [
+            (reqwest::StatusCode::FORBIDDEN, b"<html>secret-token</html>".as_slice(), "HTTP 403"),
+            (reqwest::StatusCode::BAD_REQUEST, br#"{"error":{"code":"invalid_grant","message":"secret-token"},"access_token":"secret-token"}"#.as_slice(), "invalid_grant"),
+            (reqwest::StatusCode::BAD_REQUEST, br#"{"error":{"code":"secret-token","message":"secret-token"}}"#.as_slice(), "unknown_oauth_error"),
+        ] {
+            let error = parse_oauth_token_response(status, body).err().unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("secret-token"));
+            assert!(!error.contains("failed to parse"));
+        }
+        let error = parse_oauth_token_response(
+            reqwest::StatusCode::OK,
+            br#"{"access_token":{"secret-token":"secret-token"}}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("HTTP 200"));
+        assert!(!error.contains("secret-token"));
+    }
+
+    #[test]
+    fn device_poll_errors_remain_structured_and_codex_rejection_is_not_an_empty_token() {
+        for status in [reqwest::StatusCode::OK, reqwest::StatusCode::BAD_REQUEST] {
+            for error in ["authorization_pending", "slow_down"] {
+                let body = serde_json::to_vec(&json!({"error":error})).unwrap();
+                let response = parse_oauth_token_response(status, &body).unwrap();
+                assert_eq!(response.error, error);
+            }
+        }
+        let response =
+            parse_oauth_token_response(reqwest::StatusCode::OK, br#"{"error":"invalid_grant"}"#)
+                .unwrap();
+        let error = codex_token_set("test", "1", response).err().unwrap();
+        assert!(error.contains("invalid_grant"));
+        assert!(!error.contains("empty Access Token"));
+        let error = parse_oauth_token_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":"invalid_grant","error_description":null}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("invalid_grant"));
+        let response = parse_oauth_token_response(reqwest::StatusCode::OK,
+            br#"{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id"}"#).unwrap();
+        assert_eq!(response.access_token, "test-access");
+    }
     use crate::memory::sqlite::SqliteStore;
     use crate::secret_store::SecretValueBackend;
     use axum::extract::{Form, State};
