@@ -24,7 +24,11 @@ import {
   runtimeAgentTools,
 } from "../apps/service/src/agent-tools.js";
 import { createAppServer } from "../apps/service/src/http.js";
-import { localAccess, contentSchema } from "../packages/core/src/model.js";
+import {
+  localAccess,
+  contentSchema,
+  type InputAttachment,
+} from "../packages/core/src/model.js";
 
 const live = process.argv.includes("--live");
 let streamApp: ElectronApplication | undefined;
@@ -455,6 +459,7 @@ try {
     body: string,
     artifactId: string | null = null,
     conversationId?: string,
+    attachments?: InputAttachment[],
   ) {
     const boot = (await (await fetch(origin + "/api/workspace")).json()) as {
       csrfToken: string;
@@ -477,6 +482,7 @@ try {
           body,
           selection: "",
           targetActantId: "morphz-agent",
+          ...(attachments ? { attachments } : {}),
         },
       }),
     });
@@ -508,6 +514,7 @@ try {
       (e: { event_id: string }) => e.event_id === delivery.rootId,
     );
     assert.equal(accepted.message.format.id, "morphzwork.input");
+    assert.equal(accepted.message.format.version, "2");
     assert.equal(
       accepted.message.content.value.text,
       body,
@@ -970,6 +977,23 @@ try {
     );
     console.log(
       "PASS: real Desktop input → resumable attachment stage → typed Work envelope → unchanged native model image → authenticated immutable resource download.",
+    );
+    const countBeforeAttachment = store.snapshot().artifacts.length;
+    const attachmentOnly = await send("", null, c, [
+      { assetId, name: "message-only.png", mime: "image/png" },
+    ]);
+    assert.equal(attachmentOnly.accepted.message.content.value.text, "");
+    assert.equal(
+      attachmentOnly.accepted.message.content.value.object,
+      undefined,
+    );
+    assert.equal(
+      attachmentOnly.accepted.message.content.value.attachments.length,
+      1,
+    );
+    assert.equal(store.snapshot().artifacts.length, countBeforeAttachment);
+    console.log(
+      "PASS: attachment-only Work input reaches the real Runtime and model without creating a content Artifact or adding prompt text.",
     );
   }
 } catch (error) {

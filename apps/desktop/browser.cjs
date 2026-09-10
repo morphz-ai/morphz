@@ -48,10 +48,15 @@ class DesktopBrowser {
     if (!r.ok) throw new Error("浏览器与中心的连接失效，请关闭后重新打开。");
     return r.json();
   }
-  async open(artifactId) {
+  async open(target) {
+    const artifactId = typeof target === "string" ? target : null;
     if (
-      typeof artifactId !== "string" ||
-      !/^[a-zA-Z0-9_-]{1,100}$/.test(artifactId)
+      artifactId
+        ? !/^[a-zA-Z0-9_-]{1,100}$/.test(artifactId)
+        : !target ||
+          typeof target !== "object" ||
+          typeof target.projectId !== "string" ||
+          typeof target.url !== "string"
     )
       throw new Error("对象标识无效。");
     this.close();
@@ -60,9 +65,12 @@ class DesktopBrowser {
     if (generation !== this.generation)
       throw new Error("页面打开已取消或被替换。");
     const artifact = boot.workspace.artifacts.find((a) => a.id === artifactId);
-    if (!artifact || artifact.content.kind !== "website")
+    if (artifactId && (!artifact || artifact.content.kind !== "website"))
       throw new Error("网站对象不存在或无权访问。");
-    const url = browserURL(artifact.content.url, this.centerURL);
+    const projectId = artifact?.projectId ?? target.projectId;
+    if (!boot.workspace.projects.some((p) => p.id === projectId))
+      throw new Error("工作空间不存在或无权访问。");
+    const url = browserURL(artifact?.content.url ?? target.url, this.centerURL);
     const partition =
       "persist:morphzwork-browser-" +
       createHash("sha256")
@@ -100,9 +108,10 @@ class DesktopBrowser {
       state: {
         pageId: randomUUID(),
         artifactId,
+        projectId,
         epoch: randomUUID(),
         url,
-        title: artifact.title,
+        title: artifact?.title ?? "浏览器",
         visible: false,
         granted: false,
       },
@@ -158,12 +167,30 @@ class DesktopBrowser {
     });
     try {
       await this.post("/api/browser/desktop/register", c.state, c);
-      await view.webContents.loadURL(url);
+      if (this.current !== c || generation !== this.generation)
+        throw new Error("页面打开已取消或被替换。");
     } catch (e) {
-      this.invalidate(c);
-      c.error = e.message;
+      if (this.current === c) this.close();
+      throw e;
     }
+    this.load(c, url);
     return this.state();
+  }
+  load(c, url) {
+    const generation = (c.navigation = (c.navigation ?? 0) + 1);
+    c.error = "";
+    c.state.url = url;
+    // Navigation must not freeze the host address bar while a site is slow.
+    void c.view.webContents.loadURL(url).catch((e) => {
+      if (
+        this.current === c &&
+        c.navigation === generation &&
+        e.code !== "ERR_ABORTED"
+      ) {
+        this.invalidate(c);
+        c.error = "网页未能载入，请检查地址或重新载入。";
+      }
+    });
   }
   require(pageId) {
     const c = this.current;
@@ -196,7 +223,7 @@ class DesktopBrowser {
     )
       throw new Error("视图尺寸无效。");
     const x = Math.max(0, Math.round(bounds.x)),
-      y = Math.max(105, Math.round(bounds.y));
+      y = Math.max(44, Math.round(bounds.y));
     c.view.setBounds({
       x,
       y,
@@ -211,6 +238,8 @@ class DesktopBrowser {
     return c
       ? {
           ...c.state,
+          canGoBack: c.view.webContents.navigationHistory.canGoBack(),
+          canGoForward: c.view.webContents.navigationHistory.canGoForward(),
           pending: c.pending
             ? {
                 id: c.pending.id,
@@ -226,7 +255,7 @@ class DesktopBrowser {
     const c = this.require(pageId);
     const url = browserURL(value, this.centerURL);
     this.invalidate(c);
-    await c.view.webContents.loadURL(url);
+    this.load(c, url);
     return this.state();
   }
   async control(pageId, action) {
@@ -240,6 +269,10 @@ class DesktopBrowser {
       this.invalidate(c);
       if (c.view.webContents.navigationHistory.canGoBack())
         c.view.webContents.navigationHistory.goBack();
+    } else if (action === "forward") {
+      this.invalidate(c);
+      if (c.view.webContents.navigationHistory.canGoForward())
+        c.view.webContents.navigationHistory.goForward();
     } else if (action === "reload") {
       this.invalidate(c);
       c.view.webContents.reload();

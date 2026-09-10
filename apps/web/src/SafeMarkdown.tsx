@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
+import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 const MarkdownScope = createContext<{
   state: Workspace;
@@ -150,15 +151,18 @@ export function SafeMarkdown({
   children,
   state,
   onOpen,
+  documentTitle,
 }: {
   children: string;
   state: Workspace;
   onOpen: (id: string) => void;
+  documentTitle?: string;
 }) {
   return (
     <MarkdownScope.Provider value={{ state, onOpen }}>
       <Markdown
         skipHtml
+        remarkPlugins={[[omitRepeatedDocumentTitle, { title: documentTitle }]]}
         urlTransform={(url) =>
           webURL(url) ||
           objectLink(url) ||

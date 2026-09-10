@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useModal } from "./useModal.js";
-import { Bell, X } from "lucide-react";
+import { Bell, X, Settings2 } from "lucide-react";
 import { z } from "zod";
 import { RequestError, scopedStorage, type WorkspaceClient } from "./client.js";
 const schema = z.object({
@@ -35,7 +35,12 @@ export function Notifications({
       items: [],
     }),
     [open, setOpen] = useState(false),
-    [error, setError] = useState("");
+    [settings, setSettings] = useState(false),
+    [error, setError] = useState(""),
+    [loadError, setLoadError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const generation = useRef(0),
+    operating = useRef(false);
   const storage = useState(() => scopedStorage())[0];
   const pendingReads = useRef(
     new Set(
@@ -61,8 +66,12 @@ export function Notifications({
     current = useRef(client);
   current.current = client;
   useEffect(() => {
-    let alive = true;
+    let alive = true,
+      refreshing = false;
     const refresh = async () => {
+      if (refreshing || operating.current) return;
+      refreshing = true;
+      const version = generation.current;
       if (pendingReads.current.size) {
         const ids = [...pendingReads.current];
         try {
@@ -79,18 +88,22 @@ export function Notifications({
       return current.current
         .notifications()
         .then((v) => {
-          if (alive) {
+          if (alive && version === generation.current) {
             const next = schema.parse(v);
             const visible = new Set(next.items.map((i) => i.id));
             for (const id of pendingReads.current)
               if (!visible.has(id)) pendingReads.current.delete(id);
             rememberReads();
             setView(next);
-            setError("");
+            setLoadError("");
           }
         })
         .catch(() => {
-          if (alive) setError("暂时无法同步通知。");
+          if (alive && version === generation.current)
+            setLoadError("暂时无法同步通知。");
+        })
+        .finally(() => {
+          refreshing = false;
         });
     };
     refresh();
@@ -104,6 +117,11 @@ export function Notifications({
   async function change(
     command: Parameters<WorkspaceClient["notifications"]>[0],
   ) {
+    if (operating.current) return false;
+    operating.current = true;
+    generation.current++;
+    setBusy(true);
+    setError("");
     try {
       setView(schema.parse(await client.notifications(command)));
       setError("");
@@ -111,6 +129,9 @@ export function Notifications({
     } catch {
       setError("通知设置未保存，请重试。");
       return false;
+    } finally {
+      operating.current = false;
+      setBusy(false);
     }
   }
   return (
@@ -138,7 +159,25 @@ export function Notifications({
             <h2 ref={heading} tabIndex={-1}>
               通知
             </h2>
+            <button
+              className="icon-button"
+              aria-label="通知设置"
+              aria-expanded={settings}
+              onClick={() => setSettings(!settings)}
+            >
+              <Settings2 />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="关闭通知"
+              onClick={() => setOpen(false)}
+            >
+              <X />
+            </button>
+          </header>
+          {settings && (
             <fieldset
+              aria-busy={busy}
               className="notification-preferences"
               aria-describedby="notification-mode-hint"
               title="提醒范围：仅影响未读提示，不改变事项或通知记录。"
@@ -152,27 +191,25 @@ export function Notifications({
                       name="notification-mode"
                       value={mode.value}
                       checked={view.mode === mode.value}
-                      onChange={() =>
-                        void change({ action: "settings", mode: mode.value })
-                      }
+                      aria-disabled={busy}
+                      onClick={(event) => {
+                        if (busy) event.preventDefault();
+                      }}
+                      onChange={() => {
+                        if (!busy)
+                          void change({ action: "settings", mode: mode.value });
+                      }}
                     />
                     <span>{mode.label}</span>
                   </label>
                 ))}
               </div>
             </fieldset>
-            <button
-              className="icon-button"
-              aria-label="关闭通知"
-              onClick={() => setOpen(false)}
-            >
-              <X />
-            </button>
-          </header>
+          )}
           <p className="visually-hidden" id="notification-mode-hint">
             仅影响未读提示，不改变事项或通知记录。
           </p>
-          {error && <p role="alert">{error}</p>}
+          {(error || loadError) && <p role="alert">{error || loadError}</p>}
           <div className="notification-list">
             {view.items.map((i) => (
               <button
@@ -180,6 +217,7 @@ export function Notifications({
                 data-unread={!i.read}
                 aria-label={`${i.read ? "" : "未读，"}${i.title}，${i.priority === "high" ? "高优先级，" : ""}${i.reason}`}
                 onClick={async () => {
+                  setError("");
                   try {
                     // Navigation must not wait on a read receipt. Refresh first
                     // only to revalidate the current authorized workspace.
@@ -211,7 +249,7 @@ export function Notifications({
                 </small>
               </button>
             ))}
-            {!view.items.length && !error && (
+            {!view.items.length && !error && !loadError && (
               <p className="notification-empty">暂无通知</p>
             )}
           </div>

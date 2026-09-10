@@ -288,6 +288,17 @@ export class WorkspaceStore {
         return JSON.parse(previous.receipt) as Receipt;
       }
       const op = command.operation;
+      if (op.type === "record-input")
+        for (const attachment of op.attachments ?? []) {
+          const asset = this.attachmentAsset(attachment.assetId, access);
+          if (!asset)
+            throw new DomainError(
+              "forbidden",
+              "无权使用这份附件，请通过当前身份上传。",
+            );
+          if (attachment.mime && attachment.mime !== asset.mime)
+            throw new DomainError("invalid", "附件类型与上传文件不一致。");
+        }
       if (
         (op.type === "create-artifact" ||
           op.type === "revise-artifact" ||
@@ -397,11 +408,64 @@ export class WorkspaceStore {
       .prepare("SELECT mime,bytes FROM assets WHERE id=?")
       .get(id) as { mime: string; bytes: Uint8Array } | undefined;
   }
+  addAttachment(bytes: Buffer, name: string, access: AccessContext) {
+    if (/\.(png|jpe?g|webp)$/i.test(name)) return this.addAsset(bytes, access);
+    let mime: string;
+    if (/\.pdf$/i.test(name) && bytes.subarray(0, 5).toString() === "%PDF-") {
+      if (bytes.length > 20 * 1024 * 1024)
+        throw new DomainError("invalid", "PDF 不能超过 20 MB。");
+      mime = "application/pdf";
+    } else if (/\.(txt|md|markdown)$/i.test(name)) {
+      if (bytes.length > 8 * 1024 * 1024)
+        throw new DomainError("invalid", "文本文件不能超过 8 MB。");
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new DomainError("invalid", "请使用 UTF-8 文本文件。");
+      }
+      if (bytes.includes(0))
+        throw new DomainError("invalid", "这不是文本文件。");
+      mime = /\.txt$/i.test(name) ? "text/plain" : "text/markdown";
+    } else
+      throw new DomainError("invalid", "支持图片、PDF、TXT 和 Markdown 附件。");
+    if (!bytes.length) throw new DomainError("invalid", "不能添加空文件。");
+    const assetId = createHash("sha256").update(bytes).digest("hex");
+    this.db
+      .prepare("INSERT OR IGNORE INTO assets(id,mime,bytes) VALUES(?,?,?)")
+      .run(assetId, mime, bytes);
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO asset_owners(asset_id,principal_id) VALUES(?,?)",
+      )
+      .run(assetId, access.principalId);
+    return { assetId, mime: this.asset(assetId)!.mime };
+  }
   search(request: SearchRequest, access: AccessContext) {
     return this.index.search(request, access);
   }
   visibleAsset(id: string, access: AccessContext) {
     if (!this.index.assetVisible(id, access)) return undefined;
+    return this.asset(id);
+  }
+  attachmentAsset(id: string, access: AccessContext) {
+    if (
+      !this.index.assetVisible(id, access) &&
+      !this.db
+        .prepare(
+          "SELECT 1 FROM asset_owners WHERE asset_id=? AND principal_id=?",
+        )
+        .get(id, access.principalId) &&
+      !this.snapshot().inputs.some(
+        (input) =>
+          input.attachments?.some((a) => a.assetId === id) &&
+          this.snapshot().projects.some(
+            (p) =>
+              p.id === input.projectId &&
+              p.members.includes(access.principalId),
+          ),
+      )
+    )
+      return undefined;
     return this.asset(id);
   }
   addPdf(bytes: Buffer, pages: string[], access: AccessContext = localAccess) {

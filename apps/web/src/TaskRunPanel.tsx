@@ -126,9 +126,9 @@ export function TaskRunPanel({
           <h2>执行</h2>
           <p role="status">
             {record
-              ? `第 ${run.run} 次安排 · ${run.controlPending ? "控制请求等待确认" : run.sourceStopped ? "后续触发已停止" : run.paused ? "后续触发已暂停" : record.status === "queued" ? "等待 Runtime 调度" : record.status === "paused" ? "后续触发已暂停" : record.status === "cancelled" ? "后续触发已停止" : run.threadState === "failed" ? "执行失败" : run.threadState === "completed" ? "本次处理已结束" : run.threadState === "cancelled" ? "本次处理已停止" : "正在处理"} · 使用安排版本 v${run.artifactRevision}`
+              ? `第 ${run.run} 次安排 · ${run.controlPending ? "控制请求等待确认" : run.sourceStopped ? "后续触发已停止" : run.paused ? "后续触发已暂停" : record.status === "queued" ? "等待开始执行" : record.status === "paused" ? "后续触发已暂停" : record.status === "cancelled" ? "后续触发已停止" : run.threadState === "failed" ? "执行失败" : run.threadState === "completed" ? "本次处理已结束" : run.threadState === "cancelled" ? "本次处理已停止" : "正在处理"} · 使用安排版本 v${run.artifactRevision}`
               : task.runRequested
-                ? "安排已保存，等待 Runtime 确认"
+                ? "安排已保存，等待执行确认"
                 : "尚未提交执行安排"}
           </p>
           <div className="task-run-actions">

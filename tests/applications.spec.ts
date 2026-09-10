@@ -6,7 +6,10 @@ test("正常关闭应用不产生常驻提示，关闭失败仍显示错误且�
   page,
 }) => {
   await page.goto("/");
-  const card = page.getByRole("button", { name: "查看本空间内容", exact: true });
+  const card = page.getByRole("button", {
+    name: "查看本空间内容",
+    exact: true,
+  });
   const tab = page.getByRole("tab", { name: "内容", exact: true });
   const close = page.getByRole("button", {
     name: "关闭应用 内容",
@@ -77,7 +80,10 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
       body: JSON.stringify({ message: "应用暂时无法打开，请重试。" }),
     });
   });
-  const tile = page.getByRole("button", { name: "查看本空间内容", exact: true });
+  const tile = page.getByRole("button", {
+    name: "查看本空间内容",
+    exact: true,
+  });
   await tile.click();
   await expect(tile).toBeDisabled();
   await expect(page.getByRole("list", { name: "应用列表" })).toHaveAttribute(
@@ -121,7 +127,9 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   const originalId = boot.workspace.projects.find(
     (p: { kind: string }) => p.kind === "desk",
   ).id;
-  await page.getByRole("button", { name: "查看本空间内容", exact: true }).click();
+  await page
+    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .click();
   await page
     .locator(".library-authoring-options")
     .getByRole("button", { name: "手动写文档", exact: true })
@@ -169,6 +177,10 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toHaveCount(2);
   await content();
   await page.getByRole("button", { name: "关闭应用 工作便笺" }).click();
+  await expect(
+    page.getByRole("tab", { name: "内容", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("button", { name: "工作便笺 1.0.0", exact: true })
     .press("Space");
@@ -201,7 +213,10 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
         requestAnimationFrame(() => requestAnimationFrame(() => done()));
       }),
   );
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "保存为项目", exact: true })
+    .click();
   try {
     // A periodic snapshot sees the committed rename before the delayed receipt.
     // The old application must not unmount while the new blank desk is created.

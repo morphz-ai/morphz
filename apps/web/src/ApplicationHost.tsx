@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   BookOpen,
@@ -12,11 +18,13 @@ import {
   Layers2,
   Upload,
   X,
+  PanelLeftClose,
 } from "lucide-react";
 import {
   applicationManifestSchema,
   applicationMessageSchema,
   objectsApplication,
+  browserApplication,
   type ApplicationManifest,
   type ApplicationInstance,
 } from "../../../packages/core/src/applications.js";
@@ -27,6 +35,8 @@ import {
 } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
+import { BrowserHost } from "./BrowserHost.js";
+import type { BrowserView } from "./desktop.js";
 
 export function AppIcon({ app }: { app: ApplicationManifest }) {
   const Icon = {
@@ -57,7 +67,13 @@ export function ApplicationHost({
   enabled = true,
   foreground = true,
   toolbarTarget,
+  onBrowserPage,
+  onConnectFolder,
+  onInput,
 }: {
+  onBrowserPage?: (page: BrowserView | null) => void;
+  onConnectFolder?: () => void;
+  onInput?: () => void;
   client: WorkspaceClient;
   workspaceId: string;
   activeId: string | null;
@@ -77,17 +93,57 @@ export function ApplicationHost({
     (i) => i.workspaceId === workspaceId && i.status === "open",
   );
   const active = instances.find((i) => i.id === activeId);
-  const applications = state.applications.filter(
-    (a) =>
-      a.installedBy === client.boot!.principalId ||
-      instances.some(
-        (i) => i.applicationId === a.id && i.applicationVersion === a.version,
-      ),
-  );
+  const applications = [
+    browserApplication,
+    ...state.applications.filter(
+      (a) =>
+        a.installedBy === client.boot!.principalId ||
+        instances.some(
+          (i) => i.applicationId === a.id && i.applicationVersion === a.version,
+        ),
+    ),
+  ];
   const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
   const launching = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
+  const strip = useRef<HTMLDivElement>(null);
+  const instanceIds = instances.map((instance) => instance.id).join(":");
+  useLayoutEffect(() => {
+    const element = strip.current;
+    if (!enabled || !element) return;
+    const revealActive = () => {
+      const selected = element.querySelector<HTMLElement>(
+        '[role="tab"][aria-selected="true"]',
+      );
+      if (!selected) return;
+      // Scroll only the tab containers, never the page or the reading canvas.
+      // A resize or another application's close can otherwise leave the active
+      // application outside the visible strip even though it is still selected.
+      for (const container of [
+        selected.closest<HTMLElement>(".application-tabs"),
+        element,
+      ]) {
+        if (!container) continue;
+        const bounds = container.getBoundingClientRect();
+        const wholeTab = selected
+          .closest(".application-tab")!
+          .getBoundingClientRect();
+        const tab =
+          wholeTab.width <= bounds.width
+            ? wholeTab
+            : selected.getBoundingClientRect();
+        if (tab.left < bounds.left)
+          container.scrollLeft -= bounds.left - tab.left;
+        else if (tab.right > bounds.right)
+          container.scrollLeft += tab.right - bounds.right;
+      }
+    };
+    revealActive();
+    const observer = new ResizeObserver(revealActive);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [activeId, instanceIds, enabled, toolbarTarget]);
   async function launch(app: ApplicationManifest) {
     if (launching.current) return;
     launching.current = true;
@@ -114,14 +170,23 @@ export function ApplicationHost({
         instanceId: instance.id,
         expectedRevision: instance.revision,
       });
-      if (activeId === instance.id) onActivate(null);
+      if (activeId === instance.id) {
+        const index = instances.findIndex((i) => i.id === instance.id);
+        onActivate(
+          instances[index + 1]?.id ?? instances[index - 1]?.id ?? null,
+        );
+      }
     } catch (error) {
       onNotice((error as Error).message);
     }
   }
   if (!enabled) return <>{children}</>;
   const toolbar = (
-    <div className="application-strip" aria-label={`${space.title}的应用`}>
+    <div
+      ref={strip}
+      className="application-strip"
+      aria-label={`${space.title}的应用`}
+    >
       <button
         className="application-home"
         aria-label="应用启动台"
@@ -196,6 +261,8 @@ export function ApplicationHost({
       {active?.applicationId === objectsApplication.id &&
         active.state.artifactId && (
           <button
+            aria-label="所有内容"
+            title="所有内容"
             onClick={async () => {
               try {
                 await client.execute({
@@ -210,7 +277,8 @@ export function ApplicationHost({
               }
             }}
           >
-            所有内容
+            <FolderOpen />
+            <span className="toolbar-action-label">所有内容</span>
           </button>
         )}
       {spaceKind(space) === "desk" && (
@@ -231,6 +299,29 @@ export function ApplicationHost({
       {toolbarTarget && createPortal(toolbar, toolbarTarget)}
       {!active && (
         <div className="application-launcher">
+          {onConnectFolder && (
+            <button className="connect-folder" onClick={onConnectFolder}>
+              <FolderOpen />
+              连接本地文件夹
+            </button>
+          )}
+          {state.artifacts.some((a) => a.projectId === workspaceId) && (
+            <div className="workspace-recent" aria-label="继续工作">
+              {state.artifacts
+                .filter(
+                  (a) =>
+                    a.projectId === workspaceId && a.content.kind !== "task",
+                )
+                .slice(-4)
+                .reverse()
+                .map((a) => (
+                  <button key={a.id} onClick={() => onOpen(a.id)}>
+                    <FileText />
+                    <span>{a.title}</span>
+                  </button>
+                ))}
+            </div>
+          )}
           <div
             className="application-grid"
             role="list"
@@ -271,19 +362,79 @@ export function ApplicationHost({
             hidden={active?.id !== instance.id}
             key={instance.id}
           >
-            {app.ui.type === "builtin" ? (
+            {app.ui.type === "builtin" && app.ui.view === "browser" ? (
+              <BrowserHost
+                activeView={foreground && active?.id === instance.id}
+                onReturn={() => onActivate(null)}
+                returnLabel={spaceKind(space) === "desk" ? "工作台" : "项目"}
+                onInput={onInput}
+                projectId={workspaceId}
+                savedURLs={state.artifacts.flatMap((artifact) =>
+                  artifact.projectId === workspaceId &&
+                  artifact.content.kind === "website"
+                    ? [artifact.content.url]
+                    : [],
+                )}
+                initialURL={
+                  typeof instance.state.url === "string"
+                    ? instance.state.url
+                    : ""
+                }
+                onPage={(page) => {
+                  onBrowserPage?.(page);
+                  if (page && page.url !== instance.state.url)
+                    void client
+                      .execute({
+                        type: "set-application-state",
+                        instanceId: instance.id,
+                        expectedRevision: instance.revision,
+                        state: { ...instance.state, url: page.url },
+                      })
+                      .catch((e) => onNotice(e.message));
+                }}
+                onSave={async (url, title) => {
+                  if (
+                    client.boot!.workspace.artifacts.some(
+                      (a) =>
+                        a.projectId === workspaceId &&
+                        a.content.kind === "website" &&
+                        a.content.url === url,
+                    )
+                  )
+                    return;
+                  await client.execute({
+                    type: "create-artifact",
+                    projectId: workspaceId,
+                    title: (title || url).slice(0, 180),
+                    content: { kind: "website", url, description: "" },
+                  });
+                }}
+              />
+            ) : app.ui.type === "builtin" ? (
               children
             ) : (
-              <SandboxApplication
-                key={instance.id}
-                client={client}
-                instance={instance}
-                manifest={app}
-                active={foreground && active?.id === instance.id}
-                onOpen={onOpen}
-                onCompose={onCompose}
-                onNotice={onNotice}
-              />
+              <>
+                {app.ui.presentation === "immersive" && (
+                  <button
+                    className="immersive-return"
+                    aria-label="返回工作空间"
+                    title="返回工作空间"
+                    onClick={() => onActivate(null)}
+                  >
+                    <PanelLeftClose />
+                  </button>
+                )}
+                <SandboxApplication
+                  key={instance.id}
+                  client={client}
+                  instance={instance}
+                  manifest={app}
+                  active={foreground && active?.id === instance.id}
+                  onOpen={onOpen}
+                  onCompose={onCompose}
+                  onNotice={onNotice}
+                />
+              </>
             )}
           </div>
         );
@@ -453,6 +604,23 @@ function SandboxApplication({
       revision: instance.revision,
       state: instance.state,
       active,
+      presentation: {
+        mode: manifest.ui.presentation ?? "workspace",
+        // The host-owned return control cannot be removed by embedded content.
+        returnControl:
+          manifest.ui.presentation === "immersive"
+            ? {
+                left:
+                  /Mac/.test(navigator.platform) &&
+                  /Electron\//.test(navigator.userAgent)
+                    ? 100
+                    : 12,
+                top: 12,
+                width: 36,
+                height: 32,
+              }
+            : null,
+      },
       theme: {
         appearance: document.documentElement.dataset.appearance ?? "system",
         accent:

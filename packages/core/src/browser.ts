@@ -46,7 +46,7 @@ export const browserReceiptSchema = z
     pageId: z.uuid(),
     epoch: z.uuid(),
     projectId: z.string(),
-    artifactId: z.string(),
+    artifactId: z.string().nullable(),
     sourceSessionId: z.string().optional(),
     action: browserActionSchema,
     status: z.enum([
@@ -65,7 +65,8 @@ export type BrowserReceipt = z.infer<typeof browserReceiptSchema>;
 export const pageStateSchema = z
   .object({
     pageId: z.uuid(),
-    artifactId: z.string().min(1).max(100),
+    artifactId: z.string().min(1).max(100).nullable(),
+    projectId: z.string().min(1).max(100).optional(),
     epoch: z.uuid(),
     url: websiteURL,
     title: z.string().max(500),

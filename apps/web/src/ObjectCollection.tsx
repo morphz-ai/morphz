@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import { documentExcerpt } from "./document-presentation.js";
 
 export function ObjectCollection({
   project,
@@ -136,12 +137,12 @@ export function ObjectCollection({
                 <strong>制作表格或报告</strong>
               </span>
             </button>
-            <button aria-label="添加网站" onClick={() => onCreate("website")}>
+            <button aria-label="打开浏览器" onClick={() => onCreate("website")}>
               <span className="creation-icon">
                 <Globe />
               </span>
               <span>
-                <strong>添加网站</strong>
+                <strong>打开浏览器</strong>
               </span>
             </button>
             <button
@@ -269,6 +270,10 @@ export function ObjectCollection({
                   key={a.id}
                   onClick={() => onOpen(a.id)}
                 >
+                  <div className="artifact-card-heading">
+                    <ObjectIcon kind={a.content.kind} />
+                    <h2>{a.title}</h2>
+                  </div>
                   <div className="artifact-preview" data-kind={a.content.kind}>
                     {a.content.kind === "image" ? (
                       <img
@@ -277,30 +282,30 @@ export function ObjectCollection({
                       />
                     ) : (
                       <>
-                        <span className="eyebrow">
-                          <ObjectIcon kind={a.content.kind} />
-                          {kindLabel[a.content.kind]}
-                        </span>
-                        <h2>{a.title}</h2>
                         <p>
                           {a.content.kind === "document"
-                            ? a.content.markdown
-                                .replace(/^#+\s/gm, "")
-                                .slice(0, 160)
+                            ? documentExcerpt(a.content.markdown, a.title)
                             : a.content.kind === "pdf"
                               ? `${a.content.pages.length} 页 · ${a.content.pages.join(" ").slice(0, 120) || "扫描文档"}`
-                              : a.content.description.slice(0, 160)}
+                              : a.content.kind === "interactive"
+                                ? `${a.content.rows.length} 条记录 · ${a.content.columns.length} 个字段${a.content.description ? " · " + a.content.description.slice(0, 100) : ""}`
+                                : a.content.kind === "website"
+                                  ? a.content.description || a.content.url
+                                  : ""}
                         </p>
                       </>
                     )}
                   </div>
                   <div className="artifact-caption">
-                    <ObjectIcon kind={a.content.kind} />
                     <span>
-                      {a.title}
                       <small>
                         {ownerTitles.get(a.projectId) ?? "所属空间不可用"} ·{" "}
-                        {kindLabel[a.content.kind]} · v{a.revision}
+                        {a.content.kind === "interactive"
+                          ? { table: "表格", form: "表单", report: "报告" }[
+                              a.content.layout
+                            ]
+                          : kindLabel[a.content.kind]}{" "}
+                        · v{a.revision}
                       </small>
                     </span>
                     <time dateTime={a.updatedAt}>

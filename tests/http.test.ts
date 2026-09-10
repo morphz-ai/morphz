@@ -12,6 +12,44 @@ async function freePort() {
   await new Promise<void>((r) => s.close(() => r()));
   return p;
 }
+test("语音能力状态由提供方报告，不绑定豆包或暴露配置凭据", async () => {
+  const port = await freePort();
+  const store = new WorkspaceStore(":memory:");
+  const server = createAppServer(store, {
+    port,
+    webRoot: "/nonexistent",
+    speech: {
+      provider: { id: "test-engine", label: "测试语音" },
+      configured: () => true,
+      synthesize: async () => {
+        throw new Error("status must not synthesize");
+      },
+      transcribe: async () => {
+        throw new Error("status must not record");
+      },
+    },
+  });
+  await new Promise<void>((resolve) =>
+    server.listen(port, "127.0.0.1", resolve),
+  );
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/speech/status`);
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.configured, true);
+    assert.equal(status.provider, "test-engine");
+    assert.equal(status.providerLabel, "测试语音");
+    assert.deepEqual(Object.keys(status).sort(), [
+      "configured",
+      "provider",
+      "providerLabel",
+      "segmentSeconds",
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
 test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
   const port = await freePort(),
     store = new WorkspaceStore(":memory:"),

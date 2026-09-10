@@ -26,7 +26,7 @@ export function ExecutionSidebar({
   onPin: () => void;
   onClose: () => void;
   onSelect: (scope: ExecutionScope) => void;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, revision?: number) => void;
 }) {
   const state = client.boot!.workspace,
     runtime = client.boot!.runtime;
@@ -39,6 +39,7 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [showRecent, setShowRecent] = useState(false);
+  const [allWork, setAllWork] = useState(false);
   const [showOther, setShowOther] = useState(false),
     [stopRequested, setStopRequested] = useState(false);
   const threads = runtime.activity?.threads ?? [];
@@ -64,13 +65,21 @@ export function ExecutionSidebar({
   const liveTools = messages.filter((m) => m.tool && m.streaming);
   const entries = runtime.deliveries.flatMap((d) => {
     const source = state.inputs.find((i) => i.id === d.inputId);
-    return source ? [{ delivery: d, source }] : [];
+    return source &&
+      (allWork ||
+        (scope.artifactId
+          ? source.artifactId === scope.artifactId
+          : source.projectId === scope.projectId))
+      ? [{ delivery: d, source }]
+      : [];
   });
   const pending = (d: (typeof entries)[number]["delivery"]) =>
     ["queued", "sending", "running"].includes(d.state) ||
     threads.some((t) => t.inputId === d.inputId);
   const active = entries.filter(({ delivery: d }) => pending(d));
-  const background = threads.filter((t) => !t.inputId);
+  const background = threads.filter(
+    (t) => !t.inputId && (allWork || t.projectId === scope.projectId),
+  );
   const deliveredAt = (id: string, fallback: string) =>
     runtime.messages
       .filter((m) => m.inputId === id)
@@ -78,7 +87,15 @@ export function ExecutionSidebar({
       .sort()
       .at(-1) ?? fallback;
   const recent = entries
-    .filter(({ delivery: d }) => !pending(d))
+    .filter(
+      ({ delivery: d, source }) =>
+        !pending(d) &&
+        (d.state === "failed" ||
+          source.intent ||
+          source.artifactId ||
+          client.boot!.outputs.some((o) => o.inputId === source.id) ||
+          allWork),
+    )
     .sort((a, b) =>
       deliveredAt(b.source.id, b.source.createdAt).localeCompare(
         deliveredAt(a.source.id, a.source.createdAt),
@@ -89,7 +106,7 @@ export function ExecutionSidebar({
       queued: "等待执行",
       sending: "等待确认",
       running: "进行中",
-      completed: "已交付",
+      completed: "已结束",
       failed: "执行失败",
       cancelled: "已停止",
     })[value] ?? value;
@@ -132,7 +149,7 @@ export function ExecutionSidebar({
       setStopping(false);
     }
   }
-  const branchRow = (t: (typeof threads)[number]) => (
+  const branchRow = (t: (typeof threads)[number], compact = false) => (
     <button
       className="execution-work-row"
       key={t.id}
@@ -147,7 +164,7 @@ export function ExecutionSidebar({
       }
     >
       <span className="execution-work-body">
-        <strong>{t.title}</strong>
+        <strong>{compact ? "查看执行分支" : t.title}</strong>
         <small>
           {runtime.activity?.available ? phase(t.phase) : "状态待确认"} ·{" "}
           {t.id.slice(-8)}
@@ -176,7 +193,9 @@ export function ExecutionSidebar({
       }
     >
       <span className="execution-work-body">
-        <strong>{source.body}</strong>
+        <strong>
+          {source.body || source.attachments?.[0]?.name || "附件消息"}
+        </strong>
         <small>
           {state.projects.find((p) => p.id === source.projectId)?.title} ·{" "}
           {runtime.connected
@@ -285,6 +304,16 @@ export function ExecutionSidebar({
         </button>
       </header>
       <div className="execution-sidebar-scroll">
+        {!detail && (
+          <div className="execution-scope">
+            <button aria-pressed={!allWork} onClick={() => setAllWork(false)}>
+              当前工作
+            </button>
+            <button aria-pressed={allWork} onClick={() => setAllWork(true)}>
+              全部工作
+            </button>
+          </div>
+        )}
         {!runtime.connected && (
           <p className="delivery-error" role="status">
             连接中断，执行状态尚未确认。
@@ -337,9 +366,11 @@ export function ExecutionSidebar({
             )}
             {input && !scope.threadId && (
               <section className="execution-origin">
-                {input.body.length > 140 ? (
+                {input.body.length > 48 ? (
                   <details className="execution-input-text">
-                    <summary>{input.body.slice(0, 100)}…</summary>
+                    <summary>
+                      <span>{input.body}</span>
+                    </summary>
                     <p>{input.body}</p>
                   </details>
                 ) : (
@@ -364,8 +395,31 @@ export function ExecutionSidebar({
                 </div>
               </section>
             )}
+            {input && (
+              <div className="execution-outputs" aria-label="工作成果">
+                {client
+                  .boot!.outputs.filter((o) => o.inputId === input.id)
+                  .map((o) => (
+                    <button
+                      key={o.commandId}
+                      onClick={() => onOpen(o.artifactId, o.revision)}
+                    >
+                      {state.artifacts.find((a) => a.id === o.artifactId)
+                        ?.title ?? "打开成果"}{" "}
+                      · v{o.revision}
+                    </button>
+                  ))}
+              </div>
+            )}
             {!scope.threadId && branches.length > 0 && (
-              <section aria-label="执行分支">{branches.map(branchRow)}</section>
+              <section aria-label="执行分支">
+                {branches.map((branch) =>
+                  branchRow(
+                    branch,
+                    branches.length === 1 && branch.title === input?.body,
+                  ),
+                )}
+              </section>
             )}
             {messages
               .filter((m) => m.kind === "progress")
@@ -408,7 +462,7 @@ export function ExecutionSidebar({
         ) : (
           <>
             {active.map(row)}
-            {background.map(branchRow)}
+            {background.map((branch) => branchRow(branch))}
             {!active.length && !background.length && (
               <p className="execution-quiet">当前没有正在处理的工作</p>
             )}

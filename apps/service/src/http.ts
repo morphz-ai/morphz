@@ -29,7 +29,7 @@ import {
 } from "../../../packages/core/src/execution.js";
 import { readArtifact } from "../../../packages/core/src/retrieval.js";
 import type { BrowserBroker } from "./browser.js";
-import { type SpeechService, ttsRequestSchema } from "./speech.js";
+import { type SpeechProvider, ttsRequestSchema } from "./speech.js";
 import { IdentityCenter, workspaceFor, requiresIdentity } from "./identity.js";
 import { Notifications } from "./notifications.js";
 import {
@@ -62,7 +62,7 @@ export function createAppServer(
     runtime?: RuntimeBridge;
     agentTools?: AgentTools;
     browser?: BrowserBroker;
-    speech?: SpeechService;
+    speech?: SpeechProvider;
     identity?: IdentityCenter;
   },
 ) {
@@ -165,7 +165,8 @@ export function createAppServer(
       if (req.method === "GET" && url.pathname === "/api/speech/status") {
         json(res, 200, {
           configured: options.speech?.configured() ?? false,
-          provider: "doubao",
+          provider: options.speech?.provider.id ?? null,
+          providerLabel: options.speech?.provider.label ?? null,
           segmentSeconds: maxSpeechSegmentSeconds,
         });
         return;
@@ -470,6 +471,26 @@ export function createAppServer(
           close,
         );
         if (!options.runtime) send({ connected: false, messages: [] });
+        return;
+      }
+      if (
+        req.method === "GET" &&
+        /^\/api\/attachments\/[a-f0-9]{64}$/.test(url.pathname)
+      ) {
+        const asset = store.attachmentAsset(
+          url.pathname.split("/").at(-1)!,
+          localAccess,
+        );
+        if (!asset) {
+          json(res, 404, { message: "附件不存在或无权访问。" });
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": asset.mime,
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "private, no-store",
+        });
+        res.end(asset.bytes);
         return;
       }
       if (
@@ -799,6 +820,17 @@ export function createAppServer(
             options.runtime!.enqueue(retry[1]!),
           );
           json(res, 202, { accepted: true });
+          return;
+        }
+        if (url.pathname === "/api/attachments") {
+          const name = String(req.headers["x-file-name"] ?? "").slice(0, 1200);
+          const bytes = await body(req, 20 * 1024 * 1024);
+          assertIdentity();
+          json(
+            res,
+            201,
+            store.addAttachment(bytes, decodeURIComponent(name), localAccess),
+          );
           return;
         }
         if (url.pathname === "/api/assets") {

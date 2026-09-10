@@ -1137,10 +1137,21 @@ export class RuntimeBridge {
       }
     }
     const typed = workInputRequest(
+      // Attachments are immutable uploaded resources, not library artifacts.
       input,
       input.model ||
         (version?.content.kind === "task" ? version.content.model : null),
     );
+    for (const attachment of input.attachments ?? []) {
+      const asset = this.store.asset(attachment.assetId);
+      if (!asset)
+        throw new DomainError("invalid", "附件已不可用，输入已保留。");
+      attachments.push({
+        name: attachment.name,
+        media_type: asset.mime,
+        data_base64: Buffer.from(asset.bytes).toString("base64"),
+      });
+    }
     const resourceUploads = attachments.map((attachment, index) => ({
       stageId: `work-${createHash("sha256").update(`${input.id}:${index}`).digest("hex")}`,
       name: attachment.name,

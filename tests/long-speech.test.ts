@@ -102,6 +102,15 @@ test("长文只预加载下一段，暂停续听不重新合成当前段，自�
   await reader.play();
   await tick();
   assert.equal(calls.length, 2);
+  assert.equal(reader.state.duration, 30);
+  reader.seekSeconds(7.5);
+  assert.equal(players[0]!.currentTime, 7.5);
+  assert.equal(reader.state.seconds, 7.5);
+  assert.equal(
+    calls.length,
+    2,
+    "Seeking decoded audio does not synthesize again",
+  );
   players[0]!.currentTime = 8;
   players[0]!.ontimeupdate!();
   reader.pause();

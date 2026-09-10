@@ -87,9 +87,8 @@ test("页面标题与操作共用顶栏，内容无第二层标题区；窄窗�
       bar.getByRole("button", { name: "安装应用", exact: true }),
     ).toBeVisible();
     await connected();
-    const grid = (await page
-      .getByRole("list", { name: "应用列表" })
-      .boundingBox())!;
+    // Continue-work and folder controls are content, not another title strip.
+    const grid = (await page.locator(".application-launcher").boundingBox())!;
     const bounds = (await bar.boundingBox())!;
     expect(grid.y - bounds.y - bounds.height).toBeLessThanOrEqual(8);
     await page.screenshot({

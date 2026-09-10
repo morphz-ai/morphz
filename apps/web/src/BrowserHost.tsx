@@ -1,21 +1,61 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, RotateCw, Hand, Globe, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  RotateCw,
+  Hand,
+  Globe,
+  ShieldCheck,
+  Bookmark,
+  MessageCircle,
+} from "lucide-react";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { BrowserView } from "./desktop.js";
+import { registerNativeBrowserLayout } from "./native-browser-layout.js";
 
 export function BrowserHost({
   artifact,
   autoOpen = false,
+  projectId,
+  initialURL = "",
+  onPage,
+  onSave,
+  savedURLs = [],
+  onReturn,
+  onInput,
+  returnLabel = "工作空间",
+  activeView = true,
 }: {
-  artifact: Artifact;
+  artifact?: Artifact;
+  projectId?: string;
+  initialURL?: string;
+  onPage?: (page: BrowserView | null) => void;
+  onSave?: (url: string, title: string) => Promise<void>;
+  savedURLs?: readonly string[];
+  onReturn?: () => void;
+  onInput?: () => void;
+  returnLabel?: string;
+  activeView?: boolean;
   autoOpen?: boolean;
 }) {
   const desktop = window.morphzDesktop?.browser;
   const slot = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<BrowserView | null>(null),
-    [url, setURL] = useState(""),
+    [url, setURL] = useState(
+      initialURL ||
+        (artifact?.content.kind === "website" ? artifact.content.url : ""),
+    ),
     [error, setError] = useState(""),
     [opening, setOpening] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
+  const latestOnPage = useRef(onPage);
+  latestOnPage.current = onPage;
+  useEffect(() => {
+    latestOnPage.current?.(activeView ? page : null);
+  }, [activeView, page?.pageId, page?.epoch, page?.url, page?.granted]);
   const active = useRef<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -25,28 +65,34 @@ export function BrowserHost({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      latestOnPage.current?.(null);
       if (active.current) void desktop?.close(active.current).catch(() => {});
     };
   }, [desktop]);
   useEffect(() => {
     if (!desktop || !page) return;
     const id = page.pageId;
-    const update = () => {
+    const layout = async () => {
       const r = slot.current?.getBoundingClientRect();
       const hidden =
+        !activeViewRef.current ||
         document.hidden ||
-        !!document.querySelector("dialog[open],.theme-menu") ||
+        !!document.querySelector(
+          'dialog[open]:not([data-capturing="true"]),.theme-menu',
+        ) ||
         !r ||
         r.width < 10 ||
         r.height < 10 ||
         r.bottom < 120;
-      void desktop
-        .layout(
-          id,
-          hidden ? null : { x: r.x, y: r.y, width: r.width, height: r.height },
-        )
-        .catch(() => {});
+      await desktop.layout(
+        id,
+        hidden ? null : { x: r.x, y: r.y, width: r.width, height: r.height },
+      );
     };
+    const update = () => void layout().catch(() => {});
+    const unregister = registerNativeBrowserLayout(async () => {
+      if (activeViewRef.current) await layout();
+    });
     const observer = new ResizeObserver(update);
     if (slot.current) observer.observe(slot.current);
     const modal = new MutationObserver(update);
@@ -54,7 +100,7 @@ export function BrowserHost({
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["open"],
+      attributeFilter: ["open", "data-capturing"],
     });
     document.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
@@ -64,12 +110,21 @@ export function BrowserHost({
       void desktop
         .state()
         .then((next) => {
+          if (!mounted.current || active.current !== id) return;
           if (next?.pageId === id) setPage(next);
+          else {
+            // Another workspace may have replaced the single native page.
+            // A hidden application must not reclaim it in the background.
+            active.current = null;
+            openedFromIntent.current = false;
+            setPage(null);
+          }
         })
         .catch(() => {});
     }, 600);
     update();
     return () => {
+      unregister();
       observer.disconnect();
       modal.disconnect();
       clearInterval(timer);
@@ -81,12 +136,20 @@ export function BrowserHost({
   }, [desktop, page?.pageId]);
   const pending = useRef(false);
   const openedFromIntent = useRef(false);
-  async function start() {
+  async function start(address?: string) {
     if (!desktop || pending.current) return;
     pending.current = true;
     setOpening(true);
     try {
-      const p = await desktop.open(artifact.id);
+      setError("");
+      const p = await desktop.open(
+        artifact && !address
+          ? artifact.id
+          : {
+              projectId: projectId ?? artifact!.projectId,
+              url: normalizeAddress(address ?? url),
+            },
+      );
       if (!mounted.current) {
         await desktop.close(p.pageId);
         return;
@@ -103,13 +166,26 @@ export function BrowserHost({
     }
   }
   useEffect(() => {
-    if (autoOpen && desktop && !openedFromIntent.current) {
+    if (
+      activeView &&
+      (autoOpen || !!initialURL) &&
+      desktop &&
+      !active.current &&
+      !openedFromIntent.current
+    ) {
       openedFromIntent.current = true;
       void start();
     }
-  }, [autoOpen, desktop]);
+  }, [autoOpen, desktop, activeView, page?.pageId]);
   async function control(
-    action: "grant" | "takeover" | "back" | "reload" | "approve" | "reject",
+    action:
+      | "grant"
+      | "takeover"
+      | "back"
+      | "forward"
+      | "reload"
+      | "approve"
+      | "reject",
   ) {
     if (!desktop || !page) return;
     try {
@@ -121,73 +197,141 @@ export function BrowserHost({
   }
   return (
     <section className="browser-host">
+      <div className="browser-toolbar">
+        {onReturn && (
+          <button
+            className="application-return"
+            aria-label="返回工作空间"
+            title="返回工作空间，保留浏览位置"
+            onClick={onReturn}
+          >
+            <ArrowLeft />
+            <span>{returnLabel}</span>
+          </button>
+        )}
+        <div className="browser-navigation" role="group" aria-label="网页导航">
+          <button
+            aria-label="网页后退"
+            disabled={!page?.canGoBack}
+            onClick={() => void control("back")}
+          >
+            <ChevronLeft />
+          </button>
+          <button
+            aria-label="网页前进"
+            disabled={!page?.canGoForward}
+            onClick={() => void control("forward")}
+          >
+            <ChevronRight />
+          </button>
+          <button
+            aria-label="重新载入网页"
+            disabled={!page}
+            onClick={() => void control("reload")}
+          >
+            <RotateCw />
+          </button>
+        </div>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!desktop || opening) return;
+            try {
+              setError("");
+              if (page)
+                setPage(
+                  await desktop.navigate(page.pageId, normalizeAddress(url)),
+                );
+              else await start(url);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "地址无效。");
+            }
+          }}
+        >
+          <input
+            aria-label="网站地址"
+            autoFocus={!artifact}
+            placeholder="输入网址"
+            value={url}
+            onChange={(e) => setURL(e.target.value)}
+          />
+        </form>
+        {onSave && (
+          <button
+            aria-label="保存网页到内容"
+            aria-pressed={!!page && savedURLs.includes(page.url)}
+            title={
+              page && savedURLs.includes(page.url)
+                ? "已保存到内容"
+                : "保存网页到内容"
+            }
+            disabled={!page || saving || savedURLs.includes(page.url)}
+            onClick={async () => {
+              if (!page) return;
+              setSaving(true);
+              try {
+                await onSave(page.url, page.title);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "保存失败。");
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            <Bookmark />
+          </button>
+        )}
+        <button
+          className="browser-assistance"
+          aria-label={page?.granted ? "我来接管" : "允许 Agent 协助"}
+          disabled={!page}
+          title="开启后允许读取、填写；点击操作仍需逐次确认"
+          onClick={() => void control(page?.granted ? "takeover" : "grant")}
+        >
+          {page?.granted ? <Hand /> : <ShieldCheck />}
+          <span>{page?.granted ? "我来接管" : "允许 Agent 协助"}</span>
+        </button>
+        {onInput && (
+          <button
+            aria-label="向 Morphz 输入"
+            title="围绕当前网页输入 · ⌘J"
+            onClick={onInput}
+          >
+            <MessageCircle />
+          </button>
+        )}
+      </div>
       {!page ? (
         <div className="browser-start">
           <Globe size={30} />
           <p>
-            {artifact.content.kind === "website" ? artifact.content.url : ""}
+            {artifact?.content.kind === "website"
+              ? artifact.content.url
+              : "输入网址，开始浏览"}
           </p>
           <p className="muted">
             网站使用独立的浏览器配置。登录由你完成；开启协助后，Agent
             可读取和填写页面，点击需逐次确认。
           </p>
-          <button
-            className="primary"
-            disabled={!desktop || opening}
-            onClick={() => void start()}
-          >
-            {!desktop
-              ? "请在桌面应用中打开网站"
-              : opening
-                ? "打开中…"
-                : autoOpen
-                  ? "重新打开网站"
-                  : "打开网站"}
-          </button>
+          {artifact && (
+            <button
+              className="primary"
+              disabled={!desktop || opening}
+              onClick={() => void start()}
+            >
+              {!desktop
+                ? "请在桌面应用中打开网站"
+                : opening
+                  ? "打开中…"
+                  : autoOpen
+                    ? "重新打开网站"
+                    : "打开网站"}
+            </button>
+          )}
+          {!desktop && !artifact && <p>网页操作需要桌面应用。</p>}
         </div>
       ) : (
         <>
-          <div className="browser-toolbar">
-            <button aria-label="网页后退" onClick={() => void control("back")}>
-              <ArrowLeft />
-            </button>
-            <button
-              aria-label="重新载入网页"
-              onClick={() => void control("reload")}
-            >
-              <RotateCw />
-            </button>
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                try {
-                  setPage(await desktop!.navigate(page.pageId, url));
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : "地址无效。");
-                }
-              }}
-            >
-              <input
-                aria-label="网站地址"
-                value={url}
-                onChange={(e) => setURL(e.target.value)}
-              />
-              <button>前往</button>
-            </form>
-            <button
-              className={page.granted ? "primary" : ""}
-              onClick={() => void control(page.granted ? "takeover" : "grant")}
-            >
-              {page.granted ? <Hand /> : <ShieldCheck />}
-              {page.granted ? "我来接管" : "允许 Agent 协助"}
-            </button>
-          </div>
-          <div className="browser-status">
-            {page.granted
-              ? "Agent 可读取与填写 · 点击需确认 · 操作网页即接管"
-              : "由你操作 · Agent 当前无权读取"}
-            <span title={page.url}>{page.url}</span>
-          </div>
           {page.pending && (
             <div className="browser-confirm" role="status">
               <span>
@@ -218,4 +362,12 @@ export function BrowserHost({
       )}
     </section>
   );
+}
+
+function normalizeAddress(value: string) {
+  const text = value.trim();
+  if (!text) throw new Error("请输入网址。");
+  return /^[a-z][a-z\d+.-]*:/i.test(text) && !/^localhost:\d+/i.test(text)
+    ? text
+    : `https://${text}`;
 }

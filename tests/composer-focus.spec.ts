@@ -56,6 +56,9 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await page.goto("/");
   const input = page.getByLabel("AI 输入内容");
   const nav = page.getByRole("navigation", { name: "主导航" });
+  await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  await openInput(page);
   await input.fill("暂不发送的工作台草稿");
   await expect(page.locator(".primary-panel")).toHaveAttribute(
     "data-interaction",
@@ -86,6 +89,8 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(input).toHaveValue("暂不发送的工作台草稿");
   await page.getByLabel("取消固定输入框").click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("暂不发送的工作台草稿");
   await page
     .getByRole("main", { name: "主工作区" })
     .click({ position: { x: 650, y: 200 } });
@@ -109,6 +114,39 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await expect(input).toHaveValue("事项中的独立草稿");
 });
 
+test("点击关闭内嵌听写不误收起输入，随后点击画布仍正常收起", async ({
+  page,
+}) => {
+  await page.route("**/api/speech/status", (route) =>
+    route.fulfill({ json: { configured: false, provider: null } }),
+  );
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  const input = await openInput(page);
+  await input.fill("关闭听写后继续写，不发送");
+  const trigger = page.getByRole("button", { name: "语音输入", exact: true });
+  await trigger.click();
+  await page.getByRole("button", { name: "关闭听写", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "听写", exact: true }),
+  ).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(input).toHaveValue("关闭听写后继续写，不发送");
+  await page
+    .getByRole("main", { name: "主工作区" })
+    .click({ position: { x: 650, y: 200 } });
+  await expect(input).toHaveCount(0);
+  await openInput(page);
+  await expect(input).toHaveValue("关闭听写后继续写，不发送");
+  await trigger.click();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await expect(input).toHaveValue("关闭听写后继续写，不发送");
+});
+
 test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一次点击生效", async ({
   page,
 }) => {
@@ -124,7 +162,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   ).toBeFocused();
   // Text goes straight to common bottom-row actions; keyboard users can also
   // open More and reach every low-frequency action without leaving the input.
-  for (const name of ["截图输入", "语音输入", "更多输入选项"]) {
+  for (const name of ["附加文件", "截图输入", "语音输入", "更多输入选项"]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
     await expect(input).toHaveValue("在控件与弹窗之间保留输入");
@@ -134,7 +172,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await page.keyboard.press("ArrowDown");
   await expect(page.getByLabel("展开完整记录")).toBeFocused();
   await page.keyboard.press("End");
-  await expect(page.getByLabel("固定输入框", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("长录音转写", { exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("更多输入选项")).toBeFocused();
   await expect(page.getByRole("group", { name: "输入选项" })).toBeHidden();
@@ -161,7 +199,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(input).toHaveValue("在控件与弹窗之间保留输入");
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
   await expect(
-    page.getByRole("dialog", { name: "语音输入", exact: true }),
+    page.getByRole("region", { name: "听写", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(

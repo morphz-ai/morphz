@@ -304,6 +304,101 @@ try {
     .toBe(1);
   assert.deepEqual(await call({}), { pages: [] });
   assert.equal(submits, 1);
+  // The browser application is a working page, not a pre-created Artifact.
+  await ui.getByRole("button", { name: "应用启动台", exact: true }).click();
+  const artifactCount = store.snapshot().artifacts.length;
+  await ui.getByRole("button", { name: "浏览器 1.0.0", exact: true }).click();
+  await expect(ui.locator(".topbar")).toBeHidden();
+  await ui.getByRole("textbox", { name: "网站地址" }).fill(siteURL);
+  await ui.getByRole("textbox", { name: "网站地址" }).press("Enter");
+  await expect
+    .poll(
+      async () =>
+        (await ui.evaluate(() => window.morphzDesktop!.browser.state()))
+          ?.visible,
+    )
+    .toBe(true);
+  const originalPage = await ui.evaluate(() =>
+    window.morphzDesktop!.browser.state(),
+  );
+  assert.equal(originalPage!.artifactId, null);
+  assert.equal(store.snapshot().artifacts.length, artifactCount);
+  await ui
+    .getByRole("button", { name: "允许 Agent 协助", exact: true })
+    .click();
+  await expect
+    .poll(async () => {
+      page = (await call({})).pages[0];
+      return !!page;
+    })
+    .toBe(true);
+  view = await snapshot();
+  const draftFill = await call({
+    pageId: page.pageId,
+    epoch: page.epoch,
+    action: {
+      type: "fill",
+      snapshotId: view.snapshotId,
+      ref: view.elements.find((e: any) => e.label === "标题").ref,
+      value: "返回后保留的草稿",
+    },
+  });
+  assert.equal((await result(draftFill.id)).status, "succeeded");
+  await ui.getByRole("button", { name: "返回工作空间", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await ui.evaluate(() => window.morphzDesktop!.browser.state()))
+          ?.visible,
+    )
+    .toBe(false);
+  await expect.poll(async () => (await call({})).pages.length).toBe(0);
+  await ui.getByRole("tab", { name: "浏览器", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await ui.evaluate(() => window.morphzDesktop!.browser.state()))
+          ?.visible,
+    )
+    .toBe(true);
+  const restoredPage = await ui.evaluate(() =>
+    window.morphzDesktop!.browser.state(),
+  );
+  assert.equal(restoredPage!.pageId, originalPage!.pageId);
+  assert.equal(restoredPage!.granted, false);
+  const native = await app.evaluate(
+    async ({ webContents, BrowserWindow }, url) => {
+      const contents = webContents
+        .getAllWebContents()
+        .find((c) => c.getURL() === url + "/")!;
+      const window = BrowserWindow.getAllWindows()[0]!;
+      const view = window.contentView.children.find(
+        (v) => "webContents" in v && (v as any).webContents.id === contents.id,
+      )!;
+      return {
+        text: await contents.executeJavaScript(
+          'document.querySelector("input[name=title]").value',
+        ),
+        bounds: view.getBounds(),
+      };
+    },
+    siteURL,
+  );
+  assert.equal(native.text, "返回后保留的草稿");
+  assert.ok(native.bounds.y <= 60, JSON.stringify(native.bounds));
+  await expect(
+    ui.getByRole("complementary", { name: "工作空间导航" }),
+  ).toBeVisible();
+  assert.ok(native.bounds.x >= 240, JSON.stringify(native.bounds));
+  await ui.getByRole("button", { name: "隐藏侧边栏", exact: true }).click();
+  await expect(
+    ui.getByRole("button", { name: "显示侧边栏", exact: true }),
+  ).toBeVisible();
+  await ui.getByRole("button", { name: "显示侧边栏", exact: true }).click();
+  await expect(
+    ui.getByRole("complementary", { name: "工作空间导航" }),
+  ).toBeVisible();
+  assert.equal(store.snapshot().artifacts.length, artifactCount);
   console.log(
     "PASS: real Electron embedded page, authenticated Host-tool protocol, snapshot/fill, takeover invalidation, human-approved one-time submit, result verification, cookie and Node isolation.",
   );

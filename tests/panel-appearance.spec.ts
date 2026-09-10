@@ -70,6 +70,12 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       await expect(
         notifications.getByRole("heading", { name: "通知", exact: true }),
       ).toBeFocused();
+      const settings = notifications.getByRole("button", {
+        name: "通知设置",
+        exact: true,
+      });
+      if ((await settings.getAttribute("aria-expanded")) === "false")
+        await settings.click();
       await expect(notifications.locator("input:checked + span")).toHaveCSS(
         "background-color",
         appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(32, 32, 32)",

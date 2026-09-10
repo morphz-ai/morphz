@@ -54,6 +54,15 @@ export async function seedLibraryArtifact(
   await expect(
     page.getByRole("heading", { name: title, exact: true }),
   ).toBeVisible();
+  // A library card also contains the same heading. Wait for the opened object,
+  // not the still-visible card while launch/persistence is in flight.
+  await expect(page.locator(".object-paper")).toBeVisible();
+  if (content.kind !== "task")
+    await expect(
+      page
+        .locator(".object-paper")
+        .getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
 }
 
 export function humanTask(description = "") {

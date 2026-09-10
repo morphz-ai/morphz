@@ -288,6 +288,24 @@ export function useWorkspace() {
       }),
     ) as Promise<{ assetId: string; mime: string }>;
   }
+  async function uploadAttachment(file: File) {
+    if (!current.current) throw new Error("尚未连接中心。");
+    if (file.size > 20 * 1024 * 1024) throw new Error("附件不能超过 20 MB。");
+    return checked(
+      await fetch("/api/attachments", {
+        method: "POST",
+        headers: {
+          "X-MorphzWork-Token": current.current.csrfToken,
+          "X-File-Name": encodeURIComponent(file.name.slice(0, 180)),
+        },
+        body: file,
+        signal: AbortSignal.timeout(30000),
+      }),
+    ) as Promise<{
+      assetId: string;
+      mime: import("../../../packages/core/src/model.js").InputAttachment["mime"];
+    }>;
+  }
   async function importPdf(
     file: File,
     projectId: string,
@@ -464,7 +482,8 @@ export function useWorkspace() {
     return z
       .object({
         configured: z.boolean(),
-        provider: z.literal("doubao"),
+        provider: z.string().min(1).nullable(),
+        providerLabel: z.string().min(1).nullable().optional(),
         segmentSeconds: z.number().optional(),
       })
       .parse(await checked(await fetch("/api/speech/status", { signal })));
@@ -549,6 +568,7 @@ export function useWorkspace() {
     resolveArtifact,
     execute,
     upload,
+    uploadAttachment,
     importPdf,
     dispatchInput,
     verifyArtifact,

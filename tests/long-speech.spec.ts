@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { composerAction } from "./interaction-helpers.js";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
 
 async function syntheticMicrophone(page: Page) {
@@ -37,7 +38,7 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
   await page.goto("/");
   const before = (await (await page.request.get("/api/workspace")).json())
     .workspace.inputs.length;
-  await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  await composerAction(page, "长录音转写");
   const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
@@ -108,8 +109,17 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
   });
   await page.goto("/");
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
+  // Restored out-of-process application frames can still own the old hit-test
+  // region until the top-layer menu is painted. Wait for presentation before
+  // a real click; keep the menu and import path in this acceptance test.
+  await page
+    .getByRole("group", { name: "工作空间操作", exact: true })
+    .screenshot();
+  await page
+    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .click();
   const importer = page.getByRole("dialog", { name: "导入资料", exact: true });
+  await expect(importer).toBeVisible();
   await importer.getByLabel("选择资料文件").setInputFiles({
     name: "百万字朗读.txt",
     mimeType: "text/plain",
@@ -123,11 +133,12 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
   });
   await importer.getByRole("button", { name: "打开", exact: true }).click();
   await page.getByRole("button", { name: "朗读对象", exact: true }).click();
-  const reader = page.getByRole("dialog", { name: "朗读对象", exact: true });
+  const reader = page.getByRole("region", { name: "朗读对象", exact: true });
   await expect(
     reader.getByRole("button", { name: "朗读", exact: true }),
   ).toBeEnabled();
   expect(calls.length).toBe(0);
+  await reader.getByRole("button", { name: "朗读内容与章节" }).click();
   await expect(reader).toContainText(source.length.toLocaleString());
   await reader.getByRole("button", { name: "朗读", exact: true }).click();
   await expect.poll(() => calls.length).toBeGreaterThanOrEqual(4);
@@ -139,7 +150,7 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
   await page.waitForTimeout(700);
   expect(calls.length).toBe(pausedCalls);
   await reader.getByLabel("朗读章节").selectOption({ label: "第二章 尾声" });
-  await expect(reader.getByLabel("朗读文字")).toHaveValue(
+  await expect(reader.getByLabel("朗读文字")).toHaveText(
     "第二章 尾声\n这是全书最后一句。",
   );
   await reader.getByLabel("朗读语速").selectOption("1.5");
@@ -147,7 +158,7 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
   await reader.screenshot({
     path: "test-results/million-character-reading.png",
   });
-  await reader.getByRole("button", { name: "关闭", exact: true }).click();
+  await reader.getByRole("button", { name: "关闭朗读", exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "朗读对象", exact: true }).click();
   await expect(reader.getByLabel("朗读进度")).toHaveValue(index);
@@ -166,7 +177,7 @@ test("长转写不被输入框截断，可完整保存为文档", async ({ page 
     return route.fulfill({ json: { text: "合成转写" } });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  await composerAction(page, "长录音转写");
   const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog.getByText("正在录音", { exact: true })).toBeVisible();

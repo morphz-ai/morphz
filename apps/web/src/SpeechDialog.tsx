@@ -1,13 +1,16 @@
 import { useModal } from "./useModal.js";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Mic,
   Square,
   X,
-  Volume2,
   Pause,
   ChevronLeft,
   ChevronRight,
+  Play,
+  ListMusic,
+  LoaderCircle,
 } from "lucide-react";
 import {
   scopedStorage,
@@ -17,6 +20,7 @@ import {
 import { SpeechCapture } from "./speech-capture.js";
 import { SpeechQueue } from "./speech-queue.js";
 import { ReadAloud, type ReaderState } from "./read-aloud.js";
+import { SpeechServiceDetails } from "./SpeechServiceDetails.js";
 import {
   readingChunks,
   readingChapters,
@@ -28,7 +32,11 @@ export function SpeechDialog({
   title,
   onClose,
   onInsert,
+  inlineTarget,
+  onTranscript,
 }: {
+  inlineTarget?: HTMLElement;
+  onTranscript?: (text: string) => void;
   client: WorkspaceClient;
   scope: SpeechScope;
   title: string;
@@ -48,6 +56,7 @@ export function SpeechDialog({
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [pending, setPending] = useState(0),
+    [attempt, setAttempt] = useState({ finished: false, hasText: false }),
     [configured, setConfigured] = useState<boolean | null>(null),
     [saving, setSaving] = useState(false);
   const queue = useRef<SpeechQueue | null>(null);
@@ -55,8 +64,13 @@ export function SpeechDialog({
     return new SpeechQueue({
       transcribe: (wav, signal) => client.transcribe(scope, wav, signal),
       text: (value) => {
-        if (alive.current)
+        if (alive.current) {
+          // Presentation-only relocation of existing user-initiated dictation.
+          // Opening the UI never calls start() or transmits microphone data.
+          onTranscript?.(value);
+          setAttempt((previous) => ({ ...previous, hasText: true }));
           setText((previous) => (previous ? previous + "\n" + value : value));
+        }
       },
       changed: (count, message) => {
         if (alive.current) {
@@ -93,6 +107,8 @@ export function SpeechDialog({
     setPhase("finishing");
     try {
       await current.finish();
+      if (alive.current)
+        setAttempt((previous) => ({ ...previous, finished: true }));
     } catch (e) {
       if (alive.current)
         setError(e instanceof Error ? e.message : "语音输入结束失败。");
@@ -100,7 +116,7 @@ export function SpeechDialog({
       if (alive.current) setPhase("idle");
     }
   }
-  useModal(dialog);
+  useModal(dialog, undefined, !inlineTarget);
   useEffect(() => {
     alive.current = true;
     queue.current = makeQueue();
@@ -131,6 +147,7 @@ export function SpeechDialog({
     const token = ++epoch.current;
     setError("");
     setNotice("");
+    setAttempt({ finished: false, hasText: false });
     setPhase("permission");
     const current = new SpeechCapture(
       (wav) => queue.current!.enqueue(wav),
@@ -168,7 +185,79 @@ export function SpeechDialog({
     }
   }
   const active = phase !== "idle",
-    busy = active || pending > 0 || saving;
+    busy = active || pending > 0 || saving,
+    emptyResult =
+      attempt.finished &&
+      !attempt.hasText &&
+      !active &&
+      pending === 0 &&
+      !error;
+  if (inlineTarget)
+    return createPortal(
+      <section
+        className="inline-dictation"
+        aria-label="听写"
+        data-recording={phase === "recording"}
+      >
+        <div className="dictation-controls">
+          <Mic />
+          <span role="status">
+            {phase === "recording"
+              ? `正在听写 ${seconds}s`
+              : phase === "permission"
+                ? "等待麦克风授权"
+                : pending
+                  ? `正在识别 ${pending} 段`
+                  : emptyResult
+                    ? "未识别到文字，可重新听写"
+                    : "听写到当前输入"}
+          </span>
+          {phase === "recording" ? (
+            <button onClick={() => void finish()}>
+              <Square />
+              停止听写
+            </button>
+          ) : (
+            <button
+              disabled={busy || configured !== true}
+              onClick={() => void start()}
+            >
+              开始听写
+            </button>
+          )}
+          {error && pending > 0 && !active && (
+            <button
+              onClick={() => {
+                setError("");
+                queue.current!.retry();
+              }}
+            >
+              重试识别
+            </button>
+          )}
+          <button
+            aria-label="关闭听写"
+            title="停止采集；已识别文字保留，未识别语音丢弃"
+            onClick={() => {
+              cancel();
+              onClose();
+            }}
+          >
+            <X />
+          </button>
+        </div>
+        <small>
+          开始后录音将发送至语音服务，识别文字留在草稿，不自动发送消息。
+        </small>
+        <SpeechServiceDetails client={client} mode="dictate" />
+        {error && <p role="alert">{error}</p>}
+        {notice && <p role="status">{notice}</p>}
+        {configured === false && (
+          <p role="status">工作中心尚未配置语音服务。</p>
+        )}
+      </section>,
+      inlineTarget,
+    );
   return (
     <dialog
       ref={dialog}
@@ -199,10 +288,10 @@ export function SpeechDialog({
         </button>
       </header>
       <p className="muted">
-        开始后，语音会自动分段发送给豆包转为文字，可以持续表达。停止后检查文字，再放入输入框；不会自动发送给
-        Agent。关闭会丢弃临时语音和未保存文字。
+        开始后录音将发送至语音服务转为文字。停止后可检查并保存文字，不自动发送消息；关闭会丢弃临时语音和未保存文字。
       </p>
-      {configured === false && <p role="status">中心尚未配置豆包语音服务。</p>}
+      <SpeechServiceDetails client={client} mode="dictate" />
+      {configured === false && <p role="status">工作中心尚未配置语音服务。</p>}
       <div className="voice-recorder" data-recording={phase === "recording"}>
         <Mic />
         <strong>
@@ -214,7 +303,9 @@ export function SpeechDialog({
                 ? "正在结束采集"
                 : pending
                   ? "正在转为文字"
-                  : "准备语音输入"}
+                  : emptyResult
+                    ? "未识别到文字，可重新录音"
+                    : "准备语音输入"}
         </strong>
         <span>
           {String(Math.floor(seconds / 60)).padStart(2, "0")}:
@@ -253,6 +344,7 @@ export function SpeechDialog({
               queue.current = makeQueue();
               setPending(0);
               setError("");
+              setAttempt({ finished: false, hasText: false });
               setNotice("已放弃待识别语音，已识别的文字保留。");
             }}
           >
@@ -345,8 +437,7 @@ export function ReadAloudDialog({
   source: string;
   onClose(): void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null),
-    player = useRef<ReadAloud | null>(null);
+  const player = useRef<ReadAloud | null>(null);
   const chunks = useMemo(() => readingChunks(source), [source]);
   const chapters = useMemo(
     () => readingChapters(source, chunks),
@@ -359,11 +450,12 @@ export function ReadAloudDialog({
       complete: false,
       phase: "idle",
       error: "",
+      duration: null,
     }),
     [ready, setReady] = useState(false),
-    [storageError, setStorageError] = useState("");
+    [storageError, setStorageError] = useState(""),
+    [detailsOpen, setDetailsOpen] = useState(false);
   const [storage] = useState(() => scopedStorage());
-  useModal(dialog);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -417,156 +509,200 @@ export function ReadAloudDialog({
   function seek(index: number) {
     player.current?.seek(index);
   }
+  const single = chunks.length <= 1;
+  const fraction = state.duration
+    ? Math.min(1, state.seconds / state.duration)
+    : 0;
+  const progressMax = single ? (state.duration ?? 1) : chunks.length;
+  const progress = state.complete
+    ? progressMax
+    : single
+      ? state.duration
+        ? state.seconds
+        : 0
+      : state.index + fraction;
+  const time = (seconds: number) =>
+    `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+  const playLabel = state.complete
+    ? "从头朗读"
+    : state.phase === "paused" || state.index > 0 || state.seconds > 0
+      ? "继续朗读"
+      : "朗读";
   return (
-    <dialog
-      ref={dialog}
-      className="create-dialog voice-dialog"
-      aria-label="朗读对象"
-      onCancel={(e) => {
-        e.preventDefault();
-        player.current?.dispose();
-        onClose();
-      }}
-    >
-      <header>
-        <div>
-          <h2>朗读</h2>
-          <small>
-            {title} · v{scope.revision}
-          </small>
-        </div>
-        <button aria-label="关闭朗读" onClick={onClose}>
-          <X />
+    <section className="read-aloud-player" aria-label="朗读对象">
+      <div className="reading-transport">
+        <button
+          className="reading-play"
+          aria-label={active ? "暂停朗读" : playLabel}
+          title={active ? "暂停朗读" : playLabel}
+          disabled={!ready || !source.trim()}
+          onClick={() =>
+            active ? player.current?.pause() : void player.current?.play()
+          }
+        >
+          {state.phase === "loading" ? (
+            <LoaderCircle className="reading-loading" />
+          ) : active ? (
+            <Pause />
+          ) : (
+            <Play />
+          )}
         </button>
-      </header>
-      <p className="muted">
-        自动分段连续朗读，只合成当前内容并预加载下一段。暂停或关闭后停止后续合成，进度保存在当前设备；文字会发送给豆包，按实际合成量使用服务额度。
-      </p>
-      <div className="reading-controls">
-        <label className="field">
-          朗读进度
+        <div className="reading-timeline">
+          <div className="reading-status-line">
+            <span role="status">
+              {state.phase === "loading"
+                ? "正在准备声音…"
+                : state.complete
+                  ? "已读完"
+                  : state.phase === "playing"
+                    ? "正在朗读"
+                    : state.phase === "paused"
+                      ? "已暂停"
+                      : state.phase === "error"
+                        ? "朗读未完成"
+                        : "点击播放，开始朗读"}
+            </span>
+            <span className="reading-time">
+              {!single && `${state.index + 1}/${chunks.length} 段 · `}
+              {time(
+                state.complete
+                  ? (state.duration ?? state.seconds)
+                  : state.seconds,
+              )}
+              {single && ` / ${state.duration ? time(state.duration) : "—:—"}`}
+            </span>
+          </div>
           <input
             aria-label="朗读进度"
+            aria-valuetext={
+              single
+                ? `${time(state.seconds)} / ${state.duration ? time(state.duration) : "尚未加载"}`
+                : `第 ${state.index + 1} / ${chunks.length} 段，本段 ${time(state.seconds)}`
+            }
             type="range"
             min={0}
-            max={Math.max(0, chunks.length - 1)}
-            value={state.index}
-            disabled={!ready}
-            onChange={(e) => seek(Number(e.target.value))}
+            max={progressMax}
+            step={single ? 0.05 : 0.001}
+            value={Math.min(progress, progressMax)}
+            disabled={!ready || (single && !state.duration)}
+            style={{
+              backgroundSize: `${100 * Math.min(progress / progressMax, 1)}% 3px`,
+            }}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              if (single) player.current?.seekSeconds(value);
+              else {
+                const index = Math.min(chunks.length - 1, Math.floor(value));
+                if (index === state.index && state.duration)
+                  player.current?.seekSeconds((value - index) * state.duration);
+                else seek(index);
+              }
+            }}
           />
-        </label>
-        <small role="status">
-          {state.phase === "loading"
-            ? "正在合成当前段 · "
-            : state.phase === "playing"
-              ? "正在朗读 · "
-              : state.phase === "paused"
-                ? "已暂停 · "
-                : ""}
-          {state.complete
-            ? "已读完"
-            : "第 " +
-              (chunks.length ? state.index + 1 : 0) +
-              " / " +
-              chunks.length +
-              " 段"}
-          {state.seconds ? " · 本段 " + Math.floor(state.seconds) + " 秒" : ""}{" "}
-          · 共 {source.length.toLocaleString()} 字符
-        </small>
-        <div className="inline">
-          {chapters.length > 0 && (
-            <label>
-              章节{" "}
-              <select
-                aria-label="朗读章节"
-                value=""
-                disabled={!ready}
-                onChange={(e) => seek(Number(e.target.value))}
-              >
-                <option value="" disabled>
-                  跳转章节
-                </option>
-                {chapters.map((c, i) => (
-                  <option key={i} value={c.chunk}>
-                    {c.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label>
-            语速{" "}
-            <select
-              aria-label="朗读语速"
-              value={state.rate}
-              disabled={!ready}
-              onChange={(e) => player.current?.rate(Number(e.target.value))}
-            >
-              {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
-                <option key={rate} value={rate}>
-                  {rate}×
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
+        <select
+          className="reading-rate"
+          aria-label="朗读语速"
+          title="朗读语速"
+          value={state.rate}
+          disabled={!ready}
+          onChange={(e) => player.current?.rate(Number(e.target.value))}
+        >
+          {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
+            <option key={rate} value={rate}>
+              {rate}×
+            </option>
+          ))}
+        </select>
+        <button
+          className="reading-details-toggle"
+          aria-label="朗读内容与章节"
+          aria-expanded={detailsOpen}
+          title="朗读内容与章节"
+          onClick={() => setDetailsOpen(!detailsOpen)}
+        >
+          <ListMusic />
+        </button>
+        <button
+          aria-label="关闭朗读"
+          title="停止朗读并关闭，保留位置"
+          onClick={onClose}
+        >
+          <X />
+        </button>
       </div>
-      <label className="field">
-        当前段落
-        <textarea
-          aria-label="朗读文字"
-          value={chunk ? source.slice(chunk.start, chunk.end) : ""}
-          readOnly
-          rows={7}
-        />
-      </label>
+      {detailsOpen && (
+        <div className="reading-details">
+          <div className="reading-source">
+            <span title={title}>{title}</span>
+            <small>
+              {scope.revision ? `v${scope.revision} · ` : ""}
+              {source.length.toLocaleString()} 字符
+            </small>
+          </div>
+          {(chapters.length > 0 ||
+            !single ||
+            active ||
+            state.phase === "paused") && (
+            <div className="reading-navigation">
+              {chapters.length > 0 && (
+                <select
+                  aria-label="朗读章节"
+                  value=""
+                  disabled={!ready}
+                  onChange={(e) => seek(Number(e.target.value))}
+                >
+                  <option value="" disabled>
+                    跳转章节
+                  </option>
+                  {chapters.map((c, i) => (
+                    <option key={i} value={c.chunk}>
+                      {c.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {!single && (
+                <>
+                  <button
+                    aria-label="上一段"
+                    disabled={!ready || state.index === 0}
+                    onClick={() => seek(state.index - 1)}
+                  >
+                    <ChevronLeft />
+                  </button>
+                  <button
+                    aria-label="下一段"
+                    disabled={!ready || state.index + 1 >= chunks.length}
+                    onClick={() => seek(state.index + 1)}
+                  >
+                    <ChevronRight />
+                  </button>
+                </>
+              )}
+              {(active || state.phase === "paused") && (
+                <button
+                  disabled={!ready}
+                  onClick={() => player.current?.stop()}
+                >
+                  <Square />
+                  停止朗读
+                </button>
+              )}
+            </div>
+          )}
+          <p className="reading-passage" aria-label="朗读文字">
+            {chunk ? source.slice(chunk.start, chunk.end) : ""}
+          </p>
+          <SpeechServiceDetails client={client} mode="read" />
+        </div>
+      )}
       {(state.error || storageError) && (
         <p role="alert" className="error">
           {state.error || storageError}
         </p>
       )}
-      <footer>
-        <button onClick={onClose}>关闭</button>
-        <button
-          aria-label="上一段"
-          disabled={!ready || state.index === 0}
-          onClick={() => seek(state.index - 1)}
-        >
-          <ChevronLeft />
-        </button>
-        <button
-          aria-label="下一段"
-          disabled={!ready || state.index + 1 >= chunks.length}
-          onClick={() => seek(state.index + 1)}
-        >
-          <ChevronRight />
-        </button>
-        {active ? (
-          <>
-            <button onClick={() => player.current?.pause()}>
-              <Pause />
-              暂停朗读
-            </button>
-            <button onClick={() => player.current?.stop()}>
-              <Square />
-              停止朗读
-            </button>
-          </>
-        ) : (
-          <button
-            className="primary"
-            disabled={!ready || !source.trim()}
-            onClick={() => void player.current?.play()}
-          >
-            <Volume2 />
-            {state.complete
-              ? "从头朗读"
-              : state.phase === "paused" || state.index > 0 || state.seconds > 0
-                ? "继续朗读"
-                : "朗读"}
-          </button>
-        )}
-      </footer>
-    </dialog>
+    </section>
   );
 }

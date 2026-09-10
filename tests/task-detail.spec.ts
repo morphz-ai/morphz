@@ -88,7 +88,7 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await input.fill("补充：仍在检查，暂未完成。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(input).toHaveValue("");
-  await expect(page.locator(".task-state")).toContainText("已计划");
+  await expect(page.locator(".task-state")).toContainText("待处理");
   await page
     .getByRole("button", { name: "提交结果并完成", exact: true })
     .click();
@@ -106,7 +106,7 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
     .getByRole("button", { name: "提交结果并完成事项", exact: true })
     .click();
   await expect(input).toHaveValue("检查完成，说明与实际安装过程一致。");
-  await expect(page.locator(".task-state")).toContainText("已计划");
+  await expect(page.locator(".task-state")).toContainText("待处理");
   await page.unroute("**/api/commands");
   // A concurrent edit must not silently advance the version captured by the draft.
   const boot = await (await page.request.get("/api/workspace")).json();
@@ -141,7 +141,7 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
     page.getByText("事项已变化，请查看当前版本后操作。", { exact: true }),
   ).toBeVisible();
   await expect(input).toHaveValue("检查完成，说明与实际安装过程一致。");
-  await expect(page.locator(".task-state")).toContainText("已计划");
+  await expect(page.locator(".task-state")).toContainText("待处理");
   await page
     .getByRole("button", { name: "提交结果并完成", exact: true })
     .click();

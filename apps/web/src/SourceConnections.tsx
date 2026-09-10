@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FolderOpen,
   FileText,
-  Link2,
   Pause,
   Play,
   RefreshCw,
@@ -18,35 +17,62 @@ export default function SourceConnections({
   const api = window.morphzDesktop?.sources;
   const [sources, setSources] = useState<SourceView[]>([]),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [loadError, setLoadError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [loading, setLoading] = useState(true),
+    [retry, setRetry] = useState(0);
+  const generation = useRef(0);
+  const operating = useRef(false);
   useEffect(() => {
     if (!api) return;
-    let stopped = false;
-    const refresh = () =>
+    let stopped = false,
+      refreshing = false;
+    const refresh = () => {
+      if (operating.current || refreshing) return;
+      refreshing = true;
+      const current = ++generation.current;
       void api
         .list()
         .then((value) => {
-          if (!stopped) setSources(value);
+          if (!stopped && current === generation.current) {
+            setSources(value);
+            setLoadError("");
+          }
         })
         .catch(() => {
-          if (!stopped) setError("无法读取本机来源授权。");
+          if (!stopped && current === generation.current)
+            setLoadError("无法读取本机来源授权。已有资料不会受到影响。");
+        })
+        .finally(() => {
+          refreshing = false;
+          if (!stopped && current === generation.current) setLoading(false);
         });
+    };
     refresh();
     const timer = setInterval(refresh, 3000);
     return () => {
       stopped = true;
+      generation.current++;
       clearInterval(timer);
     };
-  }, [api]);
+  }, [api, retry]);
   async function run(action: () => Promise<SourceView[]>) {
+    operating.current = true;
+    const current = ++generation.current;
     setBusy(true);
     setError("");
     try {
-      setSources(await action());
+      const value = await action();
+      if (current === generation.current) setSources(value);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "来源操作失败。");
+      if (current === generation.current)
+        setError(e instanceof Error ? e.message : "来源操作失败。");
     } finally {
-      setBusy(false);
+      operating.current = false;
+      if (current === generation.current) {
+        setBusy(false);
+        setLoading(false);
+      }
     }
   }
   if (!api)
@@ -56,15 +82,8 @@ export default function SourceConnections({
       </p>
     );
   return (
-    <section className="source-connections">
-      <h3>
-        <Link2 />
-        外部资料来源
-      </h3>
-      <p className="muted">
-        只读接入 Markdown 和文本。在下方确认开始后，桌面每 15
-        秒检查一次所选范围。原文件不会被改写；退出桌面后停止检查，重开后接续。
-      </p>
+    <section className="source-connections" aria-label="连接来源">
+      <p className="muted">持续接入 Markdown 和文本；原文件只读，不会改写。</p>
       <div className="inline">
         <button
           disabled={busy}
@@ -81,6 +100,15 @@ export default function SourceConnections({
           选择文件
         </button>
       </div>
+      {loading && <p role="status">正在读取来源…</p>}
+      {!loading &&
+        !error &&
+        !loadError &&
+        !sources.some((s) => s.projectId === projectId) && (
+          <p className="source-empty">
+            还没有连接来源。选择文件或文件夹，确认范围后再开始同步。
+          </p>
+        )}
       {sources
         .filter((s) => s.projectId === projectId)
         .map((source) => (
@@ -94,8 +122,7 @@ export default function SourceConnections({
                   : " · 尚未读取内容"}
               </small>
             </div>
-            {source.error && <p role="alert">{source.error}</p>}
-            <div className="inline">
+            <div className="inline source-actions">
               <button
                 disabled={busy}
                 onClick={() =>
@@ -135,6 +162,7 @@ export default function SourceConnections({
                 <Unplug />
               </button>
             </div>
+            {source.error && <p role="alert">{source.error}</p>}
           </article>
         ))}
       {error && (
@@ -142,6 +170,27 @@ export default function SourceConnections({
           {error}
         </p>
       )}
+      {loadError && (
+        <div className="error-banner" role="alert">
+          {loadError}
+          <button
+            disabled={busy}
+            onClick={() => {
+              setLoading(true);
+              setRetry((value) => value + 1);
+            }}
+          >
+            重新读取
+          </button>
+        </div>
+      )}
+      <details className="source-explanation">
+        <summary>同步如何工作</summary>
+        <p>
+          确认开始后，每 15
+          秒检查已授权范围。退出桌面停止检查，重开后接续；暂停或断开不会删除已保存的资料和批注。
+        </p>
+      </details>
     </section>
   );
 }

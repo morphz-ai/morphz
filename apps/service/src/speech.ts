@@ -75,8 +75,25 @@ export function asrResponse(raw: Uint8Array) {
     .parse(JSON.parse(payload.toString("utf8")));
   return { last: !!(flags & 2), text: decoded.result?.text ?? "" };
 }
-/** Both provider credentials and audio transport stay in the center process. */
-export class SpeechService {
+/** The host depends on speech capability, not a vendor SDK or client-side key. */
+export interface SpeechProvider {
+  readonly provider: { id: string; label: string };
+  configured(): boolean;
+  synthesize(
+    principal: string,
+    text: string,
+    signal: AbortSignal,
+  ): Promise<Buffer>;
+  transcribe(
+    principal: string,
+    wav: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<string>;
+}
+
+/** Current Doubao adapter. Credentials and transport stay in the center process. */
+export class SpeechService implements SpeechProvider {
+  readonly provider = { id: "doubao", label: "豆包" };
   private active = new Set<string>();
   constructor(
     private key: string | undefined,
@@ -90,7 +107,8 @@ export class SpeechService {
     signal: AbortSignal,
     work: () => Promise<T>,
   ) {
-    if (!this.configured()) throw failure("尚未配置服务端 DOUBAO_API_KEY。");
+    if (!this.configured())
+      throw failure("工作中心尚未配置语音服务，请先完成服务配置。");
     if (this.active.has(principal))
       throw failure("已有语音请求正在处理，请等待完成或取消。");
     signal.throwIfAborted();

@@ -1,5 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 export async function openLibrary(page: Page) {
+  const exit = page.getByRole("button", { name: "返回工作空间", exact: true });
+  if (await exit.isVisible()) await exit.click();
   await expect(
     page.getByRole("region", { name: "认知应用工作空间" }),
   ).toBeVisible();

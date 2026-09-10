@@ -9,7 +9,10 @@ export type SourceView = {
 };
 export type BrowserView = {
   pageId: string;
-  artifactId: string;
+  artifactId: string | null;
+  projectId?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
   epoch: string;
   url: string;
   title: string;
@@ -31,13 +34,21 @@ declare global {
         cancelMicrophone(): Promise<void>;
       };
       browser: {
-        open(artifactId: string): Promise<BrowserView>;
+        open(
+          target: string | { projectId: string; url: string },
+        ): Promise<BrowserView>;
         state(): Promise<BrowserView | null>;
         navigate(pageId: string, url: string): Promise<BrowserView>;
         control(
           pageId: string,
           action:
-            "grant" | "takeover" | "back" | "reload" | "approve" | "reject",
+            | "grant"
+            | "takeover"
+            | "back"
+            | "forward"
+            | "reload"
+            | "approve"
+            | "reject",
         ): Promise<BrowserView>;
         layout(
           pageId: string,

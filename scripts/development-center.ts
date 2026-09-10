@@ -269,16 +269,55 @@ try {
       signal: AbortSignal.timeout(10000),
     })
   ).json();
+  const activeEndpoint = active.provider_instances?.development?.base_url;
+  // URL serialization can add the root slash; that is the same endpoint.
+  // Do not strip path segments, queries or credentials when checking identity.
+  const activeEndpointURL =
+    typeof activeEndpoint === "string" ? new URL(activeEndpoint) : null;
+  // Existing test centers may have intentionally changed their model endpoint
+  // since creation. A caller can pin that already-configured endpoint explicitly;
+  // this never rewrites the Runtime configuration or changes the provider.
+  const pinnedEndpoint = process.argv
+    .find((value) => value.startsWith("--expected-runtime-endpoint="))
+    ?.slice("--expected-runtime-endpoint=".length);
+  const expectedEndpoint = pinnedEndpoint ? new URL(pinnedEndpoint) : endpoint;
+  assert.ok(
+    !expectedEndpoint.username &&
+      !expectedEndpoint.password &&
+      !expectedEndpoint.search &&
+      !expectedEndpoint.hash &&
+      (expectedEndpoint.protocol === "https:" ||
+        (expectedEndpoint.protocol === "http:" &&
+          process.argv.includes("--allow-http-model"))),
+    "Expected Runtime endpoint requires a safe URL and explicit HTTP permission",
+  );
   assert.ok(
     active.selected_model_alias === route.model &&
-      active.provider_instances?.development?.base_url === endpoint.href &&
+      activeEndpointURL?.href === expectedEndpoint.href &&
       active.provider_instances?.development?.protocol === provider.protocol,
-    "Effective development model configuration changed; not starting Work against an unexpected model",
+    "Effective development model configuration changed; not starting Work against an unexpected model: " +
+      JSON.stringify({
+        selected: active.selected_model_alias,
+        expected: route.model,
+        providers: Object.keys(active.provider_instances ?? {}),
+        endpointMatches: activeEndpointURL?.href === expectedEndpoint.href,
+        protocolMatches:
+          active.provider_instances?.development?.protocol ===
+          provider.protocol,
+        responseKeys: Object.keys(active),
+      }),
   );
   launch(
     process.execPath,
     ["dist/service/apps/service/src/main.js"],
-    { ...env, MORPHZWORK_DATA_DIR: work, MORPHZWORK_PORT: String(workPort) },
+    {
+      ...env,
+      MORPHZWORK_DATA_DIR: work,
+      MORPHZWORK_PORT: String(workPort),
+      ...(process.env.MORPHZWORK_ENV_FILE !== undefined
+        ? { MORPHZWORK_ENV_FILE: process.env.MORPHZWORK_ENV_FILE }
+        : {}),
+    },
     "Work center",
   );
   await ready(`http://127.0.0.1:${workPort}/api/health`);

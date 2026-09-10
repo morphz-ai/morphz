@@ -72,6 +72,10 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   ).toHaveCount(1);
   await expect(
     page.locator(".human-message").filter({ hasText: "导航乙 的对象消息" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "查看全部交流", exact: true }).click();
+  await expect(
+    page.locator(".human-message").filter({ hasText: "导航乙 的对象消息" }),
   ).toHaveCount(1);
   await nav.getByRole("button", { name: "项目", exact: true }).click();
   await expect(page.getByRole("region", { name: "项目目录" })).toBeVisible();

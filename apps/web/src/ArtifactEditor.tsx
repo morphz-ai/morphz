@@ -1,4 +1,6 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, useRef } from "react";
+import { SelectionActions } from "./SelectionActions.js";
+import { ObjectRelations } from "./ObjectRelations.js";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -8,7 +10,6 @@ import {
   X,
   History,
   MessageSquarePlus,
-  Link2,
   FileText,
   Image,
   CircleCheck,
@@ -76,7 +77,12 @@ export function ArtifactEditor({
   state: Workspace;
   client: WorkspaceClient;
   onOpen: (id: string, revision?: number) => void;
-  onSelect: (quote: string, revision: number, page?: number) => void;
+  onSelect: (
+    quote: string,
+    revision: number,
+    page?: number,
+    annotation?: boolean,
+  ) => void;
   onNotice: (text: string) => void;
   initialRevision?: number | null;
   initialPage?: number | null;
@@ -86,6 +92,8 @@ export function ArtifactEditor({
   autoOpenWebsite?: boolean;
 }) {
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
+  const selectionRoot = useRef<HTMLDivElement>(null);
+  const paper = useRef<HTMLElement>(null);
   const key = draftKey("edit:" + artifact.id);
   const [draft, setDraft] = useState<Draft | null>(() => {
     const cached = readLocal<Draft | null>(key, null);
@@ -99,16 +107,16 @@ export function ArtifactEditor({
   });
   const [saving, setSaving] = useState(false),
     [history, setHistory] = useState<number | null>(initialRevision ?? null),
-    [error, setError] = useState(""),
-    [link, setLink] = useState("");
+    [error, setError] = useState("");
   const [reading, setReading] = useState<{
     text: string;
     revision: number;
     title: string;
   } | null>(null);
-  const old = history
-    ? artifact.versions.find((v) => v.revision === history)
-    : undefined;
+  const old =
+    history && history < artifact.revision
+      ? artifact.versions.find((v) => v.revision === history)
+      : undefined;
   const shown = old ?? artifact;
   const dirty =
     !!draft &&
@@ -163,6 +171,59 @@ export function ArtifactEditor({
       setSaving(false);
     }
   }
+  useEffect(() => {
+    if (!draft) return;
+    const shortcut = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "s" &&
+        !event.altKey &&
+        !event.isComposing
+      ) {
+        // Do not intercept a dialog's own task or save a different editing surface.
+        if (
+          event.defaultPrevented ||
+          !paper.current?.checkVisibility() ||
+          document.querySelector("dialog[open]")
+        )
+          return;
+        event.preventDefault();
+        if (dirty && !saving && !conflict && draft.title.trim()) void save();
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [draft, dirty, saving, conflict]);
+  const editActions = draft && (
+    <div className="editor-actions">
+      <button
+        disabled={saving}
+        aria-label="取消编辑"
+        title="取消编辑"
+        onClick={() => {
+          if (!dirty || window.confirm("放弃这份尚未保存的草稿？")) {
+            update(null);
+            setError("");
+          }
+        }}
+      >
+        <X />
+        <span className="toolbar-action-label">取消编辑</span>
+      </button>
+      <button
+        className="primary"
+        aria-label={saving ? "保存中…" : "保存版本"}
+        disabled={saving || !dirty || !draft.title.trim() || conflict}
+        onClick={() => void save()}
+        title="保存版本 · ⌘S / Ctrl+S"
+      >
+        <Check />
+        <span className="toolbar-action-label">
+          {saving ? "保存中…" : "保存版本"}
+        </span>
+      </button>
+    </div>
+  );
   function select() {
     const quote = window.getSelection()?.toString().trim() ?? "";
     if (
@@ -173,14 +234,6 @@ export function ArtifactEditor({
       onSelect(quote, shown.revision);
     else onNotice("请先选中正文中的一段文字。");
   }
-  const related = state.relations
-    .filter((r) => r.fromId === artifact.id || r.toId === artifact.id)
-    .map((r) => ({
-      relation: r,
-      object: state.artifacts.find(
-        (a) => a.id === (r.fromId === artifact.id ? r.toId : r.fromId),
-      )!,
-    }));
   const toolbar = (
     <div className="object-toolbar">
       {artifact.content.kind !== "task" && (
@@ -200,6 +253,7 @@ export function ArtifactEditor({
           shown.content.kind !== "image" && (
             <button
               aria-label="朗读对象"
+              title="朗读"
               onClick={() => {
                 const full = contentText(shown.content),
                   selected = window.getSelection()?.toString().trim() ?? "";
@@ -211,25 +265,75 @@ export function ArtifactEditor({
               }}
             >
               <Volume2 />
-              朗读
+              <span className="toolbar-action-label">朗读</span>
             </button>
           )}
-        <button
-          onClick={() => setHistory(history ? null : artifact.revision)}
-          aria-label="版本历史"
-        >
-          <History />
-          版本
-        </button>
+        {!draft && history === null && (
+          <button
+            onClick={() => setHistory(history ? null : artifact.revision)}
+            aria-label="版本历史"
+            title="版本历史"
+            aria-expanded={history !== null}
+          >
+            <History />
+            <span className="toolbar-action-label">版本</span>
+          </button>
+        )}
+        {!draft && history !== null && (
+          <div className="version-controls">
+            <select
+              aria-label="查看版本"
+              value={history}
+              onChange={(e) => setHistory(Number(e.target.value))}
+            >
+              {[...artifact.versions].reverse().map((v) => (
+                <option key={v.revision} value={v.revision}>
+                  v{v.revision} · {actorName(state, v.author.actantId)}
+                </option>
+              ))}
+            </select>
+            <button
+              className="icon-button"
+              aria-label="回到当前版本"
+              title="结束版本查看，回到当前版本"
+              onClick={() => setHistory(null)}
+            >
+              <X />
+            </button>
+          </div>
+        )}
+        {editActions}
         {!draft &&
           artifact.source?.mode !== "linked" &&
           !(
             artifact.content.kind === "document" &&
             artifact.content.understanding
           ) && (
-            <button onClick={start}>
+            <button
+              onClick={start}
+              aria-label={
+                old
+                  ? "编辑当前版本"
+                  : artifact.content.kind === "task"
+                    ? "手动编辑"
+                    : "编辑"
+              }
+              title={
+                old
+                  ? "编辑当前版本"
+                  : artifact.content.kind === "task"
+                    ? "手动编辑"
+                    : "编辑"
+              }
+            >
               <Pencil />
-              {artifact.content.kind === "task" ? "手动编辑" : "编辑"}
+              <span className="toolbar-action-label">
+                {old
+                  ? "编辑当前版本"
+                  : artifact.content.kind === "task"
+                    ? "手动编辑"
+                    : "编辑"}
+              </span>
             </button>
           )}
         {artifact.source?.mode === "linked" && (
@@ -257,6 +361,7 @@ export function ArtifactEditor({
   return (
     <>
       {toolbarTarget && createPortal(toolbar, toolbarTarget)}
+      {!toolbarTarget && toolbar}
       {reading && (
         <ReadAloudDialog
           client={client}
@@ -269,39 +374,6 @@ export function ArtifactEditor({
           source={reading.text}
           onClose={() => setReading(null)}
         />
-      )}
-      {artifact.source && (
-        <div className="source-strip">
-          <FileText />
-          <span>
-            {artifact.source.mode === "linked" ? "外部资料 · 只读" : "导入副本"}{" "}
-            · {artifact.source.relativePath}
-          </span>
-          <small>
-            {artifact.source.mode === "linked"
-              ? `${artifact.source.connection?.status === "paused" ? "同步已暂停" : artifact.source.connection?.status === "unavailable" ? "来源暂不可用，保留上次版本" : "已同步"} · 最近确认 ${artifact.source.connection ? new Date(artifact.source.connection.checkedAt).toLocaleString("zh-CN") : "未知"}`
-              : `原始内容保存在 v${artifact.source.importedRevision} · 不自动同步原文件`}
-          </small>
-        </div>
-      )}
-      {history !== null && (
-        <div className="history-strip">
-          <label>
-            查看版本
-            <select
-              aria-label="查看版本"
-              value={history}
-              onChange={(e) => setHistory(Number(e.target.value))}
-            >
-              {[...artifact.versions].reverse().map((v) => (
-                <option key={v.revision} value={v.revision}>
-                  v{v.revision} · {actorName(state, v.author.actantId)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button onClick={() => setHistory(null)}>回到当前版本</button>
-        </div>
       )}
       {error && (
         <div role="alert" className="error-banner">
@@ -341,13 +413,16 @@ export function ArtifactEditor({
         </div>
       )}
       <article
+        ref={paper}
         className={
           "object-paper " +
           (artifact.content.kind === "image"
             ? "image-paper"
             : artifact.content.kind === "task"
               ? "task-paper"
-              : "")
+              : artifact.content.kind === "interactive"
+                ? "interactive-paper"
+                : "")
         }
       >
         <div className="eyebrow">
@@ -369,14 +444,30 @@ export function ArtifactEditor({
         ) : null}
         {shown.content.kind !== "task" && (
           <div className="byline">
-            <span className="avatar">
-              {actorName(state, artifact.createdBy.actantId).slice(0, 1)}
-            </span>
             {actorName(state, artifact.createdBy.actantId)}
             <span>·</span>
             <time>{new Date(shown.createdAt).toLocaleDateString("zh-CN")}</time>
-            <span>· v{shown.revision}</span>
           </div>
+        )}
+        {artifact.source && (
+          <details className="source-strip">
+            <summary>
+              {artifact.source.mode === "linked"
+                ? "外部资料 · 只读"
+                : "导入副本"}
+              {" · "}
+              {artifact.source.relativePath}
+              {artifact.source.connection?.status === "paused" &&
+                " · 同步已暂停"}
+              {artifact.source.connection?.status === "unavailable" &&
+                " · 来源暂不可用，保留上次版本"}
+            </summary>
+            <small>
+              {artifact.source.mode === "linked"
+                ? `最近确认 ${artifact.source.connection ? new Date(artifact.source.connection.checkedAt).toLocaleString("zh-CN") : "未知"}；原文件只读。`
+                : `原始内容保存在 v${artifact.source.importedRevision} · 不自动同步原文件`}
+            </small>
+          </details>
         )}
         {draft?.content.kind === "document" ? (
           <label className="field">
@@ -392,11 +483,33 @@ export function ArtifactEditor({
           </label>
         ) : shown.content.kind === "document" ? (
           <>
-            <div className="document-body">
-              <SafeMarkdown state={state} onOpen={onOpen}>
+            <div className="document-body" ref={selectionRoot}>
+              <SafeMarkdown
+                state={state}
+                onOpen={onOpen}
+                documentTitle={shown.title}
+              >
                 {shown.content.markdown || "尚未填写正文。"}
               </SafeMarkdown>
             </div>
+            <SelectionActions
+              root={selectionRoot}
+              onAction={(action, text) => {
+                if (action === "read")
+                  setReading({
+                    text,
+                    revision: shown.revision,
+                    title: shown.title,
+                  });
+                else
+                  onSelect(
+                    text,
+                    shown.revision,
+                    undefined,
+                    action === "annotate",
+                  );
+              }}
+            />
             <button className="annotation-action" onClick={select}>
               <MessageSquarePlus />
               围绕选中文本输入
@@ -488,7 +601,16 @@ export function ArtifactEditor({
               key={shown.content.assetId}
               content={shown.content}
               initialPage={initialPage}
-              onSelect={(quote, page) => onSelect(quote, shown.revision, page)}
+              onSelect={(quote, page, annotation) =>
+                onSelect(quote, shown.revision, page, annotation)
+              }
+              onRead={(text) =>
+                setReading({
+                  text,
+                  title: shown.title,
+                  revision: shown.revision,
+                })
+              }
             />
           </Suspense>
         )}
@@ -518,29 +640,6 @@ export function ArtifactEditor({
             onRespond={() => onTaskInput(true)}
           />
         )}
-        {draft && (
-          <div className="editor-actions">
-            <button
-              className="primary"
-              disabled={saving || !draft.title.trim() || conflict}
-              onClick={() => void save()}
-            >
-              <Check />
-              {saving ? "保存中…" : "保存版本"}
-            </button>
-            <button
-              onClick={() => {
-                if (!dirty || window.confirm("放弃这份尚未保存的草稿？")) {
-                  update(null);
-                  setError("");
-                }
-              }}
-            >
-              <X />
-              取消编辑
-            </button>
-          </div>
-        )}
       </article>
       {shown.content.kind === "document" && shown.content.understanding && (
         <section className="understanding-sources">
@@ -559,76 +658,12 @@ export function ArtifactEditor({
           ))}
         </section>
       )}
-      {artifact.content.kind === "task" ? (
-        related.length > 0 && (
-          <section className="relations task-relations" aria-label="关联对象">
-            <div className="section-label">
-              <Link2 />
-              关联对象
-            </div>
-            <div className="relation-list">
-              {related.map(({ relation, object }) => (
-                <button key={relation.id} onClick={() => onOpen(object.id)}>
-                  <ObjectIcon kind={object.content.kind} />
-                  {object.title}
-                </button>
-              ))}
-            </div>
-          </section>
-        )
-      ) : (
-        <section className="relations">
-          <div className="section-label">
-            <Link2 />
-            关联对象
-          </div>
-          <div className="relation-list">
-            {related.map(({ relation, object }) => (
-              <button key={relation.id} onClick={() => onOpen(object.id)}>
-                <ObjectIcon kind={object.content.kind} />
-                {object.title}
-              </button>
-            ))}
-          </div>
-          <form
-            className="relation-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!link) return;
-              void client
-                .execute({
-                  type: "link-artifacts",
-                  fromId: artifact.id,
-                  toId: link,
-                  relation: "references",
-                })
-                .then(() => {
-                  setLink("");
-                })
-                .catch((e) => setError(e.message));
-            }}
-          >
-            <select
-              aria-label="要关联的对象"
-              value={link}
-              onChange={(e) => setLink(e.target.value)}
-            >
-              <option value="">选择同项目的对象…</option>
-              {state.artifacts
-                .filter(
-                  (a) =>
-                    a.projectId === artifact.projectId && a.id !== artifact.id,
-                )
-                .map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.title}
-                  </option>
-                ))}
-            </select>
-            <button disabled={!link}>添加关联</button>
-          </form>
-        </section>
-      )}
+      <ObjectRelations
+        artifact={artifact}
+        state={state}
+        client={client}
+        onOpen={onOpen}
+      />
     </>
   );
 }
@@ -867,8 +902,7 @@ export function TaskFields({
         </>
       )}
       <p className="muted wide">
-        这里保存工作安排与进度记录；下方“实际执行”显示 Runtime
-        的确认结果。交付验收不等同于执行状态。
+        这里保存工作安排；实际执行进度在下方显示。完成执行后，成果仍需单独验收。
       </p>
     </div>
   );

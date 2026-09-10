@@ -170,6 +170,32 @@
 .draft-toolbar h2 {
   font-size: 14px;
 }
+.version-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.app .version-controls select {
+  width: 112px;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: transparent;
+}
+.app .object-paper .source-strip {
+  display: block;
+  padding: 0;
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+.object-paper .source-strip summary {
+  cursor: pointer;
+}
+.object-paper .source-strip small {
+  display: block;
+  margin-top: 4px;
+}
 .object-paper {
   padding-top: 12px;
 }
@@ -242,6 +268,9 @@
   }
   .topbar .object-toolbar > span {
     display: none;
+  }
+  .app .version-controls select {
+    width: 80px;
   }
 }
 .app:not(.sidebar-hidden) .sidebar-toggle {
@@ -335,7 +364,7 @@
 }
 @container (max-width: 640px) {
   .topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
-    min-width: 48px;
+    min-width: 150px;
   }
   .topbar .application-strip {
     overflow-x: auto;
@@ -347,10 +376,22 @@
   .topbar .detail-toolbar-slot {
     min-width: 32px;
   }
+  .topbar .object-toolbar button {
+    min-width: 32px;
+    padding-inline: 6px;
+  }
+  .topbar .object-toolbar .inline {
+    gap: 2px;
+  }
 }
 .app[data-desktop="mac"] .application-tabs,
 .app[data-desktop="mac"] .workspace-options {
   -webkit-app-region: no-drag;
+}
+@container (max-width: 400px) {
+  .topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
+    min-width: 72px;
+  }
 }
 .primary-panel > main.application-canvas {
   display: flex;

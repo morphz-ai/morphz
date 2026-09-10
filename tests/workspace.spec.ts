@@ -92,6 +92,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(
     page.getByRole("heading", { name: "示例封面", exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "关联其他对象" }).click();
   await page.getByLabel("要关联的对象").selectOption({ label: "并发工作说明" });
   await page.getByRole("button", { name: "添加关联" }).click();
   await expect(page.locator(".relation-list")).toContainText("并发工作说明");
@@ -137,6 +138,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(page.locator(".app")).toHaveAttribute("data-accent", "mono");
   for (const width of [1440, 1024, 736, 360, 320]) {
     await page.setViewportSize({ width, height: 960 });
+    await openInput(page);
     await expect(page.getByLabel("AI 输入内容")).toBeVisible();
     const overflow = await page
       .locator(".app")

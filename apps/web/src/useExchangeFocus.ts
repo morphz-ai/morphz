@@ -72,7 +72,9 @@ export function useExchangeFocus(options: {
           current.visible &&
           (engaged === current.scope ||
             (event.target instanceof Node &&
-              current.root.current?.contains(event.target)))
+              current.root.current
+                ?.closest(".primary-panel")
+                ?.contains(event.target)))
             ? current
             : null;
       }

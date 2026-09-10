@@ -21,12 +21,17 @@ export const applicationManifestSchema = z
     harness: z.object({ id: name, version: name }).strict().nullable(),
     ui: z.discriminatedUnion("type", [
       z
-        .object({ type: z.literal("builtin"), view: z.literal("objects") })
+        .object({
+          type: z.literal("builtin"),
+          view: z.enum(["objects", "browser"]),
+          presentation: z.enum(["workspace", "immersive"]).optional(),
+        })
         .strict(),
       z
         .object({
           type: z.literal("sandbox"),
           html: z.string().min(1).max(1000000),
+          presentation: z.enum(["workspace", "immersive"]).optional(),
         })
         .strict(),
     ]),
@@ -63,6 +68,18 @@ export const objectsApplication: ApplicationManifest = {
   permissions: ["artifacts.read", "artifacts.write", "input.compose"],
   harness: null,
   ui: { type: "builtin", view: "objects" },
+};
+
+export const browserApplication: ApplicationManifest = {
+  format: "morphz-work-app/v1",
+  id: "morphz.browser",
+  version: "1.0.0",
+  title: "浏览器",
+  description: "直接访问网站；需要时让 Morphz 协助。",
+  icon: "globe",
+  permissions: ["input.compose"],
+  harness: null,
+  ui: { type: "builtin", view: "browser", presentation: "workspace" },
 };
 
 export const applicationMessageSchema = z.discriminatedUnion("method", [

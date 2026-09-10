@@ -28,6 +28,23 @@ export function useModal(
       : [];
     const element = dialog.current;
     if (!element || !open) return;
+    const main = document.querySelector<HTMLElement>(".workspace");
+    const position = () => {
+      const bounds = main?.getBoundingClientRect();
+      if (!bounds || bounds.width < 1) return;
+      element.style.setProperty(
+        "--modal-center",
+        `${bounds.x + bounds.width / 2}px`,
+      );
+      element.style.setProperty(
+        "--modal-max-width",
+        `${Math.max(240, bounds.width - 32)}px`,
+      );
+    };
+    const observer = new ResizeObserver(position);
+    if (main) observer.observe(main);
+    window.addEventListener("resize", position);
+    position();
     element.showModal();
     (
       initialFocus?.current ??
@@ -36,6 +53,8 @@ export function useModal(
       element.querySelector<HTMLElement>("button")
     )?.focus();
     return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
       element.close();
       if (origin?.isConnected && !document.querySelector("dialog[open]")) {
         const returnTarget = origin.getClientRects().length

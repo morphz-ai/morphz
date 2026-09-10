@@ -26,8 +26,15 @@ import type { RuntimeBridge } from "./runtime.js";
 import { stableId } from "./collaboration.js";
 import { browserToolSchema, type BrowserBroker } from "./browser.js";
 import { interactiveSchema } from "../../../packages/core/src/interactive.js";
-import { objectsApplication } from "../../../packages/core/src/applications.js";
-import { workInputData, workInputFormat } from "./session-io.js";
+import {
+  objectsApplication,
+  browserApplication,
+} from "../../../packages/core/src/applications.js";
+import {
+  workInputData,
+  workInputFormat,
+  workInputFormatV1,
+} from "./session-io.js";
 
 const requestSchema = z
   .object({
@@ -182,7 +189,7 @@ export function prepareHostTools(
   const value = JSON.stringify(
     {
       protocol: 1,
-      formats: [workInputFormat],
+      formats: [workInputFormat, workInputFormatV1],
       tools: [
         {
           endpoint,
@@ -265,6 +272,7 @@ export class AgentTools {
         space = checkProject(state, scope.projectId, scope.access);
       const apps = [
         objectsApplication,
+        browserApplication,
         ...state.applications.filter((a) =>
           space.members.includes(a.installedBy),
         ),

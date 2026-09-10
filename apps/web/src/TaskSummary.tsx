@@ -65,7 +65,12 @@ export function TaskSummary({
           <dt className="sr-only">执行进度</dt>
           <dd>
             <StatusIcon size={15} />
-            {executionLabel[value.execution]}
+            {value.assignment === "declined" &&
+            !["completed", "cancelled"].includes(value.execution)
+              ? "待重新安排"
+              : value.execution === "planned" && assignee?.kind === "human"
+                ? "待处理"
+                : executionLabel[value.execution]}
           </dd>
         </div>
         <div>
@@ -138,10 +143,12 @@ export function TaskSummary({
         </section>
       )}
       <details className="task-metadata">
-        <summary>
-          安排详情<span>{assignmentLabel[value.assignment]}</span>
-        </summary>
+        <summary>安排详情</summary>
         <dl>
+          <div>
+            <dt>执行进度</dt>
+            <dd>{executionLabel[value.execution]}</dd>
+          </div>
           <div>
             <dt>分派状态</dt>
             <dd>{assignmentLabel[value.assignment]}</dd>

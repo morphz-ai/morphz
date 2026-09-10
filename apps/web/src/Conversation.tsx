@@ -15,6 +15,7 @@ import type { LiveMessage } from "../../../packages/core/src/live-conversation.j
 import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
+import { AttachmentPreview } from "./AttachmentPreview.js";
 
 export type ExchangePosition = {
   top: number;
@@ -25,7 +26,7 @@ export type ExchangePosition = {
 
 /** The conversation shares the primary column with objects and the global composer. */
 export function Conversation({
-  inputs,
+  inputs: allInputs,
   state,
   runtime,
   projectId,
@@ -36,7 +37,11 @@ export function Conversation({
   positions,
   revealInputId,
   onInspect,
+  focusedArtifactId,
+  focusedApplicationId,
 }: {
+  focusedArtifactId?: string;
+  focusedApplicationId?: string;
   inputs: Workspace["inputs"];
   state: Workspace;
   runtime: ConversationRuntime;
@@ -49,6 +54,22 @@ export function Conversation({
   revealInputId: string | null;
   onInspect?: (inputId: string) => void;
 }) {
+  const [allHistory, setAllHistory] = useState(false);
+  useEffect(
+    () => setAllHistory(false),
+    [focusedArtifactId, focusedApplicationId],
+  );
+  const focused = !!(focusedArtifactId || focusedApplicationId) && !allHistory;
+  const inputs = focused
+    ? allInputs.filter((i) =>
+        focusedArtifactId
+          ? i.artifactId === focusedArtifactId ||
+            client.boot?.outputs.some(
+              (o) => o.inputId === i.id && o.artifactId === focusedArtifactId,
+            )
+          : i.application?.instanceId === focusedApplicationId,
+      )
+    : allInputs;
   const [stopStates, setStopStates] = useState<
     Record<string, { pending: boolean; error: string }>
   >({});
@@ -75,7 +96,13 @@ export function Conversation({
     }
   }
   const scroller = useRef<HTMLElement>(null);
-  const saved = positions.get(conversationId);
+  const positionKey =
+    conversationId +
+    (focused
+      ? ":focus:" + (focusedArtifactId ?? focusedApplicationId)
+      : ":all");
+  const saved = positions.get(positionKey);
+  const previousPositionKey = useRef(positionKey);
   const following = useRef(saved?.following ?? true);
   const initialized = useRef(false);
   const revealed = useRef(saved?.revealed ?? revealInputId);
@@ -111,7 +138,13 @@ export function Conversation({
       )
     )
       messages.set(m.id, m);
-  const groups = conversationGroups(inputs, [...messages.values()]);
+  const groups = conversationGroups(
+    inputs,
+    [...messages.values()].filter(
+      (m) =>
+        !focused || (!!m.inputId && inputs.some((i) => i.id === m.inputId)),
+    ),
+  );
   // Keep cancellation with the corresponding response, including before its
   // first token arrives. Only authoritative input IDs establish ownership.
   const responseControls = new Map(
@@ -191,6 +224,12 @@ export function Conversation({
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    if (previousPositionKey.current !== positionKey) {
+      initialized.current = false;
+      following.current = saved?.following ?? true;
+      revealed.current = saved?.revealed ?? revealInputId;
+      previousPositionKey.current = positionKey;
+    }
     if (!initialized.current && saved) el.scrollTop = saved.top;
     if (revealInputId && revealed.current !== revealInputId)
       following.current = true;
@@ -201,13 +240,13 @@ export function Conversation({
       setUnread(true);
     revealed.current = revealInputId;
     initialized.current = true;
-    positions.set(conversationId, {
+    positions.set(positionKey, {
       top: el.scrollTop,
       following: following.current,
       version: contentVersion,
       revealed: revealed.current,
     });
-  }, [contentVersion, revealInputId]);
+  }, [contentVersion, revealInputId, positionKey]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -228,7 +267,7 @@ export function Conversation({
         following.current = shouldFollow(
           el.scrollHeight - el.clientHeight - el.scrollTop,
         );
-        positions.set(conversationId, {
+        positions.set(positionKey, {
           top: el.scrollTop,
           following: following.current,
           version: contentVersion,
@@ -237,6 +276,18 @@ export function Conversation({
         if (following.current) setUnread(false);
       }}
     >
+      {(focusedArtifactId || focusedApplicationId) && (
+        <button
+          className="conversation-scope"
+          onClick={() => setAllHistory(!allHistory)}
+        >
+          {allHistory
+            ? focusedArtifactId
+              ? "仅看当前对象的交流"
+              : "仅看当前应用的交流"
+            : "查看全部交流"}
+        </button>
+      )}
       {timeline.length ? (
         <div
           className="conversation-messages"
@@ -391,7 +442,19 @@ export function Conversation({
                       </button>
                     )}
                     {item ? (
-                      <p>{item.body}</p>
+                      <>
+                        {!!item.attachments?.length && (
+                          <div className="message-attachments">
+                            {item.attachments.map((a, index) => (
+                              <AttachmentPreview
+                                key={a.assetId + index}
+                                attachment={a}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {item.body && <p>{item.body}</p>}
+                      </>
                     ) : (
                       <div className="reply-content">
                         {reply?.tool ? (

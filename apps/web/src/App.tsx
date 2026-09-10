@@ -35,13 +35,13 @@ import {
   Maximize2,
   Minimize2,
   History,
-  MoreHorizontal,
   ListChecks,
 } from "lucide-react";
 import {
   inboxFor,
   spaceKind,
   inConversation,
+  applicationFor,
   type Artifact,
   type TaskContent,
 } from "../../../packages/core/src/model.js";
@@ -69,12 +69,18 @@ import { BrandMark } from "./BrandMark.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
 import { ApplicationHost } from "./ApplicationHost.js";
-import { objectsApplication } from "../../../packages/core/src/applications.js";
+import {
+  objectsApplication,
+  browserApplication,
+} from "../../../packages/core/src/applications.js";
 import { ImportDocuments, SearchDocuments } from "./LibraryDialogs.js";
-import { UnderstandingDialog } from "./UnderstandingDialog.js";
+import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
 import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
+import { MessageAttachments } from "./MessageAttachments.js";
+import type { InputAttachment } from "../../../packages/core/src/model.js";
+import type { BrowserView } from "./desktop.js";
 import { Notifications } from "./Notifications.js";
 import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
@@ -102,6 +108,8 @@ type Preferences = {
   selectedConversations?: Record<string, string>;
 };
 type InputDraft = {
+  attachments?: InputAttachment[];
+  annotation?: boolean;
   model?: string;
   body: string;
   intent?: InputIntent;
@@ -235,6 +243,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [notice, setNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
     [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
+    [uploadingDrafts, setUploadingDrafts] = useState<Record<string, boolean>>(
+      {},
+    ),
     [taskFilter, setTaskFilter] = useState<
       "mine" | "active" | "waiting" | "completed" | "all"
     >("mine"),
@@ -243,13 +254,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       title: string;
       key: string;
       draft: InputDraft;
+      modal?: boolean;
     } | null>(null),
     [capture, setCapture] = useState<{
+      key: string;
       projectId: string;
       artifactId?: string;
       artifactRevision?: number;
     } | null>(null),
     [importOpen, setImportOpen] = useState(false),
+    [importMode, setImportMode] = useState<"copy" | "linked">("copy"),
     [executions, setExecutions] = useState<ExecutionScope | null>(() =>
       prefs.executionPinned
         ? {
@@ -265,7 +279,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     [understandingOpen, setUnderstandingOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
     [themeOpen, setThemeOpen] = useState(false),
-    [spaceMenu, setSpaceMenu] = useState(false),
     [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null),
     [detailToolbarTarget, setDetailToolbarTarget] =
       useState<HTMLDivElement | null>(null),
@@ -290,6 +303,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [trailVersion, setTrailVersion] = useState(0);
   const restoring = useRef(false);
   const [websiteIntent, setWebsiteIntent] = useState<string | null>(null);
+  const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
+  const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [dictationSlot, setDictationSlot] = useState<HTMLDivElement | null>(
+    null,
+  );
   const savingWorkspace = useRef<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null),
     exchange = useRef<HTMLDivElement>(null),
@@ -297,7 +317,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null),
     theme = useRef<HTMLDivElement>(null),
-    spaceOptions = useRef<HTMLDetailsElement>(null),
+    spaceOptions = useRef<HTMLDivElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [compact, setCompact] = useState(
@@ -361,6 +381,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     (i) =>
       i.id === activeId && i.workspaceId === project?.id && i.status === "open",
   );
+  const immersiveApplication = !!(
+    state &&
+    activeInstance &&
+    applicationFor(
+      state,
+      activeInstance.applicationId,
+      activeInstance.applicationVersion,
+    ).ui.presentation === "immersive"
+  );
   const artifact = state?.artifacts.find(
     (a) =>
       a.projectId === project?.id &&
@@ -420,7 +449,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     visible: inputVisible,
     pinned: inputPinned,
     suspended:
-      !!speech || !!capture || searchOpen || !!creating || !!executions,
+      !!speech ||
+      !!capture ||
+      searchOpen ||
+      !!creating ||
+      !!executions ||
+      !!uploadingDrafts[contextKey],
     onLeave: () => setInteraction("hidden"),
   });
   const latestInteraction = useRef(interaction);
@@ -450,9 +484,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     if (conversationVisible && project)
       setSeenReplies((old) => ({ ...old, [conversationId]: replyVersion }));
   }, [conversationVisible, conversationId, replyVersion]);
-  useEffect(() => {
-    setSpaceMenu(false);
-  }, [project?.id, prefs.view, activeId]);
   useLayoutEffect(() => {
     const element =
       main.current?.querySelector<HTMLElement>(
@@ -541,8 +572,26 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return () => window.removeEventListener("keydown", key);
   }, [trailVersion, placeKey]);
   const navigationGeneration = useRef(0);
+  const requestedConversationFocus = useRef<{
+    id: string;
+    generation: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const request = requestedConversationFocus.current;
+    if (!request) return;
+    if (request.generation !== navigationGeneration.current) {
+      requestedConversationFocus.current = null;
+      return;
+    }
+    if (request.id === conversationId && inputVisible && input.current) {
+      requestedConversationFocus.current = null;
+      keepExchangeOpen();
+      input.current.focus();
+    }
+  }, [conversationId, inputVisible, contextKey, openingObject]);
   const collaborationVisible =
     !executions &&
+    !understandingOpen &&
     !!artifact &&
     (compact ? mobileCollaboration : prefs.collaboration);
   const legacyContextKey =
@@ -566,6 +615,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       "selectedConversations" in change
     ) {
       navigationGeneration.current++;
+      setUnderstandingOpen(false);
       setRestoredPlace(null);
       setOpeningObject(false);
     }
@@ -616,8 +666,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
   }
   function setDraft(key: string, value: InputDraft) {
+    updateDraft(key, () => value);
+  }
+  function updateDraft(key: string, update: (value: InputDraft) => InputDraft) {
     setDrafts((previous) => {
-      const next = { ...previous, [key]: value };
+      const next = { ...previous, [key]: update(previous[key] ?? emptyDraft) };
       try {
         writeLocal(draftKey("inputs"), next);
       } catch {
@@ -740,7 +793,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             : "recent",
       },
     });
-    if (focus) requestAnimationFrame(() => input.current?.focus());
+    if (focus) {
+      keepExchangeOpen();
+      requestedConversationFocus.current = {
+        id,
+        generation: navigationGeneration.current,
+      };
+    }
   }
   async function createProjectConversation(workspaceId: string, title: string) {
     // Creating a conversation is a new navigation intent too. An older object
@@ -779,10 +838,41 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     requestAnimationFrame(() => input.current?.focus());
   }
   function composeIntent(intent: InputIntent) {
+    if (intent === "website") {
+      void openBrowser();
+      return;
+    }
     // Preserve the exact workspace, object reference, selection and unfinished text.
     // Clicking a shortcut neither submits a request nor creates an empty object.
-    setDraft(contextKey, { ...draft, intent });
+    setDraft(contextKey, {
+      ...draft,
+      intent,
+      annotation: false,
+      taskResult: undefined,
+    });
     showInput();
+  }
+  async function openBrowser() {
+    if (!project) return;
+    const generation = ++navigationGeneration.current;
+    try {
+      const result = await client.execute({
+        type: "launch-application",
+        workspaceId: project.id,
+        applicationId: browserApplication.id,
+        applicationVersion: browserApplication.version,
+      });
+      if (generation !== navigationGeneration.current) return;
+      prefer({
+        view: spaceKind(project) === "project" ? "projects" : "desk",
+        projectId: project.id,
+        projectOpen: true,
+        artifactId: null,
+        applications: { ...prefs.applications, [project.id]: result.entityId },
+      });
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "浏览器未能打开。");
+    }
   }
   function hideInput() {
     setInteraction("hidden");
@@ -793,12 +883,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
     }
   }
+  function closeSpeech() {
+    if (speech && !speech.modal && speech.key === currentContext.current) {
+      // Restore a stable control before the inline close button unmounts.
+      // Closing dictation is not leaving the surrounding composer.
+      keepExchangeOpen();
+      exchange.current
+        ?.querySelector<HTMLButtonElement>('button[aria-label="语音输入"]')
+        ?.focus();
+    }
+    setSpeech(null);
+  }
   useEffect(() => {
     function keyboard(e: KeyboardEvent) {
       if (e.isComposing || e.keyCode === 229 || e.defaultPrevented) return;
       // Native dialogs own Escape/focus while modal. Global composer shortcuts
       // must not consume their cancel event or open a second modal behind them.
       if (document.querySelector("dialog[open]")) return;
+      if (e.key === "Escape" && speech && !speech.modal) {
+        e.preventDefault();
+        closeSpeech();
+        return;
+      }
       if (
         (e.metaKey || e.ctrlKey) &&
         !e.altKey &&
@@ -824,11 +930,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         }
       } else if (e.key === "Escape") {
         if (creating) return;
-        if (spaceMenu) {
-          e.preventDefault();
-          setSpaceMenu(false);
-          spaceOptions.current?.querySelector<HTMLElement>("summary")?.focus();
-        } else if (themeOpen) {
+        if (themeOpen) {
           e.preventDefault();
           setThemeOpen(false);
           theme.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -863,15 +965,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     contextKey,
     creating,
     themeOpen,
-    spaceMenu,
     mobileCollaboration,
     executions,
+    speech,
   ]);
   useEffect(() => {
     function outside(e: PointerEvent) {
       if (!theme.current?.contains(e.target as Node)) setThemeOpen(false);
-      if (!spaceOptions.current?.contains(e.target as Node))
-        setSpaceMenu(false);
     }
     window.addEventListener("pointerdown", outside);
     return () => window.removeEventListener("pointerdown", outside);
@@ -879,12 +979,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   useEffect(() => {
     document.documentElement.dataset.appearance = prefs.appearance;
   }, [prefs.appearance]);
-  async function send(asAnnotation = false) {
+  async function send(asAnnotation = draft.annotation === true) {
     if (
       !project ||
       selectedConversation?.archivedAt ||
-      !draft.body.trim() ||
-      sending
+      (!draft.body.trim() && !draft.attachments?.length) ||
+      sending ||
+      uploadingDrafts[contextKey]
     )
       return;
     const key = contextKey,
@@ -892,6 +993,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setSending(true);
     setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
+      if (
+        asAnnotation &&
+        (!artifact || !captured.selection || !captured.revision)
+      )
+        throw new Error(
+          "选区已失效，请重新选择文字后保存批注；不会发送给 Agent。",
+        );
+      if ((asAnnotation || captured.taskResult) && captured.attachments?.length)
+        throw new Error(
+          "批注与事项结果暂不支持附件，请移除附件或改为发送消息；草稿已保留。",
+        );
       if (captured.taskResult && !asAnnotation) {
         if (captured.taskResult.taskId !== artifact?.id)
           throw new Error("请回到这件事项后提交结果，草稿已保留。");
@@ -931,6 +1043,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               : null,
             selection: captured.selection,
             body: captured.body,
+            ...(captured.attachments?.length
+              ? { attachments: captured.attachments }
+              : {}),
+            ...(browserPage &&
+            activeInstance?.applicationId === "morphz.browser"
+              ? {
+                  browser: {
+                    pageId: browserPage.pageId,
+                    epoch: browserPage.epoch,
+                    url: browserPage.url,
+                    title: browserPage.title,
+                  },
+                }
+              : {}),
             ...(captured.intent ? { intent: captured.intent } : {}),
             targetActantId: "morphz-agent",
           },
@@ -1022,9 +1148,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const annotations = artifact
     ? state.annotations.filter((a) => a.artifactId === artifact.id)
     : [];
-  const contextTitle = artifact?.title ?? project.title;
+  const contextTitle =
+    artifact?.title ??
+    (activeInstance?.applicationId === browserApplication.id
+      ? browserPage?.title || "浏览器"
+      : project.title);
   const openExecutions = () => {
     keepExchangeOpen();
+    setUnderstandingOpen(false);
     setExecutions({
       projectId: conversationProjectId,
       conversationId,
@@ -1035,6 +1166,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     const source = state.inputs.find((i) => i.id === id);
     if (!source) return;
     keepExchangeOpen();
+    setUnderstandingOpen(false);
     setExecutions({
       projectId: source.projectId,
       conversationId: source.conversationId ?? source.projectId,
@@ -1075,7 +1207,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         "app " +
         (!collaborationVisible ? "without-collaboration" : "") +
         (compact && mobileCollaboration ? " mobile-collaboration" : "") +
-        (!prefs.sidebar ? " sidebar-hidden" : "")
+        (!prefs.sidebar ? " sidebar-hidden" : "") +
+        (immersiveApplication ? " application-immersive" : "") +
+        (applicationWorkspaceOpen &&
+        activeInstance?.applicationId === browserApplication.id
+          ? " application-browser-workspace"
+          : "")
       }
       data-accent={prefs.accent}
       data-appearance={prefs.appearance}
@@ -1269,6 +1406,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         </div>
       </aside>
       <div className="workspace">
+        {applicationWorkspaceOpen &&
+          activeInstance?.applicationId === browserApplication.id && (
+            <button
+              className="icon-button browser-sidebar-toggle"
+              aria-label={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
+              title={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
+              aria-expanded={prefs.sidebar}
+              aria-controls="workspace-sidebar"
+              onClick={() => {
+                setThemeOpen(false);
+                prefer({ sidebar: !prefs.sidebar });
+              }}
+            >
+              <PanelLeft />
+            </button>
+          )}
         <header
           className="topbar"
           aria-label={`${applicationWorkspaceOpen ? project.title : labels[prefs.view]}工具栏`}
@@ -1432,76 +1585,49 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 <small>{activeExecutionCount}</small>
               )}
             </button>
-            <details
-              ref={spaceOptions}
-              className="workspace-options"
-              open={spaceMenu}
-              onToggle={(e) => setSpaceMenu(e.currentTarget.open)}
-            >
-              <summary aria-label="工作空间选项">
-                <MoreHorizontal />
-              </summary>
-              <div className="workspace-options-menu">
-                {prefs.view === "content" && !artifact && (
-                  <>
-                    {(
-                      [
-                        ["interactive", "制作表格或报告"],
-                        ["website", "添加网站"],
-                      ] as const
-                    ).map(([intent, title]) => (
-                      <button
-                        key={intent}
-                        onClick={() => {
-                          setSpaceMenu(false);
-                          composeIntent(intent);
-                        }}
-                      >
-                        {title}
-                      </button>
-                    ))}
-                    <button
-                      onClick={() => {
-                        setSpaceMenu(false);
-                        setCreating("document");
-                      }}
-                    >
-                      手动写文档
-                    </button>
-                  </>
-                )}
-                <button
-                  title="核对项目当前理解"
-                  aria-label="当前理解"
-                  className="icon-button"
-                  onClick={() => {
-                    spaceOptions.current
-                      ?.querySelector<HTMLElement>("summary")
-                      ?.focus();
-                    setSpaceMenu(false);
-                    setUnderstandingOpen(true);
-                  }}
-                >
-                  <Brain />
-                  当前理解
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label="资料导入与来源"
-                  title="资料导入与来源"
-                  onClick={() => {
-                    spaceOptions.current
-                      ?.querySelector<HTMLElement>("summary")
-                      ?.focus();
-                    setSpaceMenu(false);
-                    setImportOpen(true);
-                  }}
-                >
-                  <FileUp />
-                  资料导入与来源
-                </button>
-              </div>
-            </details>
+            <div ref={spaceOptions} className="workspace-options">
+              <ComposerOptions
+                key={`${project.id}:${prefs.view}:${activeId}`}
+                label="工作空间选项"
+                menuLabel="工作空间操作"
+                below
+                options={[
+                  ...(prefs.view === "content" && !artifact
+                    ? [
+                        {
+                          label: "制作表格或报告",
+                          icon: <Layers2 />,
+                          onSelect: () => composeIntent("interactive"),
+                        },
+                        {
+                          label: "打开浏览器",
+                          icon: <PanelsTopLeft />,
+                          onSelect: () => composeIntent("website"),
+                        },
+                        {
+                          label: "手动写文档",
+                          icon: <Plus />,
+                          onSelect: () => setCreating("document"),
+                        },
+                      ]
+                    : []),
+                  {
+                    label: "当前理解",
+                    icon: <Brain />,
+                    onSelect: () => {
+                      setExecutions(null);
+                      setMobileCollaboration(false);
+                      setUnderstandingOpen(true);
+                    },
+                  },
+                  {
+                    label: "资料导入与来源",
+                    icon: <FileUp />,
+                    onSelect: () => setImportOpen(true),
+                  },
+                ]}
+              />
+            </div>
             {artifact && (
               <button
                 className="icon-button"
@@ -1509,11 +1635,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 title={artifact ? "对象批注" : "打开对象后查看批注"}
                 disabled={!artifact}
                 aria-pressed={collaborationVisible}
-                onClick={() =>
+                onClick={() => {
+                  setUnderstandingOpen(false);
+                  setExecutions(null);
                   compact
                     ? setMobileCollaboration(!mobileCollaboration)
-                    : prefer({ collaboration: !prefs.collaboration })
-                }
+                    : prefer({ collaboration: !prefs.collaboration });
+                }}
               >
                 <MessageSquareText />
               </button>
@@ -1523,12 +1651,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <div
           className="workspace-body"
           data-execution-open={!!executions || undefined}
+          data-understanding-open={understandingOpen || undefined}
           style={
             executions
               ? {
                   gridTemplateColumns: `minmax(0, 1fr) ${prefs.executionWidth ?? 340}px`,
                 }
-              : undefined
+              : understandingOpen
+                ? { gridTemplateColumns: "minmax(0, 1fr) 340px" }
+                : undefined
           }
         >
           <div
@@ -1563,6 +1694,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               )}
               <div className="object-surface" hidden={creating === "document"}>
                 <ApplicationHost
+                  onInput={showInput}
+                  onBrowserPage={setBrowserPage}
+                  onConnectFolder={() => {
+                    setImportMode("linked");
+                    setImportOpen(true);
+                  }}
                   toolbarTarget={toolbarTarget}
                   client={client}
                   foreground={!historyVisible && creating !== "document"}
@@ -1642,12 +1779,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       }}
                       initialRevision={prefs.artifactRevision}
                       initialPage={prefs.artifactPage}
-                      onSelect={(quote, revision, page) => {
+                      onSelect={(quote, revision, page, annotation) => {
                         setDraft(contextKey, {
                           ...draft,
                           selection: quote,
                           revision,
                           page,
+                          annotation,
+                          taskResult: undefined,
+                          intent: undefined,
                         });
                         showInput();
                       }}
@@ -1712,7 +1852,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       onOpen={openUser}
                       onCreate={composeIntent}
                       onWrite={() => setCreating("document")}
-                      onImport={() => setImportOpen(true)}
+                      onImport={() => {
+                        setImportMode("copy");
+                        setImportOpen(true);
+                      }}
                       importing={importing}
                     />
                   )}
@@ -1722,6 +1865,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             <div className="exchange-surface" ref={exchange}>
               {conversationVisible && (
                 <Conversation
+                  focusedApplicationId={
+                    !historyVisible &&
+                    activeInstance?.applicationId === browserApplication.id
+                      ? activeInstance.id
+                      : undefined
+                  }
+                  focusedArtifactId={!historyVisible ? artifact?.id : undefined}
                   key={conversationId}
                   inputs={inputs}
                   positions={exchangePositions.current}
@@ -1770,16 +1920,37 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     id="global-composer"
                     aria-label="AI 输入"
                   >
+                    <div ref={setAttachmentSlot} />
+                    <div ref={setDictationSlot} />
                     {draft.selection && (
                       <div className="selection-quote">
                         <blockquote>{draft.selection}</blockquote>
                         <button
                           aria-label="移除引用"
                           onClick={() =>
-                            setDraft(contextKey, { ...draft, selection: "" })
+                            setDraft(contextKey, {
+                              ...draft,
+                              selection: "",
+                              annotation: false,
+                            })
                           }
                         >
                           <X />
+                        </button>
+                      </div>
+                    )}
+                    {draft.annotation && (
+                      <div className="annotation-mode">
+                        <span>保存为批注 · 不发送给 Agent</span>
+                        <button
+                          onClick={() =>
+                            setDraft(contextKey, {
+                              ...draft,
+                              annotation: false,
+                            })
+                          }
+                        >
+                          改为提问
                         </button>
                       </div>
                     )}
@@ -1788,11 +1959,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         ref={input}
                         aria-label="AI 输入内容"
                         placeholder={
-                          draft.taskResult
-                            ? "写下结果；提交后将以你的身份完成这件事项…"
-                            : draft.intent
-                              ? inputIntents[draft.intent].placeholder
-                              : "提出想法，或让工作继续…"
+                          draft.annotation
+                            ? "写下批注，保存到当前选区；不会发送给 Agent…"
+                            : draft.taskResult
+                              ? "写下结果；提交后将以你的身份完成这件事项…"
+                              : draft.intent
+                                ? inputIntents[draft.intent].placeholder
+                                : "提出想法，或让工作继续…"
                         }
                         rows={2}
                         maxLength={30000}
@@ -1828,18 +2001,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         {inputErrors[contextKey]}
                       </p>
                     )}
-                    {(draft.taskResult ||
-                      !client.online ||
-                      !client.boot!.runtime.connected) && (
+                    {(!client.online ||
+                      draft.taskResult ||
+                      (!draft.annotation &&
+                        !client.boot!.runtime.connected)) && (
                       <small className="model-status">
-                        {draft.taskResult
-                          ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
-                          : !client.online
-                            ? "工作中心已断开 · 草稿保留在本机"
+                        {!client.online
+                          ? "工作中心已断开 · 草稿保留在本机"
+                          : draft.taskResult
+                            ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
                             : client.boot!.runtime.configured
                               ? "连接中 · 消息将保留并排队"
                               : "Agent 未连接 · 仅保存，不会回复"}
-                        {!draft.taskResult && (
+                        {(!client.online || !draft.taskResult) && (
                           <button
                             className="text-button"
                             onClick={() => setConnectionOpen(true)}
@@ -1912,28 +2086,65 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         </div>
                       </div>
                       <div className="inline composer-input-tools">
-                        <button
-                          className="icon-button"
-                          aria-label="截图输入"
-                          title="截图输入"
-                          disabled={sending || !client.online}
-                          onClick={() =>
-                            setCapture({
-                              projectId: project.id,
-                              ...(artifact
-                                ? {
-                                    artifactId: artifact.id,
-                                    artifactRevision:
-                                      draft.revision ??
-                                      prefs.artifactRevision ??
-                                      artifact.revision,
-                                  }
-                                : {}),
-                            })
-                          }
-                        >
-                          <SquareBottomDashedScissors />
-                        </button>
+                        {((!draft.annotation && !draft.taskResult) ||
+                          !!draft.attachments?.length) && (
+                          <MessageAttachments
+                            key={`attachments:${contextKey}`}
+                            previewTarget={attachmentSlot}
+                            client={client}
+                            attachments={draft.attachments ?? []}
+                            allowAdd={!draft.annotation && !draft.taskResult}
+                            disabled={sending || !!uploadingDrafts[contextKey]}
+                            onBusy={(busy) =>
+                              setUploadingDrafts((old) => ({
+                                ...old,
+                                [contextKey]: busy,
+                              }))
+                            }
+                            onChange={(update) =>
+                              updateDraft(contextKey, (old) => ({
+                                ...old,
+                                attachments: update(old.attachments ?? []),
+                              }))
+                            }
+                            onError={(message) =>
+                              setInputErrors((old) => ({
+                                ...old,
+                                [contextKey]: message,
+                              }))
+                            }
+                          />
+                        )}
+                        {!draft.annotation && !draft.taskResult && (
+                          <button
+                            className="icon-button"
+                            aria-label="截图输入"
+                            title="截图输入"
+                            disabled={
+                              sending ||
+                              !!uploadingDrafts[contextKey] ||
+                              !client.online ||
+                              (draft.attachments?.length ?? 0) >= 8
+                            }
+                            onClick={() =>
+                              setCapture({
+                                key: contextKey,
+                                projectId: project.id,
+                                ...(artifact
+                                  ? {
+                                      artifactId: artifact.id,
+                                      artifactRevision:
+                                        draft.revision ??
+                                        prefs.artifactRevision ??
+                                        artifact.revision,
+                                    }
+                                  : {}),
+                              })
+                            }
+                          >
+                            <SquareBottomDashedScissors />
+                          </button>
+                        )}
                         <button
                           className="icon-button"
                           aria-label="语音输入"
@@ -1969,6 +2180,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             aria-pressed={true}
                             onClick={() => {
                               keepExchangeOpen();
+                              // This pin button unmounts when cleared. Keep focus
+                              // in the exchange instead of treating its removal
+                              // as the user leaving the input.
+                              input.current?.focus();
                               prefer({
                                 pinnedInputs: { [exchangeKey]: false },
                               });
@@ -1978,14 +2193,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           </button>
                         )}
                         <ComposerOptions
-                          key={contextKey}
+                          key={`options:${contextKey}`}
                           modelControl={
                             <ModelPicker
                               value={draft.model}
                               disabled={
                                 !client.online ||
                                 !client.boot!.runtime.connected ||
-                                !!draft.taskResult
+                                !!draft.taskResult ||
+                                !!draft.annotation
                               }
                               onChange={(model) =>
                                 setDraft(contextKey, {
@@ -2060,6 +2276,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                   },
                                 ]
                               : []),
+                            {
+                              label: "长录音转写",
+                              icon: <Mic />,
+                              onSelect: () =>
+                                setSpeech({
+                                  modal: true,
+                                  key: contextKey,
+                                  title: contextTitle,
+                                  draft: { ...draft },
+                                  scope: {
+                                    projectId: project.id,
+                                    ...(artifact
+                                      ? {
+                                          artifactId: artifact.id,
+                                          revision:
+                                            draft.revision ?? artifact.revision,
+                                        }
+                                      : {}),
+                                  },
+                                }),
+                              disabled: !client.online,
+                            },
                             ...(draft.selection
                               ? [
                                   {
@@ -2088,18 +2326,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         <button
                           className="send"
                           aria-label={
-                            draft.taskResult
-                              ? "提交结果并完成事项"
-                              : client.boot!.runtime.configured
-                                ? "发送消息"
-                                : "保存输入"
+                            draft.annotation
+                              ? "保存批注"
+                              : draft.taskResult
+                                ? "提交结果并完成事项"
+                                : client.boot!.runtime.configured
+                                  ? "发送消息"
+                                  : "保存输入"
                           }
                           disabled={
-                            !draft.body.trim() || sending || !client.online
+                            (!draft.body.trim() &&
+                              !draft.attachments?.length) ||
+                            sending ||
+                            !!uploadingDrafts[contextKey] ||
+                            !client.online
                           }
                           onClick={() => void send()}
                         >
-                          <ArrowUp />
+                          {draft.annotation ? (
+                            <MessageSquarePlus />
+                          ) : (
+                            <ArrowUp />
+                          )}
                         </button>
                       </div>
                     </div>
@@ -2141,6 +2389,35 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               }}
               onSelect={setExecutions}
               onOpen={openUser}
+            />
+          )}
+          {understandingOpen && (
+            <UnderstandingPanel
+              client={client}
+              projectId={project.id}
+              onOpen={openUser}
+              onCompose={(body) => {
+                setDraft(contextKey, {
+                  ...draft,
+                  body: [draft.body.trimEnd(), body]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                  annotation: false,
+                  taskResult: undefined,
+                  intent: undefined,
+                });
+                if (window.matchMedia("(max-width: 1100px)").matches)
+                  setUnderstandingOpen(false);
+                showInput();
+              }}
+              onClose={() => {
+                setUnderstandingOpen(false);
+                requestAnimationFrame(() =>
+                  spaceOptions.current
+                    ?.querySelector<HTMLElement>("button")
+                    ?.focus(),
+                );
+              }}
             />
           )}
           {collaborationVisible && (
@@ -2233,49 +2510,64 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       )}
       {importOpen && (
         <ImportDocuments
+          initialMode={importMode}
           client={client}
           project={project}
           onClose={() => setImportOpen(false)}
           onOpen={openUser}
         />
       )}
-      {speech && (
-        <SpeechDialog
-          client={client}
-          scope={speech.scope}
-          title={speech.title}
-          onClose={() => setSpeech(null)}
-          onInsert={(text) => {
-            const saved = speech.draft;
-            const body = [saved.body, text].filter(Boolean).join("\n");
-            if (body.length > 30000)
-              throw new Error(
-                "这段文字超过单条消息长度，请先保存为文档，再围绕文档输入；文字不会被截断。",
-              );
-            setDraft(speech.key, {
-              ...saved,
-              body,
-              revision: speech.scope.revision ?? null,
-            });
-            setSpeech(null);
-            setInteraction("input");
-            requestAnimationFrame(() => input.current?.focus());
-          }}
-        />
-      )}
-      {understandingOpen && (
-        <UnderstandingDialog
-          client={client}
-          projectId={project.id}
-          onOpen={openUser}
-          onClose={() => setUnderstandingOpen(false)}
-        />
-      )}
+      {speech &&
+        (speech.modal || dictationSlot) &&
+        speech.key === contextKey && (
+          <SpeechDialog
+            inlineTarget={speech.modal ? undefined : dictationSlot!}
+            onTranscript={
+              speech.modal
+                ? undefined
+                : (text) =>
+                    updateDraft(speech.key, (saved) => ({
+                      ...saved,
+                      body: [saved.body, text].filter(Boolean).join("\n"),
+                      revision: speech.scope.revision ?? null,
+                    }))
+            }
+            client={client}
+            scope={speech.scope}
+            title={speech.title}
+            onClose={closeSpeech}
+            onInsert={(text) => {
+              const saved = speech.draft;
+              const body = [saved.body, text].filter(Boolean).join("\n");
+              if (body.length > 30000)
+                throw new Error(
+                  "这段文字超过单条消息长度，请先保存为文档，再围绕文档输入；文字不会被截断。",
+                );
+              setDraft(speech.key, {
+                ...saved,
+                body,
+                revision: speech.scope.revision ?? null,
+              });
+              setSpeech(null);
+              setInteraction("input");
+              requestAnimationFrame(() => input.current?.focus());
+            }}
+          />
+        )}
       {capture && (
         <CaptureDialog
           client={client}
           {...capture}
           onClose={() => setCapture(null)}
+          onAttach={(attachment) => {
+            const key = capture.key;
+            updateDraft(key, (old) => ({
+              ...old,
+              attachments: [...(old.attachments ?? []), attachment],
+            }));
+            setCapture(null);
+            if (currentContext.current === key) showInput();
+          }}
           onSaved={(id) => {
             const projectId = capture.projectId;
             setCapture(null);
@@ -2428,14 +2720,14 @@ function CreateDialog({
   const heading = (
     <header className={kind === "document" ? "draft-toolbar" : undefined}>
       <h2 id="create-title">
-        新建
-        {
-          {
-            document: "文档",
-            project: "项目",
-            "save-project": "项目（保留当前工作）",
-          }[kind]
-        }
+        {kind === "save-project"
+          ? "为当前工作命名"
+          : "新建" +
+            {
+              document: "文档",
+              project: "项目",
+              "save-project": "",
+            }[kind]}
       </h2>
       <button
         type="button"
@@ -2463,6 +2755,11 @@ function CreateDialog({
           required
         />
       </label>
+      {kind === "save-project" && (
+        <p className="muted">
+          保留当前应用、内容和工作记录。保存后可以继续这个项目，工作台会准备一处新的空白空间。
+        </p>
+      )}
       {kind === "document" && (
         <label className="field">
           正文 · Markdown
@@ -2483,7 +2780,7 @@ function CreateDialog({
           取消
         </button>
         <button className="primary" disabled={busy || !title.trim()}>
-          {busy ? "保存中…" : "创建"}
+          {busy ? "保存中…" : kind === "save-project" ? "保存为项目" : "创建"}
         </button>
       </footer>
     </form>

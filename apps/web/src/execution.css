@@ -114,6 +114,24 @@
 }
 .execution-input-text summary {
   cursor: pointer;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.execution-input-text summary::before {
+  content: "›";
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.execution-input-text[open] summary::before {
+  transform: rotate(90deg);
+}
+.execution-input-text summary > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 .execution-input-text p {
   white-space: pre-wrap;

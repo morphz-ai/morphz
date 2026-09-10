@@ -13,6 +13,7 @@ import {
   applicationInstanceSchema,
   applicationStateSchema,
   objectsApplication,
+  browserApplication,
 } from "./applications.js";
 
 export const id = z
@@ -105,6 +106,31 @@ export function quotedText(content: Content): string {
 }
 const authorSchema = z.object({ principalId: id, actantId: id }).strict();
 export type AccessContext = z.infer<typeof authorSchema>;
+export const inputAttachmentSchema = z
+  .object({
+    assetId: z.string().regex(/^[a-f0-9]{64}$/),
+    name: z.string().min(1).max(180),
+    mime: z
+      .enum([
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "text/plain",
+        "text/markdown",
+        "application/pdf",
+      ])
+      .optional(),
+  })
+  .strict();
+export type InputAttachment = z.infer<typeof inputAttachmentSchema>;
+const browserReferenceSchema = z
+  .object({
+    pageId: z.uuid(),
+    epoch: z.uuid(),
+    url: z.string().max(4000),
+    title: z.string().max(500),
+  })
+  .strict();
 const versionSchema = z
   .object({
     revision: z.number().int().positive(),
@@ -299,7 +325,9 @@ export const stateSchema = z
           artifactId: id.nullable(),
           artifactRevision: z.number().int().positive().nullable(),
           selection: z.string().max(10000),
-          body: z.string().trim().min(1).max(30000),
+          body: z.string().trim().max(30000),
+          attachments: z.array(inputAttachmentSchema).max(8).optional(),
+          browser: browserReferenceSchema.optional(),
           author: authorSchema,
           targetActantId: id,
           status: z.literal("recorded"),
@@ -488,10 +516,16 @@ export const operationSchema = z.discriminatedUnion("type", [
       artifactId: id.nullable(),
       artifactRevision: z.number().int().positive().nullable(),
       selection: z.string().max(10000),
-      body: z.string().trim().min(1).max(30000),
+      body: z.string().trim().max(30000),
+      attachments: z.array(inputAttachmentSchema).max(8).optional(),
+      browser: browserReferenceSchema.optional(),
       targetActantId: id,
     })
-    .strict(),
+    .strict()
+    .refine(
+      (value) => !!value.body.trim() || !!value.attachments?.length,
+      "请输入文字或添加附件。",
+    ),
 ]);
 export type Operation = z.infer<typeof operationSchema>;
 export const commandSchema = z
@@ -1203,6 +1237,8 @@ export function applyCommand(
       createdAt: now,
     });
   } else if (op.type === "record-input") {
+    if (!op.body.trim() && !op.attachments?.length)
+      throw new DomainError("invalid", "请输入文字或添加附件。");
     const project = checkProject(state, op.projectId, access);
     const conversationId = discussionId(op);
     const conversation = checkConversation(
@@ -1259,6 +1295,8 @@ export function applyCommand(
       body: op.body,
       author: { ...access },
       targetActantId: op.targetActantId,
+      ...(op.attachments?.length ? { attachments: op.attachments } : {}),
+      ...(op.browser ? { browser: op.browser } : {}),
       status: "recorded",
       ...(op.intent ? { intent: op.intent } : {}),
       ...(op.model ? { model: op.model } : {}),
@@ -1295,6 +1333,11 @@ export function applicationFor(
   version: string,
   principalId?: string,
 ) {
+  if (
+    applicationId === browserApplication.id &&
+    version === browserApplication.version
+  )
+    return browserApplication;
   if (
     applicationId === objectsApplication.id &&
     version === objectsApplication.version

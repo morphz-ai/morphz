@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   Plus,
   Trash2,
   Table2,
   ListTodo,
   ChartNoAxesColumn,
+  Search,
+  X,
 } from "lucide-react";
 import {
   interactiveSummary,
@@ -23,6 +25,30 @@ export function InteractiveArtifact({
     [sort, setSort] = useState<{ column: string; desc: boolean } | null>(null),
     [rowId, setRowId] = useState(value.rows[0]?.id ?? "");
   const selected = value.rows.find((r) => r.id === rowId) ?? value.rows[0];
+  const surface = useRef<HTMLElement>(null);
+  const focusRow = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const id = focusRow.current;
+    if (!id) return;
+    const row = Array.from(
+      surface.current?.querySelectorAll<HTMLElement>("[data-row-id]") ?? [],
+    ).find((element) => element.dataset.rowId === id);
+    const field = row?.querySelector<HTMLInputElement>("input");
+    if (field) {
+      field.focus();
+      field.scrollIntoView({ block: "nearest" });
+      focusRow.current = null;
+    }
+  }, [value.rows]);
+  function addRow() {
+    const id = crypto.randomUUID();
+    setQuery("");
+    setSort(null);
+    setRowId(id);
+    if (layout === "report") setLayout("table");
+    focusRow.current = id;
+    onChange?.({ ...value, rows: [...value.rows, { id, cells: {} }] });
+  }
   function changeCell(
     row: string,
     column: string,
@@ -98,7 +124,7 @@ export function InteractiveArtifact({
       return sort.desc ? -n : n;
     });
   return (
-    <section className="interactive-artifact">
+    <section ref={surface} className="interactive-artifact">
       <div className="interactive-toolbar">
         <div className="filter-tabs" role="group" aria-label="交互视图">
           {(["table", "form", "report"] as const).map((mode) => (
@@ -121,21 +147,53 @@ export function InteractiveArtifact({
             </button>
           ))}
         </div>
+        {layout === "table" && (
+          <label className="interactive-search-field">
+            <Search size={14} />
+            <input
+              aria-label="筛选记录"
+              placeholder="筛选记录"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query && (
+              <button aria-label="清除记录筛选" onClick={() => setQuery("")}>
+                <X size={14} />
+              </button>
+            )}
+          </label>
+        )}
         <span className="muted">
-          {value.rows.length} 条记录{onChange ? " · 编辑后需保存版本" : ""}
+          {layout === "table" && query.trim()
+            ? `${visible.length} / ${value.rows.length}`
+            : value.rows.length}{" "}
+          条记录
         </span>
+        {onChange && (
+          <button
+            className="outline"
+            disabled={value.rows.length >= 1000}
+            onClick={addRow}
+          >
+            <Plus />
+            添加记录
+          </button>
+        )}
       </div>
       {onChange ? (
-        <label className="field">
-          说明
-          <textarea
-            rows={2}
-            value={value.description}
-            onChange={(e) =>
-              onChange({ ...value, description: e.target.value })
-            }
-          />
-        </label>
+        <details className="interactive-description">
+          <summary>说明{value.description ? " · 已填写" : " · 可选"}</summary>
+          <label className="field">
+            <textarea
+              aria-label="说明"
+              rows={2}
+              value={value.description}
+              onChange={(e) =>
+                onChange({ ...value, description: e.target.value })
+              }
+            />
+          </label>
+        </details>
       ) : (
         value.description && <p>{value.description}</p>
       )}
@@ -231,19 +289,21 @@ export function InteractiveArtifact({
       )}
       {layout === "table" && (
         <>
-          <input
-            aria-label="筛选记录"
-            className="interactive-search"
-            placeholder="筛选当前记录"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
           <div className="interactive-table">
             <table>
               <thead>
                 <tr>
                   {value.columns.map((c) => (
-                    <th key={c.id}>
+                    <th
+                      key={c.id}
+                      aria-sort={
+                        sort?.column === c.id
+                          ? sort.desc
+                            ? "descending"
+                            : "ascending"
+                          : "none"
+                      }
+                    >
                       <button
                         onClick={() =>
                           setSort({
@@ -263,7 +323,7 @@ export function InteractiveArtifact({
               </thead>
               <tbody>
                 {visible.map((row) => (
-                  <tr key={row.id}>
+                  <tr key={row.id} data-row-id={row.id}>
                     {value.columns.map((c) => (
                       <td key={c.id}>{cellInput(row, c)}</td>
                     ))}
@@ -286,26 +346,39 @@ export function InteractiveArtifact({
                 ))}
               </tbody>
             </table>
-            {!visible.length && <p className="muted">暂无记录。</p>}
+            {!visible.length && (
+              <p className="interactive-empty">
+                {query.trim()
+                  ? "没有匹配的记录。"
+                  : onChange
+                    ? "还没有记录，点击上方“添加记录”开始。"
+                    : "暂无记录。"}
+                {query.trim() && (
+                  <button onClick={() => setQuery("")}>清除筛选</button>
+                )}
+              </p>
+            )}
           </div>
         </>
       )}
       {layout === "form" && (
-        <div className="interactive-form">
-          <label className="field">
-            记录
-            <select
-              aria-label="选择表单记录"
-              value={selected?.id ?? ""}
-              onChange={(e) => setRowId(e.target.value)}
-            >
-              {value.rows.map((r, i) => (
-                <option value={r.id} key={r.id}>
-                  {String(r.cells[value.columns[0]!.id] ?? `记录 ${i + 1}`)}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="interactive-form" data-row-id={selected?.id}>
+          {!!value.rows.length && (
+            <label className="field">
+              记录
+              <select
+                aria-label="选择表单记录"
+                value={selected?.id ?? ""}
+                onChange={(e) => setRowId(e.target.value)}
+              >
+                {value.rows.map((r, i) => (
+                  <option value={r.id} key={r.id}>
+                    {String(r.cells[value.columns[0]!.id] ?? `记录 ${i + 1}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {selected ? (
             value.columns.map((c) => (
               <label className="field" key={c.id}>
@@ -315,7 +388,11 @@ export function InteractiveArtifact({
               </label>
             ))
           ) : (
-            <p className="muted">暂无记录。点击“编辑”后添加。</p>
+            <p className="muted">
+              {onChange
+                ? "还没有记录，点击上方“添加记录”开始。"
+                : "暂无记录。点击“编辑”后添加。"}
+            </p>
           )}
         </div>
       )}
@@ -338,23 +415,9 @@ export function InteractiveArtifact({
             </div>
           ))}
           <p className="muted">
-            报告由当前版本数据计算。空值不计入数值均值；未运行生成代码或外部请求。
+            根据{onChange ? "当前草稿" : "当前版本"}计算，空值不计入均值。
           </p>
         </div>
-      )}
-      {onChange && (
-        <button
-          className="outline"
-          disabled={value.rows.length >= 1000}
-          onClick={() => {
-            const id = crypto.randomUUID();
-            setRowId(id);
-            onChange({ ...value, rows: [...value.rows, { id, cells: {} }] });
-          }}
-        >
-          <Plus />
-          添加记录
-        </button>
       )}
     </section>
   );

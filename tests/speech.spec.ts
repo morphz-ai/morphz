@@ -50,7 +50,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
     window.getSelection()!.addRange(r);
   });
   await page.getByRole("button", { name: "围绕选中文本输入" }).click();
-  await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  await composerAction(page, "长录音转写");
   const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
   await expect(dialog).toContainText("v2");
   expect(uploads).toBe(0);
@@ -96,7 +96,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   await composerAction(page, "保存为批注");
   await expect(page.locator(".annotation")).toContainText("确认后的语音批注。");
   await expect(page.locator(".annotation")).toContainText("v2");
-  await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  await composerAction(page, "长录音转写");
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog).toContainText("正在录音");
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
@@ -136,8 +136,9 @@ test("朗读不会自动请求，取消后可关闭且不修改对象", async ({
   await page.getByLabel("文档正文").fill("用于朗读的测试正文。");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
   await page.getByRole("button", { name: "朗读对象", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "朗读对象", exact: true });
-  await expect(dialog.getByLabel("朗读文字")).toHaveValue(
+  const dialog = page.getByRole("region", { name: "朗读对象", exact: true });
+  await dialog.getByRole("button", { name: "朗读内容与章节" }).click();
+  await expect(dialog.getByLabel("朗读文字")).toHaveText(
     "用于朗读的测试正文。",
   );
   expect(calls).toBe(0);
@@ -147,7 +148,7 @@ test("朗读不会自动请求，取消后可关闭且不修改对象", async ({
     dialog.getByRole("button", { name: "停止朗读", exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "停止朗读", exact: true }).click();
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: "关闭朗读", exact: true }).click();
   expect(calls).toBe(1);
   await expect(page.locator(".object-toolbar")).toContainText("v2");
 });

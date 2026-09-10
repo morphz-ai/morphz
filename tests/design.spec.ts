@@ -134,7 +134,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
     path: "test-results/editor-light.png",
   });
   await page.getByRole("button", { name: "取消编辑", exact: true }).click();
-  await page.getByLabel("AI 输入内容").fill("请帮我梳理这份文档的重点。");
+  await (await openInput(page)).fill("请帮我梳理这份文档的重点。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(
     page

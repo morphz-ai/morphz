@@ -7,6 +7,7 @@ import {
 export type ReaderState = ReadingProgress & {
   phase: "idle" | "loading" | "playing" | "paused" | "ended" | "error";
   error: string;
+  duration: number | null;
 };
 type Cached = {
   controller: AbortController;
@@ -37,6 +38,7 @@ export class ReadAloud {
       ...progress,
       phase: progress.complete ? "ended" : "idle",
       error: "",
+      duration: null,
     };
   }
   private publish(patch: Partial<ReaderState> = {}) {
@@ -117,11 +119,13 @@ export class ReadAloud {
         player.playbackRate = this.state.rate;
         const position = this.state.seconds;
         player.onloadedmetadata = () => {
-          if (this.player === player && Number.isFinite(player.duration))
+          if (this.player === player && Number.isFinite(player.duration)) {
             player.currentTime = Math.min(
               position,
               Math.max(0, player.duration - 0.05),
             );
+            this.publish({ duration: player.duration });
+          }
         };
         player.ontimeupdate = () => {
           if (this.player === player)
@@ -135,7 +139,7 @@ export class ReadAloud {
           if (next >= this.options.chunks.length)
             this.publish({ phase: "ended", complete: true, seconds: 0 });
           else {
-            this.publish({ index: next, seconds: 0 });
+            this.publish({ index: next, seconds: 0, duration: null });
             void this.play(false);
           }
         };
@@ -212,8 +216,19 @@ export class ReadAloud {
     this.publish({
       index: Math.max(0, Math.min(this.options.chunks.length - 1, index)),
       seconds: 0,
+      duration: null,
       complete: false,
       error: "",
+    });
+  }
+  seekSeconds(seconds: number) {
+    if (!Number.isFinite(seconds) || !this.state.duration) return;
+    const position = Math.max(0, Math.min(seconds, this.state.duration - 0.05));
+    if (this.player) this.player.currentTime = position;
+    this.publish({
+      seconds: position,
+      complete: false,
+      phase: this.state.phase === "ended" ? "paused" : this.state.phase,
     });
   }
   rate(value: number) {

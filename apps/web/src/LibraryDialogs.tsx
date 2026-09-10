@@ -18,6 +18,7 @@ import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import SourceConnections from "./SourceConnections.js";
 import { useModal } from "./useModal.js";
+import { documentExcerpt } from "./document-presentation.js";
 import { maxPdfBytes, pdfImportIssue } from "../../../packages/core/src/pdf.js";
 
 const isImage = (path: string) => /\.(png|jpe?g|webp)$/i.test(path);
@@ -34,7 +35,9 @@ export function ImportDocuments({
   project,
   onClose,
   onOpen,
+  initialMode = "copy",
 }: {
+  initialMode?: "copy" | "linked";
   client: WorkspaceClient;
   project: { id: string; title: string };
   onClose: () => void;
@@ -47,7 +50,7 @@ export function ImportDocuments({
   const [selection, setSelection] = useState<Selection[]>([]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const [mode, setMode] = useState<"copy" | "linked">("copy");
+  const [mode, setMode] = useState<"copy" | "linked">(initialMode);
   useModal(dialog);
   function choose(list: FileList | null) {
     if (!list) return;
@@ -549,7 +552,11 @@ export function SearchDocuments({
                 </small>
               </span>
             </button>
-            {hit.excerpt && <p>{hit.excerpt}</p>}
+            {hit.excerpt && (
+              <p className="search-excerpt">
+                {documentExcerpt(hit.excerpt, hit.title)}
+              </p>
+            )}
             <div className="search-result-footer">
               <small>{hit.source?.relativePath ?? "工作空间内容"}</small>
               {(hit.kind === "document" || hit.kind === "pdf") &&

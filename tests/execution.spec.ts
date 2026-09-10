@@ -88,6 +88,17 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await page.setViewportSize({ width: 1440, height: 960 });
   await dialog.getByRole("button", { name: "仅允许这一次" }).click();
   await expect(dialog.getByText("需要你的批准")).toHaveCount(0);
+  await expect(
+    dialog.getByText("审批只授权本次操作，不会开启完全访问。", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByText("执行目标：本机 ·", { exact: true }),
+  ).toBeHidden();
+  await dialog.getByText("操作详情", { exact: true }).click();
+  await expect(
+    dialog.getByText("执行目标：本机 ·", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByText("操作详情", { exact: true }).click();
   expect(calls[0]!.action.type).toBe("allow-once");
   await dialog.getByRole("button", { name: "停止此项执行" }).click();
   await expect(dialog.getByText("正在停止", { exact: true })).toBeVisible();

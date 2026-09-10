@@ -59,7 +59,6 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   await input.fill("这段草稿不能被入口覆盖");
   for (const [button, intent] of [
     ["让 Morphz 起草", "创作文档"],
-    ["添加网站", "添加网站"],
     ["制作表格或报告", "制作表格或报告"],
   ] as const) {
     await page

@@ -10,9 +10,75 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { ChevronLeft, ChevronRight, MessageSquarePlus } from "lucide-react";
 import type { Content } from "../../../packages/core/src/model.js";
 import { scopedStorage } from "./client.js";
+import { SelectionActions } from "./SelectionActions.js";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type Pdf = Extract<Content, { kind: "pdf" }>;
+export function PdfAttachment({ url }: { url: string }) {
+  const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null),
+    [error, setError] = useState(""),
+    [page, setPage] = useState(1);
+  const root = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(600);
+  useEffect(() => {
+    const task = getDocument({
+      url,
+      cMapUrl: "/pdfjs/cmaps/",
+      cMapPacked: true,
+      standardFontDataUrl: "/pdfjs/standard_fonts/",
+      wasmUrl: "/pdfjs/wasm/",
+    });
+    let stopped = false;
+    void task.promise
+      .then((p) => {
+        if (!stopped) setPdf(p);
+      })
+      .catch(() => {
+        if (!stopped) setError("无法打开 PDF，请检查文件和连接。");
+      });
+    const observer = new ResizeObserver((entries) =>
+      setWidth(Math.max(200, Math.min(900, entries[0]!.contentRect.width))),
+    );
+    if (root.current) observer.observe(root.current);
+    return () => {
+      stopped = true;
+      observer.disconnect();
+      void task.destroy();
+    };
+  }, [url]);
+  return (
+    <div ref={root}>
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : pdf ? (
+        <>
+          <div className="pdf-controls">
+            <button
+              disabled={page <= 1}
+              aria-label="附件上一页"
+              onClick={() => setPage(page - 1)}
+            >
+              <ChevronLeft />
+            </button>
+            <span>
+              {page} / {pdf.numPages}
+            </span>
+            <button
+              disabled={page >= pdf.numPages}
+              aria-label="附件下一页"
+              onClick={() => setPage(page + 1)}
+            >
+              <ChevronRight />
+            </button>
+          </div>
+          <Page key={page} pdf={pdf} number={page} width={width} />
+        </>
+      ) : (
+        <p>正在读取 PDF…</p>
+      )}
+    </div>
+  );
+}
 function Page({
   pdf,
   number,
@@ -91,9 +157,11 @@ export default function PdfReader({
   content,
   onSelect,
   initialPage,
+  onRead,
 }: {
   content: Pdf;
-  onSelect: (quote: string, page: number) => void;
+  onSelect: (quote: string, page: number, annotation?: boolean) => void;
+  onRead?: (quote: string) => void;
   initialPage?: number | null;
 }) {
   const root = useRef<HTMLDivElement>(null);
@@ -155,7 +223,9 @@ export default function PdfReader({
       !root.current.contains(value.focusNode)
     )
       return;
-    const raw = value.toString().trim();
+    setQuote(exactQuote(value.toString().trim()));
+  }
+  function exactQuote(raw: string) {
     const source = content.pages[number - 1]!;
     // PDF visual runs may insert line breaks/spaces differently. Map back to the exact stored page slice.
     let exact = source.includes(raw) ? raw : "";
@@ -175,7 +245,7 @@ export default function PdfReader({
           offsets[start + needle.length - 1]! + 1,
         );
     }
-    setQuote(exact.length <= 10000 ? exact : "");
+    return exact.length <= 10000 ? exact : "";
   }
   return (
     <div
@@ -184,6 +254,15 @@ export default function PdfReader({
       onMouseUp={selection}
       onKeyUp={selection}
     >
+      <SelectionActions
+        root={root}
+        onAction={(action, raw) => {
+          const exact = exactQuote(raw);
+          if (!exact) return;
+          if (action === "read") onRead?.(exact);
+          else onSelect(exact, number, action === "annotate");
+        }}
+      />
       <div className="pdf-controls">
         <button
           aria-label="PDF 上一页"

@@ -154,13 +154,16 @@ export function ExecutionDialog({
         !!snapshot?.jobs.length ||
         !!snapshot?.approvals.length) && (
         <div className="execution-dialog-toolbar">
-          <span className="muted">审批只授权本次操作，不会开启完全访问。</span>
+          <span className="muted">
+            {!!snapshot?.approvals.length &&
+              "审批只授权本次操作，不会开启完全访问。"}
+          </span>
           <button aria-label="刷新执行记录" onClick={() => void refresh()}>
             <RefreshCw />
           </button>
         </div>
       )}
-      {!snapshot && !error && <p className="muted">正在读取 Runtime…</p>}
+      {!snapshot && !error && <p className="muted">正在读取执行记录…</p>}
       <div className="execution-list">
         {snapshot?.approvals.map((approval) => (
           <section
@@ -245,13 +248,13 @@ export function ExecutionDialog({
                   ·{" "}
                 </>
               )}
-              {new Date(job.created_at).toLocaleString("zh-CN")} ·{" "}
-              {job.target_id}
+              {new Date(job.created_at).toLocaleString("zh-CN")}
             </small>
             {job.error && <p className="delivery-error">{job.error}</p>}
             <details>
               <summary>操作详情</summary>
               <pre>{JSON.stringify(job.request, null, 2)}</pre>
+              <small>执行目标：{job.target_id} · </small>
               <small>执行 ID：{job.id}</small>
             </details>
             <div className="execution-actions">
@@ -294,14 +297,19 @@ export function ExecutionDialog({
                     }}
                   >
                     <FileText />
-                    打开产物
+                    {client.boot?.workspace.artifacts.find(
+                      (a) => a.id === producedId,
+                    )?.title ?? "打开成果"}
                   </button>
                 )}
-                <pre>
-                  {result.available
-                    ? result.text || "执行返回了空内容。"
-                    : "尚无最终结果。"}
-                </pre>
+                <details>
+                  <summary>技术详情</summary>
+                  <pre>
+                    {result.available
+                      ? result.text || "执行返回了空内容。"
+                      : "尚无最终结果。"}
+                  </pre>
+                </details>
                 {result.truncated && (
                   <small>结果较长，当前显示前 64,000 个字符。</small>
                 )}
