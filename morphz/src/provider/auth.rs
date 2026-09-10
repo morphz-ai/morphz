@@ -1357,6 +1357,7 @@ impl ProviderAuthManager {
     /// retry window after token exchange but before catalog commit. Hosted
     /// compute must not park while that state is still needed. Expired or
     /// explicitly finished/cancelled attempts do not keep compute alive.
+    #[cfg(any(feature = "remote-store", test))]
     pub(crate) fn has_active_logins(&self) -> Result<bool, String> {
         let now = Utc::now();
         Ok(self
