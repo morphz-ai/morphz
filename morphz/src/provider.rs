@@ -24,8 +24,8 @@ use std::time::Duration;
 pub mod auth;
 mod claude_oauth;
 pub mod control;
-mod refresh_diagnostics;
 pub(crate) mod gemini_schema;
+mod refresh_diagnostics;
 pub mod routing;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -4631,14 +4631,7 @@ fn build_gemini_request(
         if let Some(attachments) = model_attachments(message) {
             let parts = attachments
                 .iter()
-                .map(|attachment| {
-                    json!({
-                        "inlineData": {
-                            "mimeType": attachment.media_type,
-                            "data": attachment.data_base64,
-                        }
-                    })
-                })
+                .map(gemini_attachment_part)
                 .collect::<Vec<_>>();
             if !parts.is_empty() {
                 contents.push(json!({"role": "user", "parts": parts}));
@@ -4781,6 +4774,66 @@ fn build_gemini_request(
         }]);
     }
     request
+}
+
+fn gemini_attachment_part(attachment: &ModelAttachment) -> Value {
+    let media_type = attachment
+        .media_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    // Gemini's Blob contract is for supported media, not arbitrary file bytes.
+    // Text uses a text part; opaque artifacts remain accessible through the
+    // Runtime file references already included in the structured context.
+    // https://ai.google.dev/api/generate-content#Blob
+    let is_text = media_type.starts_with("text/")
+        || matches!(
+            media_type.as_str(),
+            "application/json"
+                | "application/xml"
+                | "application/x-javascript"
+                | "application/x-typescript"
+                | "application/x-python-code"
+                | "application/x-ipynb+json"
+                | "application/rtf"
+                | "video/text/timestamp"
+        );
+    if is_text {
+        if let Some(text) = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.data_base64)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        {
+            return json!({
+                "text": format!("Attached file '{}':\n{}", attachment.name, text),
+            });
+        }
+    } else if matches!(
+        media_type.as_str(),
+        "image/png"
+            | "image/jpeg"
+            | "image/jpg"
+            | "image/webp"
+            | "image/heic"
+            | "image/heif"
+            | "image/gif"
+            | "image/avif"
+            | "application/pdf"
+    ) || media_type.starts_with("audio/")
+        || media_type.starts_with("video/")
+    {
+        return json!({
+            "inlineData": {"mimeType": media_type, "data": attachment.data_base64},
+        });
+    }
+    json!({
+        "text": format!(
+            "Attached file '{}' ({}) is available to the Runtime but is not a supported Gemini media or UTF-8 text input. Its bytes are not included in this model request. Use the file reference and Runtime tools to inspect or transfer it.",
+            attachment.name, attachment.media_type
+        ),
+    })
 }
 
 fn data_url(attachment: &ModelAttachment) -> String {
@@ -6047,6 +6100,99 @@ mod tests {
             gemini["contents"][1]["parts"][0]["inlineData"]["data"],
             "aW1hZ2U="
         );
+    }
+
+    #[test]
+    fn gemini_opaque_attachment_keeps_file_reference_without_inlining_binary() {
+        // The browser acceptance fixture is 7.5 MiB. Its bytes belong in the
+        // Runtime artifact store / transfer channel, not the model context.
+        let attachment = ModelAttachment {
+            name: "browser-proof.bin".to_string(),
+            media_type: "application/octet-stream".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(vec![0xa5; 7_864_320]),
+        };
+        let reference = "File browser-proof.bin; path=/workspace/attachments/browser-proof.bin; size_bytes=7864320; sha256=fixture-digest. Transfer this file to the selected Edge.";
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: reference.to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            attachment_message(vec![attachment]).unwrap(),
+        ];
+        let body = build_request(
+            ModelProtocol::GeminiContent,
+            "m",
+            None,
+            None,
+            &messages,
+            &[],
+        );
+        assert_eq!(body["contents"][0]["parts"][0]["text"], reference);
+        let part = &body["contents"][1]["parts"][0];
+        assert!(part.get("inlineData").is_none());
+        let notice = part["text"].as_str().unwrap();
+        assert!(notice.contains("browser-proof.bin"));
+        assert!(notice.contains("application/octet-stream"));
+        assert!(notice.contains("Runtime"));
+        assert!(serde_json::to_string(&body).unwrap().len() < 2048);
+
+        let client = ProtocolClient::new_with_adapter_and_context(
+            &ProviderConfig {
+                protocol: ModelProtocol::GeminiContent,
+                base_url: "https://cloudcode-pa.googleapis.com".to_string(),
+                ..ProviderConfig::default()
+            },
+            "google-antigravity",
+            "gemini-test".to_string(),
+            None,
+            &LlmConfig::default(),
+            BTreeMap::from([("project_id".to_string(), "project-123".to_string())]),
+        )
+        .unwrap();
+        let envelope = client.request_for_model("gemini-test", &messages, &[]);
+        assert_eq!(envelope["request"]["contents"], body["contents"]);
+        assert!(serde_json::to_string(&envelope).unwrap().len() < 2048);
+    }
+
+    #[test]
+    fn gemini_attachment_parts_preserve_media_and_decode_text() {
+        for media_type in ["image/png", "application/pdf", "audio/mpeg", "video/mp4"] {
+            let part = gemini_attachment_part(&ModelAttachment {
+                name: "supported-media".to_string(),
+                media_type: media_type.to_string(),
+                data_base64: "aW1hZ2U=".to_string(),
+            });
+            assert_eq!(part["inlineData"]["mimeType"], media_type);
+            assert_eq!(part["inlineData"]["data"], "aW1hZ2U=");
+        }
+        for media_type in [
+            "text/plain; charset=utf-8",
+            "application/json",
+            "application/x-python-code",
+        ] {
+            let part = gemini_attachment_part(&ModelAttachment {
+                name: "supported-text".to_string(),
+                media_type: media_type.to_string(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode("hello 世界"),
+            });
+            assert!(part.get("inlineData").is_none());
+            assert_eq!(part["text"], "Attached file 'supported-text':\nhello 世界");
+        }
+        // Neither an archive nor invalid UTF-8 masquerading as text belongs in
+        // inlineData or a lossy/base64 text fallback.
+        for media_type in ["application/zip", "text/plain"] {
+            let part = gemini_attachment_part(&ModelAttachment {
+                name: "opaque".to_string(),
+                media_type: media_type.to_string(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode([0xff; 1024]),
+            });
+            assert!(part.get("inlineData").is_none());
+            assert!(part["text"].as_str().unwrap().contains("Runtime"));
+            assert!(serde_json::to_string(&part).unwrap().len() < 1024);
+        }
     }
 
     #[test]
