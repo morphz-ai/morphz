@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -24,7 +25,6 @@ import {
   MessageSquarePlus,
   RefreshCw,
   ChevronRight,
-  PanelLeft,
   CircleCheck,
   Search,
   FileUp,
@@ -86,11 +86,15 @@ import { Notifications } from "./Notifications.js";
 import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
 import { useExchangeFocus } from "./useExchangeFocus.js";
+import { useDesktopAppearance } from "./useDesktopAppearance.js";
+import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
+import { SidebarToggle } from "./SidebarToggle.js";
 
 type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type Preferences = {
   executionPinned?: boolean;
   executionWidth?: number;
+  inspectorWidth?: number;
   accent: "cyan" | "iris" | "coral" | "mono";
   appearance: "system" | "light" | "dark";
   view: View;
@@ -476,7 +480,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       : conversationId;
   const dialogueCanvas = prefs.view === "dialogue" && !artifact;
   const interaction = prefs.interactions?.[exchangeKey] ?? "input";
-  const inputVisible = interaction !== "hidden";
+  const inputVisible = dialogueCanvas || interaction !== "hidden";
   const conversationVisible =
     dialogueCanvas ||
     !!selectedConversation?.archivedAt ||
@@ -490,6 +494,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     visible: inputVisible,
     pinned: inputPinned,
     suspended:
+      dialogueCanvas ||
       !!speech ||
       !!capture ||
       searchOpen ||
@@ -655,6 +660,37 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     !understandingOpen &&
     !!artifact &&
     (compact ? mobileCollaboration : prefs.collaboration);
+  const { ref: inspectorWorkspace, layout: rightInspector } =
+    useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
+  const inspectorOpen =
+    !!executions || understandingOpen || collaborationVisible;
+  const resizeInspector = (inspectorWidth: number) =>
+    prefer({ inspectorWidth });
+  const lastInspector = useRef<{
+    kind: "execution" | "understanding" | "collaboration";
+    context: string;
+    scope?: ExecutionScope;
+  } | null>(null);
+  function closeInspector() {
+    lastInspector.current = {
+      kind: executions
+        ? "execution"
+        : understandingOpen
+          ? "understanding"
+          : "collaboration",
+      context: contextKey,
+      scope: executions ?? undefined,
+    };
+    setExecutions(null);
+    setUnderstandingOpen(false);
+    setMobileCollaboration(false);
+    prefer({ collaboration: false, executionPinned: false });
+    requestAnimationFrame(() => {
+      const trigger = document.querySelector<HTMLElement>(".inspector-toggle");
+      if (trigger?.getClientRects().length) trigger.focus();
+      else (input.current ?? toggle.current)?.focus();
+    });
+  }
   const legacyContextKey =
     (navigationProject?.id ?? "") +
     ":" +
@@ -934,6 +970,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   function hideInput() {
+    if (dialogueCanvas) {
+      input.current?.blur();
+      return;
+    }
     setInteraction("hidden");
     if (document.activeElement?.closest("#global-composer")) {
       requestAnimationFrame(() => {
@@ -984,7 +1024,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         e.preventDefault();
         if (!e.repeat) {
           setThemeOpen(false);
-          if (inputVisible) hideInput();
+          if (inputVisible && !dialogueCanvas) hideInput();
           else showInput();
         }
       } else if (e.key === "Escape") {
@@ -993,21 +1033,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           e.preventDefault();
           setThemeOpen(false);
           theme.current?.querySelector<HTMLButtonElement>("button")?.focus();
-        } else if (mobileCollaboration) {
-          e.preventDefault();
-          setMobileCollaboration(false);
         } else if (
-          executions &&
+          inspectorOpen &&
           !input.current?.contains(document.activeElement)
         ) {
           e.preventDefault();
-          setExecutions(null);
-          prefer({ executionPinned: false });
-          requestAnimationFrame(() =>
-            document
-              .querySelector<HTMLButtonElement>(".execution-panel-toggle")
-              ?.focus(),
-          );
+          closeInspector();
         } else if (
           inputVisible &&
           input.current?.contains(document.activeElement)
@@ -1021,11 +1052,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return () => window.removeEventListener("keydown", keyboard);
   }, [
     interaction,
+    dialogueCanvas,
     contextKey,
     creating,
     themeOpen,
     mobileCollaboration,
     executions,
+    understandingOpen,
+    collaborationVisible,
     speech,
   ]);
   useEffect(() => {
@@ -1035,9 +1069,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     window.addEventListener("pointerdown", outside);
     return () => window.removeEventListener("pointerdown", outside);
   }, []);
-  useEffect(() => {
-    document.documentElement.dataset.appearance = prefs.appearance;
-  }, [prefs.appearance]);
+  useDesktopAppearance(prefs.appearance);
   async function send(asAnnotation = draft.annotation === true) {
     if (
       !project ||
@@ -1245,6 +1277,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const openExecutions = () => {
     keepExchangeOpen();
     setUnderstandingOpen(false);
+    setMobileCollaboration(false);
+    prefer({ collaboration: false });
     setExecutions({
       projectId: conversationProjectId,
       conversationId,
@@ -1256,12 +1290,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     if (!source) return;
     keepExchangeOpen();
     setUnderstandingOpen(false);
+    setMobileCollaboration(false);
+    prefer({ collaboration: false });
     setExecutions({
       projectId: source.projectId,
       conversationId: source.conversationId ?? source.projectId,
       artifactId: source.artifactId,
       inputId: source.id,
     });
+  };
+  const showInspector = () => {
+    const previous = lastInspector.current;
+    if (previous?.context === contextKey) {
+      keepExchangeOpen();
+      if (previous.kind === "understanding") setUnderstandingOpen(true);
+      else if (previous.kind === "collaboration" && artifact) {
+        compact
+          ? setMobileCollaboration(true)
+          : prefer({ collaboration: true });
+      } else if (previous.scope) setExecutions(previous.scope);
+      else openExecutions();
+    } else openExecutions();
   };
   const activeExecutionCount = new Set([
     ...client
@@ -1503,40 +1552,42 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           )}
         </div>
       </aside>
-      <div className="workspace">
+      <div
+        className="workspace"
+        ref={inspectorWorkspace}
+        data-inspector-mode={inspectorOpen ? rightInspector.mode : undefined}
+        data-inspector-width={inspectorOpen ? rightInspector.width : undefined}
+        style={
+          { "--inspector-width": `${rightInspector.width}px` } as CSSProperties
+        }
+      >
         {applicationWorkspaceOpen &&
           activeInstance?.applicationId === browserApplication.id && (
-            <button
-              className="icon-button browser-sidebar-toggle"
-              aria-label={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
-              title={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
-              aria-expanded={prefs.sidebar}
-              aria-controls="workspace-sidebar"
+            <SidebarToggle
+              className="browser-sidebar-toggle"
+              side="left"
+              expanded={prefs.sidebar}
+              controls="workspace-sidebar"
               onClick={() => {
                 setThemeOpen(false);
                 prefer({ sidebar: !prefs.sidebar });
               }}
-            >
-              <PanelLeft />
-            </button>
+            />
           )}
         <header
           className="topbar"
           aria-label={`${applicationWorkspaceOpen ? project.title : labels[prefs.view]}工具栏`}
         >
-          <button
-            className="icon-button sidebar-toggle"
-            aria-label={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
-            title={prefs.sidebar ? "隐藏侧边栏" : "显示侧边栏"}
-            aria-expanded={prefs.sidebar}
-            aria-controls="workspace-sidebar"
+          <SidebarToggle
+            className="sidebar-toggle"
+            side="left"
+            expanded={prefs.sidebar}
+            controls="workspace-sidebar"
             onClick={() => {
               setThemeOpen(false);
               prefer({ sidebar: !prefs.sidebar });
             }}
-          >
-            <PanelLeft />
-          </button>
+          />
           <div
             className="navigation-history"
             role="group"
@@ -1653,12 +1704,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   {visibleTasks.length} 项
                 </small>
                 <button
+                  className="secondary-action"
                   aria-label="新建事项"
                   title="新建事项"
                   onClick={() => composeIntent("task")}
                 >
                   <Plus />
-                  <span className="toolbar-action-label">新建事项</span>
+                  <span className="toolbar-action-label">新建</span>
                 </button>
               </>
             )}
@@ -1669,20 +1721,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             hidden={openingObject || (!artifact && creating !== "document")}
           />
           <div className="top-actions">
-            <button
-              className="icon-button execution-panel-toggle"
-              aria-label="查看执行面板"
-              aria-expanded={!!executions}
-              title="查看后台执行"
-              onClick={() =>
-                executions ? setExecutions(null) : openExecutions()
-              }
-            >
-              <ListChecks />
-              {activeExecutionCount > 0 && (
-                <small>{activeExecutionCount}</small>
-              )}
-            </button>
             <div ref={spaceOptions} className="workspace-options">
               <ComposerOptions
                 key={`${project.id}:${prefs.view}:${activeId}`}
@@ -1710,11 +1748,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       ]
                     : []),
                   {
+                    label: "执行",
+                    icon: <ListChecks />,
+                    onSelect: openExecutions,
+                  },
+                  {
                     label: "当前理解",
                     icon: <Brain />,
                     onSelect: () => {
                       setExecutions(null);
                       setMobileCollaboration(false);
+                      prefer({ collaboration: false, executionPinned: false });
                       setUnderstandingOpen(true);
                     },
                   },
@@ -1728,7 +1772,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </div>
             {artifact && (
               <button
-                className="icon-button"
+                className="icon-button collaboration-panel-toggle"
                 aria-label={collaborationVisible ? "收起批注栏" : "展开批注栏"}
                 title={artifact ? "对象批注" : "打开对象后查看批注"}
                 disabled={!artifact}
@@ -1736,6 +1780,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 onClick={() => {
                   setUnderstandingOpen(false);
                   setExecutions(null);
+                  prefer({ executionPinned: false });
                   compact
                     ? setMobileCollaboration(!mobileCollaboration)
                     : prefer({ collaboration: !prefs.collaboration });
@@ -1744,26 +1789,32 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 <MessageSquareText />
               </button>
             )}
+            {!inspectorOpen && (
+              <SidebarToggle
+                className="inspector-toggle execution-panel-toggle"
+                side="right"
+                expanded={false}
+                controls="workspace-inspector"
+                title={
+                  activeExecutionCount > 0
+                    ? `显示右侧栏 · ${activeExecutionCount} 项执行中`
+                    : undefined
+                }
+                onClick={showInspector}
+              />
+            )}
           </div>
         </header>
         <div
           className="workspace-body"
           data-execution-open={!!executions || undefined}
           data-understanding-open={understandingOpen || undefined}
-          style={
-            executions
-              ? {
-                  gridTemplateColumns: `minmax(0, 1fr) ${prefs.executionWidth ?? 340}px`,
-                }
-              : understandingOpen
-                ? { gridTemplateColumns: "minmax(0, 1fr) 340px" }
-                : undefined
-          }
         >
           <div
             className="primary-panel"
             data-interaction={historyVisible ? "history" : interaction}
             data-input-pinned={inputPinned || undefined}
+            data-dialogue-canvas={dialogueCanvas || undefined}
           >
             <main
               ref={main}
@@ -2272,7 +2323,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         >
                           <Mic />
                         </button>
-                        {inputPinned && (
+                        {inputPinned && !dialogueCanvas && (
                           <button
                             className="icon-button composer-pin"
                             aria-label="取消固定输入框"
@@ -2359,7 +2410,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                     : []),
                                 ]
                               : []),
-                            ...(!inputPinned
+                            ...(!inputPinned && !dialogueCanvas
                               ? [
                                   {
                                     label: "固定输入框",
@@ -2415,14 +2466,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               : []),
                           ]}
                         />
-                        <button
-                          className="icon-button"
-                          aria-label="收起 AI 输入框"
-                          title="收起 AI 输入框"
-                          onClick={hideInput}
-                        >
-                          <ChevronDown />
-                        </button>
+                        {!dialogueCanvas && (
+                          <button
+                            className="icon-button"
+                            aria-label="收起 AI 输入框"
+                            title="收起 AI 输入框"
+                            onClick={hideInput}
+                          >
+                            <ChevronDown />
+                          </button>
+                        )}
                         <button
                           className="send"
                           aria-label={
@@ -2469,107 +2522,86 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               </div>
             </div>
           </div>
-          {executions && (
-            <ExecutionSidebar
-              key={executions.threadId ?? executions.inputId ?? "overview"}
-              client={client}
-              scope={executions}
-              pinned={!!prefs.executionPinned}
-              width={prefs.executionWidth ?? 340}
-              onResize={(executionWidth) => prefer({ executionWidth })}
-              onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
-              onClose={() => {
-                setExecutions(null);
-                prefer({ executionPinned: false });
-                requestAnimationFrame(() =>
-                  document
-                    .querySelector<HTMLButtonElement>(".execution-panel-toggle")
-                    ?.focus(),
-                );
-              }}
-              onSelect={setExecutions}
-              onOpen={openUser}
-            />
-          )}
-          {understandingOpen && (
-            <UnderstandingPanel
-              client={client}
-              projectId={project.id}
-              onOpen={openUser}
-              onCompose={(body) => {
-                setDraft(contextKey, {
-                  ...draft,
-                  body: [draft.body.trimEnd(), body]
-                    .filter(Boolean)
-                    .join("\n\n"),
-                  annotation: false,
-                  taskResult: undefined,
-                  intent: undefined,
-                });
-                if (window.matchMedia("(max-width: 1100px)").matches)
-                  setUnderstandingOpen(false);
-                showInput();
-              }}
-              onClose={() => {
-                setUnderstandingOpen(false);
-                requestAnimationFrame(() =>
-                  spaceOptions.current
-                    ?.querySelector<HTMLElement>("button")
-                    ?.focus(),
-                );
-              }}
-            />
-          )}
-          {collaborationVisible && (
-            <aside className="collaboration" aria-label="对象批注">
-              <header>
-                <h2>批注</h2>
-                <p className="collaboration-context" title={contextTitle}>
-                  {contextTitle}
-                </p>
-                <button
-                  aria-label="关闭批注栏"
-                  onClick={() => {
-                    setMobileCollaboration(false);
-                    prefer({ collaboration: false });
-                  }}
-                >
-                  <X />
-                </button>
-              </header>
-              <div className="collaboration-scroll">
-                {!annotations.length ? (
-                  <div className="discussion-empty">
-                    <MessageSquarePlus />
-                    <p>
-                      选中正文，在输入框写下想法，
-                      <br />
-                      选择“保存为批注”。
-                    </p>
-                    <small>对话显示在主工作区。</small>
-                  </div>
-                ) : (
-                  <>
-                    {annotations.map((a) => (
-                      <section className="message annotation" key={a.id}>
-                        <div className="message-author">
-                          <MessageSquarePlus />
-                          {actorName(state, a.author.actantId)}
-                          <small>
-                            批注 · v{a.artifactRevision}
-                            {a.page ? ` · 第 ${a.page} 页` : ""}
-                          </small>
-                        </div>
-                        <blockquote>{a.quote}</blockquote>
-                        <p>{a.body}</p>
-                      </section>
-                    ))}
-                  </>
-                )}
-              </div>
-            </aside>
-          )}
         </div>
+        {executions && (
+          <ExecutionSidebar
+            key={executions.threadId ?? executions.inputId ?? "overview"}
+            client={client}
+            scope={executions}
+            pinned={!!prefs.executionPinned}
+            layout={rightInspector}
+            onResize={resizeInspector}
+            onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
+            onClose={closeInspector}
+            onSelect={setExecutions}
+            onOpen={openUser}
+          />
+        )}
+        {understandingOpen && (
+          <UnderstandingPanel
+            client={client}
+            layout={rightInspector}
+            onResize={resizeInspector}
+            projectId={project.id}
+            onOpen={openUser}
+            onCompose={(body) => {
+              setDraft(contextKey, {
+                ...draft,
+                body: [draft.body.trimEnd(), body].filter(Boolean).join("\n\n"),
+                annotation: false,
+                taskResult: undefined,
+                intent: undefined,
+              });
+              if (rightInspector.mode === "overlay")
+                setUnderstandingOpen(false);
+              showInput();
+            }}
+            onClose={closeInspector}
+          />
+        )}
+        {collaborationVisible && (
+          <InspectorPanel
+            className="collaboration"
+            label="对象批注"
+            title="批注"
+            context={contextTitle}
+            resizeLabel="调整批注栏宽度"
+            layout={rightInspector}
+            onResize={resizeInspector}
+            onClose={closeInspector}
+          >
+            <div className="collaboration-scroll">
+              {!annotations.length ? (
+                <div className="discussion-empty">
+                  <MessageSquarePlus />
+                  <p>
+                    选中正文，在输入框写下想法，
+                    <br />
+                    选择“保存为批注”。
+                  </p>
+                  <small>对话显示在主工作区。</small>
+                </div>
+              ) : (
+                <>
+                  {annotations.map((a) => (
+                    <section className="message annotation" key={a.id}>
+                      <div className="message-author">
+                        <MessageSquarePlus />
+                        {actorName(state, a.author.actantId)}
+                        <small>
+                          批注 · v{a.artifactRevision}
+                          {a.page ? ` · 第 ${a.page} 页` : ""}
+                        </small>
+                      </div>
+                      <blockquote>{a.quote}</blockquote>
+                      <p>{a.body}</p>
+                    </section>
+                  ))}
+                </>
+              )}
+            </div>
+          </InspectorPanel>
+        )}
         {notice && (
           <div className="workspace-notice">
             <span role="alert">{notice}</span>

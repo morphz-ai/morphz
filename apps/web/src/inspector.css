@@ -1,0 +1,160 @@
+/* The inspector belongs to the window Host, not to a page's content grid. */
+.app .workspace {
+  --inspector-toolbar-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--inspector-toolbar-height) minmax(0, 1fr);
+}
+.app .workspace[data-inspector-mode="docked"] {
+  grid-template-columns: minmax(0, 1fr) var(--inspector-width);
+}
+.app .workspace > .topbar {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+.app .workspace > .workspace-body {
+  grid-column: 1;
+  grid-row: 2;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.app:is(.application-immersive, .application-browser-workspace) .workspace {
+  --inspector-toolbar-height: 52px;
+  grid-template-rows: minmax(0, 1fr);
+}
+.app:is(.application-immersive, .application-browser-workspace)
+  .workspace
+  > .workspace-body {
+  grid-row: 1;
+}
+.app .workspace > .workspace-inspector {
+  position: relative;
+  inset: auto;
+  grid-column: 2;
+  grid-row: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  width: var(--inspector-width);
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--soft);
+  box-shadow: none;
+  font-size: 13px;
+  animation: none;
+  z-index: 28;
+}
+.app .workspace > .workspace-inspector[data-inspector-mode="overlay"] {
+  grid-column: 1 / -1;
+  position: absolute;
+  inset: 0 0 0 auto;
+  /* Non-modal: the uncovered canvas stays interactive. */
+  box-shadow: -8px 0 24px #0002;
+}
+.app .workspace-inspector > .inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: 0 0 var(--inspector-toolbar-height);
+  height: var(--inspector-toolbar-height);
+  min-height: var(--inspector-toolbar-height);
+  gap: 6px;
+  padding: 0 12px;
+  margin: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  -webkit-app-region: drag;
+}
+.app .inspector-header > h2 {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.app .inspector-header > .inspector-context {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.app .inspector-header > .icon-button {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 5px;
+  -webkit-app-region: no-drag;
+}
+.app .inspector-header svg {
+  width: 16px;
+  height: 16px;
+}
+/* Left and right use one control: only the icon's sidebar edge is mirrored. */
+.app .sidebar-visibility-toggle,
+.app .inspector-header > .sidebar-visibility-toggle {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 7px;
+}
+.app .sidebar-visibility-toggle > svg {
+  width: 18px;
+  height: 18px;
+}
+.app .workspace-inspector > .inspector-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  overflow-wrap: anywhere;
+  padding: 12px;
+}
+.app
+  .inspector-scroll
+  > :is(
+    .execution-sidebar-scroll,
+    .understanding-scroll,
+    .collaboration-scroll
+  ) {
+  overflow: visible;
+  padding: 0;
+}
+.app .workspace-inspector > footer {
+  flex-shrink: 0;
+}
+.inspector-resizer {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+}
+.inspector-resizer:focus-visible {
+  outline: 1px solid var(--accent-strong);
+  outline-offset: -3px;
+}
+.execution-scope-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.app .understanding-panel:has(.understanding-empty) > .inspector-scroll {
+  flex: 0 1 auto;
+}

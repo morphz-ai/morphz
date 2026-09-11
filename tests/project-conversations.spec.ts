@@ -388,6 +388,12 @@ test("首位对话与工作台共享历史，场景草稿可恢复且没有全�
   await box.fill("全局待发送草稿");
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(await openInput(page)).toHaveValue("未发送的工作台草稿");
+  // A restored object can scope the workbench history; explicitly inspect the shared history.
+  const allExchanges = page.getByRole("button", {
+    name: "查看全部交流",
+    exact: true,
+  });
+  if (await allExchanges.isVisible()) await allExchanges.click();
   // Views share one continuous conversation; unsent drafts remain scoped to the work surface.
   await expect(
     page.locator(".human-message").filter({ hasText: "全局讨论，独立保存" }),
@@ -578,6 +584,9 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
   await composerAction(page, "执行记录与审批");
   await page.getByText("其他后台执行与审批", { exact: true }).click();
   await expect.poll(() => scope).toBe(c);
+  // The workspace poll can still be inside route.fetch when this test ends.
+  // Drain handlers here instead of leaking teardown errors into the next test.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("对象引用随对话草稿保存，切换不会把选区带到另一条对话", async ({
@@ -602,7 +611,9 @@ test("对象引用随对话草稿保存，切换不会把选区带到另一条�
   await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   await page.getByLabel("全文搜索").fill("可追溯的历史");
   await page.getByLabel("搜索项目范围").selectOption({ label: "引用归属验收" });
-  await page.getByRole("button", { name: "引用并提问", exact: true }).click();
+  await page
+    .getByRole("button", { name: "AI 交互：跨对话引用原文", exact: true })
+    .click();
   await expect(page.locator(".selection-quote")).toContainText("可追溯的历史");
   await page.getByLabel("AI 输入内容").fill("解释这段引用，尚未发送");
   await projectGroup(page).locator(".project-link").click();

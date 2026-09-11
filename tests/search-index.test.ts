@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkspaceStore } from "../apps/service/src/store.js";
@@ -68,6 +68,141 @@ test("持久索引与领域检索一致，短中文和查询符号不变成 FTS 
       throw new Error("Search must not deserialize workspace");
     };
     assert.equal(store.search({ query: "上下文" }, localAccess).total, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("多关键词按 AND 跨标题和正文匹配，空白、次序、重复与字面符号保持一致", () => {
+  const store = new WorkspaceStore(":memory:");
+  try {
+    const titleHit = create(store, "交互验收报告", {
+      kind: "document",
+      markdown: "完成桌面检查。",
+    });
+    const mixedHit = create(store, "交互记录", {
+      kind: "document",
+      markdown: "前言。".repeat(150) + "验收结果：Alpha 与上下文一起保留。",
+    });
+    const bodyHit = create(store, "只有正文命中", {
+      kind: "document",
+      markdown: "验收完成后，继续交互检查。",
+    });
+    create(store, "交互但没有另一关键词");
+    const literal = create(store, "符号原文", {
+      kind: "document",
+      markdown: 'Alpha 引号 "arrow" 100% _ [] OR AND NEAR',
+    });
+    const state = store.snapshot();
+    const searches = [
+      "交互 验收",
+      "验收 交互",
+      "  交互\t验收\n交互  ",
+      "交互　验收",
+      "交互 Alpha",
+      "上下文 alpha",
+      'ALPHA "arrow"',
+      '"arrow" [] OR',
+      "100% AND _",
+      "交互 不存在的词",
+    ];
+    for (const query of searches) {
+      assert.deepEqual(
+        store.search({ query }, localAccess),
+        searchArtifacts(state, { query }, localAccess),
+        query,
+      );
+    }
+    const hits = store.search({ query: "交互 验收" }, localAccess).hits;
+    assert.deepEqual(
+      new Set(hits.map((hit) => hit.artifactId)),
+      new Set([titleHit.entityId, mixedHit.entityId, bodyHit.entityId]),
+    );
+    assert.equal(hits.at(-1)!.artifactId, bodyHit.entityId);
+    const mixed = hits.find((hit) => hit.artifactId === mixedHit.entityId)!;
+    assert.match(mixed.excerpt, /验收结果/);
+    assert.ok(
+      state.artifacts.find((item) => item.id === mixed.artifactId)!.content
+        .kind === "document",
+    );
+    assert.equal(
+      store.search({ query: 'ALPHA "arrow"' }, localAccess).hits[0]!.artifactId,
+      literal.entityId,
+    );
+    assert.equal(
+      store.search({ query: "交互 不存在的词" }, localAccess).total,
+      0,
+    );
+    const first = store.search({ query: "交互 验收", limit: 2 }, localAccess);
+    const second = store.search(
+      { query: "交互 验收", limit: 2, offset: 2 },
+      localAccess,
+    );
+    assert.equal(first.total, 3);
+    assert.equal(first.hasMore, true);
+    assert.equal(second.hits.length, 1);
+    assert.equal(
+      new Set([...first.hits, ...second.hits].map((hit) => hit.artifactId))
+        .size,
+      3,
+    );
+    assert.equal(
+      store.search(
+        { query: "交互 验收", projectId: "first-project" },
+        localAccess,
+      ).total,
+      3,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("PDF 多词可跨页匹配，但单词不能跨页拼接；引用仍是某一页的原文", () => {
+  const store = new WorkspaceStore(":memory:");
+  try {
+    const pages = ["第一页的 alpha 和边界甲", "乙边界及 beta 的检查结果"];
+    const content = store.addPdf(
+      readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
+      pages,
+    );
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "import-pdf",
+          projectId: "first-project",
+          relativePath: "notes/多词检索.pdf",
+          content,
+        },
+      },
+      localAccess,
+    );
+    const state = store.snapshot();
+    for (const query of [
+      "alpha beta",
+      "多词检索 beta",
+      "甲乙",
+      "alpha missing",
+    ]) {
+      const actual = store.search({ query }, localAccess);
+      assert.deepEqual(
+        actual,
+        searchArtifacts(state, { query }, localAccess),
+        query,
+      );
+      if (actual.hits[0]) {
+        const hit = actual.hits[0];
+        assert.ok(pages[hit.page! - 1]!.includes(hit.quote));
+        assert.ok(hit.quote.length <= 260);
+      }
+    }
+    assert.equal(store.search({ query: "alpha beta" }, localAccess).total, 1);
+    assert.equal(
+      store.search({ query: "多词检索 beta" }, localAccess).hits[0]!.page,
+      2,
+    );
+    assert.equal(store.search({ query: "甲乙" }, localAccess).total, 0);
   } finally {
     store.close();
   }
@@ -146,6 +281,10 @@ test("检索计数、原文和原始文件在授权投影内过滤；未关联�
     db.close();
     const reopened = new WorkspaceStore(path);
     assert.equal(reopened.search({ query: "hidden" }, localAccess).total, 0);
+    assert.equal(
+      reopened.search({ query: "only-secret hidden" }, localAccess).total,
+      0,
+    );
     assert.equal(reopened.visibleAsset(assetId, localAccess), undefined);
     assert.throws(
       () =>
@@ -165,6 +304,10 @@ test("检索计数、原文和原始文件在授权投影内过滤；未关联�
     );
     const other = { principalId: "other", actantId: "other-human" };
     assert.equal(reopened.search({ query: "hidden" }, other).total, 1);
+    assert.equal(
+      reopened.search({ query: "only-secret hidden" }, other).total,
+      1,
+    );
     assert.ok(reopened.visibleAsset(assetId, other));
     reopened.close();
   } finally {

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openLibrary } from "./application-helpers.js";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import { openInput } from "./interaction-helpers.js";
 import { humanTask } from "./artifact-fixtures.js";
 import type { Boot } from "../apps/web/src/client.js";
 
@@ -14,7 +14,10 @@ test("保存回执和断线不增设底栏或挤动页面；关键信息留在�
     .getByRole("button", { name: "对话", exact: true })
     .click();
   const input = await openInput(page);
-  await composerAction(page, "固定输入框");
+  // The dialogue canvas is permanently available; only work surfaces need pinning.
+  await expect(page.getByLabel("收起 AI 输入框", { exact: true })).toHaveCount(
+    0,
+  );
   await input.fill("隔离界面测试，只保存输入");
   const before = await page.locator(".workspace-body").boundingBox();
   const composerBefore = await page.locator(".composer").boundingBox();

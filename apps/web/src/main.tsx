@@ -5,6 +5,7 @@ import "./styles.css";
 import "./ui.css";
 import "./workflow.css";
 import "./visual-system.css";
+import "./inspector.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

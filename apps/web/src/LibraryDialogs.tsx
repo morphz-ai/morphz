@@ -6,6 +6,7 @@ import {
   X,
   Check,
   AlertCircle,
+  MessageSquareQuote,
 } from "lucide-react";
 import {
   documentImportIssue,
@@ -18,7 +19,7 @@ import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import SourceConnections from "./SourceConnections.js";
 import { useModal } from "./useModal.js";
-import { documentExcerpt } from "./document-presentation.js";
+import { searchPreview } from "./document-presentation.js";
 import { maxPdfBytes, pdfImportIssue } from "../../../packages/core/src/pdf.js";
 
 const isImage = (path: string) => /\.(png|jpe?g|webp)$/i.test(path);
@@ -466,7 +467,7 @@ export function SearchDocuments({
           <input
             ref={searchInput}
             aria-label="全文搜索"
-            placeholder="搜索标题、正文和事项…"
+            placeholder="搜索内容和事项…"
             maxLength={200}
             value={query}
             onChange={(e) => {
@@ -508,6 +509,8 @@ export function SearchDocuments({
               key={item.id}
               data-search-index={index}
               data-selected={index === selected}
+              onPointerEnter={() => setSelected(index)}
+              onFocus={() => setSelected(index)}
             >
               <button
                 className="search-result-open"
@@ -518,14 +521,14 @@ export function SearchDocuments({
               >
                 <ObjectIcon kind={item.content.kind} />
                 <span>
-                  <strong>{item.title}</strong>
-                  <small>
-                    {
+                  <SearchResultHeading
+                    title={item.title}
+                    projectTitle={
                       client.boot?.workspace.projects.find(
                         (p) => p.id === item.projectId,
                       )?.title
                     }
-                  </small>
+                  />
                 </span>
               </button>
             </article>
@@ -535,47 +538,63 @@ export function SearchDocuments({
             key={hit.artifactId}
             data-search-index={index}
             data-selected={index === selected}
+            onPointerEnter={() => setSelected(index)}
+            onFocus={() => setSelected(index)}
+            data-quotable={
+              (hit.kind === "document" || hit.kind === "pdf") &&
+              !!hit.quote.trim()
+            }
           >
             <button
               className="search-result-open"
-              onClick={() => {
+              onClick={(event) => {
+                // Text remains selectable; releasing a drag must not navigate.
+                const selection = window.getSelection();
+                if (
+                  event.detail > 0 &&
+                  selection &&
+                  !selection.isCollapsed &&
+                  (event.currentTarget.contains(selection.anchorNode) ||
+                    event.currentTarget.contains(selection.focusNode))
+                )
+                  return;
                 onClose();
                 onOpen(hit.artifactId, hit.revision, hit.page);
               }}
             >
               <ObjectIcon kind={hit.kind} />
               <span>
-                <strong>{hit.title}</strong>
-                <small>
-                  {hit.projectTitle}
-                  {hit.page ? ` · 第 ${hit.page} 页` : ""}
-                </small>
+                <SearchResultHeading
+                  title={hit.title}
+                  projectTitle={hit.projectTitle}
+                  page={hit.page}
+                  sourcePath={hit.source?.relativePath}
+                />
+                {hit.excerpt && (
+                  <span className="search-excerpt">
+                    {searchPreview(hit.excerpt, hit.title, query, {
+                      kind: hit.kind,
+                      page: hit.page,
+                    })}
+                  </span>
+                )}
               </span>
             </button>
-            {hit.excerpt && (
-              <p className="search-excerpt">
-                {documentExcerpt(hit.excerpt, hit.title)}
-              </p>
-            )}
-            <div className="search-result-footer">
-              <small>{hit.source?.relativePath ?? "工作空间内容"}</small>
-              {(hit.kind === "document" || hit.kind === "pdf") &&
-                hit.quote.trim() && (
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onQuote(
-                        hit.artifactId,
-                        hit.revision,
-                        hit.quote,
-                        hit.page,
-                      );
-                    }}
-                  >
-                    引用并提问
-                  </button>
-                )}
-            </div>
+            {(hit.kind === "document" || hit.kind === "pdf") &&
+              hit.quote.trim() && (
+                <button
+                  className="search-result-quote"
+                  aria-label={`AI 交互：${hit.title}`}
+                  title={`围绕《${hit.title}》的这段内容与 AI 交互；先加入输入框，不会自动发送`}
+                  onClick={() => {
+                    onClose();
+                    onQuote(hit.artifactId, hit.revision, hit.quote, hit.page);
+                  }}
+                >
+                  <MessageSquareQuote aria-hidden="true" />
+                  <span>AI</span>
+                </button>
+              )}
           </article>
         ))}
         {!loading && !error && choices.length === 0 && (
@@ -587,9 +606,16 @@ export function SearchDocuments({
         )}
       </div>
       <div className="search-help">
-        <span>↑ ↓ 选择</span>
-        <span>Enter 打开</span>
-        <span>Esc 返回</span>
+        <span>
+          <kbd>↑</kbd>
+          <kbd>↓</kbd> 选择
+        </span>
+        <span>
+          <kbd>↵</kbd> 打开
+        </span>
+        <span>
+          <kbd>Esc</kbd> 返回
+        </span>
       </div>
       {result && (offset > 0 || result.hasMore) && (
         <footer>
@@ -609,5 +635,44 @@ export function SearchDocuments({
         </footer>
       )}
     </dialog>
+  );
+}
+
+function SearchResultHeading({
+  title,
+  projectTitle,
+  page,
+  sourcePath,
+}: {
+  title: string;
+  projectTitle?: string;
+  page?: number;
+  sourcePath?: string;
+}) {
+  const location = [projectTitle, page ? `第 ${page} 页` : undefined]
+    .filter(Boolean)
+    .join(" · ");
+  const source = [location, sourcePath].filter(Boolean).join(" · ");
+  // A filename identical to the result title adds no visual distinction.
+  // Keep the full provenance in the tooltip and the object's source view.
+  const visiblePath =
+    sourcePath?.replace(/\.[^/.]+$/, "") === title ? undefined : sourcePath;
+  return (
+    <span className="search-result-heading">
+      <strong title={title}>{title}</strong>
+      {source && (
+        <small className="search-result-meta" title={source}>
+          {location && (
+            <span className="search-result-location">{location}</span>
+          )}
+          {visiblePath && (
+            <>
+              {location && <span aria-hidden="true">·</span>}
+              <span className="search-source">{visiblePath}</span>
+            </>
+          )}
+        </small>
+      )}
+    </span>
   );
 }

@@ -74,6 +74,16 @@ export function BrowserHost({
     const id = page.pageId;
     const layout = async () => {
       const r = slot.current?.getBoundingClientRect();
+      // Native WebContentsView sits above DOM. Clip its bounds rather than
+      // replacing/reloading the user's page when a non-modal inspector opens.
+      const inspector = document
+        .querySelector<HTMLElement>(
+          '.workspace > .workspace-inspector[data-inspector-mode="overlay"]',
+        )
+        ?.getBoundingClientRect();
+      const visibleWidth = r
+        ? Math.max(0, Math.min(r.right, inspector?.left ?? r.right) - r.left)
+        : 0;
       const hidden =
         !activeViewRef.current ||
         document.hidden ||
@@ -81,12 +91,14 @@ export function BrowserHost({
           'dialog[open]:not([data-capturing="true"]),.theme-menu',
         ) ||
         !r ||
-        r.width < 10 ||
+        visibleWidth < 10 ||
         r.height < 10 ||
         r.bottom < 120;
       await desktop.layout(
         id,
-        hidden ? null : { x: r.x, y: r.y, width: r.width, height: r.height },
+        hidden
+          ? null
+          : { x: r.x, y: r.y, width: visibleWidth, height: r.height },
       );
     };
     const update = () => void layout().catch(() => {});
@@ -100,7 +112,12 @@ export function BrowserHost({
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["open", "data-capturing"],
+      attributeFilter: [
+        "open",
+        "data-capturing",
+        "data-inspector-mode",
+        "data-inspector-width",
+      ],
     });
     document.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);

@@ -1,0 +1,107 @@
+import { test, expect, _electron } from "@playwright/test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", async ({
+  request,
+}) => {
+  test.skip(process.platform !== "darwin", "macOS 原生材质专项");
+  const directory = await mkdtemp(join(tmpdir(), "morphz-sidebar-native-"));
+  const before = await (await request.get("/api/workspace")).json();
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && entry[0] !== "ELECTRON_RUN_AS_NODE",
+    ),
+  );
+  env.MORPHZWORK_TEST_PROFILE = directory;
+  const desktop = await _electron.launch({
+    args: ["apps/desktop/main.cjs", "--center=http://127.0.0.1:65421"],
+    env,
+  });
+  try {
+    const page = await desktop.firstWindow();
+    await expect(page.locator(".app")).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-native-material",
+      /sidebar|solid/,
+    );
+    const reduced = await desktop.evaluate(
+      ({ nativeTheme }) =>
+        nativeTheme.prefersReducedTransparency ||
+        nativeTheme.shouldUseHighContrastColors,
+    );
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-native-material",
+      reduced ? "solid" : "sidebar",
+    );
+    for (const [label, value] of [
+      ["亮色", "light"],
+      ["暗色", "dark"],
+      ["跟随系统", "system"],
+    ]) {
+      await page.getByRole("button", { name: "外观设置", exact: true }).click();
+      await page.getByRole("button", { name: label, exact: true }).click();
+      await expect
+        .poll(() =>
+          desktop.evaluate(({ nativeTheme }) => nativeTheme.themeSource),
+        )
+        .toBe(value);
+      await page.keyboard.press("Escape");
+      expect(
+        await page
+          .locator(".workspace")
+          .evaluate((el) => getComputedStyle(el).backgroundColor),
+      ).not.toContain("rgba");
+    }
+    const bridge = await page.evaluate(async () => {
+      const native = window.morphzDesktop!.appearance!;
+      let changed = 0;
+      const off = native.onChange(() => changed++);
+      await native.setMode("dark");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      off();
+      const previous = changed;
+      await native.setMode("light");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      let invalidRejected = false;
+      try {
+        await native.setMode("menu" as "light");
+      } catch {
+        invalidRejected = true;
+      }
+      await native.setMode("system");
+      return {
+        previous,
+        changed,
+        invalidRejected,
+        node: typeof (window as any).require,
+      };
+    });
+    expect(bridge.previous).toBeGreaterThan(0);
+    expect(bridge.changed).toBe(bridge.previous);
+    expect(bridge.invalidRejected).toBe(true);
+    expect(bridge.node).toBe("undefined");
+    await page.evaluate(() => {
+      const frame = document.createElement("iframe");
+      frame.id = "untrusted-material-frame";
+      frame.srcdoc =
+        "<!doctype html><title>权限隔离验收</title><p>独立子页面</p>";
+      document.body.append(frame);
+    });
+    const frame = page.frameLocator("#untrusted-material-frame");
+    await expect(frame.locator("body")).toBeVisible();
+    expect(
+      await frame.locator("body").evaluate(() => typeof window.morphzDesktop),
+    ).toBe("undefined");
+    const after = await (await request.get("/api/workspace")).json();
+    expect(after.workspace.inputs).toHaveLength(before.workspace.inputs.length);
+    expect(after.workspace.artifacts).toHaveLength(
+      before.workspace.artifacts.length,
+    );
+  } finally {
+    await desktop.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

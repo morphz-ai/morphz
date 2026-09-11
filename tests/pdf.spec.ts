@@ -69,7 +69,7 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.getByLabel("全文搜索").fill("durable butterfly");
   await page.getByLabel("搜索项目范围").selectOption({ label: title });
   await expect(page.getByRole("dialog").getByText(/第 2 页/)).toBeVisible();
-  await page.getByRole("button", { name: "引用并提问" }).click();
+  await page.getByRole("button", { name: /^AI 交互：/ }).click();
   await page.getByLabel("AI 输入内容").fill("这段原文需要进一步解释。");
   await composerAction(page, "保存为批注");
   const value = await page.request.get("/api/workspace").then((r) => r.json());

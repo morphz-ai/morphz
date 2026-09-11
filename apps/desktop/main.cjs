@@ -6,6 +6,7 @@ const {
   session,
   ipcMain,
   systemPreferences,
+  nativeTheme,
   shell,
 } = require("electron");
 const { join, isAbsolute } = require("node:path");
@@ -17,6 +18,7 @@ const {
 const { DesktopBrowser } = require("./browser.cjs");
 const { MicrophoneGate } = require("./microphone.cjs");
 const { DesktopCapture } = require("./capture.cjs");
+const { DesktopAppearance } = require("./appearance.cjs");
 const { rendererURL, loadDevelopmentWindow } = require("./development.cjs");
 app.setName("Morphz");
 app.enableSandbox();
@@ -32,6 +34,7 @@ else {
   let window;
   let sources;
   let browser;
+  let appearance;
   function requireMain(event) {
     if (
       !window ||
@@ -58,6 +61,7 @@ else {
         ? {
             titleBarStyle: "hiddenInset",
             trafficLightPosition: { x: 20, y: 20 },
+            visualEffectState: "followWindow",
           }
         : {}),
       backgroundColor: "#11141c",
@@ -68,6 +72,7 @@ else {
         partition: "persist:morphzwork-app",
       },
     });
+    appearance = new DesktopAppearance(window, nativeTheme);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     browser = new DesktopBrowser(window, url, (input, init) =>
       window.webContents.session.fetch(input, {
@@ -95,6 +100,7 @@ else {
     });
     window.on("closed", () => {
       browser = null;
+      appearance = null;
       window = null;
     });
     window.webContents.on("will-navigate", (event, destination) => {
@@ -136,6 +142,10 @@ else {
     }
   }
   app.whenReady().then(async () => {
+    ipcMain.handle("appearance:mode", (event, mode) => {
+      requireMain(event);
+      return appearance.setMode(mode);
+    });
     ipcMain.handle("capture:select", async (event) => {
       requireMain(event);
       if (!window.isFocused()) throw new Error("请先回到 Morphz 窗口。");

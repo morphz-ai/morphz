@@ -52,9 +52,17 @@ test("切换工作页面和重新展开输入不重复挂载附件按钮", async
     await expect(
       page.getByRole("button", { name: "附加文件", exact: true }),
     ).toHaveCount(1);
-    await page
-      .getByRole("button", { name: "收起 AI 输入框", exact: true })
-      .click();
+    if (name === "对话") {
+      await expect(
+        page.getByRole("button", { name: "收起 AI 输入框", exact: true }),
+      ).toHaveCount(0);
+      await page.keyboard.press("Control+j");
+      await expect(page.getByLabel("AI 输入内容")).toBeFocused();
+    } else {
+      await page
+        .getByRole("button", { name: "收起 AI 输入框", exact: true })
+        .click();
+    }
     await openInput(page);
     await expect(
       page.getByRole("button", { name: "附加文件", exact: true }),

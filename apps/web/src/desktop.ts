@@ -1,3 +1,10 @@
+export type DesktopAppearanceState = {
+  revision: number;
+  material: "sidebar" | "solid";
+  active: boolean;
+  reducedTransparency: boolean;
+  highContrast: boolean;
+};
 export type SourceView = {
   id: string;
   label: string;
@@ -24,6 +31,12 @@ export type BrowserView = {
 declare global {
   interface Window {
     morphzDesktop?: {
+      appearance?: {
+        setMode(
+          mode: "system" | "light" | "dark",
+        ): Promise<DesktopAppearanceState>;
+        onChange(callback: (state: DesktopAppearanceState) => void): () => void;
+      };
       openExternal?(url: string): Promise<void>;
       capture: {
         select(): Promise<{ mime: "image/png"; data: string } | null>;

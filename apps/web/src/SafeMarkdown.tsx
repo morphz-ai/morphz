@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 const MarkdownScope = createContext<{
@@ -7,6 +9,18 @@ const MarkdownScope = createContext<{
   onOpen: (id: string) => void;
 } | null>(null);
 const markdownComponents = {
+  table: function MarkdownTable({ children }: { children?: ReactNode }) {
+    return (
+      <div
+        className="markdown-table-scroll"
+        role="region"
+        aria-label="表格"
+        tabIndex={0}
+      >
+        <table>{children}</table>
+      </div>
+    );
+  },
   a: function MarkdownLink({
     href,
     children,
@@ -162,7 +176,11 @@ export function SafeMarkdown({
     <MarkdownScope.Provider value={{ state, onOpen }}>
       <Markdown
         skipHtml
-        remarkPlugins={[[omitRepeatedDocumentTitle, { title: documentTitle }]]}
+        remarkPlugins={[
+          remarkGfm,
+          remarkCjkFriendly,
+          [omitRepeatedDocumentTitle, { title: documentTitle }],
+        ]}
         urlTransform={(url) =>
           webURL(url) ||
           objectLink(url) ||

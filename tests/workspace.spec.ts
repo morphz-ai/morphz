@@ -217,13 +217,11 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     page.getByRole("complementary", { name: "对象批注" }),
   ).not.toContainText("请围绕这个对象继续讨论。");
   const annotationHeader = page.locator(".collaboration > header");
-  await expect(
-    annotationHeader.locator(".collaboration-context"),
-  ).toBeVisible();
+  await expect(annotationHeader.locator(".inspector-context")).toBeVisible();
   expect((await annotationHeader.boundingBox())!.height).toBeLessThanOrEqual(
-    44,
+    48,
   );
-  await page.getByRole("button", { name: "关闭批注栏" }).click();
+  await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await openInput(page);
   await composerAction(page, "收起交流记录");
   await expect(page.getByLabel("文档正文", { exact: true })).toHaveValue(

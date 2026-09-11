@@ -34,7 +34,8 @@ test("当前理解非模态核对，更新只准备统一草稿，不发送技�
     /context_tx|host_morphz_work|mw-public|Session/,
   );
   await panel.screenshot({ path: "test-results/experience-understanding.png" });
-  await page.getByRole("button", { name: "查看执行面板", exact: true }).click();
+  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
+  await page.getByRole("button", { name: "执行", exact: true }).click();
   await expect(panel).toHaveCount(0);
   await expect(
     page.getByRole("complementary", { name: "执行面板" }),

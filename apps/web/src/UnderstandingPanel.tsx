@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
-import { X, BookOpen, RefreshCw, MessageSquarePlus } from "lucide-react";
+import { BookOpen, RefreshCw, MessageSquarePlus } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import { SafeMarkdown } from "./SafeMarkdown.js";
+import { InspectorPanel } from "./InspectorPanel.js";
+import type { InspectorLayout } from "./inspector-layout.js";
 
 /** Public, committed understanding; inspecting it never submits an input. */
 export function UnderstandingPanel({
@@ -10,17 +11,17 @@ export function UnderstandingPanel({
   onOpen,
   onCompose,
   onClose,
+  layout,
+  onResize,
 }: {
   client: WorkspaceClient;
   projectId: string;
   onOpen: (id: string, revision?: number) => void;
   onCompose: (body: string) => void;
   onClose: () => void;
+  layout: InspectorLayout;
+  onResize: (width: number) => void;
 }) {
-  const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    heading.current?.focus({ preventScroll: true });
-  }, []);
   const state = client.boot!.workspace;
   const project = state.projects.find((p) => p.id === projectId);
   const artifact = state.artifacts.find(
@@ -32,30 +33,45 @@ export function UnderstandingPanel({
   const content =
     artifact?.content.kind === "document" ? artifact.content : null;
   return (
-    <aside
+    <InspectorPanel
       className="understanding-panel"
-      aria-label="当前理解"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !event.defaultPrevented) {
-          event.preventDefault();
-          event.stopPropagation();
-          onClose();
-        }
-      }}
+      label="当前理解"
+      title="当前理解"
+      context={project?.title}
+      resizeLabel="调整当前理解宽度"
+      layout={layout}
+      onResize={onResize}
+      onClose={onClose}
+      footer={
+        <footer>
+          {artifact && (
+            <button
+              onClick={() =>
+                onCompose(
+                  "请更新当前工作空间的公开理解。需要纠正或补充的内容：",
+                )
+              }
+            >
+              <MessageSquarePlus />
+              纠正或补充
+            </button>
+          )}
+          <button
+            onClick={() =>
+              onCompose(
+                artifact
+                  ? "请根据最新进展更新当前工作空间的公开理解。"
+                  : "请梳理当前工作空间的公开理解，包括目标、约束和已确认的事实。",
+              )
+            }
+          >
+            <RefreshCw />
+            {artifact ? "更新理解" : "梳理理解"}
+          </button>
+          <small>在输入框中确认后发送</small>
+        </footer>
+      }
     >
-      <header>
-        <h2 ref={heading} tabIndex={-1}>
-          当前理解
-        </h2>
-        <span title={project?.title}>{project?.title}</span>
-        <button
-          className="icon-button"
-          aria-label="关闭当前理解"
-          onClick={onClose}
-        >
-          <X />
-        </button>
-      </header>
       <div className="understanding-scroll">
         {content?.understanding && artifact ? (
           <>
@@ -101,31 +117,6 @@ export function UnderstandingPanel({
           这里展示可共同核对的公开摘要，不是内部推理。更新后会保留版本。
         </p>
       </div>
-      <footer>
-        {artifact && (
-          <button
-            onClick={() =>
-              onCompose("请更新当前工作空间的公开理解。需要纠正或补充的内容：")
-            }
-          >
-            <MessageSquarePlus />
-            纠正或补充
-          </button>
-        )}
-        <button
-          onClick={() =>
-            onCompose(
-              artifact
-                ? "请根据最新进展更新当前工作空间的公开理解。"
-                : "请梳理当前工作空间的公开理解，包括目标、约束和已确认的事实。",
-            )
-          }
-        >
-          <RefreshCw />
-          {artifact ? "更新理解" : "梳理理解"}
-        </button>
-        <small>在输入框中确认后发送</small>
-      </footer>
-    </aside>
+    </InspectorPanel>
   );
 }

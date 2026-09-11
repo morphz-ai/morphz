@@ -16,6 +16,7 @@ import {
   Globe,
   Table2,
   Volume2,
+  Copy,
 } from "lucide-react";
 import {
   contentSchema,
@@ -256,6 +257,7 @@ export function ArtifactEditor({
           shown.content.kind !== "website" &&
           shown.content.kind !== "image" && (
             <button
+              className="secondary-action"
               aria-label="朗读对象"
               title="朗读"
               onClick={() => {
@@ -274,6 +276,7 @@ export function ArtifactEditor({
           )}
         {!draft && history === null && (
           <button
+            className="secondary-action"
             onClick={() => setHistory(history ? null : artifact.revision)}
             aria-label="版本历史"
             title="版本历史"
@@ -314,6 +317,7 @@ export function ArtifactEditor({
             artifact.content.understanding
           ) && (
             <button
+              className="secondary-action"
               onClick={start}
               aria-label={
                 old
@@ -342,6 +346,9 @@ export function ArtifactEditor({
           )}
         {artifact.source?.mode === "linked" && (
           <button
+            className="secondary-action"
+            aria-label="创建可编辑副本"
+            title="创建可编辑副本，保留只读来源"
             onClick={async () => {
               try {
                 const receipt = await client.execute({
@@ -356,7 +363,8 @@ export function ArtifactEditor({
               }
             }}
           >
-            创建可编辑副本
+            <Copy aria-hidden="true" />
+            创建副本
           </button>
         )}
       </div>
@@ -516,9 +524,14 @@ export function ArtifactEditor({
                   );
               }}
             />
-            <button className="annotation-action" onClick={select}>
+            <button
+              className="annotation-action secondary-action"
+              aria-label="围绕选中文本输入"
+              title="先选中正文，再将选区加入输入框；不会自动发送"
+              onClick={select}
+            >
               <MessageSquarePlus />
-              围绕选中文本输入
+              选区提问
             </button>
           </>
         ) : null}

@@ -1,5 +1,6 @@
 import { useEffect, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { MessageCircle, Highlighter, Volume2 } from "lucide-react";
 
 export function SelectionActions({
   root,
@@ -51,18 +52,21 @@ export function SelectionActions({
       >
         {(
           [
-            ["ask", "询问 Morphz"],
-            ["annotate", "批注"],
-            ["read", "朗读"],
+            ["ask", "提问", "询问 Morphz", MessageCircle],
+            ["annotate", "批注", "批注", Highlighter],
+            ["read", "朗读", "朗读", Volume2],
           ] as const
-        ).map(([action, label]) => (
+        ).map(([action, label, name, Icon]) => (
           <button
             key={action}
+            aria-label={name}
+            title={name}
             onClick={() => {
               onAction(action, selection.text);
               setSelection(null);
             }}
           >
+            <Icon aria-hidden="true" />
             {label}
           </button>
         ))}

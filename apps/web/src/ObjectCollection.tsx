@@ -10,6 +10,7 @@ import {
   FolderOpen,
   X,
   Globe,
+  PencilLine,
 } from "lucide-react";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
@@ -104,14 +105,16 @@ export function ObjectCollection({
         createPortal(
           <div className="content-actions" role="group" aria-label="创建内容">
             <button
+              className="secondary-action"
               aria-label="让 Morphz 起草"
-              title={`新内容保存到${project.title}`}
+              title={`让 Morphz 起草，保存到${project.title}；先填写需求，不自动发送`}
               onClick={() => onCreate("document")}
             >
               <FilePlus2 />
-              <span className="toolbar-action-label">让 Morphz 起草</span>
+              <span className="toolbar-action-label">起草</span>
             </button>
             <button
+              className="secondary-action"
               aria-label="导入资料"
               title={`导入到${project.title}`}
               onClick={onImport}
@@ -127,37 +130,48 @@ export function ObjectCollection({
         {!catalog && (
           <div className="creation-actions" role="group" aria-label="创建内容">
             <button
+              className="secondary-action"
               aria-label="制作表格或报告"
+              title="制作表格或报告，先在输入框中描述需求"
               onClick={() => onCreate("interactive")}
             >
               <span className="creation-icon">
                 <List />
               </span>
               <span>
-                <strong>制作表格或报告</strong>
+                <strong>表格 / 报告</strong>
               </span>
             </button>
-            <button aria-label="打开浏览器" onClick={() => onCreate("website")}>
+            <button
+              className="secondary-action"
+              aria-label="打开浏览器"
+              title="打开浏览器"
+              onClick={() => onCreate("website")}
+            >
               <span className="creation-icon">
                 <Globe />
               </span>
               <span>
-                <strong>打开浏览器</strong>
+                <strong>浏览器</strong>
               </span>
             </button>
             <button
+              className="secondary-action"
               aria-label="让 Morphz 起草"
+              title="让 Morphz 起草，先在输入框中描述需求"
               onClick={() => onCreate("document")}
             >
               <span className="creation-icon">
                 <FilePlus2 />
               </span>
               <span>
-                <strong>让 Morphz 起草</strong>
+                <strong>起草</strong>
               </span>
             </button>
             <button
+              className="secondary-action"
               aria-label="导入资料"
+              title="导入资料"
               onClick={onImport}
               disabled={importing}
             >
@@ -165,12 +179,18 @@ export function ObjectCollection({
                 <FileUp />
               </span>
               <span>
-                <strong>{importing ? "导入中…" : "导入资料"}</strong>
+                <strong>{importing ? "导入中…" : "导入"}</strong>
               </span>
             </button>
             <span className="library-authoring-options">
-              <button className="text-button" onClick={onWrite}>
-                手动写文档
+              <button
+                className="secondary-action"
+                aria-label="手动写文档"
+                title="手动写文档"
+                onClick={onWrite}
+              >
+                <PencilLine aria-hidden="true" />
+                写文档
               </button>
             </span>
           </div>

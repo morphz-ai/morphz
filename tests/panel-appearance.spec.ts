@@ -29,6 +29,9 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       const search = page.getByRole("dialog", { name: "搜索资料" });
       const field = page.getByLabel("全文搜索");
       await expect(field).toBeFocused();
+      expect(
+        (await search.getByLabel("搜索项目范围").boundingBox())!.width,
+      ).toBeLessThan(150);
       await expect(search.locator(".search-field")).toHaveCSS(
         "outline-style",
         "none",
@@ -43,15 +46,79 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       );
       await expect(search.locator("article[data-selected=true]")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(232, 232, 236)" : "rgb(48, 48, 52)",
+        appearance === "亮色" ? "rgb(228, 228, 228)" : "rgb(58, 58, 58)",
       );
       await field.fill("产品资料");
       await expect(search.getByText("找到 1 项内容")).toBeVisible();
-      const quote = search.getByRole("button", { name: "引用并提问" });
-      await expect(quote).toHaveCSS(
-        "color",
-        appearance === "亮色" ? "rgb(103, 103, 108)" : "rgb(170, 170, 176)",
+      const quote = search.getByRole("button", {
+        name: "AI 交互：整理品牌与产品资料",
+        exact: true,
+      });
+      await expect(quote).toHaveText("AI");
+      await expect(quote.locator(".lucide-message-square-quote")).toHaveCount(
+        1,
       );
+      const aiSurface = await quote.evaluate((button) => {
+        // Composite the transparent entry over the selected row, not black.
+        const context = document.createElement("canvas").getContext("2d")!;
+        const rgb = (value: string, surface?: string) => {
+          context.clearRect(0, 0, 1, 1);
+          if (surface) {
+            context.fillStyle = surface;
+            context.fillRect(0, 0, 1, 1);
+          }
+          context.fillStyle = value;
+          context.fillRect(0, 0, 1, 1);
+          return `rgb(${[...context.getImageData(0, 0, 1, 1).data].slice(0, 3).join(",")})`;
+        };
+        const style = getComputedStyle(button);
+        return {
+          ink: rgb(style.color),
+          background: rgb(
+            style.backgroundColor,
+            getComputedStyle(button.closest("article")!).backgroundColor,
+          ),
+        };
+      });
+      const hierarchy = await search
+        .locator("article")
+        .first()
+        .evaluate((row) => {
+          const color = (selector: string) =>
+            getComputedStyle(row.querySelector(selector)!).color;
+          return {
+            title: color("strong"),
+            excerpt: color(".search-excerpt"),
+            metadata: color(".search-result-meta"),
+            background: getComputedStyle(row).backgroundColor,
+          };
+        });
+      expect(
+        new Set([hierarchy.title, hierarchy.excerpt, hierarchy.metadata]).size,
+      ).toBe(3);
+      for (const [ink, background] of [
+        [hierarchy.title, hierarchy.background],
+        [hierarchy.excerpt, hierarchy.background],
+        [hierarchy.metadata, hierarchy.background],
+        [aiSurface.ink, aiSurface.background],
+      ]) {
+        const luminance = (css: string) => {
+          const rgb = css
+            .match(/[\d.]+/g)!
+            .slice(0, 3)
+            .map(Number)
+            .map((v) => v / 255)
+            .map((v) =>
+              v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4,
+            );
+          return rgb[0]! * 0.2126 + rgb[1]! * 0.7152 + rgb[2]! * 0.0722;
+        };
+        const a = luminance(ink!),
+          b = luminance(background!);
+        expect(
+          (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
       await search.screenshot({
         path: `test-results/search-${appearance}-${color}.png`,
       });
@@ -61,6 +128,8 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         "outline-width",
         "2px",
       );
+      await quote.focus();
+      await expect(quote).toHaveCSS("outline-width", "2px");
       await page.keyboard.press("Escape");
       await page.getByRole("button", { name: /^通知(?:，|$)/ }).click();
       const notifications = page.getByRole("dialog", {
@@ -78,7 +147,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         await settings.click();
       await expect(notifications.locator("input:checked + span")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(43, 43, 47)",
+        appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(48, 48, 48)",
       );
       await notifications.screenshot({
         path: `test-results/notifications-${appearance}-${color}.png`,

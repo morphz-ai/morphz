@@ -1,17 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, Pin, PinOff, Square, X } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, ChevronRight, Pin, PinOff, Square } from "lucide-react";
 import { discussionId } from "../../../packages/core/src/model.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
 import { StopResponse, ToolMessage } from "./Conversation.js";
 import { useConversationStream } from "./useConversationStream.js";
+import { InspectorPanel } from "./InspectorPanel.js";
+import type { InspectorLayout } from "./inspector-layout.js";
 
 export function ExecutionSidebar({
   client,
   scope,
   pinned,
-  width,
+  layout,
   onResize,
   onPin,
   onClose,
@@ -21,7 +23,7 @@ export function ExecutionSidebar({
   client: WorkspaceClient;
   scope: ExecutionScope;
   pinned: boolean;
-  width: number;
+  layout: InspectorLayout;
   onResize: (width: number) => void;
   onPin: () => void;
   onClose: () => void;
@@ -30,10 +32,6 @@ export function ExecutionSidebar({
 }) {
   const state = client.boot!.workspace,
     runtime = client.boot!.runtime;
-  const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    heading.current?.focus({ preventScroll: true });
-  }, []);
   const input = state.inputs.find((i) => i.id === scope.inputId);
   const delivery = runtime.deliveries.find((d) => d.inputId === scope.inputId);
   const [stopping, setStopping] = useState(false),
@@ -220,49 +218,21 @@ export function ExecutionSidebar({
     </button>
   );
   return (
-    <aside
+    <InspectorPanel
       className="execution-sidebar"
-      aria-label="执行面板"
-      style={{ width }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) {
-          e.preventDefault();
-          e.stopPropagation();
-          onClose();
-        }
-      }}
-    >
-      <div
-        className="execution-resizer"
-        role="separator"
-        aria-label="调整执行面板宽度"
-        aria-orientation="vertical"
-        aria-valuemin={280}
-        aria-valuemax={520}
-        aria-valuenow={width}
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (["ArrowLeft", "ArrowRight"].includes(e.key)) {
-            e.preventDefault();
-            onResize(
-              Math.max(
-                280,
-                Math.min(520, width + (e.key === "ArrowLeft" ? 16 : -16)),
-              ),
-            );
-          }
-        }}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (e.currentTarget.hasPointerCapture(e.pointerId))
-            onResize(Math.max(280, Math.min(520, innerWidth - e.clientX)));
-        }}
-        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
-      />
-      <header className="execution-sidebar-header">
-        {detail && (
+      label="执行面板"
+      title={scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "执行"}
+      context={
+        allWork && !detail
+          ? "全部工作"
+          : state.projects.find((p) => p.id === scope.projectId)?.title
+      }
+      resizeLabel="调整执行面板宽度"
+      layout={layout}
+      onResize={onResize}
+      onClose={onClose}
+      leading={
+        detail && (
           <button
             className="icon-button"
             aria-label="返回执行概览"
@@ -276,33 +246,22 @@ export function ExecutionSidebar({
           >
             <ArrowLeft />
           </button>
-        )}
-        <h2 ref={heading} tabIndex={-1}>
-          {scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "执行"}
-        </h2>
-        {!detail && (
-          <small>
-            {active.length + new Set(background.map((t) => t.rootId)).size} 项
-            {runtime.activity?.available === false ? "状态待确认" : "进行中"}
-          </small>
-        )}
-        <span className="execution-header-space" />
+        )
+      }
+      actions={
         <button
           className="icon-button"
           aria-label={pinned ? "取消固定执行面板" : "固定执行面板"}
           aria-pressed={pinned}
+          title={
+            pinned ? "取消固定，跟随当前工作" : "固定当前执行，不随页面切换"
+          }
           onClick={onPin}
         >
           {pinned ? <PinOff /> : <Pin />}
         </button>
-        <button
-          className="icon-button"
-          aria-label="关闭执行面板"
-          onClick={onClose}
-        >
-          <X />
-        </button>
-      </header>
+      }
+    >
       <div className="execution-sidebar-scroll">
         {!detail && (
           <div className="execution-scope">
@@ -312,6 +271,10 @@ export function ExecutionSidebar({
             <button aria-pressed={allWork} onClick={() => setAllWork(true)}>
               全部工作
             </button>
+            <small className="execution-scope-count">
+              {active.length + new Set(background.map((t) => t.rootId)).size} 项
+              {runtime.activity?.available === false ? "状态待确认" : "进行中"}
+            </small>
           </div>
         )}
         {!runtime.connected && (
@@ -497,6 +460,6 @@ export function ExecutionSidebar({
           </>
         )}
       </div>
-    </aside>
+    </InspectorPanel>
   );
 }

@@ -8,6 +8,8 @@ import {
 import {
   contentText,
   searchSchema,
+  searchTerms,
+  searchExcerpt,
   type SearchRequest,
   type SearchResult,
   type SearchHit,
@@ -131,7 +133,7 @@ export class SearchIndex {
   search(raw: SearchRequest, access: AccessContext): SearchResult {
     this.assertActor(access);
     const request = searchSchema.parse(raw),
-      needle = request.query.toLocaleLowerCase();
+      terms = searchTerms(request.query);
     if (request.projectId) {
       if (
         !this.db
@@ -148,24 +150,30 @@ export class SearchIndex {
       )
         throw new DomainError("forbidden", "没有访问这个项目的权限。");
     }
-    let where =
-      "m.principal=? AND (instr(o.title_fold,?)>0 OR (instr(o.body_fold,?)>0 AND (json_extract(o.meta,'$.kind')<>'pdf' OR EXISTS (SELECT 1 FROM json_each(o.meta,'$.pagesFold') page WHERE instr(page.value,?)>0))))";
-    const params: SQLInputValue[] = [
-      access.principalId,
-      needle,
-      needle,
-      needle,
-    ];
+    let where = "m.principal=?";
+    const params: SQLInputValue[] = [access.principalId];
+    for (const term of terms) {
+      where +=
+        " AND (instr(o.title_fold,?)>0 OR (instr(o.body_fold,?)>0 AND (json_extract(o.meta,'$.kind')<>'pdf' OR EXISTS (SELECT 1 FROM json_each(o.meta,'$.pagesFold') page WHERE instr(page.value,?)>0))))";
+      params.push(term, term, term);
+    }
     if (request.projectId) {
       where += " AND o.project=?";
       params.push(request.projectId);
     }
-    // Long literal queries use trigram postings. One/two-character queries fall back
-    // to SQLite's projection scan (not the workspace/versions JSON).
-    if ([...needle].length >= 3 && !needle.includes("\0")) {
+    // Intersect all indexable terms first. Short terms still use exact checks,
+    // but no longer force an otherwise indexable multi-term query into a scan.
+    const indexedTerms = terms.filter(
+      (term) => [...term].length >= 3 && !term.includes("\0"),
+    );
+    if (indexedTerms.length) {
       where +=
         " AND o.rowid IN (SELECT rowid FROM search_fts WHERE search_fts MATCH ?)";
-      params.push('"' + needle.replaceAll('"', '""') + '"');
+      params.push(
+        indexedTerms
+          .map((term) => '"' + term.replaceAll('"', '""') + '"')
+          .join(" AND "),
+      );
     }
     const from =
       "FROM search_object o JOIN search_project p ON p.id=o.project JOIN search_member m ON m.project=o.project WHERE " +
@@ -179,9 +187,11 @@ export class SearchIndex {
       .prepare(
         "SELECT o.id,o.project,o.revision,o.title,o.body,o.meta,p.title AS project_title " +
           from +
-          " ORDER BY instr(o.title_fold,?)>0 DESC,json_extract(o.meta,'$.updatedAt') DESC,o.id LIMIT ? OFFSET ?",
+          " ORDER BY (" +
+          terms.map(() => "instr(o.title_fold,?)>0").join(" OR ") +
+          ") DESC,json_extract(o.meta,'$.updatedAt') DESC,o.id LIMIT ? OFFSET ?",
       )
-      .all(...params, needle, request.limit, request.offset) as {
+      .all(...params, ...terms, request.limit, request.offset) as {
       id: string;
       project: string;
       revision: number;
@@ -197,18 +207,20 @@ export class SearchIndex {
         updatedAt: string;
         pages?: string[];
       };
+      const title = row.title.toLocaleLowerCase();
+      const bodyTerms = terms.filter((term) => !title.includes(term));
+      const excerptTerms = bodyTerms.length ? bodyTerms : terms;
       const page = meta.pages
         ? Math.max(
             0,
             meta.pages.findIndex((text) =>
-              text.toLocaleLowerCase().includes(needle),
+              excerptTerms.some((term) =>
+                text.toLocaleLowerCase().includes(term),
+              ),
             ),
           )
         : undefined;
-      const body = meta.pages ? meta.pages[page!]! : row.body,
-        position = body.toLocaleLowerCase().indexOf(needle),
-        start = Math.max(0, position - 72),
-        quote = body.slice(start, start + 260);
+      const body = meta.pages ? meta.pages[page!]! : row.body;
       return {
         artifactId: row.id,
         projectId: row.project,
@@ -218,12 +230,10 @@ export class SearchIndex {
         kind: meta.kind,
         source: meta.source,
         updatedAt: meta.updatedAt,
-        matchedIn: row.title.toLocaleLowerCase().includes(needle)
+        matchedIn: terms.some((term) => title.includes(term))
           ? "title"
           : "content",
-        quote,
-        excerpt:
-          (start ? "…" : "") + quote + (start + 260 < body.length ? "…" : ""),
+        ...searchExcerpt(body, excerptTerms),
         ...(page !== undefined ? { page: page + 1 } : {}),
       };
     });

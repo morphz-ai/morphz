@@ -86,6 +86,7 @@ export default function SourceConnections({
       <p className="muted">持续接入 Markdown 和文本；原文件只读，不会改写。</p>
       <div className="inline">
         <button
+          className="secondary-action"
           disabled={busy}
           onClick={() => void run(() => api.choose(projectId, "directory"))}
         >
@@ -93,6 +94,7 @@ export default function SourceConnections({
           选择目录
         </button>
         <button
+          className="secondary-action"
           disabled={busy}
           onClick={() => void run(() => api.choose(projectId, "file"))}
         >
@@ -124,6 +126,7 @@ export default function SourceConnections({
             </div>
             <div className="inline source-actions">
               <button
+                className="secondary-action"
                 disabled={busy}
                 onClick={() =>
                   void run(() =>
@@ -139,6 +142,7 @@ export default function SourceConnections({
                     : "开始只读同步"}
               </button>
               <button
+                className="secondary-action"
                 disabled={busy || !source.enabled}
                 aria-label={`检查 ${source.label} 的更新`}
                 onClick={() =>
@@ -148,6 +152,7 @@ export default function SourceConnections({
                 <RefreshCw />
               </button>
               <button
+                className="secondary-action"
                 disabled={busy}
                 aria-label={`断开 ${source.label}`}
                 onClick={() => {

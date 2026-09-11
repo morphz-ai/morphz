@@ -112,7 +112,7 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await page.screenshot({ path: "test-results/execution-dialog.png" });
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel("查看执行面板", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("显示右侧栏", { exact: true })).toBeFocused();
   await expect(await openInput(page)).toHaveValue("打开执行记录时保留的草稿");
   await page.getByLabel("隐藏侧边栏").click();
   // Losing focus has hidden the unpinned exchange; reopen it explicitly.

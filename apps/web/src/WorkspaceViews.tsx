@@ -70,9 +70,14 @@ export function ProjectDirectory({
               <option value="recent">最近更新</option>
               <option value="name">名称</option>
             </select>
-            <button onClick={onCreate} aria-label="创建项目" title="创建项目">
+            <button
+              className="secondary-action"
+              onClick={onCreate}
+              aria-label="创建项目"
+              title="创建项目"
+            >
               <Plus />
-              <span className="toolbar-action-label">创建项目</span>
+              <span className="toolbar-action-label">新建</span>
             </button>
           </div>,
           toolbarTarget,

@@ -261,6 +261,13 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   await expect(
     page.getByRole("complementary", { name: "执行面板" }),
   ).toHaveCount(0);
+  // A persisted workbench application can focus its own object history.
+  // Inspect the shared conversation before asserting cross-surface controls.
+  const allHistory = page.getByRole("button", {
+    name: "查看全部交流",
+    exact: true,
+  });
+  if (await allHistory.isVisible()) await allHistory.click();
   await expect(page.locator(".response-controls")).toHaveCount(1);
   expect(calls).toHaveLength(2);
 });

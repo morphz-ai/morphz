@@ -16,6 +16,7 @@ import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
+import { conversationDate } from "./conversation-presentation.js";
 
 export type ExchangePosition = {
   top: number;
@@ -107,6 +108,7 @@ export function Conversation({
   const initialized = useRef(false);
   const revealed = useRef(saved?.revealed ?? revealInputId);
   const [unread, setUnread] = useState(false);
+  const [awayFromLatest, setAwayFromLatest] = useState(!following.current);
   const stream = useConversationStream(
     projectId,
     conversationId,
@@ -241,6 +243,7 @@ export function Conversation({
       setUnread(true);
     revealed.current = revealInputId;
     initialized.current = true;
+    setAwayFromLatest(!following.current);
     positions.set(positionKey, {
       top: el.scrollTop,
       following: following.current,
@@ -268,6 +271,7 @@ export function Conversation({
         following.current = shouldFollow(
           el.scrollHeight - el.clientHeight - el.scrollTop,
         );
+        setAwayFromLatest(!following.current);
         positions.set(positionKey, {
           top: el.scrollTop,
           following: following.current,
@@ -299,6 +303,24 @@ export function Conversation({
         >
           {timeline.map(
             ({ input: item, reply, output, id, createdAt }, index) => {
+              const date = conversationDate(createdAt);
+              const previous = timeline[index - 1];
+              const dateDivider = date &&
+                date.key !==
+                  conversationDate(previous?.createdAt ?? "")?.key && (
+                  <div className="conversation-date">
+                    <time dateTime={date.key}>{date.label}</time>
+                  </div>
+                );
+              const inputId = item?.id ?? reply?.inputId ?? output?.inputId;
+              const previousInputId =
+                previous?.input?.id ??
+                previous?.reply?.inputId ??
+                previous?.output?.inputId;
+              const startsTurn =
+                !!previous &&
+                !dateDivider &&
+                (!inputId || inputId !== previousInputId);
               if (output) {
                 const artifact = state.artifacts.find(
                   (a) => a.id === output.artifactId,
@@ -307,24 +329,37 @@ export function Conversation({
                   (v) => v.revision === output.revision,
                 );
                 return (
-                  <article
-                    key={id}
-                    className="conversation-message agent-message delivery-message"
-                  >
-                    <button
-                      className="delivery-object"
-                      disabled={!version}
-                      aria-label={
-                        "打开交付：" + (version?.title ?? "对象不可用")
-                      }
-                      onClick={() => onOpen(output.artifactId, output.revision)}
+                  <Fragment key={id}>
+                    {dateDivider}
+                    <article
+                      className="conversation-message agent-message delivery-message"
+                      data-starts-turn={startsTurn || undefined}
+                      data-message-id={id}
                     >
-                      {artifact && <ObjectIcon kind={artifact.content.kind} />}
-                      <span>{version?.title ?? "对象不存在或无访问权限"}</span>
-                      <small>v{output.revision}</small>
-                      <ChevronRight size={14} />
-                    </button>
-                  </article>
+                      <button
+                        className="delivery-object"
+                        disabled={!version}
+                        aria-label={
+                          "打开交付：" + (version?.title ?? "对象不可用")
+                        }
+                        onClick={() =>
+                          onOpen(output.artifactId, output.revision)
+                        }
+                      >
+                        {artifact && (
+                          <ObjectIcon kind={artifact.content.kind} />
+                        )}
+                        <span className="delivery-object-info">
+                          <small>交付内容</small>
+                          <span>
+                            {version?.title ?? "对象不存在或无访问权限"}
+                          </span>
+                        </span>
+                        <small>v{output.revision}</small>
+                        <ChevronRight size={14} />
+                      </button>
+                    </article>
+                  </Fragment>
                 );
               }
               const delivery = item
@@ -364,6 +399,7 @@ export function Conversation({
               );
               return (
                 <Fragment key={id}>
+                  {dateDivider}
                   <article
                     className={
                       "message conversation-message" +
@@ -372,6 +408,7 @@ export function Conversation({
                     key={id}
                     data-input-id={item?.id ?? reply?.inputId ?? undefined}
                     data-message-id={id}
+                    data-starts-turn={startsTurn || undefined}
                     data-streaming={reply?.streaming || undefined}
                     data-stream-active={
                       (stream.connected &&
@@ -435,11 +472,20 @@ export function Conversation({
                     {item?.artifactId && (
                       <button
                         className="message-object-link"
-                        onClick={() => onOpen(item.artifactId!)}
+                        onClick={() =>
+                          onOpen(
+                            item.artifactId!,
+                            item.artifactRevision ?? undefined,
+                          )
+                        }
                       >
-                        {state.artifacts.find((a) => a.id === item.artifactId)
-                          ?.title ?? "关联对象"}{" "}
-                        · v{item.artifactRevision}
+                        {state.artifacts
+                          .find((a) => a.id === item.artifactId)
+                          ?.versions.find(
+                            (v) => v.revision === item.artifactRevision,
+                          )?.title ?? "关联对象"}
+                        {item.artifactRevision != null &&
+                          ` · v${item.artifactRevision}`}
                       </button>
                     )}
                     {item ? (
@@ -521,18 +567,21 @@ export function Conversation({
           <p>这里还没有交流记录</p>
         </div>
       )}
-      {unread && (
-        <button
-          className="new-exchange"
-          onClick={() => {
-            following.current = true;
-            if (scroller.current)
-              scroller.current.scrollTop = scroller.current.scrollHeight;
-            setUnread(false);
-          }}
-        >
-          有新内容 · 返回最新
-        </button>
+      {awayFromLatest && (
+        <div className="conversation-return">
+          <button
+            className="new-exchange"
+            onClick={() => {
+              following.current = true;
+              if (scroller.current)
+                scroller.current.scrollTop = scroller.current.scrollHeight;
+              setUnread(false);
+              setAwayFromLatest(false);
+            }}
+          >
+            {unread ? "有新内容 · 返回最新" : "返回最新"}
+          </button>
+        </div>
       )}
     </section>
   );

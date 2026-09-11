@@ -7,7 +7,9 @@ test("导入资料、搜索正文、引用提问与旧版本打开", async ({ pa
   await page.getByLabel("新对象标题").fill(name);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
+  await page
+    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .click();
   const dialog = page.getByRole("dialog", { name: "导入资料" });
   await dialog.getByLabel("选择资料文件").setInputFiles([
     {
@@ -36,9 +38,9 @@ test("导入资料、搜索正文、引用提问与旧版本打开", async ({ pa
   const search = page.getByRole("dialog", { name: "搜索资料" });
   await expect(search.getByText("找到 1 项内容")).toBeVisible();
   await expect(
-    search.locator(".workspace-search-results article > p"),
+    search.locator(".workspace-search-results .search-excerpt"),
   ).toContainText("蝴蝶资料检索");
-  await search.getByRole("button", { name: "引用并提问" }).click();
+  await search.getByRole("button", { name: /^AI 交互：/ }).click();
   await expect(page.locator(".selection-quote")).toContainText("蝴蝶资料检索");
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   // The selected original is carried with the exact version, not pasted into prose.

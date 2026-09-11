@@ -41,6 +41,31 @@ export type SearchResult = {
   workspaceRevision: number;
 };
 
+/** Whitespace separates literal AND terms; punctuation is never query syntax. */
+export function searchTerms(query: string): string[] {
+  return [...new Set(query.toLocaleLowerCase().trim().split(/\s+/u))].filter(
+    Boolean,
+  );
+}
+
+/** Keep an exact, version-bound slice of the original around a matching term. */
+export function searchExcerpt(text: string, terms: string[]) {
+  const folded = text.toLocaleLowerCase();
+  const positions = terms
+    .map((term) => folded.indexOf(term))
+    .filter((position) => position >= 0);
+  const start = Math.max(
+    0,
+    (positions.length ? Math.min(...positions) : 0) - 72,
+  );
+  const quote = text.slice(start, start + 260);
+  return {
+    quote,
+    excerpt:
+      (start ? "…" : "") + quote + (start + 260 < text.length ? "…" : ""),
+  };
+}
+
 export function contentText(content: Content): string {
   switch (content.kind) {
     case "document":
@@ -107,30 +132,37 @@ export function searchArtifacts(
       )
       .map((p) => [p.id, p]),
   );
-  const needle = request.query.toLocaleLowerCase();
+  const terms = searchTerms(request.query);
   const found: SearchHit[] = [];
   for (const artifact of state.artifacts) {
     const project = projects.get(artifact.projectId);
     if (!project) continue;
-    const pdfPage =
-      artifact.content.kind === "pdf"
-        ? Math.max(
-            0,
-            artifact.content.pages.findIndex((page) =>
-              page.toLocaleLowerCase().includes(needle),
-            ),
-          )
-        : undefined;
-    const text =
-      artifact.content.kind === "pdf"
-        ? artifact.content.pages[pdfPage!]!
-        : contentText(artifact.content);
-    const inTitle = artifact.title.toLocaleLowerCase().includes(needle);
-    const index = text.toLocaleLowerCase().indexOf(needle);
-    if (!inTitle && index < 0) continue;
-    // Return exact original text for revision-bound quoting; no lossy normalization.
-    const start = Math.max(0, index - 72);
-    const quote = text.slice(start, start + 260);
+    const title = artifact.title.toLocaleLowerCase();
+    const pages =
+      artifact.content.kind === "pdf" ? artifact.content.pages : undefined;
+    const body = pages ?? [contentText(artifact.content)];
+    const foldedBody = body.map((text) => text.toLocaleLowerCase());
+    if (
+      !terms.every(
+        (term) =>
+          title.includes(term) ||
+          foldedBody.some((text) => text.includes(term)),
+      )
+    )
+      continue;
+    // Prefer a body-only match when the other terms are already in the title.
+    const bodyTerms = terms.filter((term) => !title.includes(term));
+    const excerptTerms = bodyTerms.length ? bodyTerms : terms;
+    const pdfPage = pages
+      ? Math.max(
+          0,
+          foldedBody.findIndex((page) =>
+            excerptTerms.some((term) => page.includes(term)),
+          ),
+        )
+      : undefined;
+    const text = body[pdfPage ?? 0]!;
+    const inTitle = terms.some((term) => title.includes(term));
     found.push({
       artifactId: artifact.id,
       projectId: project.id,
@@ -138,10 +170,8 @@ export function searchArtifacts(
       title: artifact.title,
       kind: artifact.content.kind,
       revision: artifact.revision,
-      excerpt:
-        (start ? "…" : "") + quote + (start + 260 < text.length ? "…" : ""),
+      ...searchExcerpt(text, excerptTerms),
       matchedIn: inTitle ? "title" : "content",
-      quote,
       updatedAt: artifact.updatedAt,
       source: artifact.source,
       ...(pdfPage !== undefined ? { page: pdfPage + 1 } : {}),

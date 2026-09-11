@@ -7,6 +7,7 @@ import {
   Flag,
   Cpu,
   CalendarDays,
+  MessageCircle,
 } from "lucide-react";
 import type {
   Artifact,
@@ -128,8 +129,14 @@ export function TaskSummary({
         )}
       </div>
       {onCompose && (
-        <button className="task-compose-action" onClick={onCompose}>
-          补充或调整
+        <button
+          className="task-compose-action secondary-action"
+          aria-label="补充或调整"
+          title="在输入框中补充或调整这项工作；不会自动发送"
+          onClick={onCompose}
+        >
+          <MessageCircle aria-hidden="true" />
+          补充
         </button>
       )}
       {results.length > 0 && (

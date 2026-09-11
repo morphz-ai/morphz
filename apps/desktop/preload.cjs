@@ -3,6 +3,14 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld(
   "morphzDesktop",
   Object.freeze({
+    appearance: Object.freeze({
+      setMode: (mode) => ipcRenderer.invoke("appearance:mode", mode),
+      onChange: (callback) => {
+        const receive = (_event, state) => callback(state);
+        ipcRenderer.on("appearance:changed", receive);
+        return () => ipcRenderer.removeListener("appearance:changed", receive);
+      },
+    }),
     openExternal: (url) => ipcRenderer.invoke("open-external", url),
     capture: Object.freeze({
       select: () => ipcRenderer.invoke("capture:select"),
