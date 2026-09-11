@@ -444,6 +444,14 @@ impl PostgresStore {
                     activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;
+            // Existing databases must replace the server-side admission
+            // function too; editing the earlier migration only fixes new ones.
+            store
+                .run_versioned_migration(
+                    "20260911_01_scheduler_dependency_ready_fifo",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
             store
                 .run_versioned_migration(
                     "20260726_01_plan_executions",

@@ -12917,6 +12917,15 @@ impl ActivationStore for SqliteStore {
                              json_extract((SELECT payload FROM events WHERE id = older_thread.root_turn_id), '$.dispatch_mode'),
                              ''
                            ) != 'parallel'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM threads predecessor
+                             WHERE predecessor.id = json_extract(
+                               (SELECT payload FROM events WHERE id = older_thread.root_turn_id),
+                               '$.after_thread_id'
+                             )
+                               AND (predecessor.status = 'open'
+                                    OR predecessor.delivery_status IN ('pending', 'deferred'))
+                           )
                            AND (
                              CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                                < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -13046,6 +13055,15 @@ impl ActivationStore for SqliteStore {
                        json_extract((SELECT payload FROM events WHERE id = older_thread.root_turn_id), '$.dispatch_mode'),
                        ''
                      ) != 'parallel'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM threads predecessor
+                       WHERE predecessor.id = json_extract(
+                         (SELECT payload FROM events WHERE id = older_thread.root_turn_id),
+                         '$.after_thread_id'
+                       )
+                         AND (predecessor.status = 'open'
+                              OR predecessor.delivery_status IN ('pending', 'deferred'))
+                     )
                      AND (
                        CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                          < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -13201,6 +13219,10 @@ impl ActivationStore for SqliteStore {
                     .bind(id)
                     .fetch_optional(&mut *tx)
                     .await?;
+                    // FIFO applies only to dependency-ready turns. A follow-up
+                    // waiting for A must not block A's later steering Signal,
+                    // whose Activation legitimately has no parent_activation_id.
+                    // Keep this predicate aligned with both admission read paths.
                     let oldest_queued: Option<String> = sqlx::query_scalar(
                         r#"SELECT activation.id
                            FROM thread_activations activation
@@ -13214,6 +13236,15 @@ impl ActivationStore for SqliteStore {
                                json_extract((SELECT payload FROM events WHERE id = thread.root_turn_id), '$.dispatch_mode'),
                                ''
                              ) != 'parallel'
+                             AND NOT EXISTS (
+                               SELECT 1 FROM threads predecessor
+                               WHERE predecessor.id = json_extract(
+                                 (SELECT payload FROM events WHERE id = thread.root_turn_id),
+                                 '$.after_thread_id'
+                               )
+                                 AND (predecessor.status = 'open'
+                                      OR predecessor.delivery_status IN ('pending', 'deferred'))
+                             )
                            ORDER BY
                              CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
                              activation.trigger_sequence,

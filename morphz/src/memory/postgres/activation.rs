@@ -484,6 +484,9 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                  RETURN;
                END IF;
 
+               -- FIFO only orders dependency-ready turns. A follow-up waiting
+               -- for A cannot block A's parentless steering continuation. Keep
+               -- this predicate aligned with both admission read paths.
                SELECT activation.id INTO oldest_queued
                  FROM thread_activations activation
                  JOIN threads thread
@@ -497,6 +500,15 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                       WHERE id = thread.root_turn_id),
                     ''
                   ) <> 'parallel'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM threads predecessor
+                    WHERE predecessor.id = (
+                      SELECT payload ->> 'after_thread_id' FROM events
+                      WHERE id = thread.root_turn_id
+                    )
+                      AND (predecessor.status = 'open'
+                           OR predecessor.delivery_status IN ('pending', 'deferred'))
+                  )
                 ORDER BY
                   CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
                   activation.trigger_sequence,
@@ -2387,6 +2399,15 @@ impl ActivationStore for PostgresStore {
                              (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = older_thread.root_turn_id),
                              ''
                            ) != 'parallel'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM threads predecessor
+                             WHERE predecessor.id = (
+                               SELECT payload ->> 'after_thread_id' FROM events
+                               WHERE id = older_thread.root_turn_id
+                             )
+                               AND (predecessor.status = 'open'
+                                    OR predecessor.delivery_status IN ('pending', 'deferred'))
+                           )
                            AND (
                              CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                                < CASE WHEN activations.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
@@ -2492,6 +2513,15 @@ impl ActivationStore for PostgresStore {
                        (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = older_thread.root_turn_id),
                        ''
                      ) != 'parallel'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM threads predecessor
+                       WHERE predecessor.id = (
+                         SELECT payload ->> 'after_thread_id' FROM events
+                         WHERE id = older_thread.root_turn_id
+                       )
+                         AND (predecessor.status = 'open'
+                              OR predecessor.delivery_status IN ('pending', 'deferred'))
+                     )
                      AND (
                        CASE WHEN older.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END
                          < CASE WHEN candidate.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END

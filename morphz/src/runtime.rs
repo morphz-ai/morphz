@@ -11956,7 +11956,8 @@ mod tests {
             messages: Vec<Message>,
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
-            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
                 self.entered.notify_one();
                 self.release.notified().await;
                 let mut response = text_response("");
@@ -11968,18 +11969,35 @@ mod tests {
                 });
                 return Ok(response);
             }
-            assert!(
-                messages
+            if call == 1 {
+                assert!(
+                    messages
+                        .iter()
+                        .any(|message| message.content.contains("Use the corrected parser")),
+                    "next Evaluation must see the directed correction"
+                );
+                Ok(text_response("corrected-parser-delivered"))
+            } else {
+                assert_eq!(call, 2, "steering must not replay an already finished turn");
+                assert!(messages
                     .iter()
-                    .any(|message| message.content.contains("Use the corrected parser")),
-                "next Evaluation must see the directed correction"
-            );
-            Ok(text_response("corrected-parser-delivered"))
+                    .any(|message| message.content.contains("Explain the finished parser")));
+                Ok(text_response("follow-up-delivered"))
+            }
         }
     }
 
     #[tokio::test]
     async fn steering_supersedes_uncommitted_response_without_a_second_dialogue() {
+        assert_steering_boundary(false).await;
+    }
+
+    #[tokio::test]
+    async fn steering_resumes_before_the_follow_up_waiting_for_its_thread() {
+        assert_steering_boundary(true).await;
+    }
+
+    async fn assert_steering_boundary(with_follow_up: bool) {
         let database = NamedTempFile::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let marker = workspace.path().join("obsolete.txt");
@@ -12023,6 +12041,27 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // B is older than the steering Signal, but cannot run until A has
+        // delivered. It must not become the FIFO gate for A's continuation.
+        let follow_up = if with_follow_up {
+            Some(
+                session
+                    .send_as_principal_with_options(
+                        "Explain the finished parser",
+                        "User",
+                        runtime.identity().principal_id.clone(),
+                        Some("follow-up".into()),
+                        SessionMessageOptions {
+                            dispatch_mode: Some(crate::memory::MessageDispatchMode::FollowUp),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
         let correction = session
             .send_as_principal_with_options(
                 "Use the corrected parser",
@@ -12049,7 +12088,17 @@ mod tests {
             !marker.exists(),
             "superseded model action must never execute"
         );
-        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        if let Some(follow_up) = follow_up {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+                .await
+                .expect("follow-up must start once the steered Thread has delivered")
+                .unwrap();
+            assert_eq!(next.payload["text"], "follow-up-delivered");
+            assert_eq!(next.payload["root_turn_id"], follow_up.event_id);
+            assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        } else {
+            assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        }
         assert!(runtime
             .inner
             .store

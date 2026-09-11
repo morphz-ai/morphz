@@ -2078,6 +2078,159 @@ where
             .unwrap(),
         ThreadActivationMutation::Updated(_)
     ));
+    // A directed correction resumes A without a parent Activation. B is older
+    // in the queue, but its dependency on A must exclude it from the FIFO head.
+    let mut steering = dispatch_message("conformance-dispatch-steering", "correct first input");
+    steering.payload.insert(
+        "input_destination".to_string(),
+        serde_json::to_value(morphz::steering::InputDestination::Thread {
+            thread_id: first_thread.id.clone(),
+            generation: first_thread.generation,
+        })
+        .unwrap(),
+    );
+    let steering = match store
+        .claim_message(
+            dispatch_session_id,
+            "conformance-dispatch-steering-client",
+            &steering,
+            MessageDispatchMode::Parallel,
+        )
+        .await
+        .unwrap()
+    {
+        MessageClaim::Accepted { event, .. } => event,
+        other => panic!("unexpected steering claim: {other:?}"),
+    };
+    let steering_signal = store
+        .next_pending_thread_signal(&first_thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(steering_signal.event_id, steering.id);
+    let steering_activation = store
+        .claim_thread_signal_batch(
+            NewThreadSignal {
+                id: steering_signal.id,
+                thread_id: first_thread.id.clone(),
+                thread_generation: first_thread.generation,
+                event_id: steering.id.clone(),
+                principal_id: None,
+                sequence: steering_signal.sequence,
+                kind: steering.topic.clone(),
+                parent_activation_id: None,
+            },
+            NewThreadActivation {
+                id: "conformance-dispatch-steering-activation".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: dispatch_session_id.to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: steering.id.clone(),
+                trigger_sequence: steering_signal.sequence,
+                trigger_kind: steering.topic.clone(),
+                parent_activation_id: None,
+                root_turn_id: first.id.clone(),
+            },
+            32,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(steering_activation.parent_activation_id.is_none());
+    assert_eq!(steering_activation.root_turn_id, first.id);
+    assert!(steering_activation.trigger_sequence > follow_up_activation.trigger_sequence);
+    assert!(store
+        .dialogue_turn_activation_runnable(&steering_activation.id)
+        .await
+        .unwrap());
+    assert!(!store
+        .dialogue_turn_activation_runnable(&follow_up_activation.id)
+        .await
+        .unwrap());
+    let admission = store
+        .list_queued_thread_activations_for_admission(32, 2, 60_000)
+        .await
+        .unwrap();
+    assert!(admission
+        .iter()
+        .any(|(record, _)| record.id == steering_activation.id));
+    assert!(!admission
+        .iter()
+        .any(|(record, _)| record.id == follow_up_activation.id));
+    let steering_running = match store
+        .update_thread_activation(
+            &steering_activation.id,
+            steering_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-dispatch-steering-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(record) => record,
+        other => panic!("steering must bypass the dependent follow-up: {other:?}"),
+    };
+    assert!(matches!(
+        store
+            .update_thread_activation(
+                &steering_running.id,
+                steering_running.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+    // Finishing the Evaluation is not enough: B must also wait for delivery.
+    for delivery_status in [DeliveryStatus::Pending, DeliveryStatus::Deferred] {
+        let first_thread = store.get_thread(&first_thread.id).await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .update_thread(
+                    &first_thread.id,
+                    first_thread.revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    Some("first serial reply"),
+                    Some("conformance-dispatch-reply-a"),
+                    Some(delivery_status),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        assert!(!store
+            .dialogue_turn_activation_runnable(&follow_up_activation.id)
+            .await
+            .unwrap());
+        assert!(!store
+            .list_queued_thread_activations_for_admission(32, 2, 60_000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(record, _)| record.id == follow_up_activation.id));
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &follow_up_activation.id,
+                    follow_up_activation.revision,
+                    ThreadActivationStatus::Running,
+                    Some("conformance-dispatch-worker-b"),
+                    Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Conflict { .. }
+        ));
+    }
     let first_thread = store.get_thread(&first_thread.id).await.unwrap().unwrap();
     assert!(matches!(
         store
@@ -10516,6 +10669,38 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     // remain available from `public` across repeated conformance runs.
     let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
     let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    // Simulate an existing installation with the old, unconditional FIFO
+    // function and all earlier migration markers. The new migration must
+    // replace that function, not merely fix newly-created databases.
+    let function_definition_sql =
+        "SELECT pg_get_functiondef('morphz_update_thread_activation_v1(text,bigint,text,text,text,bigint,text)'::regprocedure)";
+    let fixed_definition = sqlx::query_scalar::<_, String>(function_definition_sql)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    let legacy_definition = fixed_definition.replace(
+        "WHERE predecessor.id = (",
+        "WHERE FALSE AND predecessor.id = (",
+    );
+    assert_ne!(legacy_definition, fixed_definition);
+    sqlx::query(&legacy_definition)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20260911_01_scheduler_dependency_ready_fifo")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store.pool().close().await;
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(function_definition_sql)
+            .fetch_one(store.pool())
+            .await
+            .unwrap(),
+        fixed_definition
+    );
     let applied_migrations =
         sqlx::query_scalar::<_, String>("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(store.pool())
@@ -10551,6 +10736,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260820_01_tool_call_history",
         "20260820_02_principal_context_encounters",
         "20260901_01_agent_provider_bindings",
+        "20260911_01_scheduler_dependency_ready_fifo",
     ] {
         assert!(
             applied_migrations.contains(version),
