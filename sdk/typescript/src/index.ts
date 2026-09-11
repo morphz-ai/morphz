@@ -44,6 +44,8 @@ export interface ContextRecord {
 export interface UpdateSessionInput {
   title?: string;
   status?: string;
+  /** Omit to preserve the current override; null restores Runtime inheritance. */
+  permission_mode?: "request_approval" | "auto_review" | "full_access" | null;
 }
 
 export interface SessionRecord {

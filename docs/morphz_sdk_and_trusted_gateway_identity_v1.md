@@ -140,6 +140,17 @@ SQLite 和 PostgreSQL 共用上述语义；RemoteRuntimeStore 自动覆盖新增
 PostgreSQL 使用显式隔离测试库运行 `session_approval_postgres_contract -- --ignored`，
 不把未配置时跳过当作已通过。TypeScript SDK：`cd sdk/typescript && npm test`。
 
+### 3.2 可还原的会话审批预设（2026-09-11）
+
+`PATCH /api/sessions/:session_id` 的 `permission_mode` 区分三种输入：字段缺省
+保持原值，具体预设设置会话覆盖，显式 `null` 删除覆盖并恢复继承 Runtime 默认值。
+参与者仍通过同一服务凭证和 Principal/Session 授权；他人不能设置或清除该覆盖。
+`custom` 仍被拒绝，清除覆盖不修改 Runtime 默认策略、sandbox 或现有审批决定。
+此语义也适用于独立的 Operator 控制面，但产品参与者不得借用 Operator 凭证。
+
+原生回归先复现旧接口在 `null` 返回成功后仍保留 `request_approval` 的问题，
+修复后覆盖了缺省不改、明确还原、同值重复、跨身份拒绝和 `custom` 拒绝。
+
 ## 4. 旧 Session 的显式认领
 
 旧网站数据库已经保存 `users.id → morphz_session_id`，但旧 Runtime 可能没有 Principal 绑定。可信 Gateway 在读到该权威映射后调用：

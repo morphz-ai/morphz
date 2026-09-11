@@ -113,6 +113,18 @@ test("Context control calls use service authority while Session mutations carry 
   assert.equal(calls[1].init?.method, "PATCH");
 });
 
+test("Session permission updates preserve explicit null and the participant identity", async () => {
+  const calls: RequestInit[] = [];
+  const client = new MorphzClient({ baseUrl: "https://runtime.example", serviceToken: "gateway-secret",
+    fetch: async (_url, init) => { calls.push(init!); return Response.json({ id: "session-a" }); },
+  });
+  for (const permission_mode of ["request_approval", null] as const) {
+    await client.updateSession({ id: "site-user-42" }, "session-a", { permission_mode });
+    assert.deepEqual(JSON.parse(String(calls.at(-1)?.body)), { permission_mode });
+    assert.equal(new Headers(calls.at(-1)?.headers).get("x-morphz-principal"), "site-user-42");
+  }
+});
+
 test("Session list unwraps the HTTP collection envelope", async () => {
   const client = new MorphzClient({
     baseUrl: "https://runtime.example",

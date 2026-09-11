@@ -288,12 +288,25 @@ struct UpdateSessionRequest {
     status: Option<SessionStatus>,
     model_alias: Option<String>,
     reasoning_effort: Option<String>,
-    permission_mode: Option<crate::permission::PermissionMode>,
+    /// Missing leaves the Session unchanged; explicit null restores the
+    /// Runtime default. Preserving this distinction makes presets reversible.
+    #[serde(default, deserialize_with = "deserialize_session_permission_mode")]
+    permission_mode: Option<Option<crate::permission::PermissionMode>>,
     sandbox_mode: Option<crate::permission::SandboxMode>,
     /// Empty string restores Runtime inheritance; a concrete id becomes the
     /// destination for subsequently-created Dialogue Threads only.
     default_target_id: Option<String>,
     context_sharing: Option<crate::memory::SessionContextSharing>,
+}
+
+fn deserialize_session_permission_mode<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<crate::permission::PermissionMode>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<crate::permission::PermissionMode> as serde::Deserialize>::deserialize(deserializer)
+        .map(Some)
 }
 
 #[derive(serde::Deserialize)]
@@ -7295,7 +7308,7 @@ async fn handle_update_session(
         Some(value) if value.trim().is_empty() => Some(None),
         Some(value) => Some(Some(value.trim().to_string())),
     };
-    if permission_mode == Some(crate::permission::PermissionMode::Custom) {
+    if permission_mode == Some(Some(crate::permission::PermissionMode::Custom)) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "custom permission mode requires a complete Runtime policy and is not a Session preset",
@@ -7459,7 +7472,7 @@ async fn handle_update_session(
                 .update_session(
                     &session_id,
                     SessionUpdate {
-                        permission_mode: permission_mode.map(Some),
+                        permission_mode,
                         sandbox_mode: sandbox_mode.map(Some),
                         ..Default::default()
                     },
@@ -7509,7 +7522,7 @@ async fn handle_update_session(
                 status,
                 model_alias,
                 reasoning_effort,
-                permission_mode: permission_mode.map(Some),
+                permission_mode,
                 sandbox_mode: sandbox_mode.map(Some),
                 default_target_id,
             },
@@ -11005,6 +11018,68 @@ mod tests {
             .await
             .is_err());
 
+        // Participant policy presets must be reversible without borrowing
+        // Dashboard authority. Explicit null restores Runtime inheritance;
+        // omission leaves the previously selected preset unchanged.
+        for (principal, patch, expected_status, expected_mode) in [
+            (
+                "site-user-1",
+                json!({"permission_mode":"request_approval"}),
+                StatusCode::OK,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-2",
+                json!({"permission_mode":null}),
+                StatusCode::FORBIDDEN,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-1",
+                json!({"title":"Main"}),
+                StatusCode::OK,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":null}),
+                StatusCode::OK,
+                None,
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":null}),
+                StatusCode::OK,
+                None,
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":"custom"}),
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+        ] {
+            let response = handle_update_session(
+                State(Arc::clone(&state)),
+                Path("gateway-session-a".into()),
+                gateway_headers(Some(principal)),
+                Query(AuthQuery::default()),
+                Json(serde_json::from_value(patch).unwrap()),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                runtime
+                    .get_session("gateway-session-a")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .permission_mode,
+                expected_mode
+            );
+        }
+
         // A Dashboard Operator may change the Session's Evaluation model as
         // control-plane policy without impersonating its participant.
         let operator_model_update = handle_update_session(
@@ -13895,7 +13970,7 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
-                permission_mode: Some(crate::permission::PermissionMode::FullAccess),
+                permission_mode: Some(Some(crate::permission::PermissionMode::FullAccess)),
                 sandbox_mode: None,
                 default_target_id: None,
                 context_sharing: None,

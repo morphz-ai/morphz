@@ -90,6 +90,21 @@ async fn main() {
 }
 
 async fn run() -> Result<(), StoreError> {
+    // Payload-free startup checkpoints distinguish remote-store restoration
+    // from platform readiness. Never include config, identities or errors.
+    let startup_began = Instant::now();
+    let mut previous_phase = startup_began;
+    let mut startup_phase = |phase: &'static str| {
+        let now = Instant::now();
+        tracing::info!(
+            event_code = "host.startup_phase",
+            phase,
+            phase_ms = now.duration_since(previous_phase).as_millis() as u64,
+            elapsed_ms = now.duration_since(startup_began).as_millis() as u64,
+            "Hosted startup phase completed"
+        );
+        previous_phase = now;
+    };
     let compute_policy = HostComputePolicy::from_env()?;
     let home = PathBuf::from(required("MORPHZ_HOME")?);
     if !home.is_absolute() {
@@ -121,6 +136,7 @@ async fn run() -> Result<(), StoreError> {
     required("MORPHZ_DASHBOARD_TOKEN")?;
     let provider_id = required("MORPHZ_SERVER_IDENTITY_PROVIDER_ID")?;
     let store = Arc::new(RemoteRuntimeStore::connect_owned(transport).await?);
+    startup_phase("store_claim_and_replica");
     let fence = store.compute_fence();
     let lost = store.ownership_flag();
     let file_root = home.clone();
@@ -140,6 +156,7 @@ async fn run() -> Result<(), StoreError> {
     })
     .await??
     .install()?;
+    startup_phase("files_restore");
     tokio::task::spawn_blocking(move || {
         HostConfiguration::restore(
             config_root,
@@ -152,8 +169,10 @@ async fn run() -> Result<(), StoreError> {
     })
     .await??
     .install()?;
+    startup_phase("configuration_restore");
     let secrets =
         tokio::task::spawn_blocking(move || SecretStore::managed(Arc::new(credentials))).await??;
+    startup_phase("credential_catalog_restore");
     let mut app = config::resolve_config(&home, None, None)?.config;
     app.apply_runtime_env_overrides()?;
     // The Cloud compute instance is not the user's execution target.
@@ -198,6 +217,7 @@ async fn run() -> Result<(), StoreError> {
         context_id: identity.context_id.clone(),
     };
     let gateway_identity = app.server.identity.clone();
+    startup_phase("configuration_and_client");
     let runtime = MorphzRuntime::builder(app, client)
         .identity(identity)
         .secret_store(secrets)
@@ -205,6 +225,7 @@ async fn run() -> Result<(), StoreError> {
         .principal_first_seen_cues(true)
         .build()
         .await?;
+    startup_phase("runtime_build");
     // Register before capturing the startup frontier. Reset old readers before
     // opening HTTP; startup/recovery facts after this point must be published.
     let feed = runtime.subscribe_host_observer();
@@ -220,6 +241,7 @@ async fn run() -> Result<(), StoreError> {
     let mut observer_queue = ObserverQueue::new(store.compute_fence(), initial)?;
     store.install_observer_progress(observer_queue.progress())?;
     flush_observers(&mut observer_queue, &observers, &store).await?;
+    startup_phase("observer_frontier");
     let mut observer_task = tokio::spawn(publish_observers(
         observer_queue,
         feed,
@@ -227,10 +249,13 @@ async fn run() -> Result<(), StoreError> {
         observers,
     ));
     runtime.start().await?;
+    startup_phase("runtime_start");
     // Provision the one Agent's primary Session without claiming it for the
     // local operator. The verified user gateway binds its Principal separately.
     store.ensure_session(initial_session).await?;
+    startup_phase("primary_session");
     store.complete_recovery().await?;
+    startup_phase("recovery_commit");
     let bind = required("MORPHZ_BIND")?;
     let gate = Arc::new(HostRequestGate::default());
     Server::new(runtime.clone(), defaults)
@@ -238,6 +263,7 @@ async fn run() -> Result<(), StoreError> {
         .with_host_request_gate(gate.clone())
         .start(&bind)
         .await?;
+    startup_phase("http_ready");
     tracing::info!(
         event_code = "host.ready",
         compute_mode = compute_policy.name(),
