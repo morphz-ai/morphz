@@ -81,7 +81,7 @@ impl TurnStoreProfile {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Stage {
     Queue,
     Restore,
@@ -175,6 +175,7 @@ impl OperationTiming {
 
     pub(super) fn mark(&mut self, stage: Stage) {
         if let Some(clock) = &mut self.0 {
+            tracing::trace!(target: "morphz::remote_store_stage", operation = clock.operation, ?stage, "native store phase");
             clock.mark(stage, Instant::now());
         }
     }

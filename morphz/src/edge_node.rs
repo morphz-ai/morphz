@@ -1419,8 +1419,29 @@ impl EdgeNodeWorker {
                     return Ok(true);
                 }
             };
-        let local_authority_approved = match self
-            .authorize_local_capability(&execution_command, provider_local_preauthorized)
+        let internal_stage = artifact_channel.as_ref().map(|channel| match channel {
+            PreparedEdgeArtifactChannel::RuntimeToEdge { channel, stage } => {
+                crate::artifact::InternalArtifactStage {
+                    path: if channel.payload_kind == EdgeArtifactPayloadKind::DirectoryArchive {
+                        stage.with_extension("tree")
+                    } else {
+                        stage.clone()
+                    },
+                    access: crate::permission::FilesystemAccess::Read,
+                }
+            }
+            PreparedEdgeArtifactChannel::EdgeToRuntime { stage, .. } => {
+                crate::artifact::InternalArtifactStage {
+                    path: stage.clone(),
+                    access: crate::permission::FilesystemAccess::Write,
+                }
+            }
+        });
+        let local_authority_approved = match crate::artifact::CURRENT_INTERNAL_ARTIFACT_STAGE
+            .scope(
+                internal_stage.clone(),
+                self.authorize_local_capability(&execution_command, provider_local_preauthorized),
+            )
             .await
         {
             Ok(approved) => approved,
@@ -1487,10 +1508,13 @@ impl EdgeNodeWorker {
                 side_effect_tx.clone(),
                 crate::tool::CURRENT_PHYSICAL_SIDE_EFFECT.scope(
                     side_effect_tx,
-                    self.runtime.execute_edge_tool_streaming(
-                        &execution_command,
-                        local_authority_approved,
-                        Some(output_tx),
+                    crate::artifact::CURRENT_INTERNAL_ARTIFACT_STAGE.scope(
+                        internal_stage,
+                        self.runtime.execute_edge_tool_streaming(
+                            &execution_command,
+                            local_authority_approved,
+                            Some(output_tx),
+                        ),
                     ),
                 ),
             ),

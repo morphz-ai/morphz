@@ -1375,12 +1375,17 @@ impl Default for EdgeExecutionConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutionTargetsConfig {
     pub local_enabled: bool,
+    /// Explicit data-plane opt-in when local execution is disabled. Publishes
+    /// only `transfer` with a non-overridable workspace boundary; it never
+    /// enables shell/read/write tool fallback.
+    pub local_artifact_transfer_enabled: bool,
 }
 
 impl Default for ExecutionTargetsConfig {
     fn default() -> Self {
         Self {
             local_enabled: true,
+            local_artifact_transfer_enabled: false,
         }
     }
 }
@@ -3673,6 +3678,13 @@ impl AppConfig {
             self.execution_targets.local_enabled = parse_env_bool(&value).ok_or_else(|| {
                 format!("MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED is not a valid boolean: {value}")
             })?;
+        }
+        if let Ok(value) = std::env::var("MORPHZ_EXECUTION_TARGETS_LOCAL_ARTIFACT_TRANSFER_ENABLED")
+        {
+            self.execution_targets.local_artifact_transfer_enabled =
+                parse_env_bool(&value).ok_or_else(|| {
+                    format!("MORPHZ_EXECUTION_TARGETS_LOCAL_ARTIFACT_TRANSFER_ENABLED is not a valid boolean: {value}")
+                })?;
         }
         if let Ok(value) = std::env::var("MORPHZ_PERMISSION_MODE") {
             self.permissions.mode = match value.trim().to_ascii_lowercase().as_str() {

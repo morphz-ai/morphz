@@ -1325,7 +1325,16 @@ impl MorphzRuntimeBuilder {
             .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
         let human_approval_hub = HumanApprovalHub::default();
-        let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
+        let mut permission_profile = PermissionProfile::from_config(&permission_config)?;
+        if !self.config.execution_targets.local_enabled
+            && self
+                .config
+                .execution_targets
+                .local_artifact_transfer_enabled
+        {
+            permission_profile = permission_profile.confine_to_workspace();
+        }
+        let permission_profile = Arc::new(permission_profile);
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
             tracing::warn!(event_code = "runtime.permissions.full_access_enabled", "Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries");
         }
@@ -1566,6 +1575,24 @@ impl MorphzRuntimeBuilder {
             local_target.status = crate::memory::ExecutionTargetStatus::Offline;
             local_target.capabilities.clear();
             local_target.metadata["availability"] = json!("disabled_by_configuration");
+            if self
+                .config
+                .execution_targets
+                .local_artifact_transfer_enabled
+                && registry
+                    .physical_tool_names()
+                    .iter()
+                    .any(|name| name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME)
+            {
+                // The hosted Artifact data plane is not an execution fallback.
+                // Explicitly publish only transfer; both endpoint permissions,
+                // approvals, digest validation and frozen Routes still apply.
+                local_target.status = crate::memory::ExecutionTargetStatus::Online;
+                local_target.capabilities =
+                    vec![crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.into()];
+                local_target.name = "Runtime Artifact transfer endpoint".into();
+                local_target.metadata["availability"] = json!("artifact_transfer_only");
+            }
         }
         store.register_execution_target(local_target).await?;
         let mut runtime_managed_ssh_target_ids = HashSet::new();
@@ -4331,6 +4358,31 @@ impl MorphzRuntime {
         &self,
         command: &crate::memory::EdgeCommandRecord,
     ) -> Result<String, RuntimeError> {
+        if command.route.get("source").is_none() && command.route.get("destination").is_none() {
+            // A local Edge transfer has already been localized by the worker.
+            // It uses the ordinary local Tool, not the cross-target dispatcher.
+            let route: crate::execution_target::ExecutionRouteSnapshot =
+                serde_json::from_value(command.route.clone())?;
+            let request = crate::artifact::transfer_request_from_tool_arguments(
+                &command.arguments,
+                format!("transfer:{}", command.job_id),
+            )?;
+            if route.target_id != crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+                || request.source.target_id != route.target_id
+                || request.destination.target_id != route.target_id
+            {
+                return Err(
+                    "Edge local Artifact request does not match its localized Route".into(),
+                );
+            }
+            return self
+                .inner
+                .registry
+                .get(ARTIFACT_TRANSFER_TOOL_NAME)
+                .ok_or("Edge Runtime has not registered transfer")?
+                .execute(&command.arguments)
+                .await;
+        }
         let routes: crate::execution_target::ArtifactTransferRouteSnapshot =
             serde_json::from_value(command.route.clone())?;
         let request = crate::artifact::transfer_request_from_tool_arguments(
@@ -5425,34 +5477,42 @@ impl MorphzRuntime {
             let execution_activation_id = job.activation_id.clone();
             let execution_context_id = job.context_id.clone();
             let execution_session_id = job.session_id.clone();
-            let execute = self
-                .inner
-                .execution_targets
-                .execute(&execution_job, tool, &arguments);
-            let execution = crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
-                side_effect_tx,
-                CURRENT_ARTIFACT_TRANSFER_PROGRESS.scope(
-                    progress_tx,
-                    crate::tool::CURRENT_EXECUTION_JOB.scope(Some(tool_context), async {
-                        crate::tool::CURRENT_PRINCIPAL_ID
-                            .scope(execution_principal_id, async {
-                                crate::tool::CURRENT_ATTEMPT_ID
-                                    .scope(execution_activation_id, async {
-                                        crate::tool::CURRENT_CONTEXT_ID
-                                            .scope(execution_context_id, async {
-                                                crate::tool::CURRENT_SESSION_ID
-                                                    .scope(execution_session_id, execute)
+            let dispatcher = Arc::clone(&self.inner.execution_targets);
+            // Physical work can hold a Store mutex while awaiting authority.
+            // Polling it inline in the control select would suspend that work
+            // whenever a heartbeat/progress branch awaits the same Store.
+            // JoinSet keeps it independently driven and aborts it on every
+            // early return; shutdown below also waits for cancellation before
+            // publishing the durable terminal result.
+            let mut execution = tokio::task::JoinSet::new();
+            execution.spawn(async move {
+                let execute = dispatcher.execute(&execution_job, tool, &arguments);
+                crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT
+                    .scope(
+                        side_effect_tx,
+                        CURRENT_ARTIFACT_TRANSFER_PROGRESS.scope(
+                            progress_tx,
+                            crate::tool::CURRENT_EXECUTION_JOB.scope(Some(tool_context), async {
+                                crate::tool::CURRENT_PRINCIPAL_ID
+                                    .scope(execution_principal_id, async {
+                                        crate::tool::CURRENT_ATTEMPT_ID
+                                            .scope(execution_activation_id, async {
+                                                crate::tool::CURRENT_CONTEXT_ID
+                                                    .scope(execution_context_id, async {
+                                                        crate::tool::CURRENT_SESSION_ID
+                                                            .scope(execution_session_id, execute)
+                                                            .await
+                                                    })
                                                     .await
                                             })
                                             .await
                                     })
                                     .await
-                            })
-                            .await
-                    }),
-                ),
-            );
-            tokio::pin!(execution);
+                            }),
+                        ),
+                    )
+                    .await
+            });
             let mut control_tick = tokio::time::interval(std::time::Duration::from_secs(1));
             control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let progress_started = std::time::Instant::now();
@@ -5460,9 +5520,9 @@ impl MorphzRuntime {
             let mut persisted_progress: Option<ArtifactTransferProgress> = None;
             let mut progress_open = true;
             let mut side_effect_open = true;
-            loop {
+            let result = loop {
                 tokio::select! {
-                    result = &mut execution => {
+                    result = execution.join_next() => {
                         while let Ok(progress) = progress_rx.try_recv() {
                             latest_progress = Some(progress);
                         }
@@ -5473,7 +5533,11 @@ impl MorphzRuntime {
                                 }
                             }
                         }
-                        break result;
+                        break match result {
+                            Some(Ok(result)) => result,
+                            Some(Err(error)) => Err(format!("Artifact Transfer executor task failed: {error}").into()),
+                            None => Err("Artifact Transfer executor task disappeared".into()),
+                        };
                     },
                     progress = progress_rx.recv(), if progress_open => {
                         match progress {
@@ -5534,8 +5598,8 @@ impl MorphzRuntime {
                                 let child_id = crate::artifact::artifact_transfer_relay_leg_job_id(job_id, leg);
                                 let _ = self.inner.store.request_edge_command_cancel(&child_id).await;
                             }
-                            // Dropping the physical future closes local streams
-                            // and kills managed SSH children (`kill_on_drop`).
+                            // shutdown below drops physical streams and managed
+                            // SSH children (`kill_on_drop`) before terminal CAS.
                             break Err(crate::artifact::ArtifactTransferCancelled.into());
                         }
                         let progress_ref = latest_progress.as_ref().map(|progress| {
@@ -5574,7 +5638,9 @@ impl MorphzRuntime {
                         }
                     }
                 }
-            }
+            };
+            execution.shutdown().await;
+            result
         };
 
         let (status, text, error) = match result {
@@ -13782,6 +13848,86 @@ mod tests {
                 &runtime.identity().agent_id,
                 &runtime.identity().context_id,
                 "thread-cloud-no-target",
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn cloud_config_artifact_transfer_only_keeps_physical_tools_disabled() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.execution_targets.local_enabled = false;
+        config.execution_targets.local_artifact_transfer_enabled = true;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let local = runtime
+            .get_execution_target(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.status, crate::memory::ExecutionTargetStatus::Online);
+        assert_eq!(local.capabilities, vec!["transfer".to_string()]);
+        assert_eq!(local.metadata["availability"], "artifact_transfer_only");
+        let dispatcher = &runtime.inner.execution_targets;
+        for tool in ["exec", "read", "write", "edit", "list_files", "search"] {
+            let error = dispatcher
+                .validate_for_tool(
+                    &local.id,
+                    tool,
+                    r#"{"command":"pwd"}"#,
+                    Some(&runtime.identity().principal_id),
+                    &runtime.identity().agent_id,
+                    &runtime.identity().context_id,
+                    "thread-cloud-transfer-only",
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+                    .is_some(),
+                "{tool} must still require a real execution Target"
+            );
+        }
+        dispatcher
+            .validate_for_tool(
+                &local.id,
+                "transfer",
+                "{}",
+                Some(&runtime.identity().principal_id),
+                &runtime.identity().agent_id,
+                &runtime.identity().context_id,
+                "thread-cloud-transfer-only",
+            )
+            .await
+            .unwrap();
+        // A previously frozen local exec must also fail at physical dispatch,
+        // not only at today's model/API admission check.
+        let now = chrono::Utc::now();
+        let old_job: ExecutionJobRecord = serde_json::from_value(json!({
+            "id": "old-local-exec", "revision": 1, "activation_id": "old-activation",
+            "thread_id": "old-thread", "agent_id": runtime.identity().agent_id,
+            "context_id": runtime.identity().context_id, "session_id": "old-session",
+            "target_id": local.id, "tool_call_id": "old-call", "tool_name": "exec",
+            "request": { crate::execution_target::EXECUTION_ROUTE_REQUEST_KEY:
+                crate::execution_target::ExecutionRouteSnapshot::freeze(&local) },
+            "status": crate::memory::ExecutionJobStatus::Queued,
+            "retry_safety": crate::memory::ExecutionRetrySafety::AtMostOnce,
+            "result_refs": [], "created_at": now, "updated_at": now
+        }))
+        .unwrap();
+        let error = dispatcher
+            .execute(
+                &old_job,
+                runtime.inner.registry.get("exec").unwrap(),
+                r#"{"command":"exit 0"}"#,
             )
             .await
             .unwrap_err();

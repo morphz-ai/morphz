@@ -177,6 +177,9 @@ async fn run() -> Result<(), StoreError> {
     app.apply_runtime_env_overrides()?;
     // The Cloud compute instance is not the user's execution target.
     app.execution_targets.local_enabled = false;
+    // Explicit hosted data-plane role: uploaded files can cross the existing
+    // authorized transfer contract without publishing exec/read/write tools.
+    app.execution_targets.local_artifact_transfer_enabled = true;
     let workspace = home.join("workspace");
     std::fs::create_dir_all(&workspace)?;
     app.permissions.workspace_root = workspace.to_string_lossy().into_owned();

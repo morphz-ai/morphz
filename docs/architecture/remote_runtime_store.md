@@ -347,6 +347,39 @@ binds the user's Principal, rather than a bootstrap-local operator claiming the
 Session. Cloud local execution is disabled; uploaded files remain available for
 transfer to a selected Edge target through the existing tool/API contract.
 
+Correction from the real-provider gate (2026-09-11): the initial hosted entrypoint
+disabled every local Target capability, so a valid Runtime-to-Edge `transfer`
+failed as `EXECUTION_TARGET_REQUIRED` even when the selected Edge was connected.
+The previous sentence described intent, not verified data-plane completion.
+An explicit, default-off `execution_targets.local_artifact_transfer_enabled`
+option now permits an online `target-default` with only `transfer` when ordinary
+local execution is disabled; the hosted executable opts in. Its metadata says
+`artifact_transfer_only`, not a user computer. Shell and read/write/edit/search
+tools still return the machine-readable missing-execution-target boundary.
+The opt-in also installs a non-overridable workspace boundary in the hosted
+PermissionProfile. Absolute paths, parent traversal and symlink escapes outside
+the Agent workspace fail even with extra roots or a Full Access Session. Protected
+paths remain protected in this mode, and directory transfers check descendants
+and prospective publication paths; hosted transfers reject symlinks and special
+files. This is service-host isolation, not a second jail for ordinary self-hosted
+Full Access deployments. Both admission and physical dispatch still refuse local
+shell/read/write capabilities, including previously frozen jobs after a role change.
+
+Transfers retain both endpoints' authorization, approvals, frozen routes, digest
+checks and atomic publication. Explicit user SDK transfer intent uses endpoint
+policy; it is not evidence of a model tool's remote-operation human approval.
+The Edge worker supplies only its exact authenticated byte-channel stage as a
+task-local read or write capability. That internal capability is not a request
+field or reusable grant, does not cover neighboring paths, and never unprotects
+the user endpoint or its directory descendants. Localized Edge transfers execute
+the ordinary local transfer Tool; dual Managed SSH routes keep the dispatcher.
+
+The direct transfer executor is driven independently of its heartbeat/control
+loop. A branch waiting on RemoteRuntimeStore must not suspend the physical
+future while it holds that Store's replica lock. Its JoinSet aborts on early
+return; cancellation drains the task before committing terminal state. True
+remote file receipt and physical reads remain separate acceptance requirements.
+
 Remote capability leases use the registered Target's platform for directory
 ancestry, never the compute host's `PathBuf` semantics or a model-supplied dialect.
 Windows paths are parsed into Windows components even on a Unix Cloud host;

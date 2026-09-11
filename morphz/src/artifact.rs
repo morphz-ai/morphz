@@ -63,6 +63,19 @@ pub const ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY: &str = "_morphz_artifact_transfe
 /// request. It is intentionally absent from the model-visible Tool schema.
 pub const ARTIFACT_TRANSFER_ID_REQUEST_KEY: &str = "_morphz_artifact_transfer_id";
 
+/// Exact internal byte-channel stage, supplied only by the authenticated Edge
+/// worker after route validation. Never serialized into tool arguments, Target
+/// metadata, approval grants or model-visible schemas.
+#[derive(Clone)]
+pub(crate) struct InternalArtifactStage {
+    pub(crate) path: PathBuf,
+    pub(crate) access: FilesystemAccess,
+}
+
+tokio::task_local! {
+    pub(crate) static CURRENT_INTERNAL_ARTIFACT_STAGE: Option<InternalArtifactStage>;
+}
+
 /// Best-effort data-plane progress emitted by physical transfer backends.
 /// Lifecycle remains authoritative in ExecutionJob; this snapshot is
 /// deliberately monotonic and disposable so reporting can never block bytes.
@@ -447,7 +460,8 @@ impl ArtifactTransferBackend for LocalArtifactTransferBackend {
     }
 
     fn supports(&self, request: &ArtifactTransferRequest) -> bool {
-        request.source.target_id == request.destination.target_id
+        request.source.target_id == crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+            && request.destination.target_id == crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
     }
 
     async fn transfer(
@@ -469,6 +483,18 @@ impl ArtifactTransferBackend for LocalArtifactTransferBackend {
                 crate::tool::current_approval_context(),
             )
             .await?;
+        // Do not enumerate an outside tree before its root read permission has
+        // been authorized. Descendant protection remains non-overridable.
+        let profile = self.permissions.profile();
+        if internal_artifact_stage(&request.source, FilesystemAccess::Read).is_none() {
+            profile.enforce_transfer_tree(&source, &source)?;
+        }
+        if internal_artifact_stage(&request.destination, FilesystemAccess::Write).is_none() {
+            profile.enforce_transfer_tree(&source, &destination)?;
+            if destination.exists() {
+                profile.enforce_transfer_tree(&destination, &destination)?;
+            }
+        }
         transfer_local_file(request, source, destination).await
     }
 }
@@ -727,12 +753,35 @@ fn local_transfer_paths_and_delta(
     Ok((source, destination, requested))
 }
 
+fn internal_artifact_stage(
+    location: &ArtifactLocation,
+    access: FilesystemAccess,
+) -> Option<PathBuf> {
+    CURRENT_INTERNAL_ARTIFACT_STAGE
+        .try_with(|stage| {
+            stage
+                .as_ref()
+                .filter(|stage| {
+                    stage.access == access
+                        && location.target_id
+                            == crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+                        && Path::new(&location.path) == stage.path
+                })
+                .map(|stage| stage.path.clone())
+        })
+        .ok()
+        .flatten()
+}
+
 fn local_path_decision(
     permissions: &PermissionBroker,
     location: &ArtifactLocation,
     access: FilesystemAccess,
     requested: &mut CapabilityDelta,
 ) -> Result<PathBuf, ArtifactTransferError> {
+    if let Some(path) = internal_artifact_stage(location, access) {
+        return Ok(path);
+    }
     // A remote path is meaningful only inside its own Execution Target.  The
     // cloud Runtime must not reinterpret it through the local filesystem
     // profile merely because both endpoints happen to name the same Target.
@@ -1579,6 +1628,129 @@ mod tests {
             receipt.destination.media_type.as_deref(),
             Some("application/vnd.morphz.directory")
         );
+    }
+
+    #[tokio::test]
+    async fn internal_artifact_stage_is_exact_directional_and_never_unprotects_user_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join(".git");
+        std::fs::create_dir(&private).unwrap();
+        let stage = private.join("stage.bin");
+        let neighbor = private.join("neighbor.bin");
+        std::fs::write(&stage, b"authenticated channel bytes").unwrap();
+        std::fs::write(&neighbor, b"must not be read").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let broker = permission_broker(
+            root.path(),
+            PermissionMode::RequestApproval,
+            ApprovalDecision::AllowOnce {
+                rationale: "no extra grant should be required".into(),
+                risk_tags: vec![],
+            },
+            calls.clone(),
+        );
+        let backend = LocalArtifactTransferBackend::new(broker.clone());
+        let remote = ArtifactTransferRequest {
+            transfer_id: "not-local".into(),
+            source: location("other-target", "source.txt"),
+            destination: location("other-target", "destination.txt"),
+            overwrite: ArtifactOverwritePolicy::Deny,
+            expected_source_digest: None,
+            media_type: None,
+            origin: None,
+        };
+        assert!(
+            !backend.supports(&remote),
+            "a remote id must not select an unchecked process-cwd copy"
+        );
+        let request = ArtifactTransferRequest {
+            transfer_id: "trusted-stage".into(),
+            source: location(DEFAULT_EXECUTION_TARGET_ID, stage.to_str().unwrap()),
+            destination: location(
+                DEFAULT_EXECUTION_TARGET_ID,
+                root.path().join("proof.txt").to_str().unwrap(),
+            ),
+            overwrite: ArtifactOverwritePolicy::Deny,
+            expected_source_digest: None,
+            media_type: None,
+            origin: None,
+        };
+        assert!(backend.transfer(&request).await.is_err());
+        let scope = InternalArtifactStage {
+            path: stage.clone(),
+            access: FilesystemAccess::Read,
+        };
+        CURRENT_INTERNAL_ARTIFACT_STAGE
+            .scope(Some(scope.clone()), async {
+                let mut delta = CapabilityDelta::default();
+                assert!(local_path_decision(
+                    &broker,
+                    &request.source,
+                    FilesystemAccess::Write,
+                    &mut delta
+                )
+                .is_err());
+                let mut other = request.clone();
+                other.source.path = neighbor.to_string_lossy().into_owned();
+                assert!(backend.transfer(&other).await.is_err());
+                other = request.clone();
+                other.destination.path = root.path().join(".env").to_string_lossy().into_owned();
+                assert!(backend.transfer(&other).await.is_err());
+                backend
+                    .transfer(&request)
+                    .await
+                    .unwrap()
+                    .validate_against(&request)
+                    .unwrap();
+            })
+            .await;
+        assert_eq!(
+            std::fs::read(root.path().join("proof.txt")).unwrap(),
+            b"authenticated channel bytes"
+        );
+        assert!(backend.transfer(&request).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&neighbor).unwrap(), b"must not be read");
+    }
+
+    #[tokio::test]
+    async fn protected_directory_descendants_are_checked_before_internal_stage_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join(".git/stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join(".env"), b"not publishable").unwrap();
+        let backend = LocalArtifactTransferBackend::new(permission_broker(
+            root.path(),
+            PermissionMode::RequestApproval,
+            ApprovalDecision::AllowOnce {
+                rationale: "must not override protected descendants".into(),
+                risk_tags: vec![],
+            },
+            Arc::new(AtomicUsize::new(0)),
+        ));
+        let request = ArtifactTransferRequest {
+            transfer_id: "protected-descendant".into(),
+            source: location(DEFAULT_EXECUTION_TARGET_ID, stage.to_str().unwrap()),
+            destination: location(
+                DEFAULT_EXECUTION_TARGET_ID,
+                root.path().join("incoming").to_str().unwrap(),
+            ),
+            overwrite: ArtifactOverwritePolicy::Deny,
+            expected_source_digest: None,
+            media_type: None,
+            origin: None,
+        };
+        let result = CURRENT_INTERNAL_ARTIFACT_STAGE
+            .scope(
+                Some(InternalArtifactStage {
+                    path: stage,
+                    access: FilesystemAccess::Read,
+                }),
+                backend.transfer(&request),
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("protected path"));
+        assert!(!root.path().join("incoming").exists());
     }
 
     #[tokio::test]

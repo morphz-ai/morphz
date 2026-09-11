@@ -287,6 +287,9 @@ pub struct PermissionProfile {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub protected_paths: Vec<String>,
+    // A service-host data plane is not a user computer. This invariant is
+    // installed by Runtime, not a Session preset or approvable capability.
+    workspace_boundary: bool,
     /// Operator-configured network policy for the restricted workspace
     /// sandbox. `network` is the effective value and is necessarily true in
     /// full-access mode, so it cannot be used to reconstruct this intent when
@@ -346,6 +349,7 @@ impl PermissionProfile {
             read_roots,
             write_roots,
             protected_paths: config.protected_paths.clone(),
+            workspace_boundary: false,
             configured_network: config.network,
             network: sandbox_mode == SandboxMode::DangerFullAccess || config.network,
             shell_environment_policy: config.shell_environment_policy,
@@ -354,6 +358,44 @@ impl PermissionProfile {
 
     pub fn full_access(&self) -> bool {
         self.sandbox_mode == SandboxMode::DangerFullAccess
+    }
+
+    pub(crate) fn confine_to_workspace(mut self) -> Self {
+        self.workspace_boundary = true;
+        self
+    }
+
+    /// Check every logical path of a directory transfer, including when the
+    /// bytes live in private staging but will be published at `location`.
+    /// Root endpoint approval owns access; this prevents descendant paths
+    /// from bypassing protection, including at a prospective destination.
+    pub(crate) fn enforce_transfer_tree(
+        &self,
+        tree: &Path,
+        location: &Path,
+    ) -> Result<(), PermissionError> {
+        for entry in walkdir::WalkDir::new(tree).follow_links(false) {
+            let entry = entry?;
+            if self.workspace_boundary
+                && (entry.file_type().is_symlink()
+                    || !(entry.file_type().is_file() || entry.file_type().is_dir()))
+            {
+                return Err(
+                    "confined Artifact transfer cannot contain links or special files".into(),
+                );
+            }
+            let relative = entry.path().strip_prefix(tree)?;
+            let path = if relative.as_os_str().is_empty() {
+                location.to_path_buf()
+            } else {
+                location.join(relative)
+            };
+            let resolved = self.resolve_candidate(&path.to_string_lossy())?;
+            if resolved.protected {
+                return Err("Artifact transfer contains a protected path".into());
+            }
+        }
+        Ok(())
     }
 
     pub fn effective_mode(&self) -> PermissionMode {
@@ -381,7 +423,12 @@ impl PermissionProfile {
             self.workspace_root.join(raw)
         };
         let resolved_anchor = resolve_existing_or_parent(&candidate)?;
-        let protected = !self.full_access()
+        if self.workspace_boundary && !resolved_anchor.starts_with(&self.workspace_root) {
+            return Err(
+                "Runtime Artifact path is outside the non-overridable workspace boundary".into(),
+            );
+        }
+        let protected = (!self.full_access() || self.workspace_boundary)
             && self
                 .protected_paths
                 .iter()
@@ -399,7 +446,7 @@ impl PermissionProfile {
         access: FilesystemAccess,
     ) -> Result<PathDecision, PermissionError> {
         let resolved = self.resolve_candidate(input)?;
-        if self.full_access() {
+        if self.full_access() && !self.workspace_boundary {
             return Ok(PathDecision::Allowed(resolved.candidate));
         }
         if resolved.protected {
@@ -714,7 +761,7 @@ impl PermissionBroker {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let material = serde_json::json!({
+        let mut material = serde_json::json!({
             "mode": profile.mode,
             "sandbox_mode": profile.sandbox_mode,
             "approval_policy": profile.approval_policy,
@@ -727,6 +774,9 @@ impl PermissionBroker {
             "network": profile.network,
             "shell_environment_policy": profile.shell_environment_policy,
         });
+        if profile.workspace_boundary {
+            material["workspace_boundary"] = serde_json::json!(true);
+        }
         let bytes = serde_json::to_vec(&material).unwrap_or_default();
         format!("policy_{:x}", Sha256::digest(bytes))
     }
@@ -1249,6 +1299,86 @@ mod tests {
                 .unwrap(),
             PathDecision::Denied(_)
         ));
+    }
+
+    #[test]
+    fn confined_artifact_paths_cannot_escalate_outside_or_override_protection() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(root.path().join("proof.txt"), "attachment").unwrap();
+        std::fs::write(root.path().join(".env"), "synthetic-only").unwrap();
+        let config = PermissionConfig {
+            mode: PermissionMode::FullAccess,
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            read_roots: vec![outside.path().to_string_lossy().into_owned()],
+            write_roots: vec![outside.path().to_string_lossy().into_owned()],
+            ..PermissionConfig::default()
+        };
+        let profile = PermissionProfile::from_config(&config)
+            .unwrap()
+            .confine_to_workspace();
+        let broker = PermissionBroker::new(
+            Arc::new(profile),
+            Arc::new(DenyAllApprovalProvider::new("test")),
+        );
+        for mode in [
+            PermissionMode::FullAccess,
+            PermissionMode::RequestApproval,
+            PermissionMode::AutoReview,
+        ] {
+            broker.set_session_permission_mode("confined", Some(mode));
+            let profile = broker.profile_for_session("confined");
+            for access in [FilesystemAccess::Read, FilesystemAccess::Write] {
+                assert!(profile
+                    .inspect_path(outside.path().to_str().unwrap(), access)
+                    .is_err());
+                assert!(matches!(
+                    profile.inspect_path("proof.txt", access).unwrap(),
+                    PathDecision::Allowed(_)
+                ));
+                assert!(matches!(
+                    profile.inspect_path(".env", access).unwrap(),
+                    PathDecision::Denied(_)
+                ));
+            }
+            assert!(profile
+                .canonical_permission_root(outside.path().to_str().unwrap())
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn confined_artifact_trees_check_source_and_prospective_destination_children() {
+        let root = TempDir::new().unwrap();
+        let staging = TempDir::new().unwrap();
+        let profile = profile(root.path()).confine_to_workspace();
+        let tree = root.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(tree.join("proof.txt"), "attachment").unwrap();
+        profile.enforce_transfer_tree(&tree, &tree).unwrap();
+        std::fs::write(tree.join(".env"), "synthetic-only").unwrap();
+        assert!(profile.enforce_transfer_tree(&tree, &tree).is_err());
+        std::fs::write(staging.path().join(".env"), "synthetic-only").unwrap();
+        assert!(profile
+            .enforce_transfer_tree(staging.path(), &root.path().join("incoming"))
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_artifact_paths_and_trees_reject_symlink_escape() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret"), "synthetic-only").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
+        let profile = profile(root.path()).confine_to_workspace();
+        for path in ["escape/secret", "escape/new.txt"] {
+            assert!(profile.inspect_path(path, FilesystemAccess::Read).is_err());
+            assert!(profile.inspect_path(path, FilesystemAccess::Write).is_err());
+        }
+        assert!(profile
+            .enforce_transfer_tree(root.path(), root.path())
+            .is_err());
     }
 
     #[test]
