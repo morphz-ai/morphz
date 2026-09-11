@@ -24,6 +24,7 @@ use std::time::Duration;
 pub mod auth;
 mod claude_oauth;
 pub mod control;
+mod refresh_diagnostics;
 pub(crate) mod gemini_schema;
 pub mod routing;
 

@@ -6,6 +6,8 @@
 //! owned here. Token material is stored only through [`SecretStore`].
 
 use super::{antigravity_request_user_agent, response_body_preview, ANTIGRAVITY_DAILY_BASE_URL};
+use super::refresh_diagnostics::RefreshDiagnostics;
+pub use super::refresh_diagnostics::OAuthRefreshDiagnostics;
 use crate::config::AuthAccountConfig;
 use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
 use crate::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
@@ -1001,6 +1003,7 @@ pub struct ProviderAuthManager {
     secret_store: Arc<SecretStore>,
     account_store: Arc<dyn ProviderAccountStateStore>,
     adapters: AuthAdapterRegistry,
+    refresh_diagnostics: RefreshDiagnostics,
 }
 
 impl ProviderAuthManager {
@@ -1030,11 +1033,18 @@ impl ProviderAuthManager {
             secret_store,
             account_store,
             adapters,
+            // An observation identity is not an auth credential. If entropy
+            // is unavailable, auth still works and diagnostic evidence is invalid.
+            refresh_diagnostics: RefreshDiagnostics::new(random_hex(12).ok()),
         }
     }
 
     pub fn account(&self, account_id: &str) -> Option<AuthAccountConfig> {
         self.accounts.read().ok()?.get(account_id).cloned()
+    }
+
+    pub fn refresh_diagnostics(&self) -> OAuthRefreshDiagnostics {
+        self.refresh_diagnostics.snapshot()
     }
 
     /// Resolve a Runtime-managed static credential through the same Secret
@@ -1561,6 +1571,18 @@ impl ProviderAuthManager {
         account: &AuthAccountConfig,
         adapter: &dyn AuthAdapter,
     ) -> Result<OAuthTokenSet, String> {
+        let observation = self.refresh_diagnostics.request();
+        let outcome = self.refresh_token_inner(account_id, account, adapter).await;
+        observation.finish(outcome.is_ok());
+        outcome
+    }
+
+    async fn refresh_token_inner(
+        &self,
+        account_id: &str,
+        account: &AuthAccountConfig,
+        adapter: &dyn AuthAdapter,
+    ) -> Result<OAuthTokenSet, String> {
         let owner_id = format!("oauth-refresh-{}", random_hex(12)?);
         let lease = self
             .account_store
@@ -1572,6 +1594,7 @@ impl ProviderAuthManager {
             .await
             .map_err(|error| format!("failed to claim OAuth Refresh Lease: {error}"))?;
         let Some(lease) = lease else {
+            self.refresh_diagnostics.contention();
             // Another worker owns the refresh. Wait for its durable token
             // publication rather than making every concurrent request fail.
             // The wait is bounded by the refresh lease, so a crashed owner can
@@ -1649,7 +1672,9 @@ impl ProviderAuthManager {
                 "OAuth Auth Account '{account_id}' has no Refresh Token"
             ));
         }
+        let provider_observation = self.refresh_diagnostics.provider_call();
         let outcome = adapter.refresh(&current).await;
+        drop(provider_observation);
         // Reacquire the same-owner lease before publication. A replacement
         // owner wins: a late network reply must not publish with its old grant.
         guard.renew().await?;
@@ -1684,6 +1709,7 @@ impl ProviderAuthManager {
                 {
                     return Err("OAuth credential changed while refresh was in flight; the newer credential was preserved".into());
                 }
+                self.refresh_diagnostics.publication();
                 self
                     .account_store
                     .compare_and_set_provider_account_state(
@@ -4397,6 +4423,81 @@ mod tests {
         serde_json::from_value(json!({"adapter_id":"held-oauth", "adapter_version":"1", "access_token":value,
             "refresh_token":"initial-refresh", "expires_at":Utc::now() + ChronoDuration::seconds(if expired { -1 } else { 3600 })})).unwrap()
     }
+
+    #[tokio::test]
+    async fn concurrent_oauth_refresh_diagnostics_prove_contention_and_one_publication() {
+        let adapter = Arc::new(HeldRefreshAdapter {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            fail: false,
+        });
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(adapter.clone());
+        let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
+        let account = manager.account("oauth-account").unwrap();
+        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        let before = manager.refresh_diagnostics();
+        assert_eq!(before.requests_started, 0);
+        assert!(!before.incomplete);
+        let workers: Vec<_> = (0..4).map(|_| {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.materialize_authorization("oauth-account").await })
+        }).collect();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if manager.refresh_diagnostics().lease_contentions == 3 { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let held = manager.refresh_diagnostics();
+        assert_eq!((held.requests_started, held.requests_active, held.requests_peak_active), (4, 4, 4));
+        assert_eq!((held.provider_calls_started, held.provider_calls_active), (1, 1));
+        assert_eq!(held.credential_publications, 0);
+        adapter.release.notify_one();
+        for worker in workers {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
+            assert_eq!(result.bearer_token, "refreshed-token");
+        }
+        let after = manager.refresh_diagnostics();
+        assert_eq!(after.instance_id, before.instance_id);
+        assert_eq!((after.requests_succeeded, after.requests_failed, after.requests_abandoned), (4, 0, 0));
+        assert_eq!((after.requests_active, after.provider_calls_active), (0, 0));
+        assert_eq!((after.provider_calls_started, after.provider_calls_peak_active, after.credential_publications), (1, 1, 1));
+        assert!(!after.incomplete);
+        let public = serde_json::to_string(&after).unwrap();
+        for private in ["oauth-account", "private-initial-token", "initial-refresh", "refreshed-token", "rotated-refresh-token"] {
+            assert!(!public.contains(private));
+        }
+        manager.materialize_authorization("oauth-account").await.unwrap();
+        assert_eq!(manager.refresh_diagnostics(), after); // Warm auth is not a refresh.
+    }
+
+    #[tokio::test]
+    async fn cancelled_oauth_refresh_is_not_counted_as_success_or_left_active() {
+        let adapter = Arc::new(HeldRefreshAdapter {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            fail: false,
+        });
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(adapter.clone());
+        let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
+        let account = manager.account("oauth-account").unwrap();
+        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        let worker = Arc::clone(&manager);
+        let running = tokio::spawn(async move { worker.materialize_authorization("oauth-account").await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), adapter.entered.notified()).await.unwrap();
+        assert_eq!(manager.refresh_diagnostics().provider_calls_active, 1);
+        running.abort();
+        assert!(matches!(running.await, Err(error) if error.is_cancelled()));
+        let snapshot = manager.refresh_diagnostics();
+        assert_eq!((snapshot.requests_started, snapshot.requests_abandoned), (1, 1));
+        assert_eq!((snapshot.requests_succeeded, snapshot.requests_failed), (0, 0));
+        assert_eq!((snapshot.requests_active, snapshot.provider_calls_active, snapshot.credential_publications), (0, 0, 0));
+        assert!(!snapshot.incomplete);
+        assert_eq!(manager.load_token(&account).unwrap().access_token, "private-initial-token");
+    }
+
     #[tokio::test]
     async fn in_flight_refresh_preserves_new_login_logout_and_operator_disable() {
         for race in ["login", "logout", "disable", "failed-login", "new-owner"] {
@@ -4498,6 +4599,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(result.is_err(), "stale refresh authorized after {race}");
+            let observed = manager.refresh_diagnostics();
+            assert_eq!((observed.requests_started, observed.requests_failed, observed.provider_calls_started), (1, 1, 1));
+            assert_eq!((observed.requests_active, observed.provider_calls_active), (0, 0));
+            // Disable preserves routing authority even when the credential
+            // CAS succeeded before the separate account-state CAS rejected it.
+            assert_eq!(observed.credential_publications, u64::from(race == "disable"));
+            assert!(!observed.incomplete);
             let state = manager
                 .account_store
                 .get_provider_account_state("oauth-account")

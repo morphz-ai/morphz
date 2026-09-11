@@ -13099,6 +13099,15 @@ mod tests {
 
         let snapshot = runtime.provider_control_snapshot().await.unwrap();
         let account = &snapshot.auth_accounts["oauth-account"];
+        let diagnostics = snapshot.oauth_refresh.as_ref().unwrap();
+        assert!(diagnostics.instance_id.is_some());
+        assert_eq!(diagnostics.requests_started, 0); // Login is not a refresh.
+        assert!(!diagnostics.incomplete);
+        let mut older_snapshot = serde_json::to_value(&snapshot).unwrap();
+        older_snapshot.as_object_mut().unwrap().remove("oauth_refresh");
+        let older: crate::provider::control::ProviderControlSnapshot =
+            serde_json::from_value(older_snapshot).unwrap();
+        assert!(older.oauth_refresh.is_none()); // Missing must not mean zero.
         assert!(account.authenticated);
         assert_eq!(
             account

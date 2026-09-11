@@ -3485,6 +3485,7 @@ impl MorphzRuntime {
         }
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
+            oauth_refresh: Some(self.inner.provider_auth_manager.refresh_diagnostics()),
             experimental_features: if cfg!(feature = "experimental-structured-context-delta-cache")
             {
                 vec!["structured-context-delta-cache".to_string()]
