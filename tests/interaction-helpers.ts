@@ -24,25 +24,11 @@ export async function openInput(page: Page) {
   return input;
 }
 
-/** Low-frequency composer actions are reached through More, not hidden buttons. */
+/** Enter the floating tools directly; no menu or input-focus side effects. */
 export async function composerAction(page: Page, name: string) {
-  const action = page.getByLabel(name, { exact: true });
-  // Use native open state rather than a previously rendered hidden menu.
-  const menu = page.getByRole("group", {
-    name: "输入选项",
-    exact: true,
-    includeHidden: true,
-  });
-  if (!(await menu.evaluate((el) => el.matches(":popover-open"))))
-    await page.getByLabel("更多输入选项", { exact: true }).click();
-  // Native popovers above an out-of-process app frame can enter the DOM before
-  // Chromium presents their hit-test surface. Capture the visible menu before
-  // sending a physical mouse click, rather than bypassing it with dispatchEvent.
-  if (
-    await page.getByRole("group", { name: "输入选项", exact: true }).isVisible()
-  )
-    await page
-      .getByRole("group", { name: "输入选项", exact: true })
-      .screenshot();
-  await action.click();
+  const tools = page.getByRole("group", { name: "输入工具", exact: true });
+  await tools.hover();
+  await expect(tools).toHaveCSS("opacity", "1");
+  await tools.screenshot();
+  await tools.getByLabel(name, { exact: true }).click();
 }

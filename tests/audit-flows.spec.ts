@@ -24,9 +24,18 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
     route.fulfill({
       json: {
         current: "model-a",
+        reasoning: {
+          current: "low",
+          levels: ["none", "low", "medium", "high", "max"],
+        },
         options: [
-          { id: "model-a", label: "模型 A" },
-          { id: "model-b", label: "模型 B" },
+          { id: "model-a", label: "模型 A", sources: ["主用"] },
+          { id: "model-b", label: "模型 B", sources: ["备用"] },
+          {
+            id: "model-c",
+            label: "自动推理模型",
+            supported_reasoning_efforts: [],
+          },
         ],
       },
     }),
@@ -41,21 +50,35 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("指定下一次模型");
-  await page.getByLabel("更多输入选项").click();
   const select = page.getByLabel("本次输入模型");
+  await expect(select).toBeVisible();
   await expect(select).toBeEnabled();
   await select.selectOption("model-b");
   await expect(select).toHaveValue("model-b");
-  await expect(
-    page.getByText("仅用于下一次发送，不改变其他工作。"),
-  ).toBeVisible();
-  await select.press("Escape");
+  await expect(select).toContainText("模型 B · 备用");
+  const effort = page.getByLabel("本次输入推理强度");
+  await expect(effort).toBeEnabled();
+  await effort.selectOption("high");
+  await expect(select).toHaveAttribute("title", /仅用于下一次发送/);
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect.poll(() => submitted?.operation?.model).toBe("model-b");
+  await expect.poll(() => submitted?.operation?.reasoningEffort).toBe("high");
   await expect(input).toHaveValue("指定下一次模型");
-  await page.getByLabel("更多输入选项").click();
   await expect(page.getByLabel("本次输入模型")).toHaveValue("model-b");
+  await page.reload();
+  await expect(effort).toHaveValue("high");
+  await expect(page.getByLabel("本次输入模型")).toHaveValue("model-b");
+  await expect(input).toHaveValue("指定下一次模型");
   await page.screenshot({ path: "test-results/audit-model-picker.png" });
+  await select.selectOption("model-c");
+  await expect(effort).toBeEnabled();
+  await expect(effort).toHaveValue("high");
+  await expect(
+    page.getByText("请重新选择推理强度", { exact: true }),
+  ).toBeVisible();
+  await effort.selectOption("");
+  await expect(effort).toBeDisabled();
+  await expect(effort).toContainText("模型自动");
 });
 
 async function command(page: Page, operation: Command["operation"]) {
@@ -300,6 +323,5 @@ test("只保留紧凑连接提示；详情区分中心与 Agent，模型故障�
   await page.screenshot({ path: "test-results/audit-connection.png" });
   await page.keyboard.press("Escape");
   await openInput(page);
-  await page.getByLabel("更多输入选项").click();
   await expect(page.getByLabel("本次输入模型")).toBeDisabled();
 });

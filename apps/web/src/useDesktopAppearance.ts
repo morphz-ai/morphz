@@ -4,7 +4,10 @@ import type { DesktopAppearanceState } from "./desktop.js";
 export function useDesktopAppearance(mode: "system" | "light" | "dark") {
   useEffect(() => {
     const root = document.documentElement;
-    root.dataset.appearance = mode;
+    function setAttribute(name: string, value: string) {
+      if (root.dataset[name] !== value) root.dataset[name] = value;
+    }
+    setAttribute("appearance", mode);
     const native = window.morphzDesktop?.appearance;
     if (!native) return; // Older desktop shells and browsers keep the solid fallback.
     let alive = true;
@@ -12,10 +15,10 @@ export function useDesktopAppearance(mode: "system" | "light" | "dark") {
     function update(state: DesktopAppearanceState) {
       if (!alive || state.revision < revision) return;
       revision = state.revision;
-      root.dataset.nativeMaterial = state.material;
-      root.dataset.windowActive = String(state.active);
-      root.dataset.reducedTransparency = String(state.reducedTransparency);
-      root.dataset.nativeContrast = state.highContrast ? "more" : "normal";
+      setAttribute("nativeMaterial", state.material);
+      setAttribute("windowActive", String(state.active));
+      setAttribute("reducedTransparency", String(state.reducedTransparency));
+      setAttribute("nativeContrast", state.highContrast ? "more" : "normal");
     }
     const unsubscribe = native.onChange(update);
     void native

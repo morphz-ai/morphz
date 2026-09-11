@@ -3,9 +3,16 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { DesktopAppearance } = require("../apps/desktop/appearance.cjs");
+const {
+  DesktopAppearance,
+  windowAppearanceOptions,
+} = require("../apps/desktop/appearance.cjs");
 
-function fixture(platform = "darwin") {
+function fixture(
+  platform = "darwin",
+  materialNotifiesTheme = false,
+  initialized = false,
+) {
   const theme = Object.assign(new EventEmitter(), {
     themeSource: "system",
     shouldUseDarkColors: true,
@@ -13,18 +20,31 @@ function fixture(platform = "darwin") {
     shouldUseHighContrastColors: false,
   });
   const calls: unknown[][] = [];
+  let nativeNotifications = 0;
+  const nativeChange = (kind: string, value: unknown) => {
+    calls.push([kind, value]);
+    // Bound a broken implementation so the regression reports useful counts
+    // instead of exhausting the stack when AppKit reports an appearance update.
+    if (materialNotifiesTheme && nativeNotifications++ < 100)
+      theme.emit("updated");
+  };
   let focused = true;
   const window = Object.assign(new EventEmitter(), {
     isDestroyed: () => false,
     isFocused: () => focused,
-    setVibrancy: (v: unknown) => calls.push(["vibrancy", v]),
-    setBackgroundColor: (v: unknown) => calls.push(["background", v]),
+    setVibrancy: (v: unknown) => nativeChange("vibrancy", v),
+    setBackgroundColor: (v: unknown) => nativeChange("background", v),
     webContents: {
       isDestroyed: () => false,
       send: (...args: unknown[]) => calls.push(["send", ...args]),
     },
   });
-  const appearance = new DesktopAppearance(window, theme, platform);
+  const appearance = new DesktopAppearance(
+    window,
+    theme,
+    platform,
+    initialized ? windowAppearanceOptions(theme, platform) : null,
+  );
   return {
     theme,
     window,
@@ -51,6 +71,64 @@ test("原生侧栏材质跟随外观与窗口焦点，不开放任意原生参�
   for (const value of ["menu", "transparent", {}, null, undefined])
     assert.throws(() => appearance.setMode(value), /外观模式无效/);
   assert.equal(theme.themeSource, "dark");
+});
+
+test("窗口在创建时就配置透明原生材质，不先创建不透明绘制表面", () => {
+  const { theme, appearance, calls } = fixture("darwin", false, true);
+  assert.deepEqual(windowAppearanceOptions(theme, "darwin"), {
+    backgroundColor: "#00000000",
+    vibrancy: "sidebar",
+    visualEffectState: "followWindow",
+  });
+  assert.equal(appearance.setMode("system").material, "sidebar");
+  assert.equal(calls.filter(([kind]) => kind !== "send").length, 0);
+  theme.prefersReducedTransparency = true;
+  assert.deepEqual(windowAppearanceOptions(theme, "darwin"), {
+    backgroundColor: "#202022",
+  });
+  theme.prefersReducedTransparency = false;
+  for (const platform of ["linux", "win32"])
+    assert.deepEqual(windowAppearanceOptions(theme, platform), {
+      backgroundColor: "#202022",
+    });
+});
+
+test("重复的原生外观通知不重建侧栏材质或重复发布状态", () => {
+  const { appearance, theme, calls } = fixture();
+  const initial = appearance.setMode("system");
+  calls.length = 0;
+  for (let n = 0; n < 1000; n++) theme.emit("updated");
+  assert.equal(calls.length, 0);
+  assert.deepEqual(appearance.setMode("system"), initial);
+  assert.equal(calls.length, 0);
+  theme.shouldUseDarkColors = false;
+  theme.emit("updated");
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
+  assert.equal(calls.filter(([kind]) => kind !== "send").length, 0);
+});
+
+test("原生材质设置再次触发主题通知时不会形成刷新循环", () => {
+  const { appearance, theme, calls } = fixture("darwin", true);
+  assert.deepEqual(
+    calls.filter(([kind]) => kind !== "send"),
+    [
+      ["vibrancy", "sidebar"],
+      ["background", "#00000000"],
+    ],
+  );
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
+  calls.length = 0;
+  theme.prefersReducedTransparency = true;
+  theme.emit("updated");
+  assert.equal(appearance.setMode("system").material, "solid");
+  assert.deepEqual(
+    calls.filter(([kind]) => kind !== "send"),
+    [
+      ["vibrancy", null],
+      ["background", "#202022"],
+    ],
+  );
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
 });
 
 test("减少透明和增强对比度关闭原生模糊，关闭窗口解除监听", () => {

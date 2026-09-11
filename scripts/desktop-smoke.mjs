@@ -138,7 +138,7 @@ try {
   await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(desktopInput).toBeFocused();
   await expect(desktopInput).toHaveValue("原生输入区验收，不发送");
-  await window.getByLabel("更多输入选项", { exact: true }).click();
+  await window.locator(".composer-floating-tools").hover();
   await window.getByLabel("固定输入框", { exact: true }).click();
   await window
     .getByRole("main", { name: "主工作区" })

@@ -101,6 +101,27 @@ test("原生材质只透出侧栏，辅助功能与旧壳保留实底", async ({
     "data-native-material",
     "sidebar",
   );
+  const repeatedMutations = await page.evaluate(async () => {
+    const root = document.documentElement;
+    let changes = 0;
+    const observer = new MutationObserver((records) => {
+      changes += records.length;
+    });
+    observer.observe(root, {
+      attributes: true,
+      attributeFilter: [
+        "data-native-material",
+        "data-window-active",
+        "data-reduced-transparency",
+        "data-native-contrast",
+      ],
+    });
+    for (let n = 0; n < 100; n++) (window as any).__materialChange({});
+    await Promise.resolve();
+    observer.disconnect();
+    return changes;
+  });
+  expect(repeatedMutations).toBe(0);
   await page.evaluate(() => {
     document.documentElement.dataset.appearance = "dark";
     document.querySelector<HTMLElement>(".app")!.dataset.appearance = "dark";

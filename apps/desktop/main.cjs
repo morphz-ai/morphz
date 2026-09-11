@@ -1,3 +1,4 @@
+require("./stdio.cjs").protectStandardStreams();
 const {
   app,
   BrowserWindow,
@@ -18,7 +19,10 @@ const {
 const { DesktopBrowser } = require("./browser.cjs");
 const { MicrophoneGate } = require("./microphone.cjs");
 const { DesktopCapture } = require("./capture.cjs");
-const { DesktopAppearance } = require("./appearance.cjs");
+const {
+  DesktopAppearance,
+  windowAppearanceOptions,
+} = require("./appearance.cjs");
 const { rendererURL, loadDevelopmentWindow } = require("./development.cjs");
 app.setName("Morphz");
 app.enableSandbox();
@@ -51,6 +55,9 @@ else {
   const capture = new DesktopCapture();
   let microphoneRequest = 0;
   async function createWindow() {
+    // Set translucency before Electron creates the native/compositor surfaces.
+    // Converting an opaque window later can leave stale sidebar tiles behind.
+    const appearanceOptions = windowAppearanceOptions(nativeTheme);
     window = new BrowserWindow({
       title: "Morphz",
       width: 1380,
@@ -61,10 +68,9 @@ else {
         ? {
             titleBarStyle: "hiddenInset",
             trafficLightPosition: { x: 20, y: 20 },
-            visualEffectState: "followWindow",
           }
         : {}),
-      backgroundColor: "#11141c",
+      ...appearanceOptions,
       show: false,
       webPreferences: {
         ...webPreferences,
@@ -72,7 +78,12 @@ else {
         partition: "persist:morphzwork-app",
       },
     });
-    appearance = new DesktopAppearance(window, nativeTheme);
+    appearance = new DesktopAppearance(
+      window,
+      nativeTheme,
+      process.platform,
+      appearanceOptions,
+    );
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     browser = new DesktopBrowser(window, url, (input, init) =>
       window.webContents.session.fetch(input, {

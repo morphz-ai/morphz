@@ -1179,7 +1179,7 @@
   padding: 7px;
 }
 .composer-input-tools > .send {
-  margin-left: 6px;
+  margin-left: 0;
 }
 .app .send {
   width: 32px;

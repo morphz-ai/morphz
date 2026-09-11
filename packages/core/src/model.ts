@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
 import {
   documentImportIssue,
@@ -333,6 +334,7 @@ export const stateSchema = z
           status: z.literal("recorded"),
           intent: inputIntentSchema.optional(),
           model: z.string().trim().min(1).max(256).optional(),
+          reasoningEffort: reasoningEffortSchema.optional(),
           application: z
             .object({
               instanceId: id,
@@ -509,6 +511,7 @@ export const operationSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("record-input"),
       model: z.string().trim().min(1).max(256).optional(),
+      reasoningEffort: reasoningEffortSchema.optional(),
       conversationId: id.optional(),
       newConversation: z.object({ title }).strict().optional(),
       intent: inputIntentSchema.optional(),
@@ -1329,6 +1332,7 @@ export function applyCommand(
       status: "recorded",
       ...(op.intent ? { intent: op.intent } : {}),
       ...(op.model ? { model: op.model } : {}),
+      ...(op.reasoningEffort ? { reasoningEffort: op.reasoningEffort } : {}),
       ...(app && instance
         ? {
             application: {

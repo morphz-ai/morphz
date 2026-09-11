@@ -281,7 +281,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
       kind: "reply",
     },
   ];
-  await expect(page.locator(".composer-more .unread-label")).toBeVisible({
+  await expect(page.locator(".composer-unread")).toBeVisible({
     timeout: 10000,
   });
   await expect(exchange).toHaveCount(0);

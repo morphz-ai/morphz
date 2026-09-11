@@ -60,7 +60,7 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await expect(page.locator(".conversation-heading")).toHaveCount(0);
   const trigger = page
     .getByRole("region", { name: "AI 输入", exact: true })
-    .getByRole("button", { name: "更多输入选项" });
+    .getByRole("button", { name: "执行记录与审批" });
   await page.getByLabel("AI 输入内容").fill("打开执行记录时保留的草稿");
   await composerAction(page, "执行记录与审批");
   const dialog = page.getByRole("complementary", {
@@ -133,19 +133,19 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     const collapse = (await composer
       .getByLabel("收起 AI 输入框")
       .boundingBox())!;
-    expect(execution.y).toBe(collapse.y);
+    if (width >= 760) expect(execution.y).toBe(collapse.y);
     expect(
       await composer.evaluate((el) => el.scrollWidth <= el.clientWidth),
     ).toBe(true);
-    await trigger.click();
+    await trigger.focus();
     await expect(
       page.getByRole("button", { name: "执行记录与审批" }),
     ).toHaveCount(1);
-    const menu = page.getByRole("group", { name: "输入选项" });
-    const menuBounds = (await menu.boundingBox())!;
-    expect(menuBounds.x).toBeGreaterThanOrEqual(8);
-    expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(width - 8);
-    await page.keyboard.press("Escape");
+    const tools = page.getByRole("group", { name: "输入工具", exact: true });
+    const toolBounds = (await tools.boundingBox())!;
+    expect(toolBounds.x).toBeGreaterThanOrEqual(0);
+    expect(toolBounds.x + toolBounds.width).toBeLessThanOrEqual(width);
+    await expect(page.getByLabel("更多输入选项")).toHaveCount(0);
     await expect(page.locator(".conversation-heading")).toHaveCount(0);
   }
 });

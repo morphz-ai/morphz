@@ -100,6 +100,9 @@ export function workInputRequest(
         ? { harness: input.application.harness }
         : {}),
       ...(model ? { model_alias: model } : {}),
+      ...(input.reasoningEffort
+        ? { reasoning_effort: input.reasoningEffort }
+        : {}),
     },
     delivery: {
       accept_formats: [{ id: "morphz.chat", version: "1", encoding: "json" }],

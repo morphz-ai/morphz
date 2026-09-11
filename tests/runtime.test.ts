@@ -68,6 +68,11 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
         "other-model",
         "显式选择只绑定这条输入",
       );
+      assert.equal(
+        body.activation.reasoning_effort,
+        "high",
+        "强度绑定到本次 activation，重试不丢失",
+      );
       assert.ok(path.endsWith("/io/messages"));
       attempts++;
       const previous = received.get(body.client_message_id);
@@ -155,6 +160,7 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
           selection: "",
           body: "请解读",
           model: "other-model",
+          reasoningEffort: "high",
           targetActantId: "morphz-agent",
         },
       },
@@ -163,6 +169,10 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
     bridge.enqueue(input.entityId);
     assert.deepEqual(await bridge.models(), {
       current: "test-model",
+      reasoning: {
+        current: null,
+        levels: ["none", "low", "medium", "high", "max"],
+      },
       options: [
         { id: "test-model", label: "当前模型" },
         { id: "other-model", label: "另一模型" },

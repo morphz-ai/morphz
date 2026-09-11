@@ -70,13 +70,13 @@ test("菜单入场不移动命中区域，关闭立即失去交互，动效不�
   const input = await openInput(page);
   await input.fill("动画期间保留草稿");
   const trigger = page.getByRole("button", {
-    name: "更多输入选项",
+    name: "工作空间选项",
     exact: true,
   });
   // Keep resolving the same node after inert removes it from the accessibility
   // tree, so the closed-state assertion tests the element rather than lookup.
   const menu = page.getByRole("group", {
-    name: "输入选项",
+    name: "工作空间操作",
     exact: true,
     includeHidden: true,
   });
@@ -96,6 +96,7 @@ test("菜单入场不移动命中区域，关闭立即失去交互，动效不�
   await trigger.click();
   await expect(menu).toHaveCSS("opacity", "1");
   await page.keyboard.press("Escape");
+  await openInput(page);
   await expect(input).toHaveValue("动画期间保留草稿");
   await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   const search = page.getByRole("dialog", { name: "搜索资料", exact: true });

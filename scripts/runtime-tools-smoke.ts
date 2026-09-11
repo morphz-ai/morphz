@@ -450,9 +450,9 @@ try {
         .getByRole("button", { name: /向 Morphz 输入/ })
         .click();
     await streamWindow.getByLabel("AI 输入内容").focus();
-    await streamWindow.getByLabel("更多输入选项", { exact: true }).click();
+    await streamWindow.locator(".composer-floating-tools").hover();
     await streamWindow.getByLabel("展开完整记录", { exact: true }).click();
-    await streamWindow.getByLabel("更多输入选项", { exact: true }).click();
+    await streamWindow.locator(".composer-floating-tools").hover();
     await streamWindow.getByLabel("固定输入框", { exact: true }).click();
   }
   async function send(

@@ -160,29 +160,24 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
       .locator(".model-status")
       .getByRole("button", { name: "连接详情", exact: true }),
   ).toBeFocused();
-  // Text goes straight to common bottom-row actions; keyboard users can also
-  // open More and reach every low-frequency action without leaving the input.
-  for (const name of ["附加文件", "截图输入", "语音输入", "更多输入选项"]) {
+  // Every available tool is directly reachable in the floating row via Tab.
+  for (const name of [
+    "附加文件",
+    "截图输入",
+    "语音输入",
+    "长录音转写",
+    "收起交流记录",
+    "展开完整记录",
+    "固定输入框",
+    "收起 AI 输入框",
+  ]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
     await expect(input).toHaveValue("在控件与弹窗之间保留输入");
   }
-  await page.keyboard.press("Enter");
-  await expect(page.getByLabel("收起交流记录")).toBeFocused();
-  await page.keyboard.press("ArrowDown");
-  await expect(page.getByLabel("展开完整记录")).toBeFocused();
-  await page.keyboard.press("End");
-  await expect(page.getByLabel("长录音转写", { exact: true })).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(page.getByLabel("更多输入选项")).toBeFocused();
-  await expect(page.getByRole("group", { name: "输入选项" })).toBeHidden();
-  await page.keyboard.press("Tab");
-  await expect(page.getByLabel("收起 AI 输入框")).toBeFocused();
-  await page.getByLabel("更多输入选项").click();
+  await expect(page.getByLabel("更多输入选项")).toHaveCount(0);
   await input.click();
-  await expect(page.getByRole("group", { name: "输入选项" })).toBeHidden();
   await expect(input).toBeFocused();
-  await page.getByLabel("更多输入选项").click();
   const composerBounds = (await page.locator(".composer").boundingBox())!;
   await page.mouse.click(composerBounds.x - 20, composerBounds.y + 20);
   await expect(input).toHaveCount(0);
@@ -282,7 +277,7 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
     ).toBe("none");
     const executions = composer.getByLabel("执行记录与审批", { exact: true });
     await expect(executions).toBeDisabled();
-    await expect(executions).toBeHidden();
+    await expect(executions).toBeVisible();
     await expect(
       composer.locator(".lucide-square-bottom-dashed-scissors"),
     ).toHaveCount(1);
@@ -296,12 +291,20 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
       .boundingBox())!;
     expect(mic.x - camera.x - camera.width).toBeLessThanOrEqual(4);
     expect(mic.y).toBe(camera.y);
-    const more = (await composer.getByLabel("更多输入选项").boundingBox())!;
+    const transcribe = (await composer
+      .getByLabel("长录音转写", { exact: true })
+      .boundingBox())!;
     const collapse = (await composer
       .getByLabel("收起 AI 输入框")
       .boundingBox())!;
-    expect(collapse.x - more.x - more.width).toBeLessThanOrEqual(4);
-    expect(collapse.y).toBe(more.y);
+    expect(transcribe.x - mic.x - mic.width).toBeLessThanOrEqual(4);
+    const executionBounds = (await executions.boundingBox())!;
+    expect(executionBounds.x - transcribe.x - transcribe.width).toBe(12);
+    const pin = (await composer
+      .getByLabel("固定输入框", { exact: true })
+      .boundingBox())!;
+    expect(collapse.x - pin.x - pin.width).toBeLessThanOrEqual(4);
+    expect(collapse.y).toBe(transcribe.y);
     expect(collapse.y).toBe(camera.y);
     expect(
       await composer.evaluate((el) => el.scrollWidth <= el.clientWidth),

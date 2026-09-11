@@ -29,6 +29,16 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
   const transparent = async (button: Locator) => {
     await expect(button).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   };
+  const tokenColor = (token: string) =>
+    page.locator(".app").evaluate((app, token) => {
+      const probe = document.createElement("span");
+      probe.hidden = true;
+      probe.style.backgroundColor = `var(${token})`;
+      app.append(probe);
+      const color = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return color;
+    }, token);
   for (const appearance of ["亮色", "暗色"]) {
     for (const theme of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
       await page.getByRole("button", { name: "外观设置", exact: true }).click();
@@ -39,12 +49,15 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
       // A named Session, not its project parent, owns the selected state.
       await expect(heading).toHaveAttribute("data-active", "false");
       await expect(heading).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-      for (const row of [heading, conversation]) {
+      for (const [row, token] of [
+        [heading, "--nav-hover"],
+        [conversation, "--nav-selected"],
+      ] as const) {
         await row.hover();
         // Compare settled theme colors, not a frame midway through the switch.
         await expect(row).toHaveCSS(
           "background-color",
-          appearance === "亮色" ? "rgb(232, 232, 236)" : "rgb(48, 48, 52)",
+          await tokenColor(token),
         );
         const selected = await row.evaluate(
           (el) => getComputedStyle(el).backgroundColor,
@@ -70,7 +83,10 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
     .click();
   await expect(heading).toHaveAttribute("data-active", "false");
   await heading.locator(".project-link").hover();
-  await expect(heading).toHaveCSS("background-color", "rgb(48, 48, 52)");
+  await expect(heading).toHaveCSS(
+    "background-color",
+    await tokenColor("--nav-hover"),
+  );
   const hover = await heading.evaluate(
     (el) => getComputedStyle(el).backgroundColor,
   );

@@ -83,6 +83,43 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
     expect(bridge.changed).toBe(bridge.previous);
     expect(bridge.invalidRejected).toBe(true);
     expect(bridge.node).toBe("undefined");
+    const unchanged = await desktop.evaluate(
+      async ({ BrowserWindow, nativeTheme }) => {
+        const window = BrowserWindow.getAllWindows()[0]!;
+        const vibrancy = window.setVibrancy.bind(window);
+        const background = window.setBackgroundColor.bind(window);
+        const send = window.webContents.send.bind(window.webContents);
+        let materialWrites = 0;
+        let backgroundWrites = 0;
+        let appearanceMessages = 0;
+        window.setVibrancy = (...args) => {
+          materialWrites++;
+          return vibrancy(...args);
+        };
+        window.setBackgroundColor = (...args) => {
+          backgroundWrites++;
+          return background(...args);
+        };
+        window.webContents.send = (channel, ...args) => {
+          if (channel === "appearance:changed") appearanceMessages++;
+          return send(channel, ...args);
+        };
+        try {
+          for (let n = 0; n < 100; n++) nativeTheme.emit("updated");
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          return { materialWrites, backgroundWrites, appearanceMessages };
+        } finally {
+          window.setVibrancy = vibrancy;
+          window.setBackgroundColor = background;
+          window.webContents.send = send;
+        }
+      },
+    );
+    expect(unchanged).toEqual({
+      materialWrites: 0,
+      backgroundWrites: 0,
+      appearanceMessages: 0,
+    });
     await page.evaluate(() => {
       const frame = document.createElement("iframe");
       frame.id = "untrusted-material-frame";

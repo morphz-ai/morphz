@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const require = createRequire(import.meta.url);
+require("../apps/desktop/stdio.cjs").protectStandardStreams();
 const { centerFromArgs } = require("../apps/desktop/security.cjs");
 const { developmentOrigin } = require("../apps/desktop/development.cjs");
 const args = process.argv.slice(2);

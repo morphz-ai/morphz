@@ -755,7 +755,7 @@ export function createAppServer(
                   ?.content
               : null;
           if (
-            chosen &&
+            (chosen || (op.type === "record-input" && op.reasoningEffort)) &&
             !(previousModel?.kind === "task" && previousModel.model === chosen)
           ) {
             if (!options.runtime)
@@ -764,7 +764,10 @@ export function createAppServer(
                 "Agent 尚未连接，无法确认所选模型。",
               );
             await options.runtime.as(localAccess, () =>
-              options.runtime!.validateModel(chosen),
+              options.runtime!.validateInference(
+                chosen ?? undefined,
+                op.type === "record-input" ? op.reasoningEffort : undefined,
+              ),
             );
           }
           json(res, 200, store.execute(command, localAccess));
@@ -786,9 +789,10 @@ export function createAppServer(
             throw new DomainError("invalid", "消息入口只接受输入。");
           assertIdentity();
           const model = command.operation.model;
-          if (model)
+          const effort = command.operation.reasoningEffort;
+          if (model || effort)
             await options.runtime.as(localAccess, () =>
-              options.runtime!.validateModel(model),
+              options.runtime!.validateInference(model, effort),
             );
           const receipt = store.execute(command, localAccess);
           options.runtime.as(localAccess, () =>

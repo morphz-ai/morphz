@@ -132,7 +132,10 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
     "356",
   );
   await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await page.getByRole("button", { name: "执行", exact: true }).click();
+  await page.getByRole("button", { name: "执行记录", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "执行记录", exact: true }),
+  ).toBeVisible();
   await geometry(page, "docked");
   await expect(page.getByRole("separator")).toHaveAttribute(
     "aria-valuenow",

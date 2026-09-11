@@ -221,7 +221,9 @@ export function ExecutionSidebar({
     <InspectorPanel
       className="execution-sidebar"
       label="执行面板"
-      title={scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "执行"}
+      title={
+        scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "执行记录"
+      }
       context={
         allWork && !detail
           ? "全部工作"

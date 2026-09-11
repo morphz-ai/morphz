@@ -45,6 +45,7 @@ export function InspectorPanel({
   onClose,
   children,
   footer,
+  focusOnMount = true,
 }: {
   className: string;
   label: string;
@@ -58,9 +59,12 @@ export function InspectorPanel({
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  focusOnMount?: boolean;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus({ preventScroll: true }), []);
+  useEffect(() => {
+    if (focusOnMount) heading.current?.focus({ preventScroll: true });
+  }, []);
   return (
     <aside
       id="workspace-inspector"

@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   ArrowUp,
+  AudioLines,
   ArrowLeft,
   ArrowRight,
   ChevronDown,
@@ -66,6 +67,7 @@ import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
 import { ComposerOptions } from "./ComposerOptions.js";
+import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { BrandMark } from "./BrandMark.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
@@ -116,6 +118,7 @@ type InputDraft = {
   attachments?: InputAttachment[];
   annotation?: boolean;
   model?: string;
+  reasoningEffort?: import("../../../packages/core/src/inference.js").ReasoningEffort;
   body: string;
   intent?: InputIntent;
   taskResult?: { taskId: string; revision: number };
@@ -1133,6 +1136,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           {
             type: "record-input",
             ...(captured.model ? { model: captured.model } : {}),
+            ...(captured.reasoningEffort
+              ? { reasoningEffort: captured.reasoningEffort }
+              : {}),
             projectId: project.id,
             conversationId,
             ...(firstConversation
@@ -1188,6 +1194,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         if (asAnnotation) {
           if (compact) setMobileCollaboration(true);
           else prefer({ collaboration: true });
+          if (latestInteraction.current !== "hidden")
+            sentInputFocus.current = {
+              key,
+              generation: navigationGeneration.current,
+            };
         } else if (!captured.taskResult) {
           setMobileCollaboration(false);
           setInteraction(afterSend(latestInteraction.current));
@@ -1748,7 +1759,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       ]
                     : []),
                   {
-                    label: "执行",
+                    label: "执行记录",
                     icon: <ListChecks />,
                     onSelect: openExecutions,
                   },
@@ -2236,7 +2247,39 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           )}
                         </div>
                       </div>
-                      <div className="inline composer-input-tools">
+                      {!draft.annotation && !draft.taskResult && (
+                        <div className="composer-preferences">
+                          <ModelPicker
+                            compact
+                            current={client.boot!.runtime.model}
+                            value={draft.model}
+                            reasoning={{
+                              value: draft.reasoningEffort,
+                              onChange: (reasoningEffort) =>
+                                setDraft(contextKey, {
+                                  ...draft,
+                                  reasoningEffort,
+                                }),
+                            }}
+                            disabled={
+                              sending ||
+                              !client.online ||
+                              !client.boot!.runtime.connected
+                            }
+                            onChange={(model) =>
+                              setDraft(contextKey, {
+                                ...draft,
+                                model: model || undefined,
+                              })
+                            }
+                          />
+                        </div>
+                      )}
+                      <div
+                        className="composer-floating-tools"
+                        role="group"
+                        aria-label="输入工具"
+                      >
                         {((!draft.annotation && !draft.taskResult) ||
                           !!draft.attachments?.length) && (
                           <MessageAttachments
@@ -2299,7 +2342,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         <button
                           className="icon-button"
                           aria-label="语音输入"
-                          title="语音输入"
+                          title="短句听写 · 识别文字放入输入框"
                           disabled={sending || !client.online}
                           onClick={() =>
                             setSpeech({
@@ -2323,113 +2366,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         >
                           <Mic />
                         </button>
-                        {inputPinned && !dialogueCanvas && (
-                          <button
-                            className="icon-button composer-pin"
-                            aria-label="取消固定输入框"
-                            title="已固定 · 点击后恢复自动收起"
-                            aria-pressed={true}
-                            onClick={() => {
-                              keepExchangeOpen();
-                              // This pin button unmounts when cleared. Keep focus
-                              // in the exchange instead of treating its removal
-                              // as the user leaving the input.
-                              input.current?.focus();
-                              prefer({
-                                pinnedInputs: { [exchangeKey]: false },
-                              });
-                            }}
-                          >
-                            <Pin />
-                          </button>
-                        )}
-                        <ComposerOptions
+                        <ComposerToolButtons
                           key={`options:${contextKey}`}
-                          modelControl={
-                            <ModelPicker
-                              value={draft.model}
-                              disabled={
-                                !client.online ||
-                                !client.boot!.runtime.connected ||
-                                !!draft.taskResult ||
-                                !!draft.annotation
-                              }
-                              onChange={(model) =>
-                                setDraft(contextKey, {
-                                  ...draft,
-                                  model: model || undefined,
-                                })
-                              }
-                            />
-                          }
-                          model={client.boot!.runtime.model || "未配置"}
                           unread={!conversationVisible && unseenReply}
                           options={[
                             {
-                              label: "执行记录与审批",
-                              icon: <ListChecks />,
-                              onSelect: openExecutions,
-                              disabled: !client.boot!.runtime.configured,
-                              title: !client.boot!.runtime.configured
-                                ? "连接 Agent 后可查看执行记录与审批"
-                                : undefined,
-                            },
-                            ...(!dialogueCanvas
-                              ? [
-                                  {
-                                    label: conversationVisible
-                                      ? "收起交流记录"
-                                      : "查看交流记录",
-                                    icon: <History />,
-                                    onSelect: () =>
-                                      setInteraction(
-                                        conversationVisible
-                                          ? "input"
-                                          : "recent",
-                                      ),
-                                  },
-                                  ...(conversationVisible
-                                    ? [
-                                        {
-                                          label: historyVisible
-                                            ? "返回工作内容"
-                                            : "展开完整记录",
-                                          icon: historyVisible ? (
-                                            <Minimize2 />
-                                          ) : (
-                                            <Maximize2 />
-                                          ),
-                                          onSelect: () =>
-                                            setInteraction(
-                                              historyVisible
-                                                ? "recent"
-                                                : "history",
-                                            ),
-                                        },
-                                      ]
-                                    : []),
-                                ]
-                              : []),
-                            ...(!inputPinned && !dialogueCanvas
-                              ? [
-                                  {
-                                    label: "固定输入框",
-                                    icon: <Pin />,
-                                    pressed: false,
-                                    onSelect: () => {
-                                      keepExchangeOpen();
-                                      prefer({
-                                        pinnedInputs: {
-                                          [exchangeKey]: true,
-                                        },
-                                      });
-                                    },
-                                  },
-                                ]
-                              : []),
-                            {
                               label: "长录音转写",
-                              icon: <Mic />,
+                              title: "长录音转写 · 录音结束后确认文字",
+                              icon: <AudioLines />,
                               onSelect: () =>
                                 setSpeech({
                                   modal: true,
@@ -2449,16 +2393,83 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 }),
                               disabled: !client.online,
                             },
-                            ...(draft.selection
+                            {
+                              label: "执行记录与审批",
+                              groupStart: true,
+                              icon: <ListChecks />,
+                              onSelect: openExecutions,
+                              disabled: !client.boot!.runtime.configured,
+                              title: !client.boot!.runtime.configured
+                                ? "连接 Agent 后可查看执行记录与审批"
+                                : undefined,
+                            },
+                            ...(!dialogueCanvas
+                              ? [
+                                  {
+                                    id: "history-visibility",
+                                    label: conversationVisible
+                                      ? "收起交流记录"
+                                      : "查看交流记录",
+                                    icon: <History />,
+                                    onSelect: () =>
+                                      setInteraction(
+                                        conversationVisible
+                                          ? "input"
+                                          : "recent",
+                                      ),
+                                  },
+                                  {
+                                    id: "history-size",
+                                    label: historyVisible
+                                      ? "返回工作内容"
+                                      : "展开完整记录",
+                                    icon: historyVisible ? (
+                                      <Minimize2 />
+                                    ) : (
+                                      <Maximize2 />
+                                    ),
+                                    onSelect: () =>
+                                      setInteraction(
+                                        historyVisible ? "recent" : "history",
+                                      ),
+                                  },
+                                ]
+                              : []),
+                            ...(!dialogueCanvas
+                              ? [
+                                  {
+                                    id: "pin",
+                                    label: inputPinned
+                                      ? "取消固定输入框"
+                                      : "固定输入框",
+                                    icon: <Pin />,
+                                    pressed: inputPinned,
+                                    onSelect: () => {
+                                      keepExchangeOpen();
+                                      if (inputPinned) input.current?.focus();
+                                      prefer({
+                                        pinnedInputs: {
+                                          [exchangeKey]: !inputPinned,
+                                        },
+                                      });
+                                    },
+                                  },
+                                ]
+                              : []),
+                            ...(artifact
                               ? [
                                   {
                                     label: "保存为批注",
+                                    reserveOnly: !draft.selection,
                                     icon: <MessageSquarePlus />,
                                     disabled:
                                       !draft.body.trim() ||
                                       sending ||
                                       !client.online,
                                     onSelect: () => {
+                                      // Saving clears the selection and removes this
+                                      // tool. Leave focus on the persistent input.
+                                      input.current?.focus();
                                       void send(true);
                                     },
                                   },
@@ -2476,6 +2487,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             <ChevronDown />
                           </button>
                         )}
+                      </div>
+                      <div className="inline composer-input-tools">
                         <button
                           className="send"
                           aria-label={
@@ -2566,6 +2579,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             title="批注"
             context={contextTitle}
             resizeLabel="调整批注栏宽度"
+            // Showing a saved annotation must not steal focus from continued input.
+            focusOnMount={!sentInputFocus.current}
             layout={rightInspector}
             onResize={resizeInspector}
             onClose={closeInspector}

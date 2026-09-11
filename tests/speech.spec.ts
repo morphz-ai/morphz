@@ -96,6 +96,9 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   await composerAction(page, "保存为批注");
   await expect(page.locator(".annotation")).toContainText("确认后的语音批注。");
   await expect(page.locator(".annotation")).toContainText("v2");
+  await expect(page.getByLabel("AI 输入内容")).toBeVisible();
+  await expect(page.getByLabel("AI 输入内容")).toBeFocused();
+  await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
   await composerAction(page, "长录音转写");
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog).toContainText("正在录音");

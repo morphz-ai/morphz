@@ -4,6 +4,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { workInputRequest } from "./session-io.js";
+import {
+  modelOptionSchema,
+  reasoningEffortSchema,
+  reasoningLevels,
+  type ReasoningEffort,
+  type ModelCatalog,
+} from "../../../packages/core/src/inference.js";
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import {
   DomainError,
@@ -819,30 +826,97 @@ export class RuntimeBridge {
     }
     return response.json();
   }
-  async models() {
+  async models(includeSources = true) {
     const raw = z
       .object({
         model: z.string().optional(),
         models: z.array(z.string()).optional(),
-        model_options: z
-          .array(z.object({ id: z.string(), label: z.string() }).passthrough())
-          .optional(),
+        model_options: z.array(modelOptionSchema).optional(),
+        reasoning_effort: reasoningEffortSchema.nullable().optional(),
       })
       .passthrough()
       .parse(await this.request("/api/runtime/inference"));
-    return {
+    const catalog: ModelCatalog = {
       current: raw.model ?? this.state.model,
       options:
         raw.model_options ??
         (raw.models ?? []).map((id) => ({ id, label: id })),
+      reasoning: {
+        current: raw.reasoning_effort ?? null,
+        levels: reasoningEffortSchema.options,
+      },
     };
+    // Provider configuration is optional metadata. Only names cross this boundary;
+    // never forward keys, endpoints, headers or credential references to the UI.
+    if (includeSources) {
+      try {
+        const providers = z
+          .object({
+            provider_instances: z.record(
+              z.string(),
+              z.object({ accounts: z.array(z.string()).default([]) }),
+            ),
+            auth_accounts: z.record(
+              z.string(),
+              z.object({
+                config: z.object({ label: z.string().nullable().optional() }),
+                effective_enabled: z.boolean(),
+                oauth: z.boolean(),
+                authenticated: z.boolean(),
+              }),
+            ),
+            model_routes: z.record(
+              z.string(),
+              z.object({
+                candidates: z.array(
+                  z.object({
+                    provider: z.string(),
+                    account: z.string().nullable().optional(),
+                  }),
+                ),
+              }),
+            ),
+          })
+          .parse(await this.request("/api/runtime/providers"));
+        catalog.options = catalog.options.map((option) => {
+          const names = new Set<string>();
+          for (const candidate of providers.model_routes[option.id]
+            ?.candidates ?? []) {
+            const accounts = candidate.account
+              ? [candidate.account]
+              : (providers.provider_instances[candidate.provider]?.accounts ??
+                []);
+            for (const id of accounts) {
+              const account = providers.auth_accounts[id];
+              if (
+                account?.effective_enabled &&
+                (!account.oauth || account.authenticated)
+              )
+                names.add(account.config.label?.trim() || candidate.provider);
+            }
+          }
+          return names.size ? { ...option, sources: [...names] } : option;
+        });
+      } catch {
+        /* Older or restricted Runtime: keep the authoritative model catalog. */
+      }
+    }
+    return catalog;
   }
   async validateModel(model: string) {
-    const catalog = await this.models();
-    if (!catalog.options.some((option) => option.id === model))
+    return this.validateInference(model);
+  }
+  async validateInference(model?: string, effort?: ReasoningEffort) {
+    const catalog = await this.models(false);
+    if (model && !catalog.options.some((option) => option.id === model))
       throw new DomainError(
         "invalid",
         "所选模型当前不可用，请重新选择；草稿已保留。",
+      );
+    if (effort && !reasoningLevels(catalog, model ?? "").includes(effort))
+      throw new DomainError(
+        "invalid",
+        "所选模型不支持此推理强度，请重新选择；草稿已保留。",
       );
   }
   snapshot(access?: AccessContext): ConversationRuntime {
