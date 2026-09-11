@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   getDocument,
   GlobalWorkerOptions,
@@ -7,7 +8,7 @@ import {
   type RenderTask,
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { ChevronLeft, ChevronRight, MessageSquarePlus } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Content } from "../../../packages/core/src/model.js";
 import { scopedStorage } from "./client.js";
 import { SelectionActions } from "./SelectionActions.js";
@@ -158,11 +159,13 @@ export default function PdfReader({
   onSelect,
   initialPage,
   onRead,
+  toolbarTarget,
 }: {
   content: Pdf;
   onSelect: (quote: string, page: number, annotation?: boolean) => void;
   onRead?: (quote: string) => void;
   initialPage?: number | null;
+  toolbarTarget?: HTMLElement | null;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
@@ -177,8 +180,7 @@ export default function PdfReader({
       ? saved
       : 1;
   });
-  const [width, setWidth] = useState(600),
-    [quote, setQuote] = useState("");
+  const [width, setWidth] = useState(600);
   useEffect(() => {
     const task = getDocument({
       url: "/api/assets/" + content.assetId,
@@ -211,19 +213,7 @@ export default function PdfReader({
   }, [content.assetId]);
   function go(page: number) {
     setNumber(page);
-    setQuote("");
     writeLocal("pdf-page:" + content.assetId, page);
-  }
-  function selection() {
-    const value = window.getSelection();
-    if (
-      !value?.anchorNode ||
-      !value.focusNode ||
-      !root.current?.contains(value.anchorNode) ||
-      !root.current.contains(value.focusNode)
-    )
-      return;
-    setQuote(exactQuote(value.toString().trim()));
   }
   function exactQuote(raw: string) {
     const source = content.pages[number - 1]!;
@@ -247,13 +237,40 @@ export default function PdfReader({
     }
     return exact.length <= 10000 ? exact : "";
   }
+  const controls = (
+    <div className="pdf-controls" role="group" aria-label="PDF 阅读工具">
+      <button
+        aria-label="PDF 上一页"
+        disabled={number === 1}
+        onClick={() => go(number - 1)}
+      >
+        <ChevronLeft />
+      </button>
+      <label>
+        <select
+          aria-label="PDF 页码"
+          value={number}
+          onChange={(e) => go(Number(e.target.value))}
+        >
+          {content.pages.map((_, i) => (
+            <option key={i} value={i + 1}>
+              {i + 1}
+            </option>
+          ))}
+        </select>{" "}
+        / {content.pages.length}
+      </label>
+      <button
+        aria-label="PDF 下一页"
+        disabled={number === content.pages.length}
+        onClick={() => go(number + 1)}
+      >
+        <ChevronRight />
+      </button>
+    </div>
+  );
   return (
-    <div
-      className="pdf-reader"
-      ref={root}
-      onMouseUp={selection}
-      onKeyUp={selection}
-    >
+    <div className="pdf-reader" ref={root}>
       <SelectionActions
         root={root}
         onAction={(action, raw) => {
@@ -263,41 +280,7 @@ export default function PdfReader({
           else onSelect(exact, number, action === "annotate");
         }}
       />
-      <div className="pdf-controls">
-        <button
-          aria-label="PDF 上一页"
-          disabled={number === 1}
-          onClick={() => go(number - 1)}
-        >
-          <ChevronLeft />
-        </button>
-        <label>
-          页码{" "}
-          <select
-            aria-label="PDF 页码"
-            value={number}
-            onChange={(e) => go(Number(e.target.value))}
-          >
-            {content.pages.map((_, i) => (
-              <option key={i} value={i + 1}>
-                {i + 1}
-              </option>
-            ))}
-          </select>{" "}
-          / {content.pages.length}
-        </label>
-        <button
-          aria-label="PDF 下一页"
-          disabled={number === content.pages.length}
-          onClick={() => go(number + 1)}
-        >
-          <ChevronRight />
-        </button>
-        <button disabled={!quote} onClick={() => onSelect(quote, number)}>
-          <MessageSquarePlus />
-          引用选中文字
-        </button>
-      </div>
+      {toolbarTarget ? createPortal(controls, toolbarTarget) : controls}
       {error ? (
         <p role="alert" className="error-banner">
           {error}

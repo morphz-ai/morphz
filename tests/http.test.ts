@@ -12,6 +12,65 @@ async function freePort() {
   await new Promise<void>((r) => s.close(() => r()));
   return p;
 }
+test("首发建会话 HTTP 契约：无效输入不创建，丢回执重试返回同一记录", async () => {
+  const port = await freePort(),
+    store = new WorkspaceStore(":memory:");
+  const server = createAppServer(store, { port, webRoot: "/nonexistent" });
+  await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+  const origin = `http://127.0.0.1:${port}`;
+  try {
+    const boot = await (await fetch(origin + "/api/workspace")).json();
+    assert.equal(boot.capabilities.conversationOnFirstInput, true);
+    const headers = {
+      Origin: origin,
+      "Content-Type": "application/json",
+      "X-MorphzWork-Token": boot.csrfToken,
+    };
+    const request = {
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input",
+        projectId: "first-project",
+        conversationId: randomUUID(),
+        newConversation: { title: "对话 1" },
+        body: "HTTP 首发验收",
+        selection: "",
+        artifactId: null,
+        artifactRevision: null,
+        targetActantId: "morphz-agent",
+      },
+    };
+    const post = (data: unknown) =>
+      fetch(origin + "/api/commands", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(data),
+      });
+    const before = store.snapshot();
+    assert.equal(
+      (
+        await post({
+          ...request,
+          operation: { ...request.operation, body: " " },
+        })
+      ).status,
+      400,
+    );
+    assert.deepEqual(store.snapshot(), before);
+    const first = await post(request);
+    assert.equal(first.status, 200);
+    const receipt = await first.json();
+    assert.deepEqual(await (await post(request)).json(), receipt);
+    assert.equal(store.snapshot().inputs.length, before.inputs.length + 1);
+    assert.equal(
+      store.snapshot().conversations.length,
+      before.conversations.length + 1,
+    );
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  }
+});
 test("语音能力状态由提供方报告，不绑定豆包或暴露配置凭据", async () => {
   const port = await freePort();
   const store = new WorkspaceStore(":memory:");

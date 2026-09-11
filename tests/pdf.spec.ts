@@ -11,7 +11,9 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.getByLabel("新对象标题").fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
+  await page
+    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .click();
   const dialog = page.getByRole("dialog", { name: "导入资料" });
   await dialog
     .getByLabel("选择资料文件")
@@ -24,6 +26,31 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await expect(page.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
   await expect(page.locator(".pdf-text-layer")).toContainText("合成测试资料");
   await expect(page.getByText("正在渲染第 1 页…")).toHaveCount(0);
+  // One integrated toolbar; no duplicate title, author or paging row above the PDF.
+  await expect(page.locator(".topbar .pdf-controls")).toBeVisible();
+  await expect(
+    page.locator(
+      ".pdf-paper > h1, .pdf-paper > .byline, .pdf-reader > .pdf-controls",
+    ),
+  ).toHaveCount(0);
+  for (const width of [1440, 760]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect
+      .poll(async () => {
+        const bar = (await page.locator(".topbar").boundingBox())!;
+        const canvas = (await page.locator(".pdf-page").boundingBox())!;
+        return canvas.y - bar.y - bar.height;
+      })
+      .toBeLessThanOrEqual(12);
+    const paging = (await page.getByLabel("PDF 页码").boundingBox())!;
+    expect(paging.x + paging.width).toBeLessThanOrEqual(width);
+    await expect(page.locator(".topbar")).toHaveJSProperty(
+      "scrollWidth",
+      await page.locator(".topbar").evaluate((e) => e.clientWidth),
+    );
+    await page.screenshot({ path: `test-results/pdf-integrated-${width}.png` });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
   expect(
     await page
       .locator(".pdf-page canvas")

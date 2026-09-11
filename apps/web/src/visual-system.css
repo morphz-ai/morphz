@@ -1,0 +1,526 @@
+/* Shared visual language. HIG principles, not Apple-prescribed CSS values.
+   Geometry/behavior stay in ui.css and workflow.css; this layer owns material
+   and motion. No transitions on user text, live deltas or native view bounds. */
+.app,
+.startup,
+.connection-screen {
+  --bg: light-dark(#f7f7f8, #19191b);
+  --paper: light-dark(#fdfdfd, #202022);
+  --side: light-dark(#f1f1f3, #18181a);
+  --soft: light-dark(#f4f4f6, #29292c);
+  --hover: light-dark(#e8e8ec, #303034);
+  --ink: light-dark(#242426, #ededee);
+  --muted: light-dark(#67676c, #aaaab0);
+  --line: light-dark(#dedee3, #38383d);
+  --hairline: light-dark(#eaeaec, #303034);
+  --line-strong: light-dark(#c6c6ce, #515158);
+  --surface-raised: light-dark(#ffffff, #2b2b2f);
+  --surface-glass: light-dark(#fcfcfdba, #222224dd);
+  --surface-menu: light-dark(#fcfcfdf0, #2b2b2ff2);
+  --surface-control: light-dark(#ffffffb8, #ffffff07);
+  --edge-highlight: light-dark(#ffffffcc, #ffffff0c);
+  --elevation-small: 0 1px 2px light-dark(#17171f08, #00000020);
+  --elevation-floating:
+    0 8px 28px light-dark(#17171f12, #00000030),
+    0 1px 3px light-dark(#17171f08, #00000020);
+  --elevation-modal:
+    0 20px 64px light-dark(#17171f24, #00000060),
+    0 2px 8px light-dark(#17171f0c, #00000030);
+  --material-blur: blur(20px) saturate(1.08);
+  --motion-feedback: 110ms;
+  --motion-surface: 180ms;
+  --motion-reveal: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0.75, 0.25, 1);
+  --motion-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* Stable plane, quiet navigation. One row owns each hover/selection surface. */
+.sidebar {
+  border-right-color: var(--hairline);
+}
+.app :is(.topbar, .primary-panel, .browser-toolbar) {
+  background: var(--paper);
+}
+.app
+  :is(
+    button,
+    summary,
+    select,
+    .sidebar-project-heading,
+    .project-conversation-row,
+    .search-field,
+    .composer
+  ) {
+  transition:
+    background-color var(--motion-feedback) ease,
+    border-color var(--motion-feedback) ease,
+    color var(--motion-feedback) ease,
+    box-shadow var(--motion-feedback) ease;
+}
+.app button:active:not(:disabled) {
+  background-color: var(--hover);
+}
+.app :is(button, a, summary, [tabindex]):focus-visible {
+  outline-offset: 2px;
+}
+.app .outline {
+  background: var(--surface-control);
+  border-color: var(--line);
+  box-shadow: var(--elevation-small);
+}
+.app .primary {
+  box-shadow: var(--elevation-small);
+}
+.app .topbar :is(.outline, input, select) {
+  box-shadow: none;
+}
+.app .sidebar nav button[aria-current="page"] {
+  box-shadow: inset 0 1px var(--edge-highlight);
+}
+.message-peek,
+.project-new-conversation {
+  transition: opacity var(--motion-feedback) ease;
+}
+
+/* Results look like usable content, not a wall of outlined widgets. */
+.app :is(.artifact-grid .artifact-card, .project-card) {
+  background: var(--surface-control);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--elevation-small);
+}
+.app :is(.artifact-grid .artifact-card, .project-card):hover {
+  background: var(--soft);
+  border-color: var(--line-strong);
+}
+.app .application-tile {
+  gap: 10px;
+  padding: 18px 12px;
+}
+.app .application-icon {
+  background: var(--surface-control);
+  border-color: var(--line);
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-small);
+  color: var(--accent);
+  border-radius: 16px;
+}
+.app .application-tile:hover .application-icon {
+  border-color: var(--line-strong);
+}
+.app :is(.empty-state > svg, .empty-icon) {
+  color: var(--muted);
+  background: var(--soft);
+  border-color: var(--hairline);
+}
+.app :is(.artifact-list .artifact-card, .task-row) {
+  border-color: var(--hairline);
+}
+.app .object-paper {
+  background: transparent;
+}
+.app :is(.source-strip, .object-relations, .task-properties) {
+  border-color: var(--hairline);
+}
+.app :is(.annotation, .task-results, .delivery-object, .attachment-file) {
+  border-color: var(--line);
+  border-radius: 8px;
+}
+.app :is(.interactive-table th, .interactive-table td) {
+  border-color: var(--hairline);
+}
+.app :is(.interactive-table tbody tr):hover {
+  background: var(--soft);
+}
+.app .interactive-form .field > span {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.app .pdf-reader {
+  background: var(--bg);
+}
+
+/* Reading tools belong to the existing window bar, not a second page header. */
+.app .object-paper.pdf-paper {
+  max-width: 952px;
+  padding: 8px 16px 16px;
+}
+.app .pdf-paper .pdf-reader {
+  margin-top: 0;
+}
+.app .pdf-toolbar-slot .pdf-controls {
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+}
+.app .pdf-toolbar-slot .pdf-controls button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 4px;
+}
+.app .pdf-toolbar-slot label {
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.app .pdf-toolbar-slot select {
+  width: auto;
+  min-width: 44px;
+  height: 28px;
+  padding: 3px 4px;
+  background: transparent;
+  border-color: transparent;
+}
+.app .pdf-file-info {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.app .pdf-file-info p {
+  margin: 6px 0;
+}
+.app .topbar:has(.pdf-toolbar-slot) .breadcrumb {
+  min-width: 40px;
+}
+.app .topbar:has(.pdf-toolbar-slot) .detail-toolbar-slot {
+  flex-shrink: 0;
+}
+@container (max-width: 640px) {
+  .app .topbar:has(.pdf-toolbar-slot) .application-toolbar-slot {
+    min-width: 0;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .application-strip {
+    overflow-x: auto;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .navigation-history button:last-child {
+    display: none;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .object-toolbar {
+    gap: 2px;
+  }
+}
+
+/* The composer keeps its full writing area. Only transient recent history
+   floats over HTML content; pinned/native/short layouts remain docked. */
+.primary-panel {
+  position: relative;
+}
+.exchange-surface {
+  position: relative;
+  z-index: 4;
+}
+.app .composer {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+  border-radius: 14px;
+  box-shadow: none;
+}
+.app .composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--line-strong));
+  box-shadow: none;
+}
+.app .composer textarea {
+  background: transparent;
+}
+.app .composer-actions {
+  color: var(--muted);
+}
+.app .composer-input-tools .send:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.app .composer-input-tools .send:not(:disabled):hover {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+.app .composer-input-tools .send:disabled {
+  background: var(--soft);
+  opacity: 0.55;
+}
+.primary-panel[data-interaction="recent"] .exchange-surface > .conversation {
+  background: var(--surface-glass);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 62%, transparent);
+  border-radius: 14px;
+  padding: 14px 16px 10px;
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-floating);
+  scrollbar-gutter: auto;
+}
+@media (min-height: 650px) {
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .exchange-surface
+    > .conversation {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    translate: -50% 0;
+    height: min(34dvh, 360px);
+    max-height: calc(100dvh - 280px);
+    margin: 0 0 4px;
+  }
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .conversation:has(.conversation-empty) {
+    height: auto;
+  }
+}
+.application-browser-workspace
+  .primary-panel[data-interaction="recent"]
+  .exchange-surface
+  > .conversation {
+  /* The native web view is a separate compositor, not a CSS backdrop. */
+  background: var(--soft);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.conversation .human-message {
+  background: var(--soft);
+  border-radius: 14px 14px 5px 14px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 40%, transparent);
+}
+.app .primary-panel[data-interaction="recent"] .conversation {
+  /* Metadata must stay readable even above a black image or white PDF. */
+  --muted: light-dark(#45454b, #bdbdc4);
+}
+.app .delivery-object {
+  background: var(--surface-control);
+  border-color: var(--line);
+}
+.app .composer-reopen,
+.app .new-exchange {
+  background: var(--surface-menu);
+  border-color: var(--line);
+  box-shadow: var(--elevation-floating);
+  backdrop-filter: var(--material-blur);
+}
+
+/* Every transient surface shares a material, edge and elevation hierarchy. */
+.app :is(.create-dialog, .search-dialog, .attachment-preview-dialog) {
+  background: var(--surface-menu);
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-modal);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+}
+.app dialog::backdrop {
+  background: light-dark(#19191f24, #00000060);
+}
+.app .attachment-preview-dialog:has(> pre) {
+  width: min(680px, 85vw);
+}
+.app .capture-dialog .capture-start {
+  margin: 4px 0;
+}
+.app .capture-dialog > footer {
+  margin-top: 16px;
+}
+.app :is(.composer-options, .theme-menu, .workspace-options-menu) {
+  background: var(--surface-menu);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-floating);
+  /* Menus are nearly opaque: a stable hit-test surface is more valuable than
+     live blur, particularly above out-of-process application content. */
+  backdrop-filter: none;
+}
+.app .workspace-search-controls,
+.app .search-scope,
+.app .search-help {
+  background: transparent;
+  border-color: var(--hairline);
+}
+.app .workspace-search-results article {
+  border-color: var(--hairline);
+}
+.app .workspace-search-results article[data-selected="true"] {
+  background: var(--hover);
+}
+.app .notification-list article {
+  border-color: var(--hairline);
+}
+.app .notification-modes {
+  background: var(--soft);
+}
+.app .notification-modes input:checked + span {
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-small);
+}
+.workspace :is(.execution-sidebar, .understanding-panel, .collaboration) {
+  background: var(--soft);
+  border-left-color: var(--line);
+}
+.workspace :is(.execution-sidebar-header, .understanding-panel > header) {
+  background: transparent;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 6px;
+}
+.workspace .collaboration {
+  padding: 0 12px 12px;
+}
+.workspace .collaboration > header {
+  min-height: 42px;
+  gap: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.workspace .collaboration h2 {
+  margin: 0;
+  flex-shrink: 0;
+}
+.workspace .collaboration-context {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace .collaboration-scroll {
+  padding-top: 12px;
+}
+.app .execution-details :is(pre, .execution-result) {
+  background: var(--surface-control);
+  border-radius: 6px;
+}
+.app .browser-toolbar form {
+  background: var(--soft);
+  border-color: var(--hairline);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.app .browser-toolbar form:focus-within {
+  border-color: var(--line-strong);
+}
+.app .read-aloud-player {
+  background: var(--surface-menu);
+  border-color: var(--line);
+  border-radius: 12px;
+  box-shadow: var(--elevation-floating);
+  backdrop-filter: var(--material-blur);
+}
+.app .inline-dictation {
+  border-color: var(--hairline);
+}
+
+/* Directional, interruptible reveals. Individual translate/scale leave dialog
+   centering transforms untouched. Data changes never replay an entrance. */
+@keyframes surface-reveal {
+  from {
+    opacity: 0;
+    scale: 0.985;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+@keyframes inspector-reveal {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes dialog-reveal {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes exchange-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.app dialog[open] {
+  animation: dialog-reveal var(--motion-surface) var(--motion-ease);
+}
+.app :is(.execution-sidebar, .understanding-panel) {
+  animation: inspector-reveal var(--motion-reveal) var(--motion-ease);
+}
+.app .primary-panel[data-interaction="recent"] .conversation,
+.app :is(.read-aloud-player, .inline-dictation) {
+  animation: exchange-reveal var(--motion-reveal) var(--motion-ease);
+}
+/* Keep the native top-layer hit surface stable. Only the contents fade in;
+   dismissal is immediate, without a deferred display/overlay transition. */
+.app .composer-options:not(:popover-open) {
+  pointer-events: none;
+}
+@keyframes menu-content-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.app .composer-options:popover-open > * {
+  animation: menu-content-reveal var(--motion-surface) var(--motion-ease);
+}
+.app .theme-menu {
+  animation: surface-reveal var(--motion-surface) var(--motion-ease);
+}
+.app
+  :is(.execution-section-toggle > svg, .execution-input-text summary::before) {
+  transition: transform var(--motion-feedback) var(--motion-ease);
+}
+/* Screenshot selection must see the final clean canvas, never a fading layer. */
+.app:has(.capture-dialog[data-capturing="true"])
+  :is(.exchange-surface, dialog) {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app {
+    --surface-glass: var(--surface-raised);
+    --surface-menu: var(--surface-raised);
+    --material-blur: none;
+  }
+}
+@media (prefers-contrast: more) {
+  .app {
+    --line: light-dark(#898992, #8e8e98);
+    --hairline: var(--line);
+    --line-strong: var(--ink);
+    --surface-glass: var(--surface-raised);
+    --surface-menu: var(--surface-raised);
+    --material-blur: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app *,
+  .app *::before,
+  .app *::after,
+  .app dialog::backdrop {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

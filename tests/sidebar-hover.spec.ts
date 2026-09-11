@@ -20,6 +20,8 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
   await heading.hover();
   await expect(create).toHaveCSS("opacity", "1");
   await create.click();
+  await page.getByLabel("AI 输入内容").fill("侧栏选中态验收");
+  await page.getByLabel("AI 输入内容").press("Enter");
   const conversation = project.locator(
     '.project-conversation-row[data-selected="true"]',
   );
@@ -34,7 +36,16 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
       await page.getByRole("button", { name: theme, exact: true }).click();
       await away.hover();
       await expect(create).toHaveCSS("opacity", "0");
+      // A named Session, not its project parent, owns the selected state.
+      await expect(heading).toHaveAttribute("data-active", "false");
+      await expect(heading).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
       for (const row of [heading, conversation]) {
+        await row.hover();
+        // Compare settled theme colors, not a frame midway through the switch.
+        await expect(row).toHaveCSS(
+          "background-color",
+          appearance === "亮色" ? "rgb(232, 232, 236)" : "rgb(48, 48, 52)",
+        );
         const selected = await row.evaluate(
           (el) => getComputedStyle(el).backgroundColor,
         );
@@ -59,6 +70,7 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
     .click();
   await expect(heading).toHaveAttribute("data-active", "false");
   await heading.locator(".project-link").hover();
+  await expect(heading).toHaveCSS("background-color", "rgb(48, 48, 52)");
   const hover = await heading.evaluate(
     (el) => getComputedStyle(el).backgroundColor,
   );

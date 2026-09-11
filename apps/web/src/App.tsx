@@ -41,6 +41,7 @@ import {
   inboxFor,
   spaceKind,
   inConversation,
+  discussionId,
   applicationFor,
   type Artifact,
   type TaskContent,
@@ -117,6 +118,12 @@ type InputDraft = {
   selection: string;
   revision: number | null;
   page?: number;
+};
+type ConversationDraft = {
+  id: string;
+  projectId: string;
+  title: string;
+  inputId: string;
 };
 type NavigationPlace = Pick<
   Preferences,
@@ -292,6 +299,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [drafts, setDrafts] = useState<Record<string, InputDraft>>(() =>
     readLocal(draftKey("inputs"), {}),
   );
+  const [conversationDrafts, setConversationDrafts] = useState<
+    Record<string, ConversationDraft>
+  >(() => readLocal(draftKey("conversations"), {}));
+  const conversationDraftsRef = useRef(conversationDrafts);
+  conversationDraftsRef.current = conversationDrafts;
+  const sendPending = useRef(false);
+  const startedConversations = new Set([
+    ...(state?.inputs.map(discussionId) ?? []),
+    ...(client.boot?.runtime.messages.map(discussionId) ?? []),
+  ]);
+  const hasConversationDraft = (id: string) =>
+    Object.entries(drafts).some(
+      ([key, value]) =>
+        key.startsWith(id + ":") &&
+        !!(
+          value.body.trim() ||
+          value.attachments?.length ||
+          value.selection ||
+          value.intent
+        ),
+    );
   const [openingObject, setOpeningObject] = useState(false);
   const [restoredPlace, setRestoredPlace] = useState<NavigationPlace | null>(
     null,
@@ -411,9 +439,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         c.id === prefs.selectedConversations?.[navigationProject?.id ?? ""] &&
         (!sharedDefault || c.id !== navigationProject?.id),
     ) ?? state?.conversations.find((c) => c.id === defaultConversation);
-  const conversationId = selectedConversation?.id ?? project?.id ?? "";
+  const pendingConversation =
+    prefs.view === "projects" && prefs.projectOpen
+      ? conversationDrafts[navigationProject?.id ?? ""]
+      : undefined;
+  const selectedDraft =
+    pendingConversation?.id ===
+    prefs.selectedConversations?.[navigationProject?.id ?? ""]
+      ? pendingConversation
+      : undefined;
+  const conversationId =
+    selectedDraft?.id ?? selectedConversation?.id ?? project?.id ?? "";
   const conversationProjectId =
-    selectedConversation?.projectId ?? project?.id ?? "";
+    selectedDraft?.projectId ??
+    selectedConversation?.projectId ??
+    project?.id ??
+    "";
   function conversationKey(workspaceId: string) {
     return workspaceId === project?.id
       ? conversationId
@@ -588,7 +629,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       keepExchangeOpen();
       input.current.focus();
     }
-  }, [conversationId, inputVisible, contextKey, openingObject]);
+    // Reusing the current draft keeps its IDs unchanged. Honor a fresh request
+    // on that render as well, rather than waiting for navigation to change.
+  });
+  const sentInputFocus = useRef<{
+    key: string;
+    generation: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const request = sentInputFocus.current;
+    if (!request || sending) return;
+    sentInputFocus.current = null;
+    if (
+      request.key === contextKey &&
+      request.generation === navigationGeneration.current &&
+      inputVisible &&
+      input.current
+    ) {
+      keepExchangeOpen();
+      input.current.focus();
+    }
+  }, [sending, contextKey, inputVisible]);
   const collaborationVisible =
     !executions &&
     !understandingOpen &&
@@ -802,33 +863,31 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   async function createProjectConversation(workspaceId: string, title: string) {
-    // Creating a conversation is a new navigation intent too. An older object
-    // open must not complete later and prevent this explicit selection.
-    const generation = ++navigationGeneration.current;
-    setOpeningObject(false);
-    // Leaving a pending manual creation also invalidates its completion
-    // navigation. The persisted object remains in the project library.
-    setCreating(null);
-    setWebsiteIntent(null);
-    const receipt = await client.execute({
-      type: "create-conversation",
-      projectId: workspaceId,
-      title,
-    });
-    // A late creation receipt must not pull the user away from newer navigation.
-    if (generation === navigationGeneration.current)
-      selectConversation(workspaceId, receipt.entityId, true);
+    // Starting to type is local navigation, not a server-side conversation.
+    // Repeated clicks reuse the unfinished draft; the first input commits both.
+    let pending = conversationDraftsRef.current[workspaceId];
+    if (!pending) {
+      pending = {
+        id: crypto.randomUUID(),
+        projectId: workspaceId,
+        title,
+        inputId: crypto.randomUUID(),
+      };
+      const next = { ...conversationDraftsRef.current, [workspaceId]: pending };
+      writeLocal(draftKey("conversations"), next);
+      conversationDraftsRef.current = next;
+      setConversationDrafts(next);
+    }
+    selectConversation(workspaceId, pending.id, true);
   }
   function openProject(id: string) {
-    setWebsiteIntent(null);
-    setCreating(null);
-    if (!prefs.executionPinned) setExecutions(null);
-    prefer({
-      view: "projects",
-      projectId: id,
-      projectOpen: true,
-      artifactId: null,
-    });
+    // An explicit project click means its default conversation, not whichever
+    // named Session happened to be used last. Reuse the same switching path so
+    // drafts, the current application/object and in-flight work stay intact.
+    selectConversation(
+      id,
+      sharedDefault ? (personalSpace("dialogue")?.id ?? id) : id,
+    );
   }
   function showInput() {
     keepExchangeOpen();
@@ -985,11 +1044,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       selectedConversation?.archivedAt ||
       (!draft.body.trim() && !draft.attachments?.length) ||
       sending ||
+      sendPending.current ||
       uploadingDrafts[contextKey]
     )
       return;
     const key = contextKey,
       captured = { ...draft };
+    const firstConversation = selectedDraft;
+    sendPending.current = true;
     setSending(true);
     setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
@@ -1028,12 +1090,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           body: captured.body,
         });
       else {
+        if (
+          firstConversation &&
+          !client.boot?.capabilities.conversationOnFirstInput
+        )
+          throw new Error(
+            "工作中心需要更新后才能开始新会话；草稿已保留，现有会话仍可使用。",
+          );
         const receipt = await client.execute(
           {
             type: "record-input",
             ...(captured.model ? { model: captured.model } : {}),
             projectId: project.id,
             conversationId,
+            ...(firstConversation
+              ? { newConversation: { title: firstConversation.title } }
+              : {}),
             ...(activeInstance
               ? { applicationInstanceId: activeInstance.id }
               : {}),
@@ -1061,7 +1133,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             targetActantId: "morphz-agent",
           },
           !!client.boot?.runtime.configured,
+          undefined,
+          firstConversation?.inputId,
         );
+        if (
+          firstConversation &&
+          conversationDraftsRef.current[project.id]?.id === firstConversation.id
+        ) {
+          const next = { ...conversationDraftsRef.current };
+          delete next[project.id];
+          conversationDraftsRef.current = next;
+          setConversationDrafts(next);
+          writeLocal(draftKey("conversations"), next);
+        }
         setRevealedInputs((old) => ({
           ...old,
           [conversationId]: receipt.entityId,
@@ -1076,7 +1160,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           setMobileCollaboration(false);
           setInteraction(afterSend(latestInteraction.current));
           if (latestInteraction.current !== "hidden")
-            requestAnimationFrame(() => input.current?.focus());
+            // Focus only after React removes the sending-disabled state.
+            sentInputFocus.current = {
+              key,
+              generation: navigationGeneration.current,
+            };
         }
       }
     } catch (e) {
@@ -1085,6 +1173,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
       }));
     } finally {
+      sendPending.current = false;
       setSending(false);
     }
   }
@@ -1350,14 +1439,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   prefs.projectOpen &&
                   navigationProject?.id === p.id
                 }
-                selectedId={
-                  prefs.selectedConversations?.[p.id] &&
-                  (!sharedDefault || prefs.selectedConversations[p.id] !== p.id)
-                    ? prefs.selectedConversations[p.id]!
-                    : sharedDefault
-                      ? defaultConversation!
-                      : p.id
-                }
+                selectedId={conversationId}
+                startedIds={startedConversations}
+                drafts={[
+                  ...state.conversations.filter(
+                    (c) =>
+                      c.projectId === p.id &&
+                      c.id !== p.id &&
+                      !startedConversations.has(c.id) &&
+                      hasConversationDraft(c.id),
+                  ),
+                  ...Object.values(conversationDrafts).filter(
+                    (c) =>
+                      c.projectId === p.id &&
+                      !startedConversations.has(c.id) &&
+                      hasConversationDraft(c.id),
+                  ),
+                ]}
                 defaultConversationId={
                   sharedDefault ? defaultConversation! : p.id
                 }
@@ -1665,6 +1763,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           <div
             className="primary-panel"
             data-interaction={historyVisible ? "history" : interaction}
+            data-input-pinned={inputPinned || undefined}
           >
             <main
               ref={main}
@@ -1744,8 +1843,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     <ArtifactEditor
                       autoOpenWebsite={websiteIntent === artifact.id}
                       titleInToolbar={
-                        !applicationWorkspaceOpen &&
-                        artifact.content.kind === "task"
+                        artifact.content.kind === "pdf" ||
+                        (!applicationWorkspaceOpen &&
+                          artifact.content.kind === "task")
                       }
                       toolbarTarget={
                         creating === "document" ? null : detailToolbarTarget
@@ -2424,6 +2524,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             <aside className="collaboration" aria-label="对象批注">
               <header>
                 <h2>批注</h2>
+                <p className="collaboration-context" title={contextTitle}>
+                  {contextTitle}
+                </p>
                 <button
                   aria-label="关闭批注栏"
                   onClick={() => {
@@ -2434,7 +2537,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   <X />
                 </button>
               </header>
-              <p className="collaboration-context">{contextTitle}</p>
               <div className="collaboration-scroll">
                 {!annotations.length ? (
                   <div className="discussion-empty">

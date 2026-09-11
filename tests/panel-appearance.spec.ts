@@ -43,14 +43,14 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       );
       await expect(search.locator("article[data-selected=true]")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(232, 232, 232)" : "rgb(43, 43, 43)",
+        appearance === "亮色" ? "rgb(232, 232, 236)" : "rgb(48, 48, 52)",
       );
       await field.fill("产品资料");
       await expect(search.getByText("找到 1 项内容")).toBeVisible();
       const quote = search.getByRole("button", { name: "引用并提问" });
       await expect(quote).toHaveCSS(
         "color",
-        appearance === "亮色" ? "rgb(104, 104, 104)" : "rgb(163, 163, 163)",
+        appearance === "亮色" ? "rgb(103, 103, 108)" : "rgb(170, 170, 176)",
       );
       await search.screenshot({
         path: `test-results/search-${appearance}-${color}.png`,
@@ -78,7 +78,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         await settings.click();
       await expect(notifications.locator("input:checked + span")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(32, 32, 32)",
+        appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(43, 43, 47)",
       );
       await notifications.screenshot({
         path: `test-results/notifications-${appearance}-${color}.png`,

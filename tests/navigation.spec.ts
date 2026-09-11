@@ -49,11 +49,11 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   await expect(page.locator(".sidebar")).toHaveCSS("width", "280px");
   await expect(page.locator(".sidebar")).toHaveCSS(
     "background-color",
-    "rgb(23, 23, 23)",
+    "rgb(24, 24, 26)",
   );
   await expect(page.locator(".workspace")).toHaveCSS(
     "background-color",
-    "rgb(32, 32, 32)",
+    "rgb(32, 32, 34)",
   );
   await page.screenshot({
     path: "test-results/workbench-dark.png",

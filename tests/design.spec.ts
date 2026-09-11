@@ -74,7 +74,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
       );
       await expect(page.locator(".workspace")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(32, 32, 32)",
+        appearance === "亮色" ? "rgb(253, 253, 253)" : "rgb(32, 32, 34)",
       );
       await page.screenshot({
         animations: "disabled",

@@ -27,7 +27,13 @@ export async function openInput(page: Page) {
 /** Low-frequency composer actions are reached through More, not hidden buttons. */
 export async function composerAction(page: Page, name: string) {
   const action = page.getByLabel(name, { exact: true });
-  if (!(await action.isVisible()))
+  // Use native open state rather than a previously rendered hidden menu.
+  const menu = page.getByRole("group", {
+    name: "输入选项",
+    exact: true,
+    includeHidden: true,
+  });
+  if (!(await menu.evaluate((el) => el.matches(":popover-open"))))
     await page.getByLabel("更多输入选项", { exact: true }).click();
   // Native popovers above an out-of-process app frame can enter the DOM before
   // Chromium presents their hit-test surface. Capture the visible menu before

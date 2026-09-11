@@ -79,7 +79,10 @@ test("half-open history has a translucent boundary without dimming text or resiz
     );
     const history = page.locator(".conversation");
     await expect(history).toHaveCSS("opacity", "1");
-    await expect(history).toHaveCSS("backdrop-filter", "blur(12px)");
+    await expect(history).toHaveCSS(
+      "backdrop-filter",
+      "blur(20px) saturate(1.08)",
+    );
     expect(
       await history.evaluate((el) => getComputedStyle(el).boxShadow),
     ).not.toBe("none");
@@ -184,6 +187,11 @@ test("browser has an address field before creating an object; attachment draft p
   await expect(
     page.getByRole("dialog", { name: "附件预览：sample.txt" }),
   ).toContainText("合成附件");
+  expect(
+    (await page
+      .getByRole("dialog", { name: "附件预览：sample.txt" })
+      .boundingBox())!.width,
+  ).toBeLessThanOrEqual(680);
   await page.getByRole("button", { name: "关闭附件预览" }).click();
   await page.reload();
   await expect(

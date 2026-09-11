@@ -510,6 +510,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       type: z.literal("record-input"),
       model: z.string().trim().min(1).max(256).optional(),
       conversationId: id.optional(),
+      newConversation: z.object({ title }).strict().optional(),
       intent: inputIntentSchema.optional(),
       applicationInstanceId: id.optional(),
       projectId: id,
@@ -1241,6 +1242,34 @@ export function applyCommand(
       throw new DomainError("invalid", "请输入文字或添加附件。");
     const project = checkProject(state, op.projectId, access);
     const conversationId = discussionId(op);
+    if (op.newConversation) {
+      if (actor.kind !== "human" || spaceKind(project) !== "project")
+        throw new DomainError(
+          "forbidden",
+          "只有项目成员可以开始项目内的对话。",
+        );
+      if (
+        !op.conversationId ||
+        state.projects.some((p) => p.id === conversationId)
+      )
+        throw new DomainError("invalid", "新对话需要独立的标识。");
+      const existing = state.conversations.find((c) => c.id === conversationId);
+      if (existing && existing.projectId !== project.id)
+        throw new DomainError("forbidden", "对话不属于当前项目。");
+      // Created inside the same command transaction as the first real input.
+      // Any later validation failure rolls both back. Existing IDs are never
+      // renamed or rebound, including retries after a lost response.
+      if (!existing)
+        state.conversations.push({
+          id: conversationId,
+          projectId: project.id,
+          title: op.newConversation.title,
+          revision: 1,
+          archivedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+    }
     const conversation = checkConversation(
       state,
       project.id,

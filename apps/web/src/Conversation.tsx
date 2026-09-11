@@ -110,7 +110,8 @@ export function Conversation({
   const stream = useConversationStream(
     projectId,
     conversationId,
-    runtime.configured,
+    runtime.configured &&
+      state.conversations.some((c) => c.id === conversationId),
   );
   const messages = new Map<string, LiveMessage>();
   for (const m of runtime.messages)

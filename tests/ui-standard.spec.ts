@@ -1,4 +1,4 @@
-import { composerAction } from "./interaction-helpers.js";
+import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 
@@ -106,7 +106,9 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   await page.screenshot({ path: "test-results/quick-search-760.png" });
   await page.keyboard.press("Escape");
   await page.getByLabel("工作空间选项").click();
-  await page.getByRole("button", { name: "资料导入与来源", exact: true }).click();
+  await page
+    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .click();
   await expect(page.getByRole("dialog", { name: "导入资料" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("工作空间选项")).toBeFocused();
@@ -223,7 +225,10 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
     });
   });
   await page.reload();
-  await composerAction(page, "查看交流记录");
+  // Focus restores the recent exchange; reload may already retain that state.
+  // Do not wait for a "show" action after the history is visibly open.
+  await openInput(page);
+  await expect(page.locator(".conversation")).toBeVisible();
   await composerAction(page, "展开完整记录");
   const exchange = page.locator(".conversation");
   await expect(
@@ -289,4 +294,5 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
   ).toHaveCount(0);
   await expect(page.locator(".creation-actions")).toBeVisible();
   await page.screenshot({ path: "test-results/exchange-inline.png" });
+  await page.unrouteAll({ behavior: "wait" });
 });

@@ -381,6 +381,7 @@ export function createAppServer(
           capabilities: {
             runtime: options.runtime?.snapshot().connected ?? false,
             teamAuthentication: !!options.identity,
+            conversationOnFirstInput: true,
           },
           runtime:
             options.runtime?.snapshot(localAccess) ?? disconnectedRuntime,

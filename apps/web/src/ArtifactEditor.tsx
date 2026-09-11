@@ -94,6 +94,8 @@ export function ArtifactEditor({
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
   const selectionRoot = useRef<HTMLDivElement>(null);
   const paper = useRef<HTMLElement>(null);
+  const [pdfToolbarTarget, setPdfToolbarTarget] =
+    useState<HTMLDivElement | null>(null);
   const key = draftKey("edit:" + artifact.id);
   const [draft, setDraft] = useState<Draft | null>(() => {
     const cached = readLocal<Draft | null>(key, null);
@@ -118,6 +120,7 @@ export function ArtifactEditor({
       ? artifact.versions.find((v) => v.revision === history)
       : undefined;
   const shown = old ?? artifact;
+  const isPdf = shown.content.kind === "pdf";
   const dirty =
     !!draft &&
     (draft.title !== artifact.title ||
@@ -236,7 +239,8 @@ export function ArtifactEditor({
   }
   const toolbar = (
     <div className="object-toolbar">
-      {artifact.content.kind !== "task" && (
+      {isPdf && <div className="pdf-toolbar-slot" ref={setPdfToolbarTarget} />}
+      {artifact.content.kind !== "task" && !isPdf && (
         <span>
           {kindLabel[artifact.content.kind]}{" "}
           <span className="muted">
@@ -422,7 +426,9 @@ export function ArtifactEditor({
               ? "task-paper"
               : artifact.content.kind === "interactive"
                 ? "interactive-paper"
-                : "")
+                : isPdf
+                  ? "pdf-paper"
+                  : "")
         }
       >
         <div className="eyebrow">
@@ -439,17 +445,17 @@ export function ArtifactEditor({
               onChange={(e) => update({ ...draft, title: e.target.value })}
             />
           </label>
-        ) : !titleInToolbar || old ? (
+        ) : !titleInToolbar || (old && !isPdf) ? (
           <h1>{shown.title}</h1>
         ) : null}
-        {shown.content.kind !== "task" && (
+        {shown.content.kind !== "task" && !isPdf && (
           <div className="byline">
             {actorName(state, artifact.createdBy.actantId)}
             <span>·</span>
             <time>{new Date(shown.createdAt).toLocaleDateString("zh-CN")}</time>
           </div>
         )}
-        {artifact.source && (
+        {artifact.source && !isPdf && (
           <details className="source-strip">
             <summary>
               {artifact.source.mode === "linked"
@@ -600,6 +606,7 @@ export function ArtifactEditor({
             <PdfReader
               key={shown.content.assetId}
               content={shown.content}
+              toolbarTarget={pdfToolbarTarget}
               initialPage={initialPage}
               onSelect={(quote, page, annotation) =>
                 onSelect(quote, shown.revision, page, annotation)
@@ -613,6 +620,36 @@ export function ArtifactEditor({
               }
             />
           </Suspense>
+        )}
+        {isPdf && (
+          <details className="pdf-file-info">
+            <summary>
+              文件信息{old ? ` · 正在查看历史版本 v${shown.revision}` : ""}
+            </summary>
+            <p>
+              {shown.title} · v{shown.revision}
+            </p>
+            <p>
+              {actorName(state, artifact.createdBy.actantId)} ·{" "}
+              {new Date(shown.createdAt).toLocaleDateString("zh-CN")}
+            </p>
+            {artifact.source && (
+              <p>
+                {artifact.source.mode === "linked"
+                  ? "外部资料 · 原文件只读"
+                  : "导入副本"}
+                {" · "}
+                {artifact.source.relativePath}
+                {artifact.source.connection?.status === "paused" &&
+                  " · 同步已暂停"}
+                {artifact.source.connection?.status === "unavailable" &&
+                  " · 来源暂不可用，保留上次版本"}
+                {artifact.source.mode === "linked"
+                  ? ` · 最近确认 ${artifact.source.connection ? new Date(artifact.source.connection.checkedAt).toLocaleString("zh-CN") : "未知"}`
+                  : ` · 原始内容保存在 v${artifact.source.importedRevision}，不自动同步原文件`}
+              </p>
+            )}
+          </details>
         )}
         {draft?.content.kind === "task" ? (
           <TaskFields

@@ -30,6 +30,95 @@ function commands(store: WorkspaceStore) {
     store.execute({ commandId: randomUUID(), operation }, actor).entityId;
 }
 
+test("首条输入原子创建会话：校验失败不留空记录，重试不重复，不能越权改绑", () => {
+  const store = new WorkspaceStore(":memory:");
+  try {
+    const id = randomUUID();
+    const request = {
+      commandId: randomUUID(),
+      operation: {
+        ...input("first-project", id),
+        newConversation: { title: "对话 1" },
+      },
+    };
+    const before = store.snapshot();
+    assert.throws(() =>
+      store.execute(
+        {
+          ...request,
+          operation: { ...request.operation, artifactId: "missing" },
+        },
+        localAccess,
+      ),
+    );
+    assert.deepEqual(store.snapshot(), before);
+    assert.throws(() =>
+      store.execute(
+        { ...request, operation: { ...request.operation, body: " " } },
+        localAccess,
+      ),
+    );
+    assert.deepEqual(store.snapshot(), before);
+    assert.throws(
+      () =>
+        store.execute(request, {
+          principalId: "morphz-service",
+          actantId: "morphz-agent",
+        }),
+      /项目成员/,
+    );
+    assert.deepEqual(store.snapshot(), before);
+    const receipt = store.execute(request, localAccess);
+    assert.deepEqual(store.execute(request, localAccess), receipt);
+    const after = store.snapshot();
+    assert.equal(after.conversations.length, before.conversations.length + 1);
+    assert.equal(after.inputs.length, before.inputs.length + 1);
+    assert.equal(after.inputs.at(-1)!.conversationId, id);
+    assert.equal(after.conversations.find((c) => c.id === id)!.title, "对话 1");
+    const project = commands(store)({
+      type: "create-project",
+      title: "另一个项目",
+    });
+    assert.throws(
+      () =>
+        commands(store)({
+          ...input(project, id),
+          newConversation: { title: "不能改绑" },
+        } as Operation),
+      /不属于/,
+    );
+    assert.throws(
+      () =>
+        commands(store)({
+          ...input("first-project", "first-project"),
+          newConversation: { title: "不能占用默认" },
+        } as Operation),
+      /独立/,
+    );
+    assert.throws(
+      () =>
+        store.execute(
+          {
+            ...request,
+            operation: {
+              ...request.operation,
+              body: "不能用相同标识提交不同消息",
+            },
+          },
+          localAccess,
+        ),
+      /另一项/,
+    );
+    commands(store)(input("first-project", id));
+    assert.equal(
+      store.snapshot().conversations.length,
+      after.conversations.length + 1,
+    ); // new project default only
+  } finally {
+    store.close();
+  }
+});
+
 test("项目默认对话和多对话：权限、版本、归档恢复与后台接续", () => {
   const store = new WorkspaceStore(":memory:"),
     run = commands(store);

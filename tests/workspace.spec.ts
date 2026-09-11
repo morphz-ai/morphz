@@ -92,6 +92,10 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(
     page.getByRole("heading", { name: "示例封面", exact: true }),
   ).toBeVisible();
+  // setInputFiles bypasses the physical import-control click. Return to the
+  // object canvas explicitly before using controls behind floating history.
+  await page.getByRole("heading", { name: "示例封面", exact: true }).click();
+  await expect(page.locator(".conversation")).toHaveCount(0);
   await page.getByRole("button", { name: "关联其他对象" }).click();
   await page.getByLabel("要关联的对象").selectOption({ label: "并发工作说明" });
   await page.getByRole("button", { name: "添加关联" }).click();
@@ -212,6 +216,13 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await expect(
     page.getByRole("complementary", { name: "对象批注" }),
   ).not.toContainText("请围绕这个对象继续讨论。");
+  const annotationHeader = page.locator(".collaboration > header");
+  await expect(
+    annotationHeader.locator(".collaboration-context"),
+  ).toBeVisible();
+  expect((await annotationHeader.boundingBox())!.height).toBeLessThanOrEqual(
+    44,
+  );
   await page.getByRole("button", { name: "关闭批注栏" }).click();
   await openInput(page);
   await composerAction(page, "收起交流记录");

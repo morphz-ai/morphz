@@ -118,8 +118,12 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   // Losing focus has hidden the unpinned exchange; reopen it explicitly.
   await openInput(page);
   await composerAction(page, "执行记录与审批");
-  const collapsed = (await dialog.boundingBox())!;
-  expect(Math.abs(collapsed.x + collapsed.width - 1440)).toBeLessThan(2);
+  await expect
+    .poll(async () => {
+      const collapsed = (await dialog.boundingBox())!;
+      return Math.abs(collapsed.x + collapsed.width - 1440);
+    })
+    .toBeLessThan(2);
   await page.keyboard.press("Escape");
   for (const width of [760, 390, 320]) {
     await page.setViewportSize({ width, height: 800 });

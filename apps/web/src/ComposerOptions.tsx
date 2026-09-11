@@ -48,7 +48,11 @@ export function ComposerOptions({
     const position = () => {
       const anchor = trigger.current!.getBoundingClientRect();
       element.style.maxHeight = `${Math.max(80, (below ? innerHeight : anchor.top) - 16)}px`;
-      const bounds = element.getBoundingClientRect();
+      // Anchor using stable layout dimensions, independent of reveal effects.
+      const bounds = {
+        width: element.offsetWidth,
+        height: element.offsetHeight,
+      };
       element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, innerWidth - bounds.width - 8))}px`;
       element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, innerHeight - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
     };
@@ -103,6 +107,7 @@ export function ComposerOptions({
         ref={panel}
         id={id}
         popover="manual"
+        inert={!open}
         className="composer-options"
         role="group"
         aria-label={menuLabel}

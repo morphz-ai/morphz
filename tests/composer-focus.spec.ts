@@ -250,8 +250,9 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
   await expect(
     page
       .getByLabel(projectName + "的会话")
-      .getByLabel("打开对话：对话 2", { exact: true }),
-  ).toHaveAttribute("aria-current", "true");
+      .getByLabel("打开对话：对话 1", { exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   for (const width of [1440, 760]) {
     await page.setViewportSize({ width, height: 800 });
     await page.getByLabel("AI 输入内容").focus();

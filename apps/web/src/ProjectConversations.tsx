@@ -27,6 +27,8 @@ export function ProjectConversations({
   onSelect,
   onCreate,
   defaultConversationId,
+  startedIds,
+  drafts,
 }: {
   client: WorkspaceClient;
   projectId: string;
@@ -37,6 +39,8 @@ export function ProjectConversations({
   onSelect: (id: string) => void;
   onCreate: (title: string) => Promise<void>;
   defaultConversationId: string;
+  startedIds: Set<string>;
+  drafts: { id: string; title: string }[];
 }) {
   const [expanded, setExpanded] = useState(active);
   const [archived, setArchived] = useState(false);
@@ -47,14 +51,18 @@ export function ProjectConversations({
   const pending = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   const state = client.boot!.workspace;
-  const conversations = state.conversations
-    .filter((c) => c.projectId === projectId)
-    .map((c) =>
-      c.id === projectId && defaultConversationId !== projectId
-        ? { ...c, id: defaultConversationId, title: "持续对话" }
-        : c,
-    );
-  const hasNamed = conversations.some((c) => c.id !== defaultConversationId);
+  // The project row is the default conversation entry. Legacy default records
+  // stay in the store for history/routing, but are never extra sidebar children.
+  // Filter by identity, not title: a user may name a Session "持续对话".
+  const conversations = state.conversations.filter(
+    (c) =>
+      c.projectId === projectId &&
+      c.id !== projectId &&
+      c.id !== defaultConversationId &&
+      startedIds.has(c.id),
+  );
+  const hasNamed = conversations.length > 0 || drafts.length > 0;
+  const defaultSelected = active && selectedId === defaultConversationId;
   const archivedCount = conversations.filter((c) => c.archivedAt).length;
   useEffect(() => {
     if (active) setExpanded(true);
@@ -74,7 +82,10 @@ export function ProjectConversations({
     setBusy(true);
     setError("");
     try {
-      await onCreate("对话 " + (conversations.length + 1));
+      let ordinal = conversations.length + 1;
+      while (conversations.some((c) => c.title === "对话 " + ordinal))
+        ordinal++;
+      await onCreate("对话 " + ordinal);
       setExpanded(true);
     } catch (e) {
       setError((e as Error).message);
@@ -117,10 +128,10 @@ export function ProjectConversations({
       aria-label={projectTitle + "的会话"}
       role="group"
     >
-      <div className="sidebar-project-heading" data-active={active}>
+      <div className="sidebar-project-heading" data-active={defaultSelected}>
         <button
           className="project-link"
-          aria-current={active ? "true" : undefined}
+          aria-current={defaultSelected ? "true" : undefined}
           onClick={() => {
             setExpanded(true);
             onOpen();
@@ -146,7 +157,7 @@ export function ProjectConversations({
           className="project-new-conversation icon-button"
           aria-label={"新建项目对话：" + projectTitle}
           title="新建会话"
-          disabled={busy || !client.online}
+          disabled={busy}
           onClick={() => void create()}
         >
           <SquarePen />
@@ -154,6 +165,28 @@ export function ProjectConversations({
       </div>
       {hasNamed && expanded && (
         <div className="project-conversation-list">
+          {drafts.map((draft) => (
+            <div
+              key={draft.id}
+              className="project-conversation-row"
+              data-conversation-id={draft.id}
+              data-draft="true"
+              data-selected={active && draft.id === selectedId}
+            >
+              <button
+                className="conversation-choice"
+                aria-label={"继续草稿：" + draft.title}
+                aria-current={
+                  active && draft.id === selectedId ? "true" : undefined
+                }
+                onClick={() => onSelect(draft.id)}
+              >
+                <Pencil />
+                <span>{draft.title}</span>
+                <small>草稿</small>
+              </button>
+            </div>
+          ))}
           {conversations
             .filter((c) => !c.archivedAt || archived)
             .map((c) => {

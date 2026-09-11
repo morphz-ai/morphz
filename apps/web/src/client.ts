@@ -32,6 +32,7 @@ const bootSchema = z.object({
   capabilities: z.object({
     runtime: z.boolean(),
     teamAuthentication: z.boolean(),
+    conversationOnFirstInput: z.boolean().default(false),
   }),
   runtime: conversationRuntimeSchema.default(disconnectedRuntime),
 });
