@@ -2666,7 +2666,10 @@ async fn handle_delete_provider_account(
     }
 }
 
-fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static str> {
+fn oauth_provider_setup(
+    service: &str,
+    secret_backend: &str,
+) -> Result<OAuthProviderSetup, &'static str> {
     let account_id = api_id("account");
     let credential_ref = format!(
         "MORPHZ_OAUTH_{}",
@@ -2693,7 +2696,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
                 "codex-oauth".to_string()
             }),
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Codex".to_string(),
         },
         "kimi" => OAuthProviderSetup {
@@ -2705,7 +2708,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "kimi-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Kimi".to_string(),
         },
         "claude" | "anthropic" => OAuthProviderSetup {
@@ -2717,7 +2720,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "claude-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Claude".to_string(),
         },
         "antigravity" => OAuthProviderSetup {
@@ -2729,7 +2732,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "antigravity-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Antigravity".to_string(),
         },
         "xai" => OAuthProviderSetup {
@@ -2741,7 +2744,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "xai-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "xAI".to_string(),
         },
         _ => return Err("this OAuth service is not integrated with Runtime"),
@@ -2812,7 +2815,11 @@ async fn handle_start_oauth_provider_setup(
             "cannot determine Morphz managed configuration path",
         );
     };
-    let setup = match oauth_provider_setup(&request.service) {
+    // New OAuth accounts follow this Runtime's configured credential authority.
+    // A hosted Runtime has no local env-file backend; choosing one here would
+    // consume a provider's one-time code before credential storage can fail.
+    // Existing accounts retain their explicit backend and are not migrated.
+    let setup = match oauth_provider_setup(&request.service, state.sdk.secret_backend_id()) {
         Ok(setup) => setup,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
@@ -12462,16 +12469,30 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_oauth_bootstrap_catalog_and_start_cover_all_supported_services() {
+        assert_oauth_bootstrap_backend("morphz_env_file").await;
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_bootstrap_uses_runtime_backend_without_env_backend() {
+        assert_oauth_bootstrap_backend("web_test_memory").await;
+    }
+
+    async fn assert_oauth_bootstrap_backend(backend_id: &str) {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
         let env_path = tmp.path().join(".env");
+        let backend: Arc<dyn SecretValueBackend> = if backend_id == "morphz_env_file" {
+            Arc::new(crate::secret_store::HostEnvFileSecretBackend::new(
+                &env_path,
+            ))
+        } else {
+            Arc::new(WebTestSecretBackend::default())
+        };
         let secret_store = Arc::new(
             SecretStore::with_backends(
                 tmp.path().join("managed-secrets.json"),
-                "morphz_env_file",
-                vec![Arc::new(
-                    crate::secret_store::HostEnvFileSecretBackend::new(&env_path),
-                )],
+                backend_id,
+                vec![backend],
             )
             .unwrap(),
         );
@@ -12680,7 +12701,14 @@ mod tests {
         );
         for account_id in authenticated_accounts {
             let account = snapshot.auth_accounts.get(&account_id).unwrap();
+            assert_eq!(account.config.secret_backend.as_deref(), Some(backend_id));
             assert!(account.authenticated, "{account_id} was not authenticated");
+        }
+        if backend_id != "morphz_env_file" {
+            assert!(
+                !env_path.exists(),
+                "OAuth must not create an unconfigured env backend"
+            );
         }
     }
 
@@ -12792,7 +12820,7 @@ mod tests {
         let (state, runtime) =
             test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
         let managed_path = state.managed_config_path.clone().unwrap();
-        let setup = oauth_provider_setup("codex").unwrap();
+        let setup = oauth_provider_setup("codex", state.sdk.secret_backend_id()).unwrap();
         let legacy_model = "invented-default-model";
         let legacy_route_id = "invented-default-route";
         let mut provider = ProviderInstanceConfig {
