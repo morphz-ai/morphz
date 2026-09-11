@@ -1864,13 +1864,35 @@ mod windows {
                 })
                 .unwrap();
             let outside_delete = execute_prepared(outside_delete, &workspace);
-            assert!(
-                !outside_delete.status.success(),
-                "the elevated Windows sandbox must reject deletion of an existing file outside the writable roots"
-            );
+            // cmd's DEL can report success when the restricted account cannot
+            // enumerate the file ("Could Not Find ..."). The observable
+            // security invariant is preservation, not that shell builtin's
+            // unreliable exit code. An uncaught PowerShell deletion below
+            // separately exercises a command with meaningful failure status.
             assert_eq!(
-                std::fs::read_to_string(&outside_existing).unwrap(),
-                "preserve\r\n"
+                std::fs::read(&outside_existing).ok(),
+                Some(b"preserve\r\n".to_vec()),
+                "outside file changed: status={:?} stdout={} stderr={}",
+                outside_delete.status.code(),
+                String::from_utf8_lossy(&outside_delete.stdout),
+                String::from_utf8_lossy(&outside_delete.stderr),
+            );
+            let outside_remove = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: format!(
+                        "powershell.exe -NoProfile -Command \"Remove-Item -LiteralPath '{}' -Force -ErrorAction Stop\"",
+                        outside_existing.display()
+                    ),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let outside_remove = execute_prepared(outside_remove, &workspace);
+            assert!(!outside_remove.status.success());
+            assert_eq!(
+                std::fs::read(&outside_existing).ok(),
+                Some(b"preserve\r\n".to_vec()),
+                "outside file must survive denied PowerShell removal"
             );
 
             let protected_read = sandbox
