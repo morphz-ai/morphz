@@ -35,6 +35,13 @@ directory handles without delete sharing, and final/ancestor junction rejection.
 No setup-version or identity migration is required: the existing command path
 always refreshes root ACLs through this helper, including for provisioned users.
 
+Morphz also treats a managed `cmd /D /S /C` script tail as shell source rather
+than a CRT argv element. The shared pipe/ConPTY serializer preserves its inner
+quotes and adds only the outer pair consumed by `/S`; ordinary program arguments
+retain CRT escaping. This fixes nested PowerShell commands being printed as
+literal expressions instead of executed. It does not alter permission profiles,
+workspace capabilities, restricted identities or the process-tree boundary.
+
 The old `CodexSandbox*` operating-system resources are not automatically
 deleted during migration because they may belong to a real Codex installation.
 Morphz provisions and owns a disjoint `MorphzSandbox*` resource set.

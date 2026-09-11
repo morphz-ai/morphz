@@ -1913,6 +1913,42 @@ mod windows {
                 String::from_utf8_lossy(&powershell.stderr),
             );
 
+            // Real Provider calls use ordinary quoted scripts, not just our
+            // Base64 test helper. Both must keep relative IO on this workspace
+            // when the restricted account starts through its CWD junction.
+            let proof = b"MORPHZ_WINDOWS_QUOTED_SANDBOX\r\n";
+            std::fs::write(workspace.join("proof.txt"), proof).unwrap();
+            for (command, receipt) in [
+                (
+                    r#"powershell.exe -NoProfile -Command "Copy-Item -LiteralPath 'proof.txt' -Destination 'quoted-ps.txt'; Get-Content -LiteralPath 'quoted-ps.txt'""#,
+                    "quoted-ps.txt",
+                ),
+                (
+                    r#"cmd /c "type proof.txt > quoted-cmd.txt""#,
+                    "quoted-cmd.txt",
+                ),
+                (
+                    r#"type proof.txt > "quoted & spaces.txt""#,
+                    "quoted & spaces.txt",
+                ),
+            ] {
+                let prepared = sandbox
+                    .prepare_shell(&ShellRequest {
+                        command: command.to_string(),
+                        cwd: workspace.clone(),
+                        policy: policy.clone(),
+                    })
+                    .unwrap();
+                let output = execute_prepared(prepared, &workspace);
+                assert!(
+                    output.status.success(),
+                    "quoted sandbox command {receipt}: stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                assert_eq!(std::fs::read(workspace.join(receipt)).unwrap(), proof);
+            }
+
             let network = sandbox
                 .prepare_shell(&ShellRequest {
                     command: powershell_encoded_command(
