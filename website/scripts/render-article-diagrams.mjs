@@ -1,13 +1,16 @@
 import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 
 // Optional asset authoring, not a website build dependency. Reuses the same
 // local sharp installation as render-brand-assets.mjs. No external assets.
 const require = createRequire(import.meta.url);
 const sharp = require(process.env.MORPHZ_BRAND_SHARP || "sharp");
 const assets = new URL("../public/images/articles/", import.meta.url);
-const proofs = new URL("../../docs/brand/article-diagrams-20260907/", import.meta.url);
+const proofs = process.env.MORPHZ_ARTICLE_PROOFS_DIR
+  ? pathToFileURL(`${resolve(process.env.MORPHZ_ARTICLE_PROOFS_DIR)}/`)
+  : new URL("../outputs/article-diagrams/", import.meta.url);
 await Promise.all([mkdir(assets, { recursive: true }), mkdir(proofs, { recursive: true })]);
 const C = { bg: "#0c1419", panel: "#16252d", border: "#37515c", cyan: "#56d0de", ink: "#eef5f6", muted: "#afc1ca", grey: "#708d9a", amber: "#e4bd82" };
 const font = "Arial, 'Hiragino Sans GB', 'PingFang SC', 'Microsoft YaHei', sans-serif";

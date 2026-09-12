@@ -44,7 +44,12 @@ JavaScript or a reveal animation.
 To regenerate them, run `node scripts/render-article-diagrams.mjs` in an authoring
 environment with `sharp` installed (or set `MORPHZ_BRAND_SHARP` to its module
 path). The generator checks text widths before writing assets and saves PNG
-proofs under `docs/brand/article-diagrams-20260907/` for visual inspection.
+proofs under the Git-ignored `website/outputs/article-diagrams/` directory for
+visual inspection. Set `MORPHZ_ARTICLE_PROOFS_DIR` to save proofs elsewhere.
+Brand production sources, prompts, historical proofs and outreach records belong
+in the separate `morphz-ai-biz` repository; this website keeps its self-contained
+technical SVG generator and the final assets it actually serves. The website
+build does not depend on that private repository.
 Rendering the figures is not a build or production dependency. Verify both
 languages after changing diagram text or geometry, and bump asset filenames
 when replacing published figures.
