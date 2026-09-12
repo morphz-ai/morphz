@@ -1,7 +1,19 @@
+mod activation_approval_wait;
+mod objective_approval_wait;
+pub(crate) use activation_approval_wait::plan_approval_frontier;
+pub(crate) use objective_approval_wait::binding_event as approval_checkpoint_objective_binding;
+pub use objective_approval_wait::{
+    ApprovalOwnershipContended, ObjectiveActivationAdmission, ObjectiveApprovalWait,
+};
 pub mod lexical;
 pub mod postgres;
+#[cfg(feature = "remote-store")]
+pub mod remote;
 pub mod sqlite;
 
+pub use activation_approval_wait::{
+    ActivationApprovalWaitChanged, ActivationApprovalWaitCheckpoint, ActivationApprovalWaitRequest,
+};
 pub use lexical::{
     recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
 };
@@ -1649,6 +1661,7 @@ pub struct NewThreadActivation {
 /// Evaluation. The two optional parent columns are the only fields allowed to
 /// be absent for rows written before direct Signals carried explicit parent
 /// routes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_plan_evaluation_activation_route(
     plan: &PlanExecutionRecord,
     event: &crate::event::Event,
@@ -1657,6 +1670,7 @@ pub(crate) fn validate_plan_evaluation_activation_route(
     activation: &ThreadActivationRecord,
     parent_thread: &ThreadRecord,
     parent_activation: &ThreadActivationRecord,
+    child_outcome: Option<&ThreadOutcomeRecord>,
 ) -> Result<(), String> {
     let payload_string = |key: &str| event.payload.get(key).and_then(JsonValue::as_str);
     let event_sequence = event
@@ -1701,9 +1715,34 @@ pub(crate) fn validate_plan_evaluation_activation_route(
         );
     }
 
+    // Cancellation advances the live generation to revoke execution. Refilling
+    // a parent is historical result consumption, not execution admission. Only
+    // the exact durable cancellation Outcome can witness that closed generation.
+    // Live admission callers pass no Outcome and retain the strict current fence.
+    let child_generation = if child_thread.lifecycle == ThreadLifecycle::Cancelled {
+        let outcome = child_outcome
+            .ok_or("Cancelled infer Thread is missing its durable cancellation Outcome")?;
+        if !activation.status.is_terminal()
+            || outcome.thread_id != child_thread.id
+            || outcome.root_turn_id != child_thread.root_turn_id
+            || outcome.session_id != child_thread.session_id
+            || outcome.terminal_kind != ThreadLifecycle::Cancelled
+            || child_thread.result_event_id.as_deref() != Some(outcome.result_event_id.as_str())
+            || outcome.thread_generation != activation.generation
+            || outcome.thread_generation.checked_add(1) != Some(child_thread.generation)
+        {
+            return Err(
+                "Cancelled infer Thread has an inconsistent cancellation Outcome".to_string(),
+            );
+        }
+        outcome.thread_generation
+    } else {
+        child_thread.generation
+    };
+
     if signal.id != expected_signal_id
         || signal.thread_id != child_thread.id
-        || signal.thread_generation != child_thread.generation
+        || signal.thread_generation != child_generation
         || signal.event_id != event.id
         || signal.principal_id != plan.initiating_principal_id
         || signal.sequence != event_sequence
@@ -1726,7 +1765,7 @@ pub(crate) fn validate_plan_evaluation_activation_route(
         || activation.trigger_sequence != event_sequence
         || activation.trigger_kind != event.topic
         || activation.root_turn_id != child_thread.root_turn_id
-        || activation.generation != child_thread.generation
+        || activation.generation != child_generation
         || activation
             .parent_activation_id
             .as_deref()
@@ -4486,6 +4525,14 @@ pub struct ApprovalFilter {
     pub limit: Option<usize>,
 }
 
+/// Public approval decisions must be fenced to both the immutable initiating
+/// Principal and the Session's current participation, inside the commit.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionAuthority {
+    pub principal_id: String,
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApprovalMutation {
     Created(ApprovalRecord),
@@ -6176,6 +6223,16 @@ pub trait ApprovalStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_principal_pending_approvals(
+        &self,
+        authority: &ApprovalDecisionAuthority,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_principal_approval(
+        &self,
+        authority: &ApprovalDecisionAuthority,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_approvals(
         &self,
         filter: ApprovalFilter,
@@ -6254,6 +6311,18 @@ pub trait ApprovalStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         decision: ApprovalResolution,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        self.commit_authorized_approval_decision(id, expected_revision, decision, None)
+            .await
+    }
+    /// `None` is the trusted internal/operator path. Public callers supply an
+    /// authority; implementations must authorize before exact replay as well.
+    async fn commit_authorized_approval_decision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        decision: ApprovalResolution,
+        authority: Option<ApprovalDecisionAuthority>,
     ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically cancels a still-pending request (or an unconsumed allowed
     /// grant) and appends the same immutable authority audit Event. Denied and
@@ -6936,6 +7005,21 @@ pub trait ActivationStore: Send + Sync {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Checkpoint a drained assistant tool batch before releasing its local
+    /// execution stack. This is not a terminal outcome: pending Jobs, claimed
+    /// Signals and the immutable assistant call keep their original identity.
+    /// Any approval/Job change makes the same queued Activation eligible again.
+    /// Callers must join all started sibling futures before this boundary.
+    async fn suspend_thread_activation_for_approval(
+        &self,
+        request: ActivationApprovalWaitRequest,
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Exact persisted call identity for approval continuation recovery. This
+    /// survives re-claim and a second crash; terminalization clears it.
+    async fn get_thread_activation_approval_wait(
+        &self,
+        activation_id: &str,
+    ) -> Result<Option<ActivationApprovalWaitCheckpoint>, Box<dyn std::error::Error + Send + Sync>>;
     /// Commit the one authoritative outcome boundary for a Thread Activation.
     ///
     /// A terminal outcome marks both Activation and Thread terminal. A
@@ -7847,7 +7931,7 @@ pub trait ObjectiveStore: Send + Sync {
                     && objective.active_evaluation_id.is_some()
                     && objective
                         .evaluation_lease_expires_at
-                        .is_some_and(|expires_at| expires_at > now)
+                        .is_none_or(|expires_at| expires_at > now)
             })
             .count();
         Ok(ObjectiveReadinessCounts {
@@ -7931,6 +8015,18 @@ pub trait ObjectiveStore: Send + Sync {
         expected_revision: u64,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Returns retained Evaluation ownership, including after an approval has
+    /// changed but before a physical Activation has reacquired the lease.
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Reacquire an approval-suspended Evaluation for an already claimed,
+    /// durably routed Activation. Does not grant or consume tool permissions.
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Claim an event-driven Evaluation while preserving the Objective's
     /// current required wait. The exact dependency ID is fenced in the store:

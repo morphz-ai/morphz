@@ -11,7 +11,8 @@ use crate::memory::{
     ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
     CapabilityLeaseRecord, CapabilityLeaseRestriction, CapabilityLeaseScope, CapabilityLeaseStatus,
     CapabilityLeaseStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, NewApprovalRequest, NewCapabilityLease, NewExecutionJob,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionTargetStore, NewApprovalRequest,
+    NewCapabilityLease, NewExecutionJob,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -147,7 +148,7 @@ fn optional_time(row: &PgRow, column: &str) -> Result<Option<DateTime<Utc>>, Sto
         .transpose()
 }
 
-fn approval_from_row(row: &PgRow) -> Result<ApprovalRecord, StoreError> {
+pub(super) fn approval_from_row(row: &PgRow) -> Result<ApprovalRecord, StoreError> {
     Ok(ApprovalRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
@@ -352,6 +353,52 @@ async fn mutation_failure(
 
 #[async_trait::async_trait]
 impl ApprovalStore for PostgresStore {
+    async fn get_principal_approval(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               WHERE a.id = $1 AND s.id = $2 AND b.principal_id = $3
+                 AND b.unbound_at IS NULL AND s.status = 'active'
+                 AND j.initiating_principal_id = b.principal_id"#,
+        )
+        .bind(id)
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(approval_from_row).transpose()
+    }
+    async fn list_principal_pending_approvals(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               JOIN threads t ON t.id = j.thread_id
+               JOIN thread_activations activation ON activation.id = j.activation_id
+               WHERE s.id = $1 AND b.principal_id = $2 AND b.unbound_at IS NULL
+                 AND j.initiating_principal_id = b.principal_id AND s.status = 'active'
+                 AND a.status = 'pending_human' AND j.status = 'waiting_approval'
+                 AND t.status = 'open' AND activation.status IN ('queued', 'running')
+               ORDER BY a.created_at, a.id LIMIT $3"#,
+        )
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
     async fn ensure_approval_request(
         &self,
         request: NewApprovalRequest,
@@ -601,11 +648,12 @@ impl ApprovalStore for PostgresStore {
         ))
     }
 
-    async fn commit_approval_decision(
+    async fn commit_authorized_approval_decision(
         &self,
         id: &str,
         expected_revision: u64,
         decision: ApprovalResolution,
+        authority: Option<crate::memory::ApprovalDecisionAuthority>,
     ) -> Result<ApprovalAuditCommit, StoreError> {
         let rationale = decision.rationale().trim();
         if rationale.is_empty() {
@@ -615,6 +663,33 @@ impl ApprovalStore for PostgresStore {
         let risk_tags = decision.risk_tags().to_vec();
         let target_status = decision.status();
         let mut tx = self.pool.begin().await?;
+        if let Some(authority) = &authority {
+            // Hold participation/Session rows through commit so revocation or
+            // archival cannot race a successful public approval decision.
+            let authorized = sqlx::query(
+                r#"SELECT b.principal_id FROM approval_requests a
+                   JOIN execution_jobs j ON j.id = a.job_id
+                   JOIN sessions s ON s.id = j.session_id
+                   JOIN session_principal_bindings b ON b.session_id = s.id
+                   WHERE a.id = $1 AND s.id = $2 AND b.principal_id = $3
+                     AND b.unbound_at IS NULL AND s.status = 'active'
+                     AND j.initiating_principal_id = b.principal_id
+                   FOR SHARE OF s, b"#,
+            )
+            .bind(id)
+            .bind(&authority.session_id)
+            .bind(&authority.principal_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            if !authorized {
+                tx.commit().await?;
+                return Ok(audit(ApprovalMutation::NotFound, false, None));
+            }
+            // Match grant consumption/cancellation: lock Job before Approval.
+            sqlx::query("SELECT j.id FROM execution_jobs j JOIN approval_requests a ON a.job_id = j.id WHERE a.id = $1 FOR UPDATE OF j")
+                .bind(id).fetch_optional(&mut *tx).await?;
+        }
         let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -624,6 +699,17 @@ impl ApprovalStore for PostgresStore {
             return Ok(audit(ApprovalMutation::NotFound, false, None));
         };
         let current = approval_from_row(&row)?;
+        if authority.is_some() && current.status == ApprovalStatus::PendingAuto {
+            tx.commit().await?;
+            return Ok(audit(
+                ApprovalMutation::Rejected {
+                    current,
+                    reason: "Approval is not awaiting a human decision".into(),
+                },
+                false,
+                None,
+            ));
+        }
         if current.status == target_status
             && current.rationale.as_deref() == Some(rationale.as_str())
             && current.risk_tags == risk_tags
@@ -659,6 +745,29 @@ impl ApprovalStore for PostgresStore {
                 false,
                 None,
             ));
+        }
+        if authority.is_some() {
+            let waiting: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM execution_jobs j
+                   JOIN threads t ON t.id = j.thread_id
+                   JOIN thread_activations activation ON activation.id = j.activation_id
+                   WHERE j.id = $1 AND j.status = 'waiting_approval'
+                     AND t.status = 'open' AND activation.status IN ('queued', 'running'))"#,
+            )
+            .bind(&current.job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !waiting {
+                tx.commit().await?;
+                return Ok(audit(
+                    ApprovalMutation::Rejected {
+                        current,
+                        reason: "The approving execution is no longer waiting".into(),
+                    },
+                    false,
+                    None,
+                ));
+            }
         }
         let grant_id = if target_status == ApprovalStatus::Allowed {
             Some(stable_grant_id(
@@ -1054,7 +1163,11 @@ impl CapabilityLeaseStore for PostgresStore {
         if restricted_delta.is_empty() {
             return Err("Capability Lease restriction cannot remove every permission; revoke the rule instead".into());
         }
-        if !restricted_delta.is_subset_of(&current_delta) {
+        let target = self
+            .get_execution_target(&current.target_id)
+            .await?
+            .ok_or("Capability Lease Target does not exist")?;
+        if !restricted_delta.is_subset_of_for_target(&current_delta, &target) {
             return Err("Capability Lease adjustment cannot expand its permission boundary".into());
         }
         let now = Utc::now();

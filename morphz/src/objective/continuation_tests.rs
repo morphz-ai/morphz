@@ -181,7 +181,8 @@ async fn interrupt_tool_continuations_preserve_exact_wait_across_admission_and_h
                 &binding.objective_id,
                 &binding.evaluation_id,
                 false,
-                &activation
+                &activation,
+                "fixture-worker",
             )
             .await
             .unwrap());
@@ -331,7 +332,8 @@ async fn interrupt_continuations_reject_missing_cancelled_competing_and_stale_ro
                     &binding.objective_id,
                     &binding.evaluation_id,
                     false,
-                    "stale-continuation"
+                    "stale-continuation",
+                    "fixture-worker",
                 )
                 .await
                 .unwrap(),

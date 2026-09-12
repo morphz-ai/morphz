@@ -84,6 +84,14 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+#[path = "approval_wait.rs"]
+mod approval_wait;
+use approval_wait::{DeferredPlanApproval, ReadyToSuspendApprovalBatch};
+
+#[path = "plan_children.rs"]
+mod plan_children;
+use plan_children::PlanChildRunners;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DelegationReturnRoute {
     thread_id: String,
@@ -1615,6 +1623,7 @@ enum PreparedPhysicalExecution {
     Claimed(Box<ClaimedPhysicalExecution>),
     Terminal(Event),
     Rejected(Event),
+    DeferredHuman(String),
 }
 
 struct ClaimedPhysicalExecution {
@@ -1631,17 +1640,21 @@ pub struct DurableApprovalServices {
     execution_approvals: Arc<dyn ExecutionApprovalStore>,
     capability_leases: Arc<dyn CapabilityLeaseStore>,
     human_approval_hub: HumanApprovalHub,
+    durable_human_decisions: bool,
     capability_leases_enabled: bool,
     capability_lease_ttl_secs: u64,
 }
 
 impl DurableApprovalServices {
+    // Keep the independently scoped authority stores explicit at construction.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         broker: Arc<PermissionBroker>,
         approvals: Arc<dyn ApprovalStore>,
         execution_approvals: Arc<dyn ExecutionApprovalStore>,
         capability_leases: Arc<dyn CapabilityLeaseStore>,
         human_approval_hub: HumanApprovalHub,
+        durable_human_decisions: bool,
         capability_leases_enabled: bool,
         capability_lease_ttl_secs: u64,
     ) -> Self {
@@ -1651,6 +1664,7 @@ impl DurableApprovalServices {
             execution_approvals,
             capability_leases,
             human_approval_hub,
+            durable_human_decisions,
             capability_leases_enabled,
             capability_lease_ttl_secs,
         }
@@ -1723,7 +1737,10 @@ async fn covering_capability_lease_grant(
         let granted =
             serde_json::from_value::<crate::approval::CapabilityDelta>(lease.requested.clone())
                 .ok()?;
-        if !requirement.requested.is_subset_of(&granted) {
+        if !requirement
+            .requested
+            .is_subset_of_for_target(&granted, target)
+        {
             return None;
         }
         Some(DurableApprovalGrant {
@@ -3078,6 +3095,7 @@ pub struct Orchestrator {
     /// slow fallback exists only for shared-store mutations from another
     /// process and the commit-before-notify crash window.
     plan_reconcile_wakeup: Arc<Notify>,
+    plan_child_runners: PlanChildRunners,
     plan_job_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     plan_evaluation_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
     plan_action_group_reconcile_cursor: Mutex<Option<(chrono::DateTime<Utc>, String)>>,
@@ -4124,6 +4142,7 @@ impl Orchestrator {
             session_contexts: DashMap::new(),
             supervision_audit_dirty_contexts: Arc::new(DashMap::new()),
             plan_reconcile_wakeup: Arc::new(Notify::new()),
+            plan_child_runners: PlanChildRunners::default(),
             plan_job_reconcile_cursor: Mutex::new(None),
             plan_evaluation_reconcile_cursor: Mutex::new(None),
             plan_action_group_reconcile_cursor: Mutex::new(None),
@@ -4715,7 +4734,7 @@ impl Orchestrator {
                             event_code = "orchestrator.activation.expired_lease_reclaimed",
                             "Reclaimed a zombie Activation with an expired lease at runtime"
                         );
-                        self.bus.dispatch_persisted(trigger).await?;
+                        self.dispatch_recovered_activation(&queued, trigger).await?;
                     }
                     RestoreQueuedOutcome::AlreadyTracked
                     | RestoreQueuedOutcome::DeferredWindowFull => {
@@ -4765,6 +4784,7 @@ impl Orchestrator {
         // process-local and writes no business state.
         let dirty_contexts = Arc::clone(&self.supervision_audit_dirty_contexts);
         let plan_reconcile_wakeup = Arc::clone(&self.plan_reconcile_wakeup);
+        let admission_wakeup = self.activation_admission.clone();
         let action_group_reconcile_dirty = Arc::clone(&self.action_group_reconcile_dirty);
         let action_group_reconcile_wakeup = Arc::clone(&self.action_group_reconcile_wakeup);
         self.bus.subscribe(
@@ -4772,11 +4792,13 @@ impl Orchestrator {
             Arc::new(move |event| {
                 let dirty_contexts = Arc::clone(&dirty_contexts);
                 let plan_reconcile_wakeup = Arc::clone(&plan_reconcile_wakeup);
+                let admission_wakeup = admission_wakeup.clone();
                 let action_group_reconcile_dirty = Arc::clone(&action_group_reconcile_dirty);
                 let action_group_reconcile_wakeup = Arc::clone(&action_group_reconcile_wakeup);
                 Box::pin(async move {
                     if scheduler_audit_event(&event) {
                         plan_reconcile_wakeup.notify_one();
+                        admission_wakeup.notify_durable_queue_change();
                         if let Some(context_id) = event
                             .payload
                             .get("context_id")
@@ -4862,6 +4884,7 @@ impl Orchestrator {
         // running it first lets those futures contend with startup repairs for
         // the same SQLite writer and can make an otherwise healthy restart
         // fail with SQLITE_BUSY.
+        self.reconcile_revoked_objective_approval_waits().await?;
         self.rebuild_activation_admission_queue().await?;
         self.audit_active_supervision_invariants().await?;
         self.recover_provider_waits().await?;
@@ -5706,7 +5729,7 @@ impl Orchestrator {
         Ok(violations)
     }
 
-    async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
+    pub(crate) async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
@@ -5773,7 +5796,10 @@ impl Orchestrator {
                     continue;
                 }
             };
-            self.spawn_plan_children(children.clone())?;
+            // Recovery converges durable facts only. The owning Activation
+            // replays its parent Plan and starts children after restoring the
+            // complete execution route. Admission alone is too early, and a
+            // global spawn could race with a parent's approval checkpoint.
             if children.iter().all(|child| child.status.is_terminal()) {
                 let Some(group_id) = parent.pending_id.as_deref() else {
                     parallel_conflicts = parallel_conflicts.saturating_add(1);
@@ -5821,7 +5847,7 @@ impl Orchestrator {
                     continue;
                 }
             };
-            self.spawn_plan_children(vec![child.clone()])?;
+            // The live owning parent, not this background scan, starts work.
             if child.status.is_terminal() {
                 match coordinator
                     .reconcile_program_child(&parent.id, &child.id)
@@ -5875,6 +5901,17 @@ impl Orchestrator {
             || parallel_conflicts > 0
             || program_conflicts > 0
         {
+            if !recovered.is_empty()
+                || !jobs.resumed.is_empty()
+                || !evaluations.resumed.is_empty()
+                || parallel_resumed > 0
+                || programs_resumed > 0
+            {
+                // Recovery may requeue a Plan while its owning Activation is
+                // checkpointed and has no process-local waiter left to notify.
+                // Retain a hint; startup still dispatches only after repairs.
+                self.activation_admission.notify_durable_queue_change();
+            }
             tracing::info!(
                 expired_running_requeued = recovered.len(),
                 execution_jobs_resumed = jobs.resumed.len(),
@@ -6177,6 +6214,11 @@ impl Orchestrator {
                     .map(|attempt_id| format!("tool_calls_selected_{attempt_id}"))
             })
             .collect::<Vec<_>>();
+        evidence_ids.extend(
+            running
+                .iter()
+                .map(|group| group.assistant_call_event_id.clone()),
+        );
         for group in &running {
             if let Some(members) = members_by_group.get(&group.id) {
                 evidence_ids.extend(
@@ -6371,6 +6413,26 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Recover through the same child lane as a live infer handoff. A waiting
+    /// parent can occupy the last EventBus permit even after it releases its
+    /// Activation admission slot. Event payload flags and approval state do
+    /// not determine this lane: only the owning durable Thread does.
+    async fn dispatch_recovered_activation(
+        &self,
+        activation: &ThreadActivationRecord,
+        trigger: Event,
+    ) -> Result<(), DynError> {
+        let thread = self
+            .context_engine
+            .session_store()
+            .ok_or("Activation recovery requires a persistent SessionStore")?
+            .get_thread_by_root(&activation.root_turn_id)
+            .await?
+            .ok_or("Activation recovery is missing its durable Thread")?;
+        let child = plan_children::recovery_uses_child_handoff(activation, &thread)?;
+        dispatch_persisted_tool_handoff(self.bus.as_ref(), trigger, child).await
+    }
+
     /// Fill newly available in-memory scheduling positions from SQLite.  Only
     /// rows actually entering the window are re-dispatched; overflow remains a
     /// durable queued fact and never becomes a synthetic failure reply.
@@ -6418,7 +6480,22 @@ impl Orchestrator {
                 .restore_queued(activation_admission_key_for_class(&activation, class))?
             {
                 RestoreQueuedOutcome::Restored => {
-                    self.bus.dispatch_persisted(trigger).await?;
+                    let mut trigger = trigger;
+                    if session_store
+                        .get_thread_activation_approval_wait(&activation.id)
+                        .await?
+                        .is_some()
+                    {
+                        trigger
+                            .payload
+                            .insert("runtime_force_evaluation".to_string(), json!(true));
+                        trigger.payload.insert(
+                            "runtime_recovery_activation_id".to_string(),
+                            json!(&activation.id),
+                        );
+                    }
+                    self.dispatch_recovered_activation(&activation, trigger)
+                        .await?;
                     dispatched = dispatched.saturating_add(1);
                 }
                 RestoreQueuedOutcome::AlreadyTracked | RestoreQueuedOutcome::DeferredWindowFull => {
@@ -6494,6 +6571,10 @@ impl Orchestrator {
                 // continuation. dispatch_persisted never appends a new Event.
                 let mut trigger = trigger;
                 if events.contains_key(&format!("call_{}", activation.id))
+                    || session_store
+                        .get_thread_activation_approval_wait(&activation.id)
+                        .await?
+                        .is_some()
                     || (recovery_owns_activation
                         && activation.status == ThreadActivationStatus::Running)
                 {
@@ -6508,7 +6589,8 @@ impl Orchestrator {
                 match activation.status {
                     ThreadActivationStatus::Queued => {
                         if self.activation_admission.contains(&activation.id) {
-                            self.bus.dispatch_persisted(trigger).await?;
+                            self.dispatch_recovered_activation(&activation, trigger)
+                                .await?;
                         }
                     }
                     ThreadActivationStatus::Running => {
@@ -6537,7 +6619,8 @@ impl Orchestrator {
                                         activation_admission_key(&queued, &trigger),
                                     )? == RestoreQueuedOutcome::Restored
                                     {
-                                        self.bus.dispatch_persisted(trigger).await?;
+                                        self.dispatch_recovered_activation(&queued, trigger)
+                                            .await?;
                                     }
                                 }
                                 ThreadActivationMutation::Conflict { .. }
@@ -7825,22 +7908,56 @@ impl Orchestrator {
         } else {
             self.bind_embedded_objective_route(&activation.id, &event);
         }
+        // An ordinary dialogue can create/adopt its Objective after its
+        // immutable trigger was written. On approval recovery, the saved
+        // assistant batch carries the durable late binding.
+        if self
+            .objective_evaluations
+            .get_for_activation(&activation.id)
+            .is_none()
+        {
+            if let Some(wait) = self
+                .context_engine
+                .session_store()
+                .ok_or("Approval recovery requires SessionStore")?
+                .get_thread_activation_approval_wait(&activation.id)
+                .await?
+            {
+                if let Some(call) = self
+                    .context_engine
+                    .find_event(&activation.context_id, &wait.assistant_call_event_id)
+                    .await?
+                {
+                    let outputs = self
+                        .store
+                        .query(QueryFilter {
+                            context_id: Some(activation.context_id.clone()),
+                            activation_id: Some(activation.id.clone()),
+                            topic: Some("chat/tool_output".into()),
+                            ..Default::default()
+                        })
+                        .await?;
+                    if let Some(binding) =
+                        crate::memory::approval_checkpoint_objective_binding(&call, &outputs)?
+                    {
+                        self.bind_embedded_objective_route(&activation.id, binding);
+                    }
+                }
+            }
+        }
         let schedule_receipt_dependency = if let Some(supervisor) = &self.objective_supervisor {
             supervisor.schedule_receipt_dependency(&event).await?
         } else {
             None
         };
-        if let (Some(supervisor), Some(objective_id), Some(evaluation_id)) = (
-            self.objective_supervisor.as_ref(),
-            event
-                .payload
-                .get("objective_id")
-                .and_then(|value| value.as_str()),
-            event
-                .payload
-                .get("objective_evaluation_id")
-                .and_then(|value| value.as_str()),
-        ) {
+        let objective_route = self
+            .objective_evaluations
+            .get_for_activation(&activation.id);
+        if let (Some(supervisor), Some(objective_route)) =
+            (self.objective_supervisor.as_ref(), objective_route.as_ref())
+        {
+            let objective_id = &objective_route.objective_id;
+            let evaluation_id = &objective_route.evaluation_id;
             let objective_control_receipt = event
                 .payload
                 .get("tool_name")
@@ -7852,6 +7969,7 @@ impl Orchestrator {
                     evaluation_id,
                     objective_control_receipt,
                     &activation.id,
+                    &self.runtime_claimant_id,
                 )
                 .await?
                 && schedule_receipt_dependency.is_none()
@@ -7921,49 +8039,82 @@ impl Orchestrator {
                 )
                 .await
         };
-        let attempt = tokio::select! {
-            biased;
-            cancelled = self.objective_evaluations.wait_for_activation_cancellation(&activation.id) => {
-                (None, Some(cancelled), None)
-            }
-            reason = self.activation_cancellations.wait(&activation.id) => {
-                (None, None, Some(reason))
-            }
-            reason = self.wait_for_durable_activation_revocation(&activation.id) => {
-                (None, None, Some(reason))
-            }
-            lease = objective_lease_maintenance => {
-                match lease {
-                    Ok(revoked) => (None, Some(revoked), None),
-                    Err(error) => (Some(Err(error)), None, None),
+        tokio::pin!(objective_lease_maintenance);
+        let mut approval_resume_event_id = None;
+        let attempt = loop {
+            let attempt = tokio::select! {
+                biased;
+                cancelled = self.objective_evaluations.wait_for_activation_cancellation(&activation.id) => {
+                    (None, Some(cancelled), None)
                 }
-            }
-            _ = cancellation.changed() => {
-                debug_assert_ne!(*cancellation.borrow(), start_epoch);
-                (None, None, None)
-            }
-            result = async {
-            if !fresh_activation {
-                if let Some(thread) = self
-                    .context_engine
-                    .session_store()
-                    .ok_or("Thread requires a persistent SessionStore")?
-                    .get_thread_by_root(&activation.root_turn_id)
-                    .await?
-                {
-                    if thread.lifecycle.is_terminal() {
-                        tracing::debug!(
-                            root_turn_id = %activation.root_turn_id,
-                            event_id = %event.id,
-                            event_code = "orchestrator.mailbox_wake.thread_terminal",
-                            "Suppressed a late mailbox wake for a terminal Thread"
-                        );
-                        return Ok(());
+                reason = self.activation_cancellations.wait(&activation.id) => {
+                    (None, None, Some(reason))
+                }
+                reason = self.wait_for_durable_activation_revocation(&activation.id) => {
+                    (None, None, Some(reason))
+                }
+                lease = &mut objective_lease_maintenance => {
+                    match lease {
+                        Ok(revoked) => (None, Some(revoked), None),
+                        Err(error) => (Some(Err(error)), None, None),
+                    }
+                }
+                _ = cancellation.changed() => {
+                    debug_assert_ne!(*cancellation.borrow(), start_epoch);
+                    (None, None, None)
+                }
+                result = async {
+                if !fresh_activation {
+                    if let Some(thread) = self
+                        .context_engine
+                        .session_store()
+                        .ok_or("Thread requires a persistent SessionStore")?
+                        .get_thread_by_root(&activation.root_turn_id)
+                        .await?
+                    {
+                        if thread.lifecycle.is_terminal() {
+                            tracing::debug!(
+                                root_turn_id = %activation.root_turn_id,
+                                event_id = %event.id,
+                                event_code = "orchestrator.mailbox_wake.thread_terminal",
+                                "Suppressed a late mailbox wake for a terminal Thread"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                self.run_attempt(&session_id, &activation, fresh_activation, schedule_receipt_dependency.is_some(), approval_resume_event_id.as_deref()).await
+                } => (Some(result), None, None),
+            };
+            if let (Some(Err(error)), _, _) = &attempt {
+                if let Some(batch) = error.downcast_ref::<ReadyToSuspendApprovalBatch>() {
+                    // The evaluation future has returned and every started sibling
+                    // has joined. Commit outside the cancellation select so our own
+                    // running->queued transition cannot look like owner revocation.
+                    match self
+                        .checkpoint_tool_approval_wait(&activation.id, batch)
+                        .await
+                    {
+                        Ok(true) => {
+                            active_counter.fetch_sub(1, Ordering::SeqCst);
+                            self.activation_cancellations.clear(&activation.id);
+                            self.active_model_attempts.remove(&activation.id);
+                            self.activation_routes.remove(&activation.id);
+                            self.objective_evaluations.remove_activation(&activation.id);
+                            self.activation_admission_slots.remove(&activation.id);
+                            self.release_dialogue_thread(&session_id, &activation.root_turn_id)
+                                .await;
+                            return Ok(());
+                        }
+                        Ok(false) => {
+                            approval_resume_event_id = Some(batch.assistant_call_event_id.clone());
+                            continue;
+                        }
+                        Err(error) => break (Some(Err(error)), None, None),
                     }
                 }
             }
-            self.run_attempt(&session_id, &activation, fresh_activation, schedule_receipt_dependency.is_some()).await
-            } => (Some(result), None, None),
+            break attempt;
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
         let (result, final_status) = match attempt {
@@ -11098,22 +11249,30 @@ impl Orchestrator {
         activation: &'a ThreadActivationRecord,
         fresh_activation: bool,
         schedule_receipt: bool,
+        approval_resume_event_id: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DynError>> + Send + 'a>>
     {
         Box::pin(async move {
             let mut refresh_context_snapshot = false;
             loop {
-                // Keep the combined IO/steering Evaluation future off this
-                // wrapper's deep physical-approval polling stack.
-                match Box::pin(self.run_attempt_inner(
+                // Keep the large Evaluation state machine out of this outer
+                // retry future's inline layout, including IO/steering and
+                // physical-approval recovery on default Tokio worker stacks.
+                let attempt = Box::pin(self.run_attempt_inner(
                     session_id,
                     activation,
                     refresh_context_snapshot,
                     fresh_activation,
                     schedule_receipt,
-                ))
-                .await
-                {
+                    approval_resume_event_id,
+                ));
+                #[cfg(feature = "remote-store")]
+                let attempt = crate::memory::remote::observe_attempt(
+                    Arc::clone(&self.observability),
+                    &activation.root_turn_id,
+                    attempt,
+                );
+                match attempt.await {
                     Err(error)
                         if error
                             .downcast_ref::<RefreshContextAfterConcurrentMaintenance>()
@@ -11151,6 +11310,63 @@ impl Orchestrator {
             .map(|signal| signal.event_id.clone())
             .collect::<Vec<_>>();
         if pending_input_ids.is_empty() {
+            if let Some(supervisor) = &self.objective_supervisor {
+                if let Some(target) = supervisor.directed_input_thread(activation).await? {
+                    let pending = store
+                        .list_context_thread_signals_for_threads(
+                            &activation.context_id,
+                            std::slice::from_ref(&target.id),
+                            Some(crate::memory::ThreadSignalStatus::Pending),
+                        )
+                        .await?;
+                    if pending.iter().any(|signal| {
+                        signal.kind == "chat/steering"
+                            && signal.thread_generation == target.generation
+                    }) {
+                        // Close the source Dialogue with a Runtime handoff,
+                        // not a fabricated model response or a cancelled Job.
+                        // Finalize its Evaluation only after the terminal
+                        // receipt is durable, so crash recovery can finish it.
+                        Box::pin(self.publish_no_reply_with_attributes(
+                            &activation.session_id,
+                            &activation.id,
+                            None,
+                            vec![
+                                ("runtime_handoff".into(), json!("directed_objective_input")),
+                                ("handoff_thread_id".into(), json!(target.id)),
+                            ],
+                        ))
+                        .await?;
+                        // An unsettled Group can defer that terminal receipt.
+                        // In that case the owner remains bound and must keep
+                        // servicing its existing dependency, not disappear.
+                        if store
+                            .get_thread_activation(&activation.id)
+                            .await?
+                            .is_some_and(|current| current.status.is_terminal())
+                        {
+                            // The pending input belongs to a different root,
+                            // so the normal source-Thread completion refill
+                            // will not notify it. Reuse its durable Event.
+                            self.dispatch_next_pending_thread_signal(&target.root_turn_id)
+                                .await?;
+                            return Ok(true);
+                        }
+                        // A same-Thread input may also have won the terminal
+                        // commit race. Its existing handoff keeps this Thread
+                        // open, but still ends the old model request.
+                        return Ok(store
+                            .list_context_thread_signals_for_threads(
+                                &activation.context_id,
+                                &[thread_id.to_owned()],
+                                Some(crate::memory::ThreadSignalStatus::Pending),
+                            )
+                            .await?
+                            .iter()
+                            .any(|signal| signal.kind == "chat/steering"));
+                    }
+                }
+            }
             return Ok(false);
         }
         // Keep the Event persistence future off the already deep recursive
@@ -11218,25 +11434,49 @@ impl Orchestrator {
         refresh_context_snapshot: bool,
         fresh_activation: bool,
         schedule_receipt: bool,
+        approval_resume_event_id: Option<&str>,
     ) -> Result<(), DynError> {
         let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
-        // The fresh-turn path used to read the assistant-call boundary, final
-        // boundary, trigger Event, and root Event serially. They are immutable
-        // Event facts and therefore safe to resolve concurrently. Reuse the
-        // resulting snapshots throughout activation policy and prompt setup;
-        // repeated point reads add no authority but are very expensive for a
-        // remote PostgreSQL store.
-        let assistant_call_event_id = format!("call_{}", activation.id);
+        // Resolve the approval-owned assistant identity first, then fetch the
+        // immutable recovery boundary with the existing exact-ID batch query.
+        // One bounded Store snapshot replaces separate assistant/final/trigger/
+        // root/parent reads without caching authority or weakening recovery.
+        let approval_checkpoint = self
+            .context_engine
+            .session_store()
+            .ok_or("Approval recovery requires a persistent SessionStore")?
+            .get_thread_activation_approval_wait(&activation.id)
+            .await?;
+        let assistant_call_event_id = approval_resume_event_id
+            .or_else(|| {
+                approval_checkpoint
+                    .as_ref()
+                    .map(|wait| wait.assistant_call_event_id.as_str())
+            })
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("call_{}", activation.id));
         let final_response_event_id = format!("call_{}_final", activation.id);
-        let (mut persisted_assistant_call, persisted_final_response, trigger_event) = tokio::try_join!(
-            self.context_engine
-                .find_event(&activation.context_id, &assistant_call_event_id),
-            self.context_engine
-                .find_event(&activation.context_id, &final_response_event_id),
-            self.context_engine
-                .find_event(&activation.context_id, &activation.trigger_event_id),
-        )?;
+        let parent_call_event_id = activation
+            .parent_activation_id
+            .as_ref()
+            .map(|id| format!("call_{id}"));
+        let mut boundary_ids = vec![
+            assistant_call_event_id.as_str(),
+            final_response_event_id.as_str(),
+            activation.trigger_event_id.as_str(),
+            activation.root_turn_id.as_str(),
+        ];
+        if let Some(id) = parent_call_event_id.as_deref() {
+            boundary_ids.push(id);
+        }
+        let boundary = self
+            .context_engine
+            .find_events_by_ids(&activation.context_id, &boundary_ids)
+            .await?;
+        let mut persisted_assistant_call = boundary.get(&assistant_call_event_id).cloned();
+        let persisted_final_response = boundary.get(&final_response_event_id).cloned();
+        let trigger_event = boundary.get(&activation.trigger_event_id).cloned();
         // Preserve this Activation's own recovery boundary before resolving a
         // parent assistant plan for continuation semantics. Recovery used to
         // perform the same two point reads again inside
@@ -11244,23 +11484,12 @@ impl Orchestrator {
         let persisted_current_boundary = persisted_final_response
             .clone()
             .or_else(|| persisted_assistant_call.clone());
-        let root_event = if activation.root_turn_id == activation.trigger_event_id {
-            trigger_event.clone()
-        } else {
-            self.context_engine
-                .find_event(&activation.context_id, &activation.root_turn_id)
-                .await?
-        };
+        let root_event = boundary.get(&activation.root_turn_id).cloned();
         if persisted_assistant_call.is_none() {
-            if let Some(parent_activation_id) = activation.parent_activation_id.as_deref() {
-                persisted_assistant_call = self
-                    .context_engine
-                    .find_event(
-                        &activation.context_id,
-                        &format!("call_{parent_activation_id}"),
-                    )
-                    .await?;
-            }
+            persisted_assistant_call = parent_call_event_id
+                .as_ref()
+                .and_then(|id| boundary.get(id))
+                .cloned();
         }
         // A durable continuation does not always retain the originating
         // Activation as its direct parent. Action Group settlement is the
@@ -15684,8 +15913,9 @@ impl Orchestrator {
             activation,
             &parent,
             &parent_activation,
+            None, // Live Objective admission cannot consume a closed-generation Outcome.
         )?;
-        if persisted.payload != event.payload
+        if !infer_dispatch_payload_matches(&persisted, event, &activation.id)
             || event
                 .payload
                 .get("objective_id")
@@ -16271,6 +16501,12 @@ impl Orchestrator {
                 "Yao Plan and execution Thread have inconsistent authoritative routes".into(),
             );
         }
+        // Evaluation ownership and capability-lease scope are not the same
+        // authority. A dialogue can create an Objective before its Plan runs,
+        // without becoming an Objective-supervised Thread. Freeze exactly the
+        // same durable supervision scope that physical preflight uses below.
+        let objective_scope_id =
+            active_objective_scope_id(self.plan_store.as_deref(), &thread).await?;
         if tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer {
             let transfer = crate::artifact::transfer_request_from_tool_arguments(
                 &raw_arguments,
@@ -16301,7 +16537,7 @@ impl Orchestrator {
                 },
             )?;
             attach_execution_join_route(&mut request, None, false)?;
-            if let Some(objective_id) = plan.objective_id.as_deref() {
+            if let Some(objective_id) = objective_scope_id.as_deref() {
                 request
                     .as_object_mut()
                     .ok_or("Yao Plan Execution Job request must be a JSON object")?
@@ -16417,7 +16653,7 @@ impl Orchestrator {
             &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
         )?;
         attach_execution_join_route(&mut request, None, false)?;
-        if let Some(objective_id) = plan.objective_id.as_deref() {
+        if let Some(objective_id) = objective_scope_id.as_deref() {
             request
                 .as_object_mut()
                 .ok_or("Yao Plan Execution Job request must be a JSON object")?
@@ -16459,6 +16695,25 @@ impl Orchestrator {
         .into_new_job()
     }
 
+    #[cfg(any(feature = "remote-store", test))]
+    pub(crate) fn active_plan_child_count(&self) -> usize {
+        self.plan_child_runners.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn waiting_plan_runner_count(&self) -> usize {
+        let slots = self
+            .activation_admission_slots
+            .iter()
+            .map(|entry| Arc::clone(entry.value()))
+            .collect::<Vec<_>>();
+        let mut count = 0;
+        for slot in slots {
+            count += slot.state.lock().await.waiting_plans;
+        }
+        count
+    }
+
     async fn suspend_activation_admission(
         &self,
         activation_id: &str,
@@ -16475,47 +16730,70 @@ impl Orchestrator {
         })
     }
 
-    fn spawn_plan_children(&self, children: Vec<PlanExecutionRecord>) -> PlanExecutionResult<()> {
-        let orchestrator = self
-            .self_ref
-            .get()
-            .cloned()
-            .ok_or("Orchestrator has not started and cannot schedule a Yao child Plan")?;
-        for child in children {
-            if child.status.is_terminal() {
-                continue;
-            }
-            let program: crate::sexpr_eval::Program =
-                serde_json::from_value(child.program_json.clone())?;
-            let route = PlanExecutionRoute {
-                activation_id: child.activation_id.clone(),
-                thread_id: child.thread_id.clone(),
-                agent_id: child.agent_id.clone(),
-                context_id: child.context_id.clone(),
-                session_id: child.session_id.clone(),
-                initiating_principal_id: child.initiating_principal_id.clone(),
-                tool_call_id: child.tool_call_id.clone(),
-                objective_id: child.objective_id.clone(),
-                objective_evaluation_id: child.objective_evaluation_id.clone(),
-            };
-            let weak = orchestrator.clone();
-            tokio::spawn(async move {
-                let Some(orchestrator) = weak.upgrade() else {
-                    return;
-                };
-                let child_id = child.id;
-                if let Err(error) = orchestrator.execute_durable_plan(route, program).await {
-                    tracing::error!(
-                        plan_execution_id = %child_id,
-                        %error,
-                        event_code = "plan_execution.child_failed",
-                        "A durable Yao child Plan ended with failure"
-                    );
+    fn spawn_plan_children(
+        &self,
+        children: Vec<PlanExecutionRecord>,
+    ) -> futures_util::future::BoxFuture<'_, PlanExecutionResult<()>> {
+        // Erase the recursive parent -> child -> parent Future type while
+        // retaining Send and structured registration before tokio::spawn.
+        Box::pin(async move {
+            let orchestrator = self
+                .self_ref
+                .get()
+                .cloned()
+                .ok_or("Orchestrator has not started and cannot schedule a Yao child Plan")?;
+            for child in children {
+                if child.status.is_terminal()
+                    || self.plan_child_runners.contains(&child.id)
+                    || !self
+                        .activation_admission_slots
+                        .contains_key(&child.activation_id)
+                    || self.activation_route(&child.activation_id).is_none()
+                    || self.deferred_plan_approval(&child).await?.is_some()
+                {
+                    continue;
                 }
-                orchestrator.plan_reconcile_wakeup.notify_one();
-            });
-        }
-        Ok(())
+                let program: crate::sexpr_eval::Program =
+                    serde_json::from_value(child.program_json.clone())?;
+                let route = PlanExecutionRoute {
+                    activation_id: child.activation_id.clone(),
+                    thread_id: child.thread_id.clone(),
+                    agent_id: child.agent_id.clone(),
+                    context_id: child.context_id.clone(),
+                    session_id: child.session_id.clone(),
+                    initiating_principal_id: child.initiating_principal_id.clone(),
+                    tool_call_id: child.tool_call_id.clone(),
+                    objective_id: child.objective_id.clone(),
+                    objective_evaluation_id: child.objective_evaluation_id.clone(),
+                };
+                let Some(registration) = self
+                    .plan_child_runners
+                    .register(&child.id, Arc::clone(&self.plan_reconcile_wakeup))
+                else {
+                    continue;
+                };
+                let weak = orchestrator.clone();
+                tokio::spawn(async move {
+                    let _registration = registration;
+                    let Some(orchestrator) = weak.upgrade() else {
+                        return;
+                    };
+                    let child_id = child.id;
+                    if let Err(error) = orchestrator.execute_durable_plan(route, program).await {
+                        if error.downcast_ref::<DeferredPlanApproval>().is_some() {
+                            return;
+                        }
+                        tracing::error!(
+                            plan_execution_id = %child_id,
+                            %error,
+                            event_code = "plan_execution.child_failed",
+                            "A durable Yao child Plan ended with failure"
+                        );
+                    }
+                });
+            }
+            Ok(())
+        })
     }
 
     async fn execute_durable_plan(
@@ -16594,7 +16872,6 @@ impl Orchestrator {
             .await?;
         let worker_id = format!("plan-runner-{}", self.runtime_claimant_id);
         let mut suspended_admission = None;
-        let mut spawned_child_plans = HashSet::new();
 
         loop {
             if plan.status == PlanExecutionStatus::Waiting {
@@ -16786,7 +17063,14 @@ impl Orchestrator {
                             job.status,
                             ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval
                         ) {
-                            self.execute_plan_call(&route, &plan).await?;
+                            if let Err(error) = self.execute_plan_call(&route, &plan).await {
+                                if error.downcast_ref::<DeferredPlanApproval>().is_some() {
+                                    if let Some(suspended) = suspended_admission.take() {
+                                        suspended.release().await?;
+                                    }
+                                }
+                                return Err(error);
+                            }
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
@@ -16796,6 +17080,12 @@ impl Orchestrator {
                             .ok_or("PlanExecution disappeared while waiting for a Job")?;
                     }
                     Some(PlanExecutionWaitKind::Evaluation) => {
+                        if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
+                        }
                         let activation_id = plan
                             .pending_id
                             .clone()
@@ -16924,23 +17214,18 @@ impl Orchestrator {
                         let children = coordinator
                             .ensure_parallel_children_for_waiting(&plan)
                             .await?;
-                        let newly_visible = children
-                            .iter()
-                            .filter(|child| {
-                                !child.status.is_terminal()
-                                    && spawned_child_plans.insert(child.id.clone())
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if !newly_visible.is_empty() {
-                            self.spawn_plan_children(newly_visible)?;
-                        }
+                        self.spawn_plan_children(children.clone()).await?;
                         if children.iter().all(|child| child.status.is_terminal()) {
                             plan = plan_from_resume(
                                 coordinator
                                     .reconcile_action_group(&plan.id, &group_id)
                                     .await?,
                             )?;
+                        } else if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             plan = store.get_plan_execution(&plan.id).await?.ok_or(
@@ -16954,17 +17239,18 @@ impl Orchestrator {
                             .clone()
                             .ok_or("waiting(plan_execution) is missing pending_id")?;
                         let child = coordinator.ensure_program_child_for_waiting(&plan).await?;
-                        if !child.status.is_terminal()
-                            && spawned_child_plans.insert(child.id.clone())
-                        {
-                            self.spawn_plan_children(vec![child.clone()])?;
-                        }
+                        self.spawn_plan_children(vec![child.clone()]).await?;
                         if child.status.is_terminal() {
                             plan = plan_from_resume(
                                 coordinator
                                     .reconcile_program_child(&plan.id, &child_id)
                                     .await?,
                             )?;
+                        } else if let Some(deferred) = self.deferred_plan_approval(&plan).await? {
+                            if let Some(suspended) = suspended_admission.take() {
+                                suspended.release().await?;
+                            }
+                            return Err(deferred.into());
                         } else {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             plan = store.get_plan_execution(&plan.id).await?.ok_or(
@@ -17011,7 +17297,7 @@ impl Orchestrator {
                 arguments: serde_json::to_string(&arguments)?,
             }],
         };
-        self.execute_tool_calls(
+        Box::pin(self.execute_tool_calls(
             &route.session_id,
             &route.activation_id,
             response,
@@ -17030,7 +17316,7 @@ impl Orchestrator {
                 harness_functions: None,
                 harness_types: None,
             },
-        )
+        ))
         .await?;
         Ok(())
     }
@@ -17050,6 +17336,7 @@ impl Orchestrator {
         timeout_secs: u64,
         action_group_id: Option<&str>,
         standalone_signal: bool,
+        defer_human: bool,
     ) -> Result<PreparedPhysicalExecution, DynError> {
         let manager = self
             .execution_jobs
@@ -17530,8 +17817,11 @@ impl Orchestrator {
                     justification: requirement.justification.clone(),
                     pending_status: services.broker.pending_approval_status(),
                 };
-                let request_event =
-                    approval_request_event(&new_job, &new_approval, attempt_id, route);
+                let request_event = restore_approval_request_event(
+                    self.store.as_ref(),
+                    approval_request_event(&new_job, &new_approval, attempt_id, route),
+                )
+                .await?;
                 let (job, mut approval, created) = execution_approval_records(
                     services
                         .execution_approvals
@@ -17574,6 +17864,9 @@ impl Orchestrator {
                     };
                     let mut decision = None;
                     if approval.status == ApprovalStatus::PendingHuman {
+                        if defer_human {
+                            return Ok(PreparedPhysicalExecution::DeferredHuman(approval.id));
+                        }
                         decision = Some(services.broker.review_human(&review_request).await?);
                     } else {
                         let escalation_reason =
@@ -17631,6 +17924,11 @@ impl Orchestrator {
                                 self.bus.dispatch_persisted(escalation_event).await?;
                             }
                             if approval.status == ApprovalStatus::PendingHuman {
+                                if defer_human {
+                                    return Ok(PreparedPhysicalExecution::DeferredHuman(
+                                        approval.id,
+                                    ));
+                                }
                                 decision =
                                     Some(services.broker.review_human(&review_request).await?);
                             }
@@ -18434,6 +18732,7 @@ impl Orchestrator {
         let ordinary_action_count = selected_tool_calls.len()
             + unavailable_tool_calls.len()
             + usize::from(context_tx_batch_error.is_some());
+        let mut completed_output_event_ids = Vec::new();
 
         // objective_create is a control-plane prelude rather than an ordinary
         // sibling Action. It must establish the Objective route before any
@@ -18461,6 +18760,7 @@ impl Orchestrator {
             } else if !already_persisted {
                 self.store.append(output.clone()).await?;
             }
+            completed_output_event_ids.push(output.id.clone());
             dispatch_persisted_tool_handoff(self.bus.as_ref(), output, internal_child_handoff)
                 .await?;
         }
@@ -18568,6 +18868,24 @@ impl Orchestrator {
             })
             .transpose()?;
 
+        // A physical Plan leaf propagates its wait to the enclosing immutable
+        // batch. An infer child's own batch uses the same checkpoint and its
+        // existing dedicated tool-output handoff on resume. This does not
+        // release the parent waiting for the infer result. The last native
+        // Objective owner hands off its shared lease in the checkpoint commit.
+        let mut defer_human = (options.plan_execution_id.is_some() || options.wake_on_output)
+            && activation_route.is_some()
+            && self
+                .durable_approvals
+                .as_ref()
+                .is_some_and(|services| services.durable_human_decisions);
+        if defer_human {
+            if let Some(plan_id) = options.plan_execution_id.as_deref() {
+                defer_human = Box::pin(self.can_defer_persisted_plan_approval(plan_id)).await?;
+            }
+        }
+        let mut pending_approval_ids = Vec::new();
+        let mut pending_infer_activation_ids = Vec::new();
         let mut tasks = Vec::new();
         let mut outputs = Vec::<(Event, bool)>::new();
         let mut allowed_tool_names = options
@@ -18667,7 +18985,9 @@ impl Orchestrator {
                 let prepared = crate::tool::CURRENT_SESSION_ID
                     .scope(
                         session_id.to_string(),
-                        self.prepare_physical_execution(
+                        // This is a large state machine. Keep preflight on
+                        // the heap, including during default-stack restart.
+                        Box::pin(self.prepare_physical_execution(
                             tool,
                             route,
                             agent_id,
@@ -18680,7 +19000,8 @@ impl Orchestrator {
                             timeout_secs,
                             action_group_id.as_deref(),
                             options.wake_on_output && action_group_id.is_none(),
-                        ),
+                            defer_human,
+                        )),
                     )
                     .await;
                 match prepared? {
@@ -18696,6 +19017,10 @@ impl Orchestrator {
                     }
                     PreparedPhysicalExecution::Rejected(event) => {
                         outputs.push((event, false));
+                        continue;
+                    }
+                    PreparedPhysicalExecution::DeferredHuman(approval_id) => {
+                        pending_approval_ids.push(approval_id);
                         continue;
                     }
                 }
@@ -18885,6 +19210,9 @@ impl Orchestrator {
                                                                         &output.text,
                                                                     );
                                                                     (output, status)
+                                                                }
+                                                                Ok(Err(error)) if error.downcast_ref::<DeferredPlanApproval>().is_some() => {
+                                                                    return Err(error);
                                                                 }
                                                                 Ok(Err(error)) => (
                                                                     crate::tool::ToolExecutionResult::text(
@@ -19265,6 +19593,14 @@ impl Orchestrator {
             let metadata = task.metadata;
             let (mut output, already_persisted, job_outcome) = match task.handle.await {
                 Ok(Ok(result)) => (result.output, result.already_persisted, None),
+                Ok(Err(error)) if error.downcast_ref::<DeferredPlanApproval>().is_some() => {
+                    let deferred = error
+                        .downcast::<DeferredPlanApproval>()
+                        .expect("checked control outcome");
+                    pending_approval_ids.extend(deferred.approval_ids);
+                    pending_infer_activation_ids.extend(deferred.infer_activation_ids);
+                    continue;
+                }
                 Ok(Err(error)) => {
                     let reason = format!(
                         "execution task for tool '{}' failed while converging on a terminal state: {error}",
@@ -19324,7 +19660,10 @@ impl Orchestrator {
             };
             outputs.push((output, already_persisted));
         }
-        if outputs.is_empty() {
+        if outputs.is_empty()
+            && pending_approval_ids.is_empty()
+            && pending_infer_activation_ids.is_empty()
+        {
             return Err("All tool tasks terminated unexpectedly before producing results".into());
         }
         if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
@@ -19341,6 +19680,7 @@ impl Orchestrator {
         }
         let mut outcome = ToolExecutionOutcome::default();
         for (output, _) in &outputs {
+            completed_output_event_ids.push(output.id.clone());
             if output
                 .payload
                 .get("tool_name")
@@ -19392,7 +19732,13 @@ impl Orchestrator {
                 }
             }
         } else {
-            debug_assert_eq!(outputs.len(), 1);
+            // One eval may contain multiple physical approval dependencies.
+            debug_assert!(
+                outputs.len() <= 1
+                    && (outputs.is_empty()
+                        != (pending_approval_ids.is_empty()
+                            && pending_infer_activation_ids.is_empty()))
+            );
             for (mut output, already_persisted) in outputs {
                 if !options.wake_on_output {
                     output
@@ -19418,6 +19764,26 @@ impl Orchestrator {
                 dispatch_persisted_tool_handoff(self.bus.as_ref(), output, internal_child_handoff)
                     .await?;
             }
+        }
+        if !pending_approval_ids.is_empty() || !pending_infer_activation_ids.is_empty() {
+            pending_approval_ids.sort();
+            pending_approval_ids.dedup();
+            pending_infer_activation_ids.sort();
+            pending_infer_activation_ids.dedup();
+            if options.plan_execution_id.is_some() {
+                return Err(DeferredPlanApproval {
+                    approval_ids: pending_approval_ids,
+                    infer_activation_ids: pending_infer_activation_ids,
+                }
+                .into());
+            }
+            return Err(ReadyToSuspendApprovalBatch {
+                assistant_call_event_id,
+                pending_approval_ids,
+                pending_infer_activation_ids,
+                completed_output_event_ids,
+            }
+            .into());
         }
         Ok(outcome)
     }
@@ -19981,16 +20347,27 @@ impl Orchestrator {
         let reason = format!(
             "Objective '{objective_id}' Evaluation '{evaluation_id}' was paused or cancelled"
         );
+        let mut activation_ids = self
+            .objective_evaluations
+            .activation_ids_for_evaluation(objective_id, evaluation_id)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if let Some(supervisor) = self.objective_supervisor.as_ref() {
+            if let Some(objective) = supervisor.get(objective_id).await? {
+                activation_ids.extend(
+                    supervisor
+                        .evaluation_activation_ids(&objective, evaluation_id)
+                        .await?,
+                );
+            }
+        }
         // The physical cancellation intent is durable before the in-memory
         // signal drops the model/Activation future. This ordering prevents a
         // fast cancellation from orphaning already-materialized Actions.
         let mut cancellation_error = None;
-        for activation_id in self
-            .objective_evaluations
-            .activation_ids_for_evaluation(objective_id, evaluation_id)
-        {
+        for activation_id in &activation_ids {
             if let Err(error) = self
-                .request_cancel_execution_jobs_for_activation(&activation_id, &reason)
+                .request_cancel_execution_jobs_for_activation(activation_id, &reason)
                 .await
             {
                 tracing::error!(
@@ -20011,6 +20388,20 @@ impl Orchestrator {
             .cancel_evaluation(objective_id, evaluation_id);
         if let Some(error) = cancellation_error {
             return Err(error);
+        }
+        // A parked/cold owner has no model Future left to observe an in-memory
+        // cancellation. Fence the same persisted owners through the normal
+        // Kernel terminal transition after their physical intents are durable.
+        if let Some(store) = self.context_engine.session_store() {
+            for activation_id in &activation_ids {
+                self.activation_cancellations
+                    .request(activation_id, &reason);
+                if let Some(activation) = store.get_thread_activation(activation_id).await? {
+                    self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
+                        .await?;
+                    self.activation_admission.forget(activation_id);
+                }
+            }
         }
         Ok(was_running)
     }
@@ -20139,6 +20530,7 @@ impl Orchestrator {
             _ => return Err("Scheduler Kernel returned an invalid Thread control result".into()),
         };
         if let ThreadMutation::Updated(updated) = &mutation {
+            self.activation_admission.notify_durable_queue_change();
             if action == ThreadControlAction::Cancel {
                 self.cancel_thread_activations(&current, reason).await?;
             }
@@ -21300,6 +21692,36 @@ fn infer_tool_status(text: &str) -> &'static str {
     }
 }
 
+/// Recovery re-evaluates the same durable tool call, not a new approval
+/// occurrence. Restore only its persisted occurrence metadata; every authority
+/// and route field must still match. The Store's immutable Event collision
+/// checks remain unchanged, including the atomic Job/Approval/Event commit.
+async fn restore_approval_request_event(
+    store: &dyn EventStore,
+    mut request_event: Event,
+) -> Result<Event, DynError> {
+    if let Some(persisted) = store
+        .query(QueryFilter {
+            event_id: Some(request_event.id.clone()),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .next()
+    {
+        request_event.timestamp = persisted.timestamp;
+        request_event.sequence = persisted.sequence;
+        if request_event != persisted {
+            return Err(format!(
+                "Approval request Event '{}' conflicts with its durable authority or route",
+                request_event.id
+            )
+            .into());
+        }
+    }
+    Ok(request_event)
+}
+
 fn approval_request_event(
     job: &NewExecutionJob,
     approval: &NewApprovalRequest,
@@ -21875,6 +22297,12 @@ async fn recover_action_group_from_durable_events(
     group: &ActionGroupRecord,
     groups: &dyn ActionGroupStore,
 ) -> Result<usize, DynError> {
+    let source = context_engine
+        .find_event(&group.context_id, &group.assistant_call_event_id)
+        .await?;
+    if plan_children::uses_plan_group_recovery(group, source.as_ref())? {
+        return Ok(0);
+    }
     let durable_attempt_id = group
         .assistant_call_event_id
         .strip_prefix("call_")
@@ -21918,6 +22346,10 @@ async fn recover_action_group_from_prefetched_events(
     members: &[ActionGroupMemberRecord],
     evidence: &HashMap<String, Event>,
 ) -> Result<usize, DynError> {
+    if plan_children::uses_plan_group_recovery(group, evidence.get(&group.assistant_call_event_id))?
+    {
+        return Ok(0);
+    }
     let durable_attempt_id = group
         .assistant_call_event_id
         .strip_prefix("call_")
@@ -22219,6 +22651,37 @@ fn attach_execution_join_route(
     Ok(())
 }
 
+/// Recovery adds only dispatch hints to a copy of the immutable trigger.
+/// Those hints carry no Evaluation authority and must name this exact owner.
+/// Every other payload field remains subject to exact equality.
+fn infer_dispatch_payload_matches(
+    persisted: &Event,
+    dispatched: &Event,
+    activation_id: &str,
+) -> bool {
+    if persisted.payload == dispatched.payload {
+        return true;
+    }
+    if dispatched
+        .payload
+        .get("runtime_recovery_activation_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(activation_id)
+        || dispatched.payload.get("runtime_force_evaluation") != Some(&json!(true))
+    {
+        return false;
+    }
+    let mut payload = dispatched.payload.clone();
+    for key in ["runtime_recovery_activation_id", "runtime_force_evaluation"] {
+        if let Some(value) = persisted.payload.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        } else {
+            payload.remove(key);
+        }
+    }
+    payload == persisted.payload
+}
+
 fn extend_exec_output_facts(
     payload: &mut serde_json::Map<String, serde_json::Value>,
     output: &str,
@@ -22472,6 +22935,48 @@ fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String,
 mod tests {
     use serde_json::json;
 
+    #[test]
+    fn infer_recovery_hints_never_replace_durable_authority() {
+        let persisted = crate::event::Event::new(
+            "infer-event".into(),
+            "Runtime".into(),
+            crate::event::TYPE_INFER_REQUEST.into(),
+            "runtime/infer_request".into(),
+            json!({"objective_id":"o", "objective_evaluation_id":"e", "plan_execution_id":"p"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(super::infer_dispatch_payload_matches(
+            &persisted, &persisted, "a"
+        ));
+        let mut recovered = persisted.clone();
+        recovered
+            .payload
+            .insert("runtime_recovery_activation_id".into(), json!("a"));
+        recovered
+            .payload
+            .insert("runtime_force_evaluation".into(), json!(true));
+        assert!(super::infer_dispatch_payload_matches(
+            &persisted, &recovered, "a"
+        ));
+        for (key, value) in [
+            ("runtime_recovery_activation_id", json!("other")),
+            ("runtime_force_evaluation", json!(false)),
+            ("objective_id", json!("other")),
+            ("objective_evaluation_id", json!("other")),
+            ("plan_execution_id", json!("other")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = recovered.clone();
+            invalid.payload.insert(key.into(), value);
+            assert!(
+                !super::infer_dispatch_payload_matches(&persisted, &invalid, "a"),
+                "{key}"
+            );
+        }
+    }
+
     use super::{
         action_group_reconcile_id, activation_admission_class, active_objective_scope_id,
         active_prompt_cache_seed_deltas, apply_prompt_estimate_delta,
@@ -22553,6 +23058,73 @@ mod tests {
         let runtime =
             model_binding_completion_error(ModelAttemptBindingError::runtime("store unavailable"));
         assert_eq!(runtime.origin, ModelCompletionErrorOrigin::RuntimeInternal);
+    }
+
+    #[tokio::test]
+    async fn approval_request_recovery_restores_occurrence_without_hiding_content_conflicts() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("approval-request-recovery.db");
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let mut original = Event::new(
+            "approval_requested_test".into(),
+            "System-ApprovalAuthority".into(),
+            "approval_requested".into(),
+            "runtime/approval_requested".into(),
+            json!({"approval_id":"test", "requested":{"write_roots":["/project"]},
+                "principal_id":"alice", "attempt_id":"activation-test"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        original.timestamp -= chrono::Duration::minutes(5);
+        assert_eq!(
+            super::restore_approval_request_event(&store, original.clone())
+                .await
+                .unwrap(),
+            original
+        );
+        store.append(original.clone()).await.unwrap();
+        drop(store);
+        let restarted = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let mut reconstructed = original.clone();
+        reconstructed.timestamp = chrono::Utc::now();
+        assert_ne!(reconstructed.timestamp, original.timestamp);
+        let restored = super::restore_approval_request_event(&restarted, reconstructed.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.timestamp, original.timestamp);
+        assert!(restored.sequence.is_some());
+        restarted.append(restored.clone()).await.unwrap();
+        let persisted = restarted
+            .query(QueryFilter {
+                event_id: Some(original.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(persisted, vec![restored]);
+        for (key, value) in [
+            ("requested", json!({"write_roots":["/"]})),
+            ("principal_id", json!("bob")),
+            ("attempt_id", json!("different-activation")),
+        ] {
+            let mut conflict = reconstructed.clone();
+            conflict.payload.insert(key.into(), value);
+            assert!(super::restore_approval_request_event(&restarted, conflict)
+                .await
+                .is_err());
+        }
+        for field in ["actor", "topic", "type"] {
+            let mut conflict = reconstructed.clone();
+            match field {
+                "actor" => conflict.actor = "different".into(),
+                "topic" => conflict.topic = "different".into(),
+                _ => conflict.event_type = "different".into(),
+            }
+            assert!(super::restore_approval_request_event(&restarted, conflict)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]

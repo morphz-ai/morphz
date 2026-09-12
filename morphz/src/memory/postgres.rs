@@ -34,6 +34,7 @@ use crate::memory::{
     TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
     WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
 };
+use crate::memory::{ObjectiveActivationAdmission, ObjectiveApprovalWait};
 use crate::observability::Observability;
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -61,12 +62,14 @@ const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
 
 mod action_group;
 mod activation;
+mod activation_approval_wait;
 mod agent_provider;
 mod approval;
 mod delegation;
 mod delivery;
 mod edge;
 mod execution;
+mod objective_approval_wait;
 mod plan_execution;
 mod schedule;
 mod scheduler;
@@ -480,6 +483,28 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260726_01_plan_executions",
+                    plan_execution::migrate(&store.pool),
+                )
+                .await?;
+            // The checkpoint view references Plans and is used by admission
+            // functions below. Both dependencies must exist on a fresh store.
+            for version in [
+                "20260908_01_activation_approval_waits",
+                "20260908_03_retain_approval_resume_boundary",
+                "20260908_04_nested_plan_approval_waits",
+                "20260908_05_infer_parent_approval_waits",
+                "20260908_06_objective_approval_waits",
+            ] {
+                store
+                    .run_versioned_migration(
+                        version,
+                        activation_approval_wait::migrate(&store.pool),
+                    )
+                    .await?;
+            }
+            store
+                .run_versioned_migration(
                     "20260816_01_thread_signal_notifications",
                     activation::migrate_thread_signal_notifications(&store.pool),
                 )
@@ -511,8 +536,14 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
-                    "20260726_01_plan_executions",
-                    plan_execution::migrate(&store.pool),
+                    "20260908_02_activation_approval_wait_admission",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260909_01_terminal_activation_owners",
+                    activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;
             store
@@ -6639,8 +6670,8 @@ impl ObjectiveStore for PostgresStore {
                  COALESCE(SUM(CASE WHEN objective.status = 'active'
                    AND NOT (
                      objective.active_evaluation_id IS NOT NULL
-                     AND objective.evaluation_lease_expires_at IS NOT NULL
-                     AND objective.evaluation_lease_expires_at > $1
+                     AND (objective.evaluation_lease_expires_at IS NULL
+                       OR objective.evaluation_lease_expires_at > $1)
                    )
                    AND NOT EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
@@ -6652,8 +6683,8 @@ impl ObjectiveStore for PostgresStore {
                    ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
                  COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
                    (objective.active_evaluation_id IS NOT NULL
-                    AND objective.evaluation_lease_expires_at IS NOT NULL
-                    AND objective.evaluation_lease_expires_at > $1)
+                    AND (objective.evaluation_lease_expires_at IS NULL
+                      OR objective.evaluation_lease_expires_at > $1))
                    OR EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
                      WHERE dependency.owner_kind = 'objective'
@@ -7068,6 +7099,22 @@ impl ObjectiveStore for PostgresStore {
         })
     }
 
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>> {
+        self.objective_approval_wait(objective_id).await
+    }
+
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.admit_approval_objective(request)
+            .await
+            .map_err(objective_approval_wait::ownership_error)
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -7257,6 +7304,14 @@ impl ObjectiveStore for PostgresStore {
                      AND dependency.owner_generation = objectives.generation
                      AND dependency.required = TRUE AND dependency.status = 'pending'
                  )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM threads input_thread
+                   JOIN thread_signals input ON input.thread_id = input_thread.id
+                   WHERE input_thread.root_turn_id = $6
+                     AND input.thread_generation = input_thread.generation
+                     AND input_thread.status = 'open'
+                     AND input.kind = 'chat/steering' AND input.status IN ('pending', 'claimed')
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
         )
         .bind(evaluation_id)
@@ -7264,6 +7319,7 @@ impl ObjectiveStore for PostgresStore {
         .bind(&now)
         .bind(id)
         .bind(i64::try_from(expected_revision)?)
+        .bind(&thread.root_turn_id)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
@@ -7330,7 +7386,8 @@ impl ObjectiveStore for PostgresStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = $1, updated_at = $2
                WHERE id = $3 AND status = 'active' AND wait_condition_json IS NULL
-                 AND active_evaluation_id = $4"#,
+                 AND active_evaluation_id = $4
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)"#,
         )
         .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .bind(now_text())
@@ -7371,6 +7428,7 @@ impl ObjectiveStore for PostgresStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = $1, updated_at = $2
                WHERE id = $3 AND status = 'active' AND active_evaluation_id = $4
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)
                  AND EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency
                    WHERE dependency.id = $5

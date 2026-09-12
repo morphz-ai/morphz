@@ -16,11 +16,17 @@ experimental-session-io = []
 # lets deliberately minimal binaries omit the backend without presenting it as
 # an experimental Runtime capability.
 context-db = []
+remote-store = ["context-db", "reqwest/blocking", "dep:http-body"]
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
 # remains compile-time opt-in so default Context semantics stay untouched.
 experimental-structured-context-delta-cache = []
+
+[[bin]]
+name = "morphz-runtime-host"
+path = "src/bin/morphz-runtime-host.rs"
+required-features = ["remote-store"]
 
 [[example]]
 name = "context_db_sqlite_benchmark"
@@ -35,6 +41,7 @@ required-features = ["context-db"]
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
+http-body = { version = "1", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
@@ -93,8 +100,13 @@ clap_complete = "4.5"
 tempfile = "3.8"
 tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25.1"
+typed-path = "0.12.3"
 yao-lang = { path = "../yao" }
 morphz-cognitive-coordination = { path = "../experiments/morphz-cognitive-coordination", optional = true, default-features = false }
+
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }

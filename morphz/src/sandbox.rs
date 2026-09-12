@@ -894,8 +894,17 @@ mod linux {
             }
             push_mount(&mut arguments, "--ro-bind", &path, &path);
         }
+        let mut masked_directories: Vec<PathBuf> = Vec::new();
         for path in denied_reads {
-            mask_path(&mut arguments, &path)?;
+            // A masked directory is empty, inaccessible and read-only. Its
+            // descendants are already hidden; mounting them again would ask
+            // Bubblewrap to create targets inside that sealed filesystem.
+            if masked_directories.iter().any(|root| path.starts_with(root)) {
+                continue;
+            }
+            if mask_path(&mut arguments, &path)? {
+                masked_directories.push(path);
+            }
         }
 
         // Seal private roots only after all mount targets (including protected
@@ -951,10 +960,11 @@ mod linux {
         paths
     }
 
-    fn mask_path(arguments: &mut Vec<OsString>, path: &Path) -> Result<(), SandboxError> {
+    /// Returns true only when an existing directory was replaced by a mask.
+    fn mask_path(arguments: &mut Vec<OsString>, path: &Path) -> Result<bool, SandboxError> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
             Err(error) => {
                 return Err(SandboxError::new(format!(
                     "failed to inspect Linux sandbox protected path '{}': {error}",
@@ -973,7 +983,7 @@ mod linux {
             // not receive a fabricated copy of the protected content.
             push_mount(arguments, "--ro-bind", Path::new("/dev/null"), path);
         }
-        Ok(())
+        Ok(metadata.is_dir())
     }
 
     fn push_mount(arguments: &mut Vec<OsString>, operation: &str, source: &Path, target: &Path) {
@@ -1067,6 +1077,97 @@ mod linux {
                 1,
                 "the read-only root baseline must not be rebound after private roots are hidden",
             );
+        }
+
+        #[test]
+        fn bubblewrap_parent_mask_subsumes_protected_descendants() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            let protected = temp.path().join("edge");
+            let database = protected.join("runtime.db");
+            let sibling = temp.path().join("edge-other.txt");
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::create_dir_all(&protected).unwrap();
+            std::fs::write(&database, "private-runtime").unwrap();
+            std::fs::write(&sibling, "private-sibling").unwrap();
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.deny_path(&database);
+            policy.deny_path(&protected);
+            policy.deny_path(&sibling);
+            let arguments = argument_strings(
+                build_bwrap_arguments(&ShellRequest {
+                    command: "true".to_string(),
+                    cwd: workspace,
+                    policy,
+                })
+                .unwrap(),
+            );
+            assert!(arguments
+                .windows(2)
+                .any(|items| { items[0] == "--tmpfs" && items[1] == protected.to_string_lossy() }));
+            assert!(!arguments.iter().any(|item| item == database.to_string_lossy().as_ref()),
+                "a sealed empty parent already hides the database; a descendant mount cannot create a target there");
+            assert!(
+                arguments.windows(3).any(|items| {
+                    items[0] == "--ro-bind"
+                        && items[1] == "/dev/null"
+                        && items[2] == sibling.to_string_lossy()
+                }),
+                "a shared string prefix is not a protected descendant"
+            );
+        }
+
+        #[test]
+        fn native_bubblewrap_nested_protected_paths_stay_hidden_and_read_only() {
+            let Some(bwrap) = find_bwrap(None) else {
+                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+                return;
+            };
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            let protected = workspace.join("edge");
+            let nested = protected.join("nested");
+            std::fs::create_dir_all(&nested).unwrap();
+            let files = [
+                protected.join("runtime.db"),
+                protected.join("runtime.db-wal"),
+                nested.join("secret.txt"),
+            ];
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.write_roots.push(nested.clone());
+            // Insert child first to exercise normalized parent-first ordering.
+            for file in &files {
+                std::fs::write(file, "private-runtime").unwrap();
+                policy.deny_path(file);
+            }
+            policy.deny_path(&nested);
+            policy.deny_path(&protected);
+            let arguments = build_bwrap_arguments(&ShellRequest {
+                command: "set -eu; printf allowed > allowed.txt; \
+                    test ! -s edge/runtime.db; test ! -s edge/runtime.db-wal; \
+                    test ! -s edge/nested/secret.txt; \
+                    if cat edge/runtime.db >/dev/null 2>&1; then exit 10; fi; \
+                    if printf denied > edge/runtime.db; then exit 11; fi; \
+                    if mkdir edge/new-directory; then exit 12; fi"
+                    .to_string(),
+                cwd: workspace.clone(),
+                policy,
+            })
+            .unwrap();
+            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+                "allowed"
+            );
+            for file in &files {
+                assert_eq!(std::fs::read_to_string(file).unwrap(), "private-runtime");
+            }
+            assert!(!protected.join("new-directory").exists());
         }
 
         #[test]
@@ -1763,13 +1864,35 @@ mod windows {
                 })
                 .unwrap();
             let outside_delete = execute_prepared(outside_delete, &workspace);
-            assert!(
-                !outside_delete.status.success(),
-                "the elevated Windows sandbox must reject deletion of an existing file outside the writable roots"
-            );
+            // cmd's DEL can report success when the restricted account cannot
+            // enumerate the file ("Could Not Find ..."). The observable
+            // security invariant is preservation, not that shell builtin's
+            // unreliable exit code. An uncaught PowerShell deletion below
+            // separately exercises a command with meaningful failure status.
             assert_eq!(
-                std::fs::read_to_string(&outside_existing).unwrap(),
-                "preserve\r\n"
+                std::fs::read(&outside_existing).ok(),
+                Some(b"preserve\r\n".to_vec()),
+                "outside file changed: status={:?} stdout={} stderr={}",
+                outside_delete.status.code(),
+                String::from_utf8_lossy(&outside_delete.stdout),
+                String::from_utf8_lossy(&outside_delete.stderr),
+            );
+            let outside_remove = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: format!(
+                        "powershell.exe -NoProfile -Command \"Remove-Item -LiteralPath '{}' -Force -ErrorAction Stop\"",
+                        outside_existing.display()
+                    ),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let outside_remove = execute_prepared(outside_remove, &workspace);
+            assert!(!outside_remove.status.success());
+            assert_eq!(
+                std::fs::read(&outside_existing).ok(),
+                Some(b"preserve\r\n".to_vec()),
+                "outside file must survive denied PowerShell removal"
             );
 
             let protected_read = sandbox
@@ -1811,6 +1934,42 @@ mod windows {
                 String::from_utf8_lossy(&powershell.stdout),
                 String::from_utf8_lossy(&powershell.stderr),
             );
+
+            // Real Provider calls use ordinary quoted scripts, not just our
+            // Base64 test helper. Both must keep relative IO on this workspace
+            // when the restricted account starts through its CWD junction.
+            let proof = b"MORPHZ_WINDOWS_QUOTED_SANDBOX\r\n";
+            std::fs::write(workspace.join("proof.txt"), proof).unwrap();
+            for (command, receipt) in [
+                (
+                    r#"powershell.exe -NoProfile -Command "Copy-Item -LiteralPath 'proof.txt' -Destination 'quoted-ps.txt'; Get-Content -LiteralPath 'quoted-ps.txt'""#,
+                    "quoted-ps.txt",
+                ),
+                (
+                    r#"cmd /c "type proof.txt > quoted-cmd.txt""#,
+                    "quoted-cmd.txt",
+                ),
+                (
+                    r#"type proof.txt > "quoted & spaces.txt""#,
+                    "quoted & spaces.txt",
+                ),
+            ] {
+                let prepared = sandbox
+                    .prepare_shell(&ShellRequest {
+                        command: command.to_string(),
+                        cwd: workspace.clone(),
+                        policy: policy.clone(),
+                    })
+                    .unwrap();
+                let output = execute_prepared(prepared, &workspace);
+                assert!(
+                    output.status.success(),
+                    "quoted sandbox command {receipt}: stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                assert_eq!(std::fs::read(workspace.join(receipt)).unwrap(), proof);
+            }
 
             let network = sandbox
                 .prepare_shell(&ShellRequest {

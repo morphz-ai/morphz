@@ -1,0 +1,741 @@
+# Fenced remote RuntimeStore
+
+The `remote-store` build feature supplies a complete implementation of the
+`RuntimeStore` trait graph. It is an embedding API, not a switch that silently
+moves an existing CLI database into a cloud account. SQLite and PostgreSQL
+remain unchanged defaults for their existing deployments.
+
+## Authority and computation
+
+The remote service is the only durable authority. Rust executes the existing
+SQLite transaction implementation in a **disposable, in-memory computation
+replica**, captures its final row delta, and submits that delta as one atomic
+operation. No Runtime operation is acknowledged before the remote authority
+confirms its commit. There is no local durable file, file snapshot upload,
+dual-write, offline success mode, or alternate-backend fallback.
+
+This deliberately reuses the native Rust Context AST, commitment checks,
+state transitions, composite transactions and SQL constraints. A TypeScript
+service must not independently reimplement those business rules. The remote
+adapter stores typed records and enforces revision, ownership, idempotency and
+atomicity. SQL text is never sent over the protocol.
+
+The trust boundary is the authenticated compute process, like a database
+credential in existing deployments. Models cannot provide the endpoint,
+credential, schema, owner fence, record delta or tenant selector. An embedding
+host authenticates the compute process and binds it to exactly one Agent.
+
+## Complete interface coverage
+
+`remote_store_codegen.rs` parses the actual Rust trait graph using `syn`. All
+asynchronous storage methods forward through the same commit boundary, including
+trait defaults and compound methods. A newly added unsupported signature fails
+the build. The two notification waits remain non-authoritative timeout hints and
+do not hold the store mutex. A marker trait uses its existing blanket impl.
+
+TEMP SQLite triggers capture canonical tables, row identities, dynamically typed
+values and cascading changes. A rollback rolls back its journal too. Multiple
+updates coalesce to the final row. No-op updates do not create remote writes.
+FTS shadow tables/statistics are derived; the canonical Recall documents and
+stable FTS identities are preserved and native triggers reconstruct the index.
+New unsupported virtual tables, generated columns or row-identity layouts fail
+startup instead of being silently omitted.
+
+## Protocol `morphz-runtime-store/1`
+
+Every request is scoped by an authenticated service endpoint and an
+`{ownerId, epoch}` fence. No tenant ID is accepted from a model/tool request.
+
+- `head`: live-fenced schema hash, revision, current owner's sequence.
+- `page`: deterministic records after an opaque cursor at an exact revision;
+  a changed revision rejects the page instead of constructing a torn snapshot.
+- `commit`: schema hash, base revision, strictly next owner sequence, and an
+  ordered final record delta. The adapter checks the fence inside the same
+  durable transaction as all writes and the receipt.
+- `claim` / `renew`: optional managed compute lease. A process uses a fresh random
+  owner nonce. The authority supplies remaining TTL; Rust uses a monotonic clock
+  started before the RPC, so clock skew does not extend its ownership.
+- `recovered`: explicit acknowledgement **after complete Runtime recovery**, not
+  after a storage download and not immediately after claim.
+
+SQLite integers (including nanoseconds and row IDs) use decimal strings. Text,
+real values, blobs and null have explicit tagged encodings; JavaScript numbers
+never carry an i64 database value. Schema identity is a SHA-256 commitment to the
+native DDL and ordered data-migration identities. Schema mismatch requires an explicit migration; initialization cannot
+reset an existing remote store or import a second local authority.
+
+A serialized owner needs only its last commit digest/receipt. Submission of the
+next sequence proves receipt of the preceding one and is the retention watermark.
+Replaying the last sequence with identical content returns the existing receipt;
+changed content conflicts; older sequences never execute. An ownership change
+resets the sequence namespace, not the data revision. Old fences are rejected
+even when retrying a previously successful commit.
+
+Reads do not advance revision or write a receipt. They validate the same fenced
+head after reading their computation snapshot. A native operation returning an
+error may have deliberately persisted bookkeeping; that delta is committed before
+returning the original error, just as for a successful result.
+
+### Cached-operation validation (2026-09-09)
+
+The Cloud canary measured thousands of serialized remote `head` requests. After
+removing the gateway's redundant immutable Host identity lookup, a head still
+averaged 64.071 ms; input-to-approval remained 78 seconds. Functional success is
+not latency acceptance. The Rust adapter previously issued a head before every
+SQLite operation as well as a final head/commit afterwards.
+
+A valid cached replica now computes locally without that preliminary head. The
+result is speculative and remains inside `execute`: a read is returned only
+after a live-fenced head confirms the exact schema/revision/owner sequence; a
+write is returned only after the authority's atomic fenced CAS and validated
+receipt. The final authority decision is the linearization point. A preliminary
+head cannot protect the interval after it, so it did not replace either final
+check. No cached authorization, asynchronous write acknowledgement, protocol
+version, data migration, physical command replay or lease-policy change is added.
+
+If another writer changes the snapshot, validation rejects this operation and
+discards the local replica; the next operation restores the authoritative state.
+It does not silently rerun a consumed business closure. Missing replicas, initial
+connection, restoration and quiescent park retain their existing fenced checks.
+This reduces a successful cached operation to one remote authority decision,
+not zero; restoration can still require multiple requests.
+
+Deterministic regressions execute the real SQLite/journal against a faultable
+authority. The unmodified baseline fails the one-roundtrip assertion and passes
+the other five cases: revocation after local computation, concurrent snapshot
+change, cancellation before/after commit and lost receipts, persisted domain-error
+bookkeeping, and changed schema. Final native/workerd and hosted gate results
+must be recorded separately; unit request counts are not an online latency SLA.
+
+Verification after the change:
+
+- All **1,341 native library tests passed / 8 ignored** (133.61 seconds), including
+  all six new regressions. The first outer-sandbox run had 9 Seatbelt nesting
+  failures (`sandbox_apply: Operation not permitted`) and 3 timeout failures;
+  the complete rerun outside that wrapper with two test threads passed without
+  changes to product sandbox policy or those unrelated tests.
+- The actual workerd conformance server passed the full remote RuntimeStore
+  operational/restore case and all **5 recovery/fault cases** (33.22 seconds),
+  including the real 30-second lease while an operation is blocked. The other
+  conformance binary reported 8 passes, but its two conditional PostgreSQL cases
+  had no external URL and are not PostgreSQL deployment evidence.
+- `cargo clippy -p morphz --features remote-store --all-targets -- -D warnings`,
+  formatting and diff validation passed. Existing low-debug build cache reused;
+  no new Docker environment or cloud compute was started for these tests.
+
+The newly built Host passed all **9 actual hosted end-to-end tests** in 323.08
+seconds: product/Provider setup and Edge execution, approval park/restore, idle
+Edge, backup staging, maintenance, SIGKILL/R2 recovery, real deadline/alarm wake,
+ingress racing park and committed-message receipt loss. These use loopback
+workerd, synthetic credentials/Provider and actual local native processes; test
+temporary data is removed by the fixture. Host SHA-256 is
+`fbbcc02f059111b455423b691513057a9c330c3184f080b39f9393bccaf6b1dc`;
+Edge SHA-256 is
+`8d73728100620fb1a59062ae4d647d7d1b99b8fdf4281b709342c66f15ae89cf`.
+
+Linux/online latency comparison remains a separate gate. The previously
+published `905a3cd5` image does not contain this optimization and cannot be used
+as evidence for it. No production store or Provider was changed in these runs.
+
+## Opt-in operation profiling
+
+`RUST_LOG=warn,morphz::remote_store_timing=debug` enables native operation timing.
+Without that DEBUG target, the instrumentation allocates no record and reads no
+clock. The generated forwarding layer labels calls from the actual RuntimeStore
+trait graph; it does not maintain a separate hand-written method registry.
+
+Each record contains exactly ten fields: the closed operation name, read/commit/
+undecided mode, a validated-receipt flag, six phase durations (queue, restore,
+local SQLite, journal, authority, finalize), and total microseconds. Unknown
+labels become `unknown`. Arguments, IDs, paths, event content, credentials and
+error text are never part of this record. A validated receipt is not necessarily
+a successful business result: native error bookkeeping can be committed too.
+Cancellation/error drops record the incomplete operation without acknowledging
+its speculative state. Process kills cannot report futures that never drop.
+Connect/initial restoration and `try_park` are outside this method-level scope.
+
+The same opt-in diagnostic switch also attributes calls made inside an explicitly
+awaited Activation attempt to the existing operator-only turn timeline. Its
+`remote_store` projection contains at most 128 method groups per retained turn,
+with counts, unvalidated counts and summed phase microseconds; overflow is counted
+in `dropped`. The existing bounded 512-turn retention applies. No new durable
+records, metric ID labels, log payloads or Store wire fields are introduced.
+
+Task-local scope is captured when the operation starts, so cancellation outside
+that scope still belongs to the original turn. Concurrent roots remain separate;
+detached Tokio tasks do not inherit a parent's attribution. Ingress, background
+scans, spawned tool/evaluation workers and unscoped operations are **not** covered
+by this attempt-only projection. Missing attribution is not evidence that work
+was background, and cumulative method time is not a critical-path or wall-clock
+total. Evicted/discarded turns are not recreated by late completions. With the
+diagnostic target disabled no scope or per-call clock is installed.
+
+The Cloud repository's `hosted-runtime.test.mjs` supports explicit numerical-only
+profiling with `MORPHZ_TEST_STORE_PROFILE=/absolute/new-report.json`. Its optional
+`MORPHZ_TEST_STORE_LATENCY_MS=60` delays the real loopback authority requests;
+it is test-only, bounded to 0–100 ms, and requires an output profile. It does not
+replace the authority, relax fencing or alter production configuration. Reports
+must not already exist. The collector keeps bounded, separate process streams,
+rejects nonconforming records and persists aggregates, not raw Host logs.
+
+On 2026-09-09, the actual native Host + workerd + sandboxed Edge product canary
+passed both without injected latency (104.67 seconds) and with 60 ms injected
+per authority request (161.02 seconds). Each run verified four product gates,
+exactly one physical command, and native sandbox enforcement. The baseline
+overlapped Clippy, so these are diagnostic observations, not controlled CPU/SLO
+benchmarks. Input-to-approval was 1.789 versus 26.522 seconds; decision-to-command
+was 1.677 versus 12.334 seconds. The respective 1,270 and 1,483 operation samples
+contained zero rejected/unknown records. Rechecking the retained aggregates found
+zero versus two unvalidated records (both `undecided` Activation reads); the
+earlier claim that both runs had zero unvalidated records was incorrect. Aggregate
+diagnostics cannot identify whether an incomplete operation was cancelled or
+failed, and must not count it as a validated result. Local SQLite work summed to
+654/908 ms; authority phases summed to 3,355/96,889 ms and queue phases to
+2,282/169,504 ms. Concurrent queue durations overlap: their sum is not wall time.
+
+The instrumented revision passed all **1,344 native library tests / 8 ignored**
+(122.69 seconds), all 40 targeted remote-store tests, and all-targets Clippy with
+`-D warnings`. These include existing ownership/cancellation/error regressions;
+the instrumentation has not changed the remote-store protocol or schema.
+
+This confirms sensitivity to serialized remote latency; counts alone do not
+identify a specific caller or justify removing an authority check. Online
+performance acceptance and the other full deployment gates remain outstanding.
+
+## Concurrent validation of clean reads
+
+Native SQLite computation and journal inspection remain serialized. Once an
+operation has completed with an empty canonical journal, its owned result may
+wait for its **own** live-fenced head outside the replica mutex. Every read still
+validates the exact schema, revision and owner sequence it computed against.
+There is no shared receipt, read-result cache, TTL authorization or omitted RPC.
+A read's authority decision is still its linearization point; two readers may
+receive independent decisions for the same committed snapshot.
+
+A bounded read barrier admits at most 32 in-flight validations. A writer can
+compute speculatively while older reads wait for the network, but retains the
+FIFO replica mutex and drains every older read before its final CAS. This keeps
+the snapshot stable at those reads' authority decisions. Holding the mutex also
+prevents new readers from starving the waiting writer. Restoration and park
+likewise drain the barrier before resetting a cache or releasing compute.
+
+A failed/cancelled validation poisons the snapshot and best-effort clears its
+slot without awaiting the replica mutex. The poison flag is required when a
+writer already holds that mutex: the writer must discard its speculative delta,
+not commit it after a failed reader. A successful sibling cannot clear poison.
+Only after every reader has dropped, under the replica mutex, may restoration
+reset it. Reader completion does not acquire that mutex, avoiding a writer/drain
+deadlock. Cancelling park before its RPC still does not falsely release ownership.
+
+The deterministic regression holds one real native read at its transport boundary
+and requires a second read to finish using a separate head. The unchanged
+`e816525f` implementation fails this assertion (1.14 seconds, exit 101); the first
+candidate passes it together with write ordering, cancellation before/after a
+read decision, lost receipts, revocation/revision/schema changes, restore after a
+cancelled write, and park/cancel races (46 targeted tests). The bounded candidate
+passes all 48 targeted tests (6.21 seconds), including capacity, drain notification
+ordering and failure poison surviving a successful sibling. Hosted measurements
+and full-suite results are recorded separately; targeted tests are not online
+latency acceptance.
+
+The bounded candidate passes the full native library suite (**1,352 passed /
+8 ignored**, 159.90 seconds), all-targets Clippy with `-D warnings`, and the full
+Cloud suite with actual Host/Edge (**40 files / 243 passed**, 333.87 seconds).
+All nine hosted cases ran; conditional external PostgreSQL evidence remains a
+separate requirement. The native suite and Cloud functional suite overlapped;
+their durations are not controlled performance benchmarks.
+
+The separate real workerd endpoint also passes the complete remote operational
+contract plus restore (2.55 seconds) and all five recovery/fault tests (32.34
+seconds): cancellation/ambiguous commits, native Runtime recovery/delivery,
+credential generation CAS, new-process reconstruction, and independent lease
+renewal while a Store operation exceeds 30 seconds. The test endpoint was then
+stopped through its own cleanup handler; this is not an external PostgreSQL run.
+
+Before those suites, the same isolated native Host/workerd/sandboxed Edge canary
+with 60 ms injected authority latency passed in 133.82 seconds (one selected test,
+eight skipped). Cold-message-to-pending-approval fell from 26.522 to 12.326 seconds,
+decision-to-physical-command from 12.334 to 8.872 seconds, and command-end-to-park
+from 18.141 to 11.580 seconds. These are single test comparisons, not cloud
+percentiles or LLM first-token timings. The fixed synthetic Provider does not
+perform model inference. The command ran once with native sandbox enforcement.
+
+The new report has 1,372 samples, zero rejected/unknown records and one unvalidated
+`undecided` Event query. Summed queue phases fell from 169,504 to 15,545 ms while
+authority phases remained 96,889 versus 89,203 ms. These concurrent phase sums
+are not wall time; each read still pays for its own head RPC. The retained report
+is `/private/tmp/morphz-native-store-profile.BLm7F6/concurrent-read-delay60.json`.
+Host SHA-256 is
+`441c7ac32cd484a9529588fbd6f2335231739192dbcc1a909ce7fae78f347108`;
+the Edge remains `8d73728100620fb1a59062ae4d647d7d1b99b8fdf4281b709342c66f15ae89cf`.
+No new cloud resource, production change or Linux image is implied by this result.
+
+## Cancellation and recovery
+
+Local computation takes its replica out of the shared slot. Only a confirmed
+write puts its changed state back; a journal-empty read can return the unchanged
+replica while its cancellation/validation guard remains active as described
+above. Cancellation, transport failure, failed capacity validation, a conflicting
+head or ambiguous commit leaves no reusable speculative state. The next
+operation reconstructs from the remote authority after pending reads drain. The client
+retries retryable HTTP failures with the **same serialized request**, never by
+rerunning the business operation. It never replays physical tool effects.
+
+`connect_owned` renews independently of the transaction mutex, output delivery,
+tool execution or replica restoration. A failed/expired renewal permanently fences
+that client instance. It cannot silently reacquire under the same identity.
+Dropping the Store stops renewal; it does not mark unfinished work idle. Lease
+expiry remains a recovery signal for the hosting service. Embedders should monitor
+`ownership_lost()` and terminate the obsolete compute process; storage fences also
+reject its stale outcomes regardless of that monitor's timing.
+
+## Embedding
+
+`morphz-runtime-host` accepts the deployment-only `MORPHZ_HOST_COMPUTE_MODE`:
+`on_demand` (default) retains idle parking; `always_on` keeps an already-started
+process resident instead of parking for inactivity. `MORPHZ_HOST_IDLE_SECONDS`
+remains a positive integer (default 60), not a second mode switch. Invalid
+configuration fails before HOME restoration or acquiring any remote ownership.
+The chosen mode is included in the fixed `host.ready` log.
+
+Always-on does not change Store fences, lease renewal, expiry/revocation shutdown,
+maintenance, cancellation or physical execution authority. It is not an uptime
+guarantee or automatic pre-warming: first start, crash/reclaim and platform
+replacement still need recovery. It adds no native keepalive request or fake work.
+Existing SQLite/PostgreSQL startup and production deployment defaults are unchanged.
+
+The new policy passes all 51 remote-store tests, including default preservation
+and invalid configuration. The actual Host/workerd gate also passes both new
+cases (46.34 seconds): an idle resident Host with a one-second idle threshold
+remains alive across 32 seconds without Host requests or Provider work, renews
+its real 30-second lease under the same epoch, then exits with code 1 after a
+maintenance fence. An explicit on-demand replacement subsequently parks normally.
+Four malformed startup configurations fail before any HOME/endpoint/token is
+provided. Cloud deployment-mode/admission/outbound-registration tests (14) and
+the hosted dry-run pass. The complete native library suite passes 1,355 tests
+(8 ignored, 126.72 seconds); all-target Clippy passes. The full Cloud suite with
+the rebuilt Host and real Edge passes 247 tests in 40 files (392.02 seconds).
+These do not demonstrate a deployed always-on Container or authorize continuous
+cloud spend.
+
+Build with `--features remote-store`. Construct an `HttpRemoteStoreTransport`
+using an operator-supplied HTTPS URL and credential, then call
+`RemoteRuntimeStore::connect_owned`. Inject the resulting `Arc` using the existing
+`MorphzRuntime::builder(...).store("remote:...", store.clone())` API. Call
+`store.complete_recovery()` only after `runtime.start().await` succeeds.
+
+The Cloud implementation exposes a **private gateway primitive**, not a public
+unauthenticated Worker route. Its hosted compute adapter resolves the Cell from
+verified platform Container identity before calling that primitive. The test
+HTTP bridge and its fixed credential are test fixtures only.
+
+## Opt-in hosted executable and uploaded files
+
+`morphz-runtime-host`, built only with `remote-store`, is an explicit embedding
+entrypoint. It requires `MORPHZ_REMOTE_STORE_URL`, `MORPHZ_HOST_FILES_URL`,
+`MORPHZ_HOST_CREDENTIALS_URL`, `MORPHZ_HOST_CONFIGURATION_URL`,
+`MORPHZ_REMOTE_STORE_TOKEN`, a dedicated empty `MORPHZ_HOME`, `MORPHZ_BIND`,
+separate API/Dashboard tokens, an identity provider ID, and the control plane's
+`MORPHZ_AGENT_ID`, `MORPHZ_CONTEXT_ID`, and `MORPHZ_SESSION_ID`. Only an operator may
+set `MORPHZ_HOST_PRIVATE_GATEWAY=1` for platform-intercepted private HTTP;
+ordinary remote endpoints still require HTTPS (except loopback tests).
+
+It claims a fresh fence, restores Store and file pointers, starts Runtime
+recovery, acknowledges recovery and only then opens HTTP. It exits on ownership
+loss. It provisions exactly that Agent and primary Session; the verified gateway
+binds the user's Principal, rather than a bootstrap-local operator claiming the
+Session. Cloud local execution is disabled; uploaded files remain available for
+transfer to a selected Edge target through the existing tool/API contract.
+
+Correction from the real-provider gate (2026-09-11): the initial hosted entrypoint
+disabled every local Target capability, so a valid Runtime-to-Edge `transfer`
+failed as `EXECUTION_TARGET_REQUIRED` even when the selected Edge was connected.
+The previous sentence described intent, not verified data-plane completion.
+An explicit, default-off `execution_targets.local_artifact_transfer_enabled`
+option now permits an online `target-default` with only `transfer` when ordinary
+local execution is disabled; the hosted executable opts in. Its metadata says
+`artifact_transfer_only`, not a user computer. Shell and read/write/edit/search
+tools still return the machine-readable missing-execution-target boundary.
+The opt-in also installs a non-overridable workspace boundary in the hosted
+PermissionProfile. Absolute paths, parent traversal and symlink escapes outside
+the Agent workspace fail even with extra roots or a Full Access Session. Protected
+paths remain protected in this mode, and directory transfers check descendants
+and prospective publication paths; hosted transfers reject symlinks and special
+files. This is service-host isolation, not a second jail for ordinary self-hosted
+Full Access deployments. Both admission and physical dispatch still refuse local
+shell/read/write capabilities, including previously frozen jobs after a role change.
+
+Transfers retain both endpoints' authorization, approvals, frozen routes, digest
+checks and atomic publication. Explicit user SDK transfer intent uses endpoint
+policy; it is not evidence of a model tool's remote-operation human approval.
+The Edge worker supplies only its exact authenticated byte-channel stage as a
+task-local read or write capability. That internal capability is not a request
+field or reusable grant, does not cover neighboring paths, and never unprotects
+the user endpoint or its directory descendants. Localized Edge transfers execute
+the ordinary local transfer Tool; dual Managed SSH routes keep the dispatcher.
+
+The direct transfer executor is driven independently of its heartbeat/control
+loop. A branch waiting on RemoteRuntimeStore must not suspend the physical
+future while it holds that Store's replica lock. Its JoinSet aborts on early
+return; cancellation drains the task before committing terminal state. True
+remote file receipt and physical reads remain separate acceptance requirements.
+
+Remote capability leases use the registered Target's platform for directory
+ancestry, never the compute host's `PathBuf` semantics or a model-supplied dialect.
+Windows paths are parsed into Windows components even on a Unix Cloud host;
+Unix paths preserve literal backslashes. Relative/parent-traversal paths cannot
+prove ancestry. Windows device namespaces, alternate streams and ambiguous
+trailing dot/space components cannot reuse a directory grant. Component case is
+not folded (Windows directories may be case-sensitive), and different verbatim
+and ordinary prefixes are not silently equated. Unknown remote platforms only
+reuse exact path requests until the Target advertises a supported platform.
+
+Admission, the rule-editing API, SQLite and PostgreSQL share this comparison.
+No lease or database migration is required. This is only the Cloud-side lexical
+capability boundary: Edge still canonicalizes on the real filesystem and applies
+its own permission profile and native sandbox. A Session directory lease does
+not become Full Access or imply network/secret access.
+
+The `host_files` materialization service has no directory upload/scanning API.
+Callers supply immutable uploaded bytes at specific generated file paths.
+Stage content and offset/manifest publish atomically before HTTP acknowledgement;
+Event files, workspace attachment copies and pending marker publish before
+message admission. Cancellation removes manifest pointers. Plain text and native
+attachment parsing behavior are unchanged: no PDF/DOCX parser was introduced.
+The Cloud implementation encrypts immutable blobs in R2 and commits pointers in
+the same fenced Cell; responses are bounded and digest/length verified.
+
+Synchronous file callers yield their Tokio scheduler worker while awaiting the
+dedicated bounded I/O worker, so slow object storage cannot starve the independent
+compute lease. A failed local materialization after a remote acknowledgement
+invalidates ownership and stops the hosted process; it cannot keep using stale
+cache contents.
+
+Only this executable installs the optional file backend. Desktop, TUI and
+ordinary CLI startup neither uploads nor migrates existing files. The hosted
+executable restores exactly two primary configuration documents (`morphz` and
+`models`) from the fenced Cell database. TOML files in its private HOME are only
+disposable parser caches. Configuration writes acknowledge the database CAS
+before replacing that cache; ambiguous publication stops the owner. Cloud stores
+encrypted configuration bytes, including any inline sensitive values, rather
+than interpreting TOML or publishing configuration files into R2.
+
+`SecretStore::managed` registers one metadata-owning value backend. The Cell
+atomically stores encrypted values with the native managed-credential catalog;
+scope is authenticated with the ciphertext. Resolution checks the current fence,
+revision and usage scope and persists audit before returning plaintext. The host
+has no credential catalog/audit file or `.env` fallback and never receives a root
+encryption key. Missing aliases do not resolve from the host process environment.
+The existing local SecretStore constructors retain their local backend behavior.
+
+The private configuration and credential endpoints use the same live compute
+fence as RuntimeStore and files. Their keys are domain-separated. Root HOME
+configuration and credential filenames are rejected by the R2 file interface,
+including on restore, so it cannot become an alternate source of authority.
+Synchronous authority I/O yields the Tokio worker; a single-worker regression
+checks that credential waits do not starve lease tasks.
+
+The cross-repository native host gate creates a synthetic Provider via the real
+Runtime API, resolves its managed credential against a local HTTP fixture, kills
+the host, removes only its test cache, and repeats the Provider call after recovery.
+It checks both configuration/catalog restoration and durable usage audit, with
+no `.env` or credential files in the restored HOME. This is not a real Provider
+OAuth service test or a Cloud deployment. Audit retention, key recovery and real
+platform gates remain required.
+
+OAuth refresh now captures a SecretStore value/version snapshot after claiming
+its refresh lease. The Cloud backend publishes with that captured generation,
+not a head fetched just before the write. Authenticated generation is preserved
+only across key rewrapping; writes, metadata changes and login advance it, and
+deletion leaves a tombstone. The Worker can retry physical CAS across rotation,
+but never across a changed logical value. Expected generation conflicts preserve
+the newer credential without marking compute ownership lost. Account status is
+published through its own revision CAS and checked again before authorization;
+late refresh responses cannot undo operator disable/logout or invalidate a new
+login. Refresh lease ownership is revalidated before publication.
+
+Local backends use the same SecretStore lock, retaining explicit backend selection
+and environment-bootstrap first publication, with an in-process catalog revision
+preventing bootstrap ABA. This is not a cross-process local credential CAS. Cloud
+never falls back to the process environment and requires authoritative versions.
+The private Agent Cell envelope is unreleased and has no legacy dual-read path;
+ordinary local configuration/catalog formats are unchanged.
+
+Keep the materialization root's absolute location stable across replacements:
+existing Runtime attachment metadata contains absolute paths. The Cloud image
+uses `/run/morphz-home` and clears only its own disposable cache. The constructor
+refuses nonempty directories, rather than deleting an existing user HOME.
+The opt-in host now parks after `MORPHZ_HOST_IDLE_SECONDS` (default 60, positive)
+without HTTP activity, but inactivity alone never authorizes exit. An admission
+gate accounts for entire request/response bodies and WebSocket lifetimes. It
+exclusively closes ingress before checking process-local execution queues and
+native durable owners under the replica transaction mutex. Busy checks reopen
+ingress and retry no more often than every five seconds. Health probes do not
+reset the activity clock. Requests during a park attempt receive an explicit
+retryable `runtime_parking` 503 before reaching business handlers.
+
+The hosted gateway closes the readiness/park race with a private admission
+reservation. `POST /_morphz/host/admission` requires Operator authentication;
+it returns a random 256-bit process-local reservation, valid for 30 seconds.
+At most 64 reservations can be outstanding. They pin idle compute, are consumed
+once through `x-morphz-host-reservation`, and expire without creating durable
+work. They are not message receipts or permission grants: the business request
+still needs its original Principal/Node authority. The route exists only on the
+opt-in hosted server. An expired/reused reservation returns 409 before dispatch.
+
+Only the payload-free handshake is retried. The gateway never buffers, clones
+or replays a business body, never accepts a caller-selected container port, and
+does not use the container SDK's implicit restart with missing per-Agent env.
+A lost business response has an unknown outcome; recovery uses the native
+idempotency receipt instead of an automatic transport replay.
+
+The native check rejects active Activations, Jobs, Plans, Signals, deliveries,
+runnable Objectives, assignments/delegations, claimed/due timers, projection
+work and live Provider refresh leases. It exports the earliest future native
+timer to Cell `park`, which atomically verifies the exact RuntimeStore revision,
+due ingress and ownership, saves the deadline, then fences the old process.
+Only a positive park receipt permits exit 0. Ambiguous authority failures exit
+nonzero and recover; they never reopen admission with a potentially stale fence.
+This is also enforced at the Store boundary: once the park RPC starts, its RAII
+decision guard fences the client on error, cancellation or success. Only an
+explicit `parked: false` receipt leaves the old owner usable. Failure before
+submitting park does not invalidate otherwise valid ownership.
+
+### Observer delivery boundary (transport not yet connected)
+
+`host_observers` supplies a pure local delivery queue and a one-time installable
+park barrier, bound to that Store's exact compute owner and epoch; it has no URL,
+credential, socket or transport implementation.
+The opt-in hosted executable does **not yet** install a publisher or replace its
+existing WebSocket admission guard. This is a tested prerequisite, not a claim
+that the complete Cloud observation path or scale-to-zero UI has shipped.
+
+Each cycle retains exact batches until their matching epoch/sequence receipts.
+Failed, mismatched or ambiguous acknowledgements cannot consume a batch or reuse
+its sequence with changed content. A cycle certifies the durable append frontier
+only after its last batch is acknowledged. Startup requires an acknowledged reset;
+non-Session facts require an empty checkpoint; oversized events require a reset
+for durable API resynchronization rather than truncation. Opt-in model request
+diagnostics never enter observer batches. Bounds are 64 events and 128 KiB per
+batch, with at most 64 durable facts and 64 drafts per staged cycle.
+
+While holding the native replica mutex, `try_park` freezes the shared queue and
+checks the actual Event Store append sequence, not producer timestamps or an
+empty-channel heuristic. Queue staging uses that same freeze lock. No new cycle,
+publication or native write may cross the park decision. Busy/preflight rejection
+releases the freeze; a successful or ambiguous park permanently closes it.
+Process-local activity is rechecked after the frontier read. New Event Store
+facts, pending resets and even ephemeral-only unacknowledged batches defer park.
+
+Socket-free regressions exercise the real Store, native SQLite replica/journal,
+and restore path against a fault-injected fenced authority. They cover late and
+backdated commits, a write blocked across park, explicit busy, lost park receipts,
+cancellation on both sides of commit, and a newer owner's recovery without lost
+or duplicate facts. They do not substitute for real Cloud delivery, Session
+authorization, host-exit/socket survival or three-platform product gates.
+
+Local workerd/native-process gates cover drain, orderly idle exit, cache-free
+replacement, and a real `schedule_tx` durable Objective/Thread whose native
+deadline fires a DO alarm and starts replacement compute without another user
+request. A further native-process gate holds a real park commit, observes native
+503 admission, restores a replacement host from an empty cache, reserves across
+the idle timeout, and sends the original business message once. Duplicate message
+IDs return the same receipt; reservations cannot be reused or bypass business
+authorization. This is not a deployed Linux Container gate. Open WebSockets and
+active approval waits currently retain compute; frontend/Edge hibernation and
+approval-wait parking remain required before
+claiming the complete scale-to-zero product experience.
+
+Hosted file limits are explicit: at most 24 MiB per object, 34 MiB per upload
+transaction, 100 pointers. This executable caps ingress at 8 MiB per attachment,
+12 MiB per import and 32 attachments so both Event/workspace copies fit atomically.
+Other Runtime builds retain their existing limits. Over-capacity fails, never
+truncates or silently acknowledges local-only data.
+
+## Explicit capacity and rollout boundaries
+
+Current protocol limits are 1 MiB per encoded record, 8 MiB per atomic commit and
+50,000 distinct changed records. Snapshot pages are bounded by both rows and UTF-8
+bytes. Over-capacity operations fail atomically before acknowledgement; nothing
+is silently truncated, split into separately visible commits or written locally.
+These are physical backend admission limits, not changed Context semantics.
+
+The current replica reconstructs the complete Agent store at cold start. A hosting
+deployment must budget memory for that state. Large-state paging/partial replicas,
+explicit schema migration/export, capacity/load canaries, authenticated Container
+provisioning, R2 objects and production rollout belong to the subsequent deployment
+stage. This backend alone is not authorization to switch production storage.
+
+## Local gates
+
+The Cloud repository's `test/runtime-store-server.mjs` starts a temporary real
+workerd SQLite service and prints `MORPHZ_TEST_REMOTE_STORE_URL`. No cloud account,
+Provider credential, Docker daemon or production instance is used.
+
+With that variable set, run:
+
+```sh
+cargo test -p morphz --features remote-store --test runtime_store_conformance -- --include-ignored
+cargo test -p morphz --features remote-store --test remote_store_recovery -- --ignored
+cargo test -p morphz --features remote-store --lib
+cargo clippy -p morphz --features remote-store --all-targets -- -D warnings
+cargo fmt --all --check
+git diff --check
+```
+
+The upstream conformance suite includes native Context/Event/Session projection
+atomicity plus the existing Session, ingress, scheduler, Thread, Objective, Job,
+Edge, approval/lease and Provider cases. Fault gates cover cancellation before and
+after commit, response loss, fresh Rust processes with no local database, actual
+Runtime startup/response delivery, and a blocked operation exceeding the real
+30-second Cell lease while independent renewal continues. Cloud tests independently
+cover ownership migration, stale retry rejection, rollback, workerd restart,
+precision, bounded pagination and capacity errors.
+
+### Verified on 2026-09-07
+
+- Morphz lib with `remote-store`: **1,277 passed, 7 existing ignored**.
+- Unified conformance: **8 reported passed**; the six local/remote cases executed,
+  while the two conditional PostgreSQL cases returned without an external URL.
+  This run does not claim a fresh PostgreSQL deployment test.
+- Real remote recovery suite: **4 passed**, including fresh Rust processes,
+  commit-response loss/cancellation, actual Runtime delivery, and a 32-second
+  blocked operation with independent renewal of the real 30-second Cell lease.
+- Cloud suite: **69 passed**, including **29** Agent Cell tests against workerd.
+- Clippy `--all-targets -D warnings`, formatting and diff checks passed. Cloud
+  type checking, isolated Agent Cell dry-run and existing control-plane dry-run
+  (`--containers-rollout=none`) passed. No Docker image build or deployment ran.
+
+### Verified on 2026-09-08 (hosted configuration/credentials)
+
+- Rebuilt native `morphz-runtime-host` with `remote-store`.
+- Full Rust library: **1,283 passed, 7 existing ignored**.
+- Clippy `--all-targets -D warnings`, fmt and diff checks passed.
+- Cloud full suite: **114 passed / 19 files**, with the latest native host supplied;
+  its cross-repository test executed rather than being skipped. It includes local
+  D1/workerd and isolated PostgreSQL, credential scope/audit, encrypted configuration,
+  Provider setup/probe, SIGKILL/empty-cache recovery and stale-owner rejection.
+- TypeScript and hosted Worker dry-run passed. Provider HTTP calls used only a
+  synthetic loopback service. No real model spend, cloud deployment, Linux image
+  build, existing Agent migration or production data access occurred.
+
+### Verified on 2026-09-08 (native idle parking and timer wake)
+
+- Full Rust library with `remote-store`: **1,286 passed, 7 existing ignored**;
+  Clippy all targets with `-D warnings`, fmt and diff checks passed.
+- Cloud full suite: **119 passed / 19 files**, including all three native-process
+  gates, local D1/workerd and an isolated temporary PostgreSQL cluster. The
+  durable Schedule gate was run again after strengthening its repeated-alarm
+  assertion: the child still has exactly one Activation after replacement.
+- TypeScript and hosted dry-run passed; no Linux image or real cloud deployment.
+- The first restricted test run could not bind loopback ports or run nested
+  Seatbelt. The full suite passed in the local test environment allowing both;
+  no production access or real Provider credentials were involved.
+
+### Verified on 2026-09-08 (conditional OAuth publication)
+
+- Final Rust library: **1,291 passed, 7 existing ignored**, including held refresh
+  races against login, logout, disable, failed old refresh and replacement lease
+  owner; local scope/delete/reauthorization and environment-bootstrap ABA tests.
+- Real Rust→workerd recovery: **5 passed**, including an external credential
+  mutation bypassing the host catalog, authenticated generation CAS, harmless key
+  rotation, and expected conflicts that do not report compute ownership loss.
+- Rebuilt native host; Cloud full suite **137 passed / 20 files**, with all four
+  native-process gates executed. Credential cases cover commit-time races, same
+  plaintext reauthorization, replay and forged generation.
+- Clippy all targets with `-D warnings`, ordinary non-cloud `cargo check`, fmt,
+  TypeScript and hosted dry-run passed. Synthetic credentials and loopback only;
+  no real Provider spend, cloud deployment or production migration.
+
+### Verified on 2026-09-08 (local observer frontier and park decision)
+
+- Full Rust library with `remote-store`: **1,303 passed, 7 existing ignored**.
+  The 12 added tests cover exact retry batches, final-cycle acknowledgement,
+  explicit reset/capacity, owner/epoch binding, late/backdated native commits,
+  the final process-activity check, a write blocked across park, cancellation
+  before/after authority commit, lost receipts and cache-free owner recovery.
+- Rebuilt `morphz-runtime-host`; Clippy all targets with `-D warnings` passed.
+- Ordinary non-cloud `cargo check`, formatting and diff checks passed.
+- Cloud full suite with that rebuilt binary: **149 passed / 21 files**, including
+  all four actual native-process gates. This verifies that the park-decision
+  guard preserves existing drain, wake, recovery and business-ingress behavior.
+- The new observer queue/barrier remains unconnected to an outbound transport.
+  Its tests use a socket-free authority with real native SQLite; the existing
+  cross-repository host gates use local workerd and a synthetic Provider, not
+  production credentials or paid model calls. Full product observer/Edge/approval
+  integration and actual Linux/cloud deployment remain unverified.
+
+### Offline recovery validation (2026-09-08)
+
+`morphz-runtime-host --recovery-schema` prints the current native schema identity.
+`morphz-runtime-host --verify-recovery` reads bounded NDJSON from stdin and validates
+a staged backup in a fresh in-memory `Replica`. Both modes branch before HOME,
+configuration, credentials, HTTP clients, lease acquisition and Runtime startup.
+They neither replace an existing database nor execute imported work.
+
+The `morphz-native-recovery/1` input is exactly one `header`, nonempty `page`
+frames, one `end`, then EOF. A frame including its newline is at most 4 MiB;
+each page has at most 500 records, the complete import at most 250,000 records
+and 64 MiB of encoded record tuples. Tagged i64/blob values remain strings.
+The header carries the schema, backup fingerprint, record count and SHA-256
+chain. The initial digest is UTF-8 JSON `[protocol,schema,fingerprint]`; each
+record extends it with `[previous,[table,key,values]]`. Object key order does
+not participate in this contract.
+
+Validation uses the existing native schema/migration identity, typed parameter
+bindings and foreign-key checks. A partial page failure invalidates the verifier;
+bad schema, migration set, digest, count, types, duplicates or trailing input
+cannot produce a successful report. Diagnostics are fixed codes, not SQL or
+imported data. Success is one JSON report on stdout (exit 0); failure has no
+success report and exits 2. An initialized native schema is required; a Cell
+that never ran a Runtime is not silently bootstrapped from an empty backup.
+
+The report includes native quiescence observations (`capturedWork`,
+`nextWakeAtMs`), always `executionAuthority: "none"` and
+`requiresReconciliation: true`. Due timers are reported, never fired. These
+observations are made at validation time; they are neither proof of effects after
+the recovery point nor an authorization token. Safe publication must separately
+reconcile later input/cancellation/revocation/effects, fence obsolete owners,
+validate credentials/files and rebuild derived indexes. This is not yet an
+operator command for restoring a running Agent or replaying old Jobs.
+
+The matching Cloud private maintenance RPC emits these frames from a fully
+staged recovery, without resolving plaintext credentials or contacting compute.
+The cross-repository gate exercises the actual compiled CLI with no HOME,
+endpoint or token, a native-generated Store, independent encrypted backup and
+workerd staging; it verifies matching digests, rejection of tampering, no source
+Cell change and no Provider requests. This is local synthetic evidence, not
+live Cloud deployment or disaster-recovery completion.
+
+Verification: **6 native recovery tests passed**; full library **1,313 passed,
+8 existing ignored**. Cloud **176 passed / 24 files**, including all **5** real
+native host gates. Clippy all targets (`-D warnings`), TypeScript, formatting/diff checks and hosted Worker dry-run
+passed. No production database, cloud resource or real Provider was used.
+
+Builds use a separate temporary target with incremental/debug artifacts disabled;
+the verification cache is approximately 6 GiB, not a full-size debug target.
+
+### Edge cancellation authority (2026-09-08)
+
+An ExecutionJob's persisted cancellation intent is authoritative for its Edge
+command, regardless of whether the request came from Job, Thread, Objective or
+Session control. On every valid owner heartbeat, the Runtime checks that intent
+and projects it to `EdgeCommand::CancelRequested`. This includes the first
+heartbeat before local execution and a heartbeat after rebuilding the Runtime;
+it does not rely on the original tool future or a process-local notification.
+
+The ordinary Edge revision/claim check runs first. A wrong claimant cannot
+advance the command, and an unchanged command is not cancelled without a Job
+intent. The owning device receives the existing cancellation receipt protocol,
+terminates its managed execution and commits the actual terminal result. Merely
+requesting cancellation does not set `finished_at` or claim physical success.
+Session cancellation notifications carry the authorized Session's Context and
+Principal route so that observers do not receive a route-less event.
+
+The real `mini-m2.local` Edge gate passed in 118 seconds: cancel pending approval,
+rebuild the Runtime without its cache, verify the cancelled grant cannot execute,
+cancel a running bounded process, independently probe its PID and stopped heartbeat,
+observe the cancelled Job, then execute a fresh user message. Local library tests
+passed **1,317 / 8 ignored** and Clippy all targets (`-D warnings`) passed. Windows
+revealed a separate parent-directory metadata ACL failure before its workload
+started; it is not covered by the Mac result and requires its own native gate.

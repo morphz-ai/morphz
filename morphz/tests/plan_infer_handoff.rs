@@ -12,13 +12,174 @@ use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 
 struct PlanInferClient {
     responses: Mutex<VecDeque<Response>>,
     calls: AtomicUsize,
+}
+
+struct CancelledInferClient(AtomicUsize, AtomicBool);
+
+struct InferModelDrop<'a>(&'a AtomicBool);
+impl Drop for InferModelDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for CancelledInferClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 => Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "eval-cancelled-infer".into(),
+                    r#type: "function".into(),
+                    func_name: "eval".into(),
+                    arguments:
+                        json!({"program":"(eval (infer (returns String) \"synthetic child\"))"})
+                            .to_string(),
+                }],
+            }),
+            1 => {
+                let _guard = InferModelDrop(&self.1);
+                std::future::pending().await
+            }
+            2 => Ok(Response {
+                content: "parent-observed-cancellation".into(),
+                tool_calls: vec![],
+            }),
+            _ => Err("cancellation must not restart the child model".into()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelling_live_infer_refills_parent_and_releases_child() {
+    let database = NamedTempFile::new().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let client = Arc::new(CancelledInferClient(
+        AtomicUsize::new(0),
+        AtomicBool::new(false),
+    ));
+    let mut config = AppConfig::default();
+    config.orchestrator.event_bus.max_in_flight = 1;
+    config.orchestrator.activation_admission.max_in_flight = 1;
+    let runtime = MorphzRuntime::builder(config, client.clone())
+        .store(
+            "sqlite:infer-cancel",
+            store.clone() as Arc<dyn RuntimeStore>,
+        )
+        .tool_policy(RuntimeToolPolicy {
+            context_only: false,
+            coding_eval: true,
+        })
+        .build()
+        .await
+        .unwrap();
+    runtime.start().await.unwrap();
+    let session = runtime
+        .ensure_session(NewSession {
+            id: "session-infer-cancel".into(),
+            agent_id: runtime.identity().agent_id.clone(),
+            context_id: runtime.identity().context_id.clone(),
+            parent_session_id: None,
+            title: "Cancel one live infer".into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let mut replies = runtime.subscribe("chat/reply", 4);
+    session
+        .send(
+            "start the infer",
+            "User-Test",
+            Some("client-infer-cancel".into()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while client.0.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child model must have actually started");
+    let plan = store
+        .list_plan_executions(PlanExecutionFilter {
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let child_activation = store
+        .get_thread_activation(plan.pending_id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let child = store
+        .get_thread_by_root(&child_activation.root_turn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .control_thread(
+                &child.context_id,
+                &child.id,
+                child.revision,
+                morphz::memory::ThreadControlAction::Cancel,
+                "synthetic operator cancellation"
+            )
+            .await
+            .unwrap(),
+        morphz::memory::ThreadMutation::Updated(_)
+    ));
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+        .await
+        .expect("parent must receive the child cancellation without restarting Runtime")
+        .unwrap();
+    assert_eq!(reply.payload["text"], "parent-observed-cancellation");
+    assert_eq!(client.0.load(Ordering::SeqCst), 3);
+    assert!(
+        client.1.load(Ordering::SeqCst),
+        "cancelled child model future must be dropped"
+    );
+    let plan = store.get_plan_execution(&plan.id).await.unwrap().unwrap();
+    assert_eq!(plan.status, PlanExecutionStatus::Failed);
+    assert!(plan.error.as_deref().unwrap().contains("cancelled"));
+    assert_eq!(
+        store
+            .get_thread(&child.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        morphz::memory::ThreadLifecycle::Cancelled
+    );
+    let activations = store
+        .list_thread_activations_by_root(&child.context_id, &child.root_turn_id)
+        .await
+        .unwrap();
+    assert!(activations.iter().all(|a| a.status.is_terminal()));
 }
 
 impl PlanInferClient {

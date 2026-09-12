@@ -245,6 +245,10 @@ async fn objective_create_prelude_and_sibling_infer_keep_ordinary_plan_authority
 }
 
 async fn assert_directed_interrupt_chain(with_infer: bool) {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
     let client = Arc::new(ScriptedInterruptClient {
         responses: Default::default(),
         receipt_started: Default::default(),

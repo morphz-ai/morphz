@@ -107,6 +107,8 @@ pub struct Server {
     default_agent_id: String,
     default_context_id: String,
     identity: ServerIdentityConfig,
+    #[cfg(feature = "remote-store")]
+    host_request_gate: Option<Arc<crate::memory::remote::host_lifecycle::HostRequestGate>>,
 }
 
 pub struct ServerDefaults {
@@ -288,12 +290,25 @@ struct UpdateSessionRequest {
     status: Option<SessionStatus>,
     model_alias: Option<String>,
     reasoning_effort: Option<String>,
-    permission_mode: Option<crate::permission::PermissionMode>,
+    /// Missing leaves the Session unchanged; explicit null restores the
+    /// Runtime default. Preserving this distinction makes presets reversible.
+    #[serde(default, deserialize_with = "deserialize_session_permission_mode")]
+    permission_mode: Option<Option<crate::permission::PermissionMode>>,
     sandbox_mode: Option<crate::permission::SandboxMode>,
     /// Empty string restores Runtime inheritance; a concrete id becomes the
     /// destination for subsequently-created Dialogue Threads only.
     default_target_id: Option<String>,
     context_sharing: Option<crate::memory::SessionContextSharing>,
+}
+
+fn deserialize_session_permission_mode<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<crate::permission::PermissionMode>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<crate::permission::PermissionMode> as serde::Deserialize>::deserialize(deserializer)
+        .map(Some)
 }
 
 #[derive(serde::Deserialize)]
@@ -753,11 +768,22 @@ impl Server {
             default_agent_id: defaults.agent_id,
             default_context_id: defaults.context_id,
             identity: ServerIdentityConfig::default(),
+            #[cfg(feature = "remote-store")]
+            host_request_gate: None,
         }
     }
 
     pub fn with_identity(mut self, identity: ServerIdentityConfig) -> Self {
         self.identity = identity;
+        self
+    }
+
+    #[cfg(feature = "remote-store")]
+    pub fn with_host_request_gate(
+        mut self,
+        gate: Arc<crate::memory::remote::host_lifecycle::HostRequestGate>,
+    ) -> Self {
+        self.host_request_gate = Some(gate);
         self
     }
 
@@ -1383,6 +1409,14 @@ impl Server {
                 post(handle_send_message),
             )
             .route(
+                "/api/sessions/:session_id/approvals",
+                get(handle_session_pending_approvals),
+            )
+            .route(
+                "/api/sessions/:session_id/approvals/:approval_id",
+                get(handle_session_approval).post(handle_session_approval_decision),
+            )
+            .route(
                 "/api/sessions/:session_id/attachment-stages",
                 get(handle_list_message_attachment_stages)
                     .post(handle_create_message_attachment_stage),
@@ -1419,6 +1453,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/events",
                 get(handle_get_session_events),
+            )
+            .route(
+                "/api/sessions/:session_id/observation-snapshot",
+                get(handle_get_session_observation_snapshot),
             )
             .route(
                 "/api/sessions/:session_id/events/:event_id/attachments/:attachment_id",
@@ -1477,6 +1515,22 @@ impl Server {
             .layer(cors)
             .with_state(Arc::clone(&state));
 
+        #[cfg(feature = "remote-store")]
+        let app = if let Some(gate) = &self.host_request_gate {
+            let admission = Router::new()
+                .route(
+                    crate::memory::remote::host_lifecycle::RESERVATION_PATH,
+                    post(handle_host_admission),
+                )
+                .with_state(Arc::clone(&state));
+            app.merge(admission)
+                .layer(middleware::from_fn(
+                    crate::memory::remote::host_lifecycle::gate_request,
+                ))
+                .layer(axum::Extension(gate.clone()))
+        } else {
+            app
+        };
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!(
             addr = %addr,
@@ -1492,6 +1546,40 @@ impl Server {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(feature = "remote-store")]
+async fn handle_host_admission(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(gate): axum::Extension<
+        Arc<crate::memory::remote::host_lifecycle::HostRequestGate>,
+    >,
+    headers: HeaderMap,
+) -> Response {
+    // A reservation is not a business permission. Only the private hosted
+    // gateway may mint one; the forwarded request still uses normal auth.
+    if !is_operator_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    match gate.reserve() {
+        Ok(Some(id)) => {
+            let mut response = Json(
+                json!({"protocol":"morphz-host-ingress/1", "reservation_id":id,
+                "expires_in_ms":crate::memory::remote::host_lifecycle::RESERVATION_TTL_MS}),
+            )
+            .into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            response
+        }
+        Ok(None) => crate::memory::remote::host_lifecycle::parking_response(),
+        Err(_) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "host admission unavailable",
+        ),
     }
 }
 
@@ -2640,7 +2728,10 @@ async fn handle_delete_provider_account(
     }
 }
 
-fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static str> {
+fn oauth_provider_setup(
+    service: &str,
+    secret_backend: &str,
+) -> Result<OAuthProviderSetup, &'static str> {
     let account_id = api_id("account");
     let credential_ref = format!(
         "MORPHZ_OAUTH_{}",
@@ -2667,7 +2758,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
                 "codex-oauth".to_string()
             }),
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Codex".to_string(),
         },
         "kimi" => OAuthProviderSetup {
@@ -2679,7 +2770,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "kimi-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Kimi".to_string(),
         },
         "claude" | "anthropic" => OAuthProviderSetup {
@@ -2691,7 +2782,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "claude-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Claude".to_string(),
         },
         "antigravity" => OAuthProviderSetup {
@@ -2703,7 +2794,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "antigravity-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "Antigravity".to_string(),
         },
         "xai" => OAuthProviderSetup {
@@ -2715,7 +2806,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             auth_adapter: "xai-oauth".to_string(),
             login_adapter: None,
             credential_ref,
-            secret_backend: Some("morphz_env_file".to_string()),
+            secret_backend: Some(secret_backend.to_string()),
             account_label: "xAI".to_string(),
         },
         _ => return Err("this OAuth service is not integrated with Runtime"),
@@ -2786,7 +2877,11 @@ async fn handle_start_oauth_provider_setup(
             "cannot determine Morphz managed configuration path",
         );
     };
-    let setup = match oauth_provider_setup(&request.service) {
+    // New OAuth accounts follow this Runtime's configured credential authority.
+    // A hosted Runtime has no local env-file backend; choosing one here would
+    // consume a provider's one-time code before credential storage can fail.
+    // Existing accounts retain their explicit backend and are not migrated.
+    let setup = match oauth_provider_setup(&request.service, state.sdk.secret_backend_id()) {
         Ok(setup) => setup,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
@@ -3455,6 +3550,73 @@ async fn handle_update_inference(
         "persistent": true,
     }))
     .into_response()
+}
+
+async fn handle_session_pending_approvals(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_pending_approvals(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_session_approval(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .session_approval(&principal.principal_id, &session_id, &approval_id)
+        .await
+    {
+        Ok(approval) => Json(approval).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_session_approval_decision(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, approval_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<crate::runtime::SessionApprovalCommand>,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .decide_session_approval(&principal, &session_id, &approval_id, command)
+        .await
+    {
+        Ok(approval) => Json(approval).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
 }
 
 async fn handle_list_approvals(
@@ -4639,6 +4801,9 @@ async fn handle_claim_edge_command(
     Path(node_id): Path<String>,
     headers: HeaderMap,
     Query(query): Query<EdgeClaimQuery>,
+    #[cfg(feature = "remote-store")] permit: Option<
+        axum::Extension<Arc<crate::memory::remote::host_lifecycle::RequestPermit>>,
+    >,
     Json(command): Json<ClaimEdgeCommand>,
 ) -> impl IntoResponse {
     let device_token = match node_device_token(&headers) {
@@ -4648,6 +4813,12 @@ async fn handle_claim_edge_command(
     let wait = std::time::Duration::from_secs(query.wait_seconds.unwrap_or(20).min(25));
     let deadline = tokio::time::Instant::now() + wait;
     loop {
+        #[cfg(feature = "remote-store")]
+        if let Some(axum::Extension(permit)) = &permit {
+            if !permit.resume_edge_poll() {
+                return crate::memory::remote::host_lifecycle::parking_response();
+            }
+        }
         match state
             .sdk
             .claim_edge_command(&node_id, &device_token, command.clone())
@@ -4659,10 +4830,24 @@ async fn handle_claim_edge_command(
                 // Local producers wake this immediately. Five seconds is the
                 // durable/cross-process fallback, replacing the previous 250ms
                 // write-poll loop without weakening crash recovery.
-                state
+                let changed = state
                     .runtime
-                    .wait_for_edge_command_change(remaining.min(std::time::Duration::from_secs(5)))
-                    .await;
+                    .wait_for_edge_command_change(remaining.min(std::time::Duration::from_secs(5)));
+                #[cfg(feature = "remote-store")]
+                if let Some(axum::Extension(permit)) = &permit {
+                    if !permit.pause_empty_edge_poll() {
+                        changed.await;
+                        continue;
+                    }
+                    tokio::select! {
+                        () = changed => {},
+                        () = permit.wait_for_parking() => {
+                            return crate::memory::remote::host_lifecycle::parking_response();
+                        }
+                    }
+                    continue;
+                }
+                changed.await;
             }
             Ok(None) => return StatusCode::NO_CONTENT.into_response(),
             Err(error) => return sdk_error_response(error),
@@ -7025,6 +7210,44 @@ async fn handle_get_session(
     }
 }
 
+/// Native Session authorization remains authoritative when a hosted gateway
+/// moves the long-lived read-only socket away from the compute process.
+async fn handle_get_session_observation_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    match model_attempt_snapshot_event(&state.runtime, &session_id).await {
+        Ok(mut snapshot) => {
+            // Attempt state is not a text-prefix snapshot. A reconnecting
+            // client must not append suffixes to an unknowable active draft.
+            snapshot
+                .payload
+                .insert("draft_recovery".into(), json!("discard_until_durable"));
+            ([(header::CACHE_CONTROL, "no-store")], Json(snapshot)).into_response()
+        }
+        Err(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Observation snapshot is unavailable",
+        ),
+    }
+}
+
 /// Returns the Session selection together with deployment availability. This
 /// is intentionally richer than the global target directory so cloud clients
 /// can distinguish "choose one of your devices" from "install morphz-edge".
@@ -7158,7 +7381,7 @@ async fn handle_update_session(
         Some(value) if value.trim().is_empty() => Some(None),
         Some(value) => Some(Some(value.trim().to_string())),
     };
-    if permission_mode == Some(crate::permission::PermissionMode::Custom) {
+    if permission_mode == Some(Some(crate::permission::PermissionMode::Custom)) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "custom permission mode requires a complete Runtime policy and is not a Session preset",
@@ -7322,7 +7545,7 @@ async fn handle_update_session(
                 .update_session(
                     &session_id,
                     SessionUpdate {
-                        permission_mode: permission_mode.map(Some),
+                        permission_mode,
                         sandbox_mode: sandbox_mode.map(Some),
                         ..Default::default()
                     },
@@ -7372,7 +7595,7 @@ async fn handle_update_session(
                 status,
                 model_alias,
                 reasoning_effort,
-                permission_mode: permission_mode.map(Some),
+                permission_mode,
                 sandbox_mode: sandbox_mode.map(Some),
                 default_target_id,
             },
@@ -8207,13 +8430,14 @@ async fn handle_cancel_session(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    if let Err(error) = state
+    let session = match state
         .sdk
         .get_session(&principal.principal_id, &session_id)
         .await
     {
-        return sdk_error_response(error);
-    }
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
     let cancelled_threads = match state
         .runtime
         .cancel_session_durable(&session_id, "Session cancelled from Dashboard")
@@ -8226,7 +8450,9 @@ async fn handle_cancel_session(
     };
     let was_running = cancelled_threads > 0;
     let payload = vec![
+        ("context_id".to_string(), json!(session.context_id)),
         ("session_id".to_string(), json!(session_id)),
+        ("principal_id".to_string(), json!(principal.principal_id)),
         ("status".to_string(), json!("cancelled")),
         ("was_running".to_string(), json!(was_running)),
         (
@@ -8633,6 +8859,9 @@ async fn handle_ws_upgrade(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
+    #[cfg(feature = "remote-store")] gate: Option<
+        axum::Extension<Arc<crate::memory::remote::host_lifecycle::HostRequestGate>>,
+    >,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -8658,13 +8887,24 @@ async fn handle_ws_upgrade(
             "a non-Operator WebSocket subscription must specify session_id",
         );
     }
-    ws.on_upgrade(move |socket| {
+    #[cfg(feature = "remote-store")]
+    let connection_permit = match gate {
+        Some(axum::Extension(gate)) => match gate.enter(true) {
+            Some(permit) => Some(permit),
+            None => return crate::memory::remote::host_lifecycle::parking_response(),
+        },
+        None => None,
+    };
+    ws.on_upgrade(move |socket| async move {
+        #[cfg(feature = "remote-store")]
+        let _connection_permit = connection_permit;
         handle_ws(
             socket,
             state,
             query.session_id,
             query.observe_model_requests,
         )
+        .await
     })
 }
 
@@ -9503,6 +9743,130 @@ mod tests {
         let path = tmp.path().to_path_buf();
         drop(tmp);
         test_state_at(&path).await
+    }
+
+    #[tokio::test]
+    async fn session_approval_http_requires_gateway_auth_before_principal_assertion() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, runtime) =
+            test_state_at_with_workers(&dir.path().join("store.sqlite"), false).await;
+        let state_mut = Arc::get_mut(&mut state).unwrap();
+        state_mut.auth_token = Some("test-admin".into());
+        state_mut.gateway_token = Some("test-gateway".into());
+        state_mut.identity.mode = ServerIdentityMode::TrustedGateway;
+        runtime
+            .ensure_agent(crate::memory::NewAgent {
+                id: "agent-test".into(),
+                title: "Test".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: "context-test".into(),
+                agent_id: "agent-test".into(),
+                title: "Test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .create_session_for_principal(
+                NewSession {
+                    id: "approval-http-session".into(),
+                    agent_id: "agent-test".into(),
+                    context_id: "context-test".into(),
+                    title: "Test".into(),
+                    parent_session_id: None,
+                    mount_kind: SessionMountKind::ExistingContext,
+                },
+                PrincipalAssertion {
+                    principal_id: "alice".into(),
+                    provider_id: "test".into(),
+                    assurance: "test".into(),
+                    display_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-morphz-principal", "alice".parse().unwrap());
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_session_approval(
+                State(state.clone()),
+                Path(("approval-http-session".into(), "any-approval".into())),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_session_approval_decision(
+                State(state.clone()),
+                Path(("approval-http-session".into(), "any-approval".into())),
+                headers.clone(),
+                Json(crate::runtime::SessionApprovalCommand {
+                    expected_revision: 1,
+                    decision: crate::runtime::SessionApprovalChoice::AllowOnce
+                })
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-gateway".parse().unwrap(),
+        );
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers.clone()
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        // A user gateway still cannot access the operator-wide list.
+        assert_eq!(
+            handle_list_approvals(
+                State(state.clone()),
+                headers.clone(),
+                Query(AuthQuery {
+                    token: None,
+                    principal_id: None,
+                    session_id: None,
+                    observe_model_requests: false,
+                })
+            )
+            .await
+            .into_response()
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        headers.insert("x-morphz-principal", "bob".parse().unwrap());
+        assert_eq!(
+            handle_session_pending_approvals(
+                State(state.clone()),
+                Path("approval-http-session".into()),
+                headers
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     async fn routed_completion_for_session(
@@ -10987,6 +11351,68 @@ mod tests {
             .await
             .is_err());
 
+        // Participant policy presets must be reversible without borrowing
+        // Dashboard authority. Explicit null restores Runtime inheritance;
+        // omission leaves the previously selected preset unchanged.
+        for (principal, patch, expected_status, expected_mode) in [
+            (
+                "site-user-1",
+                json!({"permission_mode":"request_approval"}),
+                StatusCode::OK,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-2",
+                json!({"permission_mode":null}),
+                StatusCode::FORBIDDEN,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-1",
+                json!({"title":"Main"}),
+                StatusCode::OK,
+                Some(crate::permission::PermissionMode::RequestApproval),
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":null}),
+                StatusCode::OK,
+                None,
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":null}),
+                StatusCode::OK,
+                None,
+            ),
+            (
+                "site-user-1",
+                json!({"permission_mode":"custom"}),
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+        ] {
+            let response = handle_update_session(
+                State(Arc::clone(&state)),
+                Path("gateway-session-a".into()),
+                gateway_headers(Some(principal)),
+                Query(AuthQuery::default()),
+                Json(serde_json::from_value(patch).unwrap()),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                runtime
+                    .get_session("gateway-session-a")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .permission_mode,
+                expected_mode
+            );
+        }
+
         // A Dashboard Operator may change the Session's Evaluation model as
         // control-plane policy without impersonating its participant.
         let operator_model_update = handle_update_session(
@@ -12451,16 +12877,30 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_oauth_bootstrap_catalog_and_start_cover_all_supported_services() {
+        assert_oauth_bootstrap_backend("morphz_env_file").await;
+    }
+
+    #[tokio::test]
+    async fn dashboard_oauth_bootstrap_uses_runtime_backend_without_env_backend() {
+        assert_oauth_bootstrap_backend("web_test_memory").await;
+    }
+
+    async fn assert_oauth_bootstrap_backend(backend_id: &str) {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
         let env_path = tmp.path().join(".env");
+        let backend: Arc<dyn SecretValueBackend> = if backend_id == "morphz_env_file" {
+            Arc::new(crate::secret_store::HostEnvFileSecretBackend::new(
+                &env_path,
+            ))
+        } else {
+            Arc::new(WebTestSecretBackend::default())
+        };
         let secret_store = Arc::new(
             SecretStore::with_backends(
                 tmp.path().join("managed-secrets.json"),
-                "morphz_env_file",
-                vec![Arc::new(
-                    crate::secret_store::HostEnvFileSecretBackend::new(&env_path),
-                )],
+                backend_id,
+                vec![backend],
             )
             .unwrap(),
         );
@@ -12669,7 +13109,14 @@ mod tests {
         );
         for account_id in authenticated_accounts {
             let account = snapshot.auth_accounts.get(&account_id).unwrap();
+            assert_eq!(account.config.secret_backend.as_deref(), Some(backend_id));
             assert!(account.authenticated, "{account_id} was not authenticated");
+        }
+        if backend_id != "morphz_env_file" {
+            assert!(
+                !env_path.exists(),
+                "OAuth must not create an unconfigured env backend"
+            );
         }
     }
 
@@ -12781,7 +13228,7 @@ mod tests {
         let (state, runtime) =
             test_state_at_with_workers_and_auth(&database_path, false, Some(registry)).await;
         let managed_path = state.managed_config_path.clone().unwrap();
-        let setup = oauth_provider_setup("codex").unwrap();
+        let setup = oauth_provider_setup("codex", state.sdk.secret_backend_id()).unwrap();
         let legacy_model = "invented-default-model";
         let legacy_route_id = "invented-default-route";
         let mut provider = ProviderInstanceConfig {
@@ -12985,6 +13432,15 @@ mod tests {
 
         let snapshot = runtime.provider_control_snapshot().await.unwrap();
         let account = &snapshot.auth_accounts["oauth-account"];
+        let diagnostics = snapshot.oauth_refresh.as_ref().unwrap();
+        assert!(diagnostics.instance_id.is_some());
+        assert_eq!(diagnostics.requests_started, 0); // Login is not a refresh.
+        assert!(!diagnostics.incomplete);
+        let mut older_snapshot = serde_json::to_value(&snapshot).unwrap();
+        older_snapshot.as_object_mut().unwrap().remove("oauth_refresh");
+        let older: crate::provider::control::ProviderControlSnapshot =
+            serde_json::from_value(older_snapshot).unwrap();
+        assert!(older.oauth_refresh.is_none()); // Missing must not mean zero.
         assert!(account.authenticated);
         assert_eq!(
             account
@@ -13856,7 +14312,7 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
-                permission_mode: Some(crate::permission::PermissionMode::FullAccess),
+                permission_mode: Some(Some(crate::permission::PermissionMode::FullAccess)),
                 sandbox_mode: None,
                 default_target_id: None,
                 context_sharing: None,
@@ -14589,6 +15045,43 @@ account = "xai-account"
             consumed.consumed_event_id.as_deref(),
             Some(user_events[0].id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn session_cancel_notification_preserves_authorized_context_route() {
+        let (state, runtime) = test_state().await;
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "api-cancel-route".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Cancellation route".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut events = runtime.subscribe("chat/cancelled", 4);
+        let response = handle_cancel_session(
+            State(state),
+            Path(session.id().to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["context_id"], runtime.identity().context_id);
+        assert_eq!(event.payload["session_id"], session.id());
+        assert_eq!(
+            event.payload["principal_id"],
+            runtime.identity().principal_id
+        );
+        assert_eq!(event.payload["was_running"], false);
     }
 
     #[tokio::test]

@@ -2483,68 +2483,69 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
         request: &crate::artifact::ArtifactTransferRequest,
     ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
         request.validate()?;
-        let (direction, channel, command_target, provider_node_id) =
-            if routes.source.backend_kind == ExecutionTargetKind::InProcessLocal {
-                let source = self
-                    .authorize_runtime_endpoint(request, crate::permission::FilesystemAccess::Read)
-                    .await?;
-                let stage = self
-                    .stages
-                    .prepare_stage_path(
-                        &job.id,
-                        crate::artifact::ArtifactTransferStageKind::RuntimeSource,
-                    )
-                    .await?;
-                let staged = spool_local_artifact(&source, &stage).await?;
-                if request
-                    .expected_source_digest
-                    .as_deref()
-                    .is_some_and(|expected| expected != staged.logical_digest())
-                {
-                    return Err(format!(
-                        "Artifact source digest conflict: expected '{}', actual '{}'",
-                        request
-                            .expected_source_digest
-                            .as_deref()
-                            .unwrap_or_default(),
-                        staged.logical_digest()
-                    )
-                    .into());
-                }
-                let edge = &routes.destination;
-                (
-                    EdgeArtifactDataDirection::RuntimeToEdge,
-                    EdgeArtifactDataChannel {
-                        direction: EdgeArtifactDataDirection::RuntimeToEdge,
-                        payload_kind: staged.kind.into(),
-                        expected_digest: Some(staged.payload_digest),
-                        size_bytes: Some(staged.payload_size_bytes),
-                    },
-                    edge.target_id.clone(),
-                    edge.provider_node_id
-                        .clone()
-                        .ok_or("Edge destination Route is missing provider_node_id")?,
+        let (direction, channel, command_target, provider_node_id) = if routes.source.backend_kind
+            == ExecutionTargetKind::InProcessLocal
+        {
+            let source = self
+                .authorize_runtime_endpoint(request, crate::permission::FilesystemAccess::Read)
+                .await?;
+            let stage = self
+                .stages
+                .prepare_stage_path(
+                    &job.id,
+                    crate::artifact::ArtifactTransferStageKind::RuntimeSource,
                 )
-            } else {
-                let edge = &routes.source;
-                (
-                    EdgeArtifactDataDirection::EdgeToRuntime,
-                    EdgeArtifactDataChannel {
-                        direction: EdgeArtifactDataDirection::EdgeToRuntime,
-                        payload_kind: EdgeArtifactPayloadKind::Detect,
-                        // The target-local Artifact digest is not necessarily
-                        // the digest of its wire representation (directories
-                        // use a canonical archive), so it is validated from
-                        // the Tool Receipt after materialization.
-                        expected_digest: None,
-                        size_bytes: None,
-                    },
-                    edge.target_id.clone(),
-                    edge.provider_node_id
-                        .clone()
-                        .ok_or("Edge source Route is missing provider_node_id")?,
+                .await?;
+            let staged = spool_local_artifact(&source, &stage, &self.permissions.profile()).await?;
+            if request
+                .expected_source_digest
+                .as_deref()
+                .is_some_and(|expected| expected != staged.logical_digest())
+            {
+                return Err(format!(
+                    "Artifact source digest conflict: expected '{}', actual '{}'",
+                    request
+                        .expected_source_digest
+                        .as_deref()
+                        .unwrap_or_default(),
+                    staged.logical_digest()
                 )
-            };
+                .into());
+            }
+            let edge = &routes.destination;
+            (
+                EdgeArtifactDataDirection::RuntimeToEdge,
+                EdgeArtifactDataChannel {
+                    direction: EdgeArtifactDataDirection::RuntimeToEdge,
+                    payload_kind: staged.kind.into(),
+                    expected_digest: Some(staged.payload_digest),
+                    size_bytes: Some(staged.payload_size_bytes),
+                },
+                edge.target_id.clone(),
+                edge.provider_node_id
+                    .clone()
+                    .ok_or("Edge destination Route is missing provider_node_id")?,
+            )
+        } else {
+            let edge = &routes.source;
+            (
+                EdgeArtifactDataDirection::EdgeToRuntime,
+                EdgeArtifactDataChannel {
+                    direction: EdgeArtifactDataDirection::EdgeToRuntime,
+                    payload_kind: EdgeArtifactPayloadKind::Detect,
+                    // The target-local Artifact digest is not necessarily
+                    // the digest of its wire representation (directories
+                    // use a canonical archive), so it is validated from
+                    // the Tool Receipt after materialization.
+                    expected_digest: None,
+                    size_bytes: None,
+                },
+                edge.target_id.clone(),
+                edge.provider_node_id
+                    .clone()
+                    .ok_or("Edge source Route is missing provider_node_id")?,
+            )
+        };
         let mut route = edge_artifact_transfer_route_from_job(job, routes)?;
         attach_edge_artifact_data_channel(&mut route, &channel)?;
         self.store
@@ -2589,7 +2590,14 @@ impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
             // its canonical archive, so publication must not compare those
             // two different representations.
             publish_request.expected_source_digest = None;
-            publish_spooled_local_artifact(&publish_request, &stage, &destination, kind).await?;
+            publish_spooled_local_artifact(
+                &publish_request,
+                &stage,
+                &destination,
+                kind,
+                &self.permissions.profile(),
+            )
+            .await?;
             receipt.source.location = request.source.clone();
             receipt.destination.location = request.destination.clone();
             receipt.source.content_digest = Some(logical_digest.clone());
@@ -3318,7 +3326,7 @@ impl ArtifactTransferExecutionBackend for ManagedSshBackend {
                     &request.source.path,
                     crate::permission::FilesystemAccess::Read,
                 )?;
-                spool_local_artifact(&source, &spool_path).await?
+                spool_local_artifact(&source, &spool_path, &self.permissions.profile()).await?
             }
             ExecutionTargetKind::ManagedSsh => {
                 let endpoint = self.endpoint_for_route(&routes.source)?;
@@ -3361,8 +3369,14 @@ impl ArtifactTransferExecutionBackend for ManagedSshBackend {
                     &request.destination.path,
                     crate::permission::FilesystemAccess::Write,
                 )?;
-                publish_spooled_local_artifact(request, &spool_path, &destination, staged.kind)
-                    .await?;
+                publish_spooled_local_artifact(
+                    request,
+                    &spool_path,
+                    &destination,
+                    staged.kind,
+                    &self.permissions.profile(),
+                )
+                .await?;
             }
             ExecutionTargetKind::ManagedSsh => {
                 let endpoint = self.endpoint_for_route(&routes.destination)?;
@@ -3731,7 +3745,9 @@ async fn reusable_staged_artifact(
 async fn spool_local_artifact(
     source: &std::path::Path,
     spool: &std::path::Path,
+    profile: &crate::permission::PermissionProfile,
 ) -> Result<StagedArtifact, TargetExecutionError> {
+    profile.enforce_transfer_tree(source, source)?;
     if let Some(artifact) = reusable_staged_artifact(spool).await? {
         return Ok(artifact);
     }
@@ -4148,11 +4164,18 @@ async fn publish_spooled_local_artifact(
     spool: &std::path::Path,
     destination: &std::path::Path,
     kind: StagedArtifactKind,
+    profile: &crate::permission::PermissionProfile,
 ) -> Result<(), TargetExecutionError> {
+    if destination.exists() {
+        profile.enforce_transfer_tree(destination, destination)?;
+    }
     match kind {
-        StagedArtifactKind::File => publish_spooled_local_file(request, spool, destination).await,
+        StagedArtifactKind::File => {
+            profile.enforce_transfer_tree(spool, destination)?;
+            publish_spooled_local_file(request, spool, destination).await
+        }
         StagedArtifactKind::DirectoryArchive => {
-            publish_spooled_local_directory(request, spool, destination).await
+            publish_spooled_local_directory(request, spool, destination, profile).await
         }
     }
 }
@@ -4216,6 +4239,7 @@ async fn publish_spooled_local_directory(
     request: &crate::artifact::ArtifactTransferRequest,
     spool: &Path,
     destination: &Path,
+    profile: &crate::permission::PermissionProfile,
 ) -> Result<(), TargetExecutionError> {
     let parent = destination
         .parent()
@@ -4264,6 +4288,7 @@ async fn publish_spooled_local_directory(
     tokio::task::spawn_blocking(move || extract_directory_archive(&archive, &tree))
         .await
         .map_err(|error| format!("Artifact-directory extract worker failed: {error}"))??;
+    profile.enforce_transfer_tree(&temporary, destination)?;
     crate::artifact::report_artifact_bytes("publishing_directory", 1, Some(1));
 
     crate::artifact::mark_artifact_transfer_side_effect().await?;
@@ -5200,6 +5225,12 @@ impl ExecutionTargetDispatcher {
         if target.status == ExecutionTargetStatus::Disabled {
             return Err(format!("Execution Target '{}' is disabled", target.id).into());
         }
+        if target.id == DEFAULT_EXECUTION_TARGET_ID
+            && (!target.status.accepts_jobs()
+                || !target.capabilities.iter().any(|name| name == tool.name()))
+        {
+            return Err(Box::new(ExecutionTargetRequired));
+        }
         self.ensure_target_authorized(
             &target,
             job.initiating_principal_id.as_deref(),
@@ -5293,6 +5324,13 @@ impl ExecutionTargetDispatcher {
             .into());
         }
         if !target.capabilities.iter().any(|name| name == tool_name) {
+            if target.id == DEFAULT_EXECUTION_TARGET_ID
+                && target.metadata["availability"] == "artifact_transfer_only"
+            {
+                // Hosting uploaded files must not make this service host a
+                // fallback computer for shell or ordinary filesystem tools.
+                return Err(Box::new(ExecutionTargetRequired));
+            }
             return Err(format!(
                 "Execution Target '{}' has not published tool capability '{}'",
                 target.id, tool_name
@@ -5394,6 +5432,15 @@ impl ExecutionTargetDispatcher {
             .ok_or_else(|| format!("Execution Target '{}' does not exist", route.target_id))?;
         if target.status == ExecutionTargetStatus::Disabled {
             return Err(format!("Execution Target '{}' is disabled", target.id).into());
+        }
+        if target.id == DEFAULT_EXECUTION_TARGET_ID
+            && (!target.status.accepts_jobs()
+                || !target
+                    .capabilities
+                    .iter()
+                    .any(|name| name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME))
+        {
+            return Err(Box::new(ExecutionTargetRequired));
         }
         self.ensure_target_authorized(&target, principal_id, agent_id, context_id, thread_id)
             .await?;
@@ -8419,7 +8466,14 @@ mod tests {
             media_type: None,
             origin: None,
         };
-        publish_spooled_local_directory(&request, &first_archive, &destination)
+        let profile = crate::permission::PermissionProfile::from_config(
+            &crate::permission::PermissionConfig {
+                workspace_root: temp.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        publish_spooled_local_directory(&request, &first_archive, &destination, &profile)
             .await
             .unwrap();
         assert_eq!(
@@ -8429,7 +8483,7 @@ mod tests {
             b"leaf"
         );
         // A retry after publication reconciles by canonical content digest.
-        publish_spooled_local_directory(&request, &first_archive, &destination)
+        publish_spooled_local_directory(&request, &first_archive, &destination, &profile)
             .await
             .unwrap();
     }

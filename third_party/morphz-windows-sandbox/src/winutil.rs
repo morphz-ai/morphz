@@ -22,56 +22,7 @@ pub fn to_wide<S: AsRef<OsStr>>(s: S) -> Vec<u16> {
     v
 }
 
-/// Quote a single Windows command-line argument following the rules used by
-/// CommandLineToArgvW/CRT so that spaces, quotes, and backslashes are preserved.
-/// Reference behavior matches Rust std::process::Command on Windows.
-#[cfg(target_os = "windows")]
-pub fn quote_windows_arg(arg: &str) -> String {
-    let needs_quotes = arg.is_empty()
-        || arg
-            .chars()
-            .any(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '"'));
-    if !needs_quotes {
-        return arg.to_string();
-    }
-
-    let mut quoted = String::with_capacity(arg.len() + 2);
-    quoted.push('"');
-    let mut backslashes = 0;
-    for ch in arg.chars() {
-        match ch {
-            '\\' => {
-                backslashes += 1;
-            }
-            '"' => {
-                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
-                quoted.push('"');
-                backslashes = 0;
-            }
-            _ => {
-                if backslashes > 0 {
-                    quoted.push_str(&"\\".repeat(backslashes));
-                    backslashes = 0;
-                }
-                quoted.push(ch);
-            }
-        }
-    }
-    if backslashes > 0 {
-        quoted.push_str(&"\\".repeat(backslashes * 2));
-    }
-    quoted.push('"');
-    quoted
-}
-
-/// Build a Windows command line for CreateProcess-style APIs.
-#[cfg(target_os = "windows")]
-pub fn argv_to_command_line(argv: &[String]) -> String {
-    argv.iter()
-        .map(|arg| quote_windows_arg(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+pub use crate::command_line::{argv_to_command_line, quote_windows_arg};
 
 // Produce a readable description for a Win32 error code.
 pub fn format_last_error(err: i32) -> String {
@@ -211,7 +162,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn argv_to_command_line_quotes_each_argument_independently() {
+    fn argv_to_command_line_preserves_cmd_script_tail() {
         let argv = vec![
             "cmd.exe".to_string(),
             "/c".to_string(),
@@ -221,7 +172,7 @@ mod tests {
 
         assert_eq!(
             argv_to_command_line(&argv),
-            "cmd.exe /c \"\\\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\\\" -NoProfile -EncodedCommand abc==\""
+            "cmd.exe /S /c \"\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoProfile -EncodedCommand abc==\""
         );
     }
 

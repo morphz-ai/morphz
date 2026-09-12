@@ -3,6 +3,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 #[cfg(any(target_os = "windows", test))]
+mod command_line;
+#[cfg(any(target_os = "windows", test))]
 mod ssh_config_dependencies;
 
 use std::fmt;

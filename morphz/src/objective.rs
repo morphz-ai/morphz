@@ -2549,6 +2549,14 @@ impl ObjectiveSupervisor {
             if !full_reconcile {
                 return Ok(());
             }
+            if self
+                .store
+                .get_objective_approval_wait(&objective.id)
+                .await?
+                .is_some()
+            {
+                return self.reconcile(objective).await;
+            }
             let orphaned_without_evaluation = objective.active_evaluation_id.is_none()
                 && Utc::now() - objective.updated_at >= OBJECTIVE_ORPHAN_SCHEDULE_GRACE;
             if objective.wait_condition.is_some()
@@ -2633,8 +2641,9 @@ impl ObjectiveSupervisor {
         evaluation_id: &str,
         objective_control_receipt: bool,
         activation_id: &str,
+        claimed_by: &str,
     ) -> Result<bool, DynError> {
-        let Some(objective) = self.store.get_objective(objective_id).await? else {
+        let Some(mut objective) = self.store.get_objective(objective_id).await? else {
             return Ok(false);
         };
         if objective_control_receipt
@@ -2644,6 +2653,47 @@ impl ObjectiveSupervisor {
             )
         {
             return Ok(true);
+        }
+        if self.activation_store.is_some() {
+            let mut retry_delay = std::time::Duration::from_millis(25);
+            let admission = loop {
+                let result = self
+                    .store
+                    .admit_objective_activation(crate::memory::ObjectiveActivationAdmission {
+                        objective_id: objective_id.to_owned(),
+                        evaluation_id: evaluation_id.to_owned(),
+                        activation_id: activation_id.to_owned(),
+                        claimed_by: claimed_by.to_owned(),
+                        lease_expires_at: Utc::now() + self.lease_duration,
+                        pending_dependency_id: self
+                            .evaluations
+                            .get_for_activation(activation_id)
+                            .and_then(|binding| binding.pending_dependency_id),
+                    })
+                    .await;
+                match result {
+                    Err(error)
+                        if error
+                            .downcast_ref::<crate::memory::ApprovalOwnershipContended>()
+                            .is_some() =>
+                    {
+                        // The native transaction rolled back. Keep the live
+                        // Activation/route intact; repeat all persisted owner
+                        // and dependency checks after contention subsides.
+                        // The existing physical lease timer still monitors
+                        // this admitted Activation while it waits here.
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+                    }
+                    result => break result?,
+                }
+            };
+            match admission {
+                ObjectiveMutation::Updated(current) => objective = current,
+                ObjectiveMutation::Conflict { .. } | ObjectiveMutation::NotFound => {
+                    return Ok(false)
+                }
+            }
         }
         let now = Utc::now();
         let Some(current_lease_expires_at) = objective.evaluation_lease_expires_at else {
@@ -3262,7 +3312,7 @@ impl ObjectiveSupervisor {
             // An exact reply releases a wait and claims its routed Evaluation.
             // Keep reconciliation/scheduling out of that intermediate state;
             // ordinary interrupts still preserve the wait and do not need it.
-            let _reply_guard = if event
+            let reply_guard = if event
                 .payload
                 .get("reply_to_request_id")
                 .and_then(serde_json::Value::as_str)
@@ -3331,11 +3381,51 @@ impl ObjectiveSupervisor {
                 if crate::steering::input_request_id(&objective).as_deref() != Some(request_id) {
                     return Ok(RoutedObjectiveEventDisposition::Suppressed);
                 }
-                self.satisfy_wait_dependency(&objective, wait, &event.id)
-                    .await?;
+                let (kind, key) = objective_wait_dependency_key(wait);
+                let dependency = self
+                    .current_scheduler_dependencies(&objective)
+                    .await?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|dependency| {
+                        dependency.required
+                            && dependency.status == SchedulerDependencyStatus::Pending
+                            && dependency.dependency_kind == kind
+                            && dependency.dependency_id == key
+                    });
+                let Some(dependency) = dependency else {
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                };
+                // Reserve this exact reply's Evaluation before satisfying the
+                // question. Otherwise reconciliation can observe a runnable
+                // gap, claim a different Evaluation and suppress the reply.
+                let Some(claimed) = self
+                    .claim_routed_evaluation_locked(
+                        reply_guard.as_ref().expect("exact replies hold the schedule lock"),
+                        &objective,
+                        &event.id,
+                        Some(activation_id),
+                        false,
+                        Some(&dependency.id),
+                    )
+                    .await?
+                else {
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                };
+                let evaluation_id = claimed
+                    .active_evaluation_id
+                    .as_deref()
+                    .ok_or("Question reply claim has no Evaluation identity")?;
+                if !self
+                    .satisfy_wait_dependency(&claimed, wait, &event.id)
+                    .await?
+                {
+                    self.yield_to_directed_input(activation_id).await?;
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                }
                 let mutation = self
                     .transition_objective(
-                        &objective,
+                        &claimed,
                         ObjectiveStatus::Active,
                         None,
                         Some("The exact pending user question received its reply"),
@@ -3344,19 +3434,30 @@ impl ObjectiveSupervisor {
                     )
                     .await?;
                 let ObjectiveMutation::Updated(woken) = mutation else {
+                    self.yield_to_directed_input(activation_id).await?;
                     return Ok(RoutedObjectiveEventDisposition::Suppressed);
                 };
-                return Ok(
-                    if self
-                        .claim_routed_evaluation(&woken, &event.id, Some(activation_id), true, None)
-                        .await?
-                        .is_some()
-                    {
-                        RoutedObjectiveEventDisposition::Admitted
-                    } else {
-                        RoutedObjectiveEventDisposition::Suppressed
-                    },
-                );
+                // Only the consumed question fence is removed. Keep the
+                // same Evaluation/Activation instead of claiming a successor.
+                if let Some(mut binding) = self.evaluations.by_objective.get_mut(&woken.id) {
+                    if binding.evaluation_id == evaluation_id {
+                        binding.revision = woken.revision;
+                        binding.pending_dependency_id = None;
+                    }
+                }
+                if let Some(mut binding) = self
+                    .evaluations
+                    .by_activation
+                    .get_mut(canonical_activation_id(activation_id))
+                {
+                    if binding.evaluation_id == evaluation_id {
+                        binding.revision = woken.revision;
+                        binding.pending_dependency_id = None;
+                    }
+                }
+                self.publish_state_event("evaluation_started", &woken, Some(&event.id))
+                    .await?;
+                return Ok(RoutedObjectiveEventDisposition::Admitted);
             }
             let (dependency_kind, dependency_key) = objective_wait_dependency_key(wait);
             let dependency = self
@@ -3904,6 +4005,41 @@ impl ObjectiveSupervisor {
             self.remove_external_wait_subscription(&objective.id);
             return Ok(());
         }
+        if let Some(wait) = self
+            .store
+            .get_objective_approval_wait(&objective.id)
+            .await?
+        {
+            let store = self
+                .activation_store
+                .as_ref()
+                .ok_or("Objective approval recovery requires ActivationStore")?;
+            let owner = store
+                .get_thread_activation(&wait.activation_id)
+                .await?
+                .ok_or("Objective approval checkpoint lost its durable owner")?;
+            if owner.status.is_terminal() {
+                // Do not lock Objective from an Activation cleanup trigger:
+                // that would reverse the normal Objective -> Thread lock order.
+                self.revoke_local_evaluation(&objective).await?;
+                if let ObjectiveMutation::Updated(current) = self
+                    .finish_objective_evaluation(
+                        &objective.id,
+                        &wait.evaluation_id,
+                        0,
+                        0,
+                        "approval-owner-terminal",
+                    )
+                    .await?
+                {
+                    self.clear_local_binding(&current);
+                    Box::pin(self.reconcile(current)).await?;
+                }
+            } else {
+                self.cancel_lease_timer(&objective.id).await?;
+            }
+            return Ok(());
+        }
         let mut dependencies_waiting = false;
         if let Some(current_dependencies) = self.current_scheduler_dependencies(&objective).await? {
             if !current_dependencies.is_empty() {
@@ -3923,6 +4059,9 @@ impl ObjectiveSupervisor {
                     }
                     ObjectiveReadiness::Leased { .. } => {
                         // Lease handling below owns timer renewal/recovery.
+                    }
+                    ObjectiveReadiness::Suspended { .. } => {
+                        return Err("Suspended Objective Evaluation is missing its durable approval checkpoint".into());
                     }
                     ObjectiveReadiness::Runnable => {
                         if objective.wait_condition.is_some() {
@@ -4361,6 +4500,81 @@ impl ObjectiveSupervisor {
         Ok(true)
     }
 
+    /// A creation-prelude Dialogue owns the first Evaluation but is not the
+    /// Objective's primary Thread. Only that coordinator may hand off here;
+    /// infer/child owners must deliver their real results to the coordinator.
+    pub(crate) async fn directed_input_thread(
+        &self,
+        activation: &crate::memory::ThreadActivationRecord,
+    ) -> Result<Option<crate::memory::ThreadRecord>, DynError> {
+        let Some(binding) = self.evaluations.get_for_activation(&activation.id) else {
+            return Ok(None);
+        };
+        let Some(threads) = &self.thread_store else {
+            return Ok(None);
+        };
+        let Some(source) = threads.get_thread_by_root(&activation.root_turn_id).await? else {
+            return Ok(None);
+        };
+        // A dialogue is promoted to Execution after selecting physical tools.
+        // Its immutable user root, not the display kind, identifies the
+        // coordinator. Attached/infer Threads must finish their real result.
+        if !matches!(
+            source.kind,
+            ThreadKind::DialogueTurn | ThreadKind::Execution
+        ) || source.executor_kind != "self"
+            || source.generation != activation.generation
+            || source.supervision.origin_evaluation_id.is_some()
+            || source.supervision.parent_thread_id.is_some()
+        {
+            return Ok(None);
+        }
+        let root_event = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(source.root_turn_id.clone()),
+                context_id: Some(source.context_id.clone()),
+                session_id: Some(source.session_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        if !root_event.as_ref().is_some_and(crate::event::is_input_event) {
+            return Ok(None);
+        }
+        let Some(objective) = self.store.get_objective(&binding.objective_id).await? else {
+            return Ok(None);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || objective.active_evaluation_id.as_deref() != Some(binding.evaluation_id.as_str())
+            || objective.agent_id != activation.agent_id
+            || objective.context_id != activation.context_id
+            || objective.coordinator_session_id != activation.session_id
+        {
+            return Ok(None);
+        }
+        let root =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let Some(target) = threads.get_thread_by_root(&root).await? else {
+            return Ok(None);
+        };
+        if target.kind != ThreadKind::Execution
+            || target.lifecycle != crate::memory::ThreadLifecycle::Open
+            || target.control_state != crate::memory::ThreadControlState::Active
+            || target.agent_id != objective.agent_id
+            || target.context_id != objective.context_id
+            || target.session_id != objective.coordinator_session_id
+            || target.supervision.supervisor_kind != ThreadSupervisorKind::Objective
+            || target.supervision.supervisor_id.as_deref() != Some(objective.id.as_str())
+            || target.supervision.generation != objective.generation
+            || target.supervision.origin_evaluation_id.is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(target))
+    }
+
     /// Release only the current cognitive slice at a side-effect-free model
     /// boundary. The already-durable input Signal owns the next activation;
     /// do not synthesize another continuation or cancel any physical Job.
@@ -4384,6 +4598,33 @@ impl ObjectiveSupervisor {
 
     async fn claim_routed_evaluation(
         self: &Arc<Self>,
+        objective: &ObjectiveRecord,
+        source_event_id: &str,
+        activation_id: Option<&str>,
+        publish_started: bool,
+        pending_dependency_id: Option<&str>,
+    ) -> Result<Option<ObjectiveRecord>, DynError> {
+        // Share the automatic scheduler's local claim lane. Its temporary
+        // binding must not suppress a routed input while its durable claim is
+        // about to lose to that same input's reservation.
+        let guard = self.lock_schedule(&objective.id).await;
+        self.claim_routed_evaluation_locked(
+            &guard,
+            objective,
+            source_event_id,
+            activation_id,
+            publish_started,
+            pending_dependency_id,
+        )
+        .await
+    }
+
+    // Exact question replies already hold this lane across wait consumption.
+    // Reuse that guard rather than reacquiring the non-reentrant mutex; all
+    // other callers enter through the locking wrapper above.
+    async fn claim_routed_evaluation_locked(
+        self: &Arc<Self>,
+        _guard: &tokio::sync::OwnedMutexGuard<()>,
         objective: &ObjectiveRecord,
         source_event_id: &str,
         activation_id: Option<&str>,
@@ -4474,6 +4715,14 @@ impl ObjectiveSupervisor {
         let Some(objective) = self.store.get_objective(&objective_id).await? else {
             return Ok(());
         };
+        if self
+            .store
+            .get_objective_approval_wait(&objective.id)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
         if objective.status != ObjectiveStatus::Active
             || (self.scheduler_dependencies.is_none() && objective.wait_condition.is_some())
         {
@@ -4914,55 +5163,114 @@ impl ObjectiveSupervisor {
         }
     }
 
+    /// Recover exact Evaluation ownership from immutable routes, including a
+    /// creation prelude saved in an approval checkpoint. Control and recovery
+    /// share this lookup; neither infers ownership from Session membership.
+    pub(crate) async fn evaluation_activation_ids(
+        &self,
+        objective: &ObjectiveRecord,
+        evaluation_id: &str,
+    ) -> Result<std::collections::HashSet<String>, DynError> {
+        let mut activation_ids = self
+            .evaluations
+            .activation_ids_for_evaluation(&objective.id, evaluation_id)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        if let Some(store) = self.activation_store.as_ref() {
+            // The registry is deliberately process-local, so it is empty
+            // after a Runtime restart. Recover the same exact fencing
+            // relation from each nonterminal Activation's immutable
+            // Trigger Event before claiming a replacement Evaluation.
+            // Event-id reads are indexed. This is an ownership control
+            // boundary, not the hot scheduler loop.
+            for activation in store
+                .list_context_thread_activations(&objective.context_id, false)
+                .await?
+            {
+                if activation_ids.contains(&activation.id)
+                    || activation.agent_id != objective.agent_id
+                    || activation.session_id != objective.coordinator_session_id
+                {
+                    continue;
+                }
+                let mut routed = self
+                    .audit_store
+                    .query(QueryFilter {
+                        event_id: Some(activation.trigger_event_id.clone()),
+                        ..QueryFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == activation.trigger_event_id)
+                    .is_some_and(|event| {
+                        event
+                            .payload
+                            .get("objective_id")
+                            .and_then(|value| value.as_str())
+                            == Some(objective.id.as_str())
+                            && event
+                                .payload
+                                .get("objective_evaluation_id")
+                                .and_then(|value| value.as_str())
+                                == Some(evaluation_id)
+                    });
+                if !routed {
+                    if let Some(wait) = store
+                        .get_thread_activation_approval_wait(&activation.id)
+                        .await?
+                    {
+                        let calls = self
+                            .audit_store
+                            .query(QueryFilter {
+                                event_id: Some(wait.assistant_call_event_id),
+                                context_id: Some(activation.context_id.clone()),
+                                ..Default::default()
+                            })
+                            .await?;
+                        if let Some(call) = calls.first() {
+                            let outputs = self
+                                .audit_store
+                                .query(QueryFilter {
+                                    context_id: Some(activation.context_id.clone()),
+                                    activation_id: Some(activation.id.clone()),
+                                    topic: Some("chat/tool_output".into()),
+                                    ..Default::default()
+                                })
+                                .await?;
+                            routed = crate::memory::approval_checkpoint_objective_binding(
+                                call, &outputs,
+                            )?
+                            .is_some_and(|binding| {
+                                binding
+                                    .payload
+                                    .get("objective_id")
+                                    .and_then(JsonValue::as_str)
+                                    == Some(objective.id.as_str())
+                                    && binding
+                                        .payload
+                                        .get("objective_evaluation_id")
+                                        .and_then(JsonValue::as_str)
+                                        == Some(evaluation_id)
+                            });
+                        }
+                    }
+                }
+                if routed {
+                    activation_ids.insert(activation.id);
+                }
+            }
+        }
+        Ok(activation_ids)
+    }
+
     async fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) -> Result<(), DynError> {
         if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
-            let mut activation_ids = self
-                .evaluations
-                .activation_ids_for_evaluation(&objective.id, evaluation_id)
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>();
+            let activation_ids = self
+                .evaluation_activation_ids(objective, evaluation_id)
+                .await?;
             self.evaluations
                 .cancel_evaluation(&objective.id, evaluation_id);
             if let Some(store) = self.activation_store.as_ref() {
-                // The registry is deliberately process-local, so it is empty
-                // after a Runtime restart. Recover the same exact fencing
-                // relation from each nonterminal Activation's immutable
-                // Trigger Event before claiming a replacement Evaluation.
-                // Event-id reads are indexed and this path runs only at an
-                // expired Objective lease boundary, not in the hot scheduler
-                // loop.
-                for activation in store
-                    .list_context_thread_activations(&objective.context_id, false)
-                    .await?
-                {
-                    if activation_ids.contains(&activation.id) {
-                        continue;
-                    }
-                    let routed = self
-                        .audit_store
-                        .query(QueryFilter {
-                            event_id: Some(activation.trigger_event_id.clone()),
-                            ..QueryFilter::default()
-                        })
-                        .await?
-                        .into_iter()
-                        .find(|event| event.id == activation.trigger_event_id)
-                        .is_some_and(|event| {
-                            event
-                                .payload
-                                .get("objective_id")
-                                .and_then(|value| value.as_str())
-                                == Some(objective.id.as_str())
-                                && event
-                                    .payload
-                                    .get("objective_evaluation_id")
-                                    .and_then(|value| value.as_str())
-                                    == Some(evaluation_id)
-                        });
-                    if routed {
-                        activation_ids.insert(activation.id);
-                    }
-                }
                 for activation_id in activation_ids {
                     // The Orchestrator may observe the cancellation tombstone
                     // and finish concurrently. CAS conflicts are therefore
@@ -5941,6 +6249,7 @@ mod tests {
         let (started, ready) = tokio::sync::oneshot::channel();
         let mut routing = {
             let supervisor = supervisor.clone();
+            let wake = wake.clone();
             tokio::spawn(async move {
                 let _ = started.send(());
                 supervisor
@@ -5977,6 +6286,29 @@ mod tests {
         assert_eq!(binding.objective_id, resumed.id);
         assert_eq!(binding.evaluation_id, evaluation_id);
         assert_eq!(binding.revision, resumed.revision);
+        assert!(binding.pending_dependency_id.is_none());
+        assert_eq!(
+            resumed.continuation_sequence,
+            waiting.continuation_sequence + 1,
+            "the answer reserves one Evaluation, not a background successor"
+        );
+        let _ = supervisor
+            .prepare_routed_event(&wake, "activation-duplicate-reply")
+            .await
+            .unwrap();
+        assert!(evaluations
+            .get_for_activation("activation-duplicate-reply")
+            .is_none());
+        assert_eq!(
+            store
+                .get_objective(&waiting.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .active_evaluation_id,
+            resumed.active_evaluation_id,
+            "replaying the exact answer cannot replace its Evaluation"
+        );
         let unchanged = store.get_objective(&sibling.id).await.unwrap().unwrap();
         assert_eq!(unchanged.wait_condition, sibling_wait);
         assert!(unchanged.active_evaluation_id.is_none());
@@ -6072,7 +6404,14 @@ mod tests {
             panic!("Reconciliation raced the reply's revision")
         };
         let claimed = supervisor
-            .claim_routed_evaluation(&woken, "reply", Some("exact-reply-activation"), false, None)
+            .claim_routed_evaluation_locked(
+                &reply_guard,
+                &woken,
+                "reply",
+                Some("exact-reply-activation"),
+                false,
+                None,
+            )
             .await
             .unwrap()
             .unwrap();

@@ -73,6 +73,378 @@ type AttentionFuture<'a> = Pin<
 
 fn assert_complete_runtime_store<T: morphz::memory::RuntimeStore>() {}
 
+#[cfg(feature = "remote-store")]
+#[tokio::test]
+#[ignore = "requires the real Agent Cell workerd conformance server"]
+async fn remote_runtime_store_satisfies_operational_conformance_and_restores() {
+    use morphz::memory::remote::{
+        http::HttpRemoteStoreTransport, protocol::Fence, RemoteRuntimeStore,
+    };
+    use morphz::memory::ContextStore;
+    assert_complete_runtime_store::<RemoteRuntimeStore>();
+    let endpoint =
+        std::env::var("MORPHZ_TEST_REMOTE_STORE_URL").expect("real workerd URL is required");
+    let unique = chrono::Utc::now().timestamp_nanos_opt().unwrap();
+    let transport = Arc::new(
+        HttpRemoteStoreTransport::new(
+            &format!("{endpoint}conformance-{unique}"),
+            "conformance-only",
+        )
+        .unwrap(),
+    );
+    let fence = Fence {
+        owner_id: "runtime-conformance-owner".into(),
+        epoch: 1,
+    };
+    let store = Arc::new(
+        RemoteRuntimeStore::connect(transport.clone(), fence.clone())
+            .await
+            .unwrap(),
+    );
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "conformance-agent".into(),
+                title: "Conformance Agent".into(),
+                root_context_id: "conformance-context".into(),
+            },
+            NewCognitiveContext {
+                id: "conformance-context".into(),
+                agent_id: "conformance-agent".into(),
+                title: "Conformance Context".into(),
+            },
+            NewSession {
+                id: "conformance-session".into(),
+                agent_id: "conformance-agent".into(),
+                context_id: "conformance-context".into(),
+                parent_session_id: None,
+                title: "Conformance Session".into(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    assert_agent_provider_binding_conformance(store.clone()).await;
+    assert_session_directory_conformance(store.clone()).await;
+    assert_principal_first_seen_conformance(store.clone()).await;
+    assert_concurrent_parallel_ingress_conformance(store.clone()).await;
+    assert_concurrent_ordered_ingress_conformance(store.clone()).await;
+    assert_native_context_store_conformance(store.clone()).await;
+    assert_recall_projection_conformance(store.clone()).await;
+    assert_thread_store_conformance(store.clone()).await;
+    assert_activation_store_conformance(store.clone()).await;
+    assert_dialogue_interruption_conformance(store.clone()).await;
+    assert_scheduler_dependency_conformance(store.clone()).await;
+    assert_schedule_store_conformance(store.clone()).await;
+    assert_delivery_ingress_conformance(store.clone()).await;
+    assert_session_signal_conformance(store.clone()).await;
+    assert_delegation_store_conformance(store.clone()).await;
+    assert_timer_lease_conformance(store.clone()).await;
+    assert_objective_lease_conformance(store.clone()).await;
+    store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-activation".into(),
+            agent_id: "conformance-agent".into(),
+            context_id: "conformance-context".into(),
+            session_id: "conformance-session".into(),
+            initiating_principal_id: None,
+            trigger_event_id: "trigger-conformance-activation".into(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".into(),
+            parent_activation_id: None,
+            root_turn_id: "root-conformance-thread".into(),
+        })
+        .await
+        .unwrap();
+    assert_action_group_conformance(store.clone()).await;
+    assert_execution_target_conformance(store.clone()).await;
+    assert_execution_target_authorization_conformance(store.clone()).await;
+    assert_capability_lease_conformance(store.clone()).await;
+    assert_edge_execution_conformance(store.clone()).await;
+    assert_execution_job_conformance(store.clone()).await;
+    assert_background_wake_checkpoint_conformance(store.clone()).await;
+    assert_provider_account_state_cas_conformance(store.clone()).await;
+    assert_approval_grant_conformance(store.clone()).await;
+    assert_context_runtime_scheduler_snapshot_conformance(store.clone()).await;
+    assert_context_activation_causality_snapshot_conformance(store.clone()).await;
+    assert_context_execution_resources_snapshot_conformance(store.clone()).await;
+    let expected = store.get_session("conformance-session").await.unwrap();
+    let expected_context = store
+        .get_context_state("conformance-context")
+        .await
+        .unwrap();
+    let expected_recall = store
+        .search_recall_documents("conformance-context", "终点火炬", 8)
+        .await
+        .unwrap();
+    assert!(
+        !expected_recall.is_empty(),
+        "the restore probe must cover a populated FTS index"
+    );
+    drop(store);
+    let restored = RemoteRuntimeStore::connect(transport, fence).await.unwrap();
+    assert_eq!(
+        restored.get_session("conformance-session").await.unwrap(),
+        expected
+    );
+    assert_eq!(
+        restored
+            .get_context_state("conformance-context")
+            .await
+            .unwrap(),
+        expected_context
+    );
+    assert_eq!(
+        restored
+            .search_recall_documents("conformance-context", "终点火炬", 8)
+            .await
+            .unwrap(),
+        expected_recall
+    );
+}
+
+/// Native Context + Event + Session projection conformance, shared by local and
+/// remote backends. Unlike the frozen legacy suite below, hashes and mutation
+/// plans are genuine typed ContextDB commitments.
+#[cfg(feature = "context-db")]
+async fn assert_native_context_store_conformance<S: morphz::memory::RuntimeStore + 'static>(
+    store: Arc<S>,
+) {
+    use morphz::context_store::{
+        context_state_commitment, ContextMutationPlan, ContextNodeValue, ContextStateCommit,
+        ContextStateMutation,
+    };
+    let context_id = "conformance-context";
+    let session_id = "conformance-session";
+    let initial = MindState::default();
+    store
+        .initialize_context_state(
+            context_id,
+            &initial,
+            &context_state_commitment(&initial).unwrap(),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+    let observation = Event::new(
+        "native-observation".into(),
+        "conformance".into(),
+        morphz::event::TYPE_USER_MESSAGE.into(),
+        "chat/user_message".into(),
+        json!({"context_id": context_id, "session_id": session_id, "text": "observation"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    store.append(observation.clone()).await.unwrap();
+    let mut next = initial.clone();
+    next.version = 1;
+    next.mutation_clocks.global_barrier_version = 1;
+    let plan = ContextMutationPlan {
+        context_id: context_id.into(),
+        expected_revision: 0,
+        next_revision: 1,
+        expected_state_hash: context_state_hash(&initial).unwrap(),
+        next_state_hash: context_state_hash(&next).unwrap(),
+        mutations: vec![ContextStateMutation::Upsert {
+            value: ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
+            order: None,
+        }],
+    };
+    let bad_event = context_event("native-bad-attention", context_id);
+    let session_before = store.get_session(session_id).await.unwrap().unwrap();
+    assert!(store
+        .commit_context_mutation_transaction(
+            &bad_event,
+            &[SessionAttentionUpdate {
+                session_id: session_id.into(),
+                context_id: context_id.into(),
+                expected_revision: session_before.attention_revision + 100,
+                state: SessionAttentionState::Retired,
+                reason: Some("rollback conformance".into()),
+                changed_at: chrono::Utc::now(),
+                event_id: bad_event.id.clone(),
+            }],
+            &SessionProjectionMutation::default(),
+            &plan,
+            &next,
+            &context_state_commitment(&next).unwrap(),
+            &[]
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .get_context_state(context_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        0
+    );
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(bad_event.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+
+    let mut handles = Vec::new();
+    for id in ["native-race-a", "native-race-b"] {
+        let store = store.clone();
+        let plan = plan.clone();
+        let next = next.clone();
+        let observation_id = observation.id.clone();
+        handles.push(tokio::spawn(async move {
+            store
+                .commit_context_mutation_transaction(
+                    &context_event(id, context_id),
+                    &[],
+                    &SessionProjectionMutation {
+                        retired_event_ids: vec![observation_id],
+                        restored_event_ids: vec![],
+                    },
+                    &plan,
+                    &next,
+                    &context_state_commitment(&next).unwrap(),
+                    &[],
+                )
+                .await
+                .unwrap()
+        }));
+    }
+    let a = handles.remove(0).await.unwrap();
+    let b = handles.remove(0).await.unwrap();
+    assert_eq!(
+        usize::from(matches!(a, ContextStateCommit::Committed { .. }))
+            + usize::from(matches!(b, ContextStateCommit::Committed { .. })),
+        1
+    );
+    assert_eq!(
+        store
+            .get_context_state(context_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        next
+    );
+    assert!(store
+        .query_session_projections(context_id, &[session_id.into()], true)
+        .await
+        .unwrap()
+        .iter()
+        .all(|event| event.id != observation.id));
+    let snapshot = store
+        .read_context_encoding_state_snapshot(context_id, &[session_id.into()], true, None)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.context_state.unwrap().state, next);
+    assert!(snapshot
+        .events
+        .iter()
+        .all(|event| event.id != observation.id));
+    let request = ContextRuntimeDirectoryRequest {
+        context_id: context_id.into(),
+        active_session_id: session_id.into(),
+        active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+        max_full_sessions: 50,
+        max_metadata_sessions: 50,
+        known_context_state_revision: None,
+        session_filter: ContextRuntimeSessionFilter::default(),
+    };
+    assert_eq!(
+        store
+            .read_context_runtime_directory_snapshot(&request)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_state
+            .unwrap()
+            .state,
+        next
+    );
+    let mut next2 = next.clone();
+    next2.version = 2;
+    next2.mutation_clocks.global_barrier_version = 2;
+    let plan2 = ContextMutationPlan {
+        context_id: context_id.into(),
+        expected_revision: 1,
+        next_revision: 2,
+        expected_state_hash: context_state_hash(&next).unwrap(),
+        next_state_hash: context_state_hash(&next2).unwrap(),
+        mutations: vec![ContextStateMutation::Upsert {
+            value: ContextNodeValue::MutationClocks(next2.mutation_clocks.clone()),
+            order: None,
+        }],
+    };
+    let result = store
+        .commit_context_mutation_transaction(
+            &context_event("native-restore", context_id),
+            &[],
+            &SessionProjectionMutation {
+                retired_event_ids: vec![],
+                restored_event_ids: vec![observation.id.clone()],
+            },
+            &plan2,
+            &next2,
+            &context_state_commitment(&next2).unwrap(),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, ContextStateCommit::Committed { .. }));
+    assert!(store
+        .query_session_projections(context_id, &[session_id.into()], true)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| event.id == observation.id));
+}
+
+#[cfg(feature = "context-db")]
+#[tokio::test]
+async fn sqlite_native_context_satisfies_remote_common_conformance() {
+    let store = Arc::new(
+        SqliteStore::new_with_context_db(
+            ":memory:",
+            &morphz::config::SqliteStorageConfig {
+                max_connections: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap(),
+    );
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "conformance-agent".into(),
+                title: "Agent".into(),
+                root_context_id: "conformance-context".into(),
+            },
+            NewCognitiveContext {
+                id: "conformance-context".into(),
+                agent_id: "conformance-agent".into(),
+                title: "Context".into(),
+            },
+            NewSession {
+                id: "conformance-session".into(),
+                agent_id: "conformance-agent".into(),
+                context_id: "conformance-context".into(),
+                parent_session_id: None,
+                title: "Session".into(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    assert_native_context_store_conformance(store).await;
+}
+
 #[test]
 fn sqlite_two_process_context_cas_is_fenced() {
     const ROLE_ENV: &str = "MORPHZ_TEST_SQLITE_PROCESS_ROLE";
@@ -7260,7 +7632,13 @@ where
         )
         .await
         .unwrap();
-    assert!(final_commit.settled_now);
+    // Cancellation closes the join atomically. A late physical result remains
+    // durable, but cannot change its terminal outcome or create a wakeup.
+    assert!(!final_commit.settled_now);
+    assert_eq!(
+        final_commit.member.result_event_id.as_deref(),
+        Some(late_result("late-group-call-b").id.as_str())
+    );
     assert_eq!(
         store
             .get_action_group(&late_group.id)
@@ -7268,7 +7646,7 @@ where
             .unwrap()
             .unwrap()
             .status,
-        ActionGroupStatus::Settled
+        ActionGroupStatus::Cancelled
     );
     assert_eq!(
         store
@@ -7279,7 +7657,7 @@ where
             .await
             .unwrap()
             .len(),
-        1
+        0
     );
     assert!(store
         .list_context_thread_signals("conformance-context", None)
@@ -7897,7 +8275,7 @@ where
 
 async fn assert_capability_lease_conformance<S>(store: Arc<S>)
 where
-    S: CapabilityLeaseStore + Send + Sync + 'static,
+    S: CapabilityLeaseStore + ExecutionTargetStore + Send + Sync + 'static,
 {
     let lease = NewCapabilityLease {
         id: "lease-conformance".to_string(),
@@ -8022,6 +8400,88 @@ where
         .await
         .unwrap()
         .is_empty());
+
+    // The database and SDK must use the same Target-specific ancestry as
+    // admission: a Windows rule can be narrowed while hosted on Unix.
+    store
+        .register_execution_target(ExecutionTargetRegistration {
+            id: "windows-lease-target".into(),
+            owner_principal_id: Some("principal:conformance".into()),
+            provider_node_id: Some("node-conformance".into()),
+            kind: ExecutionTargetKind::EdgeNode,
+            name: "Windows lease fixture".into(),
+            status: ExecutionTargetStatus::Online,
+            platform: Some("windows-x86_64".into()),
+            workspace_root: Some(r"C:\workspace".into()),
+            capabilities: vec!["exec".into()],
+            metadata: json!({}),
+            policy_digest: "windows-policy".into(),
+            last_seen_at: None,
+        })
+        .await
+        .unwrap();
+    let CapabilityLeaseMutation::Created(windows) = store
+        .ensure_capability_lease(NewCapabilityLease {
+            id: "windows-directory-lease".into(),
+            principal_id: "principal:conformance".into(),
+            agent_id: "conformance-agent".into(),
+            scope: CapabilityLeaseScope::Session,
+            session_id: "conformance-session".into(),
+            thread_id: "conformance-thread".into(),
+            scope_id: "conformance-session".into(),
+            target_id: "windows-lease-target".into(),
+            capabilities: vec!["filesystem.write".into()],
+            requested: json!({"write_roots":[r"C:\project"]}),
+            policy_digest: "windows-policy".into(),
+            issued_by_approval_id: None,
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected Windows directory lease");
+    };
+    for path in [
+        r"C:\project-other",
+        r"D:\project\child",
+        r"C:\project\..\outside",
+    ] {
+        assert!(store
+            .restrict_capability_lease(
+                &windows.id,
+                windows.revision,
+                CapabilityLeaseRestriction {
+                    requested: json!({"write_roots":[path]}),
+                    expires_at: windows.expires_at,
+                }
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cannot expand"));
+    }
+    let restriction = CapabilityLeaseRestriction {
+        requested: json!({"write_roots":[r"C:\project\child"]}),
+        expires_at: windows.expires_at,
+    };
+    let CapabilityLeaseMutation::Updated(narrowed) = store
+        .restrict_capability_lease(&windows.id, windows.revision, restriction.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("Windows child directory must be a valid restriction on any database host");
+    };
+    assert!(matches!(
+        store
+            .restrict_capability_lease(&windows.id, windows.revision, restriction)
+            .await
+            .unwrap(),
+        CapabilityLeaseMutation::Existing(_)
+    ));
+    store
+        .revoke_capability_lease(&narrowed.id, narrowed.revision, "fixture complete")
+        .await
+        .unwrap();
 }
 
 async fn assert_execution_job_conformance<S>(store: Arc<S>)

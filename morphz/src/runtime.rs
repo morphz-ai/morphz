@@ -4,6 +4,8 @@ use crate::approval::{
     CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
+
+mod session_approval;
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
@@ -110,6 +112,10 @@ use crate::tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+pub use session_approval::{
+    SessionApprovalChoice, SessionApprovalCommand, SessionApprovalError, SessionApprovalPage,
+    SessionApprovalView,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -1294,7 +1300,16 @@ impl MorphzRuntimeBuilder {
             .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
         let human_approval_hub = HumanApprovalHub::default();
-        let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
+        let mut permission_profile = PermissionProfile::from_config(&permission_config)?;
+        if !self.config.execution_targets.local_enabled
+            && self
+                .config
+                .execution_targets
+                .local_artifact_transfer_enabled
+        {
+            permission_profile = permission_profile.confine_to_workspace();
+        }
+        let permission_profile = Arc::new(permission_profile);
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
             tracing::warn!(event_code = "runtime.permissions.full_access_enabled", "Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries");
         }
@@ -1346,6 +1361,7 @@ impl MorphzRuntimeBuilder {
         } else {
             None
         };
+        let durable_human_decisions = self.approval_provider.is_none();
         let (automatic_approval, human_approval) = match self.approval_provider {
             Some(provider) => (Arc::clone(&provider), provider),
             None => {
@@ -1545,6 +1561,24 @@ impl MorphzRuntimeBuilder {
             local_target.status = crate::memory::ExecutionTargetStatus::Offline;
             local_target.capabilities.clear();
             local_target.metadata["availability"] = json!("disabled_by_configuration");
+            if self
+                .config
+                .execution_targets
+                .local_artifact_transfer_enabled
+                && registry
+                    .physical_tool_names()
+                    .iter()
+                    .any(|name| name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME)
+            {
+                // The hosted Artifact data plane is not an execution fallback.
+                // Explicitly publish only transfer; both endpoint permissions,
+                // approvals, digest validation and frozen Routes still apply.
+                local_target.status = crate::memory::ExecutionTargetStatus::Online;
+                local_target.capabilities =
+                    vec![crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.into()];
+                local_target.name = "Runtime Artifact transfer endpoint".into();
+                local_target.metadata["availability"] = json!("artifact_transfer_only");
+            }
         }
         store.register_execution_target(local_target).await?;
         let mut runtime_managed_ssh_target_ids = HashSet::new();
@@ -1728,6 +1762,7 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&store) as Arc<dyn ExecutionApprovalStore>,
                 Arc::clone(&store) as Arc<dyn crate::memory::CapabilityLeaseStore>,
                 human_approval_hub.clone(),
+                durable_human_decisions,
                 self.config.edge_execution.capability_leases_enabled,
                 self.config.edge_execution.capability_lease_ttl.as_secs(),
             )),
@@ -3085,6 +3120,34 @@ impl MorphzRuntime {
         &self.inner.config
     }
 
+    /// Supplemental process-local check. The hosted Store separately inspects
+    /// durable owners under its transaction mutex before releasing compute.
+    #[cfg(feature = "remote-store")]
+    pub fn hosted_process_is_quiescent(&self) -> bool {
+        let admission = self.inner.orchestrator.activation_admission_snapshot();
+        let models = self.inner.orchestrator.model_provider_metrics();
+        self.inner.started.load(Ordering::Acquire)
+            && admission.queued_activation_ids.is_empty()
+            && admission.in_flight_activation_ids.is_empty()
+            && admission.suspended_activation_ids.is_empty()
+            && admission.waiter_count == 0
+            && self.inner.orchestrator.active_plan_child_count() == 0
+            && models.in_flight == 0
+            && models.queued == 0
+            && self
+                .inner
+                .orchestrator
+                .durable_event_writer_metrics()
+                .queue_depth
+                == 0
+            && !self.inner.bus.has_hosted_in_flight_dispatch()
+            && !self
+                .inner
+                .provider_auth_manager
+                .has_active_logins()
+                .unwrap_or(true)
+    }
+
     #[cfg(feature = "experimental-cognitive-coordination")]
     pub fn cognitive_coordination_network(
         &self,
@@ -3417,6 +3480,7 @@ impl MorphzRuntime {
         }
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
+            oauth_refresh: Some(self.inner.provider_auth_manager.refresh_diagnostics()),
             experimental_features: if cfg!(feature = "experimental-structured-context-delta-cache")
             {
                 vec!["structured-context-delta-cache".to_string()]
@@ -4372,6 +4436,31 @@ impl MorphzRuntime {
         &self,
         command: &crate::memory::EdgeCommandRecord,
     ) -> Result<String, RuntimeError> {
+        if command.route.get("source").is_none() && command.route.get("destination").is_none() {
+            // A local Edge transfer has already been localized by the worker.
+            // It uses the ordinary local Tool, not the cross-target dispatcher.
+            let route: crate::execution_target::ExecutionRouteSnapshot =
+                serde_json::from_value(command.route.clone())?;
+            let request = crate::artifact::transfer_request_from_tool_arguments(
+                &command.arguments,
+                format!("transfer:{}", command.job_id),
+            )?;
+            if route.target_id != crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+                || request.source.target_id != route.target_id
+                || request.destination.target_id != route.target_id
+            {
+                return Err(
+                    "Edge local Artifact request does not match its localized Route".into(),
+                );
+            }
+            return self
+                .inner
+                .registry
+                .get(ARTIFACT_TRANSFER_TOOL_NAME)
+                .ok_or("Edge Runtime has not registered transfer")?
+                .execute(&command.arguments)
+                .await;
+        }
         let routes: crate::execution_target::ArtifactTransferRouteSnapshot =
             serde_json::from_value(command.route.clone())?;
         let request = crate::artifact::transfer_request_from_tool_arguments(
@@ -4884,7 +4973,8 @@ impl MorphzRuntime {
         side_effect_started: bool,
         progress: Option<String>,
     ) -> Result<EdgeCommandMutation, RuntimeError> {
-        self.inner
+        let mutation = self
+            .inner
             .store
             .heartbeat_edge_command(
                 job_id,
@@ -4894,7 +4984,28 @@ impl MorphzRuntime {
                 side_effect_started,
                 progress,
             )
-            .await
+            .await?;
+        // The ExecutionJob is the durable cancellation authority. Thread,
+        // Objective and Session control can cancel it without going through
+        // the single-Job API, and the original tool future may already have
+        // been dropped. Every still-owning Edge heartbeat must observe that
+        // intent, including the first heartbeat before local execution and
+        // heartbeats after Runtime recovery.
+        if matches!(&mutation, EdgeCommandMutation::Updated(command)
+            if command.status == EdgeCommandStatus::Claimed)
+            && self
+                .inner
+                .store
+                .get_execution_job(job_id)
+                .await?
+                .is_some_and(|job| job.cancel_requested_at.is_some())
+        {
+            if let Some(current) = self.inner.store.request_edge_command_cancel(job_id).await? {
+                return Ok(EdgeCommandMutation::Conflict { current });
+            }
+            return Ok(EdgeCommandMutation::NotFound);
+        }
+        Ok(mutation)
     }
 
     pub async fn finish_edge_command(
@@ -5444,34 +5555,42 @@ impl MorphzRuntime {
             let execution_activation_id = job.activation_id.clone();
             let execution_context_id = job.context_id.clone();
             let execution_session_id = job.session_id.clone();
-            let execute = self
-                .inner
-                .execution_targets
-                .execute(&execution_job, tool, &arguments);
-            let execution = crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
-                side_effect_tx,
-                CURRENT_ARTIFACT_TRANSFER_PROGRESS.scope(
-                    progress_tx,
-                    crate::tool::CURRENT_EXECUTION_JOB.scope(Some(tool_context), async {
-                        crate::tool::CURRENT_PRINCIPAL_ID
-                            .scope(execution_principal_id, async {
-                                crate::tool::CURRENT_ATTEMPT_ID
-                                    .scope(execution_activation_id, async {
-                                        crate::tool::CURRENT_CONTEXT_ID
-                                            .scope(execution_context_id, async {
-                                                crate::tool::CURRENT_SESSION_ID
-                                                    .scope(execution_session_id, execute)
+            let dispatcher = Arc::clone(&self.inner.execution_targets);
+            // Physical work can hold a Store mutex while awaiting authority.
+            // Polling it inline in the control select would suspend that work
+            // whenever a heartbeat/progress branch awaits the same Store.
+            // JoinSet keeps it independently driven and aborts it on every
+            // early return; shutdown below also waits for cancellation before
+            // publishing the durable terminal result.
+            let mut execution = tokio::task::JoinSet::new();
+            execution.spawn(async move {
+                let execute = dispatcher.execute(&execution_job, tool, &arguments);
+                crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT
+                    .scope(
+                        side_effect_tx,
+                        CURRENT_ARTIFACT_TRANSFER_PROGRESS.scope(
+                            progress_tx,
+                            crate::tool::CURRENT_EXECUTION_JOB.scope(Some(tool_context), async {
+                                crate::tool::CURRENT_PRINCIPAL_ID
+                                    .scope(execution_principal_id, async {
+                                        crate::tool::CURRENT_ATTEMPT_ID
+                                            .scope(execution_activation_id, async {
+                                                crate::tool::CURRENT_CONTEXT_ID
+                                                    .scope(execution_context_id, async {
+                                                        crate::tool::CURRENT_SESSION_ID
+                                                            .scope(execution_session_id, execute)
+                                                            .await
+                                                    })
                                                     .await
                                             })
                                             .await
                                     })
                                     .await
-                            })
-                            .await
-                    }),
-                ),
-            );
-            tokio::pin!(execution);
+                            }),
+                        ),
+                    )
+                    .await
+            });
             let mut control_tick = tokio::time::interval(std::time::Duration::from_secs(1));
             control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let progress_started = std::time::Instant::now();
@@ -5479,9 +5598,9 @@ impl MorphzRuntime {
             let mut persisted_progress: Option<ArtifactTransferProgress> = None;
             let mut progress_open = true;
             let mut side_effect_open = true;
-            loop {
+            let result = loop {
                 tokio::select! {
-                    result = &mut execution => {
+                    result = execution.join_next() => {
                         while let Ok(progress) = progress_rx.try_recv() {
                             latest_progress = Some(progress);
                         }
@@ -5492,7 +5611,11 @@ impl MorphzRuntime {
                                 }
                             }
                         }
-                        break result;
+                        break match result {
+                            Some(Ok(result)) => result,
+                            Some(Err(error)) => Err(format!("Artifact Transfer executor task failed: {error}").into()),
+                            None => Err("Artifact Transfer executor task disappeared".into()),
+                        };
                     },
                     progress = progress_rx.recv(), if progress_open => {
                         match progress {
@@ -5553,8 +5676,8 @@ impl MorphzRuntime {
                                 let child_id = crate::artifact::artifact_transfer_relay_leg_job_id(job_id, leg);
                                 let _ = self.inner.store.request_edge_command_cancel(&child_id).await;
                             }
-                            // Dropping the physical future closes local streams
-                            // and kills managed SSH children (`kill_on_drop`).
+                            // shutdown below drops physical streams and managed
+                            // SSH children (`kill_on_drop`) before terminal CAS.
                             break Err(crate::artifact::ArtifactTransferCancelled.into());
                         }
                         let progress_ref = latest_progress.as_ref().map(|progress| {
@@ -5593,7 +5716,9 @@ impl MorphzRuntime {
                         }
                     }
                 }
-            }
+            };
+            execution.shutdown().await;
+            result
         };
 
         let (status, text, error) = match result {
@@ -6714,6 +6839,15 @@ impl MorphzRuntime {
         }
     }
 
+    /// Explicit hosted observation: bounded drafts, coalesced durable hints,
+    /// and overflow reset without adding EventBus backpressure.
+    #[cfg(feature = "remote-store")]
+    pub fn subscribe_host_observer(
+        &self,
+    ) -> crate::memory::remote::host_observers::HostObserverFeed {
+        crate::memory::remote::host_observers::HostObserverFeed::new(&self.inner.bus)
+    }
+
     /// Wait for the durable Assistant reply belonging to exactly one
     /// DialogueTurn.
     ///
@@ -6847,80 +6981,9 @@ impl MorphzRuntime {
                 tracing::error!(event_code = "runtime.approval.capability_delta_decode_failed", approval_id = %record.id, "Failed to decode the pending approval capability delta");
                 continue;
             };
-            let requested_scope = job
-                .request
-                .get("approval_scope")
-                .cloned()
-                .map(serde_json::from_value::<ApprovalScope>)
-                .transpose()
-                .unwrap_or_else(|error| {
-                    tracing::error!(event_code = "runtime.approval.scope_decode_failed", approval_id = %record.id, %error, "Failed to decode the pending approval scope");
-                    None
-                })
-                .unwrap_or_default();
-            let lease_offer = if self.inner.config.edge_execution.capability_leases_enabled
-                && self
-                    .inner
-                    .config
-                    .edge_execution
-                    .capability_lease_ttl
-                    .as_secs()
-                    > 0
-            {
-                match (
-                    job.initiating_principal_id.as_ref(),
-                    self.inner.store.get_thread(&job.thread_id).await,
-                    self.inner.store.get_execution_target(&job.target_id).await,
-                ) {
-                    (Some(principal_id), Ok(Some(thread)), Ok(Some(target)))
-                        if thread.lifecycle == crate::memory::ThreadLifecycle::Open
-                            && requested_scope.lease_scope().is_some() =>
-                    {
-                        let scope = requested_scope
-                            .lease_scope()
-                            .expect("lease scope was checked above");
-                        let scope_id = match scope {
-                            CapabilityLeaseScope::Thread => Some(job.thread_id.clone()),
-                            CapabilityLeaseScope::Objective => job
-                                .request
-                                .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string),
-                            CapabilityLeaseScope::Session => Some(job.session_id.clone()),
-                        };
-                        scope_id.map(|scope_id| CapabilityLeaseOffer {
-                            principal_id: principal_id.clone(),
-                            agent_id: job.agent_id.clone(),
-                            session_id: job.session_id.clone(),
-                            thread_id: job.thread_id.clone(),
-                            scope,
-                            scope_id,
-                            target_id: job.target_id.clone(),
-                            capability: action.lease_capability(),
-                            capabilities: reusable_capabilities(&action, &requested),
-                            requested: requested.clone(),
-                            policy_digest: capability_lease_policy_digest(
-                                &self.inner.permissions.policy_digest(),
-                                &target.policy_digest,
-                            ),
-                            expires_at: record.created_at
-                                + chrono::Duration::seconds(
-                                    i64::try_from(
-                                        self.inner
-                                            .config
-                                            .edge_execution
-                                            .capability_lease_ttl
-                                            .as_secs(),
-                                    )
-                                    .unwrap_or(i64::MAX),
-                                ),
-                        })
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let lease_offer = self
+                .approval_lease_offer(&record, &job, &action, &requested)
+                .await;
             pending.push(PendingHumanApproval {
                 request: crate::approval::ApprovalRequest {
                     approval_id: record.id,
@@ -7038,8 +7101,19 @@ impl MorphzRuntime {
                 return Err("approval decision returned an impossible Created state".to_string());
             }
         };
-        if commit.event_created {
-            let event = commit.event.ok_or_else(|| {
+        self.publish_approval_decision(approval_id, decision, commit.event_created, commit.event)
+            .await
+    }
+
+    async fn publish_approval_decision(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+        event_created: bool,
+        event: Option<Event>,
+    ) -> Result<(), String> {
+        if event_created {
+            let event = event.ok_or_else(|| {
                 "Approval audit Event was created atomically, but the Store did not return its persisted projection"
                     .to_string()
             })?;
@@ -7056,6 +7130,11 @@ impl MorphzRuntime {
         {
             tracing::warn!(event_code = "runtime.approval.waiter_closed", approval_id, %error, "Approval was persisted after its in-process waiter had closed");
         }
+        self.inner
+            .orchestrator
+            .wake_approval_waits()
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -7143,7 +7222,23 @@ impl MorphzRuntime {
     }
 
     pub fn cancel_session(&self, session_id: &str) -> bool {
-        self.inner.orchestrator.cancel_session(session_id)
+        let requested_at = chrono::Utc::now();
+        let active = self.inner.orchestrator.cancel_session(session_id);
+        // A checkpointed waiter has no live evaluation future to observe the
+        // process-local signal. Keep this convenience API nonblocking, but
+        // route cancellation through the same durable Thread control as UI/API.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let runtime = self.clone();
+            let session_id = session_id.to_owned();
+            handle.spawn(async move {
+                if let Err(error) = runtime.cancel_session_threads_before(&session_id, "Session cancelled by the user", requested_at).await {
+                    tracing::error!(%session_id, %error, event_code = "runtime.session.cancel_failed",
+                        "Could not persist requested Session cancellation");
+                }
+            });
+            return true;
+        }
+        active
     }
 
     /// Persistently cancel every open Thread in one Session. The legacy
@@ -7155,7 +7250,18 @@ impl MorphzRuntime {
         session_id: &str,
         reason: &str,
     ) -> Result<usize, RuntimeError> {
+        let requested_at = chrono::Utc::now();
         self.inner.orchestrator.cancel_session(session_id);
+        self.cancel_session_threads_before(session_id, reason, requested_at)
+            .await
+    }
+
+    async fn cancel_session_threads_before(
+        &self,
+        session_id: &str,
+        reason: &str,
+        requested_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize, RuntimeError> {
         let Some(session) = self.inner.store.get_session(session_id).await? else {
             return Ok(0);
         };
@@ -7165,7 +7271,7 @@ impl MorphzRuntime {
             .list_context_threads(&session.context_id, false)
             .await?
             .into_iter()
-            .filter(|thread| thread.session_id == session_id)
+            .filter(|thread| thread.session_id == session_id && thread.created_at <= requested_at)
             .collect::<Vec<_>>();
         let mut cancelled = 0usize;
         for mut current in threads {
@@ -11212,6 +11318,10 @@ fn env_flag_enabled(name: &str) -> bool {
 mod scheduler_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "runtime/plan_child_lifecycle_tests.rs"]
+mod plan_child_lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderModelConfig};
@@ -14286,6 +14396,86 @@ mod tests {
                 &runtime.identity().agent_id,
                 &runtime.identity().context_id,
                 "thread-cloud-no-target",
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn cloud_config_artifact_transfer_only_keeps_physical_tools_disabled() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.execution_targets.local_enabled = false;
+        config.execution_targets.local_artifact_transfer_enabled = true;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let local = runtime
+            .get_execution_target(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.status, crate::memory::ExecutionTargetStatus::Online);
+        assert_eq!(local.capabilities, vec!["transfer".to_string()]);
+        assert_eq!(local.metadata["availability"], "artifact_transfer_only");
+        let dispatcher = &runtime.inner.execution_targets;
+        for tool in ["exec", "read", "write", "edit", "list_files", "search"] {
+            let error = dispatcher
+                .validate_for_tool(
+                    &local.id,
+                    tool,
+                    r#"{"command":"pwd"}"#,
+                    Some(&runtime.identity().principal_id),
+                    &runtime.identity().agent_id,
+                    &runtime.identity().context_id,
+                    "thread-cloud-transfer-only",
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+                    .is_some(),
+                "{tool} must still require a real execution Target"
+            );
+        }
+        dispatcher
+            .validate_for_tool(
+                &local.id,
+                "transfer",
+                "{}",
+                Some(&runtime.identity().principal_id),
+                &runtime.identity().agent_id,
+                &runtime.identity().context_id,
+                "thread-cloud-transfer-only",
+            )
+            .await
+            .unwrap();
+        // A previously frozen local exec must also fail at physical dispatch,
+        // not only at today's model/API admission check.
+        let now = chrono::Utc::now();
+        let old_job: ExecutionJobRecord = serde_json::from_value(json!({
+            "id": "old-local-exec", "revision": 1, "activation_id": "old-activation",
+            "thread_id": "old-thread", "agent_id": runtime.identity().agent_id,
+            "context_id": runtime.identity().context_id, "session_id": "old-session",
+            "target_id": local.id, "tool_call_id": "old-call", "tool_name": "exec",
+            "request": { crate::execution_target::EXECUTION_ROUTE_REQUEST_KEY:
+                crate::execution_target::ExecutionRouteSnapshot::freeze(&local) },
+            "status": crate::memory::ExecutionJobStatus::Queued,
+            "retry_safety": crate::memory::ExecutionRetrySafety::AtMostOnce,
+            "result_refs": [], "created_at": now, "updated_at": now
+        }))
+        .unwrap();
+        let error = dispatcher
+            .execute(
+                &old_job,
+                runtime.inner.registry.get("exec").unwrap(),
+                r#"{"command":"exit 0"}"#,
             )
             .await
             .unwrap_err();
@@ -19221,9 +19411,26 @@ mod tests {
             .list_context_thread_activations(&runtime.identity().context_id, true)
             .await
             .unwrap();
-        assert!(waiting_activations
-            .iter()
-            .any(|activation| activation.status == crate::memory::ThreadActivationStatus::Running));
+        assert!(waiting_activations.iter().any(|activation| {
+            activation.status == crate::memory::ThreadActivationStatus::Queued
+                && activation.claimed_by.is_none()
+                && activation.lease_expires_at.is_none()
+        }));
+        assert!(runtime.inner.human_approval_hub.pending().is_empty());
+        let checkpoint = runtime
+            .inner
+            .store
+            .get_thread_activation_approval_wait(&waiting_jobs[0].activation_id)
+            .await
+            .unwrap()
+            .expect("the real execution stack must commit its checkpoint");
+        assert_eq!(checkpoint.approval_ids, vec![approval_id.clone()]);
+        assert!(runtime
+            .inner
+            .orchestrator
+            .activation_admission_snapshot()
+            .in_flight_activation_ids
+            .is_empty());
         assert!(waiting_activations
             .iter()
             .all(|activation| activation.status != crate::memory::ThreadActivationStatus::Failed));
@@ -19509,13 +19716,27 @@ mod tests {
         assert!(jobs[0].started_at.is_none());
         assert!(!observed_result.load(Ordering::SeqCst));
 
-        runtime
-            .allow_approval_session_capability(
-                &approval_id,
-                "human approved this capability boundary for the owning Session".to_string(),
-            )
+        let sdk = crate::sdk::MorphzSdk::new(runtime.clone());
+        let principal = sdk.default_principal();
+        let page = sdk
+            .session_pending_approvals(&principal.principal_id, &session.id)
             .await
             .unwrap();
+        assert_eq!(page.approvals.len(), 1);
+        assert!(page.approvals[0]
+            .available_scopes
+            .contains(&ApprovalScope::Session));
+        sdk.decide_session_approval(
+            &principal,
+            &session.id,
+            &approval_id,
+            SessionApprovalCommand {
+                expected_revision: page.approvals[0].revision,
+                decision: SessionApprovalChoice::AllowSession,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
             runtime
                 .get_session(&session.id)
@@ -19772,6 +19993,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edge_heartbeat_observes_job_cancellation_after_runtime_recovery() {
+        use crate::memory::{
+            NewEdgeCommand, NewExecutionJob, NewNodePairingCode, PairExecutionNode,
+        };
+
+        for cancel_before_command in [None, Some(true), Some(false)] {
+            let database = NamedTempFile::new().unwrap();
+            let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+                .database_path(database.path().to_string_lossy())
+                .build()
+                .await
+                .unwrap();
+            let store = &runtime.inner.store;
+            runtime
+                .ensure_agent(NewAgent {
+                    id: runtime.identity().agent_id.clone(),
+                    title: "Synthetic cancel gate".to_string(),
+                    root_context_id: runtime.identity().context_id.clone(),
+                })
+                .await
+                .unwrap();
+            runtime
+                .ensure_context(NewCognitiveContext {
+                    id: runtime.identity().context_id.clone(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    title: "Synthetic cancel gate".to_string(),
+                })
+                .await
+                .unwrap();
+            runtime
+                .ensure_session(NewSession {
+                    id: "cancel-gate-session".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "Synthetic cancellation".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+            store
+                .ensure_thread(NewThread {
+                    id: "cancel-gate-thread".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    root_turn_id: "cancel-gate-root".to_string(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+            store
+                .ensure_thread_activation(NewThreadActivation {
+                    id: "cancel-gate-activation".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    trigger_event_id: "cancel-gate-trigger".to_string(),
+                    trigger_sequence: 1,
+                    trigger_kind: "synthetic".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: "cancel-gate-root".to_string(),
+                })
+                .await
+                .unwrap();
+            store
+                .create_node_pairing_code(NewNodePairingCode {
+                    code_hash: "cancel-gate-pairing".to_string(),
+                    owner_principal_id: runtime.identity().principal_id.clone(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                })
+                .await
+                .unwrap();
+            store
+                .pair_execution_node(PairExecutionNode {
+                    code_hash: "cancel-gate-pairing".to_string(),
+                    node_id: "cancel-gate-node".to_string(),
+                    name: "Synthetic cancel gate".to_string(),
+                    device_key_fingerprint: "synthetic-fingerprint".to_string(),
+                    device_public_key: "00112233".to_string(),
+                    protocol_version: 1,
+                    platform: Some("linux-x86_64".to_string()),
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                })
+                .await
+                .unwrap();
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: "cancel-gate-target".to_string(),
+                    owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                    provider_node_id: Some("cancel-gate-node".to_string()),
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: "Synthetic cancel gate".to_string(),
+                    status: crate::memory::ExecutionTargetStatus::Online,
+                    platform: Some("linux-x86_64".to_string()),
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                    policy_digest: "synthetic-policy".to_string(),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+            let job = store
+                .create_execution_job(NewExecutionJob {
+                    id: "cancel-gate-job".to_string(),
+                    activation_id: "cancel-gate-activation".to_string(),
+                    thread_id: "cancel-gate-thread".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "cancel-gate-session".to_string(),
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    target_id: "cancel-gate-target".to_string(),
+                    tool_call_id: "cancel-gate-call".to_string(),
+                    tool_name: "exec".to_string(),
+                    request: json!({"command": "synthetic-never-executed"}),
+                    retry_safety: crate::memory::ExecutionRetrySafety::AtMostOnce,
+                    requires_approval: false,
+                })
+                .await
+                .unwrap();
+            if cancel_before_command == Some(true) {
+                store
+                    .request_cancel_execution_job(
+                        &job.id,
+                        job.revision,
+                        Some("cancel before Edge publication"),
+                    )
+                    .await
+                    .unwrap();
+            }
+            store
+                .create_edge_command(NewEdgeCommand {
+                    job_id: job.id.clone(),
+                    target_id: job.target_id.clone(),
+                    provider_node_id: "cancel-gate-node".to_string(),
+                    tool_name: "exec".to_string(),
+                    arguments: job.request.to_string(),
+                    route: json!({}),
+                })
+                .await
+                .unwrap();
+            let lease = chrono::Utc::now() + chrono::Duration::seconds(90);
+            let command = runtime
+                .claim_edge_command("cancel-gate-node", "worker", "claim", lease, 1)
+                .await
+                .unwrap()
+                .unwrap();
+            if cancel_before_command == Some(false) {
+                store
+                    .request_cancel_execution_job(
+                        &job.id,
+                        job.revision,
+                        Some("cancel during execution"),
+                    )
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                store
+                    .get_edge_command(&job.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                EdgeCommandStatus::Claimed
+            );
+            drop(runtime);
+            // No process-local cancellation signal or original tool future.
+            let recovered = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+                .database_path(database.path().to_string_lossy())
+                .build()
+                .await
+                .unwrap();
+            let wrong_owner = recovered
+                .heartbeat_edge_command(
+                    &job.id,
+                    command.revision,
+                    "wrong-claim",
+                    lease,
+                    false,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(wrong_owner, EdgeCommandMutation::Conflict { current } if current.status == EdgeCommandStatus::Claimed)
+            );
+            let result = recovered
+                .heartbeat_edge_command(&job.id, command.revision, "claim", lease, false, None)
+                .await
+                .unwrap();
+            if cancel_before_command.is_some() {
+                let EdgeCommandMutation::Conflict { current } = result else {
+                    panic!("expected durable cancellation")
+                };
+                assert_eq!(current.status, EdgeCommandStatus::CancelRequested);
+                assert_eq!(current.claim_token.as_deref(), Some("claim"));
+                assert!(
+                    current.finished_at.is_none(),
+                    "intent must not pretend physical exit"
+                );
+                assert!(
+                    matches!(recovered.finish_edge_command(&job.id, current.revision, "claim", EdgeCommandStatus::Cancelled, None, None)
+                    .await.unwrap(), EdgeCommandMutation::Updated(terminal) if terminal.status == EdgeCommandStatus::Cancelled)
+                );
+            } else {
+                assert!(
+                    matches!(result, EdgeCommandMutation::Updated(current) if current.status == EdgeCommandStatus::Claimed)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn session_cancellation_closes_unstarted_pending_human_job_and_waiter() {
         let database = NamedTempFile::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
@@ -19825,12 +20268,21 @@ mod tests {
         let approval_id = request.payload["approval_id"].as_str().unwrap().to_string();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
+                let job_id = request.payload["job_id"].as_str().unwrap();
+                let job = runtime
+                    .inner
+                    .store
+                    .get_execution_job(job_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
                 if runtime
                     .inner
-                    .human_approval_hub
-                    .pending()
-                    .iter()
-                    .any(|pending| pending.request.approval_id == approval_id)
+                    .store
+                    .get_thread_activation_approval_wait(&job.activation_id)
+                    .await
+                    .unwrap()
+                    .is_some()
                 {
                     break;
                 }
@@ -19838,7 +20290,7 @@ mod tests {
             }
         })
         .await
-        .expect("human waiter should attach before cancellation");
+        .expect("durable human wait should checkpoint before cancellation");
 
         assert!(session.cancel());
         let terminal = tokio::time::timeout(std::time::Duration::from_secs(3), async {

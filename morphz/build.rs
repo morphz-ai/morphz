@@ -3,8 +3,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const COMMIT_OVERRIDE: &str = "MORPHZ_BUILD_GIT_COMMIT";
+mod remote_store_codegen;
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_REMOTE_STORE").is_some() {
+        remote_store_codegen::generate();
+    }
     println!("cargo:rerun-if-env-changed={COMMIT_OVERRIDE}");
     register_git_inputs();
 

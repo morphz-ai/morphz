@@ -190,7 +190,9 @@ fn member_from_row(row: &sqlx::postgres::PgRow) -> Result<ThreadGroupMemberRecor
     })
 }
 
-fn outcome_from_row(row: &sqlx::postgres::PgRow) -> Result<ThreadOutcomeRecord, StoreError> {
+pub(super) fn outcome_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ThreadOutcomeRecord, StoreError> {
     Ok(ThreadOutcomeRecord {
         id: row.get("outcome_id"),
         thread_id: row.get("thread_id"),

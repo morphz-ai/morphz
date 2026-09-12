@@ -1008,6 +1008,31 @@ impl ThreadStore for PostgresStore {
             .bind(&activation_id)
             .execute(&mut *tx)
             .await?;
+            // Logical Plan/batch owners must not outlive the cancelled
+            // generation. Preserve already committed results and terminal rows.
+            sqlx::query(
+                r#"UPDATE action_groups
+                   SET revision = revision + 1, status = 'cancelled', updated_at = $1, settled_at = $1
+                   WHERE thread_id = $2 AND status = 'running' AND activation_id IN (
+                     SELECT id FROM thread_activations WHERE root_turn_id = $3 AND generation = $4
+                   )"#,
+            )
+            .bind(&now).bind(&current.id).bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx).await?;
+            sqlx::query(
+                r#"UPDATE plan_executions
+                   SET revision = revision + 1, status = 'cancelled', error = $1,
+                       pending_kind = NULL, pending_id = NULL, claimed_by = NULL,
+                       claim_token = NULL, lease_expires_at = NULL, updated_at = $2, finished_at = $2
+                   WHERE thread_id = $3 AND status IN ('queued', 'running', 'waiting')
+                     AND activation_id IN (
+                       SELECT id FROM thread_activations WHERE root_turn_id = $4 AND generation = $5
+                     )"#,
+            )
+            .bind(reason).bind(&now).bind(&current.id).bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx).await?;
             sqlx::query(
                 r#"UPDATE thread_signals
                    SET status = 'acknowledged', acknowledged_at = $1

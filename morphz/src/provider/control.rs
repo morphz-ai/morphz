@@ -6,7 +6,7 @@
 //! material. SDK, CLI, HTTP and Dashboard must consume this contract instead
 //! of rebuilding subtly different provider views.
 
-use super::auth::{AuthAdapterDescriptor, OAuthAccountMetadata};
+use super::auth::{AuthAdapterDescriptor, OAuthAccountMetadata, OAuthRefreshDiagnostics};
 use crate::config::{AuthAccountConfig, ModelRouteConfig, ProviderInstanceConfig};
 use crate::memory::{ProviderAccountStateRecord, ProviderModelCatalogRecord};
 use chrono::{DateTime, Utc};
@@ -17,6 +17,10 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderControlSnapshot {
     pub generated_at: DateTime<Utc>,
+    /// Secret-free process-local observations, not durable or per-account audit.
+    /// Older binaries omit this field; consumers must not assume zero counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_refresh: Option<OAuthRefreshDiagnostics>,
     /// Compile-time experimental capabilities which the control plane may
     /// explicitly configure. Absence means Dashboard must not offer the
     /// corresponding setting.

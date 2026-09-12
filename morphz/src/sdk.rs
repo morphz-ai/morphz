@@ -3151,7 +3151,18 @@ impl MorphzSdk {
                 "An empty authorization rule must be revoked instead of adjusted",
             ));
         }
-        if !restricted_delta.is_subset_of(&current_delta) {
+        let target = self
+            .runtime
+            .get_execution_target(&current.target_id)
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    "Authorization rule Target does not exist",
+                )
+            })?;
+        if !restricted_delta.is_subset_of_for_target(&current_delta, &target) {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
                 "An authorization rule adjustment cannot expand its permission boundary",
@@ -4507,6 +4518,68 @@ impl MorphzSdk {
         Ok(session)
     }
 
+    pub async fn session_pending_approvals(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+    ) -> SdkResult<crate::runtime::SessionApprovalPage> {
+        self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .session_pending_approvals(&crate::memory::ApprovalDecisionAuthority {
+                principal_id: principal_id.into(),
+                session_id: session_id.into(),
+            })
+            .await
+            .map_err(classify_session_approval_error)
+    }
+
+    pub async fn session_approval(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        approval_id: &str,
+    ) -> SdkResult<crate::runtime::SessionApprovalView> {
+        self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .session_approval(
+                &crate::memory::ApprovalDecisionAuthority {
+                    principal_id: principal_id.into(),
+                    session_id: session_id.into(),
+                },
+                approval_id,
+            )
+            .await
+            .map_err(classify_session_approval_error)
+    }
+
+    pub async fn decide_session_approval(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        approval_id: &str,
+        command: crate::runtime::SessionApprovalCommand,
+    ) -> SdkResult<crate::runtime::SessionApprovalView> {
+        self.authorize_session(&principal.principal_id, session_id)
+            .await?;
+        if command.expected_revision == 0 {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "expected_revision must be positive",
+            ));
+        }
+        self.runtime
+            .decide_session_approval(
+                crate::memory::ApprovalDecisionAuthority {
+                    principal_id: principal.principal_id.clone(),
+                    session_id: session_id.into(),
+                },
+                approval_id,
+                command,
+            )
+            .await
+            .map_err(classify_session_approval_error)
+    }
+
     pub fn subscribe_all(&self, capacity: usize) -> RuntimeEventStream {
         self.runtime.subscribe("*", capacity)
     }
@@ -4534,6 +4607,16 @@ impl MorphzSdk {
 
 fn hash_secret(secret: &str) -> String {
     format!("{:x}", Sha256::digest(secret.as_bytes()))
+}
+
+fn classify_session_approval_error(error: crate::runtime::SessionApprovalError) -> SdkError {
+    use crate::runtime::SessionApprovalError;
+    let code = match &error {
+        SessionApprovalError::NotFound => SdkErrorCode::NotFound,
+        SessionApprovalError::Conflict(_) => SdkErrorCode::Conflict,
+        SessionApprovalError::Unavailable => SdkErrorCode::Unavailable,
+    };
+    SdkError::new(code, error.to_string())
 }
 
 /// Canonical bytes signed by an Edge Node when exchanging a one-shot

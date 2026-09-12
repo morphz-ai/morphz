@@ -317,6 +317,7 @@ export type SchedulerObjectiveReadiness =
   | { state: 'runnable' }
   | { state: 'waiting'; dependency_ids: string[] }
   | { state: 'leased'; evaluation_id: string }
+  | { state: 'suspended'; evaluation_id: string }
   | { state: 'paused' | 'blocked' | 'terminal' }
 
 export interface SchedulerObjectiveSnapshot {

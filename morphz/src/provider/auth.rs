@@ -6,6 +6,8 @@
 //! owned here. Token material is stored only through [`SecretStore`].
 
 use super::{antigravity_request_user_agent, response_body_preview, ANTIGRAVITY_DAILY_BASE_URL};
+use super::refresh_diagnostics::RefreshDiagnostics;
+pub use super::refresh_diagnostics::OAuthRefreshDiagnostics;
 use crate::config::AuthAccountConfig;
 use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
 use crate::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
@@ -1001,6 +1003,7 @@ pub struct ProviderAuthManager {
     secret_store: Arc<SecretStore>,
     account_store: Arc<dyn ProviderAccountStateStore>,
     adapters: AuthAdapterRegistry,
+    refresh_diagnostics: RefreshDiagnostics,
 }
 
 impl ProviderAuthManager {
@@ -1030,11 +1033,18 @@ impl ProviderAuthManager {
             secret_store,
             account_store,
             adapters,
+            // An observation identity is not an auth credential. If entropy
+            // is unavailable, auth still works and diagnostic evidence is invalid.
+            refresh_diagnostics: RefreshDiagnostics::new(random_hex(12).ok()),
         }
     }
 
     pub fn account(&self, account_id: &str) -> Option<AuthAccountConfig> {
         self.accounts.read().ok()?.get(account_id).cloned()
+    }
+
+    pub fn refresh_diagnostics(&self) -> OAuthRefreshDiagnostics {
+        self.refresh_diagnostics.snapshot()
     }
 
     /// Resolve a Runtime-managed static credential through the same Secret
@@ -1353,11 +1363,48 @@ impl ProviderAuthManager {
             .contains_key(login_id))
     }
 
+    /// An unexpired login owns process-local state, including the bounded
+    /// retry window after token exchange but before catalog commit. Hosted
+    /// compute must not park while that state is still needed. Expired or
+    /// explicitly finished/cancelled attempts do not keep compute alive.
+    #[cfg(any(feature = "remote-store", test))]
+    pub(crate) fn has_active_logins(&self) -> Result<bool, String> {
+        let now = Utc::now();
+        Ok(self
+            .pending_logins
+            .read()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
+            .values()
+            .any(|pending| pending.expires_at > now))
+    }
+
     pub async fn materialize_authorization(
         &self,
         account_id: &str,
     ) -> Result<RequestAuthorization, String> {
         let account = self.oauth_account(account_id)?;
+        self.ensure_account_can_authorize(account_id).await?;
+        let adapter = self.adapters.get(&account.auth_adapter)?;
+        let mut token = self.load_token(&account)?;
+        if !oauth_adapters_compatible(adapter.id(), &token.adapter_id) {
+            return Err(format!(
+                "Token Adapter '{}' for Auth Account '{account_id}' does not match configuration '{}'",
+                token.adapter_id,
+                adapter.id()
+            ));
+        }
+        if token.needs_refresh(Utc::now()) || adapter.requires_metadata_refresh(&token) {
+            token = self
+                .refresh_token(account_id, &account, adapter.as_ref())
+                .await?;
+            // Waiting for another refresh does not retain an older grant if
+            // the operator revoked/disabled the account during that wait.
+            self.ensure_account_can_authorize(account_id).await?;
+        }
+        adapter.materialize(&token)
+    }
+
+    async fn ensure_account_can_authorize(&self, account_id: &str) -> Result<(), String> {
         if let Some(state) = self
             .account_store
             .get_provider_account_state(account_id)
@@ -1376,21 +1423,7 @@ impl ProviderAuthManager {
                 ));
             }
         }
-        let adapter = self.adapters.get(&account.auth_adapter)?;
-        let mut token = self.load_token(&account)?;
-        if !oauth_adapters_compatible(adapter.id(), &token.adapter_id) {
-            return Err(format!(
-                "Token Adapter '{}' for Auth Account '{account_id}' does not match configuration '{}'",
-                token.adapter_id,
-                adapter.id()
-            ));
-        }
-        if token.needs_refresh(Utc::now()) || adapter.requires_metadata_refresh(&token) {
-            token = self
-                .refresh_token(account_id, &account, adapter.as_ref(), token)
-                .await?;
-        }
-        adapter.materialize(&token)
+        Ok(())
     }
 
     pub fn account_metadata(&self, account_id: &str) -> Result<OAuthAccountMetadata, String> {
@@ -1418,7 +1451,7 @@ impl ProviderAuthManager {
         }
         if token.needs_refresh(Utc::now()) || adapter.requires_metadata_refresh(&token) {
             token = self
-                .refresh_token(account_id, &account, adapter.as_ref(), token)
+                .refresh_token(account_id, &account, adapter.as_ref())
                 .await?;
         }
         let metadata = token.public_metadata(account_id);
@@ -1537,15 +1570,19 @@ impl ProviderAuthManager {
         account_id: &str,
         account: &AuthAccountConfig,
         adapter: &dyn AuthAdapter,
-        current: OAuthTokenSet,
     ) -> Result<OAuthTokenSet, String> {
-        if current.refresh_token.as_deref().is_none_or(str::is_empty) {
-            self.mark_account_invalid(account_id, "missing_refresh_token")
-                .await;
-            return Err(format!(
-                "OAuth Auth Account '{account_id}' has no Refresh Token"
-            ));
-        }
+        let observation = self.refresh_diagnostics.request();
+        let outcome = self.refresh_token_inner(account_id, account, adapter).await;
+        observation.finish(outcome.is_ok());
+        outcome
+    }
+
+    async fn refresh_token_inner(
+        &self,
+        account_id: &str,
+        account: &AuthAccountConfig,
+        adapter: &dyn AuthAdapter,
+    ) -> Result<OAuthTokenSet, String> {
         let owner_id = format!("oauth-refresh-{}", random_hex(12)?);
         let lease = self
             .account_store
@@ -1557,6 +1594,7 @@ impl ProviderAuthManager {
             .await
             .map_err(|error| format!("failed to claim OAuth Refresh Lease: {error}"))?;
         let Some(lease) = lease else {
+            self.refresh_diagnostics.contention();
             // Another worker owns the refresh. Wait for its durable token
             // publication rather than making every concurrent request fail.
             // The wait is bounded by the refresh lease, so a crashed owner can
@@ -1580,13 +1618,68 @@ impl ProviderAuthManager {
                     .await;
             }
         };
-        let guard = RefreshLeaseGuard::new(
+        let mut guard = RefreshLeaseGuard::new(
             Arc::clone(&self.account_store),
             account_id.to_string(),
             lease.generation,
             owner_id,
         );
-        let refreshed = match adapter.refresh(&current).await {
+        // A previous owner may have published while this caller was claiming
+        // the lease. Capture the actual input value and logical version only
+        // after claim, before contacting the Provider.
+        let authority = self
+            .account_store
+            .get_provider_account_state(account_id)
+            .await
+            .map_err(|error| format!("failed to read OAuth account authority: {error}"))?;
+        if authority.as_ref().is_some_and(|state| {
+            matches!(
+                state.status,
+                ProviderAccountStatus::Disabled | ProviderAccountStatus::Revoked
+            )
+        }) {
+            return Err(format!(
+                "OAuth Auth Account '{account_id}' no longer permits refresh"
+            ));
+        }
+        let snapshot = self.secret_store.snapshot_for_update(
+            &account.credential_ref,
+            SecretUseContext::default(),
+            account.secret_backend.as_deref(),
+        )?;
+        let current: OAuthTokenSet = serde_json::from_str(snapshot.value())
+            .map_err(|_| "invalid managed OAuth Token Set")?;
+        if !oauth_adapters_compatible(adapter.id(), &current.adapter_id) {
+            return Err("OAuth credential adapter changed during refresh".into());
+        }
+        if !current.needs_refresh(Utc::now()) && !adapter.requires_metadata_refresh(&current) {
+            guard.release().await;
+            return Ok(current);
+        }
+        if current.refresh_token.as_deref().is_none_or(str::is_empty) {
+            let _ = self
+                .account_store
+                .compare_and_set_provider_account_state(
+                    account_id,
+                    authority.as_ref().map(|state| state.revision),
+                    ProviderAccountStatus::Invalid,
+                    None,
+                    Some("missing_refresh_token"),
+                    false,
+                )
+                .await;
+            return Err(format!(
+                "OAuth Auth Account '{account_id}' has no Refresh Token"
+            ));
+        }
+        let provider_observation = self.refresh_diagnostics.provider_call();
+        let outcome = adapter.refresh(&current).await;
+        drop(provider_observation);
+        // Reacquire the same-owner lease before publication. A replacement
+        // owner wins: a late network reply must not publish with its old grant.
+        guard.renew().await?;
+        let expected_revision = authority.as_ref().map(|state| state.revision);
+        let refreshed = match outcome {
             Ok(mut refreshed) => {
                 if refreshed.refresh_token.as_deref().is_none_or(str::is_empty) {
                     refreshed.refresh_token = current.refresh_token;
@@ -1606,35 +1699,67 @@ impl ProviderAuthManager {
                 if refreshed.device_id.is_none() {
                     refreshed.device_id = current.device_id;
                 }
-                self.store_token(account, &refreshed)?;
-                let _ = self
+                let serialized = zeroize::Zeroizing::new(
+                    serde_json::to_string(&refreshed)
+                        .map_err(|_| "failed to serialize refreshed OAuth Token Set")?,
+                );
+                if !self
+                    .secret_store
+                    .replace_if_unchanged(&snapshot, serialized.as_str())?
+                {
+                    return Err("OAuth credential changed while refresh was in flight; the newer credential was preserved".into());
+                }
+                self.refresh_diagnostics.publication();
+                self
                     .account_store
-                    .put_provider_account_state(
+                    .compare_and_set_provider_account_state(
                         account_id,
-                        None,
+                        expected_revision,
                         ProviderAccountStatus::Ready,
                         None,
                         None,
                         false,
                     )
-                    .await;
+                    .await.map_err(|_| "OAuth account authority changed during refresh; newer account state was preserved")?;
                 Ok(refreshed)
             }
             Err(error) => {
+                // A failed old refresh cannot invalidate a newly logged-in
+                // account, even before the login's account-state write arrives.
+                let current = self.secret_store.snapshot_for_update(
+                    &account.credential_ref,
+                    SecretUseContext::default(),
+                    account.secret_backend.as_deref(),
+                );
+                if !current
+                    .as_ref()
+                    .is_ok_and(|current| snapshot.same_version(current))
+                {
+                    return Err("OAuth credential changed during a failed refresh; newer authority was preserved".into());
+                }
                 let lower = error.to_ascii_lowercase();
                 if lower.contains("unauthorized")
                     || lower.contains("forbidden")
                     || lower.contains("invalid_grant")
                     || lower.contains("refresh_token_reused")
                 {
-                    self.mark_account_invalid(account_id, "oauth_refresh_rejected")
+                    let _ = self
+                        .account_store
+                        .compare_and_set_provider_account_state(
+                            account_id,
+                            expected_revision,
+                            ProviderAccountStatus::Invalid,
+                            None,
+                            Some("oauth_refresh_rejected"),
+                            false,
+                        )
                         .await;
                 } else {
                     let _ = self
                         .account_store
-                        .put_provider_account_state(
+                        .compare_and_set_provider_account_state(
                             account_id,
-                            None,
+                            expected_revision,
                             ProviderAccountStatus::Cooldown,
                             Some(Utc::now() + ChronoDuration::seconds(30)),
                             Some("oauth_refresh_transient"),
@@ -1647,20 +1772,6 @@ impl ProviderAuthManager {
         };
         guard.release().await;
         refreshed
-    }
-
-    async fn mark_account_invalid(&self, account_id: &str, reason: &str) {
-        let _ = self
-            .account_store
-            .put_provider_account_state(
-                account_id,
-                None,
-                ProviderAccountStatus::Invalid,
-                None,
-                Some(reason),
-                false,
-            )
-            .await;
     }
 }
 
@@ -1694,6 +1805,20 @@ impl RefreshLeaseGuard {
             .store
             .release_provider_refresh_lease(&self.account_id, self.generation, &self.owner_id)
             .await;
+    }
+    async fn renew(&mut self) -> Result<(), String> {
+        let lease = self
+            .store
+            .claim_provider_refresh_lease(
+                &self.account_id,
+                &self.owner_id,
+                Utc::now() + ChronoDuration::seconds(REFRESH_LEASE_SECS),
+            )
+            .await
+            .map_err(|_| "OAuth refresh ownership could not be verified")?
+            .ok_or("OAuth refresh ownership changed before publication")?;
+        self.generation = lease.generation;
+        Ok(())
     }
 }
 
@@ -1993,7 +2118,7 @@ struct CodexDeviceTokenResponse {
     code_verifier: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct OAuthTokenResponse {
     #[serde(default)]
     access_token: String,
@@ -2238,6 +2363,12 @@ fn codex_token_set(
     version: &str,
     response: OAuthTokenResponse,
 ) -> Result<OAuthTokenSet, String> {
+    if !response.error.is_empty() {
+        return Err(format!(
+            "Codex OAuth Token Endpoint rejected authorization: {}",
+            safe_oauth_error_code(&response.error)
+        ));
+    }
     if response.access_token.trim().is_empty() {
         return Err("Codex OAuth Token Endpoint returned an empty Access Token".to_string());
     }
@@ -3904,18 +4035,79 @@ async fn post_token_form(
         .bytes()
         .await
         .map_err(|error| format!("failed to read OAuth Token response: {error}"))?;
-    let parsed: OAuthTokenResponse = serde_json::from_slice(&body)
-        .map_err(|error| format!("failed to parse OAuth Token response: {error}"))?;
+    parse_oauth_token_response(status, &body)
+}
+
+fn safe_oauth_error_code(code: &str) -> &str {
+    match code {
+        "invalid_request"
+        | "invalid_client"
+        | "invalid_grant"
+        | "unauthorized_client"
+        | "unsupported_grant_type"
+        | "invalid_scope"
+        | "access_denied"
+        | "authorization_pending"
+        | "slow_down"
+        | "expired_token"
+        | "server_error"
+        | "temporarily_unavailable"
+        | "unsupported_country_region_territory" => code,
+        _ => "unknown_oauth_error",
+    }
+}
+
+fn parse_oauth_token_response(
+    status: reqwest::StatusCode,
+    body: &[u8],
+) -> Result<OAuthTokenResponse, String> {
+    let value = serde_json::from_slice::<Value>(body).ok();
     // RFC 8628 commonly returns pending with HTTP 400, while Kimi currently
     // returns 200. Preserve the structured OAuth error for either behavior.
-    if !status.is_success() && parsed.error.is_empty() {
+    if !status.is_success() {
+        if let Some(error) = value
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(Value::as_str)
+        {
+            if matches!(error, "authorization_pending" | "slow_down") {
+                return Ok(OAuthTokenResponse {
+                    error: error.to_string(),
+                    error_description: value
+                        .as_ref()
+                        .and_then(|value| value.get("error_description"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+        // Error objects and HTML are not successful token envelopes. Preserve
+        // the HTTP status instead of obscuring rejection as a serde failure.
+        // Emit only a closed OAuth category; no provider body/code/URL/token.
+        let code = value
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .filter(|error| error.is_string())
+                    .or_else(|| value.pointer("/error/code"))
+            })
+            .and_then(Value::as_str)
+            .map(safe_oauth_error_code)
+            .unwrap_or("unknown_oauth_error");
         return Err(format!(
-            "OAuth Token Endpoint returned HTTP {}: {}",
-            status,
-            safe_error_body(&body)
+            "OAuth Token Endpoint returned HTTP {status}: {code}; response_format={}",
+            if value.is_some() { "json" } else { "non_json" },
         ));
     }
-    Ok(parsed)
+    serde_json::from_slice(body).map_err(|_| {
+        format!(
+            "failed to parse OAuth Token response (HTTP {status}; response_format={})",
+            if value.is_some() { "json" } else { "non_json" },
+        )
+    })
 }
 
 fn to_header_map(values: &BTreeMap<String, String>) -> Result<reqwest::header::HeaderMap, String> {
@@ -4006,6 +4198,56 @@ fn validate_secret_alias(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_endpoint_errors_preserve_status_without_response_secrets() {
+        for (status, body, expected) in [
+            (reqwest::StatusCode::FORBIDDEN, b"<html>secret-token</html>".as_slice(), "HTTP 403"),
+            (reqwest::StatusCode::BAD_REQUEST, br#"{"error":{"code":"invalid_grant","message":"secret-token"},"access_token":"secret-token"}"#.as_slice(), "invalid_grant"),
+            (reqwest::StatusCode::BAD_REQUEST, br#"{"error":{"code":"secret-token","message":"secret-token"}}"#.as_slice(), "unknown_oauth_error"),
+        ] {
+            let error = parse_oauth_token_response(status, body).err().unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("secret-token"));
+            assert!(!error.contains("failed to parse"));
+        }
+        let error = parse_oauth_token_response(
+            reqwest::StatusCode::OK,
+            br#"{"access_token":{"secret-token":"secret-token"}}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("HTTP 200"));
+        assert!(!error.contains("secret-token"));
+    }
+
+    #[test]
+    fn device_poll_errors_remain_structured_and_codex_rejection_is_not_an_empty_token() {
+        for status in [reqwest::StatusCode::OK, reqwest::StatusCode::BAD_REQUEST] {
+            for error in ["authorization_pending", "slow_down"] {
+                let body = serde_json::to_vec(&json!({"error":error})).unwrap();
+                let response = parse_oauth_token_response(status, &body).unwrap();
+                assert_eq!(response.error, error);
+            }
+        }
+        let response =
+            parse_oauth_token_response(reqwest::StatusCode::OK, br#"{"error":"invalid_grant"}"#)
+                .unwrap();
+        let error = codex_token_set("test", "1", response).err().unwrap();
+        assert!(error.contains("invalid_grant"));
+        assert!(!error.contains("empty Access Token"));
+        let error = parse_oauth_token_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":"invalid_grant","error_description":null}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("invalid_grant"));
+        let response = parse_oauth_token_response(reqwest::StatusCode::OK,
+            br#"{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id"}"#).unwrap();
+        assert_eq!(response.access_token, "test-access");
+    }
     use crate::memory::sqlite::SqliteStore;
     use crate::secret_store::SecretValueBackend;
     use axum::extract::{Form, State};
@@ -4131,6 +4373,297 @@ mod tests {
         (directory, manager, secret_store)
     }
 
+    struct HeldRefreshAdapter {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        fail: bool,
+    }
+    #[async_trait::async_trait]
+    impl AuthAdapter for HeldRefreshAdapter {
+        fn id(&self) -> &'static str {
+            "held-oauth"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        fn flow(&self) -> OAuthFlowKind {
+            OAuthFlowKind::DeviceCode
+        }
+        async fn start_login(&self) -> Result<AdapterLoginStart, String> {
+            Err("not used".into())
+        }
+        async fn continue_login(
+            &self,
+            _: &Value,
+            _: OAuthLoginCompletion,
+        ) -> Result<AdapterLoginResult, String> {
+            Err("not used".into())
+        }
+        async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                return Err("invalid_grant: synthetic rejected refresh".into());
+            }
+            let mut token = current.clone();
+            token.access_token = "refreshed-token".into();
+            token.refresh_token = Some("rotated-refresh-token".into());
+            token.expires_at = Some(Utc::now() + ChronoDuration::hours(1));
+            Ok(token)
+        }
+        fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
+            Ok(RequestAuthorization {
+                bearer_token: token.access_token.clone(),
+                headers: BTreeMap::new(),
+                request_context: BTreeMap::new(),
+            })
+        }
+    }
+    fn held_token(value: &str, expired: bool) -> OAuthTokenSet {
+        serde_json::from_value(json!({"adapter_id":"held-oauth", "adapter_version":"1", "access_token":value,
+            "refresh_token":"initial-refresh", "expires_at":Utc::now() + ChronoDuration::seconds(if expired { -1 } else { 3600 })})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn concurrent_oauth_refresh_diagnostics_prove_contention_and_one_publication() {
+        let adapter = Arc::new(HeldRefreshAdapter {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            fail: false,
+        });
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(adapter.clone());
+        let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
+        let account = manager.account("oauth-account").unwrap();
+        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        let before = manager.refresh_diagnostics();
+        assert_eq!(before.requests_started, 0);
+        assert!(!before.incomplete);
+        let workers: Vec<_> = (0..4).map(|_| {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.materialize_authorization("oauth-account").await })
+        }).collect();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if manager.refresh_diagnostics().lease_contentions == 3 { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let held = manager.refresh_diagnostics();
+        assert_eq!((held.requests_started, held.requests_active, held.requests_peak_active), (4, 4, 4));
+        assert_eq!((held.provider_calls_started, held.provider_calls_active), (1, 1));
+        assert_eq!(held.credential_publications, 0);
+        adapter.release.notify_one();
+        for worker in workers {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
+            assert_eq!(result.bearer_token, "refreshed-token");
+        }
+        let after = manager.refresh_diagnostics();
+        assert_eq!(after.instance_id, before.instance_id);
+        assert_eq!((after.requests_succeeded, after.requests_failed, after.requests_abandoned), (4, 0, 0));
+        assert_eq!((after.requests_active, after.provider_calls_active), (0, 0));
+        assert_eq!((after.provider_calls_started, after.provider_calls_peak_active, after.credential_publications), (1, 1, 1));
+        assert!(!after.incomplete);
+        let public = serde_json::to_string(&after).unwrap();
+        for private in ["oauth-account", "private-initial-token", "initial-refresh", "refreshed-token", "rotated-refresh-token"] {
+            assert!(!public.contains(private));
+        }
+        manager.materialize_authorization("oauth-account").await.unwrap();
+        assert_eq!(manager.refresh_diagnostics(), after); // Warm auth is not a refresh.
+    }
+
+    #[tokio::test]
+    async fn cancelled_oauth_refresh_is_not_counted_as_success_or_left_active() {
+        let adapter = Arc::new(HeldRefreshAdapter {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            fail: false,
+        });
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(adapter.clone());
+        let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
+        let account = manager.account("oauth-account").unwrap();
+        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        let worker = Arc::clone(&manager);
+        let running = tokio::spawn(async move { worker.materialize_authorization("oauth-account").await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), adapter.entered.notified()).await.unwrap();
+        assert_eq!(manager.refresh_diagnostics().provider_calls_active, 1);
+        running.abort();
+        assert!(matches!(running.await, Err(error) if error.is_cancelled()));
+        let snapshot = manager.refresh_diagnostics();
+        assert_eq!((snapshot.requests_started, snapshot.requests_abandoned), (1, 1));
+        assert_eq!((snapshot.requests_succeeded, snapshot.requests_failed), (0, 0));
+        assert_eq!((snapshot.requests_active, snapshot.provider_calls_active, snapshot.credential_publications), (0, 0, 0));
+        assert!(!snapshot.incomplete);
+        assert_eq!(manager.load_token(&account).unwrap().access_token, "private-initial-token");
+    }
+
+    #[tokio::test]
+    async fn in_flight_refresh_preserves_new_login_logout_and_operator_disable() {
+        for race in ["login", "logout", "disable", "failed-login", "new-owner"] {
+            let adapter = Arc::new(HeldRefreshAdapter {
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                fail: race == "failed-login",
+            });
+            let mut registry = AuthAdapterRegistry::default();
+            registry.register(adapter.clone());
+            let (directory, manager, secrets) =
+                test_manager(oauth_account("held-oauth"), registry).await;
+            let account = manager.account("oauth-account").unwrap();
+            manager
+                .store_token(&account, &held_token("initial", true))
+                .unwrap();
+            manager
+                .account_store
+                .put_provider_account_state(
+                    "oauth-account",
+                    None,
+                    ProviderAccountStatus::Ready,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            let worker = manager.clone();
+            let running =
+                tokio::spawn(
+                    async move { worker.materialize_authorization("oauth-account").await },
+                );
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                adapter.entered.notified(),
+            )
+            .await
+            .unwrap();
+            match race {
+                "login" | "failed-login" => {
+                    manager
+                        .store_token(&account, &held_token("new-login", false))
+                        .unwrap();
+                    manager
+                        .account_store
+                        .put_provider_account_state(
+                            "oauth-account",
+                            None,
+                            ProviderAccountStatus::Ready,
+                            None,
+                            None,
+                            false,
+                        )
+                        .await
+                        .unwrap();
+                }
+                "logout" => {
+                    manager.logout("oauth-account").await.unwrap();
+                }
+                "disable" => {
+                    manager
+                        .account_store
+                        .put_provider_account_state(
+                            "oauth-account",
+                            None,
+                            ProviderAccountStatus::Disabled,
+                            None,
+                            None,
+                            false,
+                        )
+                        .await
+                        .unwrap();
+                }
+                "new-owner" => {
+                    let url = format!("sqlite://{}", directory.path().join("oauth.db").display());
+                    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+                    let changed = sqlx::query("UPDATE provider_refresh_leases SET lease_expires_at = ? WHERE account_id = ?")
+                        .bind((Utc::now() - ChronoDuration::seconds(1)).to_rfc3339()).bind("oauth-account")
+                        .execute(&pool).await.unwrap();
+                    assert_eq!(changed.rows_affected(), 1);
+                    pool.close().await;
+                    assert!(manager
+                        .account_store
+                        .claim_provider_refresh_lease(
+                            "oauth-account",
+                            "replacement-owner",
+                            Utc::now() + ChronoDuration::seconds(45)
+                        )
+                        .await
+                        .unwrap()
+                        .is_some());
+                }
+                _ => unreachable!(),
+            }
+            adapter.release.notify_one();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), running)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(result.is_err(), "stale refresh authorized after {race}");
+            let observed = manager.refresh_diagnostics();
+            assert_eq!((observed.requests_started, observed.requests_failed, observed.provider_calls_started), (1, 1, 1));
+            assert_eq!((observed.requests_active, observed.provider_calls_active), (0, 0));
+            // Disable preserves routing authority even when the credential
+            // CAS succeeded before the separate account-state CAS rejected it.
+            assert_eq!(observed.credential_publications, u64::from(race == "disable"));
+            assert!(!observed.incomplete);
+            let state = manager
+                .account_store
+                .get_provider_account_state("oauth-account")
+                .await
+                .unwrap()
+                .unwrap();
+            match race {
+                "login" | "failed-login" => {
+                    assert_eq!(state.status, ProviderAccountStatus::Ready);
+                    assert_eq!(
+                        manager.load_token(&account).unwrap().access_token,
+                        "new-login"
+                    );
+                    assert_eq!(
+                        manager
+                            .materialize_authorization("oauth-account")
+                            .await
+                            .unwrap()
+                            .bearer_token,
+                        "new-login"
+                    );
+                }
+                "logout" => {
+                    assert_eq!(state.status, ProviderAccountStatus::Revoked);
+                    assert!(secrets
+                        .resolve(&account.credential_ref, SecretUseContext::default())
+                        .unwrap()
+                        .is_none());
+                }
+                "disable" => {
+                    assert_eq!(state.status, ProviderAccountStatus::Disabled);
+                    assert!(manager
+                        .materialize_authorization("oauth-account")
+                        .await
+                        .is_err());
+                }
+                "new-owner" => {
+                    assert_eq!(state.status, ProviderAccountStatus::Ready);
+                    assert_eq!(
+                        manager.load_token(&account).unwrap().access_token,
+                        "initial"
+                    );
+                    assert!(manager
+                        .account_store
+                        .claim_provider_refresh_lease(
+                            "oauth-account",
+                            "third-owner",
+                            Utc::now() + ChronoDuration::seconds(45)
+                        )
+                        .await
+                        .unwrap()
+                        .is_none());
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn newly_registered_account_is_available_without_restart() {
         let (_directory, manager, _secret_store) =
@@ -4206,7 +4739,9 @@ mod tests {
             .register_transient_account("attempt-only", oauth_account(CODEX_ADAPTER_ID))
             .unwrap();
 
+        assert!(!manager.has_active_logins().unwrap());
         let challenge = manager.start_login("attempt-only").await.unwrap();
+        assert!(manager.has_active_logins().unwrap());
         assert!(manager.has_login(&challenge.login_id).unwrap());
         assert!(manager.account("attempt-only").is_some());
         assert!(secret_store
@@ -4221,12 +4756,61 @@ mod tests {
             .is_none());
 
         assert!(manager.cancel_login(&challenge.login_id).unwrap());
+        assert!(!manager.has_active_logins().unwrap());
         assert!(!manager.has_login(&challenge.login_id).unwrap());
         assert!(manager.account("attempt-only").is_none());
         assert!(secret_store
             .resolve("MORPHZ_TEST_OAUTH_TOKEN", SecretUseContext::default())
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn hosted_login_owner_expires_and_keeps_uncommitted_completion_alive() {
+        let (_directory, manager, _) = test_manager(
+            oauth_account(CODEX_ADAPTER_ID),
+            AuthAdapterRegistry::default(),
+        )
+        .await;
+        let mut pending = PendingLoginEnvelope {
+            account_id: "oauth-account".into(),
+            adapter_id: CODEX_ADAPTER_ID.into(),
+            expires_at: Utc::now() + ChronoDuration::minutes(5),
+            callback_state: None,
+            state: json!({}),
+            completed_account: None,
+        };
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("test-login".into(), pending.clone());
+        assert!(manager.has_active_logins().unwrap());
+        assert!(!manager.finish_login("test-login").unwrap());
+        assert!(manager.has_active_logins().unwrap());
+        pending.completed_account =
+            Some(held_token("synthetic", false).public_metadata("oauth-account"));
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("test-login".into(), pending.clone());
+        assert!(
+            manager.has_active_logins().unwrap(),
+            "catalog commit may still need a retry"
+        );
+        assert!(manager.finish_login("test-login").unwrap());
+        assert!(!manager.has_active_logins().unwrap());
+        pending.expires_at = Utc::now() - ChronoDuration::seconds(1);
+        manager
+            .pending_logins
+            .write()
+            .unwrap()
+            .insert("expired-login".into(), pending);
+        assert!(
+            !manager.has_active_logins().unwrap(),
+            "abandoned logins must not prevent idle park forever"
+        );
     }
 
     fn oauth_account(adapter: &str) -> AuthAccountConfig {

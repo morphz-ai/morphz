@@ -70,6 +70,7 @@ use crate::memory::{
     WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
+use crate::memory::{ObjectiveActivationAdmission, ObjectiveApprovalWait};
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, NewSchedulerDependency,
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyMutation,
@@ -87,7 +88,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+mod activation_approval_wait;
 mod agent_provider;
+mod objective_approval_wait;
 mod plan_execution;
 
 pub struct SqliteStore {
@@ -138,6 +141,11 @@ fn sqlite_has_wal_reset_fix(version: &str) -> bool {
 }
 
 impl SqliteStore {
+    #[cfg(feature = "remote-store")]
+    pub(super) fn computation_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::new_with_config(db_path, &SqliteStorageConfig::default()).await
     }
@@ -2058,6 +2066,52 @@ impl SqliteStore {
         migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
+        sqlx::query(super::activation_approval_wait::TABLE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(super::activation_approval_wait::PLAN_TABLE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(super::activation_approval_wait::INFER_TABLE)
+            .execute(&pool)
+            .await?;
+        sqlx::query(super::activation_approval_wait::INFER_INDEX)
+            .execute(&pool)
+            .await?;
+        sqlx::query(super::objective_approval_wait::TABLE)
+            .execute(&pool)
+            .await?;
+        // Retain the exact assistant-call identity across claim and a second
+        // crash. Terminal mutation (including aggregate Thread cancellation)
+        // removes it atomically; re-suspension replaces its dependency set.
+        let mut checkpoint_schema = pool.begin().await?;
+        sqlx::query("DROP VIEW IF EXISTS activation_pending_approval_waits")
+            .execute(&mut *checkpoint_schema)
+            .await?;
+        sqlx::query(&format!(
+            "CREATE VIEW activation_pending_approval_waits AS {}",
+            super::activation_approval_wait::VIEW_QUERY
+        ))
+        .execute(&mut *checkpoint_schema)
+        .await?;
+        sqlx::query("DROP TRIGGER IF EXISTS activation_approval_wait_cleared")
+            .execute(&mut *checkpoint_schema)
+            .await?;
+        sqlx::query(
+            r#"CREATE TRIGGER IF NOT EXISTS activation_approval_wait_cleared
+            AFTER UPDATE OF status ON thread_activations
+            WHEN NEW.status IN ('completed', 'failed', 'cancelled')
+            BEGIN
+                DELETE FROM activation_approval_waits WHERE activation_id = NEW.id;
+                DELETE FROM activation_approval_plan_waits WHERE activation_id = NEW.id;
+                DELETE FROM activation_approval_infer_waits WHERE activation_id = NEW.id;
+            END"#,
+        )
+        .execute(&mut *checkpoint_schema)
+        .await?;
+        checkpoint_schema.commit().await?;
+        sqlx::query("CREATE TRIGGER IF NOT EXISTS objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON objectives BEGIN DELETE FROM objective_approval_waits WHERE objective_id = NEW.id AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation); END")
+            .execute(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -11853,6 +11907,30 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
 
+        // A directed Objective input is not a competing Evaluation. Keep its
+        // immutable Signal pending until the current owner reaches a safe
+        // boundary, including when approval suspension has retired its lease.
+        if stored_signal.kind == "chat/steering"
+            && sqlx::query_scalar::<_, i64>(
+                r#"SELECT 1 FROM objectives o JOIN threads t ON t.id = ?
+               WHERE t.kind = 'execution' AND t.supervisor_kind = 'objective'
+                 AND t.origin_evaluation_id IS NULL AND t.supervisor_id = o.id
+                 AND t.supervision_generation = o.generation
+                 AND t.agent_id = o.agent_id AND t.context_id = o.context_id
+                 AND t.session_id = o.coordinator_session_id
+                 AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                 AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > ?)"#,
+            )
+            .bind(&thread.id)
+            .bind(&now)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some()
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
         // Signals produced by a physical Activation belong to that exact
         // Evaluation generation.  A late tool result from an old generation
         // must never be folded into a restarted DialogueTurn.  Signals without
@@ -12304,6 +12382,17 @@ impl ActivationStore for SqliteStore {
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
                  AND NOT EXISTS (
+                   SELECT 1 FROM objectives o
+                   WHERE signals.kind = 'chat/steering'
+                     AND thread.kind = 'execution' AND thread.supervisor_kind = 'objective'
+                     AND thread.origin_evaluation_id IS NULL AND thread.supervisor_id = o.id
+                     AND thread.supervision_generation = o.generation
+                     AND thread.agent_id = o.agent_id AND thread.context_id = o.context_id
+                     AND thread.session_id = o.coordinator_session_id
+                     AND o.status = 'active' AND o.active_evaluation_id IS NOT NULL
+                     AND (o.evaluation_lease_expires_at IS NULL OR o.evaluation_lease_expires_at > ?)
+                 )
+                 AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
                      AND activation.generation = thread.generation
@@ -12312,6 +12401,7 @@ impl ActivationStore for SqliteStore {
                ORDER BY signals.sequence, signals.id
                LIMIT ?"#,
         )
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -12900,26 +12990,36 @@ impl ActivationStore for SqliteStore {
                  SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 0
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 1
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 2
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 3
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                  UNION ALL SELECT * FROM (
                    SELECT * FROM thread_activations
                    WHERE status = 'queued' AND admission_rank = 4
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w
+                                     WHERE w.activation_id = thread_activations.id)
                    ORDER BY created_at, id LIMIT ?
                  )
                ), eligible AS (
@@ -12965,6 +13065,7 @@ impl ActivationStore for SqliteStore {
                           AND older_thread.generation = older.generation
                          WHERE older.session_id = activations.session_id
                            AND older.status = 'queued'
+                           AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                            AND older.id != activations.id
                            AND older_thread.kind = 'dialogue_turn'
                            AND COALESCE(
@@ -13068,6 +13169,7 @@ impl ActivationStore for SqliteStore {
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let runnable = sqlx::query_scalar::<_, i64>(
             r#"SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = candidate.id) THEN 0
                  WHEN candidate_thread.kind != 'dialogue_turn' THEN 1
                  WHEN COALESCE(json_extract(root_event.payload, '$.dispatch_mode'), '') = 'parallel' THEN 1
                  WHEN EXISTS (
@@ -13103,6 +13205,7 @@ impl ActivationStore for SqliteStore {
                     AND older_thread.generation = older.generation
                    WHERE older.session_id = candidate.session_id
                      AND older.status = 'queued'
+                     AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = older.id)
                      AND older.id != candidate.id
                      AND older_thread.kind = 'dialogue_turn'
                      AND COALESCE(
@@ -13168,6 +13271,27 @@ impl ActivationStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn suspend_thread_activation_for_approval(
+        &self,
+        request: crate::memory::ActivationApprovalWaitRequest,
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.checkpoint_approval_wait(request).await
+    }
+
+    async fn get_thread_activation_approval_wait(
+        &self,
+        activation_id: &str,
+    ) -> Result<
+        Option<crate::memory::ActivationApprovalWaitCheckpoint>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let rows = sqlx::query_as("SELECT approval_id, assistant_call_event_id FROM activation_approval_waits WHERE activation_id = ? ORDER BY approval_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        let infer_rows = sqlx::query_as("SELECT child_activation_id, assistant_call_event_id FROM activation_approval_infer_waits WHERE activation_id = ? ORDER BY child_activation_id")
+            .bind(activation_id).fetch_all(&self.pool).await?;
+        super::activation_approval_wait::checkpoint_from_rows(activation_id, rows, infer_rows)
     }
 
     async fn update_thread_activation(
@@ -13285,6 +13409,7 @@ impl ActivationStore for SqliteStore {
                             AND thread.generation = activation.generation
                            WHERE activation.session_id = ?
                              AND activation.status = 'queued'
+                             AND NOT EXISTS (SELECT 1 FROM activation_pending_approval_waits w WHERE w.activation_id = activation.id)
                              AND thread.kind = 'dialogue_turn'
                              AND COALESCE(
                                json_extract((SELECT payload FROM events WHERE id = thread.root_turn_id), '$.dispatch_mode'),
@@ -13327,7 +13452,11 @@ impl ActivationStore for SqliteStore {
                    lease_expires_at = ?,
                    context_snapshot_version = COALESCE(?, context_snapshot_version),
                    updated_at = ?
-               WHERE id = ? AND revision = ?"#,
+               WHERE id = ? AND revision = ?
+                 AND (? <> 'running' OR NOT EXISTS (
+                   SELECT 1 FROM activation_pending_approval_waits w
+                   WHERE w.activation_id = thread_activations.id
+                 ))"#,
         )
         .bind(thread_activation_status_storage(status))
         .bind(claimed_by)
@@ -13336,10 +13465,23 @@ impl ActivationStore for SqliteStore {
         .bind(&now)
         .bind(id)
         .bind(expected_revision)
+        .bind(thread_activation_status_storage(status))
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
             if status.is_terminal() {
+                if matches!(
+                    status,
+                    ThreadActivationStatus::Cancelled | ThreadActivationStatus::Failed
+                ) {
+                    // This Activation, not its whole Thread/Session, lost
+                    // execution authority. Close its logical children before
+                    // committing the owner fence, even with no live Runtime.
+                    sqlx::query("UPDATE action_groups SET revision = revision + 1, status = 'cancelled', updated_at = ?, settled_at = ? WHERE activation_id = ? AND status = 'running'")
+                        .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
+                    sqlx::query("UPDATE plan_executions SET revision = revision + 1, status = 'cancelled', error = 'owning Activation terminated', pending_kind = NULL, pending_id = NULL, claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL, updated_at = ?, finished_at = ? WHERE activation_id = ? AND status IN ('queued', 'running', 'waiting')")
+                        .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
+                }
                 sqlx::query(
                     r#"UPDATE thread_signals
                        SET status = 'acknowledged', acknowledged_at = ?
@@ -13762,7 +13904,19 @@ impl ActivationStore for SqliteStore {
         let mut objective_is_terminal = false;
         if let Some(objective_id) = completion_objective_id {
             let row = sqlx::query(
-                r#"SELECT status, active_evaluation_id, completion_intent_json
+                r#"SELECT status, active_evaluation_id, completion_intent_json,
+                   EXISTS (
+                     SELECT 1 FROM threads target JOIN thread_signals input ON input.thread_id = target.id
+                     WHERE target.supervisor_id = objectives.id
+                       AND target.supervisor_kind = 'objective' AND target.kind = 'execution'
+                       AND target.origin_evaluation_id IS NULL
+                       AND target.supervision_generation = objectives.generation
+                       AND target.agent_id = objectives.agent_id AND target.context_id = objectives.context_id
+                       AND target.session_id = objectives.coordinator_session_id
+                       AND target.status = 'open' AND target.control_state = 'active'
+                       AND input.thread_generation = target.generation
+                       AND input.kind = 'chat/steering' AND input.status = 'pending'
+                   ) AS pending_directed_input
                    FROM objectives WHERE id = ?"#,
             )
             .bind(objective_id)
@@ -13777,6 +13931,7 @@ impl ActivationStore for SqliteStore {
                 if !objective_is_terminal
                     && terminal_lifecycle == ThreadLifecycle::Completed
                     && status == ObjectiveStatus::Active.as_str()
+                    && !row.get::<bool, _>("pending_directed_input")
                 {
                     if let Some(intent_json) = completion_intent_json {
                         let intent: ObjectiveCompletionIntent = serde_json::from_str(&intent_json)?;
@@ -15856,6 +16011,41 @@ impl ThreadStore for SqliteStore {
             .bind(&current.root_turn_id)
             .bind(i64::try_from(current.generation)?)
             .bind(&activation_id)
+            .execute(&mut *tx)
+            .await?;
+            // Close logical execution owners in the same transaction, before
+            // live futures are interrupted. Member results remain historical
+            // facts: cancelling a batch does not fabricate successful outputs.
+            sqlx::query(
+                r#"UPDATE action_groups
+                   SET revision = revision + 1, status = 'cancelled', updated_at = ?, settled_at = ?
+                   WHERE thread_id = ? AND status = 'running' AND activation_id IN (
+                     SELECT id FROM thread_activations WHERE root_turn_id = ? AND generation = ?
+                   )"#,
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(&current.id)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE plan_executions
+                   SET revision = revision + 1, status = 'cancelled', error = ?,
+                       pending_kind = NULL, pending_id = NULL, claimed_by = NULL,
+                       claim_token = NULL, lease_expires_at = NULL, updated_at = ?, finished_at = ?
+                   WHERE thread_id = ? AND status IN ('queued', 'running', 'waiting')
+                     AND activation_id IN (
+                       SELECT id FROM thread_activations WHERE root_turn_id = ? AND generation = ?
+                     )"#,
+            )
+            .bind(reason)
+            .bind(&now)
+            .bind(&now)
+            .bind(&current.id)
+            .bind(&current.root_turn_id)
+            .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
             sqlx::query(
@@ -20121,8 +20311,8 @@ impl ObjectiveStore for SqliteStore {
                  COALESCE(SUM(CASE WHEN objective.status = 'active'
                    AND NOT (
                      objective.active_evaluation_id IS NOT NULL
-                     AND objective.evaluation_lease_expires_at IS NOT NULL
-                     AND objective.evaluation_lease_expires_at > ?
+                     AND (objective.evaluation_lease_expires_at IS NULL
+                       OR objective.evaluation_lease_expires_at > ?)
                    )
                    AND NOT EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
@@ -20134,8 +20324,8 @@ impl ObjectiveStore for SqliteStore {
                    ) THEN 1 ELSE 0 END), 0) AS runnable_objectives,
                  COALESCE(SUM(CASE WHEN objective.status = 'active' AND (
                    (objective.active_evaluation_id IS NOT NULL
-                    AND objective.evaluation_lease_expires_at IS NOT NULL
-                    AND objective.evaluation_lease_expires_at > ?)
+                    AND (objective.evaluation_lease_expires_at IS NULL
+                      OR objective.evaluation_lease_expires_at > ?))
                    OR EXISTS (
                      SELECT 1 FROM scheduler_dependencies dependency
                      WHERE dependency.owner_kind = 'objective'
@@ -20559,6 +20749,20 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn get_objective_approval_wait(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<ObjectiveApprovalWait>, Box<dyn std::error::Error + Send + Sync>> {
+        self.objective_approval_wait(objective_id).await
+    }
+
+    async fn admit_objective_activation(
+        &self,
+        request: ObjectiveActivationAdmission,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.admit_approval_objective(request).await
+    }
+
     async fn claim_objective_evaluation(
         &self,
         id: &str,
@@ -20763,6 +20967,14 @@ impl ObjectiveStore for SqliteStore {
                      AND dependency.owner_generation = objectives.generation
                      AND dependency.required = 1 AND dependency.status = 'pending'
                  )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM threads input_thread
+                   JOIN thread_signals input ON input.thread_id = input_thread.id
+                   WHERE input_thread.root_turn_id = ?
+                     AND input.thread_generation = input_thread.generation
+                     AND input_thread.status = 'open'
+                     AND input.kind = 'chat/steering' AND input.status IN ('pending', 'claimed')
+                 )
                  AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= ?)"#,
         )
         .bind(evaluation_id)
@@ -20770,6 +20982,7 @@ impl ObjectiveStore for SqliteStore {
         .bind(&now)
         .bind(id)
         .bind(expected_revision)
+        .bind(&thread.root_turn_id)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -20858,7 +21071,8 @@ impl ObjectiveStore for SqliteStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = ?, updated_at = ?
                WHERE id = ? AND status = 'active' AND wait_condition_json IS NULL
-                 AND active_evaluation_id = ?"#,
+                 AND active_evaluation_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)"#,
         )
         .bind(lease_expires_at)
         .bind(now)
@@ -20903,6 +21117,7 @@ impl ObjectiveStore for SqliteStore {
             r#"UPDATE objectives
                SET evaluation_lease_expires_at = ?, updated_at = ?
                WHERE id = ? AND status = 'active' AND active_evaluation_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM objective_approval_waits w WHERE w.objective_id = objectives.id)
                  AND EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency
                    WHERE dependency.id = ?
@@ -21292,13 +21507,25 @@ impl ActionGroupStore for SqliteStore {
             .map_err(|_| "Action Group Objective revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE threads SET revision = revision WHERE id = ?")
+            .bind(&group.thread_id)
+            .execute(&mut *tx)
+            .await?;
         let inserted = sqlx::query(
             r#"INSERT OR IGNORE INTO action_groups
                (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
                 assistant_call_event_id, objective_id, objective_evaluation_id,
                 objective_revision, status, member_count, terminal_member_count,
                 created_at, updated_at, settled_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, NULL)"#,
+               SELECT ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, NULL
+               WHERE EXISTS (
+                 SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id = t.root_turn_id
+                 WHERE t.id = ? AND a.id = ? AND t.status = 'open'
+                   AND a.status IN ('queued', 'running') AND a.generation = t.generation
+                   AND t.agent_id = ? AND a.agent_id = t.agent_id
+                   AND t.context_id = ? AND a.context_id = t.context_id
+                   AND t.session_id = ? AND a.session_id = t.session_id
+               )"#,
         )
         .bind(&group.id)
         .bind(&group.activation_id)
@@ -21313,6 +21540,8 @@ impl ActionGroupStore for SqliteStore {
         .bind(member_count)
         .bind(&now)
         .bind(&now)
+        .bind(&group.thread_id).bind(&group.activation_id).bind(&group.agent_id)
+        .bind(&group.context_id).bind(&group.session_id)
         .execute(&mut *tx)
         .await?;
         if inserted.rows_affected() == 1 {
@@ -21338,8 +21567,9 @@ impl ActionGroupStore for SqliteStore {
         }
         let row = sqlx::query("SELECT * FROM action_groups WHERE id = ?")
             .bind(&group.id)
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or("ActionGroup requires a matching live owner Thread/Activation generation")?;
         let current = action_group_from_row(&row)?;
         let current_members = sqlx::query(
             "SELECT * FROM action_group_members WHERE group_id = ? ORDER BY ordinal, tool_call_id",
@@ -21562,7 +21792,10 @@ impl ActionGroupStore for SqliteStore {
                 existing: true,
             });
         }
-        if group.status != ActionGroupStatus::Running {
+        if !matches!(
+            group.status,
+            ActionGroupStatus::Running | ActionGroupStatus::Cancelled
+        ) {
             tx.rollback().await?;
             return Err(format!(
                 "Action Group '{}' 已是 {}，不能再接收成员结果",
@@ -21585,7 +21818,10 @@ impl ActionGroupStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         let terminal_member_count = group.terminal_member_count.saturating_add(1);
-        let settled_now = terminal_member_count == group.member_count;
+        // Cancellation ends the join, not the ability to record an already
+        // issued member's late physical result. Never wake/reopen that join.
+        let settled_now = group.status == ActionGroupStatus::Running
+            && terminal_member_count == group.member_count;
         if settled_now {
             append_event_idempotent_in_transaction(&mut tx, settled_event).await?;
             if settled_event
@@ -21640,7 +21876,7 @@ impl ActionGroupStore for SqliteStore {
             sqlx::query(
                 r#"UPDATE action_groups
                    SET revision = revision + 1, terminal_member_count = ?, updated_at = ?
-                   WHERE id = ? AND status = 'running'"#,
+                   WHERE id = ? AND status IN ('running', 'cancelled')"#,
             )
             .bind(i64::try_from(terminal_member_count)?)
             .bind(&now)
@@ -24568,6 +24804,52 @@ async fn approval_job_in_transaction(
 
 #[async_trait::async_trait]
 impl ApprovalStore for SqliteStore {
+    async fn get_principal_approval(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               WHERE a.id = ? AND s.id = ? AND b.principal_id = ?
+                 AND b.unbound_at IS NULL AND s.status = 'active'
+                 AND j.initiating_principal_id = b.principal_id"#,
+        )
+        .bind(id)
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(approval_from_row).transpose()
+    }
+    async fn list_principal_pending_approvals(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        limit: usize,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT a.* FROM approval_requests a
+               JOIN execution_jobs j ON j.id = a.job_id
+               JOIN sessions s ON s.id = j.session_id
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               JOIN threads t ON t.id = j.thread_id
+               JOIN thread_activations activation ON activation.id = j.activation_id
+               WHERE s.id = ? AND b.principal_id = ? AND b.unbound_at IS NULL
+                 AND j.initiating_principal_id = b.principal_id AND s.status = 'active'
+                 AND a.status = 'pending_human' AND j.status = 'waiting_approval'
+                 AND t.status = 'open' AND activation.status IN ('queued', 'running')
+               ORDER BY a.created_at, a.id LIMIT ?"#,
+        )
+        .bind(&authority.session_id)
+        .bind(&authority.principal_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
     async fn ensure_approval_request(
         &self,
         request: NewApprovalRequest,
@@ -24837,11 +25119,12 @@ impl ApprovalStore for SqliteStore {
         })
     }
 
-    async fn commit_approval_decision(
+    async fn commit_authorized_approval_decision(
         &self,
         id: &str,
         expected_revision: u64,
         decision: ApprovalResolution,
+        authority: Option<crate::memory::ApprovalDecisionAuthority>,
     ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
         let rationale = decision.rationale().trim();
         if rationale.is_empty() {
@@ -24859,6 +25142,30 @@ impl ApprovalStore for SqliteStore {
         // commits between those statements. Acquire SQLite's writer slot
         // before the first read so the replay observes one serial history.
         let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
+        if let Some(authority) = &authority {
+            let authorized: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM approval_requests a
+                   JOIN execution_jobs j ON j.id = a.job_id
+                   JOIN sessions s ON s.id = j.session_id
+                   JOIN session_principal_bindings b ON b.session_id = s.id
+                   WHERE a.id = ? AND s.id = ? AND b.principal_id = ?
+                     AND b.unbound_at IS NULL AND s.status = 'active'
+                     AND j.initiating_principal_id = b.principal_id)"#,
+            )
+            .bind(id)
+            .bind(&authority.session_id)
+            .bind(&authority.principal_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !authorized {
+                tx.commit().await?;
+                return Ok(ApprovalAuditCommit {
+                    mutation: ApprovalMutation::NotFound,
+                    event_created: false,
+                    event: None,
+                });
+            }
+        }
         let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -24872,6 +25179,17 @@ impl ApprovalStore for SqliteStore {
             });
         };
         let current = approval_from_row(&row)?;
+        if authority.is_some() && current.status == ApprovalStatus::PendingAuto {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Rejected {
+                    current,
+                    reason: "Approval is not awaiting a human decision".into(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
         let exact_replay = current.status == target_status
             && current.rationale.as_deref() == Some(rationale.as_str())
             && current.risk_tags == risk_tags;
@@ -24907,6 +25225,29 @@ impl ApprovalStore for SqliteStore {
                 event_created: false,
                 event: None,
             });
+        }
+        if authority.is_some() {
+            let waiting: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM execution_jobs j
+                   JOIN threads t ON t.id = j.thread_id
+                   JOIN thread_activations activation ON activation.id = j.activation_id
+                   WHERE j.id = ? AND j.status = 'waiting_approval'
+                     AND t.status = 'open' AND activation.status IN ('queued', 'running'))"#,
+            )
+            .bind(&current.job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !waiting {
+                tx.commit().await?;
+                return Ok(ApprovalAuditCommit {
+                    mutation: ApprovalMutation::Rejected {
+                        current,
+                        reason: "The approving execution is no longer waiting".into(),
+                    },
+                    event_created: false,
+                    event: None,
+                });
+            }
         }
         let grant_id = if target_status == ApprovalStatus::Allowed {
             Some(stable_grant_id(
@@ -25306,7 +25647,11 @@ impl CapabilityLeaseStore for SqliteStore {
         if restricted_delta.is_empty() {
             return Err("Capability Lease restriction cannot remove every permission; revoke the rule instead".into());
         }
-        if !restricted_delta.is_subset_of(&current_delta) {
+        let target = self
+            .get_execution_target(&current.target_id)
+            .await?
+            .ok_or("Capability Lease Target does not exist")?;
+        if !restricted_delta.is_subset_of_for_target(&current_delta, &target) {
             return Err("Capability Lease adjustment cannot expand its permission boundary".into());
         }
         let now = Utc::now();
