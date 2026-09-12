@@ -17,7 +17,7 @@ import {
 } from "../apps/service/src/agent-tools.js";
 import type { AccessContext } from "../packages/core/src/model.js";
 
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-identity-")),
+const directory = mkdtempSync(join(tmpdir(), "morphz-identity-")),
   root = join(directory, "runtime");
 mkdirSync(root, { mode: 0o700 });
 const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
@@ -66,7 +66,7 @@ const provider = createServer(async (req, res) => {
           id: `call-${marker}`,
           type: "function",
           function: {
-            name: "host_morphz_work",
+            name: "host_morphz",
             arguments: JSON.stringify({
               action: "create-document",
               title: marker,
@@ -116,11 +116,11 @@ const namespace = randomUUID(),
   manifest = prepareHostTools(directory, workPort, namespace, true);
 writeFileSync(
   configFile,
-  `[llm]\nprovider="stub"\nmodel="test-model"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${portOf(provider)}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="TEST_MODEL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(root)}\n[server.identity]\nmode="trusted-gateway"\nprovider_id="morphzwork-test"\nservice_token_env="TEST_GATEWAY_TOKEN"\n`,
+  `[llm]\nprovider="stub"\nmodel="test-model"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${portOf(provider)}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="TEST_MODEL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(root)}\n[server.identity]\nmode="trusted-gateway"\nprovider_id="morphz-test"\nservice_token_env="TEST_GATEWAY_TOKEN"\n`,
   { mode: 0o600 },
 );
 const runtime = spawn(
-  process.env.MORPHZWORK_RUNTIME_BINARY ||
+  process.env.MORPHZ_APP_RUNTIME_BINARY ||
     resolve("../Morphz/target/debug/morphz"),
   [
     "serve",
@@ -200,7 +200,7 @@ try {
       headers: {
         Origin: origin,
         Cookie: cookies[person]!,
-        "X-MorphzWork-Token": csrf[person]!,
+        "X-Morphz-Token": csrf[person]!,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -358,3 +358,4 @@ try {
   await new Promise<void>((r) => provider.close(() => r()));
   store.close();
 }
+import "./application-configuration.mjs";

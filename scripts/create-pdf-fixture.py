@@ -8,14 +8,14 @@ output = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "reader
 output.parent.mkdir(parents=True, exist_ok=True)
 pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
 doc = Canvas(str(output), pagesize=(595, 842), pageCompression=1, invariant=1)
-doc.setTitle("MorphzWork PDF reader fixture")
+doc.setTitle("Morphz PDF reader fixture")
 for number, heading, detail in [
     (1, "DESIGN NOTES", "A source stays intact when a reader adds an annotation."),
     (2, "REVIEW CHECKLIST", "The second page contains the unique phrase: durable butterfly."),
 ]:
     doc.setFillColorRGB(.08, .10, .12)
     doc.setFont("Helvetica-Bold", 11)
-    doc.drawString(48, 785, "MORPHZWORK / TEST DOCUMENT")
+    doc.drawString(48, 785, "MORPHZ / TEST DOCUMENT")
     doc.setFont("Helvetica-Bold", 26)
     doc.drawString(48, 707, heading)
     doc.setFillColorRGB(.02, .52, .6)

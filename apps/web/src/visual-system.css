@@ -749,13 +749,7 @@
   background: var(--popup-backdrop);
 }
 .app .attachment-preview-dialog:has(> pre) {
-  width: min(680px, 85vw);
-}
-.app .capture-dialog .capture-start {
-  margin: 4px 0;
-}
-.app .capture-dialog > footer {
-  margin-top: 16px;
+  --ui-dialog-width: 680px;
 }
 .app :is(.composer-options, .theme-menu, .workspace-options-menu) {
   background: var(--surface-popover);

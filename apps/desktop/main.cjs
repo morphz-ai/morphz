@@ -1,5 +1,11 @@
 require("./stdio.cjs").protectStandardStreams();
 const {
+  normalizeApplicationEnvironment,
+  desktopProfile,
+  persistentPartition,
+} = require("./configuration.cjs");
+normalizeApplicationEnvironment();
+const {
   app,
   BrowserWindow,
   Menu,
@@ -54,13 +60,8 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const testProfile = process.env.MORPHZWORK_TEST_PROFILE;
-if (testProfile && !isAbsolute(testProfile))
-  throw new Error("Test profile must be absolute");
-app.setPath(
-  "userData",
-  testProfile || join(app.getPath("appData"), "MorphzWork", "desktop"),
-);
+app.setPath("userData", desktopProfile(app.getPath("appData")));
+const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   let window;
@@ -86,6 +87,7 @@ else {
   const regionPicker = new RegionPicker({ BrowserWindow, screen, ipcMain });
   const capture = new DesktopCapture({
     chooseRegion: (signal) => regionPicker.select(signal),
+    getWindow: () => window,
   });
   let microphoneRequest = 0;
   async function createWindow() {
@@ -109,7 +111,7 @@ else {
       webPreferences: {
         ...webPreferences,
         preload: join(__dirname, "preload.cjs"),
-        partition: "persist:morphzwork-app",
+        partition: appPartition,
         additionalArguments: ["--morphz-application-bridge"],
       },
     });
@@ -164,7 +166,7 @@ else {
     window.webContents.on("will-attach-webview", (event) =>
       event.preventDefault(),
     );
-    const appSession = session.fromPartition("persist:morphzwork-app");
+    const appSession = session.fromPartition(appPartition);
     appSession.setPermissionRequestHandler(
       (contents, permission, callback, details) =>
         callback(
@@ -210,7 +212,7 @@ else {
         await import("../../dist/service/packages/application/src/paths.js");
       const { openEmbeddedApplication, embeddedResources } =
         await import("../../dist/service/apps/desktop/application-host.js");
-      connection = connectionFromArgs(process.argv, dataDirectory());
+      connection = connectionFromArgs(process.argv, dataDirectory);
       if (hot) {
         if (connection.mode !== "remote")
           throw new Error(
@@ -223,7 +225,7 @@ else {
         );
       }
       microphone = new MicrophoneGate(uiURL);
-      const appSession = session.fromPartition("persist:morphzwork-app");
+      const appSession = session.fromPartition(appPartition);
       if (connection.mode === "local") {
         host = await openEmbeddedApplication(
           connection.directory,
@@ -286,10 +288,10 @@ else {
         requireMain(event);
         return appearance.setMode(mode);
       });
-      ipcMain.handle("capture:select", async (event) => {
+      ipcMain.handle("capture:select", async (event, options) => {
         requireMain(event);
         if (!window.isFocused()) throw new Error("请先回到 Morphz 窗口。");
-        const result = await capture.select();
+        const result = await capture.select(options);
         requireMain(event);
         return result;
       });
@@ -410,6 +412,8 @@ else {
     });
   const reopenMainWindow = () => {
     if (!sources) return;
+    // Activating an auxiliary picker must not bring the hidden app into the shot.
+    if (capture.hiddenWindow) return;
     if (!window || window.isDestroyed()) void createWindow();
     else {
       if (window.isMinimized()) window.restore();

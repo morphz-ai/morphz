@@ -1,10 +1,17 @@
 import { z } from "zod";
+import {
+  applicationManifestFormat,
+  legacyApplicationManifestFormat,
+} from "./application-names.js";
 
 // Work UI package v1 is a host extension, not a change to the HNS format.
 const name = z.string().trim().min(1).max(100);
 export const applicationManifestSchema = z
   .object({
-    format: z.literal("morphz-work-app/v1"),
+    format: z.enum([
+      applicationManifestFormat,
+      legacyApplicationManifestFormat,
+    ]),
     id: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
     version: z.string().regex(/^\d+\.\d+\.\d+$/),
     title: name,
@@ -59,7 +66,7 @@ export const applicationInstanceSchema = z
   .strict();
 export type ApplicationInstance = z.infer<typeof applicationInstanceSchema>;
 export const objectsApplication: ApplicationManifest = {
-  format: "morphz-work-app/v1",
+  format: applicationManifestFormat,
   id: "morphz.objects",
   version: "1.0.0",
   title: "内容",
@@ -71,7 +78,7 @@ export const objectsApplication: ApplicationManifest = {
 };
 
 export const browserApplication: ApplicationManifest = {
-  format: "morphz-work-app/v1",
+  format: applicationManifestFormat,
   id: "morphz.browser",
   version: "1.0.0",
   title: "浏览器",

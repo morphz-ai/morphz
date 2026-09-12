@@ -8,7 +8,7 @@ import { join } from "node:path";
 loadServiceEnvironment();
 const speech = new SpeechService(process.env.DOUBAO_API_KEY);
 if (!speech.configured()) throw new Error("DOUBAO_API_KEY 未配置。");
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-asr-test-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-asr-test-"));
 try {
   execFileSync(
     "/usr/bin/say",

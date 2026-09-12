@@ -92,6 +92,7 @@ const child = spawn(
       MORPHZ_HOST_TOOLS_FILE: manifest,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,
+      MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key,
     },
   },
 );

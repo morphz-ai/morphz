@@ -25,7 +25,7 @@ for (const port of [65419, 65426]) {
   });
   await new Promise((done) => probe.close(done));
 }
-const dir = realpathSync(mkdtempSync(join(tmpdir(), "morphzwork-hmr-test-")));
+const dir = realpathSync(mkdtempSync(join(tmpdir(), "morphz-hmr-test-")));
 mkdirSync(join(dir, "apps"));
 cpSync("apps/web", join(dir, "apps/web"), { recursive: true });
 cpSync("packages", join(dir, "packages"), { recursive: true });
@@ -38,9 +38,9 @@ const service = spawn(
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
-      MORPHZWORK_PORT: "65426",
-      MORPHZWORK_DATA_DIR: join(dir, "data"),
-      MORPHZWORK_ENV_FILE: "",
+      MORPHZ_APP_PORT: "65426",
+      MORPHZ_APP_DATA_DIR: join(dir, "data"),
+      MORPHZ_APP_ENV_FILE: "",
     },
     stdio: "pipe",
   },
@@ -78,7 +78,7 @@ try {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
-      MORPHZWORK_TEST_PROFILE: join(dir, "profile"),
+      MORPHZ_APP_PROFILE: join(dir, "profile"),
     },
   });
   const page = await app.firstWindow();
@@ -107,7 +107,7 @@ try {
     return {
       id: boot.centerId,
       sentinel: window.__hmrSentinel,
-      windowId: sessionStorage.getItem("morphzwork:window"),
+      windowId: sessionStorage.getItem("morphz:window"),
     };
   });
   assert.equal(identity.id, web.centerId);
@@ -141,7 +141,7 @@ try {
     identity.sentinel,
   );
   assert.equal(
-    await page.evaluate(() => sessionStorage.getItem("morphzwork:window")),
+    await page.evaluate(() => sessionStorage.getItem("morphz:window")),
     identity.windowId,
   );
   assert.equal(await page.evaluate(() => typeof window.require), "undefined");
@@ -151,7 +151,9 @@ try {
       await page.evaluate(() => window.morphzDesktop.sources.list()),
     ),
   );
-  await page.getByRole("button", { name: "查看本空间内容", exact: true }).click();
+  await page
+    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .click();
   await page
     .locator(".library-authoring-options")
     .getByRole("button", { name: "手动写文档", exact: true })

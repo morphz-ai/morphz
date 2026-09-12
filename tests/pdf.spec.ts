@@ -37,9 +37,11 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
     await page.setViewportSize({ width, height: 900 });
     await expect
       .poll(async () => {
-        const bar = (await page.locator(".topbar").boundingBox())!;
-        const canvas = (await page.locator(".pdf-page").boundingBox())!;
-        return canvas.y - bar.y - bar.height;
+        const bar = await page.locator(".topbar").boundingBox();
+        const canvas = await page.locator(".pdf-page").boundingBox();
+        // Resizing may briefly unmount the old PDF canvas while its replacement
+        // renders. Keep polling the same geometry bound instead of throwing.
+        return bar && canvas ? canvas.y - bar.y - bar.height : Infinity;
       })
       .toBeLessThanOrEqual(12);
     const paging = (await page.getByLabel("PDF 页码").boundingBox())!;

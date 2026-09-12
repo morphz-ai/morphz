@@ -11,8 +11,8 @@ import { AgentTools } from "../apps/service/src/agent-tools.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { localAccess } from "../packages/core/src/model.js";
 
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-browser-test-"));
-const workPort = Number(process.env.MORPHZWORK_BROWSER_TEST_PORT ?? 65426);
+const directory = mkdtempSync(join(tmpdir(), "morphz-browser-test-"));
+const workPort = Number(process.env.MORPHZ_APP_BROWSER_TEST_PORT ?? 65426);
 const workURL = "http://127.0.0.1:" + workPort;
 const store = new WorkspaceStore(join(directory, "workspace.sqlite")),
   broker = new BrowserBroker(store);
@@ -76,7 +76,7 @@ async function call(browser: unknown) {
     },
     body: JSON.stringify({
       protocol: 1,
-      tool: "host_morphz_work",
+      tool: "host_morphz",
       invocation: {
         job_id: randomUUID(),
         tool_call_id: randomUUID(),
@@ -109,8 +109,8 @@ async function result(requestId: string) {
 try {
   const env = {
     ...process.env,
-    MORPHZWORK_ENV_FILE: "",
-    MORPHZWORK_TEST_PROFILE: join(directory, "profile"),
+    MORPHZ_APP_ENV_FILE: "",
+    MORPHZ_APP_PROFILE: join(directory, "profile"),
   };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
@@ -174,7 +174,7 @@ try {
       type: "fill",
       snapshotId: view.snapshotId,
       ref: title.ref,
-      value: "MorphzWork 本机演示",
+      value: "Morphz 本机演示",
     },
   });
   assert.equal((await result(fill.id)).status, "succeeded");
@@ -232,7 +232,7 @@ try {
   assert.equal(isolation.sandbox, true);
   assert.equal(isolation.contextIsolation, true);
   assert.ok(!isolation.preload);
-  assert.match(isolation.storagePath!, /morphzwork-browser-/);
+  assert.match(isolation.storagePath!, /morphz-browser-/);
   await ui
     .getByRole("button", { name: "允许 Agent 协助", exact: true })
     .click();
@@ -279,7 +279,7 @@ try {
     ).length,
     app: (
       await session
-        .fromPartition("persist:morphzwork-app")
+        .fromPartition("persist:morphz-app")
         .cookies.get({ name: "fixture_session" })
     ).length,
   }));
@@ -413,3 +413,4 @@ try {
   store.close();
   console.log("Isolated browser fixture:", directory);
 }
+import "./application-configuration.mjs";

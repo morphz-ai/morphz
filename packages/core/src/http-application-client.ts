@@ -194,8 +194,12 @@ export class HttpApplicationClient {
       default:
         throw new Error("不支持这个应用操作。");
     }
-    if (options.identityGeneration)
-      headers["X-MorphzWork-Token"] = options.identityGeneration;
+    if (options.identityGeneration) {
+      headers[applicationTokenHeader] = options.identityGeneration;
+      // The same request also works with an older remote center; never retry a
+      // write under another name after an uncertain response.
+      headers[legacyApplicationTokenHeader] = options.identityGeneration;
+    }
     // In a browser Origin is managed by the browser; a trusted native remote adapter supplies it explicitly.
     if (verb === "POST" && this.origin) headers.Origin = this.origin;
     const response = await this.request(this.origin + path, {
@@ -241,3 +245,7 @@ export class HttpApplicationClient {
     return value;
   }
 }
+import {
+  applicationTokenHeader,
+  legacyApplicationTokenHeader,
+} from "./application-names.js";

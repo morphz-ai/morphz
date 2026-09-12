@@ -1,8 +1,8 @@
 # 认知应用与工作空间
 
-认知应用定义一类工作的执行方式，GUI 是可选、可按平台适配的界面扩展。MorphzWork 提供界面宿主，不要求 Morphz Runtime 渲染 GUI，也不把写作、代码和剪辑都塞进同一个固定编辑器。
+认知应用定义一类工作的执行方式，GUI 是可选、可按平台适配的界面扩展。Morphz 提供界面宿主，不要求 Morphz Runtime 渲染 GUI，也不把写作、代码和剪辑都塞进同一个固定编辑器。
 
-当前 `morphz-work-app/v1` 是工程内的实验界面扩展，不是 Morphz 底层标准。先验证和打磨，成熟后再讨论标准化。以下章节记录当前宿主协议；下一轮 UI 优化方案见 [Morphz UI 设计规范](./16-ui-design-standard.md)，不应把方案描述误作已实现行为。
+当前 `morphz-app/v1` 是工程内的实验界面扩展，不是 Morphz 底层标准。先验证和打磨，成熟后再讨论标准化。以下章节记录当前宿主协议；下一轮 UI 优化方案见 [Morphz UI 设计规范](./16-ui-design-standard.md)，不应把方案描述误作已实现行为。
 
 本文件取代早期文档中的“工作台跨项目聚合”和“按对象创建 Session”设计。现有资料组件仍保留；专业认知应用在这个框架上另行建设。
 
@@ -52,13 +52,13 @@
 
 ## 自定义 UI 包 v1
 
-这是 MorphzWork 的 UI 宿主扩展，不修改或声称替代 HNS 标准，不占用尚未定稿的 `.coa` 格式。
+这是 Morphz 的 UI 宿主扩展，不修改或声称替代 HNS 标准，不占用尚未定稿的 `.coa` 格式。
 
 应用包为 JSON：
 
 ```json
 {
-  "format": "morphz-work-app/v1",
+  "format": "morphz-app/v1",
   "id": "author.application",
   "version": "1.0.0",
   "title": "应用名称",
@@ -78,29 +78,34 @@
 
 ## 宿主协议
 
-宿主向指定 iframe 发 `morphz-work:init`，包括专属 `channel` 和 `context`：工作空间、应用实例、视图状态及修订号、活动状态、主题，以及权限范围内的对象目录。没有 Principal 凭据、中心令牌或其他空间的对象内容。
+名称统一后，新包使用 `morphz-app/v1` 与下列 `morphz-app:*` 消息。已安装的 `morphz-work-app/v1` 包继续使用其原 `morphz-work:*` 消息；宿主按包声明选择协议，不改写旧 HTML，不静默覆盖同 ID/版本。更新示例包必须使用新版本。
+
+宿主向指定 iframe 发 `morphz-app:init`，包括专属 `channel` 和 `context`：工作空间、应用实例、视图状态及修订号、活动状态、主题，以及权限范围内的对象目录。没有 Principal 凭据、中心令牌或其他空间的对象内容。
 
 应用请求：
 
 ```js
-parent.postMessage({
-  type: "morphz-work:request",
-  channel,
-  requestId: crypto.randomUUID(),
-  request: { method: "ready" }
-}, "*");
+parent.postMessage(
+  {
+    type: "morphz-app:request",
+    channel,
+    requestId: crypto.randomUUID(),
+    request: { method: "ready" },
+  },
+  "*",
+);
 ```
 
-宿主验证发送窗口、opaque origin、channel、当前活动实例和权限，返回 `morphz-work:response`，带同一 requestId、result 或 error。应用也必须检查 `event.source === parent` 和 channel，先完成 ready 往返再开放交互。
+宿主验证发送窗口、opaque origin、channel、当前活动实例和权限，返回 `morphz-app:response`，带同一 requestId、result 或 error。应用也必须检查 `event.source === parent` 和 channel，先完成 ready 往返再开放交互。
 
-| 方法 | 作用 |
-| --- | --- |
-| `ready` | 获取当前工作上下文并确认连接 |
-| `saveState` | 带 expectedRevision 保存应用视图状态；冲突不能覆盖 |
-| `readArtifact` | 读取本空间对象的指定版本 |
-| `openArtifact` | 在宿主中打开本空间对象 |
-| `compose` | 将文字放入当前 AI 输入框，由用户检查后发送 |
-| `command` | 经服务端验证后创建、修订、批注或关联本空间对象 |
+| 方法           | 作用                                               |
+| -------------- | -------------------------------------------------- |
+| `ready`        | 获取当前工作上下文并确认连接                       |
+| `saveState`    | 带 expectedRevision 保存应用视图状态；冲突不能覆盖 |
+| `readArtifact` | 读取本空间对象的指定版本                           |
+| `openArtifact` | 在宿主中打开本空间对象                             |
+| `compose`      | 将文字放入当前 AI 输入框，由用户检查后发送         |
+| `command`      | 经服务端验证后创建、修订、批注或关联本空间对象     |
 
 写入经原有命令事务和权限边界，不是 iframe 直接修改数据库。`command` 不允许代发 Agent 消息、安装应用、修改身份或跨空间写入。写入 requestId 使用 UUID，并作为持久幂等命令标识；回执未知时必须重用原 ID，不可换新 ID 重复创建。
 

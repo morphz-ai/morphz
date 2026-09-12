@@ -1,7 +1,7 @@
 // Runs the real entry against isolated data; refuses an application TCP listener.
 const { join, basename, isAbsolute } = require("node:path");
 const { lstatSync } = require("node:fs");
-const fixture = process.env.MORPHZWORK_EMBEDDED_FIXTURE;
+const fixture = process.env.MORPHZ_APP_EMBEDDED_FIXTURE;
 if (
   !fixture ||
   !isAbsolute(fixture) ||
@@ -9,8 +9,8 @@ if (
   !lstatSync(fixture).isDirectory()
 )
   throw new Error("A generated isolated fixture is required");
-process.env.MORPHZWORK_TEST_PROFILE = join(fixture, "profile");
-process.env.MORPHZWORK_DATA_DIR = join(fixture, "data");
+process.env.MORPHZ_APP_PROFILE = join(fixture, "profile");
+process.env.MORPHZ_APP_DATA_DIR = join(fixture, "data");
 const { Server } = require("node:net");
 if (process.platform === "darwin") {
   require("electron").app.dock.setIcon = () => {

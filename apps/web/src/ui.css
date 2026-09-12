@@ -435,6 +435,12 @@
 .application-canvas .cognitive-application-frame {
   height: 100%;
 }
+
+/* Native modality also removes the embedded frame's compositor hit region.
+   A late iframe load must not receive the host dialog's click. */
+body:has(dialog[open]) .cognitive-application-frame {
+  pointer-events: none;
+}
 .app .library-collection {
   max-width: none;
   margin: 0;
@@ -1499,14 +1505,16 @@
   background: var(--paper);
 }
 .create-dialog {
-  width: min(460px, calc(100vw - 40px));
+  /* Variants choose a preferred width; they never compete with this rule. */
+  width: min(var(--ui-dialog-width, 460px), calc(100vw - 40px));
+  max-height: calc(100dvh - 32px);
   border-radius: var(--ui-radius-panel);
-  padding: 8px 16px 16px;
+  padding: 8px 12px 12px;
   overflow: auto;
 }
 .create-dialog:has(.task-fields),
 .create-dialog:has(.task-grid) {
-  width: min(640px, calc(100vw - 40px));
+  --ui-dialog-width: 640px;
 }
 .create-dialog > header,
 .create-dialog > form > header,
@@ -1524,6 +1532,14 @@
   align-items: baseline;
   min-width: 0;
   gap: 8px;
+}
+.create-dialog > header > .dialog-actions {
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+}
+.create-dialog > header > :first-child {
+  min-width: 0;
 }
 .create-dialog > header p,
 .create-dialog > header small {
@@ -1551,12 +1567,120 @@
   margin: 0;
   flex-shrink: 0;
 }
-.create-dialog footer {
-  margin-top: 24px;
-  padding-top: 16px;
+.create-dialog > footer,
+.create-dialog > form > footer {
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: 0;
 }
 .library-dialog {
-  width: min(640px, calc(100vw - 40px));
+  --ui-dialog-width: 640px;
+}
+.voice-dialog {
+  --ui-dialog-width: 620px;
+}
+.attachment-preview-dialog {
+  --ui-dialog-width: 900px;
+}
+/* Media gets the space the image can use. Portraits don't leave a huge empty
+   landscape panel, and short captures don't reserve a fixed-height stage. */
+.image-preview-dialog {
+  --preview-chrome-height: 96px;
+  --ui-dialog-width: clamp(
+    360px,
+    calc(
+      min(
+          var(--preview-image-width, 960px),
+          (100dvh - var(--preview-chrome-height)) *
+            var(--preview-image-ratio, 1.6)
+        ) +
+        26px
+    ),
+    1000px
+  );
+}
+.capture-dialog.image-preview-dialog {
+  --preview-chrome-height: 180px;
+}
+.capture-dialog > header {
+  margin-bottom: 8px;
+}
+.capture-dialog .capture-start {
+  margin: 0;
+}
+.image-preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.app .image-preview-dialog .capture-preview,
+.app .image-preview-dialog > img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100dvh - var(--preview-chrome-height));
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+.capture-dialog > footer {
+  gap: 8px;
+}
+.capture-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 190px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.capture-title > span {
+  flex-shrink: 0;
+}
+.app .capture-title input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.capture-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.capture-confirm-actions > button {
+  flex-shrink: 0;
+}
+.capture-dialog > .error {
+  margin: 8px 0 0;
+  max-height: 80px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.capture-dialog:has(> .error) {
+  --preview-chrome-height: 280px;
+}
+.voice-dialog .voice-recorder {
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+}
+.voice-dialog > .inline {
+  margin: 8px 0;
+}
+.voice-dialog .voice-recorder > svg {
+  width: 16px;
+  height: 16px;
+}
+.voice-dialog .voice-recorder span {
+  font-size: 14px;
 }
 .execution-dialog {
   position: fixed;
@@ -1833,7 +1957,7 @@ summary:focus-visible {
 }
 /* Notification settings are a compact control, not the modal's main content. */
 .notification-dialog {
-  width: min(440px, calc(100vw - 40px));
+  --ui-dialog-width: 440px;
   padding: 6px 10px 10px;
 }
 .notification-dialog > header {

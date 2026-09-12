@@ -274,6 +274,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     [capture, setCapture] = useState<{
       key: string;
       projectId: string;
+      hideWindow: boolean;
       artifactId?: string;
       artifactRevision?: number;
     } | null>(null),
@@ -2339,17 +2340,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           <button
                             className="icon-button"
                             aria-label="截图输入"
-                            title="截图输入"
+                            title={`截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`}
                             disabled={
                               sending ||
                               !!uploadingDrafts[contextKey] ||
                               !client.online ||
                               (draft.attachments?.length ?? 0) >= 8
                             }
-                            onClick={() =>
+                            onClick={(event) =>
                               setCapture({
                                 key: contextKey,
                                 projectId: project.id,
+                                hideWindow: event.altKey,
                                 ...(artifact
                                   ? {
                                       artifactId: artifact.id,

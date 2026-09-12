@@ -1,4 +1,5 @@
-const { WebContentsView, session } = require("electron");
+const { WebContentsView, session, app } = require("electron");
+const { persistentPartition } = require("./configuration.cjs");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
 const { webPreferences, trustedAppURL } = require("./security.cjs");
 const { pageAction } = require("./browser-page.cjs");
@@ -60,6 +61,8 @@ class DesktopBrowser {
       method: "POST",
       headers: {
         Origin: this.centerURL,
+        "X-Morphz-Token": boot.csrfToken,
+        // The identical alias supports an older remote center without retrying writes.
         "X-MorphzWork-Token": boot.csrfToken,
         "X-Desktop-Key": c.key,
         "Content-Type": "application/json",
@@ -93,11 +96,13 @@ class DesktopBrowser {
     if (!boot.workspace.projects.some((p) => p.id === projectId))
       throw new Error("工作空间不存在或无权访问。");
     const url = browserURL(artifact?.content.url ?? target.url, this.centerURL);
-    const partition =
-      "persist:morphzwork-browser-" +
-      createHash("sha256")
-        .update(boot.centerId + ":" + boot.principalId)
-        .digest("hex");
+    const partition = persistentPartition(
+      app.getPath("userData"),
+      "browser-" +
+        createHash("sha256")
+          .update(boot.centerId + ":" + boot.principalId)
+          .digest("hex"),
+    );
     const browserSession = session.fromPartition(partition);
     browserSession.setPermissionRequestHandler((_web, _permission, callback) =>
       callback(false),

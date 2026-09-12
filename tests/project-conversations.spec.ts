@@ -243,8 +243,8 @@ test("旧空会话不占列表，已有草稿可恢复；只发附件才落库�
   ).json();
   await page.evaluate(
     ({ boot, project, saved }) => {
-      const owner = sessionStorage.getItem("morphzwork:window");
-      const key = `morphzwork:${boot.centerId}:${boot.principalId}:draft:${owner}:inputs`;
+      const owner = sessionStorage.getItem("morphz:window");
+      const key = `morphz:${boot.centerId}:${boot.principalId}:draft:${owner}:inputs`;
       const drafts = JSON.parse(localStorage.getItem(key) ?? "{}");
       drafts[`${saved.entityId}:${project.id}:projects`] = {
         body: "旧会话的未发送草稿",

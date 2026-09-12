@@ -21,7 +21,7 @@ class NoNetworkSpeech extends SpeechService {
     throw new Error("Native privacy test must not call a provider");
   }
 }
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-native-input-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-native-input-"));
 const captureOnly = process.argv.includes("--capture-only");
 const microphoneOnly = process.argv.includes("--microphone-only");
 assert.ok(!(captureOnly && microphoneOnly), "Choose one native input phase");
@@ -49,8 +49,8 @@ try {
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
       LANG: process.env.LANG,
-      MORPHZWORK_TEST_PROFILE: join(directory, "profile"),
-      MORPHZWORK_ENV_FILE: "",
+      MORPHZ_APP_PROFILE: join(directory, "profile"),
+      MORPHZ_APP_ENV_FILE: "",
     }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),

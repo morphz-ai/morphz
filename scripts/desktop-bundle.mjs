@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import "./application-configuration.mjs";
 import {
   cpSync,
   existsSync,
@@ -23,14 +24,39 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 
 // Store a configuration file reference, never its contents. Finder/Dock launches
 // do not inherit the shell that previously hosted the application's service.
-export function desktopBootstrap(config) {
+function bootstrapSource(config, { legacy = false } = {}) {
   if (
     config.envFile !== undefined &&
     config.envFile !== "" &&
     !isAbsolute(config.envFile)
   )
     throw new Error("服务端环境配置必须是绝对路径。");
-  return `const config = ${JSON.stringify(config)};\nprocess.chdir(config.root);\nif (config.envFile !== undefined && process.env.MORPHZWORK_ENV_FILE === undefined) process.env.MORPHZWORK_ENV_FILE = config.envFile;\nif (config.profile && !process.env.MORPHZWORK_TEST_PROFILE) process.env.MORPHZWORK_TEST_PROFILE = config.profile;\nif (!process.argv.some(arg => arg.startsWith('--center=') || arg.startsWith('--data-dir='))) { if (config.center) process.argv.push('--center=' + config.center); else if (config.dataDir) process.argv.push('--data-dir=' + config.dataDir); }\nif (config.hot && !process.argv.includes('--hot')) process.argv.push('--hot');\nfor (const origin of config.migrateOrigins) if (!process.argv.includes('--migrate-origin=' + origin)) process.argv.push('--migrate-origin=' + origin);\nrequire(require('node:path').join(config.root, 'apps/desktop/main.cjs'));\n`;
+  const envName = legacy ? "MORPHZWORK_ENV_FILE" : "MORPHZ_APP_ENV_FILE";
+  const profileName = legacy ? "MORPHZWORK_TEST_PROFILE" : "MORPHZ_APP_PROFILE";
+  return `const config = ${JSON.stringify(config)};\nprocess.chdir(config.root);\nif (config.envFile !== undefined && process.env.${envName} === undefined) process.env.${envName} = config.envFile;\nif (config.profile && !process.env.${profileName}) process.env.${profileName} = config.profile;\nif (!process.argv.some(arg => arg.startsWith('--center=') || arg.startsWith('--data-dir='))) { if (config.center) process.argv.push('--center=' + config.center); else if (config.dataDir) process.argv.push('--data-dir=' + config.dataDir); }\nif (config.hot && !process.argv.includes('--hot')) process.argv.push('--hot');\nfor (const origin of config.migrateOrigins) if (!process.argv.includes('--migrate-origin=' + origin)) process.argv.push('--migrate-origin=' + origin);\nrequire(require('node:path').join(config.root, 'apps/desktop/main.cjs'));\n`;
+}
+
+export function desktopBootstrap(config, options = {}) {
+  const source = bootstrapSource(config, options);
+  if (options.legacy) return source;
+  // Direct bundle launches must honor explicitly supplied legacy settings too.
+  const aliases = `if (process.env.MORPHZ_APP_ENV_FILE === undefined && process.env.MORPHZWORK_ENV_FILE !== undefined) process.env.MORPHZ_APP_ENV_FILE = process.env.MORPHZWORK_ENV_FILE;\nif (process.env.MORPHZ_APP_PROFILE === undefined && process.env.MORPHZWORK_TEST_PROFILE !== undefined) process.env.MORPHZ_APP_PROFILE = process.env.MORPHZWORK_TEST_PROFILE;\n`;
+  return source
+    .replace(
+      "process.chdir(config.root);\n",
+      "process.chdir(config.root);\n" + aliases,
+    )
+    .replace(
+      "config.profile && !process.env.MORPHZ_APP_PROFILE",
+      "config.profile && process.env.MORPHZ_APP_PROFILE === undefined",
+    );
+}
+
+export function compatibleBootstrap(existing, config) {
+  return (
+    existing === desktopBootstrap(config) ||
+    existing === desktopBootstrap(config, { legacy: true })
+  );
 }
 
 // A local development bundle, not a Developer ID signed/distributable release.
@@ -42,11 +68,11 @@ export function prepareDesktop({
   hot = false,
   profile,
   migrateOrigins = [],
-  envFile = process.env.MORPHZWORK_ENV_FILE,
+  envFile = process.env.MORPHZ_APP_ENV_FILE,
 } = {}) {
   if (center && dataDir)
     throw new Error("本机数据目录与远端中心不能同时指定。");
-  const bootstrap = desktopBootstrap({
+  const config = {
     root,
     center,
     dataDir,
@@ -54,7 +80,8 @@ export function prepareDesktop({
     profile,
     migrateOrigins,
     envFile,
-  });
+  };
+  const bootstrap = desktopBootstrap(config);
   if (process.platform !== "darwin")
     return {
       executable: require("electron"),
@@ -171,7 +198,14 @@ export function prepareDesktop({
   );
   // Persist only launch configuration, never service credentials. Reopening the
   // Dock item after quitting returns to this same source tree and center.
-  writeGenerated(join(appPath, "main.cjs"), bootstrap);
+  const bootstrapPath = join(appPath, "main.cjs");
+  // A naming-only update does not rewrite a compatible installed launcher:
+  // changing its signed bytes would invalidate the local ad-hoc TCC grant.
+  if (
+    !existsSync(bootstrapPath) ||
+    !compatibleBootstrap(readFileSync(bootstrapPath, "utf8"), config)
+  )
+    writeGenerated(bootstrapPath, bootstrap);
   if (bundleChanged) {
     // Sign changed nested application identities before the outer app, without
     // replacing the unmodified third-party framework's signature. Explicit IDs

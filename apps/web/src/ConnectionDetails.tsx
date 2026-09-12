@@ -21,9 +21,22 @@ export function ConnectionDetails({
     >
       <header>
         <h2>连接详情</h2>
-        <button aria-label="关闭连接详情" onClick={onClose}>
-          <X />
-        </button>
+        <div className="dialog-actions">
+          <button
+            className="secondary-action"
+            onClick={() => void client.refresh()}
+          >
+            <RefreshCw size={14} />
+            检查连接
+          </button>
+          <button
+            className="icon-button"
+            aria-label="关闭连接详情"
+            onClick={onClose}
+          >
+            <X />
+          </button>
+        </div>
       </header>
       <dl className="connection-facts">
         <dt>工作中心</dt>
@@ -42,10 +55,6 @@ export function ConnectionDetails({
       {(client.error || runtime.error) && (
         <p role="alert">{client.error || runtime.error}</p>
       )}
-      <button onClick={() => void client.refresh()}>
-        <RefreshCw size={14} />
-        检查连接
-      </button>
     </dialog>
   );
 }

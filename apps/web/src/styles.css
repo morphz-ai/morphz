@@ -2925,7 +2925,6 @@ kbd {
 }
 .voice-dialog {
   accent-color: var(--accent);
-  width: min(620px, calc(100vw - 40px));
 }
 .reading-controls {
   display: grid;
@@ -2993,9 +2992,6 @@ kbd {
 .voice-recorder[data-recording="true"] > svg {
   color: var(--accent);
 }
-.capture-dialog {
-  width: min(820px, calc(100vw - 40px));
-}
 .capture-dialog > .muted {
   font-size: 13px;
   line-height: 1.7;
@@ -3004,7 +3000,6 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 0;
 }
 .capture-start svg {
   width: 16px;
@@ -3012,8 +3007,6 @@ kbd {
 .capture-preview {
   display: block;
   max-width: 100%;
-  max-height: 48vh;
-  margin: 12px auto;
   object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 8px;

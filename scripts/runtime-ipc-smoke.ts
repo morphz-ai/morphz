@@ -18,7 +18,7 @@ import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import { localAccess, type Receipt } from "../packages/core/src/model.js";
 
 const binary = resolve(
-  process.env.MORPHZWORK_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
+  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
 );
 assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
 const directory = mkdtempSync(join(tmpdir(), "morphz-runtime-ipc-"));
@@ -38,9 +38,7 @@ const provider = createServer(async (req, res) => {
     for await (const c of req) chunks.push(c);
     const input = JSON.parse(Buffer.concat(chunks).toString());
     assert.ok(
-      input.tools?.some(
-        (tool: any) => tool.function?.name === "host_morphz_work",
-      ),
+      input.tools?.some((tool: any) => tool.function?.name === "host_morphz"),
     );
     const call =
       providerCalls++ === 0
@@ -48,7 +46,7 @@ const provider = createServer(async (req, res) => {
             id: "ipc-create-document",
             type: "function",
             function: {
-              name: "host_morphz_work",
+              name: "host_morphz",
               arguments: JSON.stringify({
                 action: "create-document",
                 title: "IPC 联合验收交付",
@@ -102,7 +100,7 @@ writeFileSync(
 const configFile = join(runtimeDirectory, "morphz.toml");
 writeFileSync(
   configFile,
-  `[llm]\nprovider="stub"\nmodel="test-model"\nreasoning_effort="low"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="MORPHZWORK_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+  `[llm]\nprovider="stub"\nmodel="test-model"\nreasoning_effort="low"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
   { mode: 0o600 },
 );
 const originalListen = Server.prototype.listen;
@@ -114,7 +112,7 @@ Server.prototype.listen = function (...args: any[]) {
   );
   return originalListen.apply(this, args as Parameters<typeof originalListen>);
 } as typeof originalListen;
-process.env.MORPHZWORK_ENV_FILE = "";
+process.env.MORPHZ_APP_ENV_FILE = "";
 let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
 let runtime: ChildProcessWithoutNullStreams | undefined;
 let manifest: { tools: { token: string; ipc_path: string }[] } | undefined;
@@ -167,7 +165,7 @@ try {
         MORPHZ_DASHBOARD_TOKEN: runtimeToken,
         MORPHZ_HOST_TOOLS_FILE: host.manifestPath,
         MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
-        MORPHZWORK_TEST_KEY: "synthetic-fixture-key",
+        MORPHZ_APP_TEST_KEY: "synthetic-fixture-key",
       },
       stdio: "pipe",
     },
@@ -294,3 +292,4 @@ try {
       });
   }
 }
+import "./application-configuration.mjs";

@@ -13,9 +13,10 @@ const readPreferences = `(async () => {
   if (!response.ok) return null;
   const boot = await response.json();
   if (typeof boot.centerId !== 'string' || typeof boot.principalId !== 'string') return null;
-  const prefix = 'morphzwork:' + boot.centerId + ':' + boot.principalId + ':';
+  const prefix = 'morphz:' + boot.centerId + ':' + boot.principalId + ':';
+  const legacyPrefix = 'morphzwork:' + boot.centerId + ':' + boot.principalId + ':';
   return { centerId: boot.centerId, principalId: boot.principalId,
-    entries: Object.entries(localStorage).filter(([key]) => key.startsWith(prefix)) };
+    entries: Object.entries(localStorage).filter(([key]) => key.startsWith(prefix) || key.startsWith(legacyPrefix)) };
 })()`;
 
 function preferenceSeed(previous, current) {
@@ -26,16 +27,27 @@ function preferenceSeed(previous, current) {
     previous.principalId !== current.principalId
   )
     return [];
-  const prefix = `morphzwork:${current.centerId}:${current.principalId}:`;
-  const existing = new Set(current.entries.map(([key]) => key));
-  return previous.entries.filter(
-    ([key, value]) =>
-      typeof key === "string" &&
-      typeof value === "string" &&
-      key.startsWith(prefix) &&
-      !/:(pending|pdf):/.test(key.slice(prefix.length)) &&
-      !existing.has(key),
-  );
+  const prefix = `morphz:${current.centerId}:${current.principalId}:`;
+  const legacyPrefix = `morphzwork:${current.centerId}:${current.principalId}:`;
+  const normalize = (entries) => {
+    const values = new Map();
+    for (const sourcePrefix of [prefix, legacyPrefix])
+      for (const [key, value] of entries) {
+        if (
+          typeof key !== "string" ||
+          typeof value !== "string" ||
+          !key.startsWith(sourcePrefix)
+        )
+          continue;
+        const suffix = key.slice(sourcePrefix.length);
+        if (/(?:^|:)(pending|pdf):/.test(suffix)) continue;
+        const target = prefix + suffix;
+        if (!values.has(target)) values.set(target, value);
+      }
+    return values;
+  };
+  const existing = normalize(current.entries);
+  return [...normalize(previous.entries)].filter(([key]) => !existing.has(key));
 }
 
 async function loadDevelopmentWindow(window, center, uiURL) {

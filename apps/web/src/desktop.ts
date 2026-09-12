@@ -60,7 +60,9 @@ declare global {
       };
       openExternal?(url: string): Promise<void>;
       capture: {
-        select(): Promise<{ mime: "image/png"; data: string } | null>;
+        select(options?: {
+          hideWindow?: boolean;
+        }): Promise<{ mime: "image/png"; data: string } | null>;
         cancel(): Promise<void>;
       };
       voice: {

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-e2e-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-e2e-"));
 const child = spawn(
   process.execPath,
   ["--import", "tsx", "apps/service/src/main.ts"],
@@ -10,9 +10,9 @@ const child = spawn(
     stdio: "inherit",
     env: {
       ...process.env,
-      MORPHZWORK_PORT: "65421",
-      MORPHZWORK_DATA_DIR: directory,
-      MORPHZWORK_ENV_FILE: "",
+      MORPHZ_APP_PORT: "65421",
+      MORPHZ_APP_DATA_DIR: directory,
+      MORPHZ_APP_ENV_FILE: "",
     },
   },
 );

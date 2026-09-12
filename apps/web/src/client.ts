@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { migrateLegacyLocalState } from "./legacy-storage.js";
+import {
+  migrateLegacyLocalState,
+  migrateApplicationLocalState,
+} from "./legacy-storage.js";
+import {
+  applicationStoragePrefix,
+  legacyApplicationStoragePrefix,
+  applicationWindowKey,
+  legacyApplicationWindowKey,
+} from "../../../packages/core/src/application-names.js";
 import { applicationCall, RequestError } from "./application-transport.js";
 export { RequestError } from "./application-transport.js";
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
@@ -50,7 +59,10 @@ export function storageScope(centerId: string, principalId: string) {
 }
 export function readLocal<T>(key: string, fallback: T, scope = localScope): T {
   try {
-    const raw = localStorage.getItem("morphzwork:" + scope + ":" + key);
+    const suffix = scope + ":" + key;
+    const raw =
+      localStorage.getItem(applicationStoragePrefix + suffix) ??
+      localStorage.getItem(legacyApplicationStoragePrefix + suffix);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
@@ -58,7 +70,7 @@ export function readLocal<T>(key: string, fallback: T, scope = localScope): T {
 }
 export function writeLocal(key: string, value: unknown, scope = localScope) {
   localStorage.setItem(
-    "morphzwork:" + scope + ":" + key,
+    applicationStoragePrefix + scope + ":" + key,
     JSON.stringify(value),
   );
 }
@@ -71,10 +83,11 @@ export function scopedStorage(scope = localScope) {
 // Window-local identity survives reload. Separate tabs must not erase one another's drafts.
 const draftOwner = (() => {
   try {
-    const saved = sessionStorage.getItem("morphzwork:window");
-    if (saved) return saved;
-    const id = crypto.randomUUID();
-    sessionStorage.setItem("morphzwork:window", id);
+    const saved =
+      sessionStorage.getItem(applicationWindowKey) ??
+      sessionStorage.getItem(legacyApplicationWindowKey);
+    const id = saved || crypto.randomUUID();
+    sessionStorage.setItem(applicationWindowKey, id);
     return id;
   } catch {
     return crypto.randomUUID();
@@ -119,11 +132,16 @@ export function useWorkspace() {
               value.capabilities.teamAuthentication,
               location.origin,
             );
+            migrateApplicationLocalState(
+              localStorage,
+              value.centerId,
+              value.principalId,
+            );
             // Main-process origin migration restores this window's exact draft owner.
             // Draft and pending-command keys are copied intact, never recreated/replayed.
             if (window.morphzDesktop)
               localStorage.setItem(
-                `morphzwork:${value.centerId}:${value.principalId}:desktop:last-window`,
+                `${applicationStoragePrefix}${value.centerId}:${value.principalId}:desktop:last-window`,
                 draftOwner,
               );
             setBoot(value);

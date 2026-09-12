@@ -11,9 +11,11 @@ import { SpeechService } from "./speech.js";
 import { loadIdentity } from "./identity-config.js";
 process.umask(0o077);
 loadServiceEnvironment();
-const port = Number(process.env.MORPHZWORK_PORT ?? 65420);
+const port = Number(
+  process.env.MORPHZ_APP_PORT ?? process.env.MORPHZWORK_PORT ?? 65420,
+);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
-  throw new Error("MORPHZWORK_PORT 无效。");
+  throw new Error("MORPHZ_APP_PORT 无效。");
 const source = fileURLToPath(import.meta.url);
 const webRoot = source.includes("/dist/service/")
   ? resolve(fileURLToPath(new URL("../../../../web/", import.meta.url)))
@@ -47,7 +49,7 @@ const server = createAppServer(store, {
       : undefined,
 });
 server.listen(port, "127.0.0.1", () => {
-  console.log(`MorphzWork 本机中心：http://127.0.0.1:${port}`);
+  console.log(`Morphz 本机中心：http://127.0.0.1:${port}`);
   console.log(`数据：${database}`);
   console.log(
     runtime

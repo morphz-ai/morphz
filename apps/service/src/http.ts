@@ -130,10 +130,10 @@ export function createAppServer(
           data.token,
           req.socket.remoteAddress ?? "unknown",
         );
-        res.setHeader(
-          "Set-Cookie",
+        res.setHeader("Set-Cookie", [
           `${options.identity.cookieName}=${secret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${options.publicOrigin ? "; Secure" : ""}`,
-        );
+          `${options.identity.legacyCookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${options.publicOrigin ? "; Secure" : ""}`,
+        ]);
         json(res, 200, { connected: true });
         return;
       }
@@ -202,7 +202,7 @@ export function createAppServer(
       if (req.method === "GET") {
         if (url.pathname === "/api/health") {
           json(res, 200, {
-            application: "morphzwork",
+            application: "morphz",
             protocol: 1,
             runtimeConnected: options.runtime?.snapshot().connected ?? false,
           });
@@ -380,7 +380,7 @@ export function createAppServer(
         if (
           !req.headers.origin ||
           !origins.has(req.headers.origin) ||
-          req.headers["x-morphzwork-token"] !== requestToken
+          !applicationTokenMatches(req.headers, requestToken)
         ) {
           json(res, 403, {
             message: "请求验证已失效，请重新连接后再试。",
@@ -394,7 +394,13 @@ export function createAppServer(
           if (options.identity)
             res.setHeader(
               "Set-Cookie",
-              `${options.identity.cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${options.publicOrigin ? "; Secure" : ""}`,
+              [
+                options.identity.cookieName,
+                options.identity.legacyCookieName,
+              ].map(
+                (name) =>
+                  `${name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${options.publicOrigin ? "; Secure" : ""}`,
+              ),
             );
           json(res, 200, { disconnected: true });
           return;
@@ -618,3 +624,4 @@ export function createAppServer(
     },
   });
 }
+import { applicationTokenMatches } from "../../../packages/core/src/application-names.js";

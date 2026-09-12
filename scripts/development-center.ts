@@ -152,13 +152,13 @@ assert.equal(config.url, `http://127.0.0.1:${runtimePort}`);
 assert.equal(config.identityMode, undefined);
 const host = prepareHostTools(work, workPort, config.namespace);
 const runtimeConfig = join(runtimeHome, "morphz.toml");
-const toml = `[llm]\nprovider = "development"\nmodel = ${JSON.stringify(route.model)}\nreasoning_effort = "low"\n[providers.development]\nprotocol = ${JSON.stringify(provider.protocol)}\nbase_url = ${JSON.stringify(endpoint.href)}\ncredential = "development"\n[credentials.development]\nsource = "env"\nname = "MORPHZWORK_DEVELOPMENT_MODEL_KEY"\n[permissions]\nworkspace_root = ${JSON.stringify(workspace)}\n[background_task]\nartifact_dir = ${JSON.stringify(join(workspace, "artifacts"))}\n`;
+const toml = `[llm]\nprovider = "development"\nmodel = ${JSON.stringify(route.model)}\nreasoning_effort = "low"\n[providers.development]\nprotocol = ${JSON.stringify(provider.protocol)}\nbase_url = ${JSON.stringify(endpoint.href)}\ncredential = "development"\n[credentials.development]\nsource = "env"\nname = "MORPHZ_APP_DEVELOPMENT_MODEL_KEY"\n[permissions]\nworkspace_root = ${JSON.stringify(workspace)}\n[background_task]\nartifact_dir = ${JSON.stringify(join(workspace, "artifacts"))}\n`;
 // Runtime migrates legacy provider sections into its own models.toml on boot.
 // Preserve both files, then verify the effective model over its read-only API.
 if (existsSync(runtimeConfig)) privateText(runtimeConfig);
 else writeFileSync(runtimeConfig, toml, { mode: 0o600, flag: "wx" });
 const runtimeBinary = resolve(
-  process.env.MORPHZWORK_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
+  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
 );
 assert.ok(existsSync(runtimeBinary), "Build the compatible Runtime first");
 const children: ChildProcess[] = [];
@@ -257,7 +257,7 @@ try {
       MORPHZ_DASHBOARD_TOKEN: config.token,
       MORPHZ_HOST_TOOLS_FILE: host.path,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
-      MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,
+      MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key,
     },
     "Runtime",
   );
@@ -312,10 +312,10 @@ try {
     ["dist/service/apps/service/src/main.js"],
     {
       ...env,
-      MORPHZWORK_DATA_DIR: work,
-      MORPHZWORK_PORT: String(workPort),
-      ...(process.env.MORPHZWORK_ENV_FILE !== undefined
-        ? { MORPHZWORK_ENV_FILE: process.env.MORPHZWORK_ENV_FILE }
+      MORPHZ_APP_DATA_DIR: work,
+      MORPHZ_APP_PORT: String(workPort),
+      ...(process.env.MORPHZ_APP_ENV_FILE !== undefined
+        ? { MORPHZ_APP_ENV_FILE: process.env.MORPHZ_APP_ENV_FILE }
         : {}),
     },
     "Work center",
@@ -331,8 +331,8 @@ try {
       ["scripts/desktop-dev.mjs", `--center=http://127.0.0.1:${workPort}`],
       {
         ...env,
-        MORPHZWORK_TEST_PROFILE: join(directory, "desktop"),
-        MORPHZWORK_ENV_FILE: "",
+        MORPHZ_APP_PROFILE: join(directory, "desktop"),
+        MORPHZ_APP_ENV_FILE: "",
       },
       "Desktop",
     );
@@ -340,3 +340,4 @@ try {
   await stop();
   throw error;
 }
+import "./application-configuration.mjs";

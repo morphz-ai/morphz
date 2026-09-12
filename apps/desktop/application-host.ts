@@ -101,7 +101,9 @@ export async function openEmbeddedApplication(
     const authentication = authenticationFile(profile, store.identity());
     let cookie = authentication.read();
     if (identity && !authentication.exists() && legacyAuthentication) {
-      const previous = await legacyAuthentication(identity.cookieName);
+      const previous =
+        (await legacyAuthentication(identity.cookieName)) ??
+        (await legacyAuthentication(identity.legacyCookieName));
       if (identity.authenticate(previous)) {
         cookie = previous;
         authentication.save(cookie);

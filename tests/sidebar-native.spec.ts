@@ -15,7 +15,7 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
         typeof entry[1] === "string" && entry[0] !== "ELECTRON_RUN_AS_NODE",
     ),
   );
-  env.MORPHZWORK_TEST_PROFILE = directory;
+  env.MORPHZ_APP_PROFILE = directory;
   const desktop = await _electron.launch({
     args: [
       "tests/fixtures/remote-desktop-entry.cjs",

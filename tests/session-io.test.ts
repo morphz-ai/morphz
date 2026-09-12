@@ -80,6 +80,36 @@ test("existing outbox requests keep their protocol and fingerprint after reopeni
   }
 });
 
+test("名称统一不重写已排队的旧 typed v2 请求，新输入才采用 Morphz 格式", async () => {
+  const store = new WorkspaceStore(":memory:");
+  const connection = config();
+  let bridge = new RuntimeBridge(store, connection);
+  try {
+    const first = recordInput(store);
+    bridge.enqueue(first);
+    const ledger = store.runtimeState() as Ledger;
+    ledger.deliveries[0]!.request.message.format = {
+      id: "morphzwork.input",
+      version: "2",
+    };
+    const original = JSON.stringify(ledger.deliveries[0]!.request);
+    await bridge.stop();
+    store.saveRuntimeState(ledger);
+    bridge = new RuntimeBridge(store, connection);
+    bridge.enqueue(first);
+    bridge.enqueue(recordInput(store));
+    const next = store.runtimeState() as Ledger;
+    assert.equal(JSON.stringify(next.deliveries[0]!.request), original);
+    assert.deepEqual(next.deliveries[1]!.request.message.format, {
+      id: "morphz.application.input",
+      version: "1",
+    });
+  } finally {
+    await bridge.stop();
+    store.close();
+  }
+});
+
 test("images retain real attachment bytes and original text without a prompt prefix", async () => {
   const store = new WorkspaceStore(":memory:");
   const bridge = new RuntimeBridge(store, config());

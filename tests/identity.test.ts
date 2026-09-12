@@ -20,6 +20,16 @@ test("中心登录身份由高熵凭据绑定，持久会话、过期、退出�
   const credential = identities.login(secret, "test"),
     cookie = identityCookie + "=" + credential;
   const current = identities.authenticate(cookie)!;
+  const legacyCookie = identities.legacyCookieName + "=" + credential;
+  assert.deepEqual(identities.authenticate(legacyCookie), current);
+  assert.equal(
+    identities.authenticate(identityCookie + "=invalid;" + legacyCookie),
+    null,
+  );
+  assert.equal(
+    identities.authenticate(legacyCookie + ";" + legacyCookie),
+    null,
+  );
   assert.deepEqual(current.access, localAccess);
   assert.ok(
     !JSON.stringify(store.serviceState("identity-sessions")).includes(
@@ -34,6 +44,7 @@ test("中心登录身份由高熵凭据绑定，持久会话、过期、退出�
   assert.equal(restarted.authenticate(cookie + ";" + cookie), null);
   restarted.logout(current.sessionHash);
   assert.equal(restarted.authenticate(cookie), null);
+  assert.equal(restarted.authenticate(legacyCookie), null);
   const second = identityCookie + "=" + restarted.login(secret, "test");
   restarted.replaceConfiguration({
     ...config,

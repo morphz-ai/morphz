@@ -46,6 +46,36 @@ export function useModal(
     window.addEventListener("resize", position);
     position();
     element.showModal();
+    // Chromium can move Tab from the last native-dialog control to browser
+    // chrome (and leave activeElement on body). Keep this task's keyboard loop
+    // explicit, including compact headers/footers whose DOM order has changed.
+    const keepFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || event.defaultPrevented) return;
+      const controls = [
+        ...element.querySelectorAll<HTMLElement>(
+          "a[href],button,input,select,textarea,summary,[tabindex],[contenteditable=true]",
+        ),
+      ].filter(
+        (control) =>
+          control.tabIndex >= 0 &&
+          !control.matches(":disabled") &&
+          !control.closest("[inert]") &&
+          control.getClientRects().length > 0 &&
+          getComputedStyle(control).visibility !== "hidden",
+      );
+      const first = controls[0],
+        last = controls.at(-1);
+      if (
+        !first ||
+        (event.shiftKey
+          ? document.activeElement === first
+          : document.activeElement === last)
+      ) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      }
+    };
+    element.addEventListener("keydown", keepFocus);
     (
       initialFocus?.current ??
       element.querySelector<HTMLElement>("[autofocus]") ??
@@ -54,6 +84,7 @@ export function useModal(
     )?.focus();
     return () => {
       observer.disconnect();
+      element.removeEventListener("keydown", keepFocus);
       window.removeEventListener("resize", position);
       element.close();
       if (origin?.isConnected && !document.querySelector("dialog[open]")) {

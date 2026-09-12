@@ -23,7 +23,7 @@ try {
       )
       .get()
   )
-    throw new Error("指定数据库不是 MorphzWork 中心，未创建备份。");
+    throw new Error("指定数据库不是 Morphz 中心，未创建备份。");
   await backup(database, filename);
   chmodSync(filename, 0o600);
   console.log(`中心数据库备份完成：${filename}`);

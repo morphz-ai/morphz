@@ -31,7 +31,7 @@ contextBridge.exposeInMainWorld(
     }),
     openExternal: (url) => ipcRenderer.invoke("open-external", url),
     capture: Object.freeze({
-      select: () => ipcRenderer.invoke("capture:select"),
+      select: (options) => ipcRenderer.invoke("capture:select", options),
       cancel: () => ipcRenderer.invoke("capture:cancel"),
     }),
     voice: Object.freeze({

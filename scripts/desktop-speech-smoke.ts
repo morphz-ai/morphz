@@ -32,7 +32,7 @@ assert.ok(
   speech.configured(),
   "A server-side Doubao Plan credential is required",
 );
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-native-speech-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-native-speech-"));
 const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
 const artifactId = store.execute(
   {
@@ -74,8 +74,8 @@ try {
       HOME: process.env.HOME,
       TMPDIR: process.env.TMPDIR,
       LANG: process.env.LANG,
-      MORPHZWORK_TEST_PROFILE: join(directory, "profile"),
-      MORPHZWORK_ENV_FILE: "",
+      MORPHZ_APP_PROFILE: join(directory, "profile"),
+      MORPHZ_APP_ENV_FILE: "",
     },
   });
   const ui = await app.firstWindow();

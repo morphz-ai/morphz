@@ -9,7 +9,7 @@ import {
   chmodSync,
 } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { dataDirectory } from "../packages/application/src/paths.ts";
 import { randomUUID } from "node:crypto";
 const pid = process.argv[2],
   origin = new URL(process.argv[3]);
@@ -45,9 +45,7 @@ if (!response.ok) throw new Error("Runtime 验证失败，未保存连接。");
 const status = await response.json();
 if (status.identity_mode !== "default")
   throw new Error("此开发连接器仅用于本机单用户 Runtime。");
-const directory =
-  process.env.MORPHZWORK_DATA_DIR ||
-  join(homedir(), "Library", "Application Support", "MorphzWork");
+const directory = dataDirectory();
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const filename = join(directory, "runtime.json");
 const old = existsSync(filename)

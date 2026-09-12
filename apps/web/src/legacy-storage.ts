@@ -43,3 +43,33 @@ export function migrateLegacyLocalState(
     // Read-only/full local storage must not prevent opening the authoritative center.
   }
 }
+
+/** Adopt only the authenticated center/principal's old names, byte for byte. */
+export function migrateApplicationLocalState(
+  storage: LocalStore,
+  centerId: string,
+  principalId: string,
+) {
+  const scope = `${centerId}:${principalId}:`;
+  const previous = legacyApplicationStoragePrefix + scope;
+  const current = applicationStoragePrefix + scope;
+  try {
+    const keys = Array.from({ length: storage.length }, (_, index) =>
+      storage.key(index),
+    );
+    for (const key of keys) {
+      if (!key?.startsWith(previous)) continue;
+      const next = current + key.slice(previous.length);
+      if (storage.getItem(next) !== null) continue;
+      const value = storage.getItem(key);
+      if (value !== null) storage.setItem(next, value);
+    }
+  } catch {
+    // Originals stay intact when storage is unavailable/full. readLocal still
+    // supports the old name; never replay a pending command as part of migration.
+  }
+}
+import {
+  applicationStoragePrefix,
+  legacyApplicationStoragePrefix,
+} from "../../../packages/core/src/application-names.js";

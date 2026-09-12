@@ -1,4 +1,5 @@
 import { useModal } from "./useModal.js";
+import { isObjectToolName } from "../../../packages/core/src/application-names.js";
 import { useEffect, useRef, useState } from "react";
 import { X, RefreshCw, Square, Check, Shield, FileText } from "lucide-react";
 import {
@@ -222,7 +223,7 @@ export function ExecutionDialog({
           <section key={job.id} className="execution-job">
             <header>
               <strong>
-                {job.tool_name === "host_morphz_work"
+                {isObjectToolName(job.tool_name)
                   ? "操作工作对象"
                   : job.tool_name}
               </strong>

@@ -637,7 +637,7 @@ function SandboxApplication({
     if (!surfaceReady.current) return;
     frame.current?.contentWindow?.postMessage(
       {
-        type: "morphz-work:init",
+        type: applicationMessagePrefix(latest.current.manifest.format) + "init",
         channel: channel.current,
         context: context(),
       },
@@ -664,7 +664,8 @@ function SandboxApplication({
         event.source !== frame.current?.contentWindow ||
         event.origin !== "null" ||
         event.data?.channel !== channel.current ||
-        event.data?.type !== "morphz-work:request"
+        event.data?.type !==
+          applicationMessagePrefix(latest.current.manifest.format) + "request"
       )
         return;
       const requestId = event.data.requestId;
@@ -749,7 +750,9 @@ function SandboxApplication({
         if (frame.current?.contentWindow === source)
           source.postMessage(
             {
-              type: "morphz-work:response",
+              type:
+                applicationMessagePrefix(latest.current.manifest.format) +
+                "response",
               channel: channel.current,
               requestId,
               result,
@@ -761,7 +764,9 @@ function SandboxApplication({
         if (frame.current?.contentWindow === source)
           source.postMessage(
             {
-              type: "morphz-work:response",
+              type:
+                applicationMessagePrefix(latest.current.manifest.format) +
+                "response",
               channel: channel.current,
               requestId,
               error: error instanceof Error ? error.message : "请求失败。",
@@ -801,3 +806,4 @@ function SandboxApplication({
     />
   );
 }
+import { applicationMessagePrefix } from "../../../packages/core/src/application-names.js";

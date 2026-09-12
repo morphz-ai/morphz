@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import "./application-configuration.mjs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -55,14 +56,14 @@ try {
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
-        "MORPHZWORK_TEST_PROFILE",
+        "MORPHZ_APP_PROFILE",
       ].includes(key),
     ),
   );
   const launch = prepareDesktop({
     center,
     hot: true,
-    profile: env.MORPHZWORK_TEST_PROFILE,
+    profile: env.MORPHZ_APP_PROFILE,
   });
   desktop = spawn(launch.executable, launch.args, {
     cwd,

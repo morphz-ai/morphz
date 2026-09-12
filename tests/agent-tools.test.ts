@@ -276,8 +276,18 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.equal(first.token, second.token);
   assert.equal(lstatSync(first.path).mode & 0o077, 0);
   const data = JSON.parse(readFileSync(first.path, "utf8"));
-  assert.equal(data.tools[0].definition.name, "host_morphz_work");
-  assert.equal(data.formats[0].id, "morphzwork.input");
+  assert.deepEqual(
+    data.tools.map((t: any) => t.definition.name),
+    ["host_morphz", "host_morphz_work"],
+  );
+  assert.deepEqual(
+    data.formats.map((f: any) => [f.id, f.version]),
+    [
+      ["morphz.application.input", "1"],
+      ["morphzwork.input", "2"],
+      ["morphzwork.input", "1"],
+    ],
+  );
   assert.equal(JSON.stringify(data.formats).includes(first.token), false);
   assert.equal(
     JSON.stringify(data.tools[0].definition).includes(first.token),

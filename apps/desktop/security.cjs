@@ -55,7 +55,11 @@ function connectionFromArgs(args, defaultDirectory) {
       );
     return { mode: "remote", url: url.origin };
   }
-  const directory = directories[0]?.slice(11) ?? defaultDirectory;
+  const directory =
+    directories[0]?.slice(11) ??
+    (typeof defaultDirectory === "function"
+      ? defaultDirectory()
+      : defaultDirectory);
   if (!require("node:path").isAbsolute(directory))
     throw new Error("本机数据目录必须是绝对路径。");
   return { mode: "local", directory };

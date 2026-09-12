@@ -62,6 +62,7 @@ export function requiresIdentity(store: WorkspaceStore): boolean {
 }
 export class IdentityCenter {
   readonly cookieName: string;
+  readonly legacyCookieName: string;
   private config: Config;
   private sessions: z.infer<typeof sessionsSchema>;
   private attempts = new Map<string, { start: number; count: number }>();
@@ -70,7 +71,9 @@ export class IdentityCenter {
     configuration: unknown,
     private now = Date.now,
   ) {
-    this.cookieName = "morphzwork_" + digest(store.identity()).slice(0, 16);
+    const suffix = digest(store.identity()).slice(0, 16);
+    this.cookieName = "morphz_" + suffix;
+    this.legacyCookieName = "morphzwork_" + suffix;
     this.config = identityConfigSchema.parse(configuration);
     this.sessions = sessionsSchema.parse(
       store.serviceState("identity-sessions") ?? [],
@@ -165,12 +168,15 @@ export class IdentityCenter {
     return secret;
   }
   authenticate(cookie: string | undefined) {
-    const values = (cookie ?? "")
-      .split(";")
-      .map((part) => part.trim())
-      .filter((part) => part.startsWith(this.cookieName + "="));
+    const parts = (cookie ?? "").split(";").map((part) => part.trim());
+    // Prefer an explicitly supplied current cookie, even when invalid. Falling
+    // back in that case could restore an older identity after a failed switch.
+    const name = parts.some((part) => part.startsWith(this.cookieName + "="))
+      ? this.cookieName
+      : this.legacyCookieName;
+    const values = parts.filter((part) => part.startsWith(name + "="));
     if (values.length !== 1) return null;
-    const secret = values[0]!.slice(this.cookieName.length + 1);
+    const secret = values[0]!.slice(name.length + 1);
     if (!/^[a-f0-9]{64}$/.test(secret)) return null;
     const s = this.sessions.find((s) => s.hash === digest(secret));
     if (!s || s.expiresAt <= this.now() || !this.current(s)) return null;

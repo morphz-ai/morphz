@@ -36,16 +36,16 @@ let streamWindow: Page | undefined;
 let sawStreamText = false,
   sawStreamTool = false,
   streamFailure: unknown;
-const model = live ? process.env.MORPHZWORK_LIVE_MODEL : "test-model";
-const protocol = live ? process.env.MORPHZWORK_LIVE_PROTOCOL : "openai-chat";
-const testKey = live ? process.env.MORPHZWORK_TEST_KEY : "isolated-test-key";
+const model = live ? process.env.MORPHZ_APP_LIVE_MODEL : "test-model";
+const protocol = live ? process.env.MORPHZ_APP_LIVE_PROTOCOL : "openai-chat";
+const testKey = live ? process.env.MORPHZ_APP_TEST_KEY : "isolated-test-key";
 if (live) {
   assert.ok(
-    model && testKey && process.env.MORPHZWORK_LIVE_BASE_URL,
+    model && testKey && process.env.MORPHZ_APP_LIVE_BASE_URL,
     "Live test needs an explicitly configured model endpoint and credential.",
   );
   assert.ok(["openai-chat", "openai-responses"].includes(protocol ?? ""));
-  const url = new URL(process.env.MORPHZWORK_LIVE_BASE_URL!);
+  const url = new URL(process.env.MORPHZ_APP_LIVE_BASE_URL!);
   assert.ok(
     ["http:", "https:"].includes(url.protocol) &&
       !url.username &&
@@ -56,13 +56,13 @@ if (live) {
 }
 
 const binary = resolve(
-  process.env.MORPHZWORK_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
+  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
 );
 assert.ok(
   existsSync(binary),
-  "先构建 Morphz Runtime，或指定 MORPHZWORK_RUNTIME_BINARY。",
+  "先构建 Morphz Runtime，或指定 MORPHZ_APP_RUNTIME_BINARY。",
 );
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-runtime-tools-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-runtime-tools-"));
 const runtimeDirectory = join(directory, "runtime"),
   workDirectory = join(directory, "work");
 mkdirSync(runtimeDirectory, { mode: 0o700 });
@@ -107,13 +107,13 @@ const provider = createServer(async (request, response) => {
   assert.ok(
     input.tools?.some(
       (t: { function?: { name: string } }) =>
-        t.function?.name === "host_morphz_work",
+        t.function?.name === "host_morphz",
     ),
     "实际模型请求必须含 Host 工具定义",
   );
   const result = store.snapshot().artifacts.find((a) => a.title === "测试交付");
   let args: unknown;
-  let toolName = "host_morphz_work";
+  let toolName = "host_morphz";
   if (imagePhase) {
     args = undefined;
   } else if (taskPhase) {
@@ -331,7 +331,7 @@ const manifest = prepareHostTools(workDirectory, workPort, namespace);
 const configFile = join(runtimeDirectory, "morphz.toml");
 writeFileSync(
   configFile,
-  `[llm]\nprovider = "stub"\nmodel = ${JSON.stringify(model)}\nreasoning_effort = "low"\n[providers.stub]\nprotocol = ${JSON.stringify(protocol)}\nbase_url = ${JSON.stringify(live ? process.env.MORPHZWORK_LIVE_BASE_URL : `http://127.0.0.1:${providerPort}/v1`)}\ncredential = "stub"\n[credentials.stub]\nsource = "env"\nname = "MORPHZWORK_TEST_KEY"\n[permissions]\nworkspace_root = ${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir = ${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+  `[llm]\nprovider = "stub"\nmodel = ${JSON.stringify(model)}\nreasoning_effort = "low"\n[providers.stub]\nprotocol = ${JSON.stringify(protocol)}\nbase_url = ${JSON.stringify(live ? process.env.MORPHZ_APP_LIVE_BASE_URL : `http://127.0.0.1:${providerPort}/v1`)}\ncredential = "stub"\n[credentials.stub]\nsource = "env"\nname = "MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root = ${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir = ${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
   { mode: 0o600 },
 );
 const runtime = spawn(
@@ -358,7 +358,7 @@ const runtime = spawn(
       MORPHZ_DASHBOARD_TOKEN: runtimeToken,
       MORPHZ_HOST_TOOLS_FILE: manifest.path,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
-      MORPHZWORK_TEST_KEY: testKey,
+      MORPHZ_APP_TEST_KEY: testKey,
     },
     stdio: ["ignore", "pipe", "pipe"],
   },
@@ -434,7 +434,7 @@ try {
   if (!live && process.argv.includes("--stream-ui")) {
     const env = {
       ...process.env,
-      MORPHZWORK_TEST_PROFILE: join(directory, "stream-desktop"),
+      MORPHZ_APP_PROFILE: join(directory, "stream-desktop"),
     };
     delete env.ELECTRON_RUN_AS_NODE;
     streamApp = await _electron.launch({
@@ -469,7 +469,7 @@ try {
       headers: {
         Origin: origin,
         "Content-Type": "application/json",
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
       },
       body: JSON.stringify({
         commandId: randomUUID(),
@@ -513,7 +513,7 @@ try {
     const accepted = stored.events.find(
       (e: { event_id: string }) => e.event_id === delivery.rootId,
     );
-    assert.equal(accepted.message.format.id, "morphzwork.input");
+    assert.equal(accepted.message.format.id, "morphz.application.input");
     assert.equal(accepted.message.format.version, "2");
     assert.equal(
       accepted.message.content.value.text,
@@ -524,7 +524,7 @@ try {
     return { accepted, delivery };
   }
   await send(
-    "请用 host_morphz_work 搜索‘蝴蝶’，阅读授权资料，创建标题严格为‘测试交付’的文档并用 references 关联来源。正文需包含‘蝴蝶是测试主题’。只使用工作空间对象工具，不执行 Shell 或其他外部动作。保存完成后回复。",
+    "请用 host_morphz 搜索‘蝴蝶’，阅读授权资料，创建标题严格为‘测试交付’的文档并用 references 关联来源。正文需包含‘蝴蝶是测试主题’。只使用工作空间对象工具，不执行 Shell 或其他外部动作。保存完成后回复。",
     null,
     "local-dialogue",
   );
@@ -677,7 +677,7 @@ try {
   assert.ok(execution.jobs.length >= 2);
   assert.ok(
     execution.jobs.every(
-      (j) => j.tool_name === "host_morphz_work" && j.status === "succeeded",
+      (j) => j.tool_name === "host_morphz" && j.status === "succeeded",
     ),
   );
   const resultJob = execution.jobs.find((j) => j.result_event_id)!;
@@ -1024,3 +1024,4 @@ try {
   await new Promise<void>((r) => provider.close(() => r()));
   store.close();
 }
+import "./application-configuration.mjs";

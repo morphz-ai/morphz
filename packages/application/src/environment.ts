@@ -19,17 +19,18 @@ export function loadServiceEnvironment(
   filename: string = defaultEnvironmentFile(),
 ): void {
   // An explicit empty path disables project configuration in isolated tests.
-  const selected = env.MORPHZWORK_ENV_FILE ?? filename;
+  const configured = env.MORPHZ_APP_ENV_FILE ?? env.MORPHZWORK_ENV_FILE;
+  const selected = configured ?? filename;
   if (selected === "") return;
   if (!isAbsolute(selected))
-    throw new Error("MORPHZWORK_ENV_FILE 必须是绝对路径。");
+    throw new Error("MORPHZ_APP_ENV_FILE 必须是绝对路径。");
   let source: string;
   try {
     source = readFileSync(selected, "utf8");
   } catch (error) {
     if (
       (error as NodeJS.ErrnoException).code === "ENOENT" &&
-      env.MORPHZWORK_ENV_FILE === undefined
+      configured === undefined
     )
       return;
     // Do not attach a cause or print configuration text in an error report.

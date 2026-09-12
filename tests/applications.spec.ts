@@ -151,7 +151,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toContainText("填入输入草稿");
   await page.getByRole("button", { name: "允许并安装" }).click();
   const tile = page.getByRole("button", {
-    name: "工作便笺 1.0.0",
+    name: "工作便笺 1.1.0",
     exact: true,
   });
   await tile.focus();
@@ -187,7 +187,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
-    .getByRole("button", { name: "工作便笺 1.0.0", exact: true })
+    .getByRole("button", { name: "工作便笺 1.1.0", exact: true })
     .press("Space");
   await expect(app.locator("#note")).toHaveValue(
     "我的应用状态：保留这段文字。",

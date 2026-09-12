@@ -5,9 +5,11 @@ import { Scan, X } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
 import { syncNativeBrowserLayout } from "./native-browser-layout.js";
+import { useImagePreviewSize } from "./useImagePreviewSize.js";
 export function CaptureDialog({
   client,
   projectId,
+  hideWindow = false,
   artifactId,
   artifactRevision,
   onClose,
@@ -17,6 +19,7 @@ export function CaptureDialog({
   onAttach?: (attachment: InputAttachment) => void;
   client: WorkspaceClient;
   projectId: string;
+  hideWindow?: boolean;
   artifactId?: string;
   artifactRevision?: number;
   onClose(): void;
@@ -36,6 +39,7 @@ export function CaptureDialog({
   const created = useRef<string | null>(null);
   const uploaded = useRef<string | null>(null);
   const [preview, setPreview] = useState("");
+  const imageSize = useImagePreviewSize();
   useEffect(() => {
     if (!picture) return;
     const bytes = Uint8Array.from(atob(picture.data), (c) => c.charCodeAt(0));
@@ -52,7 +56,7 @@ export function CaptureDialog({
     const generation = epoch.current;
     const frame = requestAnimationFrame(() => {
       if (generation === epoch.current && window.morphzDesktop?.capture)
-        void select(true);
+        void select(true, hideWindow);
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -75,7 +79,7 @@ export function CaptureDialog({
     await restore(request);
     if (request === epoch.current && !picture) onClose();
   }
-  async function select(initial = false) {
+  async function select(initial = false, hideWindow = false) {
     if ((busy && !initial) || saving) return;
     const request = ++epoch.current;
     let cancelledInitial = false;
@@ -89,7 +93,7 @@ export function CaptureDialog({
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
       if (request !== epoch.current) return;
-      const next = await window.morphzDesktop?.capture.select();
+      const next = await window.morphzDesktop?.capture.select({ hideWindow });
       cancelledInitial = !next && !picture;
       if (request === epoch.current && next) {
         setPicture(next);
@@ -161,7 +165,8 @@ export function CaptureDialog({
   return (
     <dialog
       ref={dialog}
-      className="create-dialog capture-dialog"
+      className={`create-dialog capture-dialog${picture ? " image-preview-dialog" : ""}`}
+      style={imageSize.style}
       data-capturing={busy ? "true" : undefined}
       aria-label="截图输入"
       onCancel={(e) => {
@@ -175,31 +180,49 @@ export function CaptureDialog({
           <h2>截图</h2>
           {artifactId && <small>当前对象 · v{artifactRevision}</small>}
         </div>
-        <button aria-label="关闭截图输入" disabled={saving} onClick={onClose}>
-          <X />
-        </button>
+        <div className="dialog-actions">
+          <button
+            ref={selectButton}
+            className="capture-start secondary-action"
+            disabled={!window.morphzDesktop?.capture || busy || saving}
+            title={`按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz`}
+            onClick={(event) => void select(false, event.altKey)}
+          >
+            <Scan />
+            {busy ? "截图中…" : picture ? "重新划区" : "开始划区"}
+          </button>
+          <button
+            className="icon-button"
+            aria-label="关闭截图输入"
+            disabled={saving}
+            onClick={onClose}
+          >
+            <X />
+          </button>
+        </div>
       </header>
-      <button
-        ref={selectButton}
-        className="capture-start"
-        disabled={!window.morphzDesktop?.capture || busy || saving}
-        onClick={() => void select()}
-      >
-        <Scan />
-        {busy ? "截图中…" : picture ? "重新划区" : "开始划区"}
-      </button>
       {!window.morphzDesktop?.capture && (
         <p>请在桌面应用中截图，或使用导入图片。</p>
       )}
       {picture && (
-        <>
+        <div className="image-preview-frame">
           <img
             className="capture-preview"
             alt="待确认的截图"
             src={preview || undefined}
+            onLoad={imageSize.onLoad}
           />
-          <label className="field">
-            标题
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <footer>
+        {picture && (
+          <label className="capture-title">
+            <span>名称</span>
             <input
               aria-label="截图标题"
               maxLength={180}
@@ -208,33 +231,32 @@ export function CaptureDialog({
               onChange={(e) => setTitle(e.target.value)}
             />
           </label>
-        </>
-      )}
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <footer>
-        <button disabled={saving} onClick={onClose}>
-          取消
-        </button>
-        <button
-          className={onAttach ? "" : "primary"}
-          disabled={!picture || busy || saving || !title.trim()}
-          onClick={() => void save()}
-        >
-          {saving ? "保存中…" : "保存到内容"}
-        </button>
-        {onAttach && (
-          <button
-            className="primary"
-            disabled={!picture || busy || saving}
-            onClick={() => void save(true)}
-          >
-            添加到消息
-          </button>
         )}
+        <div className="capture-confirm-actions">
+          <button
+            className="secondary-action"
+            disabled={saving}
+            onClick={onClose}
+          >
+            取消
+          </button>
+          <button
+            className={onAttach ? "secondary-action" : "primary"}
+            disabled={!picture || busy || saving || !title.trim()}
+            onClick={() => void save()}
+          >
+            {saving ? "保存中…" : "保存到内容"}
+          </button>
+          {onAttach && (
+            <button
+              className="primary"
+              disabled={!picture || busy || saving}
+              onClick={() => void save(true)}
+            >
+              添加到消息
+            </button>
+          )}
+        </div>
       </footer>
     </dialog>
   );

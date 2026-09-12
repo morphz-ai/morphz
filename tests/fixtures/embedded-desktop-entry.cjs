@@ -10,7 +10,7 @@ const {
 const { join, basename, isAbsolute } = require("node:path");
 const { lstatSync } = require("node:fs");
 const root = join(__dirname, "../..");
-const fixture = process.env.MORPHZWORK_EMBEDDED_FIXTURE;
+const fixture = process.env.MORPHZ_APP_EMBEDDED_FIXTURE;
 if (
   !fixture ||
   !isAbsolute(fixture) ||

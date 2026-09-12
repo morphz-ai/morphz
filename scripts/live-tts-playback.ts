@@ -46,7 +46,7 @@ class CenterSpeech extends SpeechService {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         "X-Project-Id": project.id,
         Origin: origin.origin,
       },
@@ -105,8 +105,8 @@ const consoleErrors: string[] = [];
 try {
   const env = {
     ...process.env,
-    MORPHZWORK_ENV_FILE: "",
-    MORPHZWORK_TEST_PROFILE: join(directory, "profile"),
+    MORPHZ_APP_ENV_FILE: "",
+    MORPHZ_APP_PROFILE: join(directory, "profile"),
   };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({

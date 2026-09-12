@@ -713,8 +713,7 @@
   border: 0;
 }
 .app .attachment-preview-dialog {
-  width: min(900px, 85vw);
-  max-height: 80vh;
+  max-height: calc(100dvh - 32px);
   overflow: auto;
 }
 .attachment-preview-dialog header {
@@ -728,7 +727,7 @@
   width: auto;
   height: auto;
   max-width: 100%;
-  max-height: 62vh;
+  max-height: calc(100dvh - 96px);
   object-fit: contain;
   display: block;
   margin: auto;

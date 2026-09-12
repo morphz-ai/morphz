@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { IdentityCenter } from "../packages/application/src/identity.js";
 import { createConnection } from "node:net";
 import { createRequire } from "node:module";
 import {
@@ -28,6 +29,88 @@ import { Application } from "../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
 import { DesktopSources } from "../apps/service/src/desktop-sources.js";
 const require = createRequire(import.meta.url);
+
+test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出不回退旧登录", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-cookie-compat-"));
+  const previousEnv = process.env.MORPHZ_APP_ENV_FILE;
+  process.env.MORPHZ_APP_ENV_FILE = "";
+  let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
+  try {
+    const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
+    const token = "a".repeat(64);
+    const config = {
+      version: 1,
+      members: [
+        {
+          ...localAccess,
+          enabled: true,
+          loginTokenHash: createHash("sha256").update(token).digest("hex"),
+        },
+      ],
+    };
+    const identity = new IdentityCenter(store, config);
+    const credential = identity.login(token, "fixture");
+    const oldCookie = identity.legacyCookieName + "=" + credential;
+    store.close();
+    writeFileSync(
+      join(directory, "members.json"),
+      JSON.stringify({
+        ...config,
+        members: config.members.map((member) => ({
+          ...member,
+          name: "fixture",
+          projectIds: ["first-project"],
+        })),
+      }),
+      { mode: 0o600 },
+    );
+    const requested: string[] = [];
+    const profile = join(directory, "legacy-profile");
+    host = await openEmbeddedApplication(directory, profile, async (name) => {
+      requested.push(name);
+      return name === identity.legacyCookieName ? oldCookie : undefined;
+    });
+    assert.equal(
+      ((await host.connection.call("workspace")) as any).principalId,
+      localAccess.principalId,
+    );
+    assert.deepEqual(requested, [
+      identity.cookieName,
+      identity.legacyCookieName,
+    ]);
+    await host.close();
+    requested.length = 0;
+    host = await openEmbeddedApplication(
+      directory,
+      join(directory, "invalid-profile"),
+      async (name) => {
+        requested.push(name);
+        return name === identity.cookieName ? name + "=invalid" : oldCookie;
+      },
+    );
+    await assert.rejects(host.connection.call("workspace"));
+    assert.deepEqual(requested, [identity.cookieName]);
+    await host.close();
+    host = await openEmbeddedApplication(directory, profile, async () => {
+      throw Error("Must reuse the persisted authentication");
+    });
+    const boot = (await host.connection.call("workspace")) as any;
+    await host.connection.call("logout", undefined, {
+      identityGeneration: boot.csrfToken,
+    });
+    host.persistAuthentication();
+    await host.close();
+    host = await openEmbeddedApplication(directory, profile, async () => {
+      throw Error("Must not re-import after logout");
+    });
+    await assert.rejects(host.connection.call("workspace"));
+  } finally {
+    await host?.close();
+    if (previousEnv === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
+    else process.env.MORPHZ_APP_ENV_FILE = previousEnv;
+    rmSync(directory, { recursive: true });
+  }
+});
 
 test("桌面内嵌宿主直接打开原 SQLite，重开保留对象与命令回执且没有 HTTP 服务", async () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-embedded-"));

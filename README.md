@@ -1,4 +1,4 @@
-# MorphzWork
+# Morphz application
 
 以对象为中心，让人与 Agent 共同推进工作。
 
@@ -11,16 +11,16 @@
 ```sh
 npm ci
 npm run build
-npm start
-```
-
-Web 应用：`http://127.0.0.1:65420`。在另一个终端启动桌面壳：
-
-```sh
 npm run desktop
 ```
 
-Desktop 与 Web 连接同一个本机中心，不各自启动一份 Agent 或对象数据库。此阶段请保持中心服务进程运行。Electron 首次运行会下载对应平台的官方二进制；这是开发依赖安装，不是 MorphzWork 最终用户的安装方式。
+Desktop 内嵌共享应用业务层，直接打开本机 SQLite 和已构建界面 `morphz://app/`，不需要应用 HTTP 服务或 Vite。Morphz Runtime 保持独立。Web／远端模式才运行 HTTP 适配器：
+
+```sh
+npm start
+```
+
+Web 默认地址为 `http://127.0.0.1:65420`。桌面使用 `npm run desktop -- --center=http://127.0.0.1:65420` 可连接明确的远端／Web 中心；不要另起 HTTP 宿主打开正在被内嵌 Desktop 使用的同一中心。Electron 是开发依赖，不是 Morphz 的产品名称。macOS 本地开发包安装为 `~/Applications/Morphz.app`，尚不是正式签名发行版。
 
 桌面开发时先启动中心（`npm run dev:server` 或已有独立中心），再执行 `npm run desktop:dev -- --center=http://127.0.0.1:65424`；省略参数默认中心为 65420。该命令启动 Vite 和桌面壳，不重启中心。普通 `npm run desktop` 仍加载已构建的界面。切换到热更新模式前，先从应用菜单退出旧桌面，沿用原来的桌面配置目录。
 
@@ -31,7 +31,7 @@ Desktop 与 Web 连接同一个本机中心，不各自启动一份 Agent 或对
 ## 已实现
 
 - 事项、工作台、项目视图；Dashboard 同值、同用途的四色主题及亮暗模式。
-- 认知应用启动台：图标、双击／回车启动、页签、独立 UI、版本固定与状态恢复。工作台原子保存为项目，保留原对话、对象和应用。当前自定义包与 Harness 接入契约见[认知应用与工作空间](docs/15-cognitive-application-host.md)。
+- 认知应用启动台：图标、单击／回车启动、页签、独立 UI、版本固定与状态恢复。工作台原子保存为项目，保留原对话、对象和应用。当前自定义包与 Harness 接入契约见[认知应用与工作空间](docs/15-cognitive-application-host.md)。
 - 所有页面共用的居中 AI 输入框：Cmd+J／Ctrl+J 显隐，Esc 收起。
 - 对话与输入框位于同一主区域；“内容／对话”切换保留对象编辑状态，侧栏仅展示对象批注。保存输入后自动展示对话，刷新后恢复。
 - 创建与编辑 Markdown 文档，查看历史版本。
@@ -61,29 +61,31 @@ macOS 开发环境可以复用一个明确选定的已运行 Runtime：
 node scripts/connect-local-runtime.mjs <Runtime进程PID> http://127.0.0.1:<Runtime端口>
 ```
 
-脚本只适用于本机单用户 Runtime，验证凭据后保存权限为 0600 的配置；随后重启 MorphzWork 中心。不要更换已有配置中的 namespace 或地址来覆盖正在使用的对话。Runtime 凭据更新后可重新运行连接脚本，保留原 namespace。
+脚本只适用于本机单用户 Runtime，验证凭据后保存权限为 0600 的配置；随后正常重开相应应用宿主。不要更换已有配置中的 namespace 或地址来覆盖正在使用的对话。Runtime 凭据更新后可重新运行连接脚本，保留原 namespace。
 
-当前工作台、每个项目和个人事项各自对应一个稳定 Session，同空间的应用与对象共用对话。保存为项目不更换 Session；旧对象 Session 的历史与在途执行保留兼容读取。个人模式的这些 Session 共用 MorphzWork 专属 Context，团队认证模式按授权空间隔离 Context。不挂载 Runtime 中已有的其他会话认知。Session 默认请求审批与 workspace-write，不继承服务器的完全访问模式。
+个人模式的对话、工作台、事项及项目默认交流共用一条持续会话；显式创建的项目命名会话对应独立 Session。应用、对象、导航与执行授权分开，工具按真实输入根解析项目，不能按当前页面猜测。旧 Session、历史和在途请求保留原路由，团队模式仍按授权空间隔离 Context。不挂载 Runtime 中已有的其他会话认知。Session 默认请求审批与 workspace-write，不继承服务器的完全访问模式。详见[持续会话](docs/17-continuous-conversation-and-execution.md)。
 
 发送队列与事件游标保存在中心数据库中。重试沿用同一个消息标识；刷新或重启不会重复执行已接受的消息。原来仅保存的输入不会自动补发，可点击“发送这条消息”。围绕对象发送时，会附上指定版本的正文、事项信息或图片，以及选中的原文。
 
-目前以持久事件轮询接收进度和完整回复，尚无逐 token 渲染。新的对象工具、执行控制和调度接口需要配套 Runtime 开发构建。中心生成私有 `host-tools.json`，Runtime 启动时以 `MORPHZ_HOST_TOOLS_FILE` 指向它；旧 Runtime 不会因为更新界面就自动获得这些能力。独立中心与身份配置见[本机中心接入](docs/14-local-center-and-identity.md)。
+回复和工具状态支持真实增量，最终以持久 Runtime 回执为准。对象工具、执行控制和调度接口需要配套 Runtime 开发构建。Desktop 生成私有 `host-tools-desktop.json`，通过 Unix 本地通信回调；Web 宿主使用 `host-tools.json` 和 HTTP。Runtime 启动时以 `MORPHZ_HOST_TOOLS_FILE` 指向对应清单；界面刷新不会自动重载 Runtime 的工具注册。独立中心与身份配置见[本机中心接入](docs/14-local-center-and-identity.md)。
 
 ## 语音服务
 
-豆包语音凭据使用项目根目录 `.env` 中的 `DOUBAO_API_KEY`，变量示例见 `.env.example`。中心服务启动时读取，已由宿主环境提供的同名变量优先；不会加载任意 `.env` 变量来覆盖进程设置，也不将密钥传给界面。默认位置跟随工程而不是启动目录；也可用绝对路径 `MORPHZWORK_ENV_FILE` 指定文件，空字符串表示不读取配置文件。
+豆包语音凭据使用项目根目录 `.env` 中的 `DOUBAO_API_KEY`，变量示例见 `.env.example`。应用宿主启动时读取，已由宿主环境提供的同名变量优先；不会加载任意 `.env` 变量来覆盖进程设置，也不将密钥传给界面。默认位置跟随工程而不是启动目录；也可用绝对路径 `MORPHZ_APP_ENV_FILE` 指定文件，空字符串表示不读取配置文件。
 
 `.env` 已被忽略，不能提交、索引或作为模型资料；不要使用 `VITE_` 前缀。录音与上传分别确认，识别后可编辑再放入输入框；朗读明确发起并可停止。识别和合成都使用豆包 Plan 专用接口，凭据需具备对应服务权限。已用现有凭据验证真实合成与识别回环；配置存在仍不等于连接一定可用，服务失败会明确显示。
 
 ## 数据位置与备份
 
-| 系统 | 默认中心数据目录 |
-| --- | --- |
-| macOS | `~/Library/Application Support/MorphzWork/` |
-| Linux | `$XDG_DATA_HOME/morphzwork/`，未配置时使用 `~/.local/share/morphzwork/` |
-| Windows | `%LOCALAPPDATA%\MorphzWork\` |
+| 系统    | 默认中心数据目录                                                                        |
+| ------- | --------------------------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/Morphz/application/`                                     |
+| Linux   | `$XDG_DATA_HOME/morphz/application/`，未配置时使用 `~/.local/share/morphz/application/` |
+| Windows | `%LOCALAPPDATA%\Morphz\application\`                                                    |
 
-目录内的 `workspace.sqlite` 保存对象、版本、批注、输入记录与资源。不依赖启动目录，不使用 Morphz Runtime 的数据库。可用绝对路径 `MORPHZWORK_DATA_DIR` 指定独立数据目录，以 `MORPHZWORK_PORT` 更改端口；桌面通过 `npm run desktop -- --center=http://127.0.0.1:<端口>` 连接。
+目录内的 `workspace.sqlite` 保存对象、版本、批注、输入记录与资源。不依赖启动目录，不使用 Morphz Runtime 的数据库。可用绝对路径 `MORPHZ_APP_DATA_DIR` 或 Desktop 的 `--data-dir=` 指定中心；`MORPHZ_APP_PORT` 仅控制 Web HTTP 端口。桌面 Chromium profile 可用绝对路径 `MORPHZ_APP_PROFILE` 指定，缺省为应用数据根下的 `Morphz/desktop`。Windows 本机 Runtime 工具通信后端尚未实现，不能把目录支持当作完整桌面验收。
+
+已有 `MorphzWork` 数据目录、profile 和 Chromium 分区就地继续使用，不自动搬移；同时发现新旧两份数据时拒绝猜测，要求显式选择。旧 `MORPHZWORK_*` 配置继续兼容，新名称优先（包括显式空字符串）；`MORPHZWORK_TEST_PROFILE` 对应 `MORPHZ_APP_PROFILE`。不要为了改名直接更改运行中的数据路径。
 
 备份前停止中心进程，并备份整个数据目录。不要只复制运行中的 SQLite 主文件而忽略 WAL。草稿和界面偏好保存在各端 Web 存储中，不在这份中心备份内。草稿跨设备同步、关闭窗口后的恢复入口尚未实现；重要修改请保存成对象版本。
 
@@ -122,3 +124,11 @@ npm run test:runtime-identity
 - 索引持久化并在授权范围内查询；工作空间快照仍面向小规模使用，未做大团队容量承诺。
 
 核心设计与本轮实现边界见 [对象模型与工程基础](docs/10-object-model-and-foundation.md)。
+
+## 名称与兼容边界
+
+产品统一为 Morphz，应用工程包为 `morphz-application`，Runtime 仍是独立模块。当前 checkout 目录可以仍叫 `MorphzWork`；目录重命名和并入主仓库是独立操作，本次没有合并仓库。
+
+新应用包使用 `morphz-app/v1` 和 `morphz-app:*` 消息，新输入格式为 `morphz.application.input` v1，对象工具为 `host_morphz`，HTTP CSRF 标头为 `X-Morphz-Token`，终端存储键为 `morphz:`。已安装旧包继续使用原协议；旧输入格式定义保持原字节，旧工具名继续接受且沿用同一幂等命令身份。旧登录态与同中心、同身份的草稿可读取，新值优先，原始数据不删除。历史文档、消息、对象 ID、Context/Session 命名空间以及兼容测试中的旧名称有意保留，不代表当前产品仍叫 MorphzWork。
+
+已安装的兼容 macOS 开发启动器不会仅因名称更新被改写或重新签名；这避免破坏当前授权，但不代替未来正式发行所需的稳定签名与更新机制。

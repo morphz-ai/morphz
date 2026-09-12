@@ -13,8 +13,12 @@ import {
 import { join, isAbsolute } from "node:path";
 import { z, ZodError } from "zod";
 import { DomainError } from "../../core/src/model.js";
-import { type AgentTools, workToolDefinition } from "./agent-tools.js";
-import { workInputFormat, workInputFormatV1 } from "./session-io.js";
+import { type AgentTools, workToolDefinitions } from "./agent-tools.js";
+import { workInputFormats } from "./session-io.js";
+import {
+  objectToolName,
+  legacyObjectToolName,
+} from "../../core/src/application-names.js";
 
 const maxRequest = 4 * 1024 * 1024,
   maxResponse = 2 * 1024 * 1024;
@@ -83,19 +87,32 @@ export function prepareLocalHostTools(
                 token: z.string().regex(/^[a-f0-9]{64}$/),
                 context_ids: z.array(z.string()),
                 context_id_prefixes: z.array(z.string()).default([]),
+                definition: z
+                  .object({
+                    name: z.enum([objectToolName, legacyObjectToolName]),
+                  })
+                  .passthrough(),
               })
               .passthrough(),
           )
-          .length(1),
+          .min(1)
+          .max(2),
       })
       .passthrough()
       .parse(JSON.parse(readFileSync(path, "utf8")));
     const tool = previous.tools[0]!;
     if (
-      tool.ipc_path !== endpoint ||
-      JSON.stringify(tool.context_ids) !== JSON.stringify(scope.context_ids) ||
-      JSON.stringify(tool.context_id_prefixes) !==
-        JSON.stringify(scope.context_id_prefixes ?? [])
+      new Set(previous.tools.map((value) => value.definition.name)).size !==
+        previous.tools.length ||
+      previous.tools.some(
+        (value) =>
+          value.token !== tool.token ||
+          value.ipc_path !== endpoint ||
+          JSON.stringify(value.context_ids) !==
+            JSON.stringify(scope.context_ids) ||
+          JSON.stringify(value.context_id_prefixes) !==
+            JSON.stringify(scope.context_id_prefixes ?? []),
+      )
     )
       throw new Error("本地 Host 配置与此工作区不匹配；原配置未覆盖。");
     token = tool.token;
@@ -106,15 +123,13 @@ export function prepareLocalHostTools(
     JSON.stringify(
       {
         protocol: 1,
-        formats: [workInputFormat, workInputFormatV1],
-        tools: [
-          {
-            ipc_path: endpoint,
-            token,
-            ...scope,
-            definition: workToolDefinition,
-          },
-        ],
+        formats: workInputFormats,
+        tools: workToolDefinitions.map((definition) => ({
+          ipc_path: endpoint,
+          token,
+          ...scope,
+          definition,
+        })),
       },
       null,
       2,

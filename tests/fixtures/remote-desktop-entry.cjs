@@ -1,7 +1,7 @@
 // Use the real remote entry with isolated preferences. Surface startup failures
 // to the test runner instead of waiting forever on an unattended native dialog.
 const { isAbsolute, basename } = require("node:path");
-const profile = process.env.MORPHZWORK_TEST_PROFILE;
+const profile = process.env.MORPHZ_APP_PROFILE;
 if (
   !profile ||
   !isAbsolute(profile) ||

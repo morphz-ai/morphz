@@ -119,19 +119,19 @@ test("图片去重且不接受 SVG 或任意文件", () => {
 test("默认数据位置不依赖当前目录；显式路径必须绝对", () => {
   assert.equal(
     dataDirectory({}, "darwin", "/users/test"),
-    "/users/test/Library/Application Support/MorphzWork",
+    "/users/test/Library/Application Support/Morphz/application",
   );
   assert.equal(
     dataDirectory({}, "linux", "/users/test"),
-    "/users/test/.local/share/morphzwork",
+    "/users/test/.local/share/morphz/application",
   );
   assert.equal(
     dataDirectory({ XDG_DATA_HOME: "/data" }, "linux", "/users/test"),
-    "/data/morphzwork",
+    "/data/morphz/application",
   );
   assert.equal(
     dataDirectory({ XDG_DATA_HOME: "relative" }, "linux", "/users/test"),
-    "/users/test/.local/share/morphzwork",
+    "/users/test/.local/share/morphz/application",
   );
   assert.throws(
     () => dataDirectory({ MORPHZWORK_DATA_DIR: "data" }),
@@ -139,7 +139,7 @@ test("默认数据位置不依赖当前目录；显式路径必须绝对", () =>
   );
   assert.equal(
     dataDirectory({ LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local" }, "win32"),
-    "C:\\Users\\test\\AppData\\Local\\MorphzWork",
+    "C:\\Users\\test\\AppData\\Local\\Morphz\\application",
   );
   assert.throws(
     () => dataDirectory({ LOCALAPPDATA: "relative" }, "win32"),

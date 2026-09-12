@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { FileText, X } from "lucide-react";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
 import { useModal } from "./useModal.js";
+import { useImagePreviewSize } from "./useImagePreviewSize.js";
 const PdfAttachment = lazy(() =>
   import("./PdfReader.js").then((m) => ({ default: m.PdfAttachment })),
 );
@@ -37,6 +38,8 @@ export function AttachmentPreview({
 }
 function Preview({ a, onClose }: { a: InputAttachment; onClose(): void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const imageSize = useImagePreviewSize();
+  const isImage = !a.mime || a.mime.startsWith("image/");
   const [text, setText] = useState<string | null>(null),
     [error, setError] = useState("");
   useModal(dialog);
@@ -57,7 +60,8 @@ function Preview({ a, onClose }: { a: InputAttachment; onClose(): void }) {
   return (
     <dialog
       ref={dialog}
-      className="create-dialog attachment-preview-dialog"
+      className={`create-dialog attachment-preview-dialog${isImage ? " image-preview-dialog" : ""}`}
+      style={imageSize.style}
       aria-label={`附件预览：${a.name}`}
       onCancel={onClose}
       onClick={(e) => {
@@ -82,6 +86,7 @@ function Preview({ a, onClose }: { a: InputAttachment; onClose(): void }) {
         <img
           src={url}
           alt={a.name}
+          onLoad={imageSize.onLoad}
           onError={() => setError("图片不可读取，请检查连接与访问权限。")}
         />
       )}

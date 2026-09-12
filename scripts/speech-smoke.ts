@@ -7,7 +7,7 @@ import { join } from "node:path";
 loadServiceEnvironment();
 const speech = new SpeechService(process.env.DOUBAO_API_KEY);
 if (!speech.configured()) throw new Error("DOUBAO_API_KEY 未配置。");
-const directory = mkdtempSync(join(tmpdir(), "morphzwork-speech-test-"));
+const directory = mkdtempSync(join(tmpdir(), "morphz-speech-test-"));
 try {
   const text = "你好，这是一段合成语音，用于测试语音输入。";
   const wav = await speech.synthesize(

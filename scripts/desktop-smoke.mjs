@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
-const port = Number(process.env.MORPHZWORK_DESKTOP_TEST_PORT ?? 65419);
+const port = Number(process.env.MORPHZ_APP_DESKTOP_TEST_PORT ?? 65419);
 assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535);
 const origin = `http://127.0.0.1:${port}`;
 try {
@@ -18,16 +18,16 @@ try {
 } catch (e) {
   if (e.message.includes("already in use")) throw e;
 }
-const dir = mkdtempSync(join(tmpdir(), "morphzwork-desktop-test-"));
+const dir = mkdtempSync(join(tmpdir(), "morphz-desktop-test-"));
 const service = spawn(
   process.execPath,
   ["dist/service/apps/service/src/main.js"],
   {
     env: {
       ...process.env,
-      MORPHZWORK_PORT: String(port),
-      MORPHZWORK_DATA_DIR: join(dir, "data"),
-      MORPHZWORK_ENV_FILE: "",
+      MORPHZ_APP_PORT: String(port),
+      MORPHZ_APP_DATA_DIR: join(dir, "data"),
+      MORPHZ_APP_ENV_FILE: "",
     },
     stdio: "pipe",
   },
@@ -46,7 +46,7 @@ try {
     await delay(100);
   }
   assert.ok(ready, "service did not start");
-  const env = { ...process.env, MORPHZWORK_TEST_PROFILE: join(dir, "profile") };
+  const env = { ...process.env, MORPHZ_APP_PROFILE: join(dir, "profile") };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
     args: ["apps/desktop/main.cjs", `--center=${origin}`],
@@ -634,3 +634,4 @@ try {
   await new Promise((r) => service.once("exit", r));
   rmSync(dir, { recursive: true });
 }
+import "./application-configuration.mjs";

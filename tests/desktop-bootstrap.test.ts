@@ -15,29 +15,35 @@ test("Dock 重开保留原服务配置文件引用，不将密钥写入应用包
     migrateOrigins: [],
     hot: false,
   });
-  for (const explicit of [undefined, "", "/fixture/operator.env"]) {
-    const env: Record<string, string> =
-      explicit === undefined ? {} : { MORPHZWORK_ENV_FILE: explicit };
-    const argv: string[] = [];
-    const loaded: string[] = [];
-    runInNewContext(source, {
-      process: {
-        env,
-        argv,
-        chdir: (path: string) => assert.equal(path, "/fixture/source"),
-      },
-      require: (path: string) =>
-        path === "node:path" ? { join } : loaded.push(path),
-    });
-    assert.equal(
-      env.MORPHZWORK_ENV_FILE,
-      explicit ?? "/fixture/prior-source/.env",
-    );
-    assert.equal(env.MORPHZWORK_TEST_PROFILE, "/fixture/original/desktop");
-    assert.deepEqual(argv, ["--data-dir=/fixture/original/center"]);
-    assert.deepEqual(loaded, ["/fixture/source/apps/desktop/main.cjs"]);
-    assert.ok(!source.includes("DOUBAO_API_KEY"));
-  }
+  for (const legacy of [false, true])
+    for (const explicit of [undefined, "", "/fixture/operator.env"]) {
+      const env: Record<string, string> =
+        explicit === undefined
+          ? {}
+          : {
+              [legacy ? "MORPHZWORK_ENV_FILE" : "MORPHZ_APP_ENV_FILE"]:
+                explicit,
+            };
+      const argv: string[] = [];
+      const loaded: string[] = [];
+      runInNewContext(source, {
+        process: {
+          env,
+          argv,
+          chdir: (path: string) => assert.equal(path, "/fixture/source"),
+        },
+        require: (path: string) =>
+          path === "node:path" ? { join } : loaded.push(path),
+      });
+      assert.equal(
+        env.MORPHZ_APP_ENV_FILE,
+        explicit ?? "/fixture/prior-source/.env",
+      );
+      assert.equal(env.MORPHZ_APP_PROFILE, "/fixture/original/desktop");
+      assert.deepEqual(argv, ["--data-dir=/fixture/original/center"]);
+      assert.deepEqual(loaded, ["/fixture/source/apps/desktop/main.cjs"]);
+      assert.ok(!source.includes("DOUBAO_API_KEY"));
+    }
   assert.throws(
     () => desktopBootstrap({ envFile: "relative.env" }),
     /绝对路径/,

@@ -3,6 +3,122 @@ import { test, expect } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
+for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
+  test(`${platform}：Option/Alt 点击仅隐藏本次截图，普通点击与草稿不变`, async ({
+    page,
+  }) => {
+    await page.addInitScript((platform) => {
+      Object.defineProperty(navigator, "platform", { value: platform });
+      Reflect.set(window, "captureOptions", []);
+      Reflect.set(window, "morphzDesktop", {
+        capture: {
+          select: (options: unknown) => {
+            Reflect.get(window, "captureOptions").push(options);
+            return new Promise((resolve) =>
+              Reflect.set(window, "finishCapture", resolve),
+            );
+          },
+          cancel: async () => Reflect.get(window, "finishCapture")?.(null),
+        },
+      });
+    }, platform);
+    await page.goto("/");
+    const input = await openInput(page);
+    await input.fill("修饰键截图保留这份草稿");
+    const trigger = page.getByRole("button", { name: "截图输入", exact: true });
+    await expect(trigger).toHaveAttribute(
+      "title",
+      platform === "MacIntel"
+        ? "截图输入（按住 Option 点击隐藏 Morphz）"
+        : "截图输入（按住 Alt 点击隐藏 Morphz）",
+    );
+    let calls = 0;
+    for (const [modifiers, hideWindow] of [
+      [["Alt"], true],
+      [[], false],
+      [["Shift"], false],
+    ] as const) {
+      await trigger.click({ modifiers: [...modifiers] });
+      await expect
+        .poll(() =>
+          page.evaluate(() => Reflect.get(window, "captureOptions").length),
+        )
+        .toBe(++calls);
+      await expect
+        .poll(() =>
+          page.evaluate(() => Reflect.get(window, "captureOptions").at(-1)),
+        )
+        .toEqual({ hideWindow });
+      await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
+      await expect(page.locator(".capture-dialog")).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      await expect(input).toHaveValue("修饰键截图保留这份草稿");
+    }
+    expect(
+      await page.evaluate(() => Reflect.get(window, "captureOptions")),
+    ).toEqual([
+      { hideWindow: true },
+      { hideWindow: false },
+      { hideWindow: false },
+    ]);
+  });
+}
+
+test("重新划区逐次读取 Option/Alt，取消或失败保留已有预览且不上传", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Reflect.set(window, "captureOptions", []);
+    Reflect.set(window, "morphzDesktop", {
+      capture: {
+        select: async (options: unknown) => {
+          const calls = Reflect.get(window, "captureOptions");
+          calls.push(options);
+          if (calls.length === 1)
+            return {
+              mime: "image/png",
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aKp8AAAAASUVORK5CYII=",
+            };
+          if (calls.length === 2) throw new Error("截图测试失败");
+          return null;
+        },
+        cancel: async () => {},
+      },
+    });
+  });
+  let uploads = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/assets") && request.method() === "POST")
+      uploads++;
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("重选不改草稿");
+  await page
+    .getByRole("button", { name: "截图输入", exact: true })
+    .click({ modifiers: ["Alt"] });
+  const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
+  await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
+  await dialog.getByLabel("截图标题").fill("保留的预览");
+  const retry = dialog.getByRole("button", { name: "重新划区", exact: true });
+  await retry.click();
+  await expect(dialog.getByRole("alert")).toHaveText("截图测试失败");
+  await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
+  await retry.click({ modifiers: ["Alt"] });
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "captureOptions")))
+    .toEqual([
+      { hideWindow: true },
+      { hideWindow: false },
+      { hideWindow: true },
+    ]);
+  await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
+  await expect(dialog.getByLabel("截图标题")).toHaveValue("保留的预览");
+  await dialog.getByRole("button", { name: "关闭截图输入" }).click();
+  await expect(input).toHaveValue("重选不改草稿");
+  expect(uploads).toBe(0);
+});
+
 test("一次点击进入截图，失败只提示并等待明确重试", async ({ page }) => {
   await page.addInitScript(() => {
     Reflect.set(window, "captureCalls", 0);

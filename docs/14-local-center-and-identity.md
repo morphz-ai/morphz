@@ -6,7 +6,7 @@
 
 构建后 `npm start` 启动默认中心，另一终端 `npm run desktop` 打开桌面。已有 Runtime 的连接方式见项目 README。普通用户资料由 Work 数据库保存，不写入源码目录。
 
-独立测试中心使用新的绝对路径 `MORPHZWORK_DATA_DIR` 和空闲 `MORPHZWORK_PORT`。桌面通过以下参数连接，无参数默认连接 65420：
+独立测试中心使用新的绝对路径 `MORPHZ_APP_DATA_DIR` 和空闲 `MORPHZ_APP_PORT`。桌面通过以下参数连接，无参数默认连接 65420：
 
 ```sh
 npm run desktop -- --center=http://127.0.0.1:65422
@@ -16,9 +16,9 @@ npm run desktop -- --center=http://127.0.0.1:65422
 
 ### 配套开发 Runtime 的独立桌面
 
-`npm run dev:center -- --source-center=<原中心私有数据目录> --data-dir=<新开发数据目录> --model-key-file=<私有环境文件绝对路径> --model-key-name=<指定的模型密钥变量名> --desktop` 会启动独立 Runtime（18089）、中心（65424）及带 Vite 热更新的桌面。需要先构建 Work 和配套 Runtime；可用 `MORPHZWORK_RUNTIME_BINARY` 显式选择二进制。
+`npm run dev:center -- --source-center=<原中心私有数据目录> --data-dir=<新开发数据目录> --model-key-file=<私有环境文件绝对路径> --model-key-name=<指定的模型密钥变量名> --desktop` 会启动独立 Runtime（18089）、中心（65424）及带 Vite 热更新的桌面。需要先构建 Work 和配套 Runtime；可用 `MORPHZ_APP_RUNTIME_BINARY` 显式选择二进制。
 
-已有中心无需重新运行这个启动器：先正常退出旧桌面，再以原 `MORPHZWORK_TEST_PROFILE` 执行 `npm run desktop:dev -- --center=http://127.0.0.1:65424` 即可。该命令只管理 Vite 和桌面客户端，关闭桌面不停止中心。65419 必须空闲，不能与 Web 开发或既有桌面测试同时使用。
+已有中心无需重新运行这个启动器：先正常退出旧桌面，再以原 `MORPHZ_APP_PROFILE` 执行 `npm run desktop:dev -- --center=http://127.0.0.1:65424` 即可。该命令只管理 Vite 和桌面客户端，关闭桌面不停止中心。65419 必须空闲，不能与 Web 开发或既有桌面测试同时使用。
 
 热更新只在非打包开发壳显式启用：渲染器使用 65419，Vite 将 `/api` 代理到指定中心，保留服务端原有 Origin 与 CSRF 校验，不拦截 Electron 的 HTTP 协议。原生来源与网站分区仍绑定实际中心，不随渲染地址改变。首次连接复制同中心、同身份的偏好与草稿，不覆盖目标已有值，不复制待执行命令。CSS／React 自动更新；主进程与 preload 需要正常退出重开，服务端需单独更新。前端非组件模块的变化仍可能触发整页刷新。
 
@@ -62,7 +62,7 @@ Runtime 的宿主配置包含：
 [server.identity]
 mode = "trusted-gateway"
 provider_id = "morphzwork"
-service_token_env = "MORPHZWORK_GATEWAY_TOKEN"
+service_token_env = "MORPHZ_APP_GATEWAY_TOKEN"
 ```
 
 网关令牌通过宿主环境提供。Work 中心私有 `runtime.json` 的结构为：

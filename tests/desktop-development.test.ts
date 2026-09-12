@@ -32,7 +32,7 @@ test("开发偏好迁移限定同中心同身份，不覆盖已有偏好，也�
     entries: [["morphzwork:center:alice:preferences", "newer"]],
   };
   assert.deepEqual(preferenceSeed(previous, current), [
-    ["morphzwork:center:alice:draft:a:document", "draft"],
+    ["morphz:center:alice:draft:a:document", "draft"],
   ]);
   assert.deepEqual(
     preferenceSeed(previous, { ...current, centerId: "other" }),

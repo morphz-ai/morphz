@@ -30,13 +30,14 @@ test("内嵌地址恢复保留原窗口草稿与幂等命令，只复制同中�
     identity,
   );
   assert.deepEqual(seed, {
-    prefix,
+    prefix: "morphz:center:human:",
+    legacyPrefix: prefix,
     draftOwners: [],
     entries: [
-      [prefix + "pending:message", pending],
-      [prefix + "draft:window:conversation", "未发送"],
-      [prefix + "desktop:last-window", "window"],
-      [prefix + "view", "original view"],
+      ["morphz:center:human:pending:message", pending],
+      ["morphz:center:human:draft:window:conversation", "未发送"],
+      ["morphz:center:human:desktop:last-window", "window"],
+      ["morphz:center:human:view", "original view"],
     ],
   });
   assert.deepEqual(
@@ -74,15 +75,21 @@ test("旧版没有窗口标记时恢复唯一有内容的草稿，不在多个�
   ];
   const one = preferenceSeed([entries], identity);
   assert.deepEqual(one.draftOwners, [first]);
-  assert.equal(new Map(one.entries).get(prefix + "desktop:last-window"), first);
-  assert.equal(new Map(one.entries).get(entries[0]![0]), entries[0]![1]);
+  assert.equal(
+    new Map(one.entries).get("morphz:center:human:desktop:last-window"),
+    first,
+  );
+  assert.equal(
+    new Map(one.entries).get(entries[0]![0].replace(/^morphzwork:/, "morphz:")),
+    entries[0]![1],
+  );
   entries[1]![1] = JSON.stringify({
     project: { selection: "另一个未提交的引用" },
   });
   const multiple = preferenceSeed([entries], identity);
   assert.deepEqual(multiple.draftOwners, [first, second]);
   assert.equal(
-    new Map(multiple.entries).has(prefix + "desktop:last-window"),
+    new Map(multiple.entries).has("morphz:center:human:desktop:last-window"),
     false,
   );
 });

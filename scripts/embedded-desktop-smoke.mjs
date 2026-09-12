@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 const fixture = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
 const env = {
   ...process.env,
-  MORPHZWORK_EMBEDDED_FIXTURE: fixture,
-  MORPHZWORK_ENV_FILE: "",
+  MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
+  MORPHZ_APP_ENV_FILE: "",
 };
 delete env.ELECTRON_RUN_AS_NODE;
 let app;
@@ -86,7 +86,7 @@ try {
       async ({ BrowserWindow, session }, path) => {
         const { collectLegacyPreferences, restorePreferences, emptyPage } =
           globalThis.__fixturePreferences;
-        const appSession = session.fromPartition("persist:morphzwork-app");
+        const appSession = session.fromPartition("persist:morphz-app");
         const identity = {
           centerId: "fixture-center",
           principalId: "fixture-human",
@@ -132,7 +132,7 @@ try {
         try {
           await restorePreferences(target, seed);
           return await target.webContents.executeJavaScript(
-            `({pending: localStorage.getItem(${JSON.stringify(prefix + "pending:message")}), owner: sessionStorage.getItem('morphzwork:window'), other: localStorage.getItem('morphzwork:other:other:draft')})`,
+            `({pending: localStorage.getItem(${JSON.stringify(seed.prefix + "pending:message")}), owner: sessionStorage.getItem('morphz:window'), other: localStorage.getItem('morphzwork:other:other:draft')})`,
           );
         } finally {
           target.destroy();
@@ -224,7 +224,7 @@ try {
     // A native third-party view receives a synthetic page in its own session;
     // no application HTTP service or external network is involved.
     const partition =
-      "persist:morphzwork-browser-" +
+      "persist:morphz-browser-" +
       createHash("sha256")
         .update(state.centerId + ":" + state.principalId)
         .digest("hex");
