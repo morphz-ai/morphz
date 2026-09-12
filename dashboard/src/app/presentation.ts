@@ -99,6 +99,9 @@ export function conversationEventLane(
 ): ConversationLane | null {
   const kind = conversationEventKind(topic, payload)
   if (kind === null) return null
+  // A public answer handed to steering stays beside the user's dialogue in
+  // split mode, rather than disappearing into the execution-output pane.
+  if (topic === 'chat/progress' && payload.disposition === 'steering_draft') return 'dialogue'
   return kind === 'background' || kind === 'progress' || kind === 'reasoning'
     ? 'execution_output'
     : 'dialogue'

@@ -1592,6 +1592,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
    compact rhythm, and a wide table scrolls inside the note rather than forcing
    the conversation column open. */
 .progress-note-body { min-width: 0; }
+.progress-note-body .steering-draft-label { color: var(--accent); font-weight: 600; margin-bottom: 8px; }
 .progress-note-body > :first-child { margin-top: 0; }
 .progress-note-body > :last-child { margin-bottom: 0; }
 .progress-note-body p { margin: 0 0 6px; }

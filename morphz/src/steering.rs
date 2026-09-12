@@ -241,6 +241,14 @@ impl crate::tool::Tool for SteerTool {
                 "steer requires an ordinary message from the current authenticated user".into(),
             );
         }
+        // The persisted ingress choice is authority, not the model's reading
+        // of the text or a caller-supplied tool argument. Keep the tool catalog
+        // identical in every mode; reject only this invocation.
+        if source.payload.get("dispatch_mode").and_then(|v| v.as_str())
+            == Some(MessageDispatchMode::Parallel.as_str())
+        {
+            return Err("PARALLEL_INPUT_REQUIRES_INDEPENDENT_EXECUTION: the user explicitly sent this message in parallel. Handle and answer it in this Thread; do not forward it with steer or duplicate it at another destination. Referencing other work does not authorize transferring this request.".into());
+        }
         let identity = format!("{}:{}", source.id, serde_json::to_string(&destination)?);
         let client_id = format!("steer-{:x}", Sha256::digest(identity.as_bytes()));
         let mut event = source.clone();
@@ -397,7 +405,7 @@ mod tests {
                 "session-steer",
                 &source.id,
                 &source,
-                MessageDispatchMode::Parallel,
+                MessageDispatchMode::Interrupt,
             )
             .await
             .unwrap();
@@ -462,6 +470,89 @@ mod tests {
             )
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn natural_steering_rejects_parallel_source_without_changing_tool_definition() {
+        use crate::tool::{Tool, ToolCausalRoute, CURRENT_CAUSAL_ROUTE, CURRENT_PRINCIPAL_ID};
+        use std::sync::Arc;
+        let (_file, store, target, original) = fixture().await;
+        let store = Arc::new(store);
+        let tool = SteerTool {
+            context: Arc::new(
+                crate::orchestrator::context::ContextEngine::new(
+                    store.clone() as Arc<dyn EventStore>,
+                    crate::config::AppConfig::default().orchestrator,
+                )
+                .with_session_store(store.clone() as Arc<dyn SessionStore>),
+            ),
+            bus: Arc::new(crate::event::InMemoryEventBus::new()),
+        };
+        let definition = serde_json::to_value(tool.definition()).unwrap();
+        for (index, mode) in [
+            MessageDispatchMode::Parallel,
+            MessageDispatchMode::Interrupt,
+            MessageDispatchMode::FollowUp,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut source = original.clone();
+            source.id = format!("mode-source-{index}");
+            source
+                .payload
+                .insert("client_message_id".into(), json!(source.id));
+            // Spoofed payload must lose to the actual ingress mode saved by claim_message.
+            source
+                .payload
+                .insert("dispatch_mode".into(), json!("interrupt"));
+            store
+                .claim_message("session-steer", &source.id, &source, mode)
+                .await
+                .unwrap();
+            let source_thread = store.get_thread_by_root(&source.id).await.unwrap().unwrap();
+            let route = ToolCausalRoute {
+                thread_id: source_thread.id,
+                activation_id: format!("routing-{index}"),
+                model_attempt_id: None,
+                root_turn_id: source.id.clone(),
+                trigger_event_id: source.id,
+                trigger_sequence: 1,
+            };
+            let args = json!({"input_destination": {"kind":"thread", "thread_id":target.id,
+                "generation":target.generation}, "dispatch_mode":"interrupt"})
+            .to_string();
+            CURRENT_PRINCIPAL_ID
+                .scope(
+                    Some("principal-steer".into()),
+                    CURRENT_CAUSAL_ROUTE.scope(Some(route), async {
+                        assert_eq!(serde_json::to_value(tool.definition()).unwrap(), definition);
+                        let result = tool.execute(&args).await;
+                        if mode == MessageDispatchMode::Parallel {
+                            assert!(result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("PARALLEL_INPUT_REQUIRES_INDEPENDENT_EXECUTION"));
+                            assert!(store
+                                .query(QueryFilter {
+                                    topic: Some("chat/steering".into()),
+                                    ..Default::default()
+                                })
+                                .await
+                                .unwrap()
+                                .is_empty());
+                        } else {
+                            assert_eq!(
+                                serde_json::from_str::<serde_json::Value>(&result.unwrap())
+                                    .unwrap()["status"],
+                                "queued"
+                            );
+                        }
+                        assert_eq!(serde_json::to_value(tool.definition()).unwrap(), definition);
+                    }),
+                )
+                .await;
+        }
     }
 
     #[tokio::test]
@@ -656,6 +747,47 @@ mod tests {
         assert_question_race(&store, &source).await;
     }
 
+    async fn assert_draft_projection(store: &dyn RuntimeStore) {
+        let draft = Event::new(
+            "steering-draft-projection".into(),
+            "Agent-Morphz".into(),
+            crate::event::TYPE_AGENT_CALL.into(),
+            "chat/progress".into(),
+            serde_json::from_value(
+                json!({"context_id":"context-steer", "session_id":"session-steer",
+                "text":"preserved draft", "disposition":"steering_draft"}),
+            )
+            .unwrap(),
+        );
+        store.append(draft.clone()).await.unwrap();
+        store.append(draft.clone()).await.unwrap();
+        let projection = store
+            .query_session_projections("context-steer", &["session-steer".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(
+            projection
+                .iter()
+                .filter(|event| event.id == draft.id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            projection
+                .iter()
+                .find(|event| event.id == draft.id)
+                .unwrap()
+                .payload,
+            draft.payload
+        );
+    }
+
+    #[tokio::test]
+    async fn steering_draft_is_projected_once_in_sqlite() {
+        let (_file, store, _, _) = fixture().await;
+        assert_draft_projection(&store).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires MORPHZ_TEST_POSTGRES_URL; uses a fresh isolated schema"]
     async fn postgres_directed_input_and_question_race() {
@@ -681,6 +813,7 @@ mod tests {
         .await
         .unwrap();
         let (thread, source) = seed(&store).await;
+        assert_draft_projection(&store).await;
         for (id, mode) in [
             ("pg-interrupt", MessageDispatchMode::Interrupt),
             ("pg-followup", MessageDispatchMode::FollowUp),

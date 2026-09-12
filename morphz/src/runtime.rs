@@ -11947,10 +11947,47 @@ mod tests {
         release: tokio::sync::Notify,
         calls: AtomicU64,
         marker: String,
+        with_tool: bool,
+        partial_response: bool,
+    }
+
+    enum SteeringTestBoundary {
+        Response,
+        PartialResponse,
+        TerminalCommit,
     }
 
     #[async_trait::async_trait]
     impl Client for SteeringBoundaryClient {
+        async fn create_completion_measured_stream(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            _measurement: Option<crate::llm::PromptTokenCount>,
+            stream: crate::llm::ModelStreamSender,
+        ) -> Result<Response, RuntimeError> {
+            use crate::llm::{ModelFailure, ModelFailureKind, ModelStreamEvent};
+            let _ = stream.send(ModelStreamEvent::Started);
+            if self.partial_response && self.calls.load(Ordering::SeqCst) == 0 {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.send(ModelStreamEvent::TextDelta {
+                    text: "preserved-parser-draft".into(),
+                });
+                self.entered.notify_one();
+                self.release.notified().await;
+                let _ = stream.send(ModelStreamEvent::Incomplete {
+                    reason: "max_tokens".into(),
+                });
+                return Err(ModelFailure::new(ModelFailureKind::OutputLimit, "max_tokens").into());
+            }
+            let response = self.create_completion(messages, tools).await?;
+            let _ = stream.send(ModelStreamEvent::TextDelta {
+                text: response.content.clone(),
+            });
+            let _ = stream.send(ModelStreamEvent::Completed);
+            Ok(response)
+        }
+
         async fn create_completion(
             &self,
             messages: Vec<Message>,
@@ -11960,13 +11997,15 @@ mod tests {
             if call == 0 {
                 self.entered.notify_one();
                 self.release.notified().await;
-                let mut response = text_response("");
-                response.tool_calls.push(ToolCallRepr {
-                    id: "obsolete-write".into(),
-                    r#type: "function".into(),
-                    func_name: "write".into(),
-                    arguments: json!({"path": self.marker, "content":"obsolete"}).to_string(),
-                });
+                let mut response = text_response("preserved-parser-draft");
+                if self.with_tool {
+                    response.tool_calls.push(ToolCallRepr {
+                        id: "obsolete-write".into(),
+                        r#type: "function".into(),
+                        func_name: "write".into(),
+                        arguments: json!({"path": self.marker, "content":"obsolete"}).to_string(),
+                    });
+                }
                 return Ok(response);
             }
             if call == 1 {
@@ -11975,6 +12014,30 @@ mod tests {
                         .iter()
                         .any(|message| message.content.contains("Use the corrected parser")),
                     "next Evaluation must see the directed correction"
+                );
+                assert!(
+                    messages
+                        .iter()
+                        .any(|message| message.content.contains("Implement a parser")),
+                    "steering must retain the original request"
+                );
+                assert!(
+                    messages
+                        .iter()
+                        .any(|message| message.content.contains("preserved-parser-draft")),
+                    "next Evaluation must inherit the public draft"
+                );
+                assert!(
+                    messages.iter().any(|message| message
+                        .content
+                        .contains("(response-disposition steering_draft)")),
+                    "draft must be explicitly nonterminal in model context"
+                );
+                assert!(
+                    !messages
+                        .iter()
+                        .any(|message| message.content.contains("obsolete-write")),
+                    "unexecuted proposals must not be replayed as assistant calls"
                 );
                 Ok(text_response("corrected-parser-delivered"))
             } else {
@@ -11989,15 +12052,35 @@ mod tests {
 
     #[tokio::test]
     async fn steering_supersedes_uncommitted_response_without_a_second_dialogue() {
-        assert_steering_boundary(false).await;
+        assert_steering_boundary(false, true, SteeringTestBoundary::Response).await;
     }
 
     #[tokio::test]
     async fn steering_resumes_before_the_follow_up_waiting_for_its_thread() {
-        assert_steering_boundary(true).await;
+        assert_steering_boundary(true, true, SteeringTestBoundary::Response).await;
     }
 
-    async fn assert_steering_boundary(with_follow_up: bool) {
+    #[tokio::test]
+    async fn steering_preserves_text_only_reply_and_continues_the_original_thread() {
+        assert_steering_boundary(false, false, SteeringTestBoundary::Response).await;
+    }
+
+    #[tokio::test]
+    async fn steering_arriving_at_terminal_commit_preserves_the_reply_as_a_draft() {
+        assert_steering_boundary(false, false, SteeringTestBoundary::TerminalCommit).await;
+    }
+
+    #[tokio::test]
+    async fn steering_preserves_public_text_from_an_incomplete_model_response() {
+        assert_steering_boundary(false, false, SteeringTestBoundary::PartialResponse).await;
+    }
+
+    async fn assert_steering_boundary(
+        with_follow_up: bool,
+        with_tool: bool,
+        boundary: SteeringTestBoundary,
+    ) {
+        let late_commit = matches!(boundary, SteeringTestBoundary::TerminalCommit);
         let database = NamedTempFile::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let marker = workspace.path().join("obsolete.txt");
@@ -12008,6 +12091,8 @@ mod tests {
             release: tokio::sync::Notify::new(),
             calls: AtomicU64::new(0),
             marker: marker.to_string_lossy().into_owned(),
+            with_tool,
+            partial_response: matches!(boundary, SteeringTestBoundary::PartialResponse),
         });
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
@@ -12015,6 +12100,28 @@ mod tests {
             .await
             .unwrap();
         runtime.start().await.unwrap();
+        let commit_entered = Arc::new(tokio::sync::Notify::new());
+        let commit_release = Arc::new(tokio::sync::Notify::new());
+        if late_commit {
+            let entered = commit_entered.clone();
+            let release = commit_release.clone();
+            runtime.inner.bus.subscribe(
+                "*".into(),
+                Arc::new(move |event| {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    Box::pin(async move {
+                        if event.topic == "chat/assistant_call"
+                            && event.payload["text"] == "preserved-parser-draft"
+                        {
+                            entered.notify_one();
+                            release.notified().await;
+                        }
+                        Ok(())
+                    })
+                }),
+            );
+        }
         let session = runtime
             .ensure_session(NewSession {
                 id: "session-steering-boundary".into(),
@@ -12034,6 +12141,12 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), client.entered.notified())
             .await
             .unwrap();
+        if late_commit {
+            client.release.notify_one();
+            tokio::time::timeout(std::time::Duration::from_secs(5), commit_entered.notified())
+                .await
+                .unwrap();
+        }
         let thread = runtime
             .inner
             .store
@@ -12078,7 +12191,11 @@ mod tests {
             )
             .await
             .unwrap();
-        client.release.notify_one();
+        if late_commit {
+            commit_release.notify_one();
+        } else {
+            client.release.notify_one();
+        }
         let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
             .await
             .unwrap()
@@ -12107,6 +12224,70 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(reply.payload["root_turn_id"], original.event_id);
+        let drafts = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some("session-steering-boundary".into()),
+                topic: Some("chat/progress".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.payload["disposition"] == "steering_draft")
+            .collect::<Vec<_>>();
+        assert_eq!(drafts.len(), 1);
+        let draft = &drafts[0];
+        assert_eq!(draft.payload["text"], "preserved-parser-draft");
+        assert_eq!(draft.payload["root_turn_id"], original.event_id);
+        assert_eq!(draft.payload["thread_id"], thread.id);
+        if !late_commit {
+            assert_eq!(
+                draft.payload["pending_input_event_ids"],
+                json!([correction.event_id])
+            );
+        }
+        let saved_reply = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(reply.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(
+            draft.sequence.unwrap() < saved_reply.sequence.unwrap(),
+            "draft must be durable before the final reply"
+        );
+        // Reopening storage is the refresh/restart path, not a live UI cache.
+        let reopened = SqliteStore::new(&database.path().to_string_lossy())
+            .await
+            .unwrap();
+        let saved = reopened
+            .query(QueryFilter {
+                event_id: Some(draft.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(saved[0].payload, draft.payload);
+        reopened.append(draft.clone()).await.unwrap();
+        assert_eq!(
+            reopened
+                .query(QueryFilter {
+                    event_id: Some(draft.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "checkpoint persistence must be idempotent"
+        );
         let snapshot = runtime
             .thread_detail(&thread.context_id, &thread.id)
             .await

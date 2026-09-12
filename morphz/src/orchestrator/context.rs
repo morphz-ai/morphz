@@ -483,6 +483,13 @@ pub struct ContextObservation {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_id: Option<String>,
+    /// Immutable ingress choice; absent only on non-user or legacy Events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_mode: Option<crate::memory::MessageDispatchMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_destination: Option<crate::steering::InputDestination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_disposition: Option<String>,
     pub sequence: u64,
     pub turn: usize,
     pub attempt: Option<usize>,
@@ -5851,6 +5858,17 @@ impl ContextEngine {
                     .map(ToOwned::to_owned)
             },
             principal_id: event_principal(event).map(ToOwned::to_owned),
+            dispatch_mode: (event.event_type == TYPE_USER_MESSAGE)
+                .then(|| event.payload.get("dispatch_mode").cloned())
+                .flatten()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            input_destination: (event.event_type == TYPE_USER_MESSAGE)
+                .then(|| crate::steering::destination(event).ok().flatten())
+                .flatten(),
+            response_disposition: (event.topic == "chat/progress")
+                .then(|| event.payload.get("disposition").and_then(|v| v.as_str()))
+                .flatten()
+                .map(ToOwned::to_owned),
             sequence: metadata.sequence,
             turn: metadata.turn,
             attempt: metadata.attempt,
@@ -9975,6 +9993,41 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
     if let Some(principal_id) = &observation.principal_id {
         fields.push(pair("principal", atom(principal_id)));
     }
+    if let Some(mode) = observation.dispatch_mode {
+        fields.push(pair("dispatch-mode", atom(mode.as_str())));
+    }
+    if let Some(destination) = &observation.input_destination {
+        let mut target = match destination {
+            crate::steering::InputDestination::Thread {
+                thread_id,
+                generation,
+            } => vec![
+                pair("kind", atom("thread")),
+                pair("thread-id", atom(thread_id)),
+                pair("generation", atom(generation.to_string())),
+            ],
+            crate::steering::InputDestination::Objective {
+                objective_id,
+                generation,
+                ..
+            } => vec![
+                pair("kind", atom("objective")),
+                pair("objective-id", atom(objective_id)),
+                pair("generation", atom(generation.to_string())),
+            ],
+        };
+        if let crate::steering::InputDestination::Objective {
+            reply_to_request_id: Some(id),
+            ..
+        } = destination
+        {
+            target.push(pair("reply-to-request-id", atom(id)));
+        }
+        fields.push(list("input-destination", target));
+    }
+    if let Some(disposition) = &observation.response_disposition {
+        fields.push(pair("response-disposition", atom(disposition)));
+    }
     if let Some(attempt) = observation.attempt {
         fields.push(pair("attempt", atom(attempt.to_string())));
     }
@@ -10419,7 +10472,8 @@ fn render_protocol() -> SExpr {
                         "enqueue",
                         atom("schedule_tx enqueue serially adds intent to thread_id; omitting thread_id continues the current Thread"),
                     ),
-                    pair("human-steering", atom("A user's supplemental instruction about existing work should be forwarded with steer, not executed twice in a new DialogueTurn. Select the exact Thread or Objective and generation; copy request-id when answering its pending user-input question. Unrelated ordinary messages never satisfy user-input waits. Ask when the intended work is ambiguous; do not broadcast to all waiting Objectives.")),
+                    pair("human-steering", atom("Inbox dispatch-mode is the user's immutable ingress choice. An ordinary message with dispatch-mode parallel must be handled and answered independently in its own Thread: never automatically forward it with steer, even when it references existing work. An explicit input-destination is already directed input, including when its transport dispatch-mode is parallel. Otherwise, a user's supplemental instruction about existing work should be forwarded with steer, not executed twice in a new DialogueTurn. Select the exact Thread or Objective and generation; copy request-id when answering its pending user-input question. Unrelated ordinary messages never satisfy user-input waits. Ask when the intended work is ambiguous; do not broadcast to all waiting Objectives.")),
+                    pair("steering-draft", atom("An observation with response-disposition steering_draft preserves public response text generated before newer directed input. It is not a final reply or an executed Action. Continue from that draft together with the original request and the new input; retain applicable findings, correct invalidated parts, and decide any unexecuted tools anew. Do not repeat completed physical work or assume proposed tools ran.")),
                     pair(
                         "spawn",
                         atom("schedule_tx spawn creates an independent Thread that can run in parallel; after in the same transaction may reference its client_id as $client_id"),
@@ -13677,6 +13731,9 @@ mod tests {
             reference: "@e1".to_string(),
             session_id: Some("session-1".to_string()),
             principal_id: Some("principal-1".to_string()),
+            dispatch_mode: None,
+            input_destination: None,
+            response_disposition: None,
             sequence: 1,
             turn: 1,
             attempt: None,
@@ -13719,6 +13776,95 @@ mod tests {
                 .to_string(),
             "(state (ref @e1) (residency (retrievable false)))"
         );
+    }
+
+    #[tokio::test]
+    async fn ingress_mode_and_steering_draft_are_immutable_inbox_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("metadata.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(store, crate::config::AppConfig::default().orchestrator);
+        let metadata = || ObservationMetadata {
+            sequence: 1,
+            turn: 1,
+            attempt: None,
+            caused_by: None,
+            resource: None,
+            freshness: ContextFreshness::default(),
+            usage: ContextUsage::default(),
+        };
+        let mut event = Event::new(
+            "user-mode".into(),
+            "User".into(),
+            TYPE_USER_MESSAGE.into(),
+            "chat/user_message".into(),
+            serde_json::from_value(serde_json::json!({
+                "session_id":"s", "principal_id":"p", "text":"Compare with existing work"
+            }))
+            .unwrap(),
+        );
+        for mode in [
+            crate::memory::MessageDispatchMode::Parallel,
+            crate::memory::MessageDispatchMode::Interrupt,
+            crate::memory::MessageDispatchMode::FollowUp,
+        ] {
+            event
+                .payload
+                .insert("dispatch_mode".into(), serde_json::json!(mode));
+            let observation = engine.to_observation(&event, &MindState::default(), metadata());
+            assert_eq!(observation.dispatch_mode, Some(mode));
+            let encoded = render_inbox_observation(&observation).to_string();
+            assert!(encoded.contains(&format!("(dispatch-mode {})", mode.as_str())));
+            assert!(!encoded.contains("input-destination"));
+            assert_eq!(
+                render_context_delta_observation(&observation).to_string(),
+                encoded
+            );
+            let mut changed_visibility = observation.clone();
+            changed_visibility.protected = true;
+            changed_visibility.usage.recall_count_total = 2;
+            assert_eq!(
+                render_inbox_observation(&changed_visibility).to_string(),
+                encoded,
+                "mutable state must not rewrite immutable Inbox cache prefixes"
+            );
+        }
+        event.topic = "chat/steering".into();
+        event
+            .payload
+            .insert("dispatch_mode".into(), serde_json::json!("parallel"));
+        event.payload.insert(
+            "input_destination".into(),
+            serde_json::json!({
+                "kind":"objective", "objective_id":"objective-1", "generation":2,
+                "reply_to_request_id":"question-1"
+            }),
+        );
+        let directed = engine.to_observation(&event, &MindState::default(), metadata());
+        let encoded = render_inbox_observation(&directed).to_string();
+        assert!(encoded.contains("(dispatch-mode parallel)"));
+        assert!(encoded.contains("(input-destination (kind objective) (objective-id objective-1) (generation 2) (reply-to-request-id question-1))"));
+        event.event_type = TYPE_AGENT_CALL.into();
+        event.topic = "chat/progress".into();
+        event
+            .payload
+            .insert("disposition".into(), serde_json::json!("steering_draft"));
+        let draft = engine.to_observation(&event, &MindState::default(), metadata());
+        assert!(draft.dispatch_mode.is_none());
+        assert!(draft.input_destination.is_none());
+        assert!(render_inbox_observation(&draft)
+            .to_string()
+            .contains("(response-disposition steering_draft)"));
+        let mut legacy = serde_json::to_value(&draft).unwrap();
+        for field in ["dispatch_mode", "input_destination", "response_disposition"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        let restored: ContextObservation = serde_json::from_value(legacy).unwrap();
+        assert!(restored.dispatch_mode.is_none());
+        assert!(restored.response_disposition.is_none());
     }
 
     #[test]
@@ -15902,6 +16048,9 @@ mod tests {
             reference: "@e7".to_string(),
             session_id: Some("s1".to_string()),
             principal_id: Some("principal-default".to_string()),
+            dispatch_mode: None,
+            input_destination: None,
+            response_disposition: None,
             sequence: 7,
             turn: 1,
             attempt: None,

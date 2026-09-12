@@ -11121,6 +11121,8 @@ impl Orchestrator {
         &self,
         activation: &ThreadActivationRecord,
         thread_id: &str,
+        model_attempt_id: &str,
+        public_text: &str,
     ) -> Result<bool, DynError> {
         let Some(store) = self.context_engine.session_store() else {
             return Ok(false);
@@ -11132,15 +11134,70 @@ impl Orchestrator {
                 Some(crate::memory::ThreadSignalStatus::Pending),
             )
             .await?;
-        if !pending.iter().any(|signal| signal.kind == "chat/steering") {
+        let pending_input_ids = pending
+            .iter()
+            .filter(|signal| signal.kind == "chat/steering")
+            .map(|signal| signal.event_id.clone())
+            .collect::<Vec<_>>();
+        if pending_input_ids.is_empty() {
             return Ok(false);
         }
+        // Keep the Event persistence future off the already deep recursive
+        // Evaluation/physical-action stack (notably debug/test builds).
+        Box::pin(self.publish_steering_draft(
+            &activation.session_id,
+            &activation.id,
+            model_attempt_id,
+            public_text,
+            &pending_input_ids,
+        ))
+        .await?;
         if let Some(supervisor) = &self.objective_supervisor {
             supervisor.yield_to_directed_input(&activation.id).await?;
         }
         tracing::info!(%thread_id, activation_id = %activation.id,
             event_code = "orchestrator.input.safe_boundary_yield", "Yielded uncommitted model work to pending directed input");
         Ok(true)
+    }
+
+    async fn publish_steering_draft(
+        &self,
+        session_id: &str,
+        activation_id: &str,
+        model_attempt_id: &str,
+        public_text: &str,
+        pending_input_ids: &[String],
+    ) -> Result<(), DynError> {
+        if public_text.trim().is_empty() {
+            return Ok(());
+        }
+        // Cross the durable text boundary BEFORE yielding/releasing the
+        // Activation. This is a checkpoint, not an assistant_call (whose
+        // proposed tools recovery would replay) or a terminal chat/reply.
+        // A stable ID makes re-entry safe after persistence but before yield.
+        let mut payload = vec![
+            (
+                "context_id".into(),
+                json!(self.context_id_for_session(session_id)?),
+            ),
+            ("session_id".into(), json!(session_id)),
+            ("attempt_id".into(), json!(activation_id)),
+            ("model_attempt_id".into(), json!(model_attempt_id)),
+            ("text".into(), json!(public_text)),
+            ("disposition".into(), json!("steering_draft")),
+            ("pending_input_event_ids".into(), json!(pending_input_ids)),
+        ];
+        self.append_activation_route(activation_id, &mut payload);
+        self.bus
+            .publish(Event::new(
+                format!("steering_draft_{model_attempt_id}"),
+                "Agent-Morphz".into(),
+                TYPE_AGENT_CALL.into(),
+                "chat/progress".into(),
+                payload.into_iter().collect(),
+            ))
+            .await?;
+        Ok(())
     }
 
     async fn run_attempt_inner(
@@ -12452,6 +12509,8 @@ impl Orchestrator {
         // add one redundant remote round trip to every Evaluation.
         let mut first_request_policy = Some(initial_request_policy.clone());
         let mut interrupted_public_text = String::new();
+        let mut pending_input_draft = String::new();
+        let mut last_model_attempt_id = attempt_id.clone();
         let mut completion_prepared = recovering_completion_intent;
         let (
             response,
@@ -12460,7 +12519,19 @@ impl Orchestrator {
             terminal_provider_continuation,
             terminal_context_view_manifest,
         ) = loop {
-            if self.yield_to_pending_input(activation, &thread.id).await? {
+            if self
+                .yield_to_pending_input(
+                    activation,
+                    &thread.id,
+                    &last_model_attempt_id,
+                    if interrupted_public_text.is_empty() {
+                        &pending_input_draft
+                    } else {
+                        &interrupted_public_text
+                    },
+                )
+                .await?
+            {
                 return Ok(());
             }
             let request_index = model_request_index;
@@ -12470,6 +12541,7 @@ impl Orchestrator {
             } else {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
+            last_model_attempt_id = model_attempt_id.clone();
             let request_policy_resolve_started = Instant::now();
             let request_policy = match first_request_policy.take() {
                 Some(policy) => policy,
@@ -12613,19 +12685,48 @@ impl Orchestrator {
                     &request_policy,
                 )
                 .await;
+            if let Err(error) = &completion {
+                // A resumable Provider boundary may have already streamed
+                // public text even though it did not return a full Response.
+                if !error.is_runtime_failure() && !error.partial_text.is_empty() {
+                    let draft = format!("{interrupted_public_text}{}", error.partial_text);
+                    if self
+                        .yield_to_pending_input(activation, &thread.id, &model_attempt_id, &draft)
+                        .await?
+                    {
+                        self.record_model_attempt_terminal_state(
+                            session_id,
+                            &model_attempt_id,
+                            "completed",
+                            Some("Public draft preserved before directed input continuation"),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            }
             let (response, provider_continuation) = match completion {
                 Ok(ModelCompletion {
                     mut response,
                     provider_continuation,
                 }) => {
-                    if self.yield_to_pending_input(activation, &thread.id).await? {
-                        self.record_model_attempt_terminal_state(session_id, &model_attempt_id,
-                            "completed", Some("Response superseded before action admission by directed user input")).await?;
-                        return Ok(());
-                    }
                     if !interrupted_public_text.is_empty() {
                         response.content = format!("{interrupted_public_text}{}", response.content);
                         interrupted_public_text.clear();
+                    }
+                    pending_input_draft = response.content.clone();
+                    if self
+                        .yield_to_pending_input(
+                            activation,
+                            &thread.id,
+                            &model_attempt_id,
+                            &response.content,
+                        )
+                        .await?
+                    {
+                        self.record_model_attempt_terminal_state(session_id, &model_attempt_id,
+                            "completed", Some("Public draft preserved; unadmitted actions yielded to directed input")).await?;
+                        return Ok(());
                     }
                     self.record_model_attempt_terminal_state(
                         session_id,
@@ -13387,7 +13488,15 @@ impl Orchestrator {
         // The model response has not been committed as an Action yet. A
         // durable human correction takes precedence here; never cancel or
         // replay a Job that has already crossed its side-effect boundary.
-        if self.yield_to_pending_input(activation, &thread.id).await? {
+        if self
+            .yield_to_pending_input(
+                activation,
+                &thread.id,
+                &terminal_model_attempt_id,
+                &response.content,
+            )
+            .await?
+        {
             return Ok(());
         }
 
@@ -14987,6 +15096,28 @@ impl Orchestrator {
                 (false, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::DeferredByDirectedInput => {
+                Box::pin(
+                    self.publish_steering_draft(
+                        event
+                            .payload
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or("Deferred outcome is missing its Session")?,
+                        &route.activation_id,
+                        event
+                            .payload
+                            .get("model_attempt_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(attempt_id),
+                        event
+                            .payload
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        &[],
+                    ),
+                )
+                .await?;
                 if let Some(supervisor) = &self.objective_supervisor {
                     supervisor
                         .yield_to_directed_input(&route.activation_id)

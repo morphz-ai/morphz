@@ -8437,7 +8437,7 @@ export default function App() {
                   const tintStyle = tintStyleForLineage(lineage)
                   const waitingForModelRead = kind === 'user' && queuedUserInputEventIds.has(event.id)
                   if (kind === 'progress') {
-                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body">{event.payload.disposition === 'steering_draft' && <p className="steering-draft-label">{t('conversation.steeringDraft')}</p>}<MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
@@ -8739,7 +8739,7 @@ export default function App() {
                         const tintStyle = tintStyleForLineage(lineage)
                         const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                         if (kind === 'progress') {
-                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body">{event.payload.disposition === 'steering_draft' && <p className="steering-draft-label">{t('conversation.steeringDraft')}</p>}<MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
                           const assistantText = typeof event.payload.text === 'string' ? event.payload.text.trim() : ''

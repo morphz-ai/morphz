@@ -151,8 +151,20 @@ pub fn is_context_observation(event: &Event) -> bool {
     if event.topic == "chat/assistant_call" {
         return assistant_call_has_tool_history(event);
     }
-    if event.topic == "chat/progress"
-        || event.topic == "chat/no_reply"
+    if event.topic == "chat/progress" {
+        // Ordinary progress duplicates an assistant call. A steering draft
+        // deliberately has no admitted assistant call/final reply, so it is
+        // the sole durable source of this response for the next Evaluation.
+        return event.event_type == TYPE_AGENT_CALL
+            && event.payload.get("disposition").and_then(JsonValue::as_str)
+                == Some("steering_draft")
+            && event
+                .payload
+                .get("text")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|text| !text.trim().is_empty());
+    }
+    if event.topic == "chat/no_reply"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
         || event.topic == "chat/runtime_error"
@@ -238,7 +250,10 @@ pub fn advances_cognitive_clock(event: &Event) -> bool {
         event.event_type.as_str(),
         TYPE_EXCEPTION | TYPE_FILE_CHANGE | TYPE_AGENT_CALL
     ) {
-        return event.topic != "chat/assistant_call";
+        return event.topic != "chat/assistant_call"
+            && !(event.topic == "chat/progress"
+                && event.payload.get("disposition").and_then(JsonValue::as_str)
+                    == Some("steering_draft"));
     }
     event.topic == "chat/schedule_due"
         || event.topic.starts_with("external/")
@@ -1139,6 +1154,25 @@ mod tests {
             "integration/github",
             serde_json::json!({}),
         )));
+    }
+
+    #[test]
+    fn steering_draft_is_an_observation_but_not_new_external_cognition() {
+        let mut event = Event::new(
+            "steering-draft".into(),
+            "Agent-Morphz".into(),
+            TYPE_AGENT_CALL.into(),
+            "chat/progress".into(),
+            serde_json::from_value(serde_json::json!({
+                "text":"existing response", "disposition":"steering_draft"
+            }))
+            .unwrap(),
+        );
+        assert!(is_context_observation(&event));
+        assert!(!assistant_call_has_tool_history(&event));
+        assert!(!advances_cognitive_clock(&event));
+        event.payload.remove("disposition");
+        assert!(!is_context_observation(&event));
     }
 
     #[test]

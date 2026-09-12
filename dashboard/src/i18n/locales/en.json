@@ -958,6 +958,7 @@
     "historyHint": "Scroll up to load {{count}} earlier messages",
     "historyMore": "Load earlier chat history",
     "historyLoading": "Loading earlier chat history…",
+    "steeringDraft": "Draft preserved · continuing with new input (not final)",
     "search": {
       "placeholder": "Search chat history…",
       "action": "Search chat history",
