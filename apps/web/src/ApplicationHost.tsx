@@ -512,7 +512,7 @@ function InstallApplication({
       <p className="muted">
         {app.id} · {app.version}
       </p>
-      <p>此应用包含可执行界面代码。请只安装你信任的来源。</p>
+      <p>包含可执行界面代码</p>
       <ul>
         {app.permissions.map((p) => (
           <li key={p}>
@@ -520,18 +520,13 @@ function InstallApplication({
               {
                 "artifacts.read": "读取所在工作空间的对象",
                 "artifacts.write": "创建、修订和关联所在工作空间的对象",
-                "input.compose": "将建议放入 AI 输入框，由你确认发送",
+                "input.compose": "填入输入草稿",
               }[p]
             }
           </li>
         ))}
       </ul>
       <p>不能直接访问文件系统、账号、网络、相机或麦克风。</p>
-      <p className="muted">
-        {app.harness
-          ? `使用已在 Runtime 安装的 Harness：${app.harness.id}@${app.harness.version}。缺失时执行会明确报错，不自动降级。`
-          : "使用 Runtime 的默认执行方式。"}
-      </p>
       {error && <p role="alert">{error}</p>}
       <footer>
         <button disabled={busy} onClick={onClose}>

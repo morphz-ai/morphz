@@ -126,7 +126,10 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
     for (const name of ["搜索资料", "通知", "连接详情"]) {
       await page
         .getByRole("complementary", { name: "工作空间导航" })
-        .getByRole("button", { name, exact: true })
+        .getByRole("button", {
+          name: name === "通知" ? /^通知(?:，|$)/ : name,
+          exact: name !== "通知",
+        })
         .click();
       const dialog = page.getByRole("dialog", { name, exact: true });
       dialogs.push(await material(dialog));
@@ -180,6 +183,7 @@ test("弹窗与菜单在系统、原生辅助功能和独立网页上方使用�
 }) => {
   await page.goto("/");
   const cdp = await context.newCDPSession(page);
+  await expect(page.locator(".app")).toBeVisible();
   for (const fallback of [
     "transparency",
     "contrast",

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { migrateLegacyLocalState } from "./legacy-storage.js";
+import { applicationCall, RequestError } from "./application-transport.js";
+export { RequestError } from "./application-transport.js";
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
 import {
   executionSnapshotSchema,
@@ -42,25 +44,6 @@ export type SpeechScope = {
   artifactId?: string;
   revision?: number;
 };
-export class RequestError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-async function checked(response: Response) {
-  const value: unknown = await response.json();
-  if (!response.ok)
-    throw new RequestError(
-      response.status,
-      typeof value === "object" && value && "message" in value
-        ? String(value.message)
-        : "请求失败。",
-    );
-  return value;
-}
 let localScope = "disconnected";
 export function storageScope(centerId: string, principalId: string) {
   localScope = `${centerId}:${principalId}`;
@@ -105,26 +88,30 @@ export function useWorkspace() {
     [authenticationRequired, setAuthenticationRequired] = useState(false);
   const current = useRef<Boot | null>(null),
     epoch = useRef(0),
-    etag = useRef(""),
+    snapshotText = useRef(""),
     refreshing = useRef<Promise<void> | null>(null);
   async function refresh() {
     if (refreshing.current) return refreshing.current;
     const version = epoch.current;
     refreshing.current = (async () => {
       try {
-        const response = await fetch("/api/workspace", {
-          headers: etag.current ? { "If-None-Match": etag.current } : {},
+        const snapshot = await applicationCall("workspace", undefined, {
           signal: AbortSignal.timeout(6000),
         });
-        if (response.status !== 304) {
-          const value = bootSchema.parse(await checked(response));
+        if (version !== epoch.current) return;
+        const serialized = JSON.stringify(snapshot);
+        if (serialized !== snapshotText.current) {
+          const value = bootSchema.parse(snapshot);
           if (version !== epoch.current) return;
           // A slow snapshot must not replace newer state already rendered.
           if (
             !current.current ||
+            value.centerId !== current.current.centerId ||
+            value.principalId !== current.current.principalId ||
             value.workspace.revision >= current.current.workspace.revision
           ) {
             current.current = value;
+            snapshotText.current = serialized;
             migrateLegacyLocalState(
               localStorage,
               value.centerId,
@@ -132,8 +119,14 @@ export function useWorkspace() {
               value.capabilities.teamAuthentication,
               location.origin,
             );
+            // Main-process origin migration restores this window's exact draft owner.
+            // Draft and pending-command keys are copied intact, never recreated/replayed.
+            if (window.morphzDesktop)
+              localStorage.setItem(
+                `morphzwork:${value.centerId}:${value.principalId}:desktop:last-window`,
+                draftOwner,
+              );
             setBoot(value);
-            etag.current = response.headers.get("etag") ?? "";
           }
         }
         setOnline(true);
@@ -142,7 +135,7 @@ export function useWorkspace() {
         if (version !== epoch.current) return;
         if (e instanceof RequestError && e.status === 401) {
           current.current = null;
-          etag.current = "";
+          snapshotText.current = "";
           setBoot(null);
           storageScope("disconnected", "anonymous");
           setAuthenticationRequired(true);
@@ -165,34 +158,29 @@ export function useWorkspace() {
     return current.current?.workspace.artifacts.find((a) => a.id === id);
   }
   async function login(token: string) {
-    await checked(
-      await fetch("/api/identity/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-        signal: AbortSignal.timeout(8000),
-      }),
+    epoch.current++;
+    await applicationCall(
+      "login",
+      { token },
+      { signal: AbortSignal.timeout(8000) },
     );
     if (refreshing.current) await refreshing.current;
     current.current = null;
-    etag.current = "";
+    snapshotText.current = "";
     setBoot(null);
     setAuthenticationRequired(false);
     await refresh();
   }
   async function logout() {
     if (!current.current) return;
-    await checked(
-      await fetch("/api/identity/logout", {
-        method: "POST",
-        headers: { "X-MorphzWork-Token": current.current.csrfToken },
-        signal: AbortSignal.timeout(8000),
-      }),
-    );
+    await applicationCall("logout", undefined, {
+      identityGeneration: current.current.csrfToken,
+      signal: AbortSignal.timeout(8000),
+    });
     // Drop the mounted workspace and all in-memory object state immediately.
     epoch.current++;
     current.current = null;
-    etag.current = "";
+    snapshotText.current = "";
     setBoot(null);
     setAuthenticationRequired(true);
     storageScope("disconnected", "anonymous");
@@ -252,16 +240,13 @@ export function useWorkspace() {
     // Save retry identity before sending. A lost reply must not duplicate a mutation after reload.
     writeLocal(key, command);
     try {
-      const receipt = (await checked(
-        await fetch(dispatch ? "/api/messages" : "/api/commands", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-MorphzWork-Token": current.current.csrfToken,
-          },
-          body: JSON.stringify(command),
+      const receipt = (await applicationCall(
+        dispatch ? "message" : "command",
+        command,
+        {
+          identityGeneration: identity.csrfToken,
           signal: AbortSignal.timeout(8000),
-        }),
+        },
       )) as Receipt;
       writeLocal(key, null);
       await refresh();
@@ -280,28 +265,20 @@ export function useWorkspace() {
   async function upload(file: File) {
     if (!current.current) throw new Error("尚未连接中心。");
     if (file.size > 6 * 1024 * 1024) throw new Error("图片不能超过 6 MB。");
-    return checked(
-      await fetch("/api/assets", {
-        method: "POST",
-        headers: { "X-MorphzWork-Token": current.current.csrfToken },
-        body: file,
-        signal: AbortSignal.timeout(15000),
-      }),
-    ) as Promise<{ assetId: string; mime: string }>;
+    const identityGeneration = current.current.csrfToken;
+    return applicationCall("asset.add", await file.arrayBuffer(), {
+      identityGeneration,
+      signal: AbortSignal.timeout(15000),
+    }) as Promise<{ assetId: string; mime: string }>;
   }
   async function uploadAttachment(file: File) {
     if (!current.current) throw new Error("尚未连接中心。");
     if (file.size > 20 * 1024 * 1024) throw new Error("附件不能超过 20 MB。");
-    return checked(
-      await fetch("/api/attachments", {
-        method: "POST",
-        headers: {
-          "X-MorphzWork-Token": current.current.csrfToken,
-          "X-File-Name": encodeURIComponent(file.name.slice(0, 180)),
-        },
-        body: file,
-        signal: AbortSignal.timeout(30000),
-      }),
+    const identityGeneration = current.current.csrfToken;
+    return applicationCall(
+      "attachment.add",
+      { name: file.name.slice(0, 180), data: await file.arrayBuffer() },
+      { identityGeneration, signal: AbortSignal.timeout(30000) },
     ) as Promise<{
       assetId: string;
       mime: import("../../../packages/core/src/model.js").InputAttachment["mime"];
@@ -334,18 +311,13 @@ export function useWorkspace() {
     if (current.current?.csrfToken !== identity.csrfToken)
       throw new Error("身份已切换，文件未发送。");
     writeLocal(key, commandId);
-    const receipt = (await checked(
-      await fetch("/api/import/pdf", {
-        method: "POST",
-        headers: {
-          "X-MorphzWork-Token": current.current.csrfToken,
-          "X-Command-Id": commandId,
-          "X-Project-Id": projectId,
-          "X-Source-Path": encodeURIComponent(relativePath),
-        },
-        body: file,
-        signal: AbortSignal.timeout(30_000),
-      }),
+    const receipt = (await applicationCall(
+      "pdf.import",
+      { commandId, projectId, relativePath, data: await file.arrayBuffer() },
+      {
+        identityGeneration: identity.csrfToken,
+        signal: AbortSignal.timeout(30000),
+      },
     )) as Receipt;
     writeLocal(key, null);
     await refresh();
@@ -354,37 +326,28 @@ export function useWorkspace() {
   }
   async function dispatchInput(inputId: string) {
     if (!current.current) throw new Error("请先连接本机中心。");
-    await checked(
-      await fetch(`/api/inputs/${encodeURIComponent(inputId)}/send`, {
-        method: "POST",
-        headers: { "X-MorphzWork-Token": current.current.csrfToken },
-        signal: AbortSignal.timeout(8000),
-      }),
-    );
+    await applicationCall("input.send", inputId, {
+      identityGeneration: current.current.csrfToken,
+      signal: AbortSignal.timeout(8000),
+    });
     await refresh();
     await refresh();
   }
   async function verifyArtifact(id: string) {
     const data = bootSchema.parse(
-      await checked(
-        await fetch("/api/workspace", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(6000),
-        }),
-      ),
+      await applicationCall("workspace", undefined, {
+        signal: AbortSignal.timeout(6000),
+      }),
     );
     if (!data.workspace.artifacts.some((a) => a.id === id))
       throw new Error("事项不可用或已无访问权限。");
   }
   async function cancelInput(inputId: string) {
     if (!current.current) throw new Error("请先连接中心。");
-    await checked(
-      await fetch(`/api/inputs/${encodeURIComponent(inputId)}/cancel`, {
-        method: "POST",
-        headers: { "X-MorphzWork-Token": current.current.csrfToken },
-        signal: AbortSignal.timeout(8000),
-      }),
-    );
+    await applicationCall("input.cancel", inputId, {
+      identityGeneration: current.current.csrfToken,
+      signal: AbortSignal.timeout(8000),
+    });
     await refresh();
     await refresh();
   }
@@ -392,31 +355,15 @@ export function useWorkspace() {
     request: SearchRequest,
     signal?: AbortSignal,
   ): Promise<SearchResult> {
-    const params = new URLSearchParams({ q: request.query });
-    if (request.projectId) params.set("projectId", request.projectId);
-    if (request.limit !== undefined) params.set("limit", String(request.limit));
-    if (request.offset !== undefined)
-      params.set("offset", String(request.offset));
-    return (await checked(
-      await fetch("/api/search?" + params, {
-        signal: signal ?? AbortSignal.timeout(6000),
-      }),
-    )) as SearchResult;
+    return applicationCall("search", request, {
+      signal: signal ?? AbortSignal.timeout(6000),
+    }) as Promise<SearchResult>;
   }
   async function executionSnapshot(scope: ExecutionScope) {
-    const params = new URLSearchParams({
-      projectId: scope.projectId,
-      artifactId: scope.artifactId ?? "",
-      ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
-      ...(scope.inputId ? { inputId: scope.inputId } : {}),
-      ...(scope.threadId ? { threadId: scope.threadId } : {}),
-    });
     return executionSnapshotSchema.parse(
-      await checked(
-        await fetch("/api/executions?" + params, {
-          signal: AbortSignal.timeout(12000),
-        }),
-      ),
+      await applicationCall("execution.snapshot", scope, {
+        signal: AbortSignal.timeout(12000),
+      }),
     );
   }
   async function taskRuntime(
@@ -428,29 +375,16 @@ export function useWorkspace() {
     },
   ) {
     if (!current.current) throw new Error("尚未连接中心。");
-    return checked(
-      await fetch(`/api/tasks/${encodeURIComponent(taskId)}/runtime`, {
-        method: control ? "POST" : "GET",
-        headers: control
-          ? {
-              "Content-Type": "application/json",
-              "X-MorphzWork-Token": current.current.csrfToken,
-            }
-          : {},
-        body: control ? JSON.stringify(control) : undefined,
+    return applicationCall(
+      control ? "task.control" : "task.snapshot",
+      control ? { id: taskId, ...control } : taskId,
+      {
+        identityGeneration: current.current.csrfToken,
         signal: AbortSignal.timeout(12000),
-      }),
+      },
     );
   }
   async function executionResult(scope: ExecutionScope, jobId: string) {
-    const params = new URLSearchParams({
-      projectId: scope.projectId,
-      artifactId: scope.artifactId ?? "",
-      ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
-      ...(scope.inputId ? { inputId: scope.inputId } : {}),
-      jobId,
-      ...(scope.threadId ? { threadId: scope.threadId } : {}),
-    });
     return z
       .object({
         text: z.string(),
@@ -458,26 +392,19 @@ export function useWorkspace() {
         available: z.boolean(),
       })
       .parse(
-        await checked(
-          await fetch("/api/executions/result?" + params, {
-            signal: AbortSignal.timeout(12000),
-          }),
+        await applicationCall(
+          "execution.result",
+          { scope, jobId },
+          { signal: AbortSignal.timeout(12000) },
         ),
       );
   }
   async function controlExecution(command: ExecutionControl) {
     if (!current.current) throw new Error("请先连接中心。");
-    return checked(
-      await fetch("/api/executions/control", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-MorphzWork-Token": current.current.csrfToken,
-        },
-        body: JSON.stringify(command),
-        signal: AbortSignal.timeout(12000),
-      }),
-    );
+    return applicationCall("execution.control", command, {
+      identityGeneration: current.current.csrfToken,
+      signal: AbortSignal.timeout(12000),
+    });
   }
   async function speechStatus(signal?: AbortSignal) {
     return z
@@ -487,44 +414,23 @@ export function useWorkspace() {
         providerLabel: z.string().min(1).nullable().optional(),
         segmentSeconds: z.number().optional(),
       })
-      .parse(await checked(await fetch("/api/speech/status", { signal })));
-  }
-  async function speechRequest(
-    scope: SpeechScope,
-    action: "transcribe" | "synthesize",
-    body: Blob | string,
-    signal: AbortSignal,
-  ) {
-    if (!current.current) throw new Error("尚未连接中心。");
-    const response = await fetch("/api/speech/" + action, {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          action === "transcribe" ? "audio/wav" : "application/json",
-        "X-MorphzWork-Token": current.current.csrfToken,
-        "X-Project-Id": scope.projectId,
-        ...(scope.artifactId
-          ? {
-              "X-Artifact-Id": scope.artifactId,
-              "X-Artifact-Revision": String(scope.revision),
-            }
-          : {}),
-      },
-      body,
-      signal,
-    });
-    if (!response.ok) await checked(response);
-    return response;
+      .parse(await applicationCall("speech.status", undefined, { signal }));
   }
   async function transcribe(
     scope: SpeechScope,
     wav: Blob,
     signal: AbortSignal,
   ) {
+    if (!current.current) throw new Error("尚未连接中心。");
+    const identityGeneration = current.current.csrfToken;
     return z
       .object({ text: z.string().max(30000) })
       .parse(
-        await (await speechRequest(scope, "transcribe", wav, signal)).json(),
+        await applicationCall(
+          "speech.transcribe",
+          { scope, data: await wav.arrayBuffer() },
+          { identityGeneration, signal },
+        ),
       ).text;
   }
   async function synthesize(
@@ -532,9 +438,14 @@ export function useWorkspace() {
     text: string,
     signal: AbortSignal,
   ) {
-    return (
-      await speechRequest(scope, "synthesize", JSON.stringify({ text }), signal)
-    ).blob();
+    if (!current.current) throw new Error("尚未连接中心。");
+    const data = await applicationCall(
+      "speech.synthesize",
+      { scope, text },
+      { identityGeneration: current.current.csrfToken, signal },
+    );
+    if (!(data instanceof Uint8Array)) throw new Error("语音响应格式无效。");
+    return new Blob([new Uint8Array(data)], { type: "audio/wav" });
   }
   return {
     notifications: async (
@@ -543,16 +454,13 @@ export function useWorkspace() {
         | { action: "read"; ids: string[] },
     ) => {
       if (!current.current) throw new Error("尚未连接中心。");
-      return checked(
-        await fetch("/api/notifications", {
-          method: command ? "POST" : "GET",
-          headers: {
-            "Content-Type": "application/json",
-            "X-MorphzWork-Token": current.current.csrfToken,
-          },
-          body: command ? JSON.stringify(command) : undefined,
+      return applicationCall(
+        command ? "notifications.control" : "notifications.read",
+        command,
+        {
+          identityGeneration: current.current.csrfToken,
           signal: AbortSignal.timeout(6000),
-        }),
+        },
       );
     },
     authenticationRequired,

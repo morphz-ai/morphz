@@ -158,9 +158,12 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   await page.emulateMedia({ colorScheme: "dark" });
   await page.screenshot({ path: "test-results/concurrent-execution-dark.png" });
   await page.setViewportSize({ width: 760, height: 540 });
+  await expect(panel).toHaveAttribute("data-inspector-mode", "overlay");
   await expect(panel.getByRole("button", { name: "隐藏右侧栏" })).toBeVisible();
   // DOMRect can report 340.00003 CSS px after the panel transition.
-  expect((await panel.boundingBox())!.width).toBeCloseTo(340, 2);
+  await expect
+    .poll(async () => (await panel.boundingBox())!.width)
+    .toBeCloseTo(340, 2);
   await page.screenshot({
     path: "test-results/concurrent-execution-narrow.png",
   });

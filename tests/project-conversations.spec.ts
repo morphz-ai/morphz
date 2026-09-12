@@ -147,6 +147,66 @@ async function choose(page: Page, title: string) {
     .getByRole("button", { name: `打开对话：${title}`, exact: true })
     .click();
 }
+test("从项目搜索打开其他空间对象后，点击项目或草稿回到正确工作范围", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const title = "跨空间草稿返回-" + crypto.randomUUID().slice(0, 8);
+  await newProject(page, title);
+  const group = page.getByRole("group", {
+    name: title + "的会话",
+    exact: true,
+  });
+  await (await openInput(page)).fill("默认项目草稿，不发送");
+  await group.getByLabel("新建项目对话：" + title, { exact: true }).click();
+  await (await openInput(page)).fill("命名会话草稿，不发送");
+  const draft = group.getByLabel("继续草稿：对话 1", { exact: true });
+  await expect(draft).toBeVisible();
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const workspaceId = boot.workspace.projects.find(
+    (p: any) => p.kind === "desk",
+  ).id;
+  const objectTitle = "其他空间的阅读对象-" + crypto.randomUUID().slice(0, 8);
+  const response = await page.request.post("/api/commands", {
+    headers: {
+      Origin: new URL(page.url()).origin,
+      "X-MorphzWork-Token": boot.csrfToken,
+    },
+    data: {
+      commandId: crypto.randomUUID(),
+      operation: {
+        type: "create-artifact",
+        projectId: workspaceId,
+        title: objectTitle,
+        content: { kind: "document", markdown: "只读验收原文，不修改。" },
+      },
+    },
+  });
+  expect(response.ok(), await response.text()).toBe(true);
+  const openOtherObject = async () => {
+    await page.getByRole("button", { name: "搜索资料", exact: true }).click();
+    await page.getByLabel("全文搜索", { exact: true }).fill(objectTitle);
+    await page
+      .getByRole("dialog", { name: "搜索资料", exact: true })
+      .locator(".search-result-open")
+      .click();
+    await expect(page).toHaveTitle(objectTitle + " — Morphz");
+    await expect(page.locator(".object-paper > h1")).toHaveText(objectTitle);
+  };
+  await openOtherObject();
+  await draft.click();
+  await expect(page).toHaveTitle(title + " — Morphz");
+  await expect(await openInput(page)).toHaveValue("命名会话草稿，不发送");
+  await expect(page.locator(".composer .context-chip")).toHaveText(title);
+  await expect(page.locator(".object-paper > h1")).toHaveCount(0);
+  await openOtherObject();
+  await group.locator(".project-link").click();
+  await expect(page).toHaveTitle(title + " — Morphz");
+  await expect(await openInput(page)).toHaveValue("默认项目草稿，不发送");
+  const after = await (await page.request.get("/api/workspace")).json();
+  expect(after.workspace.inputs).toEqual(boot.workspace.inputs);
+  expect(after.workspace.conversations).toEqual(boot.workspace.conversations);
+});
 test("旧空会话不占列表，已有草稿可恢复；只发附件才落库，丢回执重试不重复", async ({
   page,
 }) => {

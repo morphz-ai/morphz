@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { composerAction, openInput } from "./interaction-helpers.js";
+import { openTranscription, openInput } from "./interaction-helpers.js";
 
 async function syntheticMicrophone(page: Page) {
   await page.addInitScript(() => {
@@ -62,13 +62,17 @@ for (const emptyResponse of ["empty text", "no speech error"] as const) {
       .get("/api/workspace")
       .then((r) => r.json());
     await page.getByRole("button", { name: "语音输入", exact: true }).click();
+    await page
+      .getByRole("button", { name: "允许并开始听写", exact: true })
+      .click();
     const voice = page.getByRole("region", { name: "听写", exact: true });
     const empty = voice.getByText("未识别到文字，可重新听写", { exact: true });
     await expect(empty).toHaveCount(0);
     for (let attempt = 0; attempt < 3; attempt++) {
-      await voice
-        .getByRole("button", { name: "开始听写", exact: true })
-        .click();
+      if (attempt > 0)
+        await voice
+          .getByRole("button", { name: "开始听写", exact: true })
+          .click();
       await expect(empty).toHaveCount(0);
       await waitForSamples(page);
       await voice
@@ -128,8 +132,8 @@ test("长录音空结果在现有状态位置说明，不启用空文字保存",
   );
   await page.goto("/");
   await openInput(page);
-  await composerAction(page, "长录音转写");
-  const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
+  await openTranscription(page);
+  const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await waitForSamples(page);
   await dialog.getByRole("button", { name: "结束录音", exact: true }).click();

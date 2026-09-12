@@ -43,7 +43,10 @@ function pdfAssets() {
 export default defineConfig({
   root: "apps/web",
   plugins: [react(), pdfAssets()],
-  build: { outDir: "../../dist/web", emptyOutDir: true, assetsInlineLimit: 0 },
+  // A running bundled desktop can still request a lazy chunk from its loaded
+  // build. Keep content-addressed assets across local rebuilds; deleting them
+  // would blank that window when it first opens a PDF before a full reload.
+  build: { outDir: "../../dist/web", emptyOutDir: false, assetsInlineLimit: 0 },
   server: {
     host: "127.0.0.1",
     port: 65419,

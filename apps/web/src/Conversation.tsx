@@ -564,7 +564,7 @@ export function Conversation({
         </div>
       ) : (
         <div className="conversation-empty">
-          <p>这里还没有交流记录</p>
+          <p>暂无交流记录</p>
         </div>
       )}
       {awayFromLatest && (
@@ -759,9 +759,7 @@ export function ToolMessage({ message }: { message: LiveMessage }) {
             <pre>{tool.result || "无文本输出"}</pre>
           </>
         )}
-        {tool.truncated && (
-          <small>此处为预览；完整记录可在执行记录与审批中查看。</small>
-        )}
+        {tool.truncated && <small>内容已截断</small>}
       </div>
     </details>
   );

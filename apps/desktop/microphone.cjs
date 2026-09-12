@@ -1,4 +1,5 @@
 // A one-use, short-lived grant for the trusted main frame. Never applies to websites.
+const { applicationOrigin, trustedMainURL } = require("./security.cjs");
 class MicrophoneGate {
   constructor(origin, now = Date.now) {
     this.origin = origin;
@@ -14,7 +15,7 @@ class MicrophoneGate {
   request(trusted, permission, details) {
     let origin;
     try {
-      origin = new URL(details?.requestingUrl).origin;
+      origin = applicationOrigin(new URL(details?.requestingUrl));
     } catch {
       return false;
     }
@@ -23,6 +24,7 @@ class MicrophoneGate {
       permission !== "media" ||
       !details.isMainFrame ||
       origin !== this.origin ||
+      !trustedMainURL(details?.requestingUrl, this.origin) ||
       this.now() >= this.until ||
       details.mediaTypes?.length !== 1 ||
       details.mediaTypes[0] !== "audio"

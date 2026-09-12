@@ -20,7 +20,10 @@ import {
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { ApplicationCaller } from "../../../packages/core/src/application-api.js";
+import { HttpApplicationClient } from "../../../packages/core/src/http-application-client.js";
 import {
+  artifactSchema,
   commandSchema,
   type Command,
   type Operation,
@@ -71,6 +74,7 @@ const bootSchema = z.object({
   csrfToken: z.string(),
   principalId: z.string(),
   workspace: z.object({
+    artifacts: z.array(artifactSchema.pick({ id: true, source: true }).strip()),
     projects: z.array(
       z.object({ id: z.string(), members: z.array(z.string()) }),
     ),
@@ -210,17 +214,26 @@ export async function readGrantedText(
 }
 
 export class DesktopSources {
+  private client: ApplicationCaller;
   private config: Config;
   private running: Promise<void> | null = null;
   private closing = false;
   private timer?: ReturnType<typeof setInterval>;
   constructor(
     private filename: string,
-    private origin: string,
-    private request: typeof fetch = fetch,
+    application: string | ApplicationCaller,
+    request: typeof fetch = fetch,
   ) {
-    if (!isAbsolute(filename) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(origin))
+    if (
+      !isAbsolute(filename) ||
+      (typeof application === "string" &&
+        !/^http:\/\/127\.0\.0\.1:\d+$/.test(application))
+    )
       throw new Error("桌面来源配置无效。");
+    this.client =
+      typeof application === "string"
+        ? new HttpApplicationClient(application, request)
+        : application;
     mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
     try {
       const info = lstatSync(filename);
@@ -262,12 +275,11 @@ export class DesktopSources {
     );
   }
   private async boot(grant?: Grant): Promise<Boot> {
-    const response = await this.request(this.origin + "/api/workspace", {
-      signal: AbortSignal.timeout(6000),
-      redirect: "error",
-    });
-    if (!response.ok) throw new Error("无法连接原中心，资料没有发送。");
-    const value = bootSchema.parse(await response.json());
+    const value = bootSchema.parse(
+      await this.client.call("workspace", undefined, {
+        signal: AbortSignal.timeout(6000),
+      }),
+    );
     if (
       grant &&
       (grant.centerId !== value.centerId ||
@@ -322,21 +334,10 @@ export class DesktopSources {
     return this.list();
   }
   private async post(boot: Boot, command: Command) {
-    const response = await this.request(this.origin + "/api/commands", {
-      method: "POST",
-      headers: {
-        Origin: this.origin,
-        "Content-Type": "application/json",
-        "X-MorphzWork-Token": boot.csrfToken,
-      },
-      body: JSON.stringify(command),
+    await this.client.call("command", command, {
+      identityGeneration: boot.csrfToken,
       signal: AbortSignal.timeout(8000),
-      redirect: "error",
     });
-    if (!response.ok)
-      throw new Error(
-        `同步未被中心确认（${response.status}），将保留原操作重试。`,
-      );
   }
   private async status(
     grant: Grant,
@@ -416,6 +417,12 @@ export class DesktopSources {
       if (!grant.enabled) continue;
       try {
         const boot = await this.boot(grant);
+        const persistedSources = new Map(
+          boot.workspace.artifacts.map((artifact) => [
+            artifact.id,
+            artifact.source,
+          ]),
+        );
         const pinnedRoot = await lstat(grant.root);
         if (
           pinnedRoot.isSymbolicLink() ||
@@ -442,6 +449,7 @@ export class DesktopSources {
             status: "unavailable",
           });
           try {
+            let acknowledged = false;
             if (record.pending) {
               await this.post(boot, record.pending);
               record.hash =
@@ -452,16 +460,34 @@ export class DesktopSources {
                   : null;
               record.pending = null;
               record.status = "current";
+              acknowledged = true;
               this.save();
             }
             if (!grant.enabled || this.closing) break;
             const text = await readGrantedText(grant, path),
               hash = createHash("sha256").update(text).digest("hex");
             if (hash === record.hash) {
-              if (record.status !== "current") {
-                await this.status(grant, "current", record.artifactId);
-                record.status = "current";
-                this.save();
+              // The private cache can survive a transient failure or an older
+              // process that already marked the application object unavailable.
+              // Reconcile with the authorized application snapshot, not just the
+              // unchanged file hash. A replay acknowledged above is already current.
+              if (!acknowledged) {
+                const source = persistedSources.get(record.artifactId);
+                const connection = source?.connection;
+                if (
+                  source?.mode !== "linked" ||
+                  connection?.sourceId !== grant.id ||
+                  connection.deviceId !== this.config.deviceId
+                )
+                  throw new Error("资料对象的来源关系已改变，未覆盖内容。");
+                if (
+                  record.status !== "current" ||
+                  connection.status !== "current"
+                ) {
+                  await this.status(grant, "current", record.artifactId);
+                  record.status = "current";
+                  this.save();
+                }
               }
               continue;
             }
@@ -511,12 +537,14 @@ export class DesktopSources {
           error instanceof Error && !(error as NodeJS.ErrnoException).code
             ? error.message
             : "来源暂时不可读，请检查文件是否仍在原位置以及访问权限。";
-        this.save();
         try {
           await this.status(grant, "unavailable");
+          for (const file of Object.values(grant.files))
+            file.status = "unavailable";
         } catch {
           /* Never send to a different center as an error recovery path. */
         }
+        this.save();
       }
     }
   }

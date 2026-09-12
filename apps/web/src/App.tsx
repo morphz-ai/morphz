@@ -30,6 +30,7 @@ import {
   Search,
   FileUp,
   Mic,
+  Square,
   SquareBottomDashedScissors,
   Pin,
   Brain,
@@ -198,7 +199,6 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
     <main className="connection-screen">
       <BrandMark />
       <h1>连接工作中心</h1>
-      <p>使用中心管理员提供的个人连接凭据。每位参与者使用自己的身份。</p>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -231,7 +231,6 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
           {busy ? "连接中…" : "连接"}
         </button>
       </form>
-      <small>凭据不会保存到页面的本地存储。</small>
     </main>
   );
 }
@@ -254,6 +253,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : defaultPrefs.view,
     };
   });
+  const dictationControls = useRef<{ toggle(): void } | null>(null);
+  const [speechRecording, setSpeechRecording] = useState(false);
   const [notice, setNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
     [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
@@ -658,6 +659,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       input.current.focus();
     }
   }, [sending, contextKey, inputVisible]);
+  useEffect(() => {
+    // Do not retain a hidden recorder that could restart when returning here.
+    setSpeech((current) =>
+      current &&
+      (current.key !== contextKey || (!current.modal && !inputVisible))
+        ? null
+        : current,
+    );
+  }, [contextKey, inputVisible]);
   const collaborationVisible =
     !executions &&
     !understandingOpen &&
@@ -871,7 +881,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     const sameProject =
       prefs.view === "projects" &&
       prefs.projectOpen &&
-      navigationProject?.id === workspaceId;
+      navigationProject?.id === workspaceId &&
+      // Search can open another space's object without changing the navigation
+      // entry. Preserve an object only when it actually belongs to this project.
+      project?.id === workspaceId;
     const selectedExchange =
       id === (sharedDefault ? defaultConversation : workspaceId)
         ? workspaceId
@@ -1094,9 +1107,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         asAnnotation &&
         (!artifact || !captured.selection || !captured.revision)
       )
-        throw new Error(
-          "选区已失效，请重新选择文字后保存批注；不会发送给 Agent。",
-        );
+        throw new Error("选区已失效，请重新选择文字。");
       if ((asAnnotation || captured.taskResult) && captured.attachments?.length)
         throw new Error(
           "批注与事项结果暂不支持附件，请移除附件或改为发送消息；草稿已保留。",
@@ -1246,7 +1257,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <p>{client.error ? "暂时无法连接本机中心。" : "正在打开工作空间…"}</p>
         {client.error && (
           <>
-            <p className="muted">请确认本机中心已启动。现有数据不会被重置。</p>
             <button onClick={() => void client.refresh()}>
               <RefreshCw />
               重新连接
@@ -1778,6 +1788,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     icon: <FileUp />,
                     onSelect: () => setImportOpen(true),
                   },
+                  {
+                    label: "录音转文字",
+                    icon: <AudioLines />,
+                    onSelect: () =>
+                      setSpeech({
+                        modal: true,
+                        key: contextKey,
+                        title: contextTitle,
+                        draft: { ...draft },
+                        scope: {
+                          projectId: project.id,
+                          ...(artifact
+                            ? {
+                                artifactId: artifact.id,
+                                revision: draft.revision ?? artifact.revision,
+                              }
+                            : {}),
+                        },
+                      }),
+                    disabled: !client.online,
+                  },
                 ]}
               />
             </div>
@@ -1982,11 +2013,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               ? "目前没有待处理事项"
                               : "这个分类下还没有事项"}
                           </h2>
-                          <p>
-                            交给你的工作会集中在这里。
-                            <br />
-                            告诉 Morphz 要做什么，它会整理事项并显示在这里。
-                          </p>
                         </div>
                       )}
                     </section>
@@ -2103,7 +2129,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     )}
                     {draft.annotation && (
                       <div className="annotation-mode">
-                        <span>保存为批注 · 不发送给 Agent</span>
+                        <span>保存为批注</span>
                         <button
                           onClick={() =>
                             setDraft(contextKey, {
@@ -2122,7 +2148,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         aria-label="AI 输入内容"
                         placeholder={
                           draft.annotation
-                            ? "写下批注，保存到当前选区；不会发送给 Agent…"
+                            ? "写下批注…"
                             : draft.taskResult
                               ? "写下结果；提交后将以你的身份完成这件事项…"
                               : draft.intent
@@ -2169,12 +2195,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         !client.boot!.runtime.connected)) && (
                       <small className="model-status">
                         {!client.online
-                          ? "工作中心已断开 · 草稿保留在本机"
+                          ? "工作中心已断开"
                           : draft.taskResult
                             ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
                             : client.boot!.runtime.configured
                               ? "连接中 · 消息将保留并排队"
-                              : "Agent 未连接 · 仅保存，不会回复"}
+                              : "Agent 未连接"}
                         {(!client.online || !draft.taskResult) && (
                           <button
                             className="text-button"
@@ -2342,57 +2368,41 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         <button
                           className="icon-button"
                           aria-label="语音输入"
-                          title="短句听写 · 识别文字放入输入框"
-                          disabled={sending || !client.online}
-                          onClick={() =>
-                            setSpeech({
-                              scope: {
-                                projectId: project.id,
-                                ...(artifact
-                                  ? {
-                                      artifactId: artifact.id,
-                                      revision:
-                                        draft.revision ??
-                                        prefs.artifactRevision ??
-                                        artifact.revision,
-                                    }
-                                  : {}),
-                              },
-                              title: contextTitle,
-                              key: contextKey,
-                              draft: { ...draft },
-                            })
+                          aria-pressed={speechRecording}
+                          data-recording={speechRecording || undefined}
+                          title={speechRecording ? "停止听写" : "开始听写"}
+                          disabled={
+                            (sending || !client.online) && !speechRecording
                           }
+                          onClick={() => {
+                            if (speech?.key === contextKey && !speech.modal)
+                              dictationControls.current?.toggle();
+                            else
+                              setSpeech({
+                                scope: {
+                                  projectId: project.id,
+                                  ...(artifact
+                                    ? {
+                                        artifactId: artifact.id,
+                                        revision:
+                                          draft.revision ??
+                                          prefs.artifactRevision ??
+                                          artifact.revision,
+                                      }
+                                    : {}),
+                                },
+                                title: contextTitle,
+                                key: contextKey,
+                                draft: { ...draft },
+                              });
+                          }}
                         >
-                          <Mic />
+                          {speechRecording ? <Square /> : <Mic />}
                         </button>
                         <ComposerToolButtons
                           key={`options:${contextKey}`}
                           unread={!conversationVisible && unseenReply}
                           options={[
-                            {
-                              label: "长录音转写",
-                              title: "长录音转写 · 录音结束后确认文字",
-                              icon: <AudioLines />,
-                              onSelect: () =>
-                                setSpeech({
-                                  modal: true,
-                                  key: contextKey,
-                                  title: contextTitle,
-                                  draft: { ...draft },
-                                  scope: {
-                                    projectId: project.id,
-                                    ...(artifact
-                                      ? {
-                                          artifactId: artifact.id,
-                                          revision:
-                                            draft.revision ?? artifact.revision,
-                                        }
-                                      : {}),
-                                  },
-                                }),
-                              disabled: !client.online,
-                            },
                             {
                               label: "执行记录与审批",
                               groupStart: true,
@@ -2589,12 +2599,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               {!annotations.length ? (
                 <div className="discussion-empty">
                   <MessageSquarePlus />
-                  <p>
-                    选中正文，在输入框写下想法，
-                    <br />
-                    选择“保存为批注”。
-                  </p>
-                  <small>对话显示在主工作区。</small>
+                  <p>暂无批注</p>
                 </div>
               ) : (
                 <>
@@ -2670,6 +2675,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         (speech.modal || dictationSlot) &&
         speech.key === contextKey && (
           <SpeechDialog
+            key={`${speech.key}:${speech.modal ? "transcription" : "dictation"}`}
+            controls={speech.modal ? undefined : dictationControls}
+            onRecording={speech.modal ? undefined : setSpeechRecording}
             inlineTarget={speech.modal ? undefined : dictationSlot!}
             onTranscript={
               speech.modal
@@ -2904,11 +2912,6 @@ function CreateDialog({
           required
         />
       </label>
-      {kind === "save-project" && (
-        <p className="muted">
-          保留当前应用、内容和工作记录。保存后可以继续这个项目，工作台会准备一处新的空白空间。
-        </p>
-      )}
       {kind === "document" && (
         <label className="field">
           正文 · Markdown

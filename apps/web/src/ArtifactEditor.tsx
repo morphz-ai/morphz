@@ -348,7 +348,7 @@ export function ArtifactEditor({
           <button
             className="secondary-action"
             aria-label="创建可编辑副本"
-            title="创建可编辑副本，保留只读来源"
+            title="创建可编辑副本"
             onClick={async () => {
               try {
                 const receipt = await client.execute({
@@ -527,7 +527,7 @@ export function ArtifactEditor({
             <button
               className="annotation-action secondary-action"
               aria-label="围绕选中文本输入"
-              title="先选中正文，再将选区加入输入框；不会自动发送"
+              title="引用选区"
               onClick={select}
             >
               <MessageSquarePlus />
@@ -694,8 +694,7 @@ export function ArtifactEditor({
       {shown.content.kind === "document" && shown.content.understanding && (
         <section className="understanding-sources">
           <p className="muted">
-            公开认知帧 v{shown.content.understanding.frameRevision} ·
-            如需纠正，请打开顶部“当前理解”。
+            摘要版本 v{shown.content.understanding.frameRevision}
           </p>
           {shown.content.understanding.sources.map((ref) => (
             <button
@@ -951,9 +950,6 @@ export function TaskFields({
           </label>
         </>
       )}
-      <p className="muted wide">
-        这里保存工作安排；实际执行进度在下方显示。完成执行后，成果仍需单独验收。
-      </p>
     </div>
   );
 }

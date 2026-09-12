@@ -7,6 +7,53 @@ import { join } from "node:path";
 const { DesktopCapture } = createRequire(import.meta.url)(
   "../apps/desktop/capture.cjs",
 );
+test("自绘选区确认前不读取像素，确认后只读取选定范围，取消不启动截图", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "morphzwork-region-unit-"));
+  let choose!: (value: unknown) => void;
+  let calls = 0;
+  const capture = new DesktopCapture({
+    platform: "darwin",
+    temporary,
+    chooseRegion: () =>
+      new Promise((resolve) => {
+        choose = resolve;
+      }),
+    runner: async (_command: string, args: string[]) => {
+      calls++;
+      assert.deepEqual(args.slice(0, -1), [
+        "-R",
+        "-1180,100,200,150",
+        "-x",
+        "-t",
+        "png",
+      ]);
+      await writeFile(
+        args.at(-1)!,
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
+      );
+    },
+  });
+  try {
+    const pending = capture.select();
+    assert.equal(calls, 0);
+    assert.deepEqual(await readdir(temporary), []);
+    choose({ x: -1180, y: 100, width: 200, height: 150 });
+    assert.equal((await pending).mime, "image/png");
+    assert.equal(calls, 1);
+    const cancelled = capture.select();
+    choose(null);
+    assert.equal(await cancelled, null);
+    assert.equal(calls, 1);
+    const late = capture.select();
+    capture.cancel();
+    choose({ x: -1180, y: 100, width: 200, height: 150 });
+    assert.equal(await late, null);
+    assert.equal(calls, 1);
+    assert.deepEqual(await readdir(temporary), []);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
 test("截图必须交互选择，只返回本次 PNG，并清理临时文件", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "morphzwork-capture-unit-"));
   try {
@@ -17,7 +64,7 @@ test("截图必须交互选择，只返回本次 PNG，并清理临时文件", a
         assert.equal(command, "/usr/sbin/screencapture");
         assert.deepEqual(args.slice(0, 4), ["-i", "-x", "-t", "png"]);
         await writeFile(
-          args[4]!,
+          args.at(-1)!,
           Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
         );
       },
@@ -39,7 +86,7 @@ test("截图必须交互选择，只返回本次 PNG，并清理临时文件", a
       platform: "darwin",
       temporary,
       runner: async (_command: string, args: string[]) => {
-        await writeFile(args[4]!, Buffer.alloc(6 * 1024 * 1024 + 1));
+        await writeFile(args.at(-1)!, Buffer.alloc(6 * 1024 * 1024 + 1));
       },
     });
     await assert.rejects(() => rejected.select(), /6 MB/);
@@ -71,7 +118,7 @@ test("截图取消会中止在途选择、清理临时文件并允许再次选�
     ) => {
       if (!first) {
         await writeFile(
-          args[4]!,
+          args.at(-1)!,
           Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
         );
         return;

@@ -148,7 +148,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     .setInputFiles("examples/applications/scratchpad.json");
   await expect(
     page.getByRole("dialog", { name: "确认安装应用" }),
-  ).toContainText("由你确认发送");
+  ).toContainText("填入输入草稿");
   await page.getByRole("button", { name: "允许并安装" }).click();
   const tile = page.getByRole("button", {
     name: "工作便笺 1.0.0",
@@ -169,6 +169,11 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   await expect(page.getByLabel("AI 输入内容")).toHaveValue(
     "我的应用状态：保留这段文字。",
   );
+  await expect(
+    page.locator(".human-message").filter({
+      hasText: "我的应用状态：保留这段文字。",
+    }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(
     page

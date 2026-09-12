@@ -167,8 +167,9 @@ try {
     window.getSelection()!.addRange(range);
   });
   await ui.getByRole("button", { name: "围绕选中文本输入" }).click();
-  await ui.getByRole("button", { name: "语音输入", exact: true }).click();
-  const recorder = ui.getByRole("dialog", { name: "语音输入", exact: true });
+  await ui.getByRole("button", { name: "工作空间选项", exact: true }).click();
+  await ui.getByRole("button", { name: "录音转文字", exact: true }).click();
+  const recorder = ui.getByRole("dialog", { name: "录音转文字", exact: true });
   await app.evaluate(({ app, BrowserWindow }) => {
     app.focus({ steal: true });
     BrowserWindow.getAllWindows()[0]!.focus();

@@ -1,5 +1,12 @@
 import { useModal } from "./useModal.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   Mic,
@@ -11,6 +18,7 @@ import {
   Play,
   ListMusic,
   LoaderCircle,
+  Info,
 } from "lucide-react";
 import {
   scopedStorage,
@@ -34,9 +42,13 @@ export function SpeechDialog({
   onInsert,
   inlineTarget,
   onTranscript,
+  controls,
+  onRecording,
 }: {
   inlineTarget?: HTMLElement;
   onTranscript?: (text: string) => void;
+  controls?: Ref<{ toggle(): void }>;
+  onRecording?: (recording: boolean) => void;
   client: WorkspaceClient;
   scope: SpeechScope;
   title: string;
@@ -44,6 +56,7 @@ export function SpeechDialog({
   onInsert(text: string): void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
+    consentDialog = useRef<HTMLDialogElement>(null),
     capture = useRef<SpeechCapture | null>(null),
     timer = useRef<ReturnType<typeof setInterval> | null>(null),
     alive = useRef(true),
@@ -58,15 +71,21 @@ export function SpeechDialog({
     [pending, setPending] = useState(0),
     [attempt, setAttempt] = useState({ finished: false, hasText: false }),
     [configured, setConfigured] = useState<boolean | null>(null),
+    [service, setService] = useState<{
+      provider: string;
+      label: string;
+    } | null>(null),
+    [consentOpen, setConsentOpen] = useState(false),
+    [level, setLevel] = useState(0),
     [saving, setSaving] = useState(false);
+  const [storage] = useState(() => scopedStorage());
+  const consentKey = (provider: string) => `dictation-consent:v1:${provider}`;
   const queue = useRef<SpeechQueue | null>(null);
   function makeQueue() {
     return new SpeechQueue({
       transcribe: (wav, signal) => client.transcribe(scope, wav, signal),
       text: (value) => {
         if (alive.current) {
-          // Presentation-only relocation of existing user-initiated dictation.
-          // Opening the UI never calls start() or transmits microphone data.
           onTranscript?.(value);
           setAttempt((previous) => ({ ...previous, hasText: true }));
           setText((previous) => (previous ? previous + "\n" + value : value));
@@ -117,6 +136,19 @@ export function SpeechDialog({
     }
   }
   useModal(dialog, undefined, !inlineTarget);
+  useModal(consentDialog, undefined, !!inlineTarget && consentOpen);
+  useEffect(() => {
+    onRecording?.(phase === "recording");
+  }, [phase]);
+  useImperativeHandle(controls, () => ({
+    toggle() {
+      if (phase === "permission") {
+        cancel();
+        setPhase("idle");
+      } else if (capture.current) void finish();
+      else if (!busy) requestStart();
+    },
+  }));
   useEffect(() => {
     alive.current = true;
     queue.current = makeQueue();
@@ -124,7 +156,23 @@ export function SpeechDialog({
     const controller = new AbortController();
     void client
       .speechStatus(controller.signal)
-      .then((s) => setConfigured(s.configured))
+      .then((s) => {
+        if (controller.signal.aborted) return;
+        setConfigured(s.configured && !!s.provider);
+        if (!s.configured || !s.provider) return;
+        const next = {
+          provider: s.provider,
+          label:
+            s.providerLabel || (s.provider === "doubao" ? "豆包" : s.provider),
+        };
+        setService(next);
+        if (inlineTarget) {
+          // Only a previously approved, named service may start immediately.
+          // This record is local to the current center and principal.
+          if (storage.readLocal(consentKey(next.provider), false)) void start();
+          else setConsentOpen(true);
+        }
+      })
       .catch(() => {
         if (!controller.signal.aborted)
           setError("无法读取语音配置，请检查中心连接。");
@@ -140,10 +188,18 @@ export function SpeechDialog({
       alive.current = false;
       controller.abort();
       cancel();
+      onRecording?.(false);
       document.removeEventListener("visibilitychange", hidden);
     };
   }, []);
+  function requestStart() {
+    if (!service || !configured || busy) return;
+    if (inlineTarget && !storage.readLocal(consentKey(service.provider), false))
+      setConsentOpen(true);
+    else void start();
+  }
   async function start() {
+    if (!alive.current || document.hidden || capture.current) return;
     const token = ++epoch.current;
     setError("");
     setNotice("");
@@ -156,6 +212,9 @@ export function SpeechDialog({
           setError(message);
           void finish();
         }
+      },
+      (value) => {
+        if (alive.current) setLevel(value);
       },
     );
     capture.current = current;
@@ -192,6 +251,71 @@ export function SpeechDialog({
       !active &&
       pending === 0 &&
       !error;
+  if (inlineTarget && consentOpen)
+    return (
+      <dialog
+        ref={consentDialog}
+        className="create-dialog dictation-consent"
+        aria-label="语音输入授权"
+        onCancel={(event) => {
+          event.preventDefault();
+          setConsentOpen(false);
+          onClose();
+        }}
+      >
+        <header>
+          <h2>使用{service?.label}识别录音</h2>
+        </header>
+        <p>
+          录音持续分段发送至{service?.label}，可能消耗服务额度。
+          停止、关闭或离开输入区后结束收音。授权将记在本机，可随时撤销。
+        </p>
+        <footer>
+          <button
+            onClick={() => {
+              setConsentOpen(false);
+              onClose();
+            }}
+          >
+            暂不启用
+          </button>
+          <button
+            className="primary"
+            disabled={!service}
+            onClick={() => {
+              if (!service) return;
+              try {
+                storage.writeLocal(consentKey(service.provider), true);
+              } catch {
+                setError("无法保存语音授权，尚未开启麦克风。");
+                return;
+              }
+              setConsentOpen(false);
+              void start();
+            }}
+          >
+            允许并开始听写
+          </button>
+        </footer>
+        {service && storage.readLocal(consentKey(service.provider), false) && (
+          <button
+            onClick={() => {
+              try {
+                storage.writeLocal(consentKey(service.provider), false);
+              } catch {
+                setError("无法撤销语音授权，请检查本机存储。");
+                return;
+              }
+              setConsentOpen(false);
+              onClose();
+            }}
+          >
+            撤销一键听写授权
+          </button>
+        )}
+        {error && <p role="alert">{error}</p>}
+      </dialog>
+    );
   if (inlineTarget)
     return createPortal(
       <section
@@ -200,18 +324,31 @@ export function SpeechDialog({
         data-recording={phase === "recording"}
       >
         <div className="dictation-controls">
-          <Mic />
+          <Mic aria-hidden="true" />
           <span role="status">
             {phase === "recording"
               ? `正在听写 ${seconds}s`
               : phase === "permission"
-                ? "等待麦克风授权"
-                : pending
-                  ? `正在识别 ${pending} 段`
-                  : emptyResult
-                    ? "未识别到文字，可重新听写"
-                    : "听写到当前输入"}
+                ? "正在打开麦克风…"
+                : phase === "finishing"
+                  ? "正在结束听写…"
+                  : pending
+                    ? `正在识别 ${pending} 段`
+                    : emptyResult
+                      ? "未识别到文字，可重新听写"
+                      : configured === null
+                        ? "正在连接语音服务…"
+                        : "听写已停止"}
           </span>
+          {phase === "recording" && (
+            <meter
+              className="dictation-level"
+              aria-label="麦克风音量"
+              min={0}
+              max={1}
+              value={level}
+            />
+          )}
           {phase === "recording" ? (
             <button onClick={() => void finish()}>
               <Square />
@@ -220,11 +357,22 @@ export function SpeechDialog({
           ) : (
             <button
               disabled={busy || configured !== true}
-              onClick={() => void start()}
+              onClick={requestStart}
             >
               开始听写
             </button>
           )}
+          <button
+            aria-label="语音服务与授权"
+            title={`语音服务：${service?.label ?? "未配置"} · 管理授权`}
+            disabled={busy || !service}
+            onClick={() => {
+              setError("");
+              setConsentOpen(true);
+            }}
+          >
+            <Info />
+          </button>
           {error && pending > 0 && !active && (
             <button
               onClick={() => {
@@ -246,10 +394,6 @@ export function SpeechDialog({
             <X />
           </button>
         </div>
-        <small>
-          开始后录音将发送至语音服务，识别文字留在草稿，不自动发送消息。
-        </small>
-        <SpeechServiceDetails client={client} mode="dictate" />
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
         {configured === false && (
@@ -262,7 +406,7 @@ export function SpeechDialog({
     <dialog
       ref={dialog}
       className="create-dialog voice-dialog"
-      aria-label="语音输入"
+      aria-label="录音转文字"
       onCancel={(e) => {
         e.preventDefault();
         cancel();
@@ -271,14 +415,14 @@ export function SpeechDialog({
     >
       <header>
         <div>
-          <h2>语音输入</h2>
+          <h2>录音转文字</h2>
           <small>
             {title}
             {scope.revision ? " · v" + scope.revision : ""}
           </small>
         </div>
         <button
-          aria-label="关闭语音输入"
+          aria-label="关闭录音转文字"
           onClick={() => {
             cancel();
             onClose();
@@ -287,9 +431,6 @@ export function SpeechDialog({
           <X />
         </button>
       </header>
-      <p className="muted">
-        开始后录音将发送至语音服务转为文字。停止后可检查并保存文字，不自动发送消息；关闭会丢弃临时语音和未保存文字。
-      </p>
       <SpeechServiceDetails client={client} mode="dictate" />
       {configured === false && <p role="status">工作中心尚未配置语音服务。</p>}
       <div className="voice-recorder" data-recording={phase === "recording"}>
@@ -305,7 +446,7 @@ export function SpeechDialog({
                   ? "正在转为文字"
                   : emptyResult
                     ? "未识别到文字，可重新录音"
-                    : "准备语音输入"}
+                    : "未录音"}
         </strong>
         <span>
           {String(Math.floor(seconds / 60)).padStart(2, "0")}:
@@ -357,7 +498,7 @@ export function SpeechDialog({
         确认文字
         <textarea
           aria-label="语音识别文字"
-          placeholder="识别的文字会逐段出现在这里…"
+          placeholder="转写文字"
           rows={7}
           value={text}
           disabled={busy}
@@ -375,6 +516,7 @@ export function SpeechDialog({
         </p>
       )}
       <footer>
+        {!!text.trim() && <small>关闭将丢弃未保存的转写</small>}
         <button
           onClick={() => {
             cancel();
@@ -561,7 +703,7 @@ export function ReadAloudDialog({
                       ? "已暂停"
                       : state.phase === "error"
                         ? "朗读未完成"
-                        : "点击播放，开始朗读"}
+                        : "未播放"}
             </span>
             <span className="reading-time">
               {!single && `${state.index + 1}/${chunks.length} 段 · `}

@@ -68,7 +68,6 @@ export function UnderstandingPanel({
             <RefreshCw />
             {artifact ? "更新理解" : "梳理理解"}
           </button>
-          <small>在输入框中确认后发送</small>
         </footer>
       }
     >
@@ -109,13 +108,8 @@ export function UnderstandingPanel({
             )}
           </>
         ) : (
-          <p className="understanding-empty">
-            还没有公开摘要。可以让 Morphz 梳理目标、约束和已经确认的事实。
-          </p>
+          <p className="understanding-empty">暂无摘要</p>
         )}
-        <p className="understanding-note">
-          这里展示可共同核对的公开摘要，不是内部推理。更新后会保留版本。
-        </p>
       </div>
     </InspectorPanel>
   );

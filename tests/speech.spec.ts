@@ -1,4 +1,4 @@
-import { composerAction } from "./interaction-helpers.js";
+import { composerAction, openTranscription } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
@@ -50,8 +50,11 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
     window.getSelection()!.addRange(r);
   });
   await page.getByRole("button", { name: "围绕选中文本输入" }).click();
-  await composerAction(page, "长录音转写");
-  const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
+  // Opening this standalone content tool is outside the composer. Keep the
+  // input pinned here so its unchanged draft can also be checked underneath.
+  await composerAction(page, "固定输入框");
+  await openTranscription(page);
+  const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await expect(dialog).toContainText("v2");
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
@@ -99,7 +102,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   await expect(page.getByLabel("AI 输入内容")).toBeVisible();
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
-  await composerAction(page, "长录音转写");
+  await openTranscription(page);
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog).toContainText("正在录音");
   await dialog.getByRole("button", { name: "取消", exact: true }).click();

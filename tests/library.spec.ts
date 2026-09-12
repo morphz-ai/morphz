@@ -11,6 +11,12 @@ test("导入资料、搜索正文、引用提问与旧版本打开", async ({ pa
     .getByRole("button", { name: "资料导入与来源", exact: true })
     .click();
   const dialog = page.getByRole("dialog", { name: "导入资料" });
+  await expect(dialog.locator(".import-explanation")).toHaveCount(0);
+  await expect(dialog.locator(".import-limits")).not.toHaveAttribute(
+    "open",
+    "",
+  );
+  await expect(dialog).not.toContainText("原文件不会被修改");
   await dialog.getByLabel("选择资料文件").setInputFiles([
     {
       name: "产品说明.md",

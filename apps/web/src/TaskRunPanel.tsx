@@ -185,9 +185,6 @@ export function TaskRunPanel({
           </div>
           <details className="task-execution-note">
             <summary>执行说明</summary>
-            <p className="muted">
-              修改负责人、模型或时间会保存为新安排版本；已提交的执行仍使用原版本。暂停和停止触发不会撤销已经发生的操作。
-            </p>
           </details>
         </>
       )}

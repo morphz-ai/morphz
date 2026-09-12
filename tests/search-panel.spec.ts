@@ -68,7 +68,7 @@ test("多关键词结果可点击摘要与来源；无来源不重复占行，�
     exact: true,
   });
   await expect(quote).toHaveText("AI");
-  await expect(quote).toHaveAttribute("title", /先加入输入框，不会自动发送/);
+  await expect(quote).toHaveAttribute("title", "引用《交互验收笔记》");
   await expect(quote.locator(".lucide-message-square-quote")).toHaveCount(1);
   await expect(quote).toHaveCSS("border-width", "0px");
   await expect(quote).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
@@ -79,10 +79,7 @@ test("多关键词结果可点击摘要与来源；无来源不重复占行，�
   ).toBeLessThanOrEqual(1);
   expect(quoteBox.height).toBeGreaterThanOrEqual(32);
   await expect(note.locator(".search-result-footer")).toHaveCount(0);
-  await expect(search.locator(".search-help kbd").first()).toHaveCSS(
-    "font-size",
-    "10px",
-  );
+  await expect(search.locator(".search-help")).toHaveCount(0);
   await excerpt.click();
   await expect(search).toHaveCount(0);
   await expect(page.locator(".object-paper > h1")).toHaveText("交互验收笔记");

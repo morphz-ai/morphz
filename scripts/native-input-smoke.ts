@@ -78,8 +78,9 @@ try {
         return stream;
       };
     });
-    await ui.getByRole("button", { name: "语音输入", exact: true }).click();
-    const voice = ui.getByRole("dialog", { name: "语音输入", exact: true });
+    await ui.getByRole("button", { name: "工作空间选项", exact: true }).click();
+    await ui.getByRole("button", { name: "录音转文字", exact: true }).click();
+    const voice = ui.getByRole("dialog", { name: "录音转文字", exact: true });
     console.log(
       "NATIVE_STAGE microphone: approve the actual macOS prompt if shown; audio goes only to a local no-network test double.",
     );
@@ -107,7 +108,7 @@ try {
     await voice.getByRole("button", { name: "继续输入", exact: true }).click();
     await expect(voice.getByText("正在录音", { exact: true })).toBeVisible();
     await voice
-      .getByRole("button", { name: "关闭语音输入", exact: true })
+      .getByRole("button", { name: "关闭录音转文字", exact: true })
       .click();
     assert.deepEqual(
       await ui.evaluate(() =>
@@ -147,9 +148,6 @@ try {
     );
     await ui.getByRole("button", { name: "截图输入", exact: true }).click();
     const capture = ui.getByRole("dialog", { name: "截图输入", exact: true });
-    await capture
-      .getByRole("button", { name: "选择窗口或区域", exact: true })
-      .click();
     console.log(
       "NATIVE_STAGE screenshot: select only a small synthetic region inside the test window using macOS UI.",
     );
@@ -162,7 +160,7 @@ try {
       .getByRole("textbox", { name: "截图标题" })
       .fill("原生截图验收（合成界面）");
     await capture
-      .getByRole("button", { name: "保存为对象", exact: true })
+      .getByRole("button", { name: "保存到内容", exact: true })
       .click();
     await expect(capture).not.toBeVisible();
     assert.equal(store.snapshot().artifacts.length, 1);

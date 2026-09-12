@@ -11,14 +11,17 @@ export class SpeechCapture {
   private cancelled = false;
   private finishing: Promise<void> | null = null;
   private finishAck: (() => void) | null = null;
+  private meterFrame: number | null = null;
   constructor(
     private onSegment: (wav: Blob) => void,
     private onError: (message: string) => void,
+    private onLevel?: (level: number) => void,
   ) {}
   async start() {
     try {
       this.context = new AudioContext({ sampleRate: speechSampleRate });
       await this.context.resume();
+      if (this.cancelled) return;
       if (
         window.morphzDesktop &&
         !(await window.morphzDesktop.voice.requestMicrophone())
@@ -70,7 +73,29 @@ export class SpeechCapture {
             this.onError("麦克风已断开，已识别文字保留。");
         }),
       );
-      context.createMediaStreamSource(stream).connect(node);
+      const source = context.createMediaStreamSource(stream);
+      source.connect(node);
+      if (this.onLevel) {
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const samples = new Float32Array(analyser.fftSize);
+        let previous = 0;
+        const measure = (now: number) => {
+          if (this.cancelled) return;
+          if (now - previous >= 100) {
+            previous = now;
+            analyser.getFloatTimeDomainData(samples);
+            const rms = Math.sqrt(
+              samples.reduce((sum, value) => sum + value * value, 0) /
+                samples.length,
+            );
+            this.onLevel!(Math.min(1, rms * 5));
+          }
+          this.meterFrame = requestAnimationFrame(measure);
+        };
+        this.meterFrame = requestAnimationFrame(measure);
+      }
       node.connect(context.destination);
     } catch (error) {
       this.cancel();
@@ -100,6 +125,9 @@ export class SpeechCapture {
   }
   cancel() {
     this.cancelled = true;
+    if (this.meterFrame !== null) cancelAnimationFrame(this.meterFrame);
+    this.meterFrame = null;
+    this.onLevel?.(0);
     this.finishAck?.();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;

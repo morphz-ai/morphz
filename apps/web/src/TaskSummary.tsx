@@ -132,7 +132,7 @@ export function TaskSummary({
         <button
           className="task-compose-action secondary-action"
           aria-label="补充或调整"
-          title="在输入框中补充或调整这项工作；不会自动发送"
+          title="补充或调整这项工作"
           onClick={onCompose}
         >
           <MessageCircle aria-hidden="true" />

@@ -39,7 +39,7 @@
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "typecheck": "tsc --noEmit",
     "start": "node dist/service/apps/service/src/main.js",
-    "desktop": "electron apps/desktop/main.cjs",
+    "desktop": "node scripts/desktop.mjs",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "test": "tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",

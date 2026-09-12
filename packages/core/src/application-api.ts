@@ -1,0 +1,64 @@
+// Logical application operations. No HTTP, Electron, filesystem or credentials.
+// Both hosts call the same business layer; only their transport adapters differ.
+export const applicationMethods = [
+  "workspace",
+  "login",
+  "logout",
+  "command",
+  "message",
+  "input.send",
+  "input.cancel",
+  "search",
+  "artifact.read",
+  "models",
+  "asset.add",
+  "attachment.add",
+  "pdf.import",
+  "execution.snapshot",
+  "execution.result",
+  "execution.control",
+  "task.snapshot",
+  "task.control",
+  "speech.status",
+  "speech.transcribe",
+  "speech.synthesize",
+  "notifications.read",
+  "notifications.control",
+  "browser.register",
+  "browser.exchange",
+] as const;
+export type ApplicationMethod = (typeof applicationMethods)[number];
+export type ApplicationFailure = {
+  status: number;
+  code: string;
+  message: string;
+};
+export type ApplicationReply =
+  { ok: true; value: unknown } | { ok: false; error: ApplicationFailure };
+export type ApplicationInvocation = {
+  id: string;
+  method: ApplicationMethod;
+  params?: unknown;
+  identityGeneration?: string;
+};
+export type ApplicationConnection =
+  { mode: "local" } | { mode: "remote"; url: string };
+export type ApplicationCallOptions = {
+  identityGeneration?: string;
+  signal?: AbortSignal;
+};
+export interface ApplicationCaller {
+  call(
+    method: ApplicationMethod,
+    params?: unknown,
+    options?: ApplicationCallOptions,
+  ): Promise<unknown>;
+}
+export class ApplicationRequestError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}

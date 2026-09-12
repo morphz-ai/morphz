@@ -24,10 +24,8 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
     .getByRole("toolbar", { name: "选中文本操作" })
     .getByRole("button", { name: "批注", exact: true })
     .click();
-  await expect(page.getByText("保存为批注 · 不发送给 Agent")).toBeVisible();
-  await expect(page.getByText("Agent 未连接 · 仅保存，不会回复")).toHaveCount(
-    0,
-  );
+  await expect(page.getByText("保存为批注", { exact: true })).toBeVisible();
+  await expect(page.getByText("Agent 未连接", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "截图输入", exact: true }),
   ).toHaveCount(0);
@@ -69,7 +67,6 @@ test("截图默认附加到消息，发送前后均不创建内容对象", async
   const before = await page.request.get("/api/workspace").then((r) => r.json());
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入" });
-  await dialog.getByRole("button", { name: "选择窗口或区域" }).click();
   await dialog.getByRole("button", { name: "添加到消息", exact: true }).click();
   await expect(page.getByLabel("消息附件", { exact: true })).toBeVisible();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
@@ -93,7 +90,7 @@ test("截图默认附加到消息，发送前后均不创建内容对象", async
   );
 });
 
-test("短听写在输入框内追加，未点击开始不采集，停止立即停采且不自动发送", async ({
+test("首次授权后听写直接在输入框内追加，停止立即停采且不自动发送", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -124,11 +121,17 @@ test("短听写在输入框内追加，未点击开始不采集，停止立即�
   await input.fill("已有草稿");
   const before = await page.request.get("/api/workspace").then((r) => r.json());
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  const consent = page.getByRole("dialog", { name: "语音输入授权" });
+  await expect(consent).toContainText("豆包");
+  expect(uploads).toBe(0);
+  expect(
+    await page.evaluate(() => Reflect.get(window, "uxStream")),
+  ).toBeUndefined();
+  await consent.getByRole("button", { name: "允许并开始听写" }).click();
   const voice = page.getByRole("region", { name: "听写", exact: true });
   await expect(voice).toBeVisible();
   expect(uploads).toBe(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await voice.getByRole("button", { name: "开始听写", exact: true }).click();
   await expect
     .poll(() =>
       page.evaluate(() => Reflect.get(window, "uxAudio")?.currentTime ?? 0),

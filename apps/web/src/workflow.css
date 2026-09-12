@@ -1015,6 +1015,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 .dictation-controls span {
   flex: 1;
@@ -1029,6 +1030,17 @@
 }
 .inline-dictation[data-recording="true"] .dictation-controls > svg {
   color: light-dark(#ae3535, #ee8d8d);
+}
+.dictation-level {
+  width: 64px;
+  height: 8px;
+  accent-color: var(--accent);
+}
+.app .composer-floating-tools > button[data-recording="true"] {
+  color: light-dark(#ae3535, #ee8d8d);
+}
+.dictation-consent {
+  max-width: 440px;
 }
 .attachment-file {
   display: flex;

@@ -165,7 +165,6 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
     "附加文件",
     "截图输入",
     "语音输入",
-    "长录音转写",
     "收起交流记录",
     "展开完整记录",
     "固定输入框",
@@ -291,20 +290,18 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
       .boundingBox())!;
     expect(mic.x - camera.x - camera.width).toBeLessThanOrEqual(4);
     expect(mic.y).toBe(camera.y);
-    const transcribe = (await composer
-      .getByLabel("长录音转写", { exact: true })
-      .boundingBox())!;
+    await expect(
+      composer.getByLabel("长录音转写", { exact: true }),
+    ).toHaveCount(0);
     const collapse = (await composer
       .getByLabel("收起 AI 输入框")
       .boundingBox())!;
-    expect(transcribe.x - mic.x - mic.width).toBeLessThanOrEqual(4);
     const executionBounds = (await executions.boundingBox())!;
-    expect(executionBounds.x - transcribe.x - transcribe.width).toBe(12);
+    expect(executionBounds.x - mic.x - mic.width).toBe(12);
     const pin = (await composer
       .getByLabel("固定输入框", { exact: true })
       .boundingBox())!;
     expect(collapse.x - pin.x - pin.width).toBeLessThanOrEqual(4);
-    expect(collapse.y).toBe(transcribe.y);
     expect(collapse.y).toBe(camera.y);
     expect(
       await composer.evaluate((el) => el.scrollWidth <= el.clientWidth),

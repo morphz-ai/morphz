@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
+import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import {
-  conversationFrameSchema,
-  type ConversationStream,
-} from "../../../packages/core/src/live-conversation.js";
+  applicationIdentity,
+  subscribeConversation,
+} from "./application-transport.js";
 
 const empty: ConversationStream = { connected: false, messages: [] };
 type Subscription = {
-  source: EventSource;
+  close: () => void;
   value: ConversationStream;
   listeners: Set<(value: ConversationStream) => void>;
 };
@@ -22,56 +23,33 @@ export function useConversationStream(
     connected: false,
     messages: [],
   });
+  const identity = applicationIdentity();
   useEffect(() => {
     setStream(empty);
     if (!enabled) return;
-    const key = JSON.stringify([projectId, conversationId]);
+    const key = JSON.stringify([identity, projectId, conversationId]);
     let entry = subscriptions.get(key);
     if (!entry) {
-      const source = new EventSource(
-        `/api/conversation/stream?${new URLSearchParams({ projectId, conversationId })}`,
-      );
-      entry = { source, value: empty, listeners: new Set() };
+      entry = { close: () => {}, value: empty, listeners: new Set() };
       subscriptions.set(key, entry);
       const update = (value: ConversationStream) => {
         entry!.value = value;
         for (const listener of entry!.listeners) listener(value);
       };
-      source.onmessage = (event) => {
-        try {
-          const value = conversationFrameSchema.parse(JSON.parse(event.data));
-          const messages = new Map(
-            (value.reset ? [] : entry!.value.messages).map((m) => [m.id, m]),
-          );
-          for (const id of value.removed) messages.delete(id);
-          for (const m of value.messages) messages.set(m.id, m);
-          update({
-            connected: value.connected,
-            messages: [...messages.values()],
-          });
-        } catch {
-          update({ ...entry!.value, connected: false });
-        }
-      };
-      source.onerror = () => {
-        // A suffix after reconnect must not retain a stale streamed prefix.
-        update({
-          connected: false,
-          messages: entry!.value.messages.filter(
-            (m) => !m.id.startsWith("stream:") && !m.streaming,
-          ),
-        });
-      };
+      entry.close = subscribeConversation(
+        { projectId, conversationId },
+        update,
+      );
     }
     entry.listeners.add(setStream);
     setStream(entry.value);
     return () => {
       entry!.listeners.delete(setStream);
       if (!entry!.listeners.size) {
-        entry!.source.close();
+        entry!.close();
         subscriptions.delete(key);
       }
     };
-  }, [projectId, conversationId, enabled]);
+  }, [identity, projectId, conversationId, enabled]);
   return stream;
 }

@@ -209,10 +209,6 @@ export function ImportDocuments({
         <SourceConnections projectId={project.id} />
       ) : (
         <>
-          <p className="import-explanation">
-            导入 Markdown、UTF-8 文本、PDF 或图片
-            副本。原文件不会被修改；后续编辑只更新工作空间中的版本。
-          </p>
           <div className="import-choices">
             <button
               className="outline"
@@ -255,11 +251,13 @@ export function ImportDocuments({
               e.target.value = "";
             }}
           />
-          <p className="muted">
-            每次最多 100 份；文本不超过 8 MB，图片不超过 6 MB，PDF 不超过 20
-            MB／300 页。隐藏文件、凭据、依赖目录和构建产物会被跳过。PDF
-            提取文字后可引用，扫描件暂不做 OCR。
-          </p>
+          <details className="import-limits">
+            <summary>支持格式与大小</summary>
+            <p>
+              每批最多 100 份。Markdown／文本 8 MB，图片 6 MB，PDF 20 MB／300
+              页。暂不支持 OCR。
+            </p>
+          </details>
           {selection.length > 0 && (
             <ul className="import-selection">
               {selection.map((item, i) => (
@@ -301,11 +299,11 @@ export function ImportDocuments({
             </p>
           )}
           <footer>
-            <span role="status" className="muted">
-              {completed
-                ? `已导入 ${completed} 份`
-                : "选择的文件会先列出，确认后再保存"}
-            </span>
+            {!!completed && (
+              <span role="status" className="muted">
+                已导入 {completed} 份
+              </span>
+            )}
             {busy ? (
               <button
                 onClick={() => {
@@ -585,7 +583,7 @@ export function SearchDocuments({
                 <button
                   className="search-result-quote"
                   aria-label={`AI 交互：${hit.title}`}
-                  title={`围绕《${hit.title}》的这段内容与 AI 交互；先加入输入框，不会自动发送`}
+                  title={`引用《${hit.title}》`}
                   onClick={() => {
                     onClose();
                     onQuote(hit.artifactId, hit.revision, hit.quote, hit.page);
@@ -599,23 +597,9 @@ export function SearchDocuments({
         ))}
         {!loading && !error && choices.length === 0 && (
           <p className="search-empty">
-            {query.trim()
-              ? "没有找到匹配的内容，试试其他关键词。"
-              : "还没有内容，可以先打开应用或导入资料。"}
+            {query.trim() ? "没有找到匹配内容" : "暂无内容"}
           </p>
         )}
-      </div>
-      <div className="search-help">
-        <span>
-          <kbd>↑</kbd>
-          <kbd>↓</kbd> 选择
-        </span>
-        <span>
-          <kbd>↵</kbd> 打开
-        </span>
-        <span>
-          <kbd>Esc</kbd> 返回
-        </span>
       </div>
       {result && (offset > 0 || result.hasMore) && (
         <footer>

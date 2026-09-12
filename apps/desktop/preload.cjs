@@ -3,6 +3,24 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld(
   "morphzDesktop",
   Object.freeze({
+    // Only an explicitly trusted application entry opts in. The main process
+    // selects local business calls or the private remote HTTP adapter.
+    application: process.argv.includes("--morphz-application-bridge")
+      ? Object.freeze({
+          invoke: (request) =>
+            ipcRenderer.invoke("application:invoke", request),
+          cancel: (id) => ipcRenderer.send("application:cancel", id),
+          subscribe: (id, scope, generation) =>
+            ipcRenderer.invoke("application:subscribe", id, scope, generation),
+          unsubscribe: (id) => ipcRenderer.send("application:unsubscribe", id),
+          onStream: (callback) => {
+            const receive = (_event, value) => callback(value);
+            ipcRenderer.on("application:stream", receive);
+            return () =>
+              ipcRenderer.removeListener("application:stream", receive);
+          },
+        })
+      : undefined,
     appearance: Object.freeze({
       setMode: (mode) => ipcRenderer.invoke("appearance:mode", mode),
       onChange: (callback) => {

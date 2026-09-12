@@ -351,7 +351,7 @@ export function InteractiveArtifact({
                 {query.trim()
                   ? "没有匹配的记录。"
                   : onChange
-                    ? "还没有记录，点击上方“添加记录”开始。"
+                    ? "暂无记录"
                     : "暂无记录。"}
                 {query.trim() && (
                   <button onClick={() => setQuery("")}>清除筛选</button>
@@ -388,11 +388,7 @@ export function InteractiveArtifact({
               </label>
             ))
           ) : (
-            <p className="muted">
-              {onChange
-                ? "还没有记录，点击上方“添加记录”开始。"
-                : "暂无记录。点击“编辑”后添加。"}
-            </p>
+            <p className="muted">暂无记录</p>
           )}
         </div>
       )}

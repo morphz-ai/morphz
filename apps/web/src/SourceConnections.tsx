@@ -75,15 +75,10 @@ export default function SourceConnections({
       }
     }
   }
-  if (!api)
-    return (
-      <p className="muted">
-        持续接入本机资料需要桌面端。当前仍可导入文件副本。
-      </p>
-    );
+  if (!api) return <p className="muted">连接来源需要桌面端</p>;
   return (
     <section className="source-connections" aria-label="连接来源">
-      <p className="muted">持续接入 Markdown 和文本；原文件只读，不会改写。</p>
+      <p className="muted">Markdown／文本 · 只读同步</p>
       <div className="inline">
         <button
           className="secondary-action"
@@ -107,9 +102,7 @@ export default function SourceConnections({
         !error &&
         !loadError &&
         !sources.some((s) => s.projectId === projectId) && (
-          <p className="source-empty">
-            还没有连接来源。选择文件或文件夹，确认范围后再开始同步。
-          </p>
+          <p className="source-empty">暂无来源</p>
         )}
       {sources
         .filter((s) => s.projectId === projectId)
@@ -190,11 +183,8 @@ export default function SourceConnections({
         </div>
       )}
       <details className="source-explanation">
-        <summary>同步如何工作</summary>
-        <p>
-          确认开始后，每 15
-          秒检查已授权范围。退出桌面停止检查，重开后接续；暂停或断开不会删除已保存的资料和批注。
-        </p>
+        <summary>同步详情</summary>
+        <p>检查间隔：15 秒。退出桌面暂停，重开后恢复。</p>
       </details>
     </section>
   );

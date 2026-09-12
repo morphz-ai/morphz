@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Brain } from "lucide-react";
+import { applicationCall } from "./application-transport.js";
 import {
   modelCatalogSchema,
   modelLabel,
@@ -37,10 +38,8 @@ export function ModelPicker({
     const controller = new AbortController();
     setError("");
     setCatalog(null);
-    void fetch("/api/models", { signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || "无法读取模型列表");
+    void applicationCall("models", undefined, { signal: controller.signal })
+      .then((data) => {
         if (!controller.signal.aborted)
           setCatalog(modelCatalogSchema.parse(data));
       })

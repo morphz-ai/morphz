@@ -9,10 +9,12 @@ class DesktopCapture {
     platform = process.platform,
     runner = promisify(execFile),
     temporary = tmpdir(),
+    chooseRegion,
   } = {}) {
     this.platform = platform;
     this.runner = runner;
     this.temporary = temporary;
+    this.chooseRegion = chooseRegion;
     this.active = null;
   }
   cancel() {
@@ -26,12 +28,36 @@ class DesktopCapture {
     this.active = controller;
     let directory;
     try {
+      const region = this.chooseRegion
+        ? await this.chooseRegion(controller.signal)
+        : undefined;
+      if (controller.signal.aborted || (this.chooseRegion && !region))
+        return null;
+      if (
+        region &&
+        (![region.x, region.y, region.width, region.height].every(
+          Number.isInteger,
+        ) ||
+          region.width < 8 ||
+          region.height < 8)
+      )
+        throw new Error("截图选区无效。");
       directory = await mkdtemp(join(this.temporary, "morphzwork-capture-"));
       const path = join(directory, "selection.png");
-      // Interactive selection is mandatory. No screen IDs, coordinates, shell or clipboard API.
+      // Coordinates come only from the trusted picker after a human drag.
+      // Never read the full screen first or accept renderer-supplied capture args.
       await this.runner(
         "/usr/sbin/screencapture",
-        ["-i", "-x", "-t", "png", path],
+        region
+          ? [
+              "-R",
+              `${region.x},${region.y},${region.width},${region.height}`,
+              "-x",
+              "-t",
+              "png",
+              path,
+            ]
+          : ["-i", "-x", "-t", "png", path],
         { signal: controller.signal, timeout: 120000, maxBuffer: 4096 },
       );
       if (controller.signal.aborted) return null;

@@ -102,6 +102,49 @@ test("桌面来源真实 HTTP 同步、重启去重、暂停、文件删除保�
     assert.equal(artifact.revision, 1);
     assert.equal(store.snapshot().artifacts.length, 1);
     assert.equal(connector.list()[0]!.error, "");
+    renameSync(library, library + "-offline");
+    await connector.tick();
+    assert.equal(
+      store.snapshot().artifacts[0]!.source?.connection?.status,
+      "unavailable",
+    );
+    renameSync(library + "-offline", library);
+    await connector.tick();
+    assert.equal(connector.list()[0]!.error, "");
+    assert.equal(
+      store.snapshot().artifacts[0]!.source?.connection?.status,
+      "current",
+      "恢复同一路径和内容后也必须恢复中心状态",
+    );
+    assert.equal(store.snapshot().artifacts[0]!.revision, 1);
+    assert.equal(store.snapshot().artifacts[0]!.versions.length, 1);
+    // An older process can leave the saved cache saying current while the
+    // authoritative application has already accepted an unavailable status.
+    await connector.stop();
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "linked-source-status",
+          projectId: artifact.projectId,
+          sourceId: artifact.source!.connection!.sourceId,
+          deviceId: artifact.source!.connection!.deviceId,
+          status: "unavailable",
+        },
+      },
+      localAccess,
+    );
+    connector = new DesktopSources(config, origin, request);
+    await connector.tick();
+    assert.equal(
+      store.snapshot().artifacts[0]!.source?.connection?.status,
+      "current",
+      "重启不能信任过期的本机状态缓存",
+    );
+    assert.equal(store.snapshot().artifacts[0]!.revision, 1);
+    const healthyWrites = writes;
+    await connector.tick();
+    assert.equal(writes, healthyWrites, "正常轮询不重复提交状态");
     writeFileSync(note, "updated source");
     await connector.tick();
     artifact = store.snapshot().artifacts[0]!;

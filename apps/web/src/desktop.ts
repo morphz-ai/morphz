@@ -31,6 +31,27 @@ export type BrowserView = {
 declare global {
   interface Window {
     morphzDesktop?: {
+      application?: {
+        invoke(
+          request: import("../../../packages/core/src/application-api.js").ApplicationInvocation,
+        ): Promise<
+          import("../../../packages/core/src/application-api.js").ApplicationReply
+        >;
+        cancel(id: string): void;
+        subscribe(
+          id: string,
+          scope: { projectId: string; conversationId: string },
+          generation: string,
+        ): Promise<void>;
+        unsubscribe(id: string): void;
+        onStream(
+          callback: (event: {
+            id: string;
+            closed?: boolean;
+            value?: import("../../../packages/core/src/live-conversation.js").ConversationStream;
+          }) => void,
+        ): () => void;
+      };
       appearance?: {
         setMode(
           mode: "system" | "light" | "dark",

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { prepareDesktop } from "./desktop-bundle.mjs";
 
 const require = createRequire(import.meta.url);
 require("../apps/desktop/stdio.cjs").protectStandardStreams();
@@ -58,15 +59,16 @@ try {
       ].includes(key),
     ),
   );
-  desktop = spawn(
-    require("electron"),
-    ["apps/desktop/main.cjs", `--center=${center}`, "--hot"],
-    {
-      cwd,
-      env,
-      stdio: "inherit",
-    },
-  );
+  const launch = prepareDesktop({
+    center,
+    hot: true,
+    profile: env.MORPHZWORK_TEST_PROFILE,
+  });
+  desktop = spawn(launch.executable, launch.args, {
+    cwd,
+    env,
+    stdio: "inherit",
+  });
   desktop.once("error", (error) => {
     console.error(error.message);
     void stop(1);

@@ -107,7 +107,7 @@ export function ObjectCollection({
             <button
               className="secondary-action"
               aria-label="让 Morphz 起草"
-              title={`让 Morphz 起草，保存到${project.title}；先填写需求，不自动发送`}
+              title={`让 Morphz 起草 · ${project.title}`}
               onClick={() => onCreate("document")}
             >
               <FilePlus2 />
@@ -349,15 +349,6 @@ export function ObjectCollection({
                 ? "没有找到匹配的内容"
                 : "这个范围内还没有内容"}
             </h2>
-            <p>
-              {scopedObjects.length
-                ? "试试其他关键词，或切换内容类型。"
-                : scope === "all"
-                  ? "创建、生成或导入的内容都会显示在这里。"
-                  : catalog
-                    ? "可以切换到全部工作空间，查看其他地方保存的内容。"
-                    : "在这里创作或导入；跨空间查找请使用侧栏的“内容”。"}
-            </p>
             {(contentObjects.length > 0 ||
               (catalog && scope !== "all") ||
               query ||

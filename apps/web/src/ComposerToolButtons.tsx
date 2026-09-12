@@ -25,11 +25,14 @@ export function ComposerToolButtons({
     const toolbar = first.current?.parentElement;
     const composer = toolbar?.closest<HTMLElement>(".composer");
     if (!toolbar || !composer) return;
-    const measure = () =>
-      composer.style.setProperty(
-        "--composer-tools-height",
-        `${toolbar.getBoundingClientRect().height}px`,
-      );
+    const measure = () => {
+      const height = toolbar.getBoundingClientRect().height;
+      // The screenshot picker deliberately removes the composer from layout.
+      // Preserve its last visible tool-row height so restoring it cannot flash
+      // a collapsed top margin before ResizeObserver measures it again.
+      if (height > 0)
+        composer.style.setProperty("--composer-tools-height", `${height}px`);
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(toolbar);
     measure();

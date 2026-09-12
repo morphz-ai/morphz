@@ -3,6 +3,47 @@ import { test, expect } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
+test("一次点击进入截图，失败只提示并等待明确重试", async ({ page }) => {
+  await page.addInitScript(() => {
+    Reflect.set(window, "captureCalls", 0);
+    Reflect.set(window, "morphzDesktop", {
+      capture: {
+        select: async () => {
+          const calls = Reflect.get(window, "captureCalls") + 1;
+          Reflect.set(window, "captureCalls", calls);
+          if (calls === 1) throw new Error("系统截图暂时不可用");
+          return null;
+        },
+        cancel: async () => {},
+      },
+    });
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("截图失败也保留草稿");
+  const trigger = page.getByRole("button", { name: "截图输入", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
+  await expect(dialog.getByRole("alert")).toHaveText("系统截图暂时不可用");
+  await expect(dialog.locator("h2")).toHaveText("截图");
+  await expect(dialog).not.toContainText("按住鼠标");
+  await expect(dialog).not.toContainText("不自动发送");
+  await expect(dialog).not.toContainText("不发送给 Agent");
+  expect(await page.evaluate(() => Reflect.get(window, "captureCalls"))).toBe(
+    1,
+  );
+  await expect(
+    dialog.getByRole("button", { name: "添加到消息", exact: true }),
+  ).toBeDisabled();
+  await dialog.getByRole("button", { name: "开始划区", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
+    .toBe(2);
+  await expect(page.locator(".capture-dialog")).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(input).toHaveValue("截图失败也保留草稿");
+});
+
 test("完整对话截图保留消息，只暂时移走输入与确认层", async ({ page }) => {
   await page.addInitScript(() => {
     Reflect.set(window, "captureCalls", 0);
@@ -35,7 +76,6 @@ test("完整对话截图保留消息，只暂时移走输入与确认层", async
   );
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
-  await dialog.locator(".capture-start").click();
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
     .toBe(1);
@@ -44,8 +84,10 @@ test("完整对话截图保留消息，只暂时移走输入与确认层", async
   await expect(message).toBeVisible();
   await page.screenshot({ path: "test-results/capture-history-visible.png" });
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "关闭截图输入" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "截图输入", exact: true }),
+  ).toBeFocused();
   await expect(input).toBeVisible();
   await expect(input).toHaveValue("截图后继续编辑，不发送");
 });
@@ -101,7 +143,6 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
   const select = dialog.locator(".capture-start");
-  await select.click();
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
     .toBe(1);
@@ -121,16 +162,15 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   );
   expect(uploads).toBe(0);
   await page.screenshot({ path: "test-results/capture-unobscured.png" });
-  // The OS returns null when its selection is cancelled; the dialog resumes.
+  // Cancelling the initial selection returns directly to the invoking input.
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
-  await expect(dialog).toBeVisible();
-  await expect(select).toBeFocused();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "截图输入", exact: true }),
+  ).toBeFocused();
   expect(await canvas.boundingBox()).toEqual(canvasBefore);
   await expect(input).toHaveValue("已有草稿，不发送");
-  await expect(
-    dialog.getByRole("button", { name: "添加到消息", exact: true }),
-  ).toBeDisabled();
-  await select.click();
+  await page.getByRole("button", { name: "截图输入", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
     .toBe(2);
@@ -233,7 +273,8 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
         layout: async (_id: string, bounds: object | null) => {
           if (
             bounds &&
-            document.querySelector('.capture-dialog[data-capturing="true"]')
+            document.querySelector('.capture-dialog[data-capturing="true"]') &&
+            !Reflect.get(window, "layoutsReleased")
           ) {
             await new Promise<void>((resolve) => {
               const pending = Reflect.get(window, "pendingLayouts") ?? [];
@@ -279,11 +320,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
   await expect(page.locator(".browser-slot")).toBeVisible();
   await openInput(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => Reflect.get(window, "layoutBounds")))
-    .toBeNull();
   const dialog = page.locator(".capture-dialog");
-  await dialog.locator(".capture-start").click();
   await expect
     .poll(() =>
       page.evaluate(() => Reflect.get(window, "pendingLayouts")?.length ?? 0),
@@ -293,6 +330,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
     0,
   );
   await page.evaluate(() => {
+    Reflect.set(window, "layoutsReleased", true);
     for (const resolve of Reflect.get(window, "pendingLayouts")) resolve();
   });
   await expect
@@ -301,13 +339,24 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
   expect(
     await page.evaluate(() => Reflect.get(window, "boundsAtCapture")),
   ).toMatchObject({ width: expect.any(Number), height: expect.any(Number) });
-  await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
+  await page.evaluate(() =>
+    Reflect.get(
+      window,
+      "finishCapture",
+    )({
+      mime: "image/png",
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aKp8AAAAASUVORK5CYII=",
+    }),
+  );
   await expect(dialog).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "layoutBounds")))
     .toBeNull();
   // Escape during preparation must prevent a late native picker from opening.
-  await page.evaluate(() => Reflect.set(window, "pendingLayouts", []));
+  await page.evaluate(() => {
+    Reflect.set(window, "pendingLayouts", []);
+    Reflect.set(window, "layoutsReleased", false);
+  });
   await dialog.locator(".capture-start").click();
   await expect
     .poll(() =>
@@ -317,6 +366,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
   await page.keyboard.press("Escape");
   await expect(dialog).toBeVisible();
   await page.evaluate(() => {
+    Reflect.set(window, "layoutsReleased", true);
     for (const resolve of Reflect.get(window, "pendingLayouts")) resolve();
   });
   await page.evaluate(
@@ -362,17 +412,11 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
   await openInput(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
-  await dialog
-    .getByRole("button", { name: "选择窗口或区域", exact: true })
-    .click();
   await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   expect(uploads).toBe(0);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
-  await dialog
-    .getByRole("button", { name: "选择窗口或区域", exact: true })
-    .click();
   await dialog.getByLabel("截图标题").fill("手动选择的测试图");
   await dialog.getByRole("button", { name: "保存到内容", exact: true }).click();
   await expect(

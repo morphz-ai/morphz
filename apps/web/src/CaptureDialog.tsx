@@ -29,7 +29,7 @@ export function CaptureDialog({
       mime: "image/png";
       data: string;
     } | null>(null),
-    [busy, setBusy] = useState(false),
+    [busy, setBusy] = useState(!!window.morphzDesktop?.capture),
     [saving, setSaving] = useState(false),
     [error, setError] = useState(""),
     [title, setTitle] = useState("现场截图");
@@ -45,7 +45,17 @@ export function CaptureDialog({
   }, [picture]);
   useModal(dialog);
   useEffect(() => {
+    // A live UI update must not discard a selected image or start another capture.
+    if (picture) return;
+    // The explicit screenshot action mounts this component. Let the hidden
+    // confirmation layer paint before entering the native picker, once only.
+    const generation = epoch.current;
+    const frame = requestAnimationFrame(() => {
+      if (generation === epoch.current && window.morphzDesktop?.capture)
+        void select(true);
+    });
     return () => {
+      cancelAnimationFrame(frame);
       epoch.current++;
       void window.morphzDesktop?.capture.cancel().catch(() => {});
     };
@@ -63,10 +73,12 @@ export function CaptureDialog({
     const request = ++epoch.current;
     await window.morphzDesktop?.capture.cancel().catch(() => {});
     await restore(request);
+    if (request === epoch.current && !picture) onClose();
   }
-  async function select() {
-    if (busy || saving) return;
+  async function select(initial = false) {
+    if ((busy && !initial) || saving) return;
     const request = ++epoch.current;
+    let cancelledInitial = false;
     setError("");
     // Keep the modal mounted (and the background inert), but remove all
     // capture/composer chrome from the picture before opening the OS picker.
@@ -78,6 +90,7 @@ export function CaptureDialog({
       );
       if (request !== epoch.current) return;
       const next = await window.morphzDesktop?.capture.select();
+      cancelledInitial = !next && !picture;
       if (request === epoch.current && next) {
         setPicture(next);
         created.current = null;
@@ -88,6 +101,8 @@ export function CaptureDialog({
         setError(e instanceof Error ? e.message : "截图失败。");
     } finally {
       await restore(request);
+      // Restore the invoking controls before the modal returns their focus.
+      if (request === epoch.current && cancelledInitial) onClose();
     }
   }
   async function save(asAttachment = false) {
@@ -157,23 +172,13 @@ export function CaptureDialog({
     >
       <header>
         <div>
-          <h2>截图输入</h2>
-          <small>
-            {onAttach
-              ? "添加到这条消息 · 不自动发送"
-              : artifactId
-                ? `关联当前对象 · v${artifactRevision}`
-                : "保存到当前项目"}
-          </small>
+          <h2>截图</h2>
+          {artifactId && <small>当前对象 · v{artifactRevision}</small>}
         </div>
         <button aria-label="关闭截图输入" disabled={saving} onClick={onClose}>
           <X />
         </button>
       </header>
-      <p className="muted">
-        手动选择一个窗口或区域。按空格切换窗口选择，Esc
-        取消。确认前只在本机预览，不发送给 Agent。
-      </p>
       <button
         ref={selectButton}
         className="capture-start"
@@ -181,11 +186,7 @@ export function CaptureDialog({
         onClick={() => void select()}
       >
         <Scan />
-        {busy
-          ? "请在系统界面选择范围…"
-          : picture
-            ? "重新选择范围"
-            : "选择窗口或区域"}
+        {busy ? "截图中…" : picture ? "重新划区" : "开始划区"}
       </button>
       {!window.morphzDesktop?.capture && (
         <p>请在桌面应用中截图，或使用导入图片。</p>

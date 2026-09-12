@@ -15,15 +15,20 @@ function browserURL(value, center) {
   return u.href;
 }
 class DesktopBrowser {
-  constructor(window, centerURL, request = fetch) {
+  constructor(window, centerURL, request = fetch, application) {
     this.window = window;
     this.centerURL = centerURL;
     this.request = request;
+    this.application = application;
     this.current = null;
     this.generation = 0;
     this.timer = setInterval(() => void this.tick(), 700);
   }
   async boot() {
+    if (this.application)
+      return this.application.call("workspace", undefined, {
+        signal: AbortSignal.timeout(4000),
+      });
     const r = await this.request(this.centerURL + "/api/workspace", {
       signal: AbortSignal.timeout(4000),
     });
@@ -34,6 +39,23 @@ class DesktopBrowser {
     const boot = await this.boot();
     if (boot.centerId !== c.centerId || boot.principalId !== c.principalId)
       throw new Error("中心或身份已变化，请重新打开网站。");
+    if (this.application) {
+      const method =
+        path === "/api/browser/desktop/register"
+          ? "browser.register"
+          : path === "/api/browser/desktop/exchange"
+            ? "browser.exchange"
+            : null;
+      if (!method) throw new Error("不支持这个浏览器操作。");
+      return this.application.call(
+        method,
+        { key: c.key, data: body },
+        {
+          identityGeneration: boot.csrfToken,
+          signal: AbortSignal.timeout(4000),
+        },
+      );
+    }
     const r = await this.request(this.centerURL + path, {
       method: "POST",
       headers: {

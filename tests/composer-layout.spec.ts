@@ -104,9 +104,9 @@ test("全宽输入、独立悬浮工具与常驻模型在明暗和窄窗口中�
       await expect(
         tools.getByLabel("执行记录与审批", { exact: true }),
       ).toBeVisible();
-      await expect(
-        tools.getByLabel("长录音转写", { exact: true }),
-      ).toBeVisible();
+      await expect(tools.getByLabel("长录音转写", { exact: true })).toHaveCount(
+        0,
+      );
       await expect(model).toBeVisible();
     }
   }
@@ -265,11 +265,21 @@ test.describe("触控输入工具", () => {
         .getByRole("navigation", { name: "主导航" })
         .getByRole("button", { name, exact: true })
         .click();
+      // Earlier capture tests may leave a workbench object open in the center.
+      // This baseline measures plain workbench tools, not an object's reserved
+      // annotation slot; explicitly return to its content list first.
+      if (name === "工作台") {
+        const contents = page.getByRole("button", {
+          name: "所有内容",
+          exact: true,
+        });
+        if (await contents.isVisible()) await contents.click();
+      }
       await openInput(page);
       if (name === "工作台") await composerAction(page, "固定输入框");
       const tools = page.getByRole("group", { name: "输入工具", exact: true });
       const buttons = tools.locator(":scope > button");
-      await expect(buttons).toHaveCount(name === "对话" ? 5 : 9);
+      await expect(buttons).toHaveCount(name === "对话" ? 4 : 8);
       let previousRight = 0;
       let previousY = -1;
       for (const button of await buttons.all()) {

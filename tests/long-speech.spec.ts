@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { composerAction } from "./interaction-helpers.js";
+import { openTranscription } from "./interaction-helpers.js";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
 
 async function syntheticMicrophone(page: Page) {
@@ -38,8 +38,8 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
   await page.goto("/");
   const before = (await (await page.request.get("/api/workspace")).json())
     .workspace.inputs.length;
-  await composerAction(page, "长录音转写");
-  const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
+  await openTranscription(page);
+  const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog.getByText("正在录音", { exact: true })).toBeVisible();
@@ -177,8 +177,8 @@ test("长转写不被输入框截断，可完整保存为文档", async ({ page 
     return route.fulfill({ json: { text: "合成转写" } });
   });
   await page.goto("/");
-  await composerAction(page, "长录音转写");
-  const dialog = page.getByRole("dialog", { name: "语音输入", exact: true });
+  await openTranscription(page);
+  const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog.getByText("正在录音", { exact: true })).toBeVisible();
   await page.waitForTimeout(700);

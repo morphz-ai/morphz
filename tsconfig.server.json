@@ -8,5 +8,5 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["apps/service/**/*.ts", "packages/core/**/*.ts"]
+  "include": ["apps/service/**/*.ts", "apps/desktop/**/*.ts", "packages/core/**/*.ts", "packages/application/**/*.ts"]
 }

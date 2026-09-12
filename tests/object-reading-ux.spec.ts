@@ -111,11 +111,12 @@ test("朗读用能力命名，服务身份只出现在按需查看的说明", as
   });
   await page.getByRole("button", { name: "朗读对象", exact: true }).click();
   const reader = page.getByRole("region", { name: "朗读对象", exact: true });
-  await expect(reader).toContainText("点击播放，开始朗读");
+  await expect(reader).toContainText("未播放");
   await expect(reader).not.toContainText(/豆包|test-voice|隔离测试语音/);
   await reader.getByRole("button", { name: "朗读内容与章节" }).click();
   await reader.getByText("语音服务与隐私", { exact: true }).click();
   await expect(reader).toContainText("当前服务：隔离测试语音");
-  await expect(reader).toContainText("朗读文字会发送");
+  await expect(reader).toContainText("朗读文字发送至该服务");
+  await expect(reader).toContainText("可能消耗服务额度");
   expect(syntheses).toBe(0);
 });

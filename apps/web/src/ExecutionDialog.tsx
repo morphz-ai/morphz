@@ -77,11 +77,7 @@ export function ExecutionDialog({
     try {
       await api.current.controlExecution({ scope, action });
       if (mounted.current)
-        setNotice(
-          action.type === "cancel-job"
-            ? "停止请求已送达。最终状态以执行记录为准，已发生的外部操作不会撤销。"
-            : "决定已送达。执行结果会继续更新。",
-        );
+        setNotice(action.type === "cancel-job" ? "已请求停止" : "已提交决定");
     } catch (error) {
       if (mounted.current)
         setNotice(
@@ -155,8 +151,7 @@ export function ExecutionDialog({
         !!snapshot?.approvals.length) && (
         <div className="execution-dialog-toolbar">
           <span className="muted">
-            {!!snapshot?.approvals.length &&
-              "审批只授权本次操作，不会开启完全访问。"}
+            {!!snapshot?.approvals.length && "单次授权"}
           </span>
           <button aria-label="刷新执行记录" onClick={() => void refresh()}>
             <RefreshCw />

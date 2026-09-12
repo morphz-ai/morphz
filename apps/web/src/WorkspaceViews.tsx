@@ -117,11 +117,6 @@ export function ProjectDirectory({
         <div className="empty-state">
           <Search />
           <h2>{query.trim() ? "没有找到这个项目" : "还没有项目"}</h2>
-          <p>
-            {query.trim()
-              ? "试试其他名称。"
-              : "可以创建项目，也可以将工作台中的工作保存为项目。"}
-          </p>
         </div>
       )}
     </section>
