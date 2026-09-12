@@ -1,7 +1,7 @@
 use super::{
     append_direct_thread_signal_in_tx, append_event_in_tx, now_text, PostgresStore, StoreError,
 };
-use crate::event::{Event, TYPE_RUNTIME_WAKE, TYPE_SESSION_SIGNAL, TYPE_USER_MESSAGE};
+use crate::event::{Event, TYPE_RUNTIME_WAKE, TYPE_SESSION_SIGNAL};
 use crate::memory::{
     message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
     BackgroundSessionWakeClaim, BackgroundThreadWakeClaim, DeliveryIngressStore,
@@ -55,7 +55,9 @@ async fn append_dialogue_signal_in_tx(
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = now_text();
 
-    let queued = if dispatch_mode == MessageDispatchMode::Interrupt {
+    let queued = if dispatch_mode == MessageDispatchMode::Interrupt
+        && event.event_type == crate::event::TYPE_USER_MESSAGE
+    {
         sqlx::query(
             r#"SELECT activation.id AS activation_id, thread.id AS thread_id,
                   thread.generation AS thread_generation
@@ -100,7 +102,9 @@ async fn append_dialogue_signal_in_tx(
             Some(row.get::<String, _>("activation_id")),
         )
     } else {
-        let pending = if dispatch_mode == MessageDispatchMode::Interrupt {
+        let pending = if dispatch_mode == MessageDispatchMode::Interrupt
+            && event.event_type == crate::event::TYPE_USER_MESSAGE
+        {
             sqlx::query(
                 r#"SELECT thread.id AS thread_id, thread.generation AS thread_generation
                FROM threads thread
@@ -971,7 +975,7 @@ async fn claim_ordered_message_fast_path(
              LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
              WHERE $17 = 'interrupt'
                AND NOT EXISTS (SELECT 1 FROM interrupted_candidate)
-               AND root_event.type = 'user_message'
+               AND root_event.type IN ('user_message', 'session_message')
                AND root_event.topic = 'chat/user_message'
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
@@ -999,7 +1003,7 @@ async fn claim_ordered_message_fast_path(
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
                AND thread.control_state = 'active'
-               AND root_event.type = 'user_message'
+               AND root_event.type IN ('user_message', 'session_message')
                AND root_event.topic = 'chat/user_message'
                AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                AND thread.initiating_principal_id IS NOT DISTINCT FROM $7
@@ -1391,6 +1395,66 @@ async fn claim_ordered_message_fast_path(
 
 #[async_trait::async_trait]
 impl DeliveryIngressStore for PostgresStore {
+    async fn commit_io_output(
+        &self,
+        event: &Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let field = |name| {
+            event
+                .payload
+                .get(name)
+                .and_then(JsonValue::as_str)
+                .ok_or("Typed output route is incomplete")
+        };
+        let session = field("session_id")?;
+        let principal = field("principal_id")?;
+        let thread = field("thread_id")?;
+        let activation = field("activation_id")?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE threads SET revision=revision WHERE id=$1")
+            .bind(thread)
+            .execute(&mut *tx)
+            .await?;
+        // Hold the authorization rows until commit: revocation and archive
+        // cannot race between this check and the durable output append.
+        let authorized: Option<i32> = sqlx::query_scalar("SELECT 1 FROM session_principal_bindings b JOIN sessions s ON s.id=b.session_id WHERE b.session_id=$1 AND b.principal_id=$2 AND b.unbound_at IS NULL AND s.status <> 'archived' FOR SHARE OF b, s").bind(session).bind(principal).fetch_optional(&mut *tx).await?;
+        if authorized.is_none() {
+            return Err("Principal no longer has access to this Session".into());
+        }
+        let previous: Option<JsonValue> =
+            sqlx::query_scalar("SELECT payload FROM events WHERE id=$1")
+                .bind(&event.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(previous) = previous {
+            for key in ["session_id", "principal_id", "root_turn_id", "io_message"] {
+                if previous.get(key) != event.payload.get(key) {
+                    return Err(
+                        "idempotency_conflict: delivery_id already identifies different content"
+                            .into(),
+                    );
+                }
+            }
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM threads t JOIN thread_activations a ON a.root_turn_id=t.root_turn_id AND a.generation=t.generation WHERE t.id=$1 AND t.session_id=$2 AND a.id=$3 AND t.status='open' AND t.control_state='active' AND a.status='running' AND NOT EXISTS(SELECT 1 FROM thread_outcomes o WHERE o.root_turn_id=t.root_turn_id))").bind(thread).bind(session).bind(activation).fetch_one(&mut *tx).await?;
+        if !active {
+            return Err("delivery_aborted: activation is cancelled, terminal or superseded".into());
+        }
+        append_event_in_tx(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+    async fn message_event_id(
+        &self,
+        session_id: &str,
+        client_message_id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(sqlx::query_scalar("SELECT event_id FROM session_message_requests WHERE session_id = $1 AND client_message_id = $2")
+            .bind(session_id).bind(client_message_id).fetch_optional(&self.pool).await?)
+    }
+
     async fn commit_thread_delivery(
         &self,
         thread_ids: &[String],
@@ -1482,7 +1546,7 @@ impl DeliveryIngressStore for PostgresStore {
         if dispatch_mode == MessageDispatchMode::Parallel
             && !event.payload.contains_key("input_destination")
             && !has_references
-            && event.event_type == TYPE_USER_MESSAGE
+            && crate::event::is_input_event(event)
             && event.topic == "chat/user_message"
         {
             if let Some(claim) = claim_parallel_message_fast_path(
@@ -1500,7 +1564,7 @@ impl DeliveryIngressStore for PostgresStore {
         let mut connection = self.acquire_observed("claim_message").await?;
         if !has_references
             && !event.payload.contains_key("input_destination")
-            && event.event_type == TYPE_USER_MESSAGE
+            && crate::event::is_input_event(event)
             && event.topic == "chat/user_message"
             && matches!(
                 dispatch_mode,
@@ -1627,7 +1691,7 @@ impl DeliveryIngressStore for PostgresStore {
         if !has_references
             && session.get::<String, _>("attention_state") != "retired"
             && !event.payload.contains_key("input_destination")
-            && event.event_type == TYPE_USER_MESSAGE
+            && crate::event::is_input_event(event)
             && event.topic == "chat/user_message"
             && matches!(
                 dispatch_mode,

@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
+pub const SESSION_IO: &str = "session-io";
 const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db"];
 pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
 pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
@@ -32,12 +33,20 @@ pub struct ExperimentalFeature {
     pub compiled: bool,
 }
 
-pub const FEATURES: &[ExperimentalFeature] = &[ExperimentalFeature {
-    name: COGNITIVE_COORDINATION,
-    cargo_feature: "experimental-cognitive-coordination",
-    summary: "coordinated multi-subject cognitive evaluation",
-    compiled: cfg!(feature = "experimental-cognitive-coordination"),
-}];
+pub const FEATURES: &[ExperimentalFeature] = &[
+    ExperimentalFeature {
+        name: COGNITIVE_COORDINATION,
+        cargo_feature: "experimental-cognitive-coordination",
+        summary: "coordinated multi-subject cognitive evaluation",
+        compiled: cfg!(feature = "experimental-cognitive-coordination"),
+    },
+    ExperimentalFeature {
+        name: SESSION_IO,
+        cargo_feature: "experimental-session-io",
+        summary: "typed bidirectional Session messages",
+        compiled: cfg!(feature = "experimental-session-io"),
+    },
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ExperimentalFeatureStatus {

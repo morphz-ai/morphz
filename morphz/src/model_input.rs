@@ -1570,7 +1570,31 @@ where
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let metadata = entry.metadata().await?;
+        // Typed deliveries reuse a deterministic Event identity on retry.
+        // Recovery must not remove their files while a cooperating writer is
+        // preparing/committing, even when a short grace period is configured.
+        let _io_output_lock = if let Some(id) = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|id| id.starts_with("io_output_"))
+        {
+            Some(
+                crate::session_io::file_lock::acquire(
+                    root.parent().expect("attachment root has a parent"),
+                    id,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            // The writer may have committed and removed its manifest while
+            // recovery was waiting for the lock.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         if now.duration_since(modified).unwrap_or_default() < grace {
             recovery.deferred_live_imports += 1;

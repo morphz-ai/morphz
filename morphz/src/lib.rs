@@ -54,6 +54,7 @@ pub mod sandbox;
 pub mod scheduler;
 pub mod sdk;
 pub mod secret_store;
+pub mod session_io;
 pub mod setup;
 pub mod sexpr;
 pub mod sexpr_eval;

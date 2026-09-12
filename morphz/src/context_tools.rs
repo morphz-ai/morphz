@@ -150,6 +150,7 @@ impl RecallTool {
 #[serde(deny_unknown_fields)]
 struct RecallArgs {
     event_id: Option<String>,
+    json_pointer: Option<String>,
     frame_id: Option<String>,
     query: Option<String>,
     start_time: Option<String>,
@@ -183,6 +184,7 @@ impl Tool for RecallTool {
                 "type": "object",
                 "properties": {
                     "event_id": { "type": "string", "description": "An exact Context Observation ref such as @e27 copied from Runtime output, or a full immutable Event ID; never synthesize @eN from a sequence" },
+                    "json_pointer": { "type": "string", "description": "Select a typed message subtree with a JSON pointer; empty string selects its content root. offset/limit count object or array entries, or Unicode characters for a string. Follow incomplete entries by their returned path. Numbers remain lossless." },
                     "frame_id": { "type": "string", "description": "An existing or retired Frame ID" },
                     "query": { "type": "string", "description": "Optional keywords to search persisted Events across every Session in the current Cognitive Context" },
                     "start_time": { "type": "string", "format": "date-time", "description": "Optional inclusive RFC 3339 start time interpreted using evaluation-environment.local-time; an explicit offset is required. A time-only recall does not require query" },
@@ -294,6 +296,20 @@ impl Tool for RecallTool {
                 )
             })?;
             let event_reference = self.context_engine.event_reference(&event);
+            if let Some(path) = args.json_pointer {
+                let message = crate::session_io::event_message(&event)
+                    .or_else(|| crate::session_io::standard_chat_event(&event))
+                    .ok_or("This Event has no typed message")?;
+                let page = crate::session_io::projection::page(
+                    &message,
+                    &event_reference,
+                    &path,
+                    args.offset.unwrap_or(0),
+                    args.limit.unwrap_or(64),
+                    self.context_engine.recall_chunk_chars(),
+                )?;
+                return Ok(serde_json::json!({"context_delivery":"full-event-chunk","event_id":event_reference,"typed_page":page}).to_string());
+            }
             return event_chunk(
                 event,
                 event_reference,
@@ -408,6 +424,15 @@ fn event_chunk(
     let chunk = text.chars().skip(offset).take(limit).collect::<String>();
     let next_offset =
         (offset + chunk.chars().count() < total_chars).then_some(offset + chunk.chars().count());
+    let typed_message =
+        crate::session_io::event_message(&event).filter(|_| offset == 0 && next_offset.is_none());
+    let format_binding = event.payload.get("io_format_binding").or_else(|| {
+        event
+            .payload
+            .get("session_io")
+            .and_then(|io| io.get("binding"))
+            .and_then(|binding| binding.get("input"))
+    });
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "context_delivery": "full-event-chunk",
         "event_id": event_reference,
@@ -420,10 +445,15 @@ fn event_chunk(
         "next_offset": next_offset,
         "paging_instruction": next_offset.map(|next| format!("use offset={next} with the same event_id on the next request")),
         "text": chunk,
+        "typed_message": typed_message,
+        "format_binding": typed_message.as_ref().and(format_binding),
     }))?)
 }
 
 fn recall_event_text(event: &Event) -> String {
+    if let Some(message) = crate::session_io::event_message(event) {
+        return message.wire_data().json();
+    }
     event
         .payload
         .get("text")

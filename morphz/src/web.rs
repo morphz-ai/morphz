@@ -1,4 +1,6 @@
 use crate::approval::ApprovalDecision;
+#[path = "web_session_io.rs"]
+mod session_io_http;
 use crate::artifact::ArtifactTransferStageKind;
 use crate::config::{
     save_managed_inference_at, AuthAccountConfig, ModelProtocol, ModelRouteConfig,
@@ -295,6 +297,7 @@ struct UpdateSessionRequest {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SendMessageRequest {
     #[serde(default)]
     input_destination: Option<crate::steering::InputDestination>,
@@ -1233,6 +1236,30 @@ impl Server {
             .route(
                 "/api/execution-jobs/:job_id/output",
                 get(handle_list_edge_command_output),
+            )
+            .route(
+                "/api/session-io/capabilities",
+                get(session_io_http::capabilities),
+            )
+            .route(
+                "/api/sessions/:session_id/io/messages",
+                post(session_io_http::send),
+            )
+            .route(
+                "/api/sessions/:session_id/io/events",
+                get(session_io_http::events),
+            )
+            .route(
+                "/api/sessions/:session_id/io/stream",
+                get(session_io_http::stream),
+            )
+            .route(
+                "/api/sessions/:session_id/io/resources/:resource_id",
+                get(session_io_http::resource),
+            )
+            .route(
+                "/api/sessions/:session_id/io/messages/:event_id/content",
+                get(session_io_http::message_page),
             )
             .route("/api/execution-jobs", get(handle_list_execution_jobs))
             .route(

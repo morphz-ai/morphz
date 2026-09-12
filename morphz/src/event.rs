@@ -9,6 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const TYPE_USER_MESSAGE: &str = "user_message";
+pub const TYPE_SESSION_MESSAGE: &str = "session_message";
+
+/// Authenticated channel input, whether standard chat or a typed domain message.
+pub fn is_input_event(event: &Event) -> bool {
+    matches!(
+        event.event_type.as_str(),
+        TYPE_USER_MESSAGE | TYPE_SESSION_MESSAGE
+    )
+}
 pub const TYPE_AGENT_CALL: &str = "agent_call";
 pub const TYPE_TOOL_OUTPUT: &str = "tool_output";
 pub const TYPE_FILE_CHANGE: &str = "file_change";
@@ -164,7 +173,8 @@ pub fn is_context_observation(event: &Event) -> bool {
                 .and_then(JsonValue::as_str)
                 .is_some_and(|text| !text.trim().is_empty());
     }
-    if event.topic == "chat/no_reply"
+    if event.topic == "session/io_state"
+        || event.topic == "chat/no_reply"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
         || event.topic == "chat/runtime_error"
@@ -190,6 +200,7 @@ pub fn is_context_observation(event: &Event) -> bool {
     matches!(
         event.event_type.as_str(),
         TYPE_USER_MESSAGE
+            | TYPE_SESSION_MESSAGE
             | TYPE_SESSION_SIGNAL
             | TYPE_TOOL_OUTPUT
             | TYPE_AGENT_CALL
@@ -232,7 +243,7 @@ pub fn advances_cognitive_clock(event: &Event) -> bool {
     }
     if matches!(
         event.event_type.as_str(),
-        TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL
+        TYPE_USER_MESSAGE | TYPE_SESSION_MESSAGE | TYPE_SESSION_SIGNAL
     ) {
         return true;
     }
@@ -310,6 +321,7 @@ impl Drop for AsyncDispatchRegistration {
 }
 
 pub struct InMemoryEventBus {
+    session_io_streams: Option<crate::session_io::stream::Streams>,
     subscriptions: DashMap<String, Arc<Subscription>>,
     sub_counter: AtomicU64,
     error_handler: Arc<dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync>,
@@ -334,6 +346,16 @@ impl Default for InMemoryEventBus {
 }
 
 impl InMemoryEventBus {
+    pub fn with_session_io(mut self, enabled: bool) -> Self {
+        self.session_io_streams = enabled.then(crate::session_io::stream::Streams::default);
+        self
+    }
+    pub fn session_io_snapshots(&self, session: &str) -> Vec<JsonValue> {
+        self.session_io_streams
+            .as_ref()
+            .map(|streams| streams.snapshots(session))
+            .unwrap_or_default()
+    }
     pub fn new() -> Self {
         Self::with_concurrency_limit(10)
     }
@@ -344,6 +366,7 @@ impl InMemoryEventBus {
 
     fn with_limits(limit: usize, sync_handler_timeout: std::time::Duration) -> Self {
         Self {
+            session_io_streams: None,
             subscriptions: DashMap::new(),
             sub_counter: AtomicU64::new(0),
             error_handler: Arc::new(|err, ev| {
@@ -482,7 +505,7 @@ impl InMemoryEventBus {
 
     async fn publish_with_options(
         &self,
-        ev: Event,
+        mut ev: Event,
         durable: bool,
         bypass_async_limit: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -522,6 +545,9 @@ impl InMemoryEventBus {
             }
         }
 
+        if let Some(streams) = &self.session_io_streams {
+            streams.observe(&mut ev);
+        }
         // 2. Run best-effort global audit listeners synchronously. They cannot own persistence.
         for sub in sync_subs {
             let handler = Arc::clone(&sub.handler);

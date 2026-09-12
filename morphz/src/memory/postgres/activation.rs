@@ -2670,6 +2670,18 @@ impl ActivationStore for PostgresStore {
                 activation_id, thread_id
             )
         })?;
+        if event.payload.contains_key("io_message") {
+            let principal = event
+                .payload
+                .get("principal_id")
+                .and_then(JsonValue::as_str)
+                .ok_or("Typed output has no initiating Principal")?;
+            let authorized: Option<i32> = sqlx::query_scalar("SELECT 1 FROM session_principal_bindings b JOIN sessions s ON s.id=b.session_id WHERE b.session_id=$1 AND b.principal_id=$2 AND b.unbound_at IS NULL AND s.status <> 'archived' FOR SHARE OF b, s")
+                .bind(session_id).bind(principal).fetch_optional(&mut *tx).await?;
+            if authorized.is_none() {
+                return Err("Typed delivery revoked before commit".into());
+            }
+        }
         let activation_generation: i64 = activation_route.get("activation_generation");
         let thread_generation: i64 = activation_route.get("thread_generation");
         let parent_thread_id: Option<String> = activation_route.get("parent_thread_id");

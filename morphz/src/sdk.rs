@@ -469,6 +469,8 @@ fn conversation_event_topics() -> &'static [&'static str] {
         "chat/user_message",
         "chat/reply",
         "chat/outbound_message",
+        "session/io_output",
+        "session/io_state",
         "chat/session_signal",
         "chat/progress",
         "chat/assistant_call",
@@ -759,6 +761,75 @@ struct PendingOAuthProviderSetup {
 }
 
 impl MorphzSdk {
+    pub async fn send_io_message(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        request: crate::session_io::Request,
+    ) -> crate::session_io::IoResult<Event> {
+        self.runtime
+            .session(session_id)
+            .send_io_as_principal(request, &principal.principal_id)
+            .await
+    }
+
+    pub async fn read_io_resource(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        resource_id: &str,
+    ) -> crate::session_io::IoResult<(serde_json::Value, MessageAttachmentInput)> {
+        crate::session_io::resources::read(
+            &self.runtime,
+            &principal.principal_id,
+            session_id,
+            resource_id,
+        )
+        .await
+    }
+
+    pub async fn read_io_message_page(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        event_id: &str,
+        query: &crate::session_io::projection::PageQuery,
+    ) -> crate::session_io::IoResult<crate::session_io::Data> {
+        use crate::session_io::{event_message, projection, IoError};
+        self.authorize_session(&principal.principal_id, session_id)
+            .await
+            .map_err(|_| IoError::new("forbidden", "Session is not accessible"))?;
+        let event = self
+            .runtime
+            .query_events(QueryFilter {
+                event_id: Some(event_id.into()),
+                session_id: Some(session_id.into()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|_| IoError::new("unavailable", "Message lookup failed"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                IoError::new("resource_unavailable", "Message is not in this Session")
+            })?;
+        let message = event_message(&event)
+            .or_else(|| crate::session_io::standard_chat_event(&event))
+            .ok_or_else(|| IoError::new("resource_unavailable", "Event is not a typed message"))?;
+        let page = projection::page(
+            &message,
+            event_id,
+            &query.json_pointer,
+            query.offset,
+            query.limit,
+            16 * 1024,
+        )?;
+        self.authorize_session(&principal.principal_id, session_id)
+            .await
+            .map_err(|_| IoError::new("forbidden", "Session is no longer accessible"))?;
+        Ok(page)
+    }
+
     pub fn new(runtime: MorphzRuntime) -> Self {
         Self {
             runtime,

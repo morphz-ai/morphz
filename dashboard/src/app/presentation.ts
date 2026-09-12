@@ -70,6 +70,8 @@ export function conversationEventKind(
   payload: Record<string, unknown>,
 ): ConversationEventKind | null {
   if (topic === 'chat/user_message' || topic === 'chat/steering') return 'user'
+  if (topic === 'session/io_output') return 'agent'
+  if (topic === 'session/io_state') return 'system'
   if (topic === 'chat/reply') {
     // `thread_kind` is causal provenance, not presentation semantics. A
     // tool-assisted reply can originate from an Execution Thread while still

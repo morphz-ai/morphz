@@ -8,7 +8,7 @@ use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
 };
-use crate::config::{AppConfig, AuthAccountConfig, CognitiveStoreBackend, StorageBackend};
+use crate::config::{AppConfig, AuthAccountConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::{
     Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -899,10 +899,23 @@ pub struct MorphzRuntimeBuilder {
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
     harness_packages: Vec<HarnessPackage>,
     extra_tools: Vec<Arc<dyn Tool>>,
+    session_io: crate::session_io::Registry,
 }
 
 impl MorphzRuntimeBuilder {
+    /// Install trusted host format definitions; inputs cannot mutate this registry.
+    pub fn session_io_registry(mut self, registry: crate::session_io::Registry) -> Self {
+        self.session_io = registry;
+        self
+    }
+
     pub fn new(config: AppConfig, client: Arc<dyn Client>) -> Self {
+        let mut session_io = crate::session_io::Registry::default();
+        session_io.enabled = crate::experimental::require_enabled(
+            &config.experimental.enabled,
+            crate::experimental::SESSION_IO,
+        )
+        .is_ok();
         Self {
             database_path: None,
             store: None,
@@ -918,6 +931,7 @@ impl MorphzRuntimeBuilder {
             execution_target_backends: Vec::new(),
             harness_packages: Vec::new(),
             extra_tools: Vec::new(),
+            session_io,
             config,
             client,
         }
@@ -1021,6 +1035,13 @@ impl MorphzRuntimeBuilder {
 
     #[allow(unused_mut)] // Cognitive Coordination rewrites the Mesh participant route when compiled.
     pub async fn build(mut self) -> Result<MorphzRuntime, RuntimeError> {
+        crate::experimental::require_all_enabled_compiled(&self.config.experimental.enabled)?;
+        if self.session_io.enabled && !cfg!(feature = "experimental-session-io") {
+            return Err("Session IO requires --features experimental-session-io".into());
+        }
+        for descriptor in &self.config.experimental.session_io_formats {
+            self.session_io.register(descriptor.clone())?;
+        }
         let database_path = self
             .database_path
             .unwrap_or_else(|| self.config.storage.sqlite.path.clone());
@@ -1053,9 +1074,12 @@ impl MorphzRuntimeBuilder {
             Some(secret_store) => secret_store,
             None => Arc::new(SecretStore::native_default()?),
         };
-        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(
-            self.config.orchestrator.event_bus.max_in_flight,
-        ));
+        let bus = Arc::new(
+            InMemoryEventBus::with_concurrency_limit(
+                self.config.orchestrator.event_bus.max_in_flight,
+            )
+            .with_session_io(self.session_io.enabled),
+        );
         let observability = Arc::new(crate::observability::Observability::default());
         let (store, sqlite_database_path, storage_label): (
             Arc<dyn RuntimeStore>,
@@ -1070,43 +1094,13 @@ impl MorphzRuntimeBuilder {
             ),
             None => match self.config.storage.backend {
                 StorageBackend::Sqlite => {
-                    let sqlite_store = match self.config.storage.cognitive_store {
-                        CognitiveStoreBackend::ContextDb => {
-                            #[cfg(feature = "context-db")]
-                            {
-                                SqliteStore::new_with_context_db(
-                                    &database_path,
-                                    &self.config.storage.sqlite,
-                                )
-                                .await?
-                            }
-                            #[cfg(not(feature = "context-db"))]
-                            {
-                                return Err(
-                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
-                                        .into(),
-                                );
-                            }
-                        }
-                        CognitiveStoreBackend::Legacy => {
-                            #[cfg(feature = "context-db")]
-                            {
-                                SqliteStore::new_with_legacy(
-                                    &database_path,
-                                    &self.config.storage.sqlite,
-                                )
-                                .await?
-                            }
-                            #[cfg(not(feature = "context-db"))]
-                            {
-                                SqliteStore::new_with_config(
-                                    &database_path,
-                                    &self.config.storage.sqlite,
-                                )
-                                .await?
-                            }
-                        }
-                    };
+                    let sqlite_store = SqliteStore::new_for_runtime(
+                        &database_path,
+                        &self.config.storage.sqlite,
+                        self.config.storage.cognitive_store,
+                        self.session_io.enabled,
+                    )
+                    .await?;
                     (
                         Arc::new(sqlite_store),
                         Some(database_path.clone()),
@@ -1126,46 +1120,14 @@ impl MorphzRuntimeBuilder {
                             "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
-                    let store = match self.config.storage.cognitive_store {
-                        CognitiveStoreBackend::ContextDb => {
-                            #[cfg(feature = "context-db")]
-                            {
-                                PostgresStore::new_with_context_db(
-                                    &database_url,
-                                    self.config.storage.postgres.max_connections,
-                                    Arc::clone(&observability),
-                                )
-                                .await?
-                            }
-                            #[cfg(not(feature = "context-db"))]
-                            {
-                                return Err(
-                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
-                                        .into(),
-                                );
-                            }
-                        }
-                        CognitiveStoreBackend::Legacy => {
-                            #[cfg(feature = "context-db")]
-                            {
-                                PostgresStore::new_with_legacy(
-                                    &database_url,
-                                    self.config.storage.postgres.max_connections,
-                                    Arc::clone(&observability),
-                                )
-                                .await?
-                            }
-                            #[cfg(not(feature = "context-db"))]
-                            {
-                                PostgresStore::new_with_observability(
-                                    &database_url,
-                                    self.config.storage.postgres.max_connections,
-                                    Arc::clone(&observability),
-                                )
-                                .await?
-                            }
-                        }
-                    };
+                    let store = PostgresStore::new_for_runtime(
+                        &database_url,
+                        self.config.storage.postgres.max_connections,
+                        Arc::clone(&observability),
+                        self.config.storage.cognitive_store,
+                        self.session_io.enabled,
+                    )
+                    .await?;
                     (
                         Arc::new(store),
                         None,
@@ -1177,6 +1139,18 @@ impl MorphzRuntimeBuilder {
                 }
             },
         };
+        if !self.session_io.enabled
+            && !store
+                .query(QueryFilter {
+                    types: vec![crate::event::TYPE_SESSION_MESSAGE.into()],
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await?
+                .is_empty()
+        {
+            return Err("This store contains Session IO records. Enable the session-io experiment before starting workers; use a pre-IO backup for rollback to an older binary.".into());
+        }
         if self.config.storage.retention.enabled {
             let now = chrono::Utc::now();
             let outbox_age = i64::try_from(
@@ -1281,6 +1255,7 @@ impl MorphzRuntimeBuilder {
                 self.config.orchestrator.clone(),
             )
             .with_observability(Arc::clone(&observability))
+            .with_typed_chat(self.session_io.enabled)
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_capability_binding_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ContextCapabilityBindingStore>
@@ -1506,6 +1481,17 @@ impl MorphzRuntimeBuilder {
             #[cfg(feature = "experimental-cognitive-coordination")]
             cognitive_coordination_network: cognitive_coordination_network.clone(),
         });
+        if self.session_io.enabled {
+            registry.register(Arc::new(
+                crate::session_io::output::DeliverMessageTool::new(
+                    Arc::clone(&store),
+                    Arc::clone(&bus),
+                    self.session_io.limits.clone(),
+                    self.config.background_task.artifact_dir.clone().into(),
+                    self.config.model_input.import_limits(),
+                ),
+            ));
+        }
         for tool in self.extra_tools {
             registry.register(tool);
         }
@@ -1766,6 +1752,7 @@ impl MorphzRuntimeBuilder {
                 store,
                 registry,
                 harness_registry,
+                session_io: self.session_io,
                 model_context_capacity,
                 model_context_capacities,
                 model_prompt_token_limit_overrides,
@@ -1979,6 +1966,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
 }
 
 struct RuntimeInner {
+    session_io: crate::session_io::Registry,
     config: AppConfig,
     /// Authoritative in-process Provider/Account/Route catalog. Unlike the
     /// immutable startup config, operator mutations replace this snapshot and
@@ -2082,6 +2070,13 @@ pub struct MorphzRuntime {
 }
 
 impl MorphzRuntime {
+    pub fn session_io_registry(&self) -> &crate::session_io::Registry {
+        &self.inner.session_io
+    }
+    pub fn session_io_snapshots(&self, session: &str) -> Vec<serde_json::Value> {
+        self.inner.bus.session_io_snapshots(session)
+    }
+
     pub fn builder(config: AppConfig, client: Arc<dyn Client>) -> MorphzRuntimeBuilder {
         MorphzRuntimeBuilder::new(config, client)
     }
@@ -9967,6 +9962,154 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
+    /// Accept a typed message through the existing atomic Event/Signal ingress.
+    /// Retry lookup precedes registry/default resolution; the winning Event owns
+    /// the exact contract even when a concurrent retry used a newer registry.
+    pub async fn send_io_as_principal(
+        &self,
+        request: crate::session_io::Request,
+        principal_id: &str,
+    ) -> crate::session_io::IoResult<Event> {
+        use crate::session_io::{AcceptedInput, IoError};
+        let sdk = crate::sdk::MorphzSdk::new(self.runtime.clone());
+        sdk.authorize_session(principal_id, &self.id)
+            .await
+            .map_err(|_| {
+                IoError::new("forbidden", "Session is not accessible to this Principal")
+            })?;
+        let existing = self
+            .runtime
+            .inner
+            .store
+            .message_event_id(&self.id, &request.client_message_id)
+            .await
+            .map_err(|_| IoError::new("unavailable", "Cannot read message acceptance state"))?;
+        if let Some(id) = existing {
+            let event = self.io_input_event(&id).await?;
+            let previous: AcceptedInput = event
+                .payload
+                .get("session_io")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .ok_or_else(|| {
+                    IoError::new(
+                        "idempotency_conflict",
+                        "This ID belongs to another input protocol",
+                    )
+                })?;
+            if previous.request_fingerprint != request.fingerprint(principal_id) {
+                return Err(IoError::new(
+                    "idempotency_conflict",
+                    "This ID is already bound to different input",
+                ));
+            }
+            return Ok(event);
+        }
+        let mut accepted = self.runtime.inner.session_io.bind(request, principal_id)?;
+        let resource_paths = accepted
+            .binding
+            .input
+            .definition
+            .as_ref()
+            .map(|definition| definition.resource_paths.as_slice())
+            .unwrap_or_default();
+        let inputs = crate::session_io::resources::declared_inputs(
+            &accepted.request.message,
+            resource_paths,
+        )?;
+        let resource_ids = &inputs.resources;
+        let mut attachments = Vec::new();
+        let mut resource_usage = crate::model_input::ModelInputUsage::default();
+        for id in resource_ids {
+            let (metadata, attachment) =
+                crate::session_io::resources::read(&self.runtime, principal_id, &self.id, id)
+                    .await?;
+            resource_usage
+                .add(attachment.data.len())
+                .map_err(|_| IoError::new("message_limit_exceeded", "Resource size overflow"))?;
+            crate::model_input::validate_model_input_usage(
+                resource_usage,
+                self.runtime.config().model_input.import_limits(),
+                "typed input resources",
+            )
+            .map_err(|_| {
+                IoError::new(
+                    "message_limit_exceeded",
+                    "Resources exceed message import limits",
+                )
+            })?;
+            accepted.binding.resources.push(metadata);
+            attachments.push(attachment);
+        }
+        let activation = &accepted.request.activation;
+        let options = SessionMessageOptions {
+            requested_harness: activation.harness.clone(),
+            dispatch_mode: Some(
+                activation
+                    .dispatch_mode
+                    .unwrap_or(MessageDispatchMode::Parallel),
+            ),
+            model_alias: activation.model_alias.clone(),
+            reasoning_effort: activation.reasoning_effort.clone(),
+            target_id: activation.target_id.clone(),
+            input_destination: activation.input_destination.clone(),
+            attachments,
+            staged_attachment_ids: inputs.stages,
+            references: inputs.references,
+        };
+        let receipt = self
+            .send_prepared_input(
+                accepted.request.message.summary(),
+                "Session-Client".into(),
+                principal_id.into(),
+                Some(accepted.request.client_message_id.clone()),
+                options,
+                Some(accepted),
+            )
+            .await
+            .map_err(|error| {
+                let code = match error
+                    .downcast_ref::<MessageIngressError>()
+                    .map(|error| error.kind)
+                {
+                    Some(MessageIngressErrorKind::Conflict) => "idempotency_conflict",
+                    Some(MessageIngressErrorKind::Forbidden) => "forbidden",
+                    Some(MessageIngressErrorKind::ResourceExhausted) => "message_limit_exceeded",
+                    Some(MessageIngressErrorKind::InvalidArgument) => "invalid_content_syntax",
+                    _ => "unavailable",
+                };
+                IoError::new(
+                    code,
+                    if code == "unavailable" {
+                        // Dispatch can fail after atomic acceptance. Never tell
+                        // the caller it is safe to create a fresh request ID.
+                        "Acceptance could not be confirmed; retry with the same client_message_id"
+                    } else {
+                        "Input rejected; check the execution route and request"
+                    },
+                )
+            })?;
+        self.io_input_event(&receipt.event_id).await
+    }
+
+    async fn io_input_event(&self, id: &str) -> crate::session_io::IoResult<Event> {
+        self.runtime
+            .query_events(crate::memory::QueryFilter {
+                event_id: Some(id.into()),
+                session_id: Some(self.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|_| {
+                crate::session_io::IoError::new("unavailable", "Cannot read the accepted input")
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                crate::session_io::IoError::new("unavailable", "Accepted input is not available")
+            })
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -10044,6 +10187,26 @@ impl SessionHandle {
         client_message_id: Option<String>,
         options: SessionMessageOptions,
     ) -> Result<MessageReceipt, RuntimeError> {
+        self.send_prepared_input(
+            text.into(),
+            actor.into(),
+            principal_id.into(),
+            client_message_id,
+            options,
+            None,
+        )
+        .await
+    }
+
+    async fn send_prepared_input(
+        &self,
+        text: String,
+        actor: String,
+        principal_id: String,
+        client_message_id: Option<String>,
+        options: SessionMessageOptions,
+        mut io: Option<crate::session_io::AcceptedInput>,
+    ) -> Result<MessageReceipt, RuntimeError> {
         let SessionMessageOptions {
             input_destination,
             requested_harness,
@@ -10063,7 +10226,6 @@ impl SessionHandle {
         {
             return Err("Directed input inherits the existing work route; model, reasoning, Target and Harness overrides are not allowed".into());
         }
-        let actor = actor.into();
         let session = self
             .runtime
             .get_session(&self.id)
@@ -10072,8 +10234,13 @@ impl SessionHandle {
         if session.status == crate::memory::SessionStatus::Archived {
             return Err("an archived Session cannot receive new messages".into());
         }
-        let text = text.into().trim().to_string();
+        let text = if io.is_some() {
+            text
+        } else {
+            text.trim().to_string()
+        };
         if text.is_empty()
+            && io.is_none()
             && attachments.is_empty()
             && staged_attachment_ids.is_empty()
             && references.is_empty()
@@ -10089,7 +10256,6 @@ impl SessionHandle {
                 "a message may reference at most 64 Sessions",
             )));
         }
-        let principal_id = principal_id.into();
         // Principal authority is intentionally decided by `claim_message`
         // while its Session row and binding belong to the same transaction as
         // the immutable Event and scheduler Signal. A transaction-external
@@ -10402,10 +10568,68 @@ impl SessionHandle {
                 json!(artifact_hash),
             );
         }
+        if let Some(input) = io.as_mut() {
+            input.binding.resources = prepared_attachments
+                .metadata()
+                .iter()
+                .enumerate()
+                .map(|(index, metadata)| {
+                    let mut owned =
+                        crate::session_io::resources::public_metadata(&event_id, metadata);
+                    if let Some(original) = input.binding.resources.get(index) {
+                        owned["original_resource_id"] = original["resource_id"].clone();
+                    }
+                    owned
+                })
+                .collect();
+            if let Err(error) = crate::session_io::projection::validate_budget(
+                &input.request.message,
+                &input.binding.input,
+                &input.binding.limits,
+                crate::session_io::projection::input_overhead(&input.binding),
+            ) {
+                discard_message_attachments(prepared_attachments, &event_id).await;
+                return Err(error.into());
+            }
+            if !payload.contains_key("model_alias") {
+                payload.insert(
+                    "model_alias".into(),
+                    json!(session
+                        .model_alias
+                        .as_deref()
+                        .unwrap_or(&self.runtime.inner.config.llm.model)),
+                );
+            }
+            if !payload.contains_key("reasoning_effort") {
+                if let Some(effort) = session.reasoning_effort.as_deref().or(self
+                    .runtime
+                    .inner
+                    .config
+                    .llm
+                    .reasoning_effort
+                    .as_ref()
+                    .map(|effort| effort.as_str()))
+                {
+                    payload.insert("reasoning_effort".into(), json!(effort));
+                }
+            }
+            input.binding.execution = json!({
+                "dispatch_mode":payload.get("dispatch_mode"), "model_alias":payload.get("model_alias"),
+                "reasoning_effort":payload.get("reasoning_effort"), "target_id":payload.get("target_id"),
+                "harness_id":payload.get("requested_harness_id"), "harness_version":payload.get("requested_harness_version"),
+                "harness_hash":payload.get("requested_harness_artifact_hash"),
+            });
+            payload.insert("session_io".into(), serde_json::to_value(input)?);
+        }
         let event = Event::new(
             event_id.clone(),
             actor,
-            TYPE_USER_MESSAGE.to_string(),
+            if io.is_some() {
+                crate::event::TYPE_SESSION_MESSAGE
+            } else {
+                TYPE_USER_MESSAGE
+            }
+            .to_string(),
             "chat/user_message".to_string(),
             payload,
         );

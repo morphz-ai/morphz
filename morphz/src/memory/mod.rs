@@ -368,6 +368,7 @@ pub fn event_has_recall_value(event: &crate::event::Event) -> bool {
             "chat/user_message"
                 | "chat/steering"
                 | "chat/reply"
+                | "session/io_output"
                 | "chat/tool_output"
                 | "chat/file_change"
                 | "chat/outbound_message"
@@ -5467,6 +5468,18 @@ pub(crate) fn background_wake_audit_event(
 pub(crate) fn message_request_fingerprint(
     payload: &serde_json::Map<String, JsonValue>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(io) = payload.get("session_io") {
+        let accepted: crate::session_io::AcceptedInput = serde_json::from_value(io.clone())?;
+        let principal = payload
+            .get("principal_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Session input requires a Principal")?;
+        let fingerprint = accepted.request.fingerprint(principal);
+        if fingerprint != accepted.request_fingerprint {
+            return Err("Session input fingerprint mismatch".into());
+        }
+        return Ok(fingerprint);
+    }
     fn field<'a>(
         payload: &'a serde_json::Map<String, JsonValue>,
         name: &str,
@@ -7585,6 +7598,22 @@ pub trait ScheduleStore: Send + Sync {
 /// Atomic user-message ingress and user-visible Thread delivery boundary.
 #[async_trait::async_trait]
 pub trait DeliveryIngressStore: Send + Sync {
+    /// Commit a nonterminal typed delivery with an active-generation and current
+    /// Principal fence. Duplicate IDs must have identical output content.
+    async fn commit_io_output(
+        &self,
+        _event: &crate::event::Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Err("This Store does not support typed Session output".into())
+    }
+    /// Exact idempotency lookup. Authorization must precede reading its Event.
+    async fn message_event_id(
+        &self,
+        _session_id: &str,
+        _client_message_id: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("This Store does not support typed Session IO lookup".into())
+    }
     /// Atomically append one user-visible delivery and mark every covered
     /// completion delivered. A completion can therefore never be delivered by
     /// two concurrent Delivery evaluations.
