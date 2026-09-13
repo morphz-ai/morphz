@@ -23,7 +23,13 @@ test("事项默认阅读，不铺字段表单；四主题与窄窗口的留白�
     ),
   );
   const paper = page.locator(".task-paper");
-  await expect(paper.locator("input, textarea, select")).toHaveCount(0);
+  await expect(
+    paper.locator(
+      ".task-description input, .task-description textarea, .task-description select",
+    ),
+  ).toHaveCount(0);
+  await expect(paper.locator(".task-inline-properties select")).toHaveCount(3);
+  await expect(paper.getByLabel("优先级", { exact: true })).toHaveCount(0);
   await expect(page.locator(".task-run-panel textarea")).toHaveCount(0);
   await expect(paper.getByText("人工事项不使用模型")).toHaveCount(0);
   await expect(paper.locator(".task-metadata")).not.toHaveAttribute("open");
@@ -88,7 +94,9 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await input.fill("补充：仍在检查，暂未完成。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(input).toHaveValue("");
-  await expect(page.locator(".task-state")).toContainText("待处理");
+  await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
+    "planned",
+  );
   await page
     .getByRole("button", { name: "提交结果并完成", exact: true })
     .click();
@@ -106,7 +114,9 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
     .getByRole("button", { name: "提交结果并完成事项", exact: true })
     .click();
   await expect(input).toHaveValue("检查完成，说明与实际安装过程一致。");
-  await expect(page.locator(".task-state")).toContainText("待处理");
+  await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
+    "planned",
+  );
   await page.unroute("**/api/commands");
   // A concurrent edit must not silently advance the version captured by the draft.
   const boot = await (await page.request.get("/api/workspace")).json();
@@ -141,7 +151,9 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
     page.getByText("事项已变化，请查看当前版本后操作。", { exact: true }),
   ).toBeVisible();
   await expect(input).toHaveValue("检查完成，说明与实际安装过程一致。");
-  await expect(page.locator(".task-state")).toContainText("待处理");
+  await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
+    "planned",
+  );
   await page
     .getByRole("button", { name: "提交结果并完成", exact: true })
     .click();
@@ -149,7 +161,9 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await page
     .getByRole("button", { name: "提交结果并完成事项", exact: true })
     .click();
-  await expect(page.locator(".task-state")).toContainText("已完成");
+  await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
+    "completed",
+  );
   await expect(page.locator(".task-run-panel blockquote")).toContainText(
     "检查完成，说明与实际安装过程一致。",
   );

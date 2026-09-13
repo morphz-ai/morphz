@@ -210,6 +210,7 @@ export function workspaceFor(
       projectIds.has(c.projectId),
     ),
     artifacts,
+    taskOrder: state.taskOrder.filter((id) => artifactIds.has(id)),
     applicationInstances: state.applicationInstances.filter((i) =>
       projectIds.has(i.workspaceId),
     ),

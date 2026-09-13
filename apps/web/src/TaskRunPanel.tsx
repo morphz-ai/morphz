@@ -1,108 +1,161 @@
-import { useEffect, useState } from "react";
-import { z } from "zod";
+import { useRef, useState } from "react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
+import {
+  taskPresentation,
+  taskRunBusy,
+} from "../../../packages/core/src/task-runtime.js";
 import type { WorkspaceClient } from "./client.js";
-const schema = z.object({
-  error: z.string().default(""),
-  runs: z.array(
-    z.object({
-      run: z.number(),
-      artifactRevision: z.number(),
-      record: z
-        .object({
-          revision: z.number(),
-          status: z.enum([
-            "queued",
-            "paused",
-            "dispatched",
-            "completed",
-            "cancelled",
-          ]),
-          interval_seconds: z.number().nullable(),
-        })
-        .nullable(),
-      error: z.string(),
-      paused: z.boolean(),
-      sourceStopped: z.boolean().default(false),
-      controlRevision: z.number().int().positive(),
-      hasSourceWatch: z.boolean(),
-      controlPending: z.string().nullable().default(null),
-      threadState: z
-        .enum(["open", "completed", "failed", "cancelled"])
-        .nullable(),
-    }),
-  ),
-});
+import { ExecutionDialog } from "./ExecutionDialog.js";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
+import { FileText, ListChecks, Play, X } from "lucide-react";
+
 export function TaskRunPanel({
   artifact,
   state,
   client,
   onRespond,
+  onOpen,
+  compact = false,
 }: {
   artifact: Artifact;
   state: Workspace;
   client: WorkspaceClient;
   onRespond: () => void;
+  onOpen?: (id: string) => void;
+  compact?: boolean;
 }) {
-  const [view, setView] = useState<z.infer<typeof schema>>({
-      error: "",
-      runs: [],
-    }),
-    [error, setError] = useState(""),
-    [loadError, setLoadError] = useState(""),
-    [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [inspect, setInspect] = useState(false);
   const task = artifact.content;
-  useEffect(() => {
-    let mounted = true;
-    const refresh = () =>
-      client
-        .taskRuntime(artifact.id)
-        .then((v) => {
-          if (mounted) {
-            setView(schema.parse(v));
-            setLoadError("");
-          }
-        })
-        .catch(() => {
-          if (mounted) setLoadError("暂时无法核对执行状态。");
-        });
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2000);
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
-  }, [artifact.id, client.taskRuntime]);
   if (task.kind !== "task") return null;
+  // All task surfaces consume the same authenticated, cached workspace snapshot.
+  const view = client.boot?.taskRuns[artifact.id];
+  const run = view?.runs.find((r) => r.run === task.runRequested);
   const human =
-      state.actants.find((a) => a.id === task.assigneeId)?.kind === "human",
-    run = view.runs.at(-1),
-    record = run?.record;
-  const active =
-    record &&
-    !["completed", "cancelled"].includes(record.status) &&
-    (record.interval_seconds !== null ||
-      run.threadState === "open" ||
-      (run.hasSourceWatch && !run.sourceStopped));
+    state.actants.find((a) => a.id === task.assigneeId)?.kind === "human";
+  const active = taskRunBusy(task, view);
+  const status = taskPresentation(task, !!human, view);
+  const connected = client.online && client.boot?.capabilities.runtime;
   const responses = state.taskResponses.filter((r) => r.taskId === artifact.id);
   const canRespond =
     human &&
     client.boot?.actantId === task.assigneeId &&
     !["completed", "cancelled"].includes(task.execution);
+  const thread = client.boot?.runtime.activity?.threads.find(
+    (t) => t.id === run?.record?.thread_id,
+  );
+  const threadId = run?.record?.thread_id;
+  const attention =
+    client.boot?.runtime.attention?.approvals.filter(
+      (a) => a.scope.threadId === run?.record?.thread_id,
+    ) ?? [];
+  const dependencies = status.state === "waiting" ? (view?.blockers ?? []) : [];
   async function perform(action: () => Promise<unknown>) {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setError("");
     try {
       await action();
-      setView(schema.parse(await client.taskRuntime(artifact.id)));
+      await client.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "操作未确认。");
+      setError(e instanceof Error ? e.message : "操作尚未确认，请核对状态。");
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
+  const start: ComposerOption = {
+    label:
+      run?.threadState === "failed"
+        ? "重试"
+        : run || ["completed", "cancelled"].includes(task.execution)
+          ? "重新执行"
+          : "开始",
+    icon: <Play />,
+    disabled: busy || !connected,
+    title: !connected
+      ? "连接 Agent 后可以开始执行"
+      : "按当前事项开始一次新的执行，已有结果保留",
+    onSelect: () =>
+      void perform(() =>
+        client.execute({
+          type: "request-task-run",
+          taskId: artifact.id,
+          expectedRevision: artifact.revision,
+        }),
+      ),
+  };
+  const records: ComposerOption = {
+    label: "执行记录",
+    icon: <ListChecks />,
+    onSelect: () => setInspect(true),
+  };
+  const results: ComposerOption = {
+    label: "查看结果",
+    icon: <FileText />,
+    onSelect: () =>
+      onOpen?.(task.resultIds.length === 1 ? task.resultIds[0]! : artifact.id),
+  };
+  const detail: ComposerOption = {
+    label: "查看事项",
+    icon: <FileText />,
+    onSelect: () => onOpen?.(artifact.id),
+  };
+  let primary: ComposerOption | undefined;
+  if (
+    attention.length &&
+    threadId &&
+    run?.threadState === "open" &&
+    !run.stopRequested
+  )
+    primary = { ...records, label: `处理确认 (${attention.length})` };
+  else if (dependencies.length && onOpen)
+    primary = {
+      ...detail,
+      label: "查看前置事项",
+      onSelect: () => onOpen(dependencies[0]!.taskId),
+    };
+  else if (active)
+    primary = threadId
+      ? { ...records, label: "查看进度" }
+      : compact
+        ? detail
+        : undefined;
+  else if (run?.threadState === "failed") primary = start;
+  else if (task.resultIds.length && onOpen) primary = results;
+  else if (run?.threadState === "completed" && threadId) primary = records;
+  else if (status.state === "waiting")
+    primary = compact ? { ...detail, label: "查看原因" } : undefined;
+  else if (task.execution !== "cancelled" && task.execution !== "completed")
+    primary = start;
+  const secondary: ComposerOption[] = [];
+  if (!active && primary !== start) secondary.push(start);
+  if (threadId && primary?.onSelect !== records.onSelect)
+    secondary.push(records);
+  if (task.resultIds.length && onOpen && primary !== results)
+    secondary.push(results);
+  if (!active && !["cancelled", "completed"].includes(task.execution))
+    secondary.push({
+      label: "取消事项",
+      icon: <X />,
+      disabled: busy || !client.online,
+      onSelect: () =>
+        void perform(() =>
+          client.execute({
+            type: "cancel-task",
+            taskId: artifact.id,
+            expectedRevision: artifact.revision,
+          }),
+        ),
+    });
   return (
-    <section className="task-run-panel" aria-label="实际执行与回应">
+    <section
+      className={`task-run-panel${compact ? " task-run-compact" : ""}`}
+      aria-label="实际执行与回应"
+    >
       {human ? (
         <>
           {responses.length > 0 && <h2>处理结果</h2>}
@@ -123,37 +176,90 @@ export function TaskRunPanel({
         </>
       ) : (
         <>
-          <h2>执行</h2>
-          <p role="status">
-            {record
-              ? `第 ${run.run} 次安排 · ${run.controlPending ? "控制请求等待确认" : run.sourceStopped ? "后续触发已停止" : run.paused ? "后续触发已暂停" : record.status === "queued" ? "等待开始执行" : record.status === "paused" ? "后续触发已暂停" : record.status === "cancelled" ? "后续触发已停止" : run.threadState === "failed" ? "执行失败" : run.threadState === "completed" ? "本次处理已结束" : run.threadState === "cancelled" ? "本次处理已停止" : "正在处理"} · 使用安排版本 v${run.artifactRevision}`
-              : task.runRequested
-                ? "安排已保存，等待执行确认"
-                : "尚未提交执行安排"}
-          </p>
+          {!compact && (
+            <p className="task-run-status" role="status">
+              {status.label}
+              {run && <small> · 第 {run.run} 次执行</small>}
+            </p>
+          )}
           <div className="task-run-actions">
-            <button
-              className="primary"
-              disabled={busy || !!active}
-              onClick={() =>
-                void perform(() =>
-                  client.execute({
-                    type: "request-task-run",
-                    taskId: artifact.id,
-                    expectedRevision: artifact.revision,
-                  }),
-                )
-              }
-            >
-              {run ? "按当前安排重新执行" : "开始执行"}
-            </button>
-            {record &&
-              !run.sourceStopped &&
-              (["queued", "paused"].includes(record.status) ||
-                run.hasSourceWatch) && (
-                <>
+            {primary && (
+              <button
+                className="task-primary-action"
+                disabled={primary.disabled}
+                title={primary.title}
+                onClick={primary.onSelect}
+              >
+                {primary.label}
+              </button>
+            )}
+            {active && run && (
+              <button
+                disabled={busy || !connected || run.stopRequested}
+                onClick={() =>
+                  void perform(() =>
+                    client.taskRuntime(artifact.id, {
+                      run: run.run,
+                      revision: run.controlRevision,
+                      action: "stop",
+                    }),
+                  )
+                }
+              >
+                {run.stopRequested ? "正在停止…" : "停止"}
+              </button>
+            )}
+            {active && !run && (
+              <button
+                disabled={busy || !client.online}
+                onClick={() =>
+                  void perform(() =>
+                    client.execute({
+                      type: "cancel-task",
+                      taskId: artifact.id,
+                      expectedRevision: artifact.revision,
+                    }),
+                  )
+                }
+              >
+                撤回安排
+              </button>
+            )}
+            {secondary.length > 0 && (
+              <ComposerOptions
+                below
+                label={`更多操作：${artifact.title}`}
+                menuLabel="事项操作"
+                options={secondary}
+              />
+            )}
+          </div>
+          {!compact && status.reason && (
+            <p className="task-status-reason">{status.reason}</p>
+          )}
+          {!compact && dependencies.length > 1 && (
+            <div className="task-dependency-actions">
+              <span>等待前置事项</span>
+              {dependencies.map((a) => (
+                <button key={a.taskId} onClick={() => onOpen?.(a.taskId)}>
+                  {a.title}
+                </button>
+              ))}
+            </div>
+          )}
+          {!compact && run && (
+            <details className="task-execution-note">
+              <summary>执行安排</summary>
+              <p>
+                使用事项版本 v{run.artifactRevision}
+                。停止不会撤回已经产生的结果。
+              </p>
+              {run.record &&
+                !run.sourceStopped &&
+                (["queued", "paused"].includes(run.record.status) ||
+                  run.hasSourceWatch) && (
                   <button
-                    disabled={busy}
+                    disabled={busy || !connected}
                     onClick={() =>
                       void perform(() =>
                         client.taskRuntime(artifact.id, {
@@ -166,32 +272,31 @@ export function TaskRunPanel({
                   >
                     {run.paused ? "恢复后续触发" : "暂停后续触发"}
                   </button>
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void perform(() =>
-                        client.taskRuntime(artifact.id, {
-                          run: run.run,
-                          revision: run.controlRevision,
-                          action: "cancel",
-                        }),
-                      )
-                    }
-                  >
-                    停止后续触发
-                  </button>
-                </>
-              )}
-          </div>
-          <details className="task-execution-note">
-            <summary>执行说明</summary>
-          </details>
+                )}
+            </details>
+          )}
         </>
       )}
-      {(error || loadError || view.error || run?.error) && (
+      {(error || (!compact && (view?.error || run?.error))) && (
         <p className="delivery-error" role="alert">
-          {error || loadError || view.error || run?.error}
+          {error || view?.error || run?.error}
         </p>
+      )}
+      {inspect && threadId && (
+        <ExecutionDialog
+          client={client}
+          scope={{
+            projectId: thread?.projectId ?? artifact.projectId,
+            artifactId: artifact.id,
+            conversationId: thread?.conversationId,
+            threadId,
+          }}
+          onClose={() => setInspect(false)}
+          onOpen={(id) => {
+            setInspect(false);
+            onOpen?.(id);
+          }}
+        />
       )}
     </section>
   );

@@ -25,7 +25,7 @@ type Binding = {
 const sessionIds = (binding: NonNullable<Binding>) => [
   ...new Set([binding.sessionId, ...(binding.legacySessionIds ?? [])]),
 ];
-const fingerprint = (value: unknown) =>
+export const approvalFingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 /** Uses only scoped Runtime reads and control APIs, never its database. */
 export class ExecutionControls {
@@ -57,7 +57,7 @@ export class ExecutionControls {
               a.request.root_turn_id,
             )),
       )
-      .map((a) => ({ ...a, fingerprint: fingerprint(a) }));
+      .map((a) => ({ ...a, fingerprint: approvalFingerprint(a) }));
   }
   private async job(binding: NonNullable<Binding>, jobId: string) {
     const job = jobSchema.parse(

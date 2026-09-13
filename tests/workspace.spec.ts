@@ -117,7 +117,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     page.getByRole("heading", { name: "检查文章", exact: true }),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "打开事项", exact: true })
+    .getByRole("button", { name: /^打开事项：/ })
     .filter({
       has: page.getByRole("heading", { name: "检查文章", exact: true }),
     })
@@ -127,10 +127,14 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   // This isolated center has no Runtime. Do not invent an available model.
   await expect(page.getByLabel("执行模型", { exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "保存版本" }).click();
-  await expect(page.locator(".task-properties")).toContainText("Morphz");
+  await expect(
+    page
+      .locator(".task-inline-properties")
+      .getByLabel("负责人", { exact: true }),
+  ).toHaveValue("morphz-agent");
   await page.locator("nav").getByRole("button", { name: /^事项/ }).click();
   await expect(
-    page.getByRole("button", { name: "打开事项", exact: true }).filter({
+    page.getByRole("button", { name: /^打开事项：/ }).filter({
       has: page.getByRole("heading", { name: "检查文章", exact: true }),
     }),
   ).toHaveCount(0);

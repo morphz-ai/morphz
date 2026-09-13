@@ -1,7 +1,8 @@
 import { useModal } from "./useModal.js";
 import { isObjectToolName } from "../../../packages/core/src/application-names.js";
 import { useEffect, useRef, useState } from "react";
-import { X, RefreshCw, Square, Check, Shield, FileText } from "lucide-react";
+import { X, RefreshCw, Square, Check, FileText } from "lucide-react";
+import { ApprovalDetails } from "./ApprovalCard.js";
 import {
   jobStatusLabel,
   type ExecutionScope,
@@ -128,7 +129,8 @@ export function ExecutionDialog({
           <div>
             <h2 id="execution-title">执行记录</h2>
             <p className="muted">
-              当前对话 · 最近 {snapshot?.limit ?? 100} 项执行
+              {scope.threadId ? "本次执行" : "当前对话"} · 最近{" "}
+              {snapshot?.limit ?? 100} 项执行
             </p>
           </div>
           <button onClick={onClose} aria-label="关闭执行记录">
@@ -166,27 +168,18 @@ export function ExecutionDialog({
             className="execution-approval"
             key={approval.request.approval_id}
           >
-            <h3>
-              <Shield />
-              需要你的批准
-            </h3>
-            <p>{approval.request.justification}</p>
-            <details>
-              <summary>查看操作及权限范围</summary>
-              <pre>
-                {JSON.stringify(
-                  {
-                    action: approval.request.action,
-                    requested: approval.request.requested,
-                  },
-                  null,
-                  2,
-                )}
-              </pre>
-            </details>
+            <ApprovalDetails approval={approval} />
             <div className="execution-actions">
               <button
-                disabled={!!busy || !!error}
+                disabled={
+                  !!busy ||
+                  !!error ||
+                  !client.online ||
+                  client.approvalSubmitted(
+                    approval.request.approval_id,
+                    approval.fingerprint,
+                  )
+                }
                 onClick={() =>
                   void control({
                     type: "deny",
@@ -199,7 +192,15 @@ export function ExecutionDialog({
               </button>
               <button
                 className="primary"
-                disabled={!!busy || !!error}
+                disabled={
+                  !!busy ||
+                  !!error ||
+                  !client.online ||
+                  client.approvalSubmitted(
+                    approval.request.approval_id,
+                    approval.fingerprint,
+                  )
+                }
                 onClick={() =>
                   void control({
                     type: "allow-once",

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import { taskRuntimeSchema } from "../../../packages/core/src/task-runtime.js";
 import {
   migrateLegacyLocalState,
   migrateApplicationLocalState,
@@ -44,8 +45,10 @@ const bootSchema = z.object({
     runtime: z.boolean(),
     teamAuthentication: z.boolean(),
     conversationOnFirstInput: z.boolean().default(false),
+    taskCompletion: z.boolean().default(false),
   }),
   runtime: conversationRuntimeSchema.default(disconnectedRuntime),
+  taskRuns: z.record(z.string(), taskRuntimeSchema).default({}),
 });
 export type Boot = z.infer<typeof bootSchema>;
 export type SpeechScope = {
@@ -95,6 +98,8 @@ const draftOwner = (() => {
 })();
 export const draftKey = (key: string) => "draft:" + draftOwner + ":" + key;
 export function useWorkspace() {
+  const approvalSubmissions = useRef(new Set<string>());
+  const [, updateApprovalSubmissions] = useState(0);
   const [boot, setBoot] = useState<Boot | null>(null),
     [online, setOnline] = useState(false),
     [error, setError] = useState(""),
@@ -389,7 +394,7 @@ export function useWorkspace() {
     control?: {
       run: number;
       revision: number;
-      action: "pause" | "resume" | "cancel";
+      action: "pause" | "resume" | "cancel" | "stop";
     },
   ) {
     if (!current.current) throw new Error("尚未连接中心。");
@@ -419,10 +424,29 @@ export function useWorkspace() {
   }
   async function controlExecution(command: ExecutionControl) {
     if (!current.current) throw new Error("请先连接中心。");
+    if (
+      command.action.type === "allow-once" ||
+      command.action.type === "deny"
+    ) {
+      const key = JSON.stringify([
+        current.current.csrfToken,
+        command.action.approvalId,
+        command.action.fingerprint,
+      ]);
+      if (approvalSubmissions.current.has(key))
+        throw new Error("本次审批已提交，请核对最新执行状态，不要重复批准。");
+      approvalSubmissions.current.add(key);
+      updateApprovalSubmissions((version) => version + 1);
+    }
     return applicationCall("execution.control", command, {
       identityGeneration: current.current.csrfToken,
       signal: AbortSignal.timeout(12000),
     });
+  }
+  function approvalSubmitted(approvalId: string, fingerprint: string) {
+    return approvalSubmissions.current.has(
+      JSON.stringify([current.current?.csrfToken, approvalId, fingerprint]),
+    );
   }
   async function speechStatus(signal?: AbortSignal) {
     return z
@@ -504,6 +528,7 @@ export function useWorkspace() {
     executionSnapshot,
     executionResult,
     controlExecution,
+    approvalSubmitted,
   };
 }
 export type WorkspaceClient = ReturnType<typeof useWorkspace>;

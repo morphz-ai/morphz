@@ -4,7 +4,6 @@ import {
   CircleDashed,
   Clock3,
   UserRound,
-  Flag,
   Cpu,
   CalendarDays,
   MessageCircle,
@@ -15,6 +14,8 @@ import type {
   Workspace,
 } from "../../../packages/core/src/model.js";
 import { actorName } from "./client.js";
+import type { WorkspaceClient } from "./client.js";
+import { TaskArrangement } from "./TaskArrangement.js";
 
 const executionLabel = {
   planned: "已计划",
@@ -37,6 +38,7 @@ export function TaskSummary({
   revision,
   onCompose,
   onOpen,
+  client,
 }: {
   value: TaskContent;
   artifact: Artifact;
@@ -44,6 +46,7 @@ export function TaskSummary({
   revision: number;
   onCompose?: () => void;
   onOpen: (id: string) => void;
+  client?: WorkspaceClient;
 }) {
   const assignee = state.actants.find((a) => a.id === value.assigneeId);
   const StatusIcon =
@@ -61,58 +64,53 @@ export function TaskSummary({
       .join("、");
   return (
     <div className="task-summary">
-      <dl className="task-properties" aria-label="事项属性">
-        <div className="task-state" data-state={value.execution}>
-          <dt className="sr-only">执行进度</dt>
-          <dd>
-            <StatusIcon size={15} />
-            {value.assignment === "declined" &&
-            !["completed", "cancelled"].includes(value.execution)
-              ? "待重新安排"
-              : value.execution === "planned" && assignee?.kind === "human"
-                ? "待处理"
-                : executionLabel[value.execution]}
-          </dd>
-        </div>
-        <div>
-          <dt>
-            <UserRound size={14} />
-            <span className="sr-only">负责人</span>
-          </dt>
-          <dd>{actorName(state, value.assigneeId)}</dd>
-        </div>
-        <div>
-          <dt>
-            <Flag size={14} />
-            <span className="sr-only">优先级</span>
-          </dt>
-          <dd>
-            {
-              { low: "低优先级", normal: "普通优先级", high: "高优先级" }[
-                value.priority
-              ]
-            }
-          </dd>
-        </div>
-        {value.dueDate && (
+      {client && artifact.content.kind === "task" ? (
+        <TaskArrangement
+          artifact={{ ...artifact, content: artifact.content }}
+          state={state}
+          client={client}
+        />
+      ) : (
+        <dl className="task-properties" aria-label="事项属性">
+          <div className="task-state" data-state={value.execution}>
+            <dt className="sr-only">执行进度</dt>
+            <dd>
+              <StatusIcon size={15} />
+              {value.assignment === "declined" &&
+              !["completed", "cancelled"].includes(value.execution)
+                ? "待重新安排"
+                : value.execution === "planned" && assignee?.kind === "human"
+                  ? "待处理"
+                  : executionLabel[value.execution]}
+            </dd>
+          </div>
           <div>
             <dt>
-              <CalendarDays size={14} />
-              <span className="sr-only">截止日期</span>
+              <UserRound size={14} />
+              <span className="sr-only">负责人</span>
             </dt>
-            <dd>{value.dueDate}</dd>
+            <dd>{actorName(state, value.assigneeId)}</dd>
           </div>
-        )}
-        {assignee?.kind === "agent" && (
-          <div>
-            <dt>
-              <Cpu size={14} />
-              <span className="sr-only">执行模型</span>
-            </dt>
-            <dd>{value.model || "自动选择模型"}</dd>
-          </div>
-        )}
-      </dl>
+          {value.dueDate && (
+            <div>
+              <dt>
+                <CalendarDays size={14} />
+                <span className="sr-only">截止日期</span>
+              </dt>
+              <dd>{value.dueDate}</dd>
+            </div>
+          )}
+          {assignee?.kind === "agent" && (
+            <div>
+              <dt>
+                <Cpu size={14} />
+                <span className="sr-only">执行模型</span>
+              </dt>
+              <dd>{value.model || "自动选择模型"}</dd>
+            </div>
+          )}
+        </dl>
+      )}
       <div className="task-description" aria-label="事项说明">
         {value.description ? (
           <Markdown

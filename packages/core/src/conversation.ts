@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionAttentionSchema } from "./execution.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
   inputId: z.string(),
@@ -45,6 +46,7 @@ export const deliverySchema = z.object({
 });
 export const conversationRuntimeSchema = z.object({
   activity: activitySchema.optional(),
+  attention: executionAttentionSchema.optional(),
   configured: z.boolean(),
   connected: z.boolean(),
   model: z.string(),

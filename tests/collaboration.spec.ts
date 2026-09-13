@@ -24,7 +24,9 @@ test("人工事项通过统一输入提交结果，刷新保留作者和回应�
     .click();
   await expect(panel.locator("blockquote")).toContainText("不引用个人文件");
   await expect(panel.locator("blockquote")).toContainText("回应 v1");
-  await expect(page.locator(".task-state")).toHaveText("执行进度已完成");
+  await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
+    "completed",
+  );
   await page.reload();
   await expect(panel.locator("blockquote")).toContainText("不引用个人文件");
   await panel.screenshot({ path: "test-results/task-response.png" });

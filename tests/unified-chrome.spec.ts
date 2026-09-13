@@ -46,8 +46,13 @@ test("页面标题与操作共用顶栏，内容无第二层标题区；窄窗�
         bar.getByRole("button", { name: "全部", exact: true }),
       ).toHaveAttribute("aria-pressed", "true");
     } else if (width === 760) {
-      await bar.getByLabel("事项状态筛选").selectOption("mine");
-      await expect(bar.getByLabel("事项状态筛选")).toHaveValue("mine");
+      await bar.getByRole("button", { name: /^筛选事项：/ }).click();
+      const filter = page.getByRole("group", { name: "筛选事项", exact: true });
+      await filter.getByLabel("事项负责人筛选").selectOption("mine");
+      await filter.getByLabel("事项状态筛选").selectOption("open");
+      await expect(filter.getByLabel("事项负责人筛选")).toHaveValue("mine");
+      await expect(filter.getByLabel("事项状态筛选")).toHaveValue("open");
+      await page.keyboard.press("Escape");
     }
     await connected();
     await page.screenshot({

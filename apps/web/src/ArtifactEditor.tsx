@@ -674,6 +674,7 @@ export function ArtifactEditor({
           />
         ) : shown.content.kind === "task" ? (
           <TaskSummary
+            client={!old ? client : undefined}
             value={shown.content}
             artifact={artifact}
             state={state}
@@ -688,6 +689,7 @@ export function ArtifactEditor({
             state={state}
             client={client}
             onRespond={() => onTaskInput(true)}
+            onOpen={onOpen}
           />
         )}
       </article>
@@ -777,24 +779,6 @@ export function TaskFields({
         />
       )}
       <label className="field">
-        优先级
-        <select
-          aria-label="优先级"
-          disabled={!editable}
-          value={value.priority}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              priority: e.target.value as TaskContent["priority"],
-            })
-          }
-        >
-          <option value="low">低</option>
-          <option value="normal">普通</option>
-          <option value="high">高</option>
-        </select>
-      </label>
-      <label className="field">
         截止日期
         <input
           type="date"
@@ -828,7 +812,11 @@ export function TaskFields({
         执行进度
         <select
           aria-label="执行进度"
-          disabled={!editable}
+          disabled={
+            !editable ||
+            state.actants.find((a) => a.id === value.assigneeId)?.kind ===
+              "agent"
+          }
           value={value.execution}
           onChange={(e) =>
             onChange({

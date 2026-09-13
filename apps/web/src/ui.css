@@ -1200,6 +1200,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   overflow-wrap: anywhere;
 }
 .composer-options {
+  /* Menus may be mounted inside native draggable title bars. The inherited
+     region also reaches ::backdrop, whose rectangle spans the whole window. */
+  -webkit-app-region: no-drag;
   position: fixed;
   inset: auto;
   margin: 0;
@@ -1212,6 +1215,10 @@ body:has(dialog[open]) .cognitive-application-frame {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: 0 6px 20px var(--shadow);
+}
+.composer-options::backdrop {
+  -webkit-app-region: no-drag;
+  pointer-events: none;
 }
 .app .composer-options > button {
   width: 100%;

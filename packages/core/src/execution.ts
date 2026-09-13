@@ -53,6 +53,16 @@ export const executionSnapshotSchema = z.object({
   approvals: z.array(approvalSchema.extend({ fingerprint: z.string() })),
   limit: z.number(),
 });
+export const executionAttentionSchema = z.object({
+  available: z.boolean(),
+  approvals: z.array(
+    z.object({
+      scope: executionScopeSchema,
+      approval: approvalSchema.extend({ fingerprint: z.string() }),
+    }),
+  ),
+});
+export type ExecutionAttention = z.infer<typeof executionAttentionSchema>;
 export type ExecutionSnapshot = z.infer<typeof executionSnapshotSchema>;
 export const executionControlSchema = z
   .object({

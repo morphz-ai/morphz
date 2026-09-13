@@ -64,7 +64,7 @@ export const contentSchema = z.discriminatedUnion("kind", [
       description: text,
       assigneeId: id,
       model: z.string().trim().min(1).max(100).nullable(),
-      priority: z.enum(["low", "normal", "high"]),
+      priority: z.enum(["low", "normal", "high"]).default("normal"),
       dueDate: z.iso.date().nullable(),
       assignment: z.enum(["proposed", "accepted", "declined"]),
       execution: z.enum([
@@ -135,6 +135,7 @@ const browserReferenceSchema = z
 const versionSchema = z
   .object({
     revision: z.number().int().positive(),
+    projectId: id.optional(),
     title,
     content: contentSchema,
     author: authorSchema,
@@ -146,6 +147,7 @@ export const artifactSchema = z
     id,
     projectId: id,
     originConversationId: id.optional(),
+    originProjectId: id.optional(),
     title,
     content: contentSchema,
     revision: z.number().int().positive(),
@@ -287,6 +289,8 @@ export const stateSchema = z
     ),
     conversations: z.array(discussionSchema).default([]),
     artifacts: z.array(artifactSchema),
+    taskOrder: z.array(id).default([]),
+    taskOrderRevision: z.number().int().nonnegative().default(0),
     applications: z
       .array(applicationManifestSchema.extend({ installedBy: id }).strict())
       .default([]),
@@ -370,6 +374,27 @@ export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
   z
+    .object({
+      type: z.literal("reorder-tasks"),
+      taskIds: z.array(id).min(1).max(500),
+      expectedOrderRevision: z.number().int().nonnegative(),
+      move: z
+        .object({
+          taskId: id,
+          expectedRevision: z.number().int().positive(),
+          execution: z.enum([
+            "planned",
+            "active",
+            "waiting",
+            "completed",
+            "cancelled",
+          ]),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  z
     .object({ type: z.literal("create-conversation"), projectId: id, title })
     .strict(),
   z
@@ -421,6 +446,40 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("request-task-run"),
+      taskId: id,
+      expectedRevision: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("set-task-completed"),
+      taskId: id,
+      expectedRevision: z.number().int().positive(),
+      completed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("arrange-task"),
+      taskId: id,
+      expectedRevision: z.number().int().positive(),
+      changes: z
+        .object({
+          projectId: id.optional(),
+          assigneeId: id.optional(),
+          dueDate: z.iso.date().nullable().optional(),
+          priority: z.enum(["low", "normal", "high"]).optional(),
+          execution: z
+            .enum(["planned", "active", "waiting", "completed", "cancelled"])
+            .optional(),
+        })
+        .strict()
+        .refine((v) => Object.keys(v).length > 0, "请选择要修改的安排。"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("cancel-task"),
       taskId: id,
       expectedRevision: z.number().int().positive(),
     })
@@ -618,6 +677,8 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     conversations: [],
     applicationInstances: [],
     artifacts: [],
+    taskOrder: [],
+    taskOrderRevision: 0,
     relations: [],
     annotations: [],
     inputs: [],
@@ -630,6 +691,46 @@ export function getArtifact(state: Workspace, artifactId: string): Artifact {
   const artifact = state.artifacts.find((a) => a.id === artifactId);
   if (!artifact) throw new DomainError("not_found", "对象不存在。");
   return artifact;
+}
+/** Stable semantic order, shared by Human views, Agent tools and admission. */
+export function orderedTasks(state: Workspace) {
+  const tasks = state.artifacts.filter(
+    (a): a is Artifact & { content: TaskContent } => a.content.kind === "task",
+  );
+  const positions = new Map(state.taskOrder.map((id, index) => [id, index]));
+  return tasks.sort(
+    (a, b) =>
+      (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity) ||
+      a.createdAt.localeCompare(b.createdAt) ||
+      a.id.localeCompare(b.id),
+  );
+}
+export function currentTaskResponse(state: Workspace, task: Artifact) {
+  if (task.content.kind !== "task" || task.content.execution !== "completed")
+    return undefined;
+  const content = task.content;
+  return state.taskResponses
+    .filter(
+      (r) => r.taskId === task.id && r.author.actantId === content.assigneeId,
+    )
+    .findLast((r) => {
+      const source = task.versions.find(
+        (v) => v.revision === r.taskRevision,
+      )?.content;
+      return (
+        source?.kind === "task" &&
+        source.description === content.description &&
+        task.versions
+          .filter((v) => v.revision > r.taskRevision)
+          .every(
+            (v) =>
+              v.content.kind === "task" &&
+              v.content.execution === "completed" &&
+              v.content.assigneeId === content.assigneeId &&
+              v.content.description === source.description,
+          )
+      );
+    });
 }
 export function checkProject(
   state: Workspace,
@@ -800,7 +901,160 @@ export function applyCommand(
     )
       throw new DomainError("forbidden", "请向 Agent 提交纠正。");
   }
-  if (op.type === "request-task-run" || op.type === "respond-task") {
+  if (op.type === "reorder-tasks") {
+    if (op.expectedOrderRevision !== state.taskOrderRevision)
+      throw new DomainError(
+        "conflict",
+        "事项顺序已变化，请读取最新顺序再调整。",
+      );
+    const selected = new Set(op.taskIds);
+    if (selected.size !== op.taskIds.length)
+      throw new DomainError("invalid", "排序不能包含重复事项。");
+    for (const id of selected) {
+      const task = getArtifact(state, id);
+      checkProject(state, task.projectId, access);
+      if (task.content.kind !== "task")
+        throw new DomainError("invalid", "只能排序事项。");
+    }
+    if (op.move) {
+      if (!selected.has(op.move.taskId))
+        throw new DomainError("invalid", "移动的事项必须包含在排序中。");
+      // Reuse the exact Human-status permission/version/dependency checks.
+      state.artifacts = applyCommand(
+        state,
+        {
+          ...command,
+          operation: {
+            type: "arrange-task",
+            taskId: op.move.taskId,
+            expectedRevision: op.move.expectedRevision,
+            changes: { execution: op.move.execution },
+          },
+        },
+        access,
+        now,
+      ).state.artifacts;
+    }
+    let index = 0;
+    // Unlisted tasks retain their slots. Filtered views and project-scoped
+    // Agents cannot displace unseen work or overwrite someone else's ordering.
+    state.taskOrder = orderedTasks(state).map((a) =>
+      selected.has(a.id) ? op.taskIds[index++]! : a.id,
+    );
+    state.taskOrderRevision++;
+    entityId = op.move?.taskId ?? op.taskIds[0]!;
+  } else if (op.type === "arrange-task" || op.type === "cancel-task") {
+    const artifact = getArtifact(state, op.taskId);
+    const source = checkProject(state, artifact.projectId, access);
+    if (
+      artifact.content.kind !== "task" ||
+      artifact.revision !== op.expectedRevision
+    )
+      throw new DomainError("conflict", "事项已变化，请查看当前版本后操作。");
+    const content = structuredClone(artifact.content);
+    const changes = op.type === "arrange-task" ? op.changes : {};
+    if (op.type === "cancel-task") {
+      content.execution = "cancelled";
+      content.runRequested = 0;
+    }
+    const target = checkProject(
+      state,
+      changes.projectId ?? artifact.projectId,
+      access,
+    );
+    if (target.id !== source.id) {
+      if (!["project", "inbox"].includes(target.kind ?? "project"))
+        throw new DomainError("invalid", "请选择项目或无项目。");
+      if (
+        target.members.some((p) => !source.members.includes(p)) ||
+        source.members.some((p) => !target.members.includes(p))
+      )
+        throw new DomainError(
+          "forbidden",
+          "两个项目的访问成员不同，不能直接移动事项及其历史。",
+        );
+      const linked =
+        content.dependsOnIds.length ||
+        content.watchSourceIds.length ||
+        content.resultIds.length ||
+        state.relations.some(
+          (r) => r.fromId === artifact.id || r.toId === artifact.id,
+        ) ||
+        state.artifacts.some((a) =>
+          a.content.kind === "task"
+            ? [
+                ...a.content.dependsOnIds,
+                ...a.content.watchSourceIds,
+                ...a.content.resultIds,
+              ].includes(artifact.id)
+            : a.content.kind === "document" &&
+              a.content.understanding?.sources.some(
+                (r) => r.artifactId === artifact.id,
+              ),
+        );
+      if (linked)
+        throw new DomainError(
+          "invalid",
+          "此事项已有项目内依赖或成果，请先处理关联再移动；原有关联不会被拆除。",
+        );
+      artifact.originProjectId ??= source.id;
+      artifact.projectId = target.id;
+    }
+    if (changes.assigneeId && changes.assigneeId !== content.assigneeId) {
+      // Assignment alone never submits an execution request, including undo.
+      content.assigneeId = changes.assigneeId;
+      content.model = null;
+      content.runRequested = 0;
+      content.notBefore = null;
+      content.everySeconds = null;
+      content.assignment = "accepted";
+      content.execution = "planned";
+    }
+    if (changes.dueDate !== undefined) content.dueDate = changes.dueDate;
+    if (changes.priority !== undefined) content.priority = changes.priority;
+    if (
+      changes.execution !== undefined &&
+      changes.execution !== content.execution
+    ) {
+      if (actor.kind !== "human" || content.assigneeId !== access.actantId)
+        throw new DomainError(
+          "forbidden",
+          "只能直接移动自己的事项；Morphz 的进度由实际执行更新。",
+        );
+      if (
+        changes.execution === "completed" &&
+        state.artifacts.some(
+          (a) =>
+            a.content.kind === "task" &&
+            a.content.dependsOnIds.includes(artifact.id) &&
+            !["completed", "cancelled"].includes(a.content.execution),
+        )
+      )
+        throw new DomainError(
+          "invalid",
+          "此事项关联后续工作，请提交结果并完成。",
+        );
+      content.execution = changes.execution;
+      content.assignment = "accepted";
+    }
+    checkContent(state, artifact.projectId, content);
+    artifact.content = content;
+    artifact.revision++;
+    artifact.updatedAt = now;
+    artifact.versions.push({
+      revision: artifact.revision,
+      projectId: artifact.projectId,
+      title: artifact.title,
+      content,
+      author: { ...access },
+      createdAt: now,
+    });
+    entityId = artifact.id;
+  } else if (
+    op.type === "request-task-run" ||
+    op.type === "respond-task" ||
+    op.type === "set-task-completed"
+  ) {
     const artifact = getArtifact(state, op.taskId);
     checkProject(state, artifact.projectId, access);
     if (
@@ -822,6 +1076,37 @@ export function applyCommand(
         ) + 1;
       content.execution = "planned";
       content.assignment = "accepted";
+    } else if (op.type === "set-task-completed") {
+      if (
+        actor.kind !== "human" ||
+        assignee.kind !== "human" ||
+        access.actantId !== assignee.id
+      )
+        throw new DomainError("forbidden", "只有本人可以标记自己的事项完成。");
+      if (content.execution === "cancelled")
+        throw new DomainError("conflict", "该事项已取消，请先重新安排。");
+      if ((content.execution === "completed") === op.completed)
+        throw new DomainError(
+          "conflict",
+          "事项状态已变化，请查看当前版本后操作。",
+        );
+      if (
+        op.completed &&
+        state.artifacts.some(
+          (a) =>
+            a.content.kind === "task" &&
+            a.content.dependsOnIds.includes(artifact.id) &&
+            !["completed", "cancelled"].includes(a.content.execution),
+        )
+      )
+        throw new DomainError(
+          "invalid",
+          "此事项关联后续工作，请提交结果并完成。",
+        );
+      content.execution = op.completed ? "completed" : "planned";
+      // This is an explicit Human status change, not a fabricated response or
+      // an Agent execution receipt. Historical responses and deliveries stay.
+      if (op.completed) content.assignment = "accepted";
     } else {
       if (assignee.kind !== "human" || access.actantId !== assignee.id)
         throw new DomainError("forbidden", "只有当前负责人可以回应这件事项。");

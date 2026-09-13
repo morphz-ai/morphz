@@ -241,7 +241,7 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
   }
   await nav.getByRole("button", { name: /^事项/ }).click();
   await page
-    .getByRole("button", { name: "打开事项", exact: true })
+    .getByRole("button", { name: `打开事项：${title}`, exact: true })
     .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
     .click();
   await openInput(page);

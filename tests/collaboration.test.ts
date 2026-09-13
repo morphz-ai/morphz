@@ -87,7 +87,8 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
     >(),
     requests = new Map<string, unknown>();
   const inputs = new Set<string>();
-  let lost = true;
+  let lost = true,
+    lifecycle = "open";
   const port = {
     session: async (_p: string, id: string) => "session-" + id,
     enqueue: (id: string) => {
@@ -123,7 +124,7 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
       }
       if (path.endsWith("/thread")) {
         const id = path.split("/turns/client-schedule-")[1]!.split("/")[0]!;
-        return { thread_id: "thread-" + id, lifecycle: "open" };
+        return { thread_id: "thread-" + id, lifecycle };
       }
       const record = records.get(path.split("/").at(-1)!)!;
       assert.ok(record);
@@ -213,7 +214,7 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
       "source events do not create another timing scheduler",
     );
     const current = s.snapshot().artifacts.find((a) => a.id === work)!;
-    execute(s, {
+    const handoffOperation: Operation = {
       type: "revise-artifact",
       artifactId: work,
       expectedRevision: current.revision,
@@ -225,7 +226,9 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
         runRequested: 0,
         everySeconds: null,
       },
-    });
+    };
+    assert.throws(() => execute(s, handoffOperation), /先停止/);
+    execute(s, handoffOperation, agent);
     c = new Collaboration(s, port);
     await c.reconcile();
     assert.equal(
@@ -244,6 +247,18 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
     await c.reconcile();
     assert.equal(inputs.size, 2, "转交后不继续生成来源输入");
     const handoff = s.snapshot().artifacts.find((a) => a.id === work)!;
+    assert.throws(
+      () =>
+        execute(s, {
+          type: "arrange-task",
+          taskId: work,
+          expectedRevision: handoff.revision,
+          changes: { assigneeId: "morphz-agent" },
+        }),
+      /先停止/,
+    );
+    lifecycle = "completed";
+    await c.reconcile();
     execute(s, {
       type: "revise-artifact",
       artifactId: work,

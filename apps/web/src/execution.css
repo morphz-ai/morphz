@@ -266,3 +266,20 @@
     animation: none;
   }
 }
+
+.approval-operation {
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr);
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.approval-operation > span {
+  color: var(--muted);
+}
+.approval-operation code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}

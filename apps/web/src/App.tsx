@@ -26,7 +26,6 @@ import {
   MessageSquarePlus,
   RefreshCw,
   ChevronRight,
-  CircleCheck,
   Search,
   FileUp,
   Mic,
@@ -45,8 +44,6 @@ import {
   inConversation,
   discussionId,
   applicationFor,
-  type Artifact,
-  type TaskContent,
 } from "../../../packages/core/src/model.js";
 import {
   actorName,
@@ -72,6 +69,8 @@ import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { BrandMark } from "./BrandMark.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
+import { TaskList } from "./TaskList.js";
+import { taskListOptions, type TaskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
 import {
   objectsApplication,
@@ -95,6 +94,7 @@ import { SidebarToggle } from "./SidebarToggle.js";
 
 type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type Preferences = {
+  taskList?: TaskListOptions;
   executionPinned?: boolean;
   executionWidth?: number;
   inspectorWidth?: number;
@@ -163,13 +163,6 @@ const labels: Record<View, string> = {
   content: "内容",
   desk: "工作台",
   projects: "项目",
-};
-const taskStatus: Record<TaskContent["execution"], string> = {
-  planned: "已计划",
-  active: "进行中",
-  waiting: "等待",
-  completed: "已完成",
-  cancelled: "已取消",
 };
 export function App() {
   const client = useWorkspace();
@@ -261,9 +254,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     [uploadingDrafts, setUploadingDrafts] = useState<Record<string, boolean>>(
       {},
     ),
-    [taskFilter, setTaskFilter] = useState<
-      "mine" | "active" | "waiting" | "completed" | "all"
-    >("mine"),
     [speech, setSpeech] = useState<{
       scope: SpeechScope;
       title: string;
@@ -1267,27 +1257,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       </div>
     );
   const tasks = inboxFor(state, client.boot!.principalId);
-  const visibleTasks =
-    taskFilter === "mine"
-      ? tasks
-      : state.artifacts
-          .filter(
-            (a) =>
-              a.content.kind === "task" &&
-              (taskFilter === "all" || a.content.execution === taskFilter),
-          )
-          .sort((a, b) => {
-            if (a.content.kind !== "task" || b.content.kind !== "task")
-              return 0;
-            const priority = { high: 0, normal: 1, low: 2 };
-            return (
-              priority[a.content.priority] - priority[b.content.priority] ||
-              (a.content.dueDate ?? "9999").localeCompare(
-                b.content.dueDate ?? "9999",
-              ) ||
-              b.updatedAt.localeCompare(a.updatedAt)
-            );
-          });
   const annotations = artifact
     ? state.annotations.filter((a) => a.artifactId === artifact.id)
     : [];
@@ -1680,63 +1649,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             className="page-toolbar-slot"
             ref={setPageToolbarTarget}
             hidden={applicationWorkspaceOpen || !!artifact}
-          >
-            {prefs.view === "inbox" && !artifact && (
-              <>
-                <div
-                  className="matter-filters"
-                  role="group"
-                  aria-label="事项状态"
-                >
-                  {(
-                    ["mine", "active", "waiting", "completed", "all"] as const
-                  ).map((filter) => (
-                    <button
-                      key={filter}
-                      aria-pressed={taskFilter === filter}
-                      onClick={() => setTaskFilter(filter)}
-                    >
-                      {
-                        {
-                          mine: "待我处理",
-                          active: "进行中",
-                          waiting: "等待",
-                          completed: "已完成",
-                          all: "全部",
-                        }[filter]
-                      }
-                    </button>
-                  ))}
-                </div>
-                <select
-                  className="matter-filter-select"
-                  aria-label="事项状态筛选"
-                  value={taskFilter}
-                  onChange={(e) =>
-                    setTaskFilter(e.target.value as typeof taskFilter)
-                  }
-                >
-                  <option value="mine">待我处理</option>
-                  <option value="active">进行中</option>
-                  <option value="waiting">等待</option>
-                  <option value="completed">已完成</option>
-                  <option value="all">全部</option>
-                </select>
-                <small className="toolbar-count">
-                  {visibleTasks.length} 项
-                </small>
-                <button
-                  className="secondary-action"
-                  aria-label="新建事项"
-                  title="新建事项"
-                  onClick={() => composeIntent("task")}
-                >
-                  <Plus />
-                  <span className="toolbar-action-label">新建</span>
-                </button>
-              </>
-            )}
-          </div>
+          ></div>
           <div
             className="detail-toolbar-slot"
             ref={setDetailToolbarTarget}
@@ -1987,36 +1900,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       }}
                     />
                   ) : prefs.view === "inbox" ? (
-                    <section
-                      className="collection matter-collection"
-                      aria-label="事项列表"
-                    >
-                      {visibleTasks.length ? (
-                        visibleTasks.map((a) => (
-                          <TaskRow
-                            key={a.id}
-                            artifact={a}
-                            onOpen={openUser}
-                            assignee={
-                              a.content.kind === "task"
-                                ? actorName(state, a.content.assigneeId)
-                                : ""
-                            }
-                          />
-                        ))
-                      ) : (
-                        <div className="empty-state">
-                          <span className="empty-icon">
-                            <Inbox />
-                          </span>
-                          <h2>
-                            {taskFilter === "mine"
-                              ? "目前没有待处理事项"
-                              : "这个分类下还没有事项"}
-                          </h2>
-                        </div>
-                      )}
-                    </section>
+                    <TaskList
+                      state={state}
+                      client={client}
+                      options={taskListOptions(prefs.taskList)}
+                      onOptions={(taskList) => prefer({ taskList })}
+                      onOpen={openUser}
+                      onCreate={() => composeIntent("task")}
+                      toolbarTarget={pageToolbarTarget}
+                    />
                   ) : prefs.view === "projects" && !prefs.projectOpen ? (
                     <ProjectDirectory
                       toolbarTarget={pageToolbarTarget}
@@ -2760,42 +2652,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         />
       )}
     </div>
-  );
-}
-function TaskRow({
-  artifact,
-  onOpen,
-  assignee,
-}: {
-  artifact: Artifact;
-  onOpen: (id: string) => void;
-  assignee: string;
-}) {
-  const c = artifact.content as TaskContent;
-  return (
-    <button
-      className="task-row"
-      aria-label="打开事项"
-      onClick={() => onOpen(artifact.id)}
-    >
-      <span className="task-check">
-        <CircleCheck />
-      </span>
-      <span className="task-summary">
-        <h2>{artifact.title}</h2>
-        <span className="task-description">
-          {c.description || "打开事项查看与调整安排。"}
-        </span>
-      </span>
-      <span className="task-meta">
-        {assignee} ·{" "}
-        <span className="priority-dot" data-priority={c.priority} />
-        {{ high: "高", normal: "普通", low: "低" }[c.priority]}优先级 ·{" "}
-        {taskStatus[c.execution]}
-        {c.dueDate && " · " + c.dueDate}
-      </span>
-      <ChevronRight />
-    </button>
   );
 }
 function CreateDialog({

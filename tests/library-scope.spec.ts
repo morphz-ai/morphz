@@ -188,7 +188,8 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await expect(page.locator(".breadcrumb")).toContainText("事项");
   await expect(page.getByLabel("事项说明")).toContainText("同一个事项的正文");
   await page.getByRole("button", { name: "手动编辑", exact: true }).click();
-  await page.getByLabel("优先级", { exact: true }).selectOption("high");
+  await expect(page.getByLabel("优先级", { exact: true })).toHaveCount(0);
+  await page.getByLabel("截止日期", { exact: true }).fill("2099-09-18");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
   await expect
     .poll(

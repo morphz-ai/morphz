@@ -4,6 +4,11 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { pdfContentSchema } from "../../../packages/core/src/pdf.js";
 import { SearchIndex } from "./search-index.js";
+import {
+  taskRunBusy,
+  taskRuntimeSchema,
+} from "../../../packages/core/src/task-runtime.js";
+import { z } from "zod";
 import type { SearchRequest } from "../../../packages/core/src/retrieval.js";
 import type { ArtifactOutput } from "../../../packages/core/src/conversation.js";
 import {
@@ -257,7 +262,7 @@ export class WorkspaceStore {
           (i) => i.id === o.inputId && i.projectId === o.projectId,
         ) &&
         state.artifacts.some(
-          (a) => a.id === o.artifactId && a.projectId === o.projectId,
+          (a) => a.id === o.artifactId && projects.has(a.projectId),
         ),
     );
   }
@@ -288,6 +293,95 @@ export class WorkspaceStore {
         return JSON.parse(previous.receipt) as Receipt;
       }
       const op = command.operation;
+      // Enforce the execution boundary inside the same transaction as the edit.
+      // A stale UI (or a generic revise command) cannot silently retarget work.
+      const taskId =
+        op.type === "arrange-task" ||
+        op.type === "request-task-run" ||
+        op.type === "cancel-task"
+          ? op.taskId
+          : op.type === "revise-artifact"
+            ? op.artifactId
+            : null;
+      const currentState = this.snapshot();
+      const task = currentState.artifacts.find((a) => a.id === taskId);
+      if (task?.content.kind === "task") {
+        const currentTask = task.content;
+        const reassign =
+          op.type === "arrange-task"
+            ? (op.changes.projectId !== undefined &&
+                op.changes.projectId !== task.projectId) ||
+              (op.changes.assigneeId !== undefined &&
+                op.changes.assigneeId !== task.content.assigneeId)
+            : op.type === "revise-artifact" &&
+              op.content.kind === "task" &&
+              op.content.assigneeId !== task.content.assigneeId &&
+              currentState.actants.find((a) => a.id === access.actantId)
+                ?.kind === "human";
+        if (
+          reassign ||
+          op.type === "request-task-run" ||
+          op.type === "cancel-task"
+        ) {
+          const saved = z
+            .object({
+              runs: z
+                .array(
+                  z
+                    .object({
+                      taskId: z.string(),
+                      watchSourceIds: z.array(z.string()).default([]),
+                    })
+                    .passthrough(),
+                )
+                .default([]),
+            })
+            .parse(this.serviceState("collaboration") ?? {});
+          const runtime = taskRuntimeSchema.parse({
+            runs: saved.runs
+              .filter((r) => r.taskId === task.id)
+              .map((r) => ({
+                ...r,
+                hasSourceWatch: r.watchSourceIds.length > 0,
+              })),
+          });
+          const deliveries = z
+            .object({
+              deliveries: z
+                .array(z.object({ inputId: z.string(), state: z.string() }))
+                .default([]),
+            })
+            .parse(this.runtimeState() ?? {}).deliveries;
+          const directActive = deliveries.some(
+            (d) =>
+              ["queued", "sending", "running"].includes(d.state) &&
+              currentState.inputs.some(
+                (i) => i.id === d.inputId && i.artifactId === task.id,
+              ),
+          );
+          const withdrawnBeforeAdmission =
+            op.type === "cancel-task" &&
+            !runtime.runs.some((r) => r.run === currentTask.runRequested);
+          if (
+            runtime.runs.some(
+              (r) =>
+                r.run !== currentTask.runRequested &&
+                taskRunBusy(
+                  { ...currentTask, runRequested: r.run },
+                  { runs: [r], error: "" },
+                ),
+            ) ||
+            (!withdrawnBeforeAdmission && taskRunBusy(task.content, runtime)) ||
+            directActive
+          )
+            throw new DomainError(
+              "conflict",
+              reassign
+                ? "此事项仍有执行或待执行安排，请先停止再更改项目或负责人。"
+                : "此事项已有执行或待执行安排，请先停止；不会重复启动。",
+            );
+        }
+      }
       if (op.type === "record-input")
         for (const attachment of op.attachments ?? []) {
           const asset = this.attachmentAsset(attachment.assetId, access);

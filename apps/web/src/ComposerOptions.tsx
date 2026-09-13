@@ -7,7 +7,7 @@ import {
 } from "react";
 import { MoreHorizontal } from "lucide-react";
 
-type Option = {
+export type ComposerOption = {
   label: string;
   text?: string;
   icon: ReactNode;
@@ -26,14 +26,16 @@ export function ComposerOptions({
   menuLabel = "输入选项",
   below = false,
   modelControl,
+  triggerIcon = <MoreHorizontal />,
 }: {
   model?: string;
   unread?: boolean;
-  options: Option[];
+  options: ComposerOption[];
   label?: string;
   menuLabel?: string;
   below?: boolean;
   modelControl?: ReactNode;
+  triggerIcon?: ReactNode;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -57,7 +59,11 @@ export function ComposerOptions({
       element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, innerHeight - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
     };
     position();
-    element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    element
+      .querySelector<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
+      )
+      ?.focus();
     const outside = (event: Event) => {
       if (
         !element.contains(event.target as Node) &&
@@ -96,7 +102,7 @@ export function ComposerOptions({
         aria-describedby={unread ? `${id}-unread` : undefined}
         onClick={() => setOpen(!open)}
       >
-        <MoreHorizontal />
+        {triggerIcon}
         {unread && (
           <span className="unread-label" id={`${id}-unread`}>
             有新回复

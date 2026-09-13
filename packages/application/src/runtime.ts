@@ -24,9 +24,13 @@ import {
   localAccess,
   getArtifact,
 } from "../../../packages/core/src/model.js";
-import { ExecutionControls } from "./execution.js";
+import { ExecutionControls, approvalFingerprint } from "./execution.js";
 import { Collaboration } from "./collaboration.js";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import {
+  approvalSchema,
+  type ExecutionScope,
+  type ExecutionAttention,
+} from "../../../packages/core/src/execution.js";
 import {
   type ConversationRuntime,
   deliverySchema,
@@ -384,6 +388,8 @@ export class RuntimeBridge {
   readonly executions: ExecutionControls;
   readonly collaboration: Collaboration;
   private state: z.infer<typeof storedSchema>;
+  // Ephemeral: approvals must be refreshed after restart, never restored as live.
+  private attention: ExecutionAttention = { available: false, approvals: [] };
   private busy = false;
   private stopped = false;
   private timer?: ReturnType<typeof setInterval>;
@@ -396,9 +402,20 @@ export class RuntimeBridge {
       throw new Error("可信网关适配需要中心身份目录。");
     this.collaboration = new Collaboration(store, {
       session: async (projectId, artifactId) => {
-        const origin = this.store
-          .snapshot()
-          .artifacts.find((a) => a.id === artifactId)?.originConversationId;
+        const workspace = this.store.snapshot();
+        const original = workspace.artifacts.find(
+          (a) => a.id === artifactId,
+        )?.originConversationId;
+        const conversation = workspace.conversations.find(
+          (c) => c.id === original,
+        );
+        const owner = workspace.projects.find(
+          (p) => p.id === conversation?.projectId,
+        );
+        const origin =
+          conversation?.projectId === projectId || owner?.kind === "dialogue"
+            ? original
+            : undefined;
         const id = this.objectSession(
           projectId,
           artifactId,
@@ -413,6 +430,7 @@ export class RuntimeBridge {
       },
       request: (path, method, body) => this.request(path, method, body),
       enqueue: (id) => this.enqueue(id),
+      approvalCount: (threadId, access) => this.snapshot(access).attention?.approvals.filter(a => a.scope.threadId === threadId).length ?? 0,
       conversation: (id) =>
         this.state.sessions[id]
           ? discussionId(this.state.sessions[id]!)
@@ -930,6 +948,12 @@ export class RuntimeBridge {
         )
       : null;
     return {
+      attention: {
+        available: this.state.connected && this.attention.available,
+        approvals: this.attention.approvals.filter(
+          (a) => !projects || projects.has(a.scope.projectId),
+        ),
+      },
       ...(this.state.activity
         ? {
             activity: {
@@ -1107,6 +1131,57 @@ export class RuntimeBridge {
         ...(this.state.activity ?? activity),
         available: false,
       };
+    }
+  }
+  private async refreshAttention() {
+    try {
+      const data = z
+        .object({ approvals: z.array(approvalSchema) })
+        .parse(await this.request("/api/approvals"));
+      const workspace = this.store.snapshot();
+      const approvals: ExecutionAttention["approvals"] = [];
+      for (const approval of data.approvals) {
+        const request = approval.request;
+        const session = this.state.sessions[request.session_id];
+        if (
+          !session ||
+          request.context_id !== this.contextId(session.projectId)
+        )
+          continue;
+        const thread = request.thread_id
+          ? this.state.threadBindings[request.thread_id]
+          : undefined;
+        if (
+          thread &&
+          (thread.sessionId !== session.id ||
+            (request.root_turn_id && thread.rootId !== request.root_turn_id))
+        )
+          continue;
+        const root = request.root_turn_id ?? thread?.rootId;
+        const delivery = root
+          ? this.state.deliveries.find(
+              (d) => d.sessionId === session.id && d.rootId === root,
+            )
+          : undefined;
+        const input = workspace.inputs.find((i) => i.id === delivery?.inputId);
+        // Shared default Sessions span work projects. Never infer ownership from
+        // the selected page or transport session when the receipt is missing.
+        if (session.sharedDefault && !input) continue;
+        const projectId = input?.projectId ?? session.projectId;
+        approvals.push({
+          scope: {
+            projectId,
+            conversationId: input ? discussionId(input) : discussionId(session),
+            artifactId: input?.artifactId ?? session.artifactId,
+            ...(input ? { inputId: input.id } : {}),
+            ...(thread ? { threadId: thread.id } : {}),
+          },
+          approval: { ...approval, fingerprint: approvalFingerprint(approval) },
+        });
+      }
+      this.attention = { available: true, approvals };
+    } catch {
+      this.attention = { ...this.attention, available: false };
     }
   }
   private objectSession(
@@ -1626,6 +1701,7 @@ export class RuntimeBridge {
         }
       }
       await this.refreshActivity();
+      await this.refreshAttention();
       this.browser?.drain(
         (projectId, sessionId) =>
           !this.state.deliveries.some(

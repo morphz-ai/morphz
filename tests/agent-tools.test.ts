@@ -12,7 +12,7 @@ import {
 } from "../apps/service/src/agent-tools.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { createAppServer } from "../apps/service/src/http.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { localAccess, orderedTasks } from "../packages/core/src/model.js";
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
 const route: HostInvocation = {
   job_id: "job-1",
@@ -35,6 +35,129 @@ const scope = (invocation: HostInvocation) => {
   assert.equal(invocation.principal_id, route.principal_id);
   return { projectId: "first-project", access: agent };
 };
+
+test("Agent 直接读取、排序和安排同一事项；幂等回执、Human 排序冲突、跨项目与代确认保护", () => {
+  const store = new WorkspaceStore(":memory:"),
+    tools = new AgentTools(store, "token", scope);
+  try {
+    const task = {
+      kind: "task",
+      description: "合成测试",
+      assigneeId: "local-human",
+      model: null,
+      dueDate: null,
+      assignment: "proposed",
+      execution: "planned",
+      delivery: "none",
+      resultIds: [],
+    };
+    const a = (
+      tools.call(envelope({ action: "create-task", title: "A", task })) as {
+        artifactId: string;
+      }
+    ).artifactId;
+    const b = (
+      tools.call(envelope({ action: "create-task", title: "B", task })) as {
+        artifactId: string;
+      }
+    ).artifactId;
+    const list = tools.call(envelope({ action: "list-tasks" })) as {
+      orderRevision: number;
+      tasks: { artifactId: string }[];
+    };
+    const requested = list.tasks.map((a) => a.artifactId).reverse();
+    const reorder = envelope({
+      action: "reorder-tasks",
+      taskIds: requested,
+      orderRevision: list.orderRevision,
+    });
+    const receipt = tools.call(reorder);
+    assert.deepEqual(tools.call(reorder), receipt);
+    assert.deepEqual(
+      (receipt as { tasks: { artifactId: string }[] }).tasks.map(
+        (t) => t.artifactId,
+      ),
+      requested,
+    );
+    assert.deepEqual(
+      orderedTasks(store.snapshot()).map((a) => a.id),
+      requested,
+    );
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "reorder-tasks",
+          taskIds: [a, b],
+          expectedOrderRevision: 1,
+        },
+      },
+      localAccess,
+    );
+    assert.throws(
+      () =>
+        tools.call(
+          envelope({
+            action: "reorder-tasks",
+            taskIds: [b, a],
+            orderRevision: 1,
+          }),
+        ),
+      /顺序已变化/,
+    );
+    tools.call(
+      envelope({
+        action: "arrange-task",
+        artifactId: a,
+        revision: 1,
+        changes: { dueDate: "2026-09-18", assigneeId: "morphz-agent" },
+      }),
+    );
+    const status = tools.call(
+      envelope({ action: "task-status", artifactId: a }),
+    ) as {
+      runRequested: number;
+      revision: number;
+      assigneeName: string;
+      projectTitle: string;
+      dueDate: string;
+      display: { state: string; label: string };
+    };
+    assert.equal(status.runRequested, 0);
+    assert.equal(status.revision, 2);
+    assert.equal(status.assigneeName, "Morphz");
+    assert.ok(status.projectTitle);
+    assert.equal(status.dueDate, "2026-09-18");
+    assert.equal(status.display.label, "待开始");
+    assert.throws(
+      () =>
+        tools.call(
+          envelope({
+            action: "arrange-task",
+            artifactId: a,
+            revision: 2,
+            changes: { projectId: "local-inbox" },
+          }),
+        ),
+      /跨项目/,
+    );
+    assert.throws(
+      () =>
+        tools.call(
+          envelope({
+            action: "finish-task",
+            artifactId: b,
+            revision: 1,
+            resultIds: [a],
+          }),
+        ),
+      /Human/,
+    );
+    assert.equal(store.snapshot().taskResponses.length, 0);
+  } finally {
+    store.close();
+  }
+});
 
 test("公开当前理解由已提交帧生成，保留来源和版本，Human 只能提出纠正", async () => {
   const store = new WorkspaceStore(":memory:");

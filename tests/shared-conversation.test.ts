@@ -31,6 +31,9 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
   >();
   const threadRoots = new Map<string, string>();
   let schedulerDown = false;
+  let approvalsDown = false;
+  let approvalReads = 0;
+  let pendingApprovals: unknown[] = [];
   const fake = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c);
@@ -105,7 +108,10 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
       });
     }
     if (path.endsWith("/events")) return send(200, { events: [] });
-    if (path === "/api/approvals") return send(200, { approvals: [] });
+    if (path === "/api/approvals") {
+      approvalReads++;
+      return send(approvalsDown ? 503 : 200, { approvals: pendingApprovals });
+    }
     return send(sessions.has(sid) ? 200 : 404, sessions.get(sid) ?? {});
   });
   await new Promise<void>((resolve) => fake.listen(0, "127.0.0.1", resolve));
@@ -180,7 +186,91 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
       );
     }
     const before = store.runtimeState();
+    const pending = (inputId: string) => ({
+      requested_at: "2026-09-09T00:00:00Z",
+      request: {
+        approval_id: "approval-" + inputId,
+        session_id: received.get(inputId)!.sessionId,
+        context_id: sessions.get(received.get(inputId)!.sessionId)!.context_id,
+        thread_id: "thread-" + inputId,
+        root_turn_id: received.get(inputId)!.root,
+        justification: "读取测试目录",
+        action: {
+          kind: "tool_operation",
+          tool: "read",
+          operation: "read",
+          target: "/fixture",
+        },
+        requested: { read_roots: ["/fixture"], network: false },
+      },
+    });
+    pendingApprovals = [
+      pending(a),
+      pending(b),
+      {
+        ...pending(a),
+        request: {
+          ...pending(a).request,
+          approval_id: "unattributed",
+          root_turn_id: "unknown-root",
+          thread_id: "unknown-thread",
+        },
+      },
+      {
+        ...pending(a),
+        request: {
+          ...pending(a).request,
+          approval_id: "foreign-context",
+          context_id: "foreign",
+        },
+      },
+      {
+        ...pending(a),
+        request: {
+          ...pending(a).request,
+          approval_id: "inconsistent-root",
+          root_turn_id: received.get(b)!.root,
+        },
+      },
+    ];
+    const reads = approvalReads;
     await bridge.tick();
+    assert.equal(
+      approvalReads - reads,
+      1,
+      "全局摘要只读取一次审批，不按消息展开工具历史",
+    );
+    const attention = bridge.snapshot().attention!;
+    assert.equal(attention.available, true);
+    assert.deepEqual(
+      attention.approvals.map((entry) => [
+        entry.scope.projectId,
+        entry.scope.inputId,
+      ]),
+      [
+        ["first-project", a],
+        [projectB, b],
+      ],
+    );
+    assert.ok(
+      attention.approvals.every((entry) =>
+        /^[a-f0-9]{64}$/.test(entry.approval.fingerprint),
+      ),
+    );
+    assert.deepEqual(
+      bridge.snapshot({ principalId: "not-a-member", actantId: "test" })
+        .attention?.approvals,
+      [],
+    );
+    approvalsDown = true;
+    await bridge.tick();
+    assert.equal(bridge.snapshot().attention?.available, false);
+    assert.equal(
+      bridge.snapshot().attention?.approvals.length,
+      2,
+      "失联保留待核对记录，不返回假零审批",
+    );
+    approvalsDown = false;
     assert.equal(bridge.snapshot().activity?.available, true);
     assert.deepEqual(
       new Set(bridge.snapshot().activity?.threads.map((t) => t.projectId)),
@@ -197,6 +287,11 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
     schedulerDown = false;
     await bridge.stop();
     bridge = new RuntimeBridge(store, config);
+    assert.deepEqual(
+      bridge.snapshot().attention,
+      { available: false, approvals: [] },
+      "重启不把缓存审批当作实时状态",
+    );
     bridge.enqueue(a);
     await bridge.tick();
     assert.equal(received.size, 4);

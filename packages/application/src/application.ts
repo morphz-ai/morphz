@@ -147,9 +147,18 @@ export class ApplicationSession {
         runtime: this.options.runtime?.snapshot().connected ?? false,
         teamAuthentication: !!this.options.identity,
         conversationOnFirstInput: true,
+        taskCompletion: true,
       },
       runtime:
         this.options.runtime?.snapshot(this.access) ?? disconnectedRuntime,
+      taskRuns: Object.fromEntries(
+        workspaceFor(this.store.snapshot(), this.access)
+          .artifacts.filter((a) => a.content.kind === "task")
+          .map((a) => [
+            a.id,
+            this.options.runtime?.collaboration.snapshot(a.id, this.access) ?? { runs: [] },
+          ]),
+      ),
     };
   }
   async command(raw: unknown) {
@@ -360,7 +369,7 @@ export class ApplicationSession {
     this.active();
     const id = identifier.parse(raw);
     readArtifact(this.store.snapshot(), id, this.access);
-    return this.options.runtime?.collaboration.snapshot(id) ?? { runs: [] };
+    return this.options.runtime?.collaboration.snapshot(id, this.access) ?? { runs: [] };
   }
   async taskControl(raw: unknown) {
     const runtime = this.runtime();
@@ -369,7 +378,7 @@ export class ApplicationSession {
         id: identifier,
         run: z.number().int().positive(),
         revision: z.number().int().positive(),
-        action: z.enum(["pause", "resume", "cancel"]),
+        action: z.enum(["pause", "resume", "cancel", "stop"]),
       })
       .strict()
       .parse(raw);
