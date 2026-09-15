@@ -398,6 +398,13 @@ export class DesktopSources {
     this.timer.unref();
     poll();
   }
+  async suspendAll() {
+    await this.stop();
+    if (this.config.grants.some((g) => g.enabled)) {
+      for (const grant of this.config.grants) grant.enabled = false;
+      this.save();
+    }
+  }
   async stop() {
     this.closing = true;
     clearInterval(this.timer);

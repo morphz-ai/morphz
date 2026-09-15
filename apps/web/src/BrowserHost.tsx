@@ -84,6 +84,21 @@ export function BrowserHost({
       const visibleWidth = r
         ? Math.max(0, Math.min(r.right, inspector?.left ?? r.right) - r.left)
         : 0;
+      // Floating input tools can extend above the in-flow composer. A native
+      // page is a separate surface: keep its bottom clear of those controls
+      // without adding a toolbar row or reopening/navigating the page.
+      const inputTools = document
+        .querySelector<HTMLElement>(".composer-floating-tools")
+        ?.getBoundingClientRect();
+      const visibleHeight = r
+        ? Math.max(
+            0,
+            Math.min(
+              r.bottom,
+              inputTools?.height ? inputTools.top - 4 : r.bottom,
+            ) - r.top,
+          )
+        : 0;
       const hidden =
         !activeViewRef.current ||
         document.hidden ||
@@ -92,13 +107,13 @@ export function BrowserHost({
         ) ||
         !r ||
         visibleWidth < 10 ||
-        r.height < 10 ||
+        visibleHeight < 10 ||
         r.bottom < 120;
       await desktop.layout(
         id,
         hidden
           ? null
-          : { x: r.x, y: r.y, width: visibleWidth, height: r.height },
+          : { x: r.x, y: r.y, width: visibleWidth, height: visibleHeight },
       );
     };
     const update = () => void layout().catch(() => {});

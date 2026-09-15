@@ -69,7 +69,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   await page.getByLabel("新文档正文").fill("搜索需要保持输入的连续性。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page.locator(".object-paper > h1")).toHaveText("快速打开验证");
-  const input = page.getByLabel("AI 输入内容");
+  const input = await openInput(page);
   await input.fill("保留这份输入草稿");
   await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(2, 6));
   expect(
@@ -106,10 +106,12 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   await page.screenshot({ path: "test-results/quick-search-760.png" });
   await page.keyboard.press("Escape");
   await page.getByLabel("工作空间选项").click();
-  await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
-    .click();
-  await expect(page.getByRole("dialog", { name: "导入资料" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "打开文件", exact: true }),
+  ).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByLabel("工作空间选项")).toBeFocused();
 });
@@ -289,6 +291,8 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
   await composerAction(page, "查看交流记录");
   expect(await exchange.evaluate((el) => el.scrollTop)).toBeLessThan(5);
   await page.getByRole("button", { name: "有新内容 · 返回最新" }).click();
+  await expect(page.getByLabel("AI 输入内容")).toBeFocused();
+  await expect(exchange).toBeVisible();
   await expect(
     page.getByRole("button", { name: "有新内容 · 返回最新" }),
   ).toHaveCount(0);

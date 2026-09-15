@@ -6,7 +6,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { SidebarToggle } from "./SidebarToggle.js";
+import { ChevronDown } from "lucide-react";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import {
   inspectorLayout,
   INSPECTOR_MIN_WIDTH,
@@ -46,6 +47,7 @@ export function InspectorPanel({
   children,
   footer,
   focusOnMount = true,
+  viewOptions,
 }: {
   className: string;
   label: string;
@@ -60,6 +62,7 @@ export function InspectorPanel({
   children: ReactNode;
   footer?: ReactNode;
   focusOnMount?: boolean;
+  viewOptions?: ComposerOption[];
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -128,16 +131,19 @@ export function InspectorPanel({
         <h2 ref={heading} tabIndex={-1}>
           {title}
         </h2>
+        {viewOptions && (
+          <ComposerOptions
+            label="切换右栏内容"
+            menuLabel="右栏内容"
+            below
+            triggerIcon={<ChevronDown />}
+            options={viewOptions}
+          />
+        )}
         <span className="inspector-context" title={context}>
           {context}
         </span>
         {actions}
-        <SidebarToggle
-          side="right"
-          expanded
-          controls="workspace-inspector"
-          onClick={onClose}
-        />
       </header>
       <div className="inspector-scroll">{children}</div>
       {footer}

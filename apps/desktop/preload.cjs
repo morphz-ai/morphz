@@ -49,6 +49,16 @@ contextBridge.exposeInMainWorld(
         ipcRenderer.invoke("browser:layout", pageId, bounds),
       close: (pageId) => ipcRenderer.invoke("browser:close", pageId),
     }),
+    directories: Object.freeze({
+      choose: (projectId, conversationId) =>
+        ipcRenderer.invoke("directories:choose", projectId, conversationId),
+    }),
+    files: Object.freeze({
+      choose: (projectId, kind) =>
+        ipcRenderer.invoke("files:choose", projectId, kind),
+      read: (request) => ipcRenderer.invoke("files:read", request),
+      revoke: (request) => ipcRenderer.invoke("files:revoke", request),
+    }),
     sources: Object.freeze({
       list: () => ipcRenderer.invoke("sources:list"),
       choose: (projectId, kind) =>

@@ -3,6 +3,7 @@ import type { WorkspaceClient } from "./client.js";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
+import type { ComposerOption } from "./ComposerOptions.js";
 
 /** Public, committed understanding; inspecting it never submits an input. */
 export function UnderstandingPanel({
@@ -13,6 +14,7 @@ export function UnderstandingPanel({
   onClose,
   layout,
   onResize,
+  viewOptions,
 }: {
   client: WorkspaceClient;
   projectId: string;
@@ -21,6 +23,7 @@ export function UnderstandingPanel({
   onClose: () => void;
   layout: InspectorLayout;
   onResize: (width: number) => void;
+  viewOptions?: ComposerOption[];
 }) {
   const state = client.boot!.workspace;
   const project = state.projects.find((p) => p.id === projectId);
@@ -42,6 +45,7 @@ export function UnderstandingPanel({
       layout={layout}
       onResize={onResize}
       onClose={onClose}
+      viewOptions={viewOptions}
       footer={
         <footer>
           {artifact && (

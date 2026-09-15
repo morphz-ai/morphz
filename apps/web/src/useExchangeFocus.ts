@@ -26,7 +26,7 @@ export function useExchangeFocus(options: {
           : target instanceof Node
             ? target.parentElement
             : null;
-      const region = element?.closest(".composer, .conversation");
+      const region = element?.closest(".exchange-panel[data-open]");
       return !!region && !!latest.current.root.current?.contains(region);
     };
     function leave(snapshot: typeof options, windowBlur = false) {

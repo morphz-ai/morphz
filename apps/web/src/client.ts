@@ -45,6 +45,8 @@ const bootSchema = z.object({
     runtime: z.boolean(),
     teamAuthentication: z.boolean(),
     conversationOnFirstInput: z.boolean().default(false),
+    localFiles: z.boolean().default(false),
+    agentDirectories: z.boolean().default(false),
     taskCompletion: z.boolean().default(false),
   }),
   runtime: conversationRuntimeSchema.default(disconnectedRuntime),

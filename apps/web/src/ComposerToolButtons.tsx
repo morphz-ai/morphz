@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 type Tool = {
   id?: string;
@@ -20,31 +20,9 @@ export function ComposerToolButtons({
   options: Tool[];
   unread?: boolean;
 }) {
-  const first = useRef<HTMLButtonElement>(null);
-  useLayoutEffect(() => {
-    const toolbar = first.current?.parentElement;
-    const composer = toolbar?.closest<HTMLElement>(".composer");
-    if (!toolbar || !composer) return;
-    const measure = () => {
-      const height = toolbar.getBoundingClientRect().height;
-      // The screenshot picker deliberately removes the composer from layout.
-      // Preserve its last visible tool-row height so restoring it cannot flash
-      // a collapsed top margin before ResizeObserver measures it again.
-      if (height > 0)
-        composer.style.setProperty("--composer-tools-height", `${height}px`);
-    };
-    const observer = new ResizeObserver(measure);
-    observer.observe(toolbar);
-    measure();
-    return () => {
-      observer.disconnect();
-      composer.style.removeProperty("--composer-tools-height");
-    };
-  }, []);
-  return options.map((option, index) => (
+  return options.map((option) => (
     <button
       key={option.id ?? option.label}
-      ref={index === 0 ? first : undefined}
       className={
         "icon-button composer-tool" +
         (option.groupStart ? " composer-tool-group-start" : "") +

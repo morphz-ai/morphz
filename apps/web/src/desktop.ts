@@ -59,6 +59,32 @@ declare global {
         onChange(callback: (state: DesktopAppearanceState) => void): () => void;
       };
       openExternal?(url: string): Promise<void>;
+      directories?: {
+        choose(
+          projectId: string,
+          conversationId: string,
+        ): Promise<
+          | import("../../../packages/core/src/local-files.js").DirectoryGrant
+          | null
+        >;
+      };
+      files?: {
+        choose(
+          projectId: string,
+          kind: "file" | "directory",
+        ): Promise<
+          | import("../../../packages/core/src/local-files.js").LocalFileView
+          | null
+        >;
+        read(request: {
+          projectId: string;
+          grantId: string;
+          path: string;
+        }): Promise<
+          import("../../../packages/core/src/local-files.js").LocalFileView
+        >;
+        revoke(request: { projectId: string; grantId: string }): Promise<void>;
+      };
       capture: {
         select(options?: {
           hideWindow?: boolean;

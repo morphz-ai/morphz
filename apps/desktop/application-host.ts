@@ -24,6 +24,7 @@ import {
 import { loadIdentity } from "../../packages/application/src/identity-config.js";
 import { BrowserBroker } from "../../packages/application/src/browser.js";
 import { SpeechService } from "../../packages/application/src/speech.js";
+import { LocalFiles } from "../../packages/application/src/local-files.js";
 import { loadServiceEnvironment } from "../../packages/application/src/environment.js";
 import {
   listenLocalHostTools,
@@ -91,12 +92,17 @@ export async function openEmbeddedApplication(
     const config = loadRuntimeConfig(directory);
     runtime = config ? new RuntimeBridge(store, config, identity) : undefined;
     const browser = new BrowserBroker(store);
+    const localFiles = new LocalFiles(
+      join(profile, "local-file-references.json"),
+      store,
+    );
     runtime?.attachBrowser(browser);
     const application = new Application(store, {
       runtime,
       identity,
       browser,
       speech: new SpeechService(process.env.DOUBAO_API_KEY),
+      localFiles,
     });
     const authentication = authenticationFile(profile, store.identity());
     let cookie = authentication.read();
@@ -120,12 +126,13 @@ export async function openEmbeddedApplication(
     if (runtime && manifest)
       tools = await listenLocalHostTools(
         manifest.endpoint,
-        runtimeAgentTools(store, runtime, manifest.token, browser),
+        runtimeAgentTools(store, runtime, manifest.token, browser, localFiles),
       );
     runtime?.start();
     let stopping: Promise<void> | undefined;
     return {
       connection,
+      localFiles,
       manifestPath: manifest?.path,
       persistAuthentication() {
         authentication.save(connection.authenticationCookie());

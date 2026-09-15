@@ -68,11 +68,9 @@ export function ApplicationHost({
   foreground = true,
   toolbarTarget,
   onBrowserPage,
-  onConnectFolder,
   onInput,
 }: {
   onBrowserPage?: (page: BrowserView | null) => void;
-  onConnectFolder?: () => void;
   onInput?: () => void;
   client: WorkspaceClient;
   workspaceId: string;
@@ -299,12 +297,6 @@ export function ApplicationHost({
       {toolbarTarget && createPortal(toolbar, toolbarTarget)}
       {!active && (
         <div className="application-launcher">
-          {onConnectFolder && (
-            <button className="connect-folder" onClick={onConnectFolder}>
-              <FolderOpen />
-              连接本地文件夹
-            </button>
-          )}
           {state.artifacts.some((a) => a.projectId === workspaceId) && (
             <div className="workspace-recent" aria-label="继续工作">
               {state.artifacts

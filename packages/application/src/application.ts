@@ -30,12 +30,14 @@ import { type SpeechProvider, ttsRequestSchema } from "./speech.js";
 import { IdentityCenter, workspaceFor, requiresIdentity } from "./identity.js";
 import { Notifications } from "./notifications.js";
 import { extractPdf } from "./pdf.js";
+import type { LocalFiles } from "./local-files.js";
 
 export type ApplicationOptions = {
   runtime?: RuntimeBridge;
   identity?: IdentityCenter;
   browser?: BrowserBroker;
   speech?: SpeechProvider;
+  localFiles?: LocalFiles;
 };
 export class ApplicationUnavailable extends Error {
   readonly status = 503;
@@ -147,6 +149,8 @@ export class ApplicationSession {
         runtime: this.options.runtime?.snapshot().connected ?? false,
         teamAuthentication: !!this.options.identity,
         conversationOnFirstInput: true,
+        localFiles: !!this.options.localFiles,
+        agentDirectories: !!this.options.localFiles,
         taskCompletion: true,
       },
       runtime:
@@ -156,7 +160,9 @@ export class ApplicationSession {
           .artifacts.filter((a) => a.content.kind === "task")
           .map((a) => [
             a.id,
-            this.options.runtime?.collaboration.snapshot(a.id, this.access) ?? { runs: [] },
+            this.options.runtime?.collaboration.snapshot(a.id, this.access) ?? {
+              runs: [],
+            },
           ]),
       ),
     };
@@ -191,7 +197,9 @@ export class ApplicationSession {
       );
     }
     this.active();
-    return this.store.execute(command, this.access);
+    return this.store.execute(command, this.access, undefined, () =>
+      this.validateLocalInput(op),
+    );
   }
   async message(raw: unknown) {
     const runtime = this.runtime(),
@@ -204,7 +212,9 @@ export class ApplicationSession {
         runtime.validateInference(model, reasoningEffort),
       );
     this.active();
-    const receipt = this.store.execute(command, this.access);
+    const receipt = this.store.execute(command, this.access, undefined, () =>
+      this.validateLocalInput(command.operation),
+    );
     runtime.as(this.access, () => runtime.enqueue(receipt.entityId));
     return receipt;
   }
@@ -213,6 +223,34 @@ export class ApplicationSession {
       id = identifier.parse(inputId);
     runtime.as(this.access, () => runtime.enqueue(id));
     return { accepted: true };
+  }
+  private validateLocalInput(
+    operation: import("../../core/src/model.js").Operation,
+  ) {
+    if (operation.type !== "record-input") return;
+    if (operation.directories?.length) {
+      if (!this.options.localFiles)
+        throw new DomainError("invalid", "此中心不支持本机目录授权。");
+      for (const directory of operation.directories)
+        this.options.localFiles.validateDirectory(
+          directory,
+          operation.projectId,
+          operation.conversationId ?? operation.projectId,
+          this.access,
+        );
+    }
+    if (!operation.localFile) return;
+    if (!this.options.localFiles)
+      throw new DomainError(
+        "invalid",
+        "此中心不支持本机文件引用；未上传文件。",
+      );
+    this.options.localFiles.validate(
+      operation.localFile,
+      operation.projectId,
+      this.access,
+      operation.selection,
+    );
   }
   cancelInput(inputId: unknown) {
     const runtime = this.runtime(),
@@ -232,6 +270,72 @@ export class ApplicationSession {
       .strict()
       .parse(raw);
     return this.store.search(request, this.access);
+  }
+  directories(raw: unknown, revoke = false) {
+    this.active();
+    const request = z
+      .object({
+        projectId: identifier,
+        conversationId: identifier,
+        grantId: z.uuid().optional(),
+      })
+      .strict()
+      .parse(raw);
+    const files = this.options.localFiles;
+    if (!files)
+      throw new DomainError("invalid", "目录授权仅在本机桌面中心可用。");
+    if (revoke) {
+      if (
+        !request.grantId ||
+        !files
+          .directories(request.projectId, request.conversationId, this.access)
+          .some((g) => g.grantId === request.grantId)
+      )
+        throw new DomainError("forbidden", "目录不属于此对话。");
+      files.revoke(request.grantId, request.projectId, this.access);
+    }
+    return files.directories(
+      request.projectId,
+      request.conversationId,
+      this.access,
+    );
+  }
+  localFiles(raw: unknown, revoke = false) {
+    this.active();
+    const request = z
+      .object({
+        projectId: identifier,
+        grantId: z.uuid(),
+        path: z.string().max(4096).default(""),
+      })
+      .strict()
+      .parse(raw);
+    if (!this.options.localFiles)
+      throw new DomainError("invalid", "本机文件访问仅在本机桌面中心可用。");
+    try {
+      return revoke
+        ? this.options.localFiles.revoke(
+            request.grantId,
+            request.projectId,
+            this.access,
+          )
+        : this.options.localFiles.read(
+            request.grantId,
+            request.path,
+            request.projectId,
+            this.access,
+          );
+    } catch (e) {
+      if (e instanceof DomainError) throw e;
+      throw new DomainError(
+        "invalid",
+        (e as NodeJS.ErrnoException).code === "ENOENT"
+          ? "原文件已移动或删除，请重新打开。"
+          : e instanceof Error
+            ? e.message
+            : "读取原文件失败。",
+      );
+    }
   }
   artifact(raw: unknown) {
     this.active();
@@ -369,7 +473,11 @@ export class ApplicationSession {
     this.active();
     const id = identifier.parse(raw);
     readArtifact(this.store.snapshot(), id, this.access);
-    return this.options.runtime?.collaboration.snapshot(id, this.access) ?? { runs: [] };
+    return (
+      this.options.runtime?.collaboration.snapshot(id, this.access) ?? {
+        runs: [],
+      }
+    );
   }
   async taskControl(raw: unknown) {
     const runtime = this.runtime();
@@ -552,6 +660,14 @@ export function invokeApplication(
       return session.search(params);
     case "artifact.read":
       return session.artifact(params);
+    case "local-files.read":
+      return session.localFiles(params);
+    case "directories.list":
+      return session.directories(params);
+    case "directories.revoke":
+      return session.directories(params, true);
+    case "local-files.revoke":
+      return session.localFiles(params, true);
     case "models":
       return session.models();
     case "asset.add":

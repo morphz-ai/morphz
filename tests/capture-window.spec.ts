@@ -69,6 +69,20 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
         .find((window) => window.webContents.getURL() === "morphz://app/")!
         .focus();
     });
+    await expect
+      .poll(
+        () =>
+          app!.evaluate(
+            ({ BrowserWindow }) =>
+              BrowserWindow.getAllWindows()
+                .find(
+                  (window) => window.webContents.getURL() === "morphz://app/",
+                )
+                ?.isFocused() ?? false,
+          ),
+        { message: "原生截图回归需要已解锁的 macOS 前台窗口" },
+      )
+      .toBe(true);
     const input = await openInput(page);
     await input.fill("Electron 截图隔离回归：保留草稿");
     const trigger = page.getByRole("button", { name: "截图输入", exact: true });

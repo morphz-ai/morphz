@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 
 type Delivery = ConversationRuntime["deliveries"][number];
@@ -175,10 +175,10 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
   );
+  await openExecutionPanel(page);
   await page
-    .locator(".human-message")
+    .locator(".execution-work-row")
     .filter({ hasText: "并发工作 A" })
-    .getByRole("button", { name: "查看这项正在处理的工作" })
     .click();
   const first = page
     .getByRole("complementary", { name: "执行面板" })

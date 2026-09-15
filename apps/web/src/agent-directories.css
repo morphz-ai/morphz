@@ -1,0 +1,42 @@
+.agent-directories {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.directory-scope {
+  white-space: nowrap;
+}
+.directory-grant {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  gap: 2px;
+}
+.directory-grant > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+  color: var(--ink);
+}
+.directory-grant .icon-button {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.directory-grant .icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+@media (pointer: coarse) {
+  .directory-grant .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+}

@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { scopedStorage } from "./client.js";
 import {
   FilePlus2,
-  FileUp,
   Search,
   LayoutGrid,
   List,
@@ -23,8 +22,6 @@ export function ObjectCollection({
   onOpen,
   onCreate,
   onWrite,
-  onImport,
-  importing,
   catalog = false,
   toolbarTarget,
 }: {
@@ -34,8 +31,6 @@ export function ObjectCollection({
   onOpen: (id: string) => void;
   onCreate: (kind: "document" | "task" | "website" | "interactive") => void;
   onWrite: () => void;
-  onImport: () => void;
-  importing: boolean;
   catalog?: boolean;
   toolbarTarget?: HTMLElement | null;
 }) {
@@ -113,16 +108,6 @@ export function ObjectCollection({
               <FilePlus2 />
               <span className="toolbar-action-label">起草</span>
             </button>
-            <button
-              className="secondary-action"
-              aria-label="导入资料"
-              title={`导入到${project.title}`}
-              onClick={onImport}
-              disabled={importing}
-            >
-              <FileUp />
-              <span className="toolbar-action-label">导入</span>
-            </button>
           </div>,
           toolbarTarget,
         )}
@@ -166,20 +151,6 @@ export function ObjectCollection({
               </span>
               <span>
                 <strong>起草</strong>
-              </span>
-            </button>
-            <button
-              className="secondary-action"
-              aria-label="导入资料"
-              title="导入资料"
-              onClick={onImport}
-              disabled={importing}
-            >
-              <span className="creation-icon">
-                <FileUp />
-              </span>
-              <span>
-                <strong>{importing ? "导入中…" : "导入"}</strong>
               </span>
             </button>
             <span className="library-authoring-options">

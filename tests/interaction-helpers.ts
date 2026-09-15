@@ -1,5 +1,16 @@
 import { expect, type Page } from "@playwright/test";
 
+/** The shell toggle controls visibility; the inspector menu chooses content. */
+export async function openExecutionPanel(page: Page) {
+  if (!(await page.locator(".workspace-inspector").isVisible()))
+    await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  await page.getByRole("button", { name: "切换右栏内容", exact: true }).click();
+  await page
+    .getByRole("group", { name: "右栏内容", exact: true })
+    .getByRole("button", { name: "执行记录", exact: true })
+    .click();
+}
+
 /** Returning to work does not force its unpinned composer open. */
 export async function openInput(page: Page) {
   const input = page.getByLabel("AI 输入内容");
@@ -24,13 +35,12 @@ export async function openInput(page: Page) {
   return input;
 }
 
-/** Enter the floating tools directly; no menu or input-focus side effects. */
+/** Use the existing direct action in its input or panel group; never a menu. */
 export async function composerAction(page: Page, name: string) {
-  const tools = page.getByRole("group", { name: "输入工具", exact: true });
-  await tools.hover();
-  await expect(tools).toHaveCSS("opacity", "1");
-  await tools.screenshot();
-  await tools.getByLabel(name, { exact: true }).click();
+  await page
+    .locator(".exchange-panel")
+    .getByLabel(name, { exact: true })
+    .click();
 }
 
 /** Standalone transcription is a content tool, not a second composer mic. */

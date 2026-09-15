@@ -2,6 +2,10 @@ import { z } from "zod";
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
 import {
+  localFileReferenceSchema,
+  directoryGrantSchema,
+} from "./local-files.js";
+import {
   documentImportIssue,
   documentTextIssue,
   maxDocumentCharacters,
@@ -333,6 +337,8 @@ export const stateSchema = z
           body: z.string().trim().max(30000),
           attachments: z.array(inputAttachmentSchema).max(8).optional(),
           browser: browserReferenceSchema.optional(),
+          localFile: localFileReferenceSchema.optional(),
+          directories: z.array(directoryGrantSchema).max(8).optional(),
           author: authorSchema,
           targetActantId: id,
           status: z.literal("recorded"),
@@ -582,6 +588,8 @@ export const operationSchema = z.discriminatedUnion("type", [
       body: z.string().trim().max(30000),
       attachments: z.array(inputAttachmentSchema).max(8).optional(),
       browser: browserReferenceSchema.optional(),
+      localFile: localFileReferenceSchema.optional(),
+      directories: z.array(directoryGrantSchema).max(8).optional(),
       targetActantId: id,
     })
     .strict()
@@ -1526,6 +1534,14 @@ export function applyCommand(
       createdAt: now,
     });
   } else if (op.type === "record-input") {
+    if (
+      op.localFile &&
+      (op.artifactId || op.applicationInstanceId || op.browser)
+    )
+      throw new DomainError(
+        "invalid",
+        "本机文件引用不能与另一对象或应用混用。",
+      );
     if (!op.body.trim() && !op.attachments?.length)
       throw new DomainError("invalid", "请输入文字或添加附件。");
     const project = checkProject(state, op.projectId, access);
@@ -1600,7 +1616,7 @@ export function applyCommand(
         throw new DomainError("invalid", "输入必须关联有效的对象版本。");
       if (op.selection && !quotedText(version.content).includes(op.selection))
         throw new DomainError("invalid", "选中内容与对象版本不匹配。");
-    } else if (op.artifactRevision !== null || op.selection)
+    } else if (op.artifactRevision !== null || (op.selection && !op.localFile))
       throw new DomainError("invalid", "未选择对象时不能附带版本或原文。");
     state.inputs.push({
       id: entityId,
@@ -1614,6 +1630,8 @@ export function applyCommand(
       targetActantId: op.targetActantId,
       ...(op.attachments?.length ? { attachments: op.attachments } : {}),
       ...(op.browser ? { browser: op.browser } : {}),
+      ...(op.localFile ? { localFile: op.localFile } : {}),
+      ...(op.directories?.length ? { directories: op.directories } : {}),
       status: "recorded",
       ...(op.intent ? { intent: op.intent } : {}),
       ...(op.model ? { model: op.model } : {}),

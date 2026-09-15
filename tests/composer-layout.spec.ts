@@ -1,9 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { composerAction, openInput } from "./interaction-helpers.js";
 
-test("全宽输入、独立悬浮工具与常驻模型在明暗和窄窗口中可用", async ({
-  page,
-}) => {
+test("全宽输入、悬浮 Dock 与常驻模型在明暗和窄窗口中可用", async ({ page }) => {
   await page.route("**/api/workspace", async (route) => {
     const response = await route.fetch({
       headers: { ...route.request().headers(), "if-none-match": "" },
@@ -80,9 +78,12 @@ test("全宽输入、独立悬浮工具与常驻模型在明暗和窄窗口中�
       });
       const toolBounds = (await tools.boundingBox())!;
       const composerBounds = (await composer.boundingBox())!;
-      expect(composerBounds.y - toolBounds.y - toolBounds.height).toBeCloseTo(
-        5,
-        0,
+      expect(toolBounds.y + toolBounds.height).toBeLessThanOrEqual(
+        composerBounds.y,
+      );
+      await expect(composer.locator(".composer-floating-tools")).toHaveCSS(
+        "position",
+        "absolute",
       );
       expect(toolBounds.x).toBeGreaterThanOrEqual(0);
       expect(toolBounds.x + toolBounds.width).toBeLessThanOrEqual(width);
@@ -97,13 +98,15 @@ test("全宽输入、独立悬浮工具与常驻模型在明暗和窄窗口中�
       expect(
         await composer.evaluate((el) => getComputedStyle(el).boxShadow),
       ).toBe("none");
-      await page.locator(".composer-dock").screenshot({
+      // Include the floating controls outside the in-flow composer bounds.
+      await page.screenshot({
         path: `test-results/composer-clean-${theme}-${width}.png`,
       });
       await expect(page.getByLabel("更多输入选项")).toHaveCount(0);
       await expect(
         tools.getByLabel("执行记录与审批", { exact: true }),
-      ).toBeVisible();
+      ).toHaveCount(0);
+      await expect(page.locator(".inspector-toggle")).toBeVisible();
       await expect(tools.getByLabel("长录音转写", { exact: true })).toHaveCount(
         0,
       );
@@ -118,7 +121,7 @@ test("全宽输入、独立悬浮工具与常驻模型在明暗和窄窗口中�
   await expect(composer.locator(".composer-intent")).toHaveCount(0);
 });
 
-test("悬浮按钮放大不移动命中区域；键盘、减少动态和弹窗返回仍可用", async ({
+test("输入按钮悬停不移动命中区域；键盘、减少动态和弹窗返回仍可用", async ({
   page,
 }) => {
   await page.goto("/");
@@ -132,20 +135,8 @@ test("悬浮按钮放大不移动命中区域；键盘、减少动态和弹窗�
   expect(first.width).toBe(32);
   expect(first.height).toBe(32);
   expect(next.x - first.x - first.width).toBe(4);
-  const face = await attach.evaluate((el) => {
-    const style = getComputedStyle(el, "::before");
-    return {
-      width: style.width,
-      height: style.height,
-      radius: style.borderRadius,
-    };
-  });
-  expect(face).toEqual({ width: "28px", height: "28px", radius: "9px" });
   await attach.hover();
-  await expect(attach.locator("svg")).toHaveCSS(
-    "transform",
-    "matrix(1.1, 0, 0, 1.1, 0, -2)",
-  );
+  await expect(attach.locator("svg")).toHaveCSS("transform", "none");
   expect(await attach.boundingBox()).toEqual(first);
   expect(await capture.boundingBox()).toEqual(next);
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -173,7 +164,7 @@ test("悬浮按钮放大不移动命中区域；键盘、减少动态和弹窗�
   await expect(input).toHaveValue("浮动工具验收草稿");
 });
 
-test("工具默认隐藏，直接悬停按钮区域或输入聚焦浮现，跨越间隙不闪退", async ({
+test("悬浮 Dock 在悬停或键盘聚焦时显示，不增加占位或挤动输入", async ({
   page,
 }) => {
   await page.goto("/");
@@ -183,7 +174,7 @@ test("工具默认隐藏，直接悬停按钮区域或输入聚焦浮现，跨�
     .click();
   const input = page.getByLabel("AI 输入内容");
   const composer = page.locator(".composer");
-  const tools = composer.getByRole("group", { name: "输入工具", exact: true });
+  const tools = composer.locator(".composer-floating-tools");
   const title = page.getByRole("heading", { name: "对话", exact: true });
   await title.click();
   await expect(tools).toHaveCSS("opacity", "0");
@@ -195,7 +186,7 @@ test("工具默认隐藏，直接悬停按钮区域或输入聚焦浮现，跨�
   await expect(tools).toHaveCSS("pointer-events", "auto");
   await title.click();
   await expect(tools).toHaveCSS("opacity", "0");
-  // Enter the hidden tool row directly from above, without crossing the input.
+  // Hovering the controls or their bridge keeps them reachable without focus.
   const hiddenBounds = (await tools.boundingBox())!;
   await page.mouse.move(
     hiddenBounds.x + hiddenBounds.width / 2,
@@ -209,7 +200,10 @@ test("工具默认隐藏，直接悬停按钮区域或输入聚焦浮现，跨�
   await expect(input).not.toBeFocused();
   await expect(tools).toHaveCSS("opacity", "1");
   const toolBounds = (await tools.boundingBox())!;
-  await page.mouse.move(toolBounds.x + toolBounds.width / 2, baseline.y - 2);
+  await page.mouse.move(
+    toolBounds.x + toolBounds.width / 2,
+    toolBounds.y + toolBounds.height + 3,
+  );
   await expect(tools).toHaveCSS("opacity", "1");
   const capture = tools.getByLabel("截图输入", { exact: true });
   await capture.focus();
@@ -245,7 +239,11 @@ test("查看、收起和展开记录时，常用按钮位置保持稳定", async
   const initial = await positions();
   await composerAction(page, "收起交流记录");
   expect(await positions()).toEqual(initial);
-  await expect(tools.getByLabel("展开完整记录", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("group", { name: "交流面板操作", exact: true })
+      .getByLabel("展开完整记录", { exact: true }),
+  ).toBeVisible();
   await composerAction(page, "展开完整记录");
   expect(await positions()).toEqual(initial);
   await composerAction(page, "返回工作内容");
@@ -258,7 +256,7 @@ test.describe("触控输入工具", () => {
     isMobile: true,
     viewport: { width: 320, height: 800 },
   });
-  test("小底面保留互不重叠的 44px 点击区", async ({ page }) => {
+  test("面板与输入工具分别保留互不重叠的 44px 点击区", async ({ page }) => {
     await page.goto("/");
     for (const name of ["对话", "工作台"]) {
       await page
@@ -279,7 +277,14 @@ test.describe("触控输入工具", () => {
       if (name === "工作台") await composerAction(page, "固定输入框");
       const tools = page.getByRole("group", { name: "输入工具", exact: true });
       const buttons = tools.locator(":scope > button");
-      await expect(buttons).toHaveCount(name === "对话" ? 4 : 8);
+      await expect(buttons).toHaveCount(3);
+      if (name === "工作台")
+        await expect(
+          page
+            .getByRole("group", { name: "交流面板操作", exact: true })
+            .getByRole("button"),
+        ).toHaveCount(4);
+      await expect(tools.getByLabel("执行记录与审批")).toHaveCount(0);
       let previousRight = 0;
       let previousY = -1;
       for (const button of await buttons.all()) {

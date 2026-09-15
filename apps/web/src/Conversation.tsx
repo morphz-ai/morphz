@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
@@ -6,6 +7,7 @@ import { inConversation } from "../../../packages/core/src/model.js";
 import {
   conversationGroups,
   conversationTimeline,
+  activeExecutionThreads,
   type ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import { shouldFollow } from "./interaction.js";
@@ -17,6 +19,7 @@ import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import { conversationDate } from "./conversation-presentation.js";
+import { ApprovalCard } from "./ApprovalCard.js";
 
 export type ExchangePosition = {
   top: number;
@@ -40,7 +43,11 @@ export function Conversation({
   onInspect,
   focusedArtifactId,
   focusedApplicationId,
+  toolbarTarget,
+  onReturnToLatest,
 }: {
+  onReturnToLatest?: () => void;
+  toolbarTarget?: HTMLElement | null;
   focusedArtifactId?: string;
   focusedApplicationId?: string;
   inputs: Workspace["inputs"];
@@ -97,6 +104,7 @@ export function Conversation({
     }
   }
   const scroller = useRef<HTMLElement>(null);
+  const latestButton = useRef<HTMLButtonElement>(null);
   const positionKey =
     conversationId +
     (focused
@@ -109,6 +117,20 @@ export function Conversation({
   const revealed = useRef(saved?.revealed ?? revealInputId);
   const [unread, setUnread] = useState(false);
   const [awayFromLatest, setAwayFromLatest] = useState(!following.current);
+  function updateLatestIndicator() {
+    if (following.current) {
+      // Move focus before removing its button. A detached focused control
+      // otherwise looks like leaving the unpinned exchange. Do not steal
+      // focus when ordinary scrolling or new content reaches the bottom.
+      if (latestButton.current === document.activeElement) {
+        onReturnToLatest?.();
+        if (latestButton.current === document.activeElement)
+          scroller.current?.focus({ preventScroll: true });
+      }
+      setUnread(false);
+    }
+    setAwayFromLatest(!following.current);
+  }
   const stream = useConversationStream(
     projectId,
     conversationId,
@@ -243,7 +265,7 @@ export function Conversation({
       setUnread(true);
     revealed.current = revealInputId;
     initialized.current = true;
-    setAwayFromLatest(!following.current);
+    updateLatestIndicator();
     positions.set(positionKey, {
       top: el.scrollTop,
       following: following.current,
@@ -264,6 +286,7 @@ export function Conversation({
     <section
       className="conversation"
       aria-label="当前对话"
+      tabIndex={-1}
       ref={scroller}
       onScroll={() => {
         const el = scroller.current;
@@ -271,28 +294,30 @@ export function Conversation({
         following.current = shouldFollow(
           el.scrollHeight - el.clientHeight - el.scrollTop,
         );
-        setAwayFromLatest(!following.current);
+        updateLatestIndicator();
         positions.set(positionKey, {
           top: el.scrollTop,
           following: following.current,
           version: contentVersion,
           revealed: revealed.current,
         });
-        if (following.current) setUnread(false);
       }}
     >
-      {(focusedArtifactId || focusedApplicationId) && (
-        <button
-          className="conversation-scope"
-          onClick={() => setAllHistory(!allHistory)}
-        >
-          {allHistory
-            ? focusedArtifactId
-              ? "仅看当前对象的交流"
-              : "仅看当前应用的交流"
-            : "查看全部交流"}
-        </button>
-      )}
+      {(focusedArtifactId || focusedApplicationId) &&
+        toolbarTarget &&
+        createPortal(
+          <button
+            className="conversation-scope"
+            onClick={() => setAllHistory(!allHistory)}
+          >
+            {allHistory
+              ? focusedArtifactId
+                ? "仅看当前对象的交流"
+                : "仅看当前应用的交流"
+              : "查看全部交流"}
+          </button>,
+          toolbarTarget,
+        )}
       {timeline.length ? (
         <div
           className="conversation-messages"
@@ -367,16 +392,15 @@ export function Conversation({
                 : undefined;
               const activeBranch =
                 item &&
-                runtime.activity?.available &&
-                runtime.activity.threads.some(
-                  (t) =>
-                    t.inputId === item.id &&
-                    (t.lifecycle === "open" || t.phase !== "idle"),
+                client.online &&
+                activeExecutionThreads(runtime).some(
+                  (t) => t.inputId === item.id,
                 );
-              const workPending =
-                !!activeBranch ||
-                (!!delivery &&
-                  ["queued", "sending", "running"].includes(delivery.state));
+              const approvals = item
+                ? (runtime.attention?.approvals.filter(
+                    (a) => a.scope.inputId === item.id,
+                  ) ?? [])
+                : [];
               const status = !delivery
                 ? "已保存 · 未发送"
                 : {
@@ -409,6 +433,10 @@ export function Conversation({
                     data-input-id={item?.id ?? reply?.inputId ?? undefined}
                     data-message-id={id}
                     data-starts-turn={startsTurn || undefined}
+                    data-background-execution={activeBranch || undefined}
+                    aria-description={
+                      activeBranch ? "这条消息的后台执行仍在进行" : undefined
+                    }
                     data-streaming={reply?.streaming || undefined}
                     data-stream-active={
                       (stream.connected &&
@@ -417,33 +445,6 @@ export function Conversation({
                       undefined
                     }
                   >
-                    {item && onInspect && delivery && (
-                      <button
-                        className="message-run-indicator"
-                        aria-label={
-                          workPending
-                            ? "查看这项正在处理的工作"
-                            : "查看这项工作的执行记录"
-                        }
-                        title={
-                          runtime.connected
-                            ? activeBranch || delivery.state === "running"
-                              ? "后台正在执行 · 点击查看过程"
-                              : "查看执行过程"
-                            : "连接中断，状态待确认"
-                        }
-                        data-running={
-                          (runtime.connected &&
-                            (activeBranch || delivery.state === "running")) ||
-                          undefined
-                        }
-                        data-pending={workPending || undefined}
-                        onClick={() => onInspect(item.id)}
-                      >
-                        <span />
-                        <ChevronRight size={12} />
-                      </button>
-                    )}
                     {reply?.inputId &&
                       onInspect &&
                       (timeline[index - 1]?.input?.id ??
@@ -488,6 +489,23 @@ export function Conversation({
                           ` · v${item.artifactRevision}`}
                       </button>
                     )}
+                    {item?.localFile && (
+                      <small
+                        className="message-local-file"
+                        title="本机原文件引用，不是导入副本；读取时校验版本和授权。"
+                      >
+                        原文件：{item.localFile.name}
+                      </small>
+                    )}
+                    {!!item?.directories?.length && (
+                      <small
+                        className="message-local-file"
+                        title="发送时允许使用的目录；是否仍可访问以当前授权为准。"
+                      >
+                        目录读写：
+                        {item.directories.map((g) => g.name).join("、")}
+                      </small>
+                    )}
                     {item ? (
                       <>
                         {!!item.attachments?.length && (
@@ -513,7 +531,13 @@ export function Conversation({
                           </details>
                         ) : (
                           <>
-                            <SafeMarkdown state={state} onOpen={onOpen}>
+                            <SafeMarkdown
+                              state={state}
+                              onOpen={onOpen}
+                              streaming={
+                                !!(stream.connected && reply?.streaming)
+                              }
+                            >
                               {reply!.text}
                             </SafeMarkdown>
                           </>
@@ -522,6 +546,14 @@ export function Conversation({
                     )}
                     {(reply?.kind !== "tool" || stopControl) && (
                       <div className="message-meta">
+                        {item && activeBranch && onInspect && (
+                          <button
+                            className="message-execution-link"
+                            onClick={() => onInspect(item.id)}
+                          >
+                            后台执行中
+                          </button>
+                        )}
                         {reply && stopControl}
                         {item &&
                           item.author.actantId !== client.boot?.actantId && (
@@ -554,6 +586,26 @@ export function Conversation({
                         </button>
                       )}
                   </article>
+                  {approvals.map((entry) => (
+                    <ApprovalCard
+                      key={
+                        entry.approval.request.approval_id +
+                        entry.approval.fingerprint
+                      }
+                      entry={entry}
+                      client={client}
+                      available={
+                        !!(
+                          client.online &&
+                          runtime.connected &&
+                          runtime.attention?.available
+                        )
+                      }
+                      onInspect={
+                        item && onInspect ? () => onInspect(item.id) : undefined
+                      }
+                    />
+                  ))}
                   {item && stopControl && !onInspect && (
                     <div className="response-placeholder">{stopControl}</div>
                   )}
@@ -570,13 +622,13 @@ export function Conversation({
       {awayFromLatest && (
         <div className="conversation-return">
           <button
+            ref={latestButton}
             className="new-exchange"
             onClick={() => {
               following.current = true;
               if (scroller.current)
                 scroller.current.scrollTop = scroller.current.scrollHeight;
-              setUnread(false);
-              setAwayFromLatest(false);
+              updateLatestIndicator();
             }}
           >
             {unread ? "有新内容 · 返回最新" : "返回最新"}

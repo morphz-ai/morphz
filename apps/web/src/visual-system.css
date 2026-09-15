@@ -429,8 +429,8 @@
   }
 }
 
-/* The composer keeps its full writing area. Only transient recent history
-   floats over HTML content; pinned/native/short layouts remain docked. */
+/* Reading and writing share one frame. Transient history floats while the
+   measured input remains reserved; pinned/native/short layouts stay docked. */
 .primary-panel {
   position: relative;
 }
@@ -438,50 +438,155 @@
   position: relative;
   z-index: 4;
 }
+.exchange-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  min-height: 0;
+  max-height: 100%;
+  margin: 0 auto 10px;
+  container: exchange / inline-size;
+}
+.exchange-panel[data-open] {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+}
+.exchange-panel[data-open]:has(.composer textarea:focus) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+.exchange-panel-header {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px 0;
+}
+.exchange-panel-header:not(:has(button)) {
+  display: none;
+}
+.exchange-scope {
+  flex: 1;
+  min-width: 0;
+}
+.exchange-scope .conversation-scope {
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exchange-panel > .conversation {
+  width: 100%;
+  margin: 0;
+  /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
+  padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
+  flex: 0 1 auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  scrollbar-gutter: auto;
+}
+.exchange-panel > .conversation:has(.conversation-empty) {
+  flex-basis: auto;
+  padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
+}
+.exchange-panel .conversation-empty {
+  padding: 0;
+}
+.exchange-panel .conversation-empty p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 24px;
+}
+.exchange-panel .composer-dock {
+  padding: 0;
+  background: transparent;
+}
 .app .composer {
   position: relative;
-  margin-top: calc(var(--composer-tools-height, 32px) + 4px);
-  background: var(--surface-raised);
-  border-color: var(--line-strong);
-  border-radius: 14px;
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--paper) 70%, var(--surface-raised));
+  border: 0;
+  border-radius: 0 0 15px 15px;
+  box-shadow: none;
+}
+.app .composer::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--hairline);
+  pointer-events: none;
+}
+.exchange-panel:not(:has(> .conversation)) .composer::before,
+.primary-panel[data-dialogue-canvas] .composer::before {
+  display: none;
+}
+.exchange-panel:not(:has(> .conversation)) .composer {
+  border-radius: 15px;
   box-shadow: none;
 }
 .app .composer:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 72%, var(--line-strong));
-  box-shadow: none;
+  border-color: transparent;
 }
 .app .composer textarea {
   background: transparent;
 }
 .app .composer-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px 8px;
   color: var(--muted);
+}
+.app .composer-actions > .composer-footer-info {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.app .composer-footer-info .composer-meta {
+  flex: 1;
+  min-width: 0;
 }
 .app .composer-floating-tools {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 4px 12px;
+  min-width: 0;
   width: max-content;
-  max-width: 100%;
+  max-width: calc(100% - 16px);
   padding: 0;
   border: 0;
   background: none;
-  box-shadow: none;
   opacity: 0;
-  pointer-events: auto;
   transition: opacity var(--motion-feedback) var(--motion-ease);
 }
 .app .composer:hover .composer-floating-tools,
 .app .composer:focus-within .composer-floating-tools {
   opacity: 1;
-  pointer-events: auto;
 }
-/* Bridge the small gap so moving from the input to a button cannot hide it. */
+/* Keep the input and its floating controls one continuous pointer region. */
 .app .composer-floating-tools::after {
   content: "";
   position: absolute;
@@ -489,6 +594,28 @@
   left: 0;
   right: 0;
   height: 8px;
+}
+.app .composer-actions > .composer-preferences {
+  grid-column: 2;
+  grid-row: 1;
+}
+.app .composer-actions > .composer-input-tools {
+  grid-column: 3;
+  grid-row: 1;
+}
+.app :is(.composer-media-tools, .exchange-view-tools) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.app .exchange-view-tools {
+  flex: 0 0 auto;
 }
 .app .composer-unread {
   position: absolute;
@@ -499,7 +626,7 @@
   border-radius: 50%;
   background: var(--accent);
 }
-.app .composer-floating-tools > .icon-button {
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
   position: relative;
   flex: 0 0 32px;
   width: 32px;
@@ -507,40 +634,55 @@
   padding: 8px;
   border: 0;
   color: var(--text-secondary);
-  background: none;
-}
-.app .composer-floating-tools > .icon-button::before {
-  content: "";
-  position: absolute;
-  inset: 2px;
   border-radius: 9px;
   background: var(--surface-raised);
   box-shadow:
     inset 0 1px 0 var(--line),
     0 2px 5px var(--shadow);
-  transition: transform var(--motion-feedback) var(--motion-ease);
 }
-.app .composer-floating-tools > .composer-tool-group-start {
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-group-start {
   margin-left: 8px;
 }
-.app .composer-floating-tools > .composer-tool-reserved {
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-reserved {
   visibility: hidden;
   pointer-events: none;
 }
-.app .composer-floating-tools > .icon-button > svg {
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button > svg {
   position: relative;
   width: 16px;
   height: 16px;
-  transition: transform var(--motion-feedback) var(--motion-ease);
 }
-.app .composer-floating-tools > .icon-button[aria-expanded="true"]::before,
-.app .composer-floating-tools > .icon-button[aria-pressed="true"]::before {
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button[aria-pressed="true"],
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button:hover:not(:disabled) {
   background: var(--soft);
 }
-@media (hover: hover) and (pointer: fine) {
-  .app .composer-floating-tools > .icon-button:not(:disabled):hover::before,
-  .app .composer-floating-tools > .icon-button:not(:disabled):hover > svg {
-    transform: translateY(-2px) scale(1.1);
+@container exchange (max-width: 540px) {
+  .app .composer-actions {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .app .composer-actions > .composer-footer-info {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .app .composer-actions > .composer-preferences {
+    grid-column: 1;
+    grid-row: 2;
+    max-width: 100%;
+  }
+  .app .composer-actions > .composer-input-tools {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .exchange-panel-header {
+    flex-wrap: wrap;
   }
 }
 .app .composer-preferences {
@@ -597,42 +739,24 @@
   white-space: normal;
   max-width: 7em;
 }
-@media (max-width: 600px) {
-  .app .composer-actions {
-    flex-wrap: wrap;
-  }
-  .app .composer-preferences {
-    flex: 0 1 auto;
-    max-width: calc(100% - 40px);
-  }
-  .app .composer-actions > .composer-footer-info {
-    order: 3;
-    flex-basis: 100%;
-  }
-}
 @media (pointer: coarse) {
   .app .composer-floating-tools {
+    opacity: 1;
+  }
+  .app :is(.composer-media-tools, .exchange-view-tools) {
     gap: 0;
     opacity: 1;
     pointer-events: auto;
   }
-  .app .composer-floating-tools > .icon-button {
+  .app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
     flex-basis: 44px;
     width: 44px;
     height: 44px;
-  }
-  .app .composer-floating-tools > .icon-button::before {
-    inset: 8px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .app .composer-floating-tools {
     transition: none;
-  }
-  .app .composer-floating-tools > .icon-button::before,
-  .app .composer-floating-tools > .icon-button > svg {
-    transition: none;
-    transform: none !important;
   }
 }
 .app .composer-input-tools .send:not(:disabled) {
@@ -647,30 +771,59 @@
   background: var(--soft);
   opacity: 0.55;
 }
-.primary-panel[data-interaction="recent"] .exchange-surface > .conversation {
+.primary-panel[data-interaction="recent"] .exchange-panel[data-open] {
   background: var(--surface-glass);
   -webkit-backdrop-filter: var(--material-blur);
   backdrop-filter: var(--material-blur);
-  border: 1px solid color-mix(in srgb, var(--line-strong) 62%, transparent);
-  border-radius: 14px;
-  padding: 14px 16px 10px;
   box-shadow:
     inset 0 1px var(--edge-highlight),
     var(--elevation-floating);
-  scrollbar-gutter: auto;
+}
+.primary-panel[data-interaction="history"] .exchange-panel,
+.primary-panel[data-interaction="history"] .exchange-panel > .conversation {
+  flex: 1 1 0;
+}
+/* The dedicated dialogue page remains a flat reading canvas. */
+.primary-panel[data-dialogue-canvas] .exchange-panel,
+.primary-panel[data-dialogue-canvas]
+  .exchange-panel:has(.composer textarea:focus) {
+  border-color: transparent;
+  background: transparent;
+}
+.app .primary-panel[data-dialogue-canvas] .composer {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: none;
+}
+.app .primary-panel[data-dialogue-canvas] .composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+@media (max-width: 850px) {
+  .exchange-panel {
+    width: calc(100% - 24px);
+  }
 }
 @media (min-height: 650px) {
   .app:not(.application-browser-workspace)
     .primary-panel[data-interaction="recent"]:not([data-input-pinned])
-    .exchange-surface
-    > .conversation {
+    .exchange-surface {
+    flex: 0 0 auto;
+    height: calc(var(--composer-dock-height, 130px) + 12px);
+  }
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .exchange-panel {
     position: absolute;
-    bottom: 100%;
+    bottom: 10px;
     left: 50%;
     translate: -50% 0;
-    height: min(34dvh, 360px);
-    max-height: calc(100dvh - 280px);
-    margin: 0 0 4px;
+    max-height: calc(100dvh - 80px);
+    margin: 0;
+  }
+  .primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
+    height: auto;
+    max-height: min(34dvh, 360px);
+    flex-basis: auto;
   }
   .app:not(.application-browser-workspace)
     .primary-panel[data-interaction="recent"]:not([data-input-pinned])
@@ -680,8 +833,7 @@
 }
 .application-browser-workspace
   .primary-panel[data-interaction="recent"]
-  .exchange-surface
-  > .conversation {
+  .exchange-panel[data-open] {
   /* The native web view is a separate compositor, not a CSS backdrop. */
   background: var(--soft);
   -webkit-backdrop-filter: none;
@@ -910,7 +1062,6 @@
 .app :is(.execution-sidebar, .understanding-panel) {
   animation: inspector-reveal var(--motion-reveal) var(--motion-ease);
 }
-.app .primary-panel[data-interaction="recent"] .conversation,
 .app :is(.read-aloud-player, .inline-dictation) {
   animation: exchange-reveal var(--motion-reveal) var(--motion-ease);
 }
@@ -1002,6 +1153,9 @@
   --nav-selected-edge: var(--ink);
   --nav-selected: var(--selection);
   --nav-selected-top: transparent;
+}
+:root[data-native-contrast="more"] .app .composer::before {
+  background: var(--popup-line);
 }
 @media (prefers-reduced-motion: reduce) {
   .app *,

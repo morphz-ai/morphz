@@ -430,7 +430,10 @@ export class RuntimeBridge {
       },
       request: (path, method, body) => this.request(path, method, body),
       enqueue: (id) => this.enqueue(id),
-      approvalCount: (threadId, access) => this.snapshot(access).attention?.approvals.filter(a => a.scope.threadId === threadId).length ?? 0,
+      approvalCount: (threadId, access) =>
+        this.snapshot(access).attention?.approvals.filter(
+          (a) => a.scope.threadId === threadId,
+        ).length ?? 0,
       conversation: (id) =>
         this.state.sessions[id]
           ? discussionId(this.state.sessions[id]!)
@@ -1105,6 +1108,7 @@ export class RuntimeBridge {
           }
           activity.threads.push({
             id: t.id,
+            kind: t.kind,
             projectId: input?.projectId ?? session.projectId,
             conversationId: input ? discussionId(input) : discussionId(session),
             inputId: input?.id ?? null,

@@ -62,6 +62,7 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
             intent: "后台分支",
             thread: {
               id,
+              kind: "execution",
               session_id: item.sessionId,
               context_id: sessions.get(item.sessionId)!.context_id,
               root_turn_id: root,
@@ -240,6 +241,7 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
       1,
       "全局摘要只读取一次审批，不按消息展开工具历史",
     );
+    assert.equal(bridge.snapshot().activity?.threads[0]?.kind, "execution");
     const attention = bridge.snapshot().attention!;
     assert.equal(attention.available, true);
     assert.deepEqual(

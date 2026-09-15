@@ -15,6 +15,7 @@ export const activitySchema = z.object({
   threads: z.array(
     z.object({
       id: z.string(),
+      kind: z.string().optional(),
       projectId: z.string(),
       conversationId: z.string(),
       inputId: z.string().nullable(),
@@ -67,6 +68,16 @@ export const conversationRuntimeSchema = z.object({
   ),
 });
 export type ConversationRuntime = z.infer<typeof conversationRuntimeSchema>;
+
+/** A delivery or dialogue turn is not a background execution. Unknown old kinds
+ * remain unmarked; a stale snapshot cannot claim that work is still running. */
+export function activeExecutionThreads(runtime: ConversationRuntime) {
+  return runtime.connected && runtime.activity?.available
+    ? runtime.activity.threads.filter(
+        (t) => t.kind === "execution" && t.lifecycle === "open",
+      )
+    : [];
+}
 
 /** Group only by authoritative input identity. Unattributed older events stay separate. */
 export function conversationGroups<

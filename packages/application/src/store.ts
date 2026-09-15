@@ -270,6 +270,7 @@ export class WorkspaceStore {
     raw: unknown,
     access: AccessContext,
     originInputId?: string,
+    validateNew?: () => void,
   ): Receipt {
     const command = commandSchema.parse(raw);
     const fingerprint = createHash("sha256")
@@ -293,6 +294,7 @@ export class WorkspaceStore {
         return JSON.parse(previous.receipt) as Receipt;
       }
       const op = command.operation;
+      validateNew?.();
       // Enforce the execution boundary inside the same transaction as the edit.
       // A stale UI (or a generic revise command) cannot silently retarget work.
       const taskId =

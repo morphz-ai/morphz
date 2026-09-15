@@ -352,35 +352,104 @@ else {
         join(app.getPath("userData"), "source-grants.json"),
         application,
       );
-      ipcMain.handle("sources:list", (event) => {
-        requireMain(event);
-        return sources.list();
-      });
-      ipcMain.handle("sources:choose", async (event, projectId, kind) => {
+      // Old imported versions remain in the center, but opening work no longer
+      // runs a background copy/synchronization pipeline.
+      await sources.suspendAll();
+      ipcMain.handle(
+        "directories:choose",
+        async (event, projectId, conversationId) => {
+          requireMain(event);
+          if (
+            !host ||
+            ![projectId, conversationId].every(
+              (value) =>
+                typeof value === "string" &&
+                /^[a-zA-Z0-9_-]{1,100}$/.test(value),
+            )
+          )
+            throw new Error("目录授权范围无效。");
+          const before = await application.call("workspace");
+          const project = before.workspace.projects.find(
+            (p) => p.id === projectId,
+          );
+          if (!project) throw new Error("无权访问此工作空间。");
+          const result = await dialog.showOpenDialog(window, {
+            title: "授权 Agent 读写目录",
+            buttonLabel: "允许读写",
+            message: "允许此对话中的 Agent 读写文本文件，可随时撤销。",
+            properties: ["openDirectory"],
+          });
+          requireMain(event);
+          if (result.canceled || !result.filePaths[0]) return null;
+          const current = await application.call("workspace");
+          if (
+            current.csrfToken !== before.csrfToken ||
+            current.principalId !== before.principalId
+          )
+            throw new Error("身份已切换，请重新授权目录。");
+          return host.localFiles.authorizeDirectory(
+            result.filePaths[0],
+            projectId,
+            conversationId,
+            { principalId: current.principalId, actantId: current.actantId },
+          );
+        },
+      );
+      ipcMain.handle("files:choose", async (event, projectId, kind) => {
         requireMain(event);
         if (
+          !host ||
           typeof projectId !== "string" ||
           !/^[a-zA-Z0-9_-]{1,100}$/.test(projectId) ||
           !["file", "directory"].includes(kind)
         )
-          throw new Error("来源选择参数无效。");
+          throw new Error("本机文件打开参数无效。");
+        const before = await application.call("workspace");
+        if (!before.workspace.projects.some((p) => p.id === projectId))
+          throw new Error("无权访问此项目。");
         const result = await dialog.showOpenDialog(window, {
-          title: "接入外部资料（只读）",
-          properties: [kind === "file" ? "openFile" : "openDirectory"],
-          ...(kind === "file"
-            ? {
-                filters: [
-                  { name: "文本资料", extensions: ["md", "markdown", "txt"] },
-                ],
-              }
-            : {}),
+          title:
+            kind === "directory"
+              ? "打开工作目录（原位读取）"
+              : "打开文件（原位读取）",
+          properties: [kind === "directory" ? "openDirectory" : "openFile"],
         });
         requireMain(event);
-        if (result.canceled || !result.filePaths[0]) return sources.list();
-        return sources.addSelection(result.filePaths[0], projectId);
+        if (result.canceled || !result.filePaths[0]) return null;
+        const current = await application.call("workspace");
+        if (
+          current.csrfToken !== before.csrfToken ||
+          current.principalId !== before.principalId
+        )
+          throw new Error("身份已切换，请重新打开文件。");
+        return host.localFiles.select(result.filePaths[0], projectId, {
+          principalId: current.principalId,
+          actantId: current.actantId,
+        });
+      });
+      for (const action of ["read", "revoke"])
+        ipcMain.handle("files:" + action, async (event, request) => {
+          requireMain(event);
+          if (!host) throw new Error("当前不是本机工作中心。");
+          const boot = await application.call("workspace");
+          return application.call("local-files." + action, request, {
+            identityGeneration: boot.csrfToken,
+          });
+        });
+      ipcMain.handle("sources:list", (event) => {
+        requireMain(event);
+        return sources.list();
+      });
+      ipcMain.handle("sources:choose", async (event) => {
+        requireMain(event);
+        throw new Error(
+          "目录导入与自动同步已停用。文件请通过消息附件提供，工作目录请明确授权 Agent 读写。",
+        );
       });
       ipcMain.handle("sources:control", async (event, id, action) => {
         requireMain(event);
+        if (action === "resume" || action === "refresh")
+          throw new Error("自动同步已停用，已有内容和批注仍然保留。");
         if (
           typeof id !== "string" ||
           !/^[a-f0-9-]{36}$/.test(id) ||
@@ -389,7 +458,6 @@ else {
           throw new Error("来源操作参数无效。");
         return sources.control(id, action);
       });
-      sources.start();
       Menu.setApplicationMenu(
         Menu.buildFromTemplate([
           ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { Paperclip, X } from "lucide-react";
 import { AttachmentPreview } from "./AttachmentPreview.js";
+import { restoreInputToolFocus } from "./input-tool-focus.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 
@@ -15,8 +16,10 @@ export function MessageAttachments({
   onError,
   onBusy,
   previewTarget,
+  inputRef,
 }: {
   previewTarget: HTMLElement | null;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   client: WorkspaceClient;
   attachments: InputAttachment[];
   disabled: boolean;
@@ -26,17 +29,83 @@ export function MessageAttachments({
   onBusy(busy: boolean): void;
 }) {
   const file = useRef<HTMLInputElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const adding = useRef(false);
   const [busy, setBusy] = useState(false);
   const [selecting, setSelecting] = useState(false);
-  function finishSelection() {
+  function finishSelection(restoreFocus = false) {
     setSelecting(false);
     onBusy(false);
+    if (restoreFocus) restoreInputToolFocus(trigger.current);
   }
   useEffect(() => {
     const element = file.current;
-    element?.addEventListener("cancel", finishSelection);
-    return () => element?.removeEventListener("cancel", finishSelection);
+    const cancel = () => finishSelection(true);
+    element?.addEventListener("cancel", cancel);
+    return () => element?.removeEventListener("cancel", cancel);
   }, [allowAdd, onBusy]);
+  async function addFiles(files: File[], fromPicker = false) {
+    const origin = fromPicker ? trigger.current : null;
+    if (!files.length) {
+      finishSelection(fromPicker);
+      return;
+    }
+    if (adding.current || (disabled && !selecting)) {
+      onError("正在处理输入，请稍后再添加附件。");
+      return;
+    }
+    if (attachments.length + files.length > 8) {
+      finishSelection(fromPicker);
+      onError("一条消息最多附加 8 个文件。");
+      return;
+    }
+    adding.current = true;
+    setBusy(true);
+    onBusy(true);
+    onError("");
+    const added: InputAttachment[] = [];
+    const errors: string[] = [];
+    try {
+      for (const value of files) {
+        try {
+          const { assetId, mime } = await client.uploadAttachment(value);
+          added.push({ assetId, mime, name: value.name.slice(0, 180) });
+        } catch (error) {
+          errors.push(
+            `${value.name}：${error instanceof Error ? error.message : "添加失败，请重试。"}`,
+          );
+        }
+      }
+    } finally {
+      // These callbacks belong to the originating draft, even if the user has
+      // navigated elsewhere while a file was uploading.
+      onChange((previous) => [...previous, ...added]);
+      if (errors.length) onError(errors.join("\n"));
+      adding.current = false;
+      setBusy(false);
+      onBusy(false);
+      if (fromPicker) restoreInputToolFocus(origin);
+    }
+  }
+  useEffect(() => {
+    const input = inputRef.current;
+    function paste(event: ClipboardEvent) {
+      const data = event.clipboardData;
+      if (!data) return;
+      // Read only the files supplied by this paste gesture, before the event's
+      // data store expires. Never poll the clipboard or resolve pasted paths.
+      const files = Array.from(data.files);
+      if (!files.length) return; // Keep native text insertion and undo intact.
+      event.preventDefault();
+      if (!allowAdd) {
+        onError("当前输入不支持附件。");
+        return;
+      }
+      void addFiles(files);
+    }
+    input?.addEventListener("paste", paste);
+    return () => input?.removeEventListener("paste", paste);
+  });
   return (
     <>
       {previewTarget &&
@@ -50,11 +119,14 @@ export function MessageAttachments({
                   className="remove-attachment"
                   disabled={disabled || busy}
                   aria-label={`移除附件 ${a.name}`}
-                  onClick={() =>
+                  onClick={() => {
+                    // This focused button is about to unmount. Keep the
+                    // user's next keystroke in the same, unsent draft.
+                    inputRef.current?.focus({ preventScroll: true });
                     onChange((previous) =>
                       previous.filter((_, i) => i !== index),
-                    )
-                  }
+                    );
+                  }}
                 >
                   <X />
                 </button>
@@ -65,6 +137,7 @@ export function MessageAttachments({
         )}
       {allowAdd && (
         <button
+          ref={trigger}
           className="icon-button"
           aria-label="附加文件"
           disabled={disabled || busy || selecting || attachments.length >= 8}
@@ -86,7 +159,7 @@ export function MessageAttachments({
             try {
               file.current?.click();
             } catch (error) {
-              finishSelection();
+              finishSelection(true);
               onError(
                 error instanceof Error ? error.message : "无法打开文件选择器。",
               );
@@ -104,34 +177,12 @@ export function MessageAttachments({
           ref={file}
           accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.markdown"
           multiple
-          onChange={async (e) => {
+          onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
             e.target.value = "";
+            const fromPicker = selecting;
             setSelecting(false);
-            if (attachments.length + files.length > 8) {
-              onBusy(false);
-              onError("一条消息最多附加 8 个文件。");
-              return;
-            }
-            setBusy(true);
-            onBusy(true);
-            const added: InputAttachment[] = [];
-            try {
-              for (const value of files) {
-                const { assetId, mime } = await client.uploadAttachment(value);
-                added.push({ assetId, mime, name: value.name.slice(0, 180) });
-              }
-            } catch (e) {
-              onError(
-                e instanceof Error
-                  ? e.message
-                  : "添加失败，已添加的附件仍保留。",
-              );
-            } finally {
-              onChange((previous) => [...previous, ...added]);
-              setBusy(false);
-              onBusy(false);
-            }
+            void addFiles(files, fromPicker);
           }}
         />
       )}

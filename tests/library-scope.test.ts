@@ -68,8 +68,6 @@ test("全部资料仅使用已授权快照，不展示其他 Principal 的空间
         onOpen() {},
         onCreate() {},
         onWrite() {},
-        onImport() {},
-        importing: false,
         catalog: true,
       }),
     );

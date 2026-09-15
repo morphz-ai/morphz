@@ -1,7 +1,10 @@
+import { useRef, useState } from "react";
 import { Shield } from "lucide-react";
 import type {
+  ExecutionAttention,
   ExecutionSnapshot,
 } from "../../../packages/core/src/execution.js";
+import type { WorkspaceClient } from "./client.js";
 
 export function ApprovalDetails({
   approval,
@@ -73,5 +76,86 @@ export function ApprovalDetails({
       </details>
       <small className="muted">仅限本次请求，不授予持续权限。</small>
     </>
+  );
+}
+
+/** The receipt and exact scope travel together. No optimistic approval or retry. */
+export function ApprovalCard({
+  entry,
+  client,
+  available,
+  origin,
+  onInspect,
+}: {
+  entry: ExecutionAttention["approvals"][number];
+  client: WorkspaceClient;
+  available: boolean;
+  origin?: string;
+  onInspect?: () => void;
+}) {
+  const [notice, setNotice] = useState("");
+  const [locked, setLocked] = useState(false);
+  const submitted = useRef(false);
+  const { approval, scope } = entry;
+  const previouslySubmitted = client.approvalSubmitted(
+    approval.request.approval_id,
+    approval.fingerprint,
+  );
+  async function decide(type: "allow-once" | "deny") {
+    if (submitted.current || !available) return;
+    submitted.current = true;
+    setLocked(true);
+    setNotice("正在确认…");
+    try {
+      await client.controlExecution({
+        scope,
+        action: {
+          type,
+          approvalId: approval.request.approval_id,
+          fingerprint: approval.fingerprint,
+        },
+      });
+      setNotice(type === "deny" ? "已拒绝本次请求" : "已允许本次请求");
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "结果未确认，请查看最新执行状态；不要重复批准。",
+      );
+    }
+    // Remain locked even if the cached poll still contains this approval. A new
+    // fingerprint is a new explicit decision, not an automatic resubmission.
+    await client.refresh();
+  }
+  return (
+    <section
+      className="execution-approval inline-approval"
+      aria-label="待审批操作"
+      data-approval-id={approval.request.approval_id}
+    >
+      {origin && <small className="approval-origin">{origin}</small>}
+      <ApprovalDetails approval={approval} />
+      {!available && <p role="status">审批状态待确认，暂不能操作。</p>}
+      {notice && <p role="status">{notice}</p>}
+      {!notice && previouslySubmitted && (
+        <p role="status">已提交本次决定，等待最新状态确认。</p>
+      )}
+      <div className="execution-actions">
+        {onInspect && <button onClick={onInspect}>查看执行</button>}
+        <button
+          disabled={!available || locked || previouslySubmitted}
+          onClick={() => void decide("deny")}
+        >
+          拒绝
+        </button>
+        <button
+          className="primary"
+          disabled={!available || locked || previouslySubmitted}
+          onClick={() => void decide("allow-once")}
+        >
+          仅允许这一次
+        </button>
+      </div>
+    </section>
   );
 }

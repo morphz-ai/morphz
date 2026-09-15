@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 
 test("流式标记跟随真实帧状态，结束、断线与参数生成完毕即停止动效", async ({
   page,
@@ -115,6 +115,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
     .poll(() => page.evaluate(() => (window as any).__streamSources.size))
     .toBe(1);
   await emit();
+  await expect(message.locator(".stream-text-reveal")).toHaveCount(0);
   await expect(message).toHaveAttribute("data-stream-active", "true");
   const paragraph = message.locator(".reply-content > p");
   await expect
@@ -124,9 +125,52 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
     .toBe("stream-caret");
   await emit({ text: "这一段正在逐步输出，新的内容已到达。" });
   await expect(paragraph).toHaveText("这一段正在逐步输出，新的内容已到达。");
+  const fresh = paragraph.locator(".stream-text-reveal");
+  await expect(fresh.first()).toBeVisible();
+  const animation = await fresh.first().evaluate((el) => {
+    const animation = el.getAnimations()[0]!;
+    animation.pause();
+    animation.currentTime = 80;
+    const before = {
+      opacity: getComputedStyle(el).opacity,
+      filter: getComputedStyle(el).filter,
+    };
+    animation.currentTime = 400;
+    const after = {
+      opacity: getComputedStyle(el).opacity,
+      filter: getComputedStyle(el).filter,
+    };
+    animation.play();
+    return { before, after, duration: animation.effect!.getTiming().duration };
+  });
+  expect(Number(animation.after.opacity)).toBeGreaterThan(
+    Number(animation.before.opacity) + 0.2,
+  );
+  expect(animation.after.filter).not.toBe(animation.before.filter);
+  expect(animation.duration).toBe(520);
+  expect(await fresh.allTextContents()).not.toContain("这一段正在逐步输出");
+  for (const time of [60, 460]) {
+    await fresh.evaluateAll((elements, time) => {
+      for (const el of elements)
+        for (const animation of el.getAnimations()) {
+          animation.pause();
+          animation.currentTime = time;
+        }
+    }, time);
+    await paragraph.screenshot({
+      path: `test-results/stream-text-frame-${time}.png`,
+    });
+  }
   await expect(message).toHaveCount(1);
   const before = await message.boundingBox();
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect
+    .poll(() =>
+      fresh.evaluateAll(
+        (elements) => elements.flatMap((el) => el.getAnimations()).length,
+      ),
+    )
+    .toBe(0);
   await expect
     .poll(() =>
       paragraph.evaluate((el) => getComputedStyle(el, "::after").animationName),
@@ -136,6 +180,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.screenshot({ path: "test-results/stream-indicator.png" });
   await emit({ streaming: false });
+  await expect(message.locator(".stream-text-reveal")).toHaveCount(0);
   await expect(message).not.toHaveAttribute("data-stream-active", "true");
   await expect
     .poll(() =>
@@ -145,8 +190,10 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
   );
+  await openExecutionPanel(page);
   await page
-    .getByRole("button", { name: "查看这项正在处理的工作", exact: true })
+    .locator(".execution-work-row")
+    .filter({ hasText: "流式交互验收" })
     .click();
   await expect
     .poll(() => page.evaluate(() => (window as any).__streamSources.size))

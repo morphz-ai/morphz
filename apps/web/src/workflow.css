@@ -456,23 +456,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.primary-panel[data-interaction="recent"] .exchange-surface > .conversation {
-  background: color-mix(in srgb, var(--soft) 88%, transparent);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border-radius: var(--ui-radius-panel);
-  padding-top: 12px;
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--line) 65%, transparent),
-    0 -4px 18px light-dark(#00000005, #00000020);
-}
-@media (prefers-reduced-transparency: reduce) {
-  .primary-panel[data-interaction="recent"] .exchange-surface > .conversation {
-    background: var(--soft);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-}
 .app.application-immersive {
   grid-template-columns: minmax(0, 1fr);
   --workspace-offset: 0px;
@@ -653,6 +636,11 @@
 .browser-slot {
   flex: 1;
   min-height: 100px;
+  /* The native page paints its own background. Clipped bounds must reveal
+     the workspace, not a white placeholder strip beneath floating tools. */
+  background: transparent;
+  border: 0;
+  border-radius: 0;
 }
 .workspace-recent {
   display: flex;
@@ -1035,7 +1023,7 @@
   height: 8px;
   accent-color: var(--accent);
 }
-.app .composer-floating-tools > button[data-recording="true"] {
+.app .composer-media-tools > button[data-recording="true"] {
   color: light-dark(#ae3535, #ee8d8d);
 }
 .dictation-consent {

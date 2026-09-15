@@ -196,46 +196,97 @@
   margin: 8px 0;
   font-size: 12px;
 }
-.workspace .execution-panel-toggle {
+.workspace .execution-status-control {
   width: auto;
   min-width: 32px;
-  gap: 4px;
-}
-.execution-panel-toggle small {
-  font-size: 11px;
-  color: var(--muted);
-}
-.conversation-message .message-run-indicator {
-  position: absolute;
-  /* Use the open space before a right-aligned bubble, not beyond the scroller. */
-  right: calc(100% + 6px);
-  bottom: 3px;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  padding: 0;
+  gap: 5px;
+  height: 32px;
+  padding: 0 8px;
+  flex-shrink: 0;
   border: 0;
+  border-radius: var(--ui-radius-sm, 6px);
   background: transparent;
   color: var(--muted);
-  opacity: 0;
+  font-size: 12px;
 }
-.message-run-indicator > span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.conversation-message .message-run-indicator[data-pending],
-.conversation-message:hover .message-run-indicator,
-.conversation-message:focus-within .message-run-indicator {
-  opacity: 1;
-}
-.message-run-indicator[data-running] > span {
+.execution-status-control[data-attention] {
   color: var(--accent-strong);
-  animation: work-pulse 1.8s ease-in-out infinite;
+  font-weight: 600;
+}
+@property --execution-glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.conversation .human-message[data-background-execution]::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--execution-glow-angle),
+    transparent 8%,
+    color-mix(in srgb, var(--accent-strong) 15%, transparent) 28%,
+    var(--accent-strong) 44%,
+    transparent 62%,
+    color-mix(in srgb, var(--accent-strong) 45%, transparent) 84%,
+    transparent
+  );
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: execution-halo-orbit 3.6s linear infinite;
+}
+.conversation .human-message[data-background-execution] {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong) 17%, transparent);
+}
+@keyframes execution-halo-orbit {
+  to {
+    --execution-glow-angle: 360deg;
+  }
+}
+.message-meta .message-execution-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+.message-execution-link:hover {
+  color: var(--accent-strong);
+}
+.inline-approval {
+  min-width: 0;
+}
+.conversation > .inline-approval,
+.conversation .inline-approval {
+  max-width: min(100%, 560px);
+  margin: 0 0 18px auto;
+}
+.approval-origin {
+  color: var(--muted);
+}
+.approval-operation {
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr);
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.approval-operation > span {
+  color: var(--muted);
+}
+.approval-operation code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}
+.inline-approval .execution-actions {
+  flex-wrap: wrap;
 }
 .conversation-message .message-source {
   display: flex;
@@ -262,24 +313,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .execution-work-mark[data-active],
-  .message-run-indicator[data-running] > span {
+  .conversation .human-message[data-background-execution]::before {
     animation: none;
   }
-}
-
-.approval-operation {
-  display: grid;
-  grid-template-columns: 4em minmax(0, 1fr);
-  gap: 8px;
-  margin: 6px 0;
-  font-size: 12px;
-}
-.approval-operation > span {
-  color: var(--muted);
-}
-.approval-operation code {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 120px;
-  overflow: auto;
 }

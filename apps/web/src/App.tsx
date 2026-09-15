@@ -12,7 +12,6 @@ import {
   AudioLines,
   ArrowLeft,
   ArrowRight,
-  ChevronDown,
   Inbox,
   Layers2,
   Library,
@@ -27,15 +26,10 @@ import {
   RefreshCw,
   ChevronRight,
   Search,
-  FileUp,
   Mic,
   Square,
   SquareBottomDashedScissors,
-  Pin,
   Brain,
-  Maximize2,
-  Minimize2,
-  History,
   ListChecks,
 } from "lucide-react";
 import {
@@ -64,19 +58,22 @@ import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
-import { ComposerOptions } from "./ComposerOptions.js";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
+import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
 import { BrandMark } from "./BrandMark.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
 import { TaskList } from "./TaskList.js";
 import { taskListOptions, type TaskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
+import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
 import {
   objectsApplication,
   browserApplication,
 } from "../../../packages/core/src/applications.js";
-import { ImportDocuments, SearchDocuments } from "./LibraryDialogs.js";
+import { SearchDocuments } from "./LibraryDialogs.js";
+import type { LocalFileView } from "../../../packages/core/src/local-files.js";
 import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
 import type { SpeechScope } from "./client.js";
@@ -91,8 +88,12 @@ import { useExchangeFocus } from "./useExchangeFocus.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
 import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
+import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
 
 type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
+type InspectorSelection =
+  | { view: "execution"; scope: ExecutionScope }
+  | { view: "understanding" | "collaboration" };
 type Preferences = {
   taskList?: TaskListOptions;
   executionPinned?: boolean;
@@ -114,6 +115,7 @@ type Preferences = {
   interactions?: Record<string, InteractionMode>;
   pinnedInputs?: Record<string, boolean>;
   selectedConversations?: Record<string, string>;
+  localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };
 type InputDraft = {
   attachments?: InputAttachment[];
@@ -268,8 +270,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactId?: string;
       artifactRevision?: number;
     } | null>(null),
-    [importOpen, setImportOpen] = useState(false),
-    [importMode, setImportMode] = useState<"copy" | "linked">("copy"),
     [executions, setExecutions] = useState<ExecutionScope | null>(() =>
       prefs.executionPinned
         ? {
@@ -454,6 +454,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     selectedConversation?.projectId ??
     project?.id ??
     "";
+  const directoryScope = `${project?.id}:${conversationId}`;
+  const canAuthorizeDirectories =
+    !!client.boot?.capabilities.agentDirectories &&
+    !!window.morphzDesktop?.directories;
+  const [directoryState, setDirectoryState] = useState<DirectoryState>({
+    scope: "",
+    ready: false,
+    grants: [],
+  });
+  const [directoryPickerScope, setDirectoryPickerScope] = useState<
+    string | null
+  >(null);
   function conversationKey(workspaceId: string) {
     return workspaceId === project?.id
       ? conversationId
@@ -474,6 +486,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : (navigationProject?.id ?? conversationId)
       : conversationId;
   const dialogueCanvas = prefs.view === "dialogue" && !artifact;
+  const [conversationToolbarTarget, setConversationToolbarTarget] =
+    useState<HTMLDivElement | null>(null);
   const interaction = prefs.interactions?.[exchangeKey] ?? "input";
   const inputVisible = dialogueCanvas || interaction !== "hidden";
   const conversationVisible =
@@ -495,6 +509,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       searchOpen ||
       !!creating ||
       !!executions ||
+      directoryPickerScope === directoryScope ||
       !!uploadingDrafts[contextKey],
     onLeave: () => setInteraction("hidden"),
   });
@@ -668,23 +683,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
   const inspectorOpen =
     !!executions || understandingOpen || collaborationVisible;
+  const inspectorSelections = useRef(new Map<string, InspectorSelection>());
+  useLayoutEffect(() => {
+    // Visibility never chooses a feature. Remember the last explicit view in
+    // each work surface, including the exact execution provenance being read.
+    if (executions)
+      inspectorSelections.current.set(contextKey, {
+        view: "execution",
+        scope: executions,
+      });
+    else if (understandingOpen)
+      inspectorSelections.current.set(contextKey, { view: "understanding" });
+    else if (collaborationVisible)
+      inspectorSelections.current.set(contextKey, { view: "collaboration" });
+  }, [contextKey, executions, understandingOpen, collaborationVisible]);
   const resizeInspector = (inspectorWidth: number) =>
     prefer({ inspectorWidth });
-  const lastInspector = useRef<{
-    kind: "execution" | "understanding" | "collaboration";
-    context: string;
-    scope?: ExecutionScope;
-  } | null>(null);
   function closeInspector() {
-    lastInspector.current = {
-      kind: executions
-        ? "execution"
-        : understandingOpen
-          ? "understanding"
-          : "collaboration",
-      context: contextKey,
-      scope: executions ?? undefined,
-    };
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
@@ -723,6 +738,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setPrefs((previous) => {
       const next = {
         ...previous,
+        ...("view" in change ||
+        "projectId" in change ||
+        "artifactId" in change ||
+        "applications" in change ||
+        "selectedConversations" in change
+          ? { localFile: undefined }
+          : {}),
         ...("artifactId" in change ? { artifactRevision: null } : {}),
         ...change,
         ...(change.selectedConversations
@@ -1095,6 +1117,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
       if (
+        canAuthorizeDirectories &&
+        (directoryState.scope !== directoryScope || !directoryState.ready)
+      )
+        throw new Error("目录授权尚未确认，请稍后发送；草稿已保留。");
+      if (
         asAnnotation &&
         (!artifact || !captured.selection || !captured.revision)
       )
@@ -1155,6 +1182,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               : null,
             selection: captured.selection,
             body: captured.body,
+            ...(canAuthorizeDirectories && directoryState.grants.length
+              ? { directories: directoryState.grants }
+              : {}),
             ...(captured.attachments?.length
               ? { attachments: captured.attachments }
               : {}),
@@ -1276,6 +1306,63 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactId: null,
     });
   };
+  const openUnderstanding = () => {
+    setExecutions(null);
+    setMobileCollaboration(false);
+    prefer({ collaboration: false, executionPinned: false });
+    setUnderstandingOpen(true);
+  };
+  const openCollaboration = () => {
+    setExecutions(null);
+    setUnderstandingOpen(false);
+    setMobileCollaboration(true);
+    prefer({ collaboration: true, executionPinned: false });
+  };
+  const rememberedInspector = inspectorSelections.current.get(contextKey);
+  const showInspector = () => {
+    if (
+      rememberedInspector?.view === "execution" &&
+      state.projects.some(
+        (p) => p.id === rememberedInspector.scope.projectId,
+      ) &&
+      (!rememberedInspector.scope.inputId ||
+        state.inputs.some((i) => i.id === rememberedInspector.scope.inputId))
+    ) {
+      keepExchangeOpen();
+      setUnderstandingOpen(false);
+      setMobileCollaboration(false);
+      prefer({ collaboration: false });
+      setExecutions(rememberedInspector.scope);
+    } else if (rememberedInspector?.view === "understanding" || !artifact) {
+      openUnderstanding();
+    } else {
+      openCollaboration();
+    }
+  };
+  const inspectorViewOptions: ComposerOption[] = [
+    {
+      label: "执行记录",
+      icon: <ListChecks />,
+      onSelect: openExecutions,
+      pressed: !!executions,
+    },
+    {
+      label: "当前理解",
+      icon: <Brain />,
+      onSelect: openUnderstanding,
+      pressed: understandingOpen,
+    },
+    ...(artifact
+      ? [
+          {
+            label: "对象批注",
+            icon: <MessageSquareText />,
+            onSelect: openCollaboration,
+            pressed: collaborationVisible,
+          },
+        ]
+      : []),
+  ];
   const inspectExecution = (id: string) => {
     const source = state.inputs.find((i) => i.id === id);
     if (!source) return;
@@ -1290,45 +1377,78 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       inputId: source.id,
     });
   };
-  const showInspector = () => {
-    const previous = lastInspector.current;
-    if (previous?.context === contextKey) {
-      keepExchangeOpen();
-      if (previous.kind === "understanding") setUnderstandingOpen(true);
-      else if (previous.kind === "collaboration" && artifact) {
-        compact
-          ? setMobileCollaboration(true)
-          : prefer({ collaboration: true });
-      } else if (previous.scope) setExecutions(previous.scope);
-      else openExecutions();
-    } else openExecutions();
-  };
   const activeExecutionCount = new Set([
-    ...client
-      .boot!.runtime.deliveries.filter(
-        (d) =>
-          state.inputs.some((i) => i.id === d.inputId) &&
-          ["queued", "sending", "running"].includes(d.state),
-      )
-      .map((d) => d.inputId),
-    ...(client.boot!.runtime.activity?.threads ?? []).map(
+    ...(client.online ? activeExecutionThreads(client.boot!.runtime) : []).map(
       (t) => t.inputId ?? t.rootId,
     ),
+    ...(client.online && client.boot!.runtime.connected
+      ? client
+          .boot!.runtime.deliveries.filter(
+            (d) =>
+              state.inputs.some((input) => input.id === d.inputId) &&
+              ["queued", "sending", "running"].includes(d.state),
+          )
+          .map((d) => d.inputId)
+      : []),
   ]).size;
-  const executionButton = (
-    <button
-      className="icon-button composer-executions"
-      aria-label="执行记录与审批"
-      title={
-        client.boot!.runtime.configured
-          ? "执行记录与审批"
-          : "连接 Agent 后可查看执行记录与审批"
-      }
-      disabled={!client.boot!.runtime.configured}
-      onClick={openExecutions}
-    >
-      <ListChecks />
-    </button>
+  const approvalCount = client.boot!.runtime.attention?.approvals.length ?? 0;
+  const attentionAvailable =
+    client.online &&
+    client.boot!.runtime.connected &&
+    client.boot!.runtime.attention?.available;
+  const inspectorTitle = executions
+    ? "执行记录"
+    : understandingOpen
+      ? "当前理解"
+      : collaborationVisible
+        ? "对象批注"
+        : rememberedInspector?.view === "execution"
+          ? "执行记录"
+          : rememberedInspector?.view === "understanding" || !artifact
+            ? "当前理解"
+            : "对象批注";
+  const inspectorControls = (
+    <div className="workspace-inspector-controls">
+      {(approvalCount > 0 || activeExecutionCount > 0) && (
+        <button
+          className="execution-status-control"
+          aria-label="执行记录与审批"
+          aria-controls="workspace-inspector"
+          aria-describedby="workspace-execution-status"
+          data-attention={approvalCount > 0 || undefined}
+          title="查看执行记录与审批"
+          onClick={openExecutions}
+        >
+          {approvalCount > 0 ? (
+            <span
+              id="workspace-execution-status"
+              aria-label={
+                attentionAvailable
+                  ? `${approvalCount} 项待审批`
+                  : "审批状态待确认"
+              }
+            >
+              {attentionAvailable ? `${approvalCount} 待审批` : "待确认"}
+            </span>
+          ) : (
+            <span
+              id="workspace-execution-status"
+              aria-label={`${activeExecutionCount} 项进行中`}
+            >
+              {activeExecutionCount} 进行中
+            </span>
+          )}
+        </button>
+      )}
+      <SidebarToggle
+        className="inspector-toggle"
+        side="right"
+        expanded={inspectorOpen}
+        controls="workspace-inspector"
+        title={`${inspectorOpen ? "隐藏" : "显示"}右侧栏 · ${inspectorTitle}`}
+        onClick={inspectorOpen ? closeInspector : showInspector}
+      />
+    </div>
   );
   return (
     <div
@@ -1698,11 +1818,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     },
                   },
                   {
-                    label: "资料导入与来源",
-                    icon: <FileUp />,
-                    onSelect: () => setImportOpen(true),
-                  },
-                  {
                     label: "录音转文字",
                     icon: <AudioLines />,
                     onSelect: () =>
@@ -1745,22 +1860,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 <MessageSquareText />
               </button>
             )}
-            {!inspectorOpen && (
-              <SidebarToggle
-                className="inspector-toggle execution-panel-toggle"
-                side="right"
-                expanded={false}
-                controls="workspace-inspector"
-                title={
-                  activeExecutionCount > 0
-                    ? `显示右侧栏 · ${activeExecutionCount} 项执行中`
-                    : undefined
-                }
-                onClick={showInspector}
-              />
-            )}
           </div>
         </header>
+        {inspectorControls}
         <div
           className="workspace-body"
           data-execution-open={!!executions || undefined}
@@ -1802,10 +1904,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 <ApplicationHost
                   onInput={showInput}
                   onBrowserPage={setBrowserPage}
-                  onConnectFolder={() => {
-                    setImportMode("linked");
-                    setImportOpen(true);
-                  }}
                   toolbarTarget={toolbarTarget}
                   client={client}
                   foreground={!historyVisible && creating !== "document"}
@@ -1933,510 +2031,506 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       onOpen={openUser}
                       onCreate={composeIntent}
                       onWrite={() => setCreating("document")}
-                      onImport={() => {
-                        setImportMode("copy");
-                        setImportOpen(true);
-                      }}
-                      importing={importing}
                     />
                   )}
                 </ApplicationHost>
               </div>
             </main>
             <div className="exchange-surface" ref={exchange}>
-              {conversationVisible && (
-                <Conversation
-                  focusedApplicationId={
-                    !historyVisible &&
-                    activeInstance?.applicationId === browserApplication.id
-                      ? activeInstance.id
-                      : undefined
-                  }
-                  focusedArtifactId={!historyVisible ? artifact?.id : undefined}
-                  key={conversationId}
-                  inputs={inputs}
-                  positions={exchangePositions.current}
-                  revealInputId={revealedInputs[conversationId] ?? null}
-                  onInspect={inspectExecution}
-                  state={state}
-                  runtime={client.boot!.runtime}
-                  projectId={conversationProjectId}
-                  conversationId={conversationId}
-                  client={client}
-                  onOpen={openUser}
-                  onRetry={async (id) => {
-                    try {
-                      await client.dispatchInput(id);
-                    } catch (error) {
-                      setNotice(
-                        error instanceof Error ? error.message : "发送失败。",
-                      );
+              <ExchangePanel
+                open={inputVisible || conversationVisible}
+                scopeRef={setConversationToolbarTarget}
+              >
+                {conversationVisible && (
+                  <Conversation
+                    toolbarTarget={conversationToolbarTarget}
+                    onReturnToLatest={() =>
+                      input.current?.focus({ preventScroll: true })
                     }
-                  }}
-                />
-              )}
-              <div className="composer-dock">
-                {selectedConversation?.archivedAt ? (
-                  <div className="archived-conversation-note">
-                    <span>对话已归档，历史和后台工作仍保留。</span>
-                    {executionButton}
-                    <button
-                      onClick={() =>
-                        void client
-                          .execute({
-                            type: "update-conversation",
-                            conversationId,
-                            expectedRevision: selectedConversation.revision,
-                            archived: false,
-                          })
-                          .catch((e) => setNotice(e.message))
+                    focusedApplicationId={
+                      !historyVisible &&
+                      activeInstance?.applicationId === browserApplication.id
+                        ? activeInstance.id
+                        : undefined
+                    }
+                    focusedArtifactId={
+                      !historyVisible ? artifact?.id : undefined
+                    }
+                    key={conversationId}
+                    inputs={inputs}
+                    positions={exchangePositions.current}
+                    revealInputId={revealedInputs[conversationId] ?? null}
+                    onInspect={inspectExecution}
+                    state={state}
+                    runtime={client.boot!.runtime}
+                    projectId={conversationProjectId}
+                    conversationId={conversationId}
+                    client={client}
+                    onOpen={openUser}
+                    onRetry={async (id) => {
+                      try {
+                        await client.dispatchInput(id);
+                      } catch (error) {
+                        setNotice(
+                          error instanceof Error ? error.message : "发送失败。",
+                        );
                       }
-                    >
-                      恢复对话
-                    </button>
-                  </div>
-                ) : inputVisible ? (
-                  <section
-                    className="composer"
-                    id="global-composer"
-                    aria-label="AI 输入"
-                  >
-                    <div ref={setAttachmentSlot} />
-                    <div ref={setDictationSlot} />
-                    {draft.selection && (
-                      <div className="selection-quote">
-                        <blockquote>{draft.selection}</blockquote>
-                        <button
-                          aria-label="移除引用"
-                          onClick={() =>
-                            setDraft(contextKey, {
-                              ...draft,
-                              selection: "",
-                              annotation: false,
+                    }}
+                  />
+                )}
+                <div className="composer-dock">
+                  {selectedConversation?.archivedAt ? (
+                    <div className="archived-conversation-note">
+                      <span>对话已归档，历史和后台工作仍保留。</span>
+                      <button
+                        onClick={() =>
+                          void client
+                            .execute({
+                              type: "update-conversation",
+                              conversationId,
+                              expectedRevision: selectedConversation.revision,
+                              archived: false,
                             })
-                          }
-                        >
-                          <X />
-                        </button>
-                      </div>
-                    )}
-                    {draft.annotation && (
-                      <div className="annotation-mode">
-                        <span>保存为批注</span>
-                        <button
-                          onClick={() =>
-                            setDraft(contextKey, {
-                              ...draft,
-                              annotation: false,
-                            })
-                          }
-                        >
-                          改为提问
-                        </button>
-                      </div>
-                    )}
-                    <div className="composer-writing">
-                      <textarea
-                        ref={input}
-                        aria-label="AI 输入内容"
-                        placeholder={
-                          draft.annotation
-                            ? "写下批注…"
-                            : draft.taskResult
-                              ? "写下结果；提交后将以你的身份完成这件事项…"
-                              : draft.intent
-                                ? inputIntents[draft.intent].placeholder
-                                : "提出想法，或让工作继续…"
+                            .catch((e) => setNotice(e.message))
                         }
-                        rows={2}
-                        maxLength={30000}
-                        value={draft.body}
-                        disabled={sending}
-                        onFocus={() => {
-                          if (!conversationVisible) setInteraction("recent");
-                        }}
-                        onChange={(e) =>
-                          setDraft(contextKey, {
-                            ...draft,
-                            body: e.target.value,
-                            revision: artifact
-                              ? (draft.revision ?? artifact.revision)
-                              : null,
-                          })
-                        }
-                        onKeyDown={(event) => {
-                          if (
-                            event.key === "Enter" &&
-                            !event.shiftKey &&
-                            !event.nativeEvent.isComposing &&
-                            event.keyCode !== 229
-                          ) {
-                            event.preventDefault();
-                            if (client.online) void send();
-                          }
-                        }}
-                      />
+                      >
+                        恢复对话
+                      </button>
                     </div>
-                    {inputErrors[contextKey] && (
-                      <p className="composer-error" role="alert">
-                        {inputErrors[contextKey]}
-                      </p>
-                    )}
-                    {(!client.online ||
-                      draft.taskResult ||
-                      (!draft.annotation &&
-                        !client.boot!.runtime.connected)) && (
-                      <small className="model-status">
-                        {!client.online
-                          ? "工作中心已断开"
-                          : draft.taskResult
-                            ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
-                            : client.boot!.runtime.configured
-                              ? "连接中 · 消息将保留并排队"
-                              : "Agent 未连接"}
-                        {(!client.online || !draft.taskResult) && (
+                  ) : inputVisible ? (
+                    <section
+                      className="composer"
+                      id="global-composer"
+                      aria-label="AI 输入"
+                    >
+                      <div ref={setAttachmentSlot} />
+                      <div ref={setDictationSlot} />
+                      {draft.selection && (
+                        <div className="selection-quote">
+                          <blockquote>{draft.selection}</blockquote>
                           <button
-                            className="text-button"
-                            onClick={() => setConnectionOpen(true)}
+                            aria-label="移除引用"
+                            onClick={() =>
+                              setDraft(contextKey, {
+                                ...draft,
+                                selection: "",
+                                annotation: false,
+                              })
+                            }
                           >
-                            连接详情
+                            <X />
                           </button>
-                        )}
-                      </small>
-                    )}
-                    <div className="composer-actions">
-                      <div className="composer-footer-info">
-                        <div className="composer-meta">
-                          {
-                            <span
-                              className="context-chip"
-                              title={
-                                contextTitle +
-                                (draft.revision ? " · v" + draft.revision : "")
-                              }
-                            >
-                              <Link2 />
-                              {contextTitle}
-                              {draft.revision ? " · v" + draft.revision : ""}
-                            </span>
+                        </div>
+                      )}
+                      {draft.annotation && (
+                        <div className="annotation-mode">
+                          <span>保存为批注</span>
+                          <button
+                            onClick={() =>
+                              setDraft(contextKey, {
+                                ...draft,
+                                annotation: false,
+                              })
+                            }
+                          >
+                            改为提问
+                          </button>
+                        </div>
+                      )}
+                      <div className="composer-writing">
+                        <textarea
+                          ref={input}
+                          aria-label="AI 输入内容"
+                          placeholder={
+                            draft.annotation
+                              ? "写下批注…"
+                              : draft.taskResult
+                                ? "写下结果；提交后将以你的身份完成这件事项…"
+                                : draft.intent
+                                  ? inputIntents[draft.intent].placeholder
+                                  : "提出想法，或让工作继续…"
                           }
-                          {(draft.taskResult || draft.intent) && (
-                            <div
-                              className={
-                                "composer-intent" +
-                                (draft.taskResult ? " task-result-intent" : "")
-                              }
-                            >
+                          rows={2}
+                          maxLength={30000}
+                          value={draft.body}
+                          disabled={sending}
+                          onFocus={() => {
+                            if (!conversationVisible) setInteraction("recent");
+                          }}
+                          onChange={(e) =>
+                            setDraft(contextKey, {
+                              ...draft,
+                              body: e.target.value,
+                              revision: artifact
+                                ? (draft.revision ?? artifact.revision)
+                                : null,
+                            })
+                          }
+                          onKeyDown={(event) => {
+                            if (
+                              event.key === "Enter" &&
+                              !event.shiftKey &&
+                              !event.nativeEvent.isComposing &&
+                              event.keyCode !== 229
+                            ) {
+                              event.preventDefault();
+                              if (client.online) void send();
+                            }
+                          }}
+                        />
+                      </div>
+                      {inputErrors[contextKey] && (
+                        <p className="composer-error" role="alert">
+                          {inputErrors[contextKey]}
+                        </p>
+                      )}
+                      <div className="composer-actions">
+                        <div className="composer-footer-info">
+                          {(!client.online ||
+                            draft.taskResult ||
+                            (!draft.annotation &&
+                              !client.boot!.runtime.connected)) && (
+                            <small className="model-status">
+                              {!client.online
+                                ? "工作中心已断开"
+                                : draft.taskResult
+                                  ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
+                                  : client.boot!.runtime.configured
+                                    ? "连接中 · 消息将保留并排队"
+                                    : "Agent 未连接"}
+                              {(!client.online || !draft.taskResult) && (
+                                <button
+                                  className="text-button"
+                                  onClick={() => setConnectionOpen(true)}
+                                >
+                                  连接详情
+                                </button>
+                              )}
+                            </small>
+                          )}
+                          <div className="composer-meta">
+                            {
                               <span
+                                className="context-chip"
                                 title={
-                                  draft.taskResult
-                                    ? "提交结果并完成事项"
-                                    : inputIntents[draft.intent!].label
+                                  contextTitle +
+                                  (draft.revision
+                                    ? " · v" + draft.revision
+                                    : "")
                                 }
                               >
-                                {draft.taskResult
-                                  ? `提交结果并完成 · v${draft.taskResult.revision}`
-                                  : inputIntents[draft.intent!].label}
+                                <Link2 />
+                                {contextTitle}
+                                {draft.revision ? " · v" + draft.revision : ""}
                               </span>
+                            }
+                            {(draft.taskResult || draft.intent) && (
+                              <div
+                                className={
+                                  "composer-intent" +
+                                  (draft.taskResult
+                                    ? " task-result-intent"
+                                    : "")
+                                }
+                              >
+                                <span
+                                  title={
+                                    draft.taskResult
+                                      ? "提交结果并完成事项"
+                                      : inputIntents[draft.intent!].label
+                                  }
+                                >
+                                  {draft.taskResult
+                                    ? `提交结果并完成 · v${draft.taskResult.revision}`
+                                    : inputIntents[draft.intent!].label}
+                                </span>
+                                <button
+                                  className="icon-button"
+                                  aria-label={
+                                    draft.taskResult
+                                      ? "改为普通输入"
+                                      : "移除输入意图"
+                                  }
+                                  title={
+                                    draft.taskResult
+                                      ? "改为普通输入，不完成事项"
+                                      : "移除输入意图"
+                                  }
+                                  onClick={() => {
+                                    const {
+                                      taskResult: _,
+                                      intent: __,
+                                      ...rest
+                                    } = draft;
+                                    setDraft(contextKey, rest);
+                                    input.current?.focus();
+                                  }}
+                                >
+                                  <X />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="composer-floating-tools">
+                          <div
+                            className="composer-media-tools"
+                            role="group"
+                            aria-label="输入工具"
+                          >
+                            {((!draft.annotation && !draft.taskResult) ||
+                              !!draft.attachments?.length) && (
+                              <MessageAttachments
+                                key={`attachments:${contextKey}`}
+                                inputRef={input}
+                                previewTarget={attachmentSlot}
+                                client={client}
+                                attachments={draft.attachments ?? []}
+                                allowAdd={
+                                  !draft.annotation && !draft.taskResult
+                                }
+                                disabled={
+                                  sending || !!uploadingDrafts[contextKey]
+                                }
+                                onBusy={(busy) =>
+                                  setUploadingDrafts((old) => ({
+                                    ...old,
+                                    [contextKey]: busy,
+                                  }))
+                                }
+                                onChange={(update) =>
+                                  updateDraft(contextKey, (old) => ({
+                                    ...old,
+                                    attachments: update(old.attachments ?? []),
+                                  }))
+                                }
+                                onError={(message) =>
+                                  setInputErrors((old) => ({
+                                    ...old,
+                                    [contextKey]: message,
+                                  }))
+                                }
+                              />
+                            )}
+                            {canAuthorizeDirectories && (
+                              <AgentDirectories
+                                key={`${client.boot!.csrfToken}:${directoryScope}`}
+                                projectId={project.id}
+                                conversationId={conversationId}
+                                identity={client.boot!.csrfToken}
+                                previewTarget={attachmentSlot}
+                                disabled={sending || !client.online}
+                                onSelecting={(selecting) =>
+                                  setDirectoryPickerScope((current) =>
+                                    selecting
+                                      ? directoryScope
+                                      : current === directoryScope
+                                        ? null
+                                        : current,
+                                  )
+                                }
+                                onState={setDirectoryState}
+                                onError={(message) =>
+                                  setInputErrors((old) => ({
+                                    ...old,
+                                    [contextKey]: message,
+                                  }))
+                                }
+                              />
+                            )}
+                            {!draft.annotation && !draft.taskResult && (
                               <button
                                 className="icon-button"
-                                aria-label={
-                                  draft.taskResult
-                                    ? "改为普通输入"
-                                    : "移除输入意图"
+                                aria-label="截图输入"
+                                title={`截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`}
+                                disabled={
+                                  sending ||
+                                  !!uploadingDrafts[contextKey] ||
+                                  !client.online ||
+                                  (draft.attachments?.length ?? 0) >= 8
                                 }
-                                title={
-                                  draft.taskResult
-                                    ? "改为普通输入，不完成事项"
-                                    : "移除输入意图"
+                                onClick={(event) =>
+                                  setCapture({
+                                    key: contextKey,
+                                    projectId: project.id,
+                                    hideWindow: event.altKey,
+                                    ...(artifact
+                                      ? {
+                                          artifactId: artifact.id,
+                                          artifactRevision:
+                                            draft.revision ??
+                                            prefs.artifactRevision ??
+                                            artifact.revision,
+                                        }
+                                      : {}),
+                                  })
                                 }
-                                onClick={() => {
-                                  const {
-                                    taskResult: _,
-                                    intent: __,
-                                    ...rest
-                                  } = draft;
-                                  setDraft(contextKey, rest);
-                                  input.current?.focus();
-                                }}
                               >
-                                <X />
+                                <SquareBottomDashedScissors />
                               </button>
+                            )}
+                            <button
+                              className="icon-button"
+                              aria-label="语音输入"
+                              aria-pressed={speechRecording}
+                              data-recording={speechRecording || undefined}
+                              title={speechRecording ? "停止听写" : "开始听写"}
+                              disabled={
+                                (sending || !client.online) && !speechRecording
+                              }
+                              onClick={() => {
+                                if (speech?.key === contextKey && !speech.modal)
+                                  dictationControls.current?.toggle();
+                                else
+                                  setSpeech({
+                                    scope: {
+                                      projectId: project.id,
+                                      ...(artifact
+                                        ? {
+                                            artifactId: artifact.id,
+                                            revision:
+                                              draft.revision ??
+                                              prefs.artifactRevision ??
+                                              artifact.revision,
+                                          }
+                                        : {}),
+                                    },
+                                    title: contextTitle,
+                                    key: contextKey,
+                                    draft: { ...draft },
+                                  });
+                              }}
+                            >
+                              {speechRecording ? <Square /> : <Mic />}
+                            </button>
+                            <ComposerToolButtons
+                              key={`options:${contextKey}`}
+                              options={[
+                                ...(artifact
+                                  ? [
+                                      {
+                                        label: "保存为批注",
+                                        reserveOnly: !draft.selection,
+                                        icon: <MessageSquarePlus />,
+                                        disabled:
+                                          !draft.body.trim() ||
+                                          sending ||
+                                          !client.online,
+                                        onSelect: () => {
+                                          // Saving clears the selection and removes this
+                                          // tool. Leave focus on the persistent input.
+                                          input.current?.focus();
+                                          void send(true);
+                                        },
+                                      },
+                                    ]
+                                  : []),
+                              ]}
+                            />
+                          </div>
+                          {!dialogueCanvas && (
+                            <div
+                              className="exchange-view-tools"
+                              role="group"
+                              aria-label="交流面板操作"
+                            >
+                              <ExchangeControls
+                                conversationVisible={conversationVisible}
+                                historyVisible={historyVisible}
+                                pinned={inputPinned}
+                                unread={!conversationVisible && unseenReply}
+                                onInteraction={setInteraction}
+                                onPin={() => {
+                                  keepExchangeOpen();
+                                  if (inputPinned) input.current?.focus();
+                                  prefer({
+                                    pinnedInputs: {
+                                      [exchangeKey]: !inputPinned,
+                                    },
+                                  });
+                                }}
+                                onHide={hideInput}
+                              />
                             </div>
                           )}
                         </div>
-                      </div>
-                      {!draft.annotation && !draft.taskResult && (
-                        <div className="composer-preferences">
-                          <ModelPicker
-                            compact
-                            current={client.boot!.runtime.model}
-                            value={draft.model}
-                            reasoning={{
-                              value: draft.reasoningEffort,
-                              onChange: (reasoningEffort) =>
+                        {!draft.annotation && !draft.taskResult && (
+                          <div className="composer-preferences">
+                            <ModelPicker
+                              compact
+                              current={client.boot!.runtime.model}
+                              value={draft.model}
+                              reasoning={{
+                                value: draft.reasoningEffort,
+                                onChange: (reasoningEffort) =>
+                                  setDraft(contextKey, {
+                                    ...draft,
+                                    reasoningEffort,
+                                  }),
+                              }}
+                              disabled={
+                                sending ||
+                                !client.online ||
+                                !client.boot!.runtime.connected
+                              }
+                              onChange={(model) =>
                                 setDraft(contextKey, {
                                   ...draft,
-                                  reasoningEffort,
-                                }),
-                            }}
-                            disabled={
-                              sending ||
-                              !client.online ||
-                              !client.boot!.runtime.connected
-                            }
-                            onChange={(model) =>
-                              setDraft(contextKey, {
-                                ...draft,
-                                model: model || undefined,
-                              })
-                            }
-                          />
-                        </div>
-                      )}
-                      <div
-                        className="composer-floating-tools"
-                        role="group"
-                        aria-label="输入工具"
-                      >
-                        {((!draft.annotation && !draft.taskResult) ||
-                          !!draft.attachments?.length) && (
-                          <MessageAttachments
-                            key={`attachments:${contextKey}`}
-                            previewTarget={attachmentSlot}
-                            client={client}
-                            attachments={draft.attachments ?? []}
-                            allowAdd={!draft.annotation && !draft.taskResult}
-                            disabled={sending || !!uploadingDrafts[contextKey]}
-                            onBusy={(busy) =>
-                              setUploadingDrafts((old) => ({
-                                ...old,
-                                [contextKey]: busy,
-                              }))
-                            }
-                            onChange={(update) =>
-                              updateDraft(contextKey, (old) => ({
-                                ...old,
-                                attachments: update(old.attachments ?? []),
-                              }))
-                            }
-                            onError={(message) =>
-                              setInputErrors((old) => ({
-                                ...old,
-                                [contextKey]: message,
-                              }))
-                            }
-                          />
+                                  model: model || undefined,
+                                })
+                              }
+                            />
+                          </div>
                         )}
-                        {!draft.annotation && !draft.taskResult && (
+                        <div className="inline composer-input-tools">
                           <button
-                            className="icon-button"
-                            aria-label="截图输入"
-                            title={`截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`}
+                            className="send"
+                            aria-label={
+                              draft.annotation
+                                ? "保存批注"
+                                : draft.taskResult
+                                  ? "提交结果并完成事项"
+                                  : client.boot!.runtime.configured
+                                    ? "发送消息"
+                                    : "保存输入"
+                            }
                             disabled={
+                              (!draft.body.trim() &&
+                                !draft.attachments?.length) ||
                               sending ||
                               !!uploadingDrafts[contextKey] ||
-                              !client.online ||
-                              (draft.attachments?.length ?? 0) >= 8
+                              (canAuthorizeDirectories &&
+                                (directoryState.scope !== directoryScope ||
+                                  !directoryState.ready)) ||
+                              !client.online
                             }
-                            onClick={(event) =>
-                              setCapture({
-                                key: contextKey,
-                                projectId: project.id,
-                                hideWindow: event.altKey,
-                                ...(artifact
-                                  ? {
-                                      artifactId: artifact.id,
-                                      artifactRevision:
-                                        draft.revision ??
-                                        prefs.artifactRevision ??
-                                        artifact.revision,
-                                    }
-                                  : {}),
-                              })
-                            }
+                            onClick={() => void send()}
                           >
-                            <SquareBottomDashedScissors />
+                            {draft.annotation ? (
+                              <MessageSquarePlus />
+                            ) : (
+                              <ArrowUp />
+                            )}
                           </button>
-                        )}
-                        <button
-                          className="icon-button"
-                          aria-label="语音输入"
-                          aria-pressed={speechRecording}
-                          data-recording={speechRecording || undefined}
-                          title={speechRecording ? "停止听写" : "开始听写"}
-                          disabled={
-                            (sending || !client.online) && !speechRecording
-                          }
-                          onClick={() => {
-                            if (speech?.key === contextKey && !speech.modal)
-                              dictationControls.current?.toggle();
-                            else
-                              setSpeech({
-                                scope: {
-                                  projectId: project.id,
-                                  ...(artifact
-                                    ? {
-                                        artifactId: artifact.id,
-                                        revision:
-                                          draft.revision ??
-                                          prefs.artifactRevision ??
-                                          artifact.revision,
-                                      }
-                                    : {}),
-                                },
-                                title: contextTitle,
-                                key: contextKey,
-                                draft: { ...draft },
-                              });
-                          }}
-                        >
-                          {speechRecording ? <Square /> : <Mic />}
-                        </button>
-                        <ComposerToolButtons
-                          key={`options:${contextKey}`}
-                          unread={!conversationVisible && unseenReply}
-                          options={[
-                            {
-                              label: "执行记录与审批",
-                              groupStart: true,
-                              icon: <ListChecks />,
-                              onSelect: openExecutions,
-                              disabled: !client.boot!.runtime.configured,
-                              title: !client.boot!.runtime.configured
-                                ? "连接 Agent 后可查看执行记录与审批"
-                                : undefined,
-                            },
-                            ...(!dialogueCanvas
-                              ? [
-                                  {
-                                    id: "history-visibility",
-                                    label: conversationVisible
-                                      ? "收起交流记录"
-                                      : "查看交流记录",
-                                    icon: <History />,
-                                    onSelect: () =>
-                                      setInteraction(
-                                        conversationVisible
-                                          ? "input"
-                                          : "recent",
-                                      ),
-                                  },
-                                  {
-                                    id: "history-size",
-                                    label: historyVisible
-                                      ? "返回工作内容"
-                                      : "展开完整记录",
-                                    icon: historyVisible ? (
-                                      <Minimize2 />
-                                    ) : (
-                                      <Maximize2 />
-                                    ),
-                                    onSelect: () =>
-                                      setInteraction(
-                                        historyVisible ? "recent" : "history",
-                                      ),
-                                  },
-                                ]
-                              : []),
-                            ...(!dialogueCanvas
-                              ? [
-                                  {
-                                    id: "pin",
-                                    label: inputPinned
-                                      ? "取消固定输入框"
-                                      : "固定输入框",
-                                    icon: <Pin />,
-                                    pressed: inputPinned,
-                                    onSelect: () => {
-                                      keepExchangeOpen();
-                                      if (inputPinned) input.current?.focus();
-                                      prefer({
-                                        pinnedInputs: {
-                                          [exchangeKey]: !inputPinned,
-                                        },
-                                      });
-                                    },
-                                  },
-                                ]
-                              : []),
-                            ...(artifact
-                              ? [
-                                  {
-                                    label: "保存为批注",
-                                    reserveOnly: !draft.selection,
-                                    icon: <MessageSquarePlus />,
-                                    disabled:
-                                      !draft.body.trim() ||
-                                      sending ||
-                                      !client.online,
-                                    onSelect: () => {
-                                      // Saving clears the selection and removes this
-                                      // tool. Leave focus on the persistent input.
-                                      input.current?.focus();
-                                      void send(true);
-                                    },
-                                  },
-                                ]
-                              : []),
-                          ]}
-                        />
-                        {!dialogueCanvas && (
-                          <button
-                            className="icon-button"
-                            aria-label="收起 AI 输入框"
-                            title="收起 AI 输入框"
-                            onClick={hideInput}
-                          >
-                            <ChevronDown />
-                          </button>
-                        )}
+                        </div>
                       </div>
-                      <div className="inline composer-input-tools">
-                        <button
-                          className="send"
-                          aria-label={
-                            draft.annotation
-                              ? "保存批注"
-                              : draft.taskResult
-                                ? "提交结果并完成事项"
-                                : client.boot!.runtime.configured
-                                  ? "发送消息"
-                                  : "保存输入"
-                          }
-                          disabled={
-                            (!draft.body.trim() &&
-                              !draft.attachments?.length) ||
-                            sending ||
-                            !!uploadingDrafts[contextKey] ||
-                            !client.online
-                          }
-                          onClick={() => void send()}
-                        >
-                          {draft.annotation ? (
-                            <MessageSquarePlus />
-                          ) : (
-                            <ArrowUp />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </section>
-                ) : (
-                  <button
-                    ref={toggle}
-                    className="composer-reopen"
-                    aria-controls="global-composer"
-                    aria-expanded={false}
-                    onClick={showInput}
-                  >
-                    <MessageCircle />向 Morphz 输入<kbd>{shortcut}</kbd>
-                    {unseenReply && (
-                      <span className="unread-label">有新回复</span>
-                    )}
-                  </button>
-                )}
-              </div>
+                    </section>
+                  ) : (
+                    <button
+                      ref={toggle}
+                      className="composer-reopen"
+                      aria-controls="global-composer"
+                      aria-expanded={false}
+                      onClick={showInput}
+                    >
+                      <MessageCircle />向 Morphz 输入<kbd>{shortcut}</kbd>
+                      {unseenReply && (
+                        <span className="unread-label">有新回复</span>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </ExchangePanel>
             </div>
           </div>
         </div>
@@ -2445,6 +2539,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             key={executions.threadId ?? executions.inputId ?? "overview"}
             client={client}
             scope={executions}
+            viewOptions={inspectorViewOptions}
             pinned={!!prefs.executionPinned}
             layout={rightInspector}
             onResize={resizeInspector}
@@ -2457,6 +2552,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         {understandingOpen && (
           <UnderstandingPanel
             client={client}
+            viewOptions={inspectorViewOptions}
             layout={rightInspector}
             onResize={resizeInspector}
             projectId={project.id}
@@ -2481,6 +2577,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             className="collaboration"
             label="对象批注"
             title="批注"
+            viewOptions={inspectorViewOptions}
             context={contextTitle}
             resizeLabel="调整批注栏宽度"
             // Showing a saved annotation must not steal focus from continued input.
@@ -2554,15 +2651,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <ConnectionDetails
           client={client}
           onClose={() => setConnectionOpen(false)}
-        />
-      )}
-      {importOpen && (
-        <ImportDocuments
-          initialMode={importMode}
-          client={client}
-          project={project}
-          onClose={() => setImportOpen(false)}
-          onOpen={openUser}
         />
       )}
       {speech &&

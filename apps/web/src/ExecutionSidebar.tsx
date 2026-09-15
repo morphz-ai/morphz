@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { ArrowLeft, ChevronRight, Pin, PinOff, Square } from "lucide-react";
-import { discussionId } from "../../../packages/core/src/model.js";
+import {
+  discussionId,
+  inConversation,
+} from "../../../packages/core/src/model.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -8,6 +11,8 @@ import { StopResponse, ToolMessage } from "./Conversation.js";
 import { useConversationStream } from "./useConversationStream.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
+import { ApprovalCard } from "./ApprovalCard.js";
+import type { ComposerOption } from "./ComposerOptions.js";
 
 export function ExecutionSidebar({
   client,
@@ -19,6 +24,7 @@ export function ExecutionSidebar({
   onClose,
   onSelect,
   onOpen,
+  viewOptions,
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
@@ -29,6 +35,7 @@ export function ExecutionSidebar({
   onClose: () => void;
   onSelect: (scope: ExecutionScope) => void;
   onOpen: (id: string, revision?: number) => void;
+  viewOptions?: ComposerOption[];
 }) {
   const state = client.boot!.workspace,
     runtime = client.boot!.runtime;
@@ -67,7 +74,12 @@ export function ExecutionSidebar({
       (allWork ||
         (scope.artifactId
           ? source.artifactId === scope.artifactId
-          : source.projectId === scope.projectId))
+          : inConversation(
+              state,
+              scope.conversationId ?? scope.projectId,
+              source,
+              !client.boot!.capabilities.teamAuthentication,
+            )))
       ? [{ delivery: d, source }]
       : [];
   });
@@ -76,7 +88,15 @@ export function ExecutionSidebar({
     threads.some((t) => t.inputId === d.inputId);
   const active = entries.filter(({ delivery: d }) => pending(d));
   const background = threads.filter(
-    (t) => !t.inputId && (allWork || t.projectId === scope.projectId),
+    (t) =>
+      !t.inputId &&
+      (allWork ||
+        inConversation(
+          state,
+          scope.conversationId ?? scope.projectId,
+          t,
+          !client.boot!.capabilities.teamAuthentication,
+        )),
   );
   const deliveredAt = (id: string, fallback: string) =>
     runtime.messages
@@ -233,6 +253,8 @@ export function ExecutionSidebar({
       layout={layout}
       onResize={onResize}
       onClose={onClose}
+      focusOnMount={false}
+      viewOptions={viewOptions}
       leading={
         detail && (
           <button
@@ -291,6 +313,35 @@ export function ExecutionSidebar({
         )}
         {runtime.activity?.truncated && (
           <p className="execution-progress">当前概览未覆盖全部后台分支。</p>
+        )}
+        {!detail && runtime.attention && (
+          <section className="execution-attention" aria-label="需要处理的审批">
+            {!runtime.attention.available && (
+              <p className="muted" role="status">
+                审批状态暂不可用，请刷新后核对。
+              </p>
+            )}
+            {runtime.attention.approvals.map((entry) => (
+              <ApprovalCard
+                key={
+                  entry.approval.request.approval_id +
+                  entry.approval.fingerprint
+                }
+                entry={entry}
+                client={client}
+                available={
+                  client.online &&
+                  runtime.connected &&
+                  runtime.attention!.available
+                }
+                origin={
+                  state.projects.find((p) => p.id === entry.scope.projectId)
+                    ?.title
+                }
+                onInspect={() => onSelect(entry.scope)}
+              />
+            ))}
+          </section>
         )}
         {detail ? (
           <>
@@ -448,7 +499,7 @@ export function ExecutionSidebar({
               className="execution-other"
               onToggle={(e) => setShowOther(e.currentTarget.open)}
             >
-              <summary>其他后台执行与审批</summary>
+              <summary>工具执行记录</summary>
               {showOther && (
                 <ExecutionDialog
                   embedded

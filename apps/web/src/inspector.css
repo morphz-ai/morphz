@@ -1,9 +1,56 @@
 /* The inspector belongs to the window Host, not to a page's content grid. */
 .app .workspace {
+  position: relative;
+  --inspector-controls-space: 56px;
   --inspector-toolbar-height: 48px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--inspector-toolbar-height) minmax(0, 1fr);
+}
+.app
+  .workspace:has(> .workspace-inspector-controls > .execution-status-control) {
+  --inspector-controls-space: 132px;
+}
+.app .workspace > .workspace-inspector-controls {
+  position: absolute;
+  top: calc(
+    (var(--inspector-toolbar-height) - var(--inspector-controls-height, 32px)) /
+      2
+  );
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 32;
+  -webkit-app-region: no-drag;
+}
+@media (pointer: coarse) {
+  .app .workspace {
+    --inspector-controls-height: 44px;
+  }
+  .app .workspace-inspector-controls > button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .app .workspace {
+    --inspector-controls-space: 68px;
+  }
+  .app
+    .workspace:has(
+      > .workspace-inspector-controls > .execution-status-control
+    ) {
+    --inspector-controls-space: 144px;
+  }
+}
+.app
+  .workspace-inspector-controls
+  .sidebar-visibility-toggle[aria-expanded="true"] {
+  color: var(--ink);
+  background: var(--soft);
+}
+.app .workspace:not([data-inspector-mode="docked"]) > .topbar,
+.app .workspace:not([data-inspector-mode="docked"]) .browser-toolbar {
+  padding-right: var(--inspector-controls-space);
 }
 .app .workspace[data-inspector-mode="docked"] {
   grid-template-columns: minmax(0, 1fr) var(--inspector-width);
@@ -65,15 +112,20 @@
   height: var(--inspector-toolbar-height);
   min-height: var(--inspector-toolbar-height);
   gap: 6px;
-  padding: 0 12px;
-  margin: 0;
+  /* Native drag hit-testing does not follow CSS z-index. Keep this rectangle
+     physically clear of the sibling visibility/status controls above it. */
+  padding: 0 0 0 12px;
+  margin: 0 var(--inspector-controls-space) 0 0;
   border-bottom: 1px solid var(--hairline);
   background: transparent;
   -webkit-app-region: drag;
 }
 .app .inspector-header > h2 {
   margin: 0;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.3;
@@ -112,6 +164,12 @@
 .app .sidebar-visibility-toggle > svg {
   width: 18px;
   height: 18px;
+}
+@media (pointer: coarse) {
+  .app .sidebar-visibility-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 .app .workspace-inspector > .inspector-scroll {
   flex: 1;

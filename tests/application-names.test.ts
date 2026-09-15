@@ -29,7 +29,7 @@ const {
 
 test("旧输入注册定义摘要不变；旧单工具清单升级保留 token 和作用范围", () => {
   const digests = workInputFormats
-    .slice(1)
+    .filter((format) => format.id === "morphzwork.input")
     .map((value) =>
       createHash("sha256").update(JSON.stringify(value)).digest("hex"),
     );

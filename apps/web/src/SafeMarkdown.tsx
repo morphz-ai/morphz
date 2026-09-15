@@ -1,14 +1,76 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import {
+  advanceStreamText,
+  streamingTextPlugin,
+  STREAM_TEXT_DURATION,
+  type StreamTextState,
+} from "./streaming-text.js";
 const MarkdownScope = createContext<{
   state: Workspace;
   onOpen: (id: string) => void;
 } | null>(null);
 const markdownComponents = {
+  span: function StreamText({
+    children,
+    node,
+  }: {
+    children?: ReactNode;
+    node?: { properties?: Record<string, unknown> };
+  }) {
+    const element = useRef<HTMLSpanElement>(null);
+    const at = Number(node?.properties?.["data-stream-at"]);
+    const offset = Number(node?.properties?.["data-stream-offset"]);
+    useLayoutEffect(() => {
+      const elapsed = Date.now() - at;
+      const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      if (
+        !element.current ||
+        !Number.isFinite(at) ||
+        elapsed >= STREAM_TEXT_DURATION ||
+        motion.matches
+      )
+        return;
+      const animation = element.current.animate(
+        [
+          { opacity: 0.12, filter: "blur(2.4px)" },
+          { opacity: 1, filter: "blur(0px)" },
+        ],
+        { duration: STREAM_TEXT_DURATION, easing: "ease-out", fill: "both" },
+      );
+      // Reconstructed Markdown nodes resume their original reveal; never flash
+      // old text on a formatting change or a concurrent token update.
+      animation.currentTime = Math.max(0, elapsed);
+      const reduce = () => {
+        if (motion.matches) animation.cancel();
+      };
+      motion.addEventListener("change", reduce);
+      return () => {
+        motion.removeEventListener("change", reduce);
+        animation.cancel();
+      };
+    }, [at, offset]);
+    return (
+      <span
+        ref={element}
+        className={Number.isFinite(at) ? "stream-text-reveal" : undefined}
+        data-stream-at={Number.isFinite(at) ? at : undefined}
+      >
+        {children}
+      </span>
+    );
+  },
   table: function MarkdownTable({ children }: { children?: ReactNode }) {
     return (
       <div
@@ -166,12 +228,28 @@ export function SafeMarkdown({
   state,
   onOpen,
   documentTitle,
+  streaming = false,
 }: {
   children: string;
   state: Workspace;
   onOpen: (id: string) => void;
   documentTitle?: string;
+  streaming?: boolean;
 }) {
+  const previous = useRef<StreamTextState>({
+    source: children,
+    active: streaming,
+    ranges: [],
+  });
+  const next = advanceStreamText(
+    previous.current,
+    children,
+    streaming,
+    Date.now(),
+  );
+  useLayoutEffect(() => {
+    previous.current = next;
+  });
   return (
     <MarkdownScope.Provider value={{ state, onOpen }}>
       <Markdown
@@ -180,6 +258,9 @@ export function SafeMarkdown({
           remarkGfm,
           remarkCjkFriendly,
           [omitRepeatedDocumentTitle, { title: documentTitle }],
+        ]}
+        rehypePlugins={[
+          [streamingTextPlugin, { source: children, ranges: next.ranges }],
         ]}
         urlTransform={(url) =>
           webURL(url) ||
