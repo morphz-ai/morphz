@@ -10,6 +10,7 @@ import {
   searchSchema,
   searchTerms,
   searchExcerpt,
+  isIndexedArtifact,
   type SearchRequest,
   type SearchResult,
   type SearchHit,
@@ -77,6 +78,9 @@ export class SearchIndex {
       for (const v of a.versions)
         if (v.content.kind === "image" || v.content.kind === "pdf")
           asset.run(v.content.assetId, a.projectId);
+      // Asset visibility is independent of search eligibility. Existing imports
+      // and their historical versions must remain readable after reindexing.
+      if (!isIndexedArtifact(state, a)) continue;
       if (revisions.get(a.id) !== a.revision) {
         const body = contentText(a.content);
         upsert.run(

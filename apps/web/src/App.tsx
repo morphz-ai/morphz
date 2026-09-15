@@ -232,6 +232,13 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
 function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
+  // The catalog and its composer share a destination. Keep the existing
+  // catalog preference key so returning/reloading restores the same scope.
+  const [contentScope, setContentScope] = useState(
+    () =>
+      readLocal<{ scope?: string }>("library-view:all-content", {}).scope ??
+      "all",
+  );
   const [prefs, setPrefs] = useState<Preferences>(() => {
     const p = readLocal<Partial<Preferences>>("preferences", {});
     return {
@@ -369,17 +376,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ? state?.projects.find((p) => p.id === savingWorkspace.current)
       : prefs.view === "dialogue"
         ? personalSpace("dialogue")
-        : prefs.view === "desk" ||
-            prefs.view === "content" ||
-            (prefs.view === "projects" && !prefs.projectOpen)
-          ? personalSpace("desk")
-          : prefs.view === "inbox"
-            ? personalSpace("inbox")
-            : (state?.projects.find(
-                (p) => p.id === prefs.projectId && spaceKind(p) === "project",
-              ) ??
-              state?.projects.find((p) => spaceKind(p) === "project") ??
-              personalSpace("desk"));
+        : prefs.view === "content"
+          ? (state?.projects.find((p) => p.id === contentScope) ??
+            personalSpace("desk"))
+          : prefs.view === "desk" ||
+              (prefs.view === "projects" && !prefs.projectOpen)
+            ? personalSpace("desk")
+            : prefs.view === "inbox"
+              ? personalSpace("inbox")
+              : (state?.projects.find(
+                  (p) => p.id === prefs.projectId && spaceKind(p) === "project",
+                ) ??
+                state?.projects.find((p) => spaceKind(p) === "project") ??
+                personalSpace("desk"));
   // Association scopes the next input, not the shared conversation or its
   // in-flight activations. An open object wins; otherwise use the visible space.
   const project =
@@ -807,6 +816,29 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setWebsiteIntent(null);
     if (a) void openObject(a.projectId, id, revision, page);
   }
+  async function composeContent(id: string) {
+    const target = state?.artifacts.find((a) => a.id === id);
+    if (!target) return;
+    // Opening a result changes the object reference, never the current Session.
+    const key = conversationId + ":" + id;
+    const revision = drafts[key]?.revision ?? target.revision;
+    updateDraft(key, (old) => ({ ...old, revision: old.revision ?? revision }));
+    setWebsiteIntent(null);
+    keepExchangeOpen();
+    // A current result is a live document, not an implicit history selection.
+    // Keep an older unsent draft anchored to its original reference, however.
+    const generation = await openObject(
+      target.projectId,
+      id,
+      revision === target.revision ? undefined : revision,
+    );
+    if (generation !== undefined) {
+      if (navigationGeneration.current !== generation) return;
+      requestedConversationFocus.current = { id: conversationId, generation };
+      keepExchangeOpen();
+      setInteraction("recent");
+    }
+  }
   // Only first-party, explicit user navigation opens a network page. Application
   // bridge requests and restored views do not grant that browser intent.
   async function openUser(id: string, revision?: number, page?: number) {
@@ -865,6 +897,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             }
           : {}),
       });
+      return navigationGeneration.current;
     } catch (e) {
       setNotice((e as Error).message);
     } finally {
@@ -888,6 +921,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setCreating(null);
     if (!prefs.executionPinned) setExecutions(null);
     prefer({ view, artifactId: null, projectOpen: false });
+  }
+  function selectContentScope(scope: string) {
+    setContentScope(scope);
+    // Treat a destination change as navigation: stale open/picker callbacks
+    // must not restore the previous scope or focus. Drafts and grants remain
+    // keyed by their original workspace, not copied into the new destination.
+    prefer({ artifactId: null });
   }
   function selectConversation(workspaceId: string, id: string, focus = false) {
     setWebsiteIntent(null);
@@ -1776,71 +1816,49 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             hidden={openingObject || (!artifact && creating !== "document")}
           />
           <div className="top-actions">
-            <div ref={spaceOptions} className="workspace-options">
-              <ComposerOptions
-                key={`${project.id}:${prefs.view}:${activeId}`}
-                label="工作空间选项"
-                menuLabel="工作空间操作"
-                below
-                options={[
-                  ...(prefs.view === "content" && !artifact
-                    ? [
-                        {
-                          label: "制作表格或报告",
-                          icon: <Layers2 />,
-                          onSelect: () => composeIntent("interactive"),
-                        },
-                        {
-                          label: "打开浏览器",
-                          icon: <PanelsTopLeft />,
-                          onSelect: () => composeIntent("website"),
-                        },
-                        {
-                          label: "手动写文档",
-                          icon: <Plus />,
-                          onSelect: () => setCreating("document"),
-                        },
-                      ]
-                    : []),
-                  {
-                    label: "执行记录",
-                    icon: <ListChecks />,
-                    onSelect: openExecutions,
-                  },
-                  {
-                    label: "当前理解",
-                    icon: <Brain />,
-                    onSelect: () => {
-                      setExecutions(null);
-                      setMobileCollaboration(false);
-                      prefer({ collaboration: false, executionPinned: false });
-                      setUnderstandingOpen(true);
+            {!(prefs.view === "content" && !artifact) && (
+              <div ref={spaceOptions} className="workspace-options">
+                <ComposerOptions
+                  key={`${project.id}:${prefs.view}:${activeId}`}
+                  label="工作空间选项"
+                  menuLabel="工作空间操作"
+                  below
+                  options={[
+                    {
+                      label: "执行记录",
+                      icon: <ListChecks />,
+                      onSelect: openExecutions,
                     },
-                  },
-                  {
-                    label: "录音转文字",
-                    icon: <AudioLines />,
-                    onSelect: () =>
-                      setSpeech({
-                        modal: true,
-                        key: contextKey,
-                        title: contextTitle,
-                        draft: { ...draft },
-                        scope: {
-                          projectId: project.id,
-                          ...(artifact
-                            ? {
-                                artifactId: artifact.id,
-                                revision: draft.revision ?? artifact.revision,
-                              }
-                            : {}),
-                        },
-                      }),
-                    disabled: !client.online,
-                  },
-                ]}
-              />
-            </div>
+                    {
+                      label: "当前理解",
+                      icon: <Brain />,
+                      onSelect: openUnderstanding,
+                    },
+                    {
+                      label: "录音转文字",
+                      icon: <AudioLines />,
+                      onSelect: () =>
+                        setSpeech({
+                          modal: true,
+                          key: contextKey,
+                          title: contextTitle,
+                          draft: { ...draft },
+                          scope: {
+                            projectId: project.id,
+                            ...(artifact
+                              ? {
+                                  artifactId: artifact.id,
+                                  revision: draft.revision ?? artifact.revision,
+                                }
+                              : {}),
+                          },
+                        }),
+                      disabled: !client.online,
+                    },
+                  ]}
+                />
+              </div>
+            )}
             {artifact && (
               <button
                 className="icon-button collaboration-panel-toggle"
@@ -2024,11 +2042,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       project={project}
                       projects={state.projects}
                       objects={state.artifacts}
+                      state={state}
+                      client={client}
                       catalog={prefs.view === "content"}
+                      catalogScope={contentScope}
+                      onScopeChange={selectContentScope}
                       toolbarTarget={
                         prefs.view === "content" ? pageToolbarTarget : null
                       }
                       onOpen={openUser}
+                      onCompose={composeContent}
                       onCreate={composeIntent}
                       onWrite={() => setCreating("document")}
                     />

@@ -1,6 +1,7 @@
 import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { seedCenter } from "./center-fixtures.js";
 
 test("搜索无关闭按钮，外部点击关闭且不误触背后的页面", async ({ page }) => {
   await page.goto("/");
@@ -64,10 +65,27 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("快速打开验证");
-  await page.getByLabel("新文档正文").fill("搜索需要保持输入的连续性。");
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const label = await page
+    .locator(".library-collection")
+    .getAttribute("aria-label");
+  const project = boot.workspace.projects.find(
+    (p: { title: string }) => label === p.title + "的内容",
+  );
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId: project.id,
+      title: "快速打开验证",
+      content: { kind: "document", markdown: "搜索需要保持输入的连续性。" },
+    },
+    true,
+  );
+  await page
+    .locator(".artifact-card")
+    .filter({ hasText: "快速打开验证" })
+    .click();
   await expect(page.locator(".object-paper > h1")).toHaveText("快速打开验证");
   const input = await openInput(page);
   await input.fill("保留这份输入草稿");
@@ -121,6 +139,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
 }) => {
   await page.goto("/");
   await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(
@@ -129,6 +148,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
   await page.getByLabel("新对象标题", { exact: true }).fill("尚未创建的草稿");
   await page.getByLabel("新文档正文").fill("离开画布也不能丢掉这段文字。");
   await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByLabel("新文档正文")).toHaveValue(
     "离开画布也不能丢掉这段文字。",
@@ -146,6 +166,7 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
     .click();
   await page.reload();
   await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await expect(page.getByLabel("新对象标题", { exact: true })).toHaveValue(
     "尚未创建的草稿",
@@ -287,7 +308,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
     timeout: 10000,
   });
   await expect(exchange).toHaveCount(0);
-  await expect(page.locator(".creation-actions")).toBeVisible();
+  await expect(page.locator(".content-actions")).toBeVisible();
   await composerAction(page, "查看交流记录");
   expect(await exchange.evaluate((el) => el.scrollTop)).toBeLessThan(5);
   await page.getByRole("button", { name: "有新内容 · 返回最新" }).click();
@@ -296,7 +317,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
   await expect(
     page.getByRole("button", { name: "有新内容 · 返回最新" }),
   ).toHaveCount(0);
-  await expect(page.locator(".creation-actions")).toBeVisible();
+  await expect(page.locator(".content-actions")).toBeVisible();
   await page.screenshot({ path: "test-results/exchange-inline.png" });
   await page.unrouteAll({ behavior: "wait" });
 });

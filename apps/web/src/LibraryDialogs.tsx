@@ -14,7 +14,10 @@ import {
   maxDocumentBytes,
   maxImportFiles,
 } from "../../../packages/core/src/sources.js";
-import type { SearchResult } from "../../../packages/core/src/retrieval.js";
+import {
+  isIndexedArtifact,
+  type SearchResult,
+} from "../../../packages/core/src/retrieval.js";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import SourceConnections from "./SourceConnections.js";
@@ -396,6 +399,7 @@ export function SearchDocuments({
     };
   }, [query, projectId, offset, revision]);
   const recent = [...(client.boot?.workspace.artifacts ?? [])]
+    .filter((a) => !!client.boot && isIndexedArtifact(client.boot.workspace, a))
     .filter((a) => !projectId || a.projectId === projectId)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 6);
@@ -465,7 +469,7 @@ export function SearchDocuments({
           <input
             ref={searchInput}
             aria-label="全文搜索"
-            placeholder="搜索内容和事项…"
+            placeholder="搜索 Agent 生成的成果…"
             maxLength={200}
             value={query}
             onChange={(e) => {

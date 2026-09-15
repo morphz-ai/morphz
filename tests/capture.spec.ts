@@ -522,6 +522,7 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
   });
   await page.goto("/");
   await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("截图关联来源");
   await page.getByRole("button", { name: "创建", exact: true }).click();

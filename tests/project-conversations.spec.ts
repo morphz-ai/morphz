@@ -1,5 +1,6 @@
+import { seedCenter } from "./center-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 
 test("新建只开草稿：反复点击与刷新不建空会话，首发失败可重试，迟到回执不抢导航", async ({
@@ -167,22 +168,16 @@ test("从项目搜索打开其他空间对象后，点击项目或草稿回到�
     (p: any) => p.kind === "desk",
   ).id;
   const objectTitle = "其他空间的阅读对象-" + crypto.randomUUID().slice(0, 8);
-  const response = await page.request.post("/api/commands", {
-    headers: {
-      Origin: new URL(page.url()).origin,
-      "X-MorphzWork-Token": boot.csrfToken,
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId: workspaceId,
+      title: objectTitle,
+      content: { kind: "document", markdown: "只读验收原文，不修改。" },
     },
-    data: {
-      commandId: crypto.randomUUID(),
-      operation: {
-        type: "create-artifact",
-        projectId: workspaceId,
-        title: objectTitle,
-        content: { kind: "document", markdown: "只读验收原文，不修改。" },
-      },
-    },
-  });
-  expect(response.ok(), await response.text()).toBe(true);
+    true,
+  );
   const openOtherObject = async () => {
     await page.getByRole("button", { name: "搜索资料", exact: true }).click();
     await page.getByLabel("全文搜索", { exact: true }).fill(objectTitle);
@@ -641,8 +636,8 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
       new URL(route.request().url()).searchParams.get("conversationId") ?? "";
     await route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } });
   });
-  await composerAction(page, "执行记录与审批");
-  await page.getByText("其他后台执行与审批", { exact: true }).click();
+  await openExecutionPanel(page);
+  await page.getByText("工具执行记录", { exact: true }).click();
   await expect.poll(() => scope).toBe(c);
   // The workspace poll can still be inside route.fetch when this test ends.
   // Drain handlers here instead of leaking teardown errors into the next test.
@@ -655,12 +650,27 @@ test("对象引用随对话草稿保存，切换不会把选区带到另一条�
   await page.goto("/");
   await newProject(page, "引用归属验收");
   await openLibrary(page);
-  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("跨对话引用原文");
+  const seedBoot = await (await page.request.get("/api/workspace")).json();
+  const project = seedBoot.workspace.projects.find(
+    (p: { title: string }) => p.title === "引用归属验收",
+  );
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId: project.id,
+      title: "跨对话引用原文",
+      content: {
+        kind: "document",
+        markdown: "上下文事务维护当前认知，保留可追溯的历史。",
+      },
+    },
+    true,
+  );
   await page
-    .getByLabel("新文档正文")
-    .fill("上下文事务维护当前认知，保留可追溯的历史。");
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+    .locator(".artifact-card")
+    .filter({ hasText: "跨对话引用原文" })
+    .click();
   await projectGroup(page)
     .getByRole("button", { name: /^新建项目对话：/ })
     .click();

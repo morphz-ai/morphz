@@ -15,10 +15,8 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   ).toBeVisible();
   await page.locator(".project-link").filter({ hasText: "我的项目" }).click();
   await openLibrary(page);
-  await page
-    .locator(".library-authoring-options")
-    .getByRole("button", { name: "手动写文档", exact: true })
-    .click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("并发工作说明");
   await page
     .getByLabel("新文档正文")
@@ -30,7 +28,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     page.getByRole("heading", { name: "并发工作说明", exact: true }),
   ).toBeVisible();
   await expect(page).toHaveTitle("并发工作说明 — Morphz");
-  await page.getByLabel("AI 输入内容").fill("保留人和 Agent 的对等关系");
+  await (await openInput(page)).fill("保留人和 Agent 的对等关系");
   await page.getByLabel("AI 输入内容").press("Control+j");
   await expect(page.getByLabel("AI 输入内容")).toBeHidden();
   await page.keyboard.press("Control+j");
@@ -162,10 +160,8 @@ test("多端旧版本冲突不会覆盖中心，草稿刷新后恢复", async ({
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page
-    .locator(".library-authoring-options")
-    .getByRole("button", { name: "手动写文档", exact: true })
-    .click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("冲突测试文档");
   await page.getByLabel("新文档正文").fill("初始内容");
   await page.getByRole("button", { name: "创建", exact: true }).click();
@@ -199,16 +195,14 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page
-    .locator(".library-authoring-options")
-    .getByRole("button", { name: "手动写文档", exact: true })
-    .click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("对话布局验证");
   await page.getByLabel("新文档正文").fill("这是对象的原始内容。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await page.getByLabel("文档正文", { exact: true }).fill("尚未保存的编辑内容");
-  await page.getByLabel("AI 输入内容").fill("请围绕这个对象继续讨论。");
+  await (await openInput(page)).fill("请围绕这个对象继续讨论。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(page.getByLabel("文档正文", { exact: true })).toBeVisible();
   await expect(

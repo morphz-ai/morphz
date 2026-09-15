@@ -151,7 +151,11 @@ test("桌面来源真实 HTTP 同步、重启去重、暂停、文件删除保�
     assert.equal(artifact.revision, 2);
     assert.equal(artifact.versions.length, 2);
     assert.equal(store.search({ query: "initial" }, localAccess).total, 0);
-    assert.equal(store.search({ query: "updated" }, localAccess).total, 1);
+    assert.equal(
+      store.search({ query: "updated" }, localAccess).total,
+      0,
+      "旧外部资料保留，但不进入 Agent 成果索引",
+    );
     assert.throws(
       () =>
         store.execute(
@@ -176,8 +180,7 @@ test("桌面来源真实 HTTP 同步、重启去重、暂停、文件删除保�
     assert.equal(writes, pausedWrites);
     assert.equal(store.snapshot().artifacts[0]!.revision, 2);
     assert.equal(
-      store.search({ query: "updated" }, localAccess).hits[0]!.source
-        ?.connection?.status,
+      store.snapshot().artifacts[0]!.source?.connection?.status,
       "paused",
     );
     await connector.control(id, "resume");

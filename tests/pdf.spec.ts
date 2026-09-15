@@ -1,6 +1,8 @@
 import { composerAction } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { openLibrary } from "./application-helpers.js";
 
 test("PDF 真实画布、中文文字层、分页引用、批注与重开", async ({ page }) => {
   const errors: string[] = [];
@@ -10,19 +12,25 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
   await page.getByLabel("新对象标题").fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
-  await page.getByLabel("工作空间选项").click();
-  await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "导入资料" });
-  await dialog
-    .getByLabel("选择资料文件")
-    .setInputFiles(
-      fileURLToPath(new URL("./fixtures/reader.pdf", import.meta.url)),
-    );
-  await dialog.getByRole("button", { name: "导入 1 份资料" }).click();
-  await expect(dialog.getByRole("status")).toHaveText("已导入 1 份");
-  await dialog.getByRole("button", { name: "打开", exact: true }).click();
+  // Seed a retained pre-migration PDF, not a new UI import workflow.
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const project = boot.workspace.projects.find(
+    (p: { title: string }) => p.title === title,
+  );
+  const imported = await page.request.post("/api/import/pdf", {
+    headers: {
+      Origin: new URL(page.url()).origin,
+      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Command-Id": randomUUID(),
+      "X-Project-Id": project.id,
+      "X-Source-Path": "reader.pdf",
+      "Content-Type": "application/pdf",
+    },
+    data: readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
+  });
+  expect(imported.ok(), await imported.text()).toBe(true);
+  await openLibrary(page);
+  await page.locator(".artifact-card").filter({ hasText: "reader" }).click();
   await expect(page.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
   await expect(page.locator(".pdf-text-layer")).toContainText("合成测试资料");
   await expect(page.getByText("正在渲染第 1 页…")).toHaveCount(0);
@@ -70,8 +78,19 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   await page.getByLabel("全文搜索").fill("durable butterfly");
   await page.getByLabel("搜索项目范围").selectOption({ label: title });
-  await expect(page.getByRole("dialog").getByText(/第 2 页/)).toBeVisible();
-  await page.getByRole("button", { name: /^AI 交互：/ }).click();
+  await expect(
+    page.getByRole("dialog").getByText("没有找到匹配内容"),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page
+    .locator(".pdf-text-layer span")
+    .filter({ hasText: "durable butterfly" })
+    .first()
+    .click({ clickCount: 3 });
+  await page
+    .getByRole("toolbar", { name: "选中文本操作" })
+    .getByRole("button", { name: "询问 Morphz", exact: true })
+    .click();
   await page.getByLabel("AI 输入内容").fill("这段原文需要进一步解释。");
   await composerAction(page, "保存为批注");
   const value = await page.request.get("/api/workspace").then((r) => r.json());

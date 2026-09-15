@@ -5,6 +5,7 @@ import {
   getArtifact,
   DomainError,
   id,
+  isPublicUnderstanding,
   type Workspace,
   type AccessContext,
   type Artifact,
@@ -40,6 +41,24 @@ export type SearchResult = {
   hasMore: boolean;
   workspaceRevision: number;
 };
+
+/** The full-text catalog is for Agent-created deliverables, not external files.
+ * Keep origin stable when a human subsequently edits a deliverable. */
+export function isIndexedArtifact(
+  state: Pick<Workspace, "actants">,
+  artifact: Artifact,
+) {
+  return (
+    !artifact.source &&
+    !isPublicUnderstanding(artifact) &&
+    state.actants.some(
+      (actor) =>
+        actor.id === artifact.createdBy.actantId &&
+        actor.principalId === artifact.createdBy.principalId &&
+        actor.kind === "agent",
+    )
+  );
+}
 
 /** Whitespace separates literal AND terms; punctuation is never query syntax. */
 export function searchTerms(query: string): string[] {
@@ -135,6 +154,7 @@ export function searchArtifacts(
   const terms = searchTerms(request.query);
   const found: SearchHit[] = [];
   for (const artifact of state.artifacts) {
+    if (!isIndexedArtifact(state, artifact)) continue;
     const project = projects.get(artifact.projectId);
     if (!project) continue;
     const title = artifact.title.toLocaleLowerCase();

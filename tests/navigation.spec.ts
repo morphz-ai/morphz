@@ -19,10 +19,8 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
       page.getByRole("heading", { name: label, exact: true }),
     ).toBeVisible();
     await openLibrary(page);
-    await page
-      .locator(".library-authoring-options")
-      .getByRole("button", { name: "手动写文档", exact: true })
-      .click();
+    await page.getByLabel("其他内容创作", { exact: true }).click();
+    await page.getByRole("button", { name: "手动写文档", exact: true }).click();
     await page.getByLabel("新对象标题", { exact: true }).fill(label + "文档");
     await page.getByLabel("新文档正文").fill(label + " 的独立内容。");
     await page.getByRole("button", { name: "创建", exact: true }).click();

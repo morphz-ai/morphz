@@ -99,6 +99,15 @@ export const contentSchema = z.discriminatedUnion("kind", [
   interactiveSchema,
 ]);
 export type Content = z.infer<typeof contentSchema>;
+/** Presentation boundaries do not delete or rewrite retained objects. */
+export function isPublicUnderstanding(artifact: { content: Content }) {
+  return (
+    artifact.content.kind === "document" && !!artifact.content.understanding
+  );
+}
+export function isContentArtifact(artifact: { content: Content }) {
+  return artifact.content.kind !== "task" && !isPublicUnderstanding(artifact);
+}
 export type TaskContent = Extract<Content, { kind: "task" }>;
 export function quotedText(content: Content): string {
   return content.kind === "document"
@@ -547,6 +556,20 @@ export const operationSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("organize-content"),
+      artifactId: id,
+      expectedRevision: z.number().int().positive(),
+      changes: z
+        .object({ title: title.optional(), projectId: id.optional() })
+        .strict()
+        .refine(
+          (value) => Object.keys(value).length > 0,
+          "请指定要修改的名称或归属。",
+        ),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("revise-artifact"),
       artifactId: id,
       expectedRevision: z.number().int().positive(),
@@ -909,7 +932,71 @@ export function applyCommand(
     )
       throw new DomainError("forbidden", "请向 Agent 提交纠正。");
   }
-  if (op.type === "reorder-tasks") {
+  if (op.type === "organize-content") {
+    const artifact = getArtifact(state, op.artifactId);
+    const source = checkProject(state, artifact.projectId, access);
+    if (artifact.content.kind === "task")
+      throw new DomainError("invalid", "事项请使用事项安排操作。");
+    if (artifact.content.kind === "document" && artifact.content.understanding)
+      throw new DomainError("forbidden", "工作空间理解不能作为普通内容整理。");
+    if (artifact.revision !== op.expectedRevision)
+      throw new DomainError("conflict", "内容已变化，请查看当前版本后操作。");
+    const target = checkProject(
+      state,
+      op.changes.projectId ?? source.id,
+      access,
+    );
+    if (target.id !== source.id) {
+      if (
+        !["project", "desk"].includes(target.kind ?? "project") &&
+        target.id !== artifact.originProjectId
+      )
+        throw new DomainError("invalid", "请选择项目或工作台。");
+      if (
+        target.members.some((p) => !source.members.includes(p)) ||
+        source.members.some((p) => !target.members.includes(p))
+      )
+        throw new DomainError(
+          "forbidden",
+          "两个空间的访问成员不同，不能直接移动内容及其历史。",
+        );
+      if (
+        state.relations.some(
+          (r) => r.fromId === artifact.id || r.toId === artifact.id,
+        ) ||
+        state.artifacts.some((a) =>
+          a.content.kind === "task"
+            ? [
+                ...a.content.dependsOnIds,
+                ...a.content.watchSourceIds,
+                ...a.content.resultIds,
+              ].includes(artifact.id)
+            : a.content.kind === "document" &&
+              a.content.understanding?.sources.some(
+                (r) => r.artifactId === artifact.id,
+              ),
+        )
+      )
+        throw new DomainError(
+          "invalid",
+          "此内容有关联事项或对象，暂不能单独移动；原有关联会保留。",
+        );
+      artifact.originProjectId ??= source.id;
+      artifact.projectId = target.id;
+    }
+    artifact.title = op.changes.title ?? artifact.title;
+    artifact.revision++;
+    artifact.updatedAt = now;
+    artifact.versions.push({
+      revision: artifact.revision,
+      projectId: artifact.projectId,
+      title: artifact.title,
+      content: structuredClone(artifact.content),
+      author: { ...access },
+      createdAt: now,
+    });
+    entityId = artifact.id;
+  } else if (op.type === "reorder-tasks") {
     if (op.expectedOrderRevision !== state.taskOrderRevision)
       throw new DomainError(
         "conflict",

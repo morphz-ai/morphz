@@ -32,6 +32,7 @@ import {
   applicationFor,
   operationSchema,
   spaceKind,
+  isContentArtifact,
 } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
@@ -297,12 +298,13 @@ export function ApplicationHost({
       {toolbarTarget && createPortal(toolbar, toolbarTarget)}
       {!active && (
         <div className="application-launcher">
-          {state.artifacts.some((a) => a.projectId === workspaceId) && (
+          {state.artifacts.some(
+            (a) => a.projectId === workspaceId && isContentArtifact(a),
+          ) && (
             <div className="workspace-recent" aria-label="继续工作">
               {state.artifacts
                 .filter(
-                  (a) =>
-                    a.projectId === workspaceId && a.content.kind !== "task",
+                  (a) => a.projectId === workspaceId && isContentArtifact(a),
                 )
                 .slice(-4)
                 .reverse()

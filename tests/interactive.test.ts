@@ -35,7 +35,7 @@ test("交互产物的数据、版本、引用和检索共用对象规则；不�
         content,
       },
     },
-    localAccess,
+    { principalId: "morphz-service", actantId: "morphz-agent" },
   );
   assert.equal(interactiveSummary(content)[0]!.mean, 5);
   assert.equal(store.search({ query: "合成资料" }, localAccess).total, 1);

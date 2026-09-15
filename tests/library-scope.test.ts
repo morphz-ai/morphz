@@ -8,6 +8,7 @@ import { workspaceFor } from "../apps/service/src/identity.js";
 import { localAccess, type Command } from "../packages/core/src/model.js";
 import { ObjectCollection } from "../apps/web/src/ObjectCollection.js";
 import { contentSchema } from "../packages/core/src/model.js";
+import type { WorkspaceClient } from "../apps/web/src/client.js";
 
 test("全部资料仅使用已授权快照，不展示其他 Principal 的空间和文档", () => {
   const store = new WorkspaceStore(":memory:");
@@ -65,7 +66,13 @@ test("全部资料仅使用已授权快照，不展示其他 Principal 的空间
         project: authorized.projects.find((p) => p.id === "first-project")!,
         projects: authorized.projects,
         objects: authorized.artifacts,
+        state: authorized,
+        client: {
+          online: true,
+          boot: { workspace: authorized },
+        } as WorkspaceClient,
         onOpen() {},
+        onCompose() {},
         onCreate() {},
         onWrite() {},
         catalog: true,

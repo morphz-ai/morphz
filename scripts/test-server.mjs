@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const directory = mkdtempSync(join(tmpdir(), "morphz-e2e-"));
+// Test-only fixture discovery. Never add an identity bypass to the real API.
+mkdirSync("node_modules/.cache", { recursive: true });
+writeFileSync(
+  "node_modules/.cache/morphz-e2e-center.json",
+  JSON.stringify({ directory }),
+  { mode: 0o600 },
+);
 const child = spawn(
   process.execPath,
   ["--import", "tsx", "apps/service/src/main.ts"],

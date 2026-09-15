@@ -37,6 +37,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   });
   await page.goto("/");
   await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("语音范围测试");
   await page.getByRole("button", { name: "创建", exact: true }).click();
@@ -135,6 +136,7 @@ test("朗读不会自动请求，取消后可关闭且不修改对象", async ({
   });
   await page.goto("/");
   await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("朗读测试");
   await page.getByRole("button", { name: "创建", exact: true }).click();

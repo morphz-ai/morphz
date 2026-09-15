@@ -45,10 +45,11 @@ test("资料导入：来源、幂等、修订和引用原文保持一致", () =>
       { query: "共享上下文" },
       localAccess,
     );
-    assert.equal(results.total, 1);
-    assert.equal(results.hits[0]!.matchedIn, "content");
-    assert.equal(results.hits[0]!.revision, 1);
-    assert.ok(command.operation.text.includes(results.hits[0]!.quote));
+    assert.equal(results.total, 0, "外部资料不进入 Agent 成果索引");
+    assert.deepEqual(
+      readArtifact(state, artifact.id, localAccess).content,
+      artifact.content,
+    );
     store.execute(
       {
         commandId: randomUUID(),
@@ -205,7 +206,21 @@ test("搜索分页稳定，支持中英文和字面符号，不执行查询语�
   const store = new WorkspaceStore(":memory:");
   try {
     for (let i = 0; i < 23; i++)
-      store.execute(importCommand('PrefixCache 与引用 %_"OR*'), localAccess);
+      store.execute(
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "create-artifact",
+            projectId: "first-project",
+            title: "Agent 成果",
+            content: {
+              kind: "document",
+              markdown: 'PrefixCache 与引用 %_"OR*',
+            },
+          },
+        },
+        { principalId: "morphz-service", actantId: "morphz-agent" },
+      );
     Object.assign(state, store.snapshot());
     const first = searchArtifacts(
       state,

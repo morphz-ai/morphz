@@ -1,4 +1,4 @@
-import { composerAction } from "./interaction-helpers.js";
+import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
@@ -105,7 +105,7 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
   await expect(
     page.getByRole("tab", { name: "内容", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".creation-actions")).toBeVisible();
+  await expect(page.locator(".content-actions")).toBeVisible();
   expect(attempts).toBe(2);
   await expect(
     page.getByRole("tab", { name: "内容", exact: true }),
@@ -130,15 +130,13 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   await page
     .getByRole("button", { name: "查看本空间内容", exact: true })
     .click();
-  await page
-    .locator(".library-authoring-options")
-    .getByRole("button", { name: "手动写文档", exact: true })
-    .click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题", { exact: true }).fill("空间原文");
   await page.getByLabel("新文档正文").fill("应用共享的版本化对象。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page.locator(".object-paper > h1")).toHaveText("空间原文");
-  await page.getByLabel("AI 输入内容").fill("围绕原文的消息");
+  await (await openInput(page)).fill("围绕原文的消息");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   const content = () => composerAction(page, "收起交流记录");
   await content();

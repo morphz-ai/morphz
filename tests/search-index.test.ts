@@ -8,6 +8,132 @@ import { tmpdir } from "node:os";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { localAccess, type Content } from "../packages/core/src/model.js";
 import { searchArtifacts } from "../packages/core/src/retrieval.js";
+const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
+
+test("重开清除旧外部全文投影，不改原对象、版本和附件可见性", () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-index-boundary-"));
+  const file = join(directory, "workspace.sqlite");
+  let store = new WorkspaceStore(file);
+  try {
+    const generated = create(store, "保留 Agent 搜索产物");
+    const imported = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "import-document",
+          projectId: "first-project",
+          relativePath: "external.md",
+          text: "旧外部全文",
+        },
+      },
+      localAccess,
+    );
+    const pdf = store.addPdf(
+      readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
+      ["retained PDF"],
+      localAccess,
+    );
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "import-pdf",
+          projectId: "first-project",
+          relativePath: "reader.pdf",
+          content: pdf,
+        },
+      },
+      localAccess,
+    );
+    const before = store.snapshot();
+    store.close();
+    const db = new DatabaseSync(file);
+    // Recreate an index row left by the former all-artifact policy.
+    db.prepare(
+      "INSERT INTO search_object(id,project,revision,title,title_fold,body,body_fold,meta) SELECT ?,project,revision,title,title_fold,body,body_fold,meta FROM search_object WHERE id=?",
+    ).run(imported.entityId, generated.entityId);
+    db.close();
+    store = new WorkspaceStore(file);
+    assert.deepEqual(store.snapshot(), before);
+    const projection = new DatabaseSync(file, { readOnly: true });
+    assert.deepEqual(
+      projection
+        .prepare("SELECT id FROM search_object")
+        .all()
+        .map((r) => r.id),
+      [generated.entityId],
+    );
+    assert.ok(
+      projection
+        .prepare("SELECT 1 FROM asset_project WHERE asset=?")
+        .get(pdf.assetId),
+    );
+    projection.close();
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("只索引 Agent 原生产物：旧导入与人工文档仍可读取，人工后续编辑不改变产物来源", () => {
+  const store = new WorkspaceStore(":memory:");
+  try {
+    const artifact = create(store, "共同词 Agent 成果");
+    const imported = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "import-document",
+          projectId: "first-project",
+          relativePath: "共同词.md",
+          text: "共同词 外部材料",
+        },
+      },
+      localAccess,
+    );
+    const human = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "create-artifact",
+          projectId: "first-project",
+          title: "共同词 人工文档",
+          content: { kind: "document", markdown: "共同词" },
+        },
+      },
+      localAccess,
+    );
+    store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "revise-artifact",
+          artifactId: artifact.entityId,
+          expectedRevision: 1,
+          title: "共同词 已人工编辑",
+          content: { kind: "document", markdown: "共同词 保留来源" },
+        },
+      },
+      localAccess,
+    );
+    assert.deepEqual(
+      store
+        .search({ query: "共同词" }, localAccess)
+        .hits.map((h) => h.artifactId),
+      [artifact.entityId],
+    );
+    assert.deepEqual(
+      store.search({ query: "共同词" }, localAccess),
+      searchArtifacts(store.snapshot(), { query: "共同词" }, localAccess),
+    );
+    assert.ok(
+      store.snapshot().artifacts.find((a) => a.id === imported.entityId),
+    );
+    assert.ok(store.snapshot().artifacts.find((a) => a.id === human.entityId));
+  } finally {
+    store.close();
+  }
+});
 
 function create(
   store: WorkspaceStore,
@@ -24,7 +150,7 @@ function create(
         content,
       },
     },
-    localAccess,
+    agent,
   );
 }
 test("持久索引与领域检索一致，短中文和查询符号不变成 FTS 表达式", () => {
@@ -165,18 +291,19 @@ test("PDF 多词可跨页匹配，但单词不能跨页拼接；引用仍是某�
     const content = store.addPdf(
       readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
       pages,
+      agent,
     );
     store.execute(
       {
         commandId: randomUUID(),
         operation: {
-          type: "import-pdf",
+          type: "create-artifact",
           projectId: "first-project",
-          relativePath: "notes/多词检索.pdf",
+          title: "多词检索",
           content,
         },
       },
-      localAccess,
+      agent,
     );
     const state = store.snapshot();
     for (const query of [
@@ -254,7 +381,7 @@ test("检索计数、原文和原始文件在授权投影内过滤；未关联�
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=",
         "base64",
       ),
-      { assetId } = store.addAsset(png);
+      { assetId } = store.addAsset(png, agent);
     assert.equal(store.visibleAsset(assetId, localAccess), undefined);
     create(store, "only-secret", {
       kind: "image",

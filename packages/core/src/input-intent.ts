@@ -26,7 +26,8 @@ export const inputIntents: Record<
     placeholder: "粘贴网址，也可以说明接下来想在网站上做什么…",
   },
   interactive: {
-    label: "制作表格或报告",
-    placeholder: "描述要整理的数据，或想得到的表格、报告…",
+    // Retained for existing drafts and historical inputs, not a creation menu.
+    label: "制作表格",
+    placeholder: "描述需要持续维护、逐项修改的记录…",
   },
 };

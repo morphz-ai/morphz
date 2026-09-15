@@ -1,3 +1,4 @@
+import { seedCenter } from "./center-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import type { Command } from "../packages/core/src/model.js";
@@ -63,7 +64,11 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
     .getByRole("button", { name: "文档", exact: true })
     .click();
   const card = page.locator(".artifact-card").filter({ hasText: title });
-  await expect(card).toContainText("对话 · 文档 · v1");
+  await expect(card).toContainText("对话 · 文档");
+  await expect(card.locator(".artifact-card-open")).toHaveAttribute(
+    "title",
+    title + " · v1",
+  );
   await expect(
     page.locator(".artifact-card").filter({ hasText: projectDoc }),
   ).toContainText(projectTitle);
@@ -115,12 +120,16 @@ test("搜索先看到刚创建的对象时，打开会补齐快照而不是无�
   const initial = await snapshot(page);
   const owner = initial.workspace.projects.find((p) => p.kind === "dialogue")!;
   const title = "先被搜索发现的新对象-" + randomUUID();
-  await command(page, {
-    type: "create-artifact",
-    projectId: owner.id,
-    title,
-    content: { kind: "document", markdown: "这是轮询尚未送达的新内容。" },
-  });
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId: owner.id,
+      title,
+      content: { kind: "document", markdown: "这是轮询尚未送达的新内容。" },
+    },
+    true,
+  );
   let deliverLatest = false;
   await page.route("**/api/workspace", async (route) => {
     if (deliverLatest) return route.continue();
@@ -172,12 +181,12 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     page.getByRole("button", { name: "新建事项", exact: true }),
   ).toHaveCount(0);
   await page.getByLabel("内容范围", { exact: true }).selectOption(projectId);
-  await expect(page.locator(".filter-tabs small")).toHaveText("0");
+  await expect(page.locator(".library-caption")).toContainText("0 项内容");
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await expect(
     page.getByText("这个范围内还没有内容", { exact: true }),
   ).toBeVisible();
-  await page.getByLabel("搜索内容标题").fill(title);
+  await page.getByLabel("搜索内容").fill(title);
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await nav.getByRole("button", { name: /^事项/ }).click();
   await page
@@ -203,7 +212,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     .getByRole("button", { name: "事项", exact: true })
     .click();
   await nav.getByRole("button", { name: "内容", exact: true }).click();
-  await expect(page.getByLabel("搜索内容标题")).toHaveValue(title);
+  await expect(page.getByLabel("搜索内容")).toHaveValue(title);
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await nav.getByRole("button", { name: /^事项/ }).click();
   await page
@@ -237,7 +246,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     .click();
   await expect(page.getByLabel("事项列表")).toBeVisible();
   await nav.getByRole("button", { name: "内容", exact: true }).click();
-  await expect(page.getByLabel("搜索内容标题")).toHaveValue(title);
+  await expect(page.getByLabel("搜索内容")).toHaveValue(title);
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await page.reload();
   await expect(
@@ -270,7 +279,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await page.getByLabel("清除搜索", { exact: true }).click();
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await expect(page.locator(".artifact-card")).toContainText(documentTitle);
-  await expect(page.locator(".filter-tabs small")).toHaveText("1");
+  await expect(page.locator(".library-caption")).toContainText("1 项内容");
   await page.evaluate(() => {
     const key = Object.keys(localStorage).find((key) =>
       key.endsWith("library-view:all-content"),
@@ -357,10 +366,9 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
   await expect(await openInput(page)).toHaveValue("内容目录草稿");
 });
 
-test("资料筛选和空态如实表达范围，筛选不改创建位置和会话", async ({ page }) => {
+test("内容空态和起草使用所选范围，不改变持续会话", async ({ page }) => {
   await page.goto("/");
   const boot = await snapshot(page);
-  const desk = boot.workspace.projects.find((p) => p.kind === "desk")!;
   const dialogue = boot.workspace.projects.find((p) => p.kind === "dialogue")!;
   const empty = await command(page, {
     type: "create-project",
@@ -378,12 +386,13 @@ test("资料筛选和空态如实表达范围，筛选不改创建位置和会�
   ).toBeVisible();
   await page.reload();
   await expect(scope).toHaveValue(empty);
-  // A browsing filter cannot silently redirect the next activation.
+  // The displayed scope and actual input destination agree, including an
+  // empty project. Selecting it never creates a separate conversation.
   await page
     .getByRole("button", { name: "让 Morphz 起草", exact: true })
     .click();
   const input = await openInput(page);
-  const body = "筛选范围不重定向输入-" + randomUUID();
+  const body = "在所选空项目起草-" + randomUUID();
   await input.fill(body);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect
@@ -394,7 +403,7 @@ test("资料筛选和空态如实表达范围，筛选不改创建位置和会�
   const sent = (await snapshot(page)).workspace.inputs.find(
     (i) => i.body === body,
   )!;
-  expect(sent.projectId).toBe(desk.id);
+  expect(sent.projectId).toBe(empty);
   expect(sent.conversationId).toBe(dialogue.id);
   await page
     .getByRole("button", { name: "收起 AI 输入框", exact: true })

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { test, expect, type Page } from "@playwright/test";
+import { seedCenter } from "./center-fixtures.js";
 
 async function fixture(
   page: Page,
@@ -20,21 +21,32 @@ async function fixture(
   };
   const project = overrides.project ?? "搜索回归-" + randomUUID();
   const projectId = await command({ type: "create-project", title: project });
-  await command({
-    type: "create-artifact",
-    projectId,
-    title: overrides.title ?? "交互验收笔记",
-    content: {
-      kind: "document",
-      markdown: "这段摘要用于检查整条搜索结果的点击、拖选和引用行为。",
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId,
+      title: overrides.title ?? "交互验收笔记",
+      content: {
+        kind: "document",
+        markdown: "这段摘要用于检查整条搜索结果的点击、拖选和引用行为。",
+      },
     },
-  });
-  await command({
-    type: "import-document",
-    projectId,
-    relativePath: overrides.relativePath ?? "notes/交互来源.md",
-    text: "# 交互来源\n\n验收结果保留具体来源路径，可以直接打开。",
-  });
+    true,
+  );
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId,
+      title: "交互验收报告",
+      content: {
+        kind: "document",
+        markdown: "验收结果来自 Agent 产物，可以直接打开。",
+      },
+    },
+    true,
+  );
   await page.reload();
   const search = page.getByRole("dialog", { name: "搜索资料", exact: true });
   const open = async () => {
@@ -48,7 +60,7 @@ async function fixture(
   return { open, search, inputCount: boot.workspace.inputs.length };
 }
 
-test("多关键词结果可点击摘要与来源；无来源不重复占行，摘要仍限两行", async ({
+test("Agent 产物多关键词结果可点击摘要；外部来源不进入结果，摘要仍限两行", async ({
   page,
 }) => {
   const { open, search } = await fixture(page);
@@ -86,14 +98,15 @@ test("多关键词结果可点击摘要与来源；无来源不重复占行，�
   await expect(page.locator(".selection-quote")).toHaveCount(0);
 
   await open();
-  const source = search.locator(".search-source");
-  await expect(source).toHaveText("notes/交互来源.md");
-  await source.click();
+  await expect(search.locator(".search-source")).toHaveCount(0);
+  await search
+    .locator("article")
+    .filter({ hasText: "交互验收报告" })
+    .locator(".search-result-open")
+    .click();
   await expect(search).toHaveCount(0);
-  await expect(page.locator(".object-paper > h1")).toHaveText("交互来源");
-  await expect(page.locator(".source-strip")).toContainText(
-    "notes/交互来源.md",
-  );
+  await expect(page.locator(".object-paper > h1")).toHaveText("交互验收报告");
+  await expect(page.locator(".source-strip")).toHaveCount(0);
 });
 
 test("摘要拖选不误打开，键盘仍可打开，引用独立且不会发送输入", async ({
@@ -151,10 +164,10 @@ test("最近修改和搜索结果的归属与标题同行，长标题和路径�
     "title",
     project,
   );
-  const source = search.locator("article").filter({ hasText: relativePath });
+  const source = search.locator("article").filter({ hasText: "交互验收报告" });
   await expect(source.locator(".search-result-meta")).toHaveAttribute(
     "title",
-    `${project} · ${relativePath}`,
+    project,
   );
 
   for (const width of [1440, 760]) {

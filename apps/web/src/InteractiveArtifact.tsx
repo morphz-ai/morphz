@@ -126,7 +126,7 @@ export function InteractiveArtifact({
   return (
     <section ref={surface} className="interactive-artifact">
       <div className="interactive-toolbar">
-        <div className="filter-tabs" role="group" aria-label="交互视图">
+        <div className="filter-tabs" role="group" aria-label="表格视图">
           {(["table", "form", "report"] as const).map((mode) => (
             <button
               key={mode}
@@ -143,7 +143,7 @@ export function InteractiveArtifact({
               ) : (
                 <ChartNoAxesColumn />
               )}
-              {{ table: "表格", form: "表单", report: "报告" }[mode]}
+              {{ table: "表格", form: "记录", report: "统计" }[mode]}
             </button>
           ))}
         </div>
@@ -367,7 +367,7 @@ export function InteractiveArtifact({
             <label className="field">
               记录
               <select
-                aria-label="选择表单记录"
+                aria-label="选择记录"
                 value={selected?.id ?? ""}
                 onChange={(e) => setRowId(e.target.value)}
               >

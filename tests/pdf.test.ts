@@ -49,12 +49,13 @@ test("PDF 原文提取、按页引用、可信内容与重启保存", async () =
         ),
       /不匹配/,
     );
-    const hit = searchArtifacts(
+    const results = searchArtifacts(
       store.snapshot(),
       { query: "durable butterfly" },
       localAccess,
-    ).hits[0]!;
-    assert.equal(hit.page, 2);
+    );
+    assert.equal(results.total, 0, "导入 PDF 不进入 Agent 成果索引");
+    assert.ok(content.pages[1]!.includes("durable butterfly"));
     const annotation = {
       type: "annotate",
       artifactId: receipt.entityId,
@@ -83,7 +84,7 @@ test("PDF 原文提取、按页引用、可信内容与重启保存", async () =
           projectId: "first-project",
           artifactId: receipt.entityId,
           artifactRevision: 1,
-          selection: hit.quote,
+          selection: "durable butterfly",
           body: "解释这一页",
           targetActantId: "morphz-agent",
         },

@@ -60,14 +60,8 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   const initial = await (await page.request.get("/api/workspace")).json();
   const input = await openInput(page);
   await input.fill("这段草稿不能被入口覆盖");
-  for (const [button, intent] of [
-    ["让 Morphz 起草", "创作文档"],
-    ["制作表格或报告", "制作表格或报告"],
-  ] as const) {
-    await page
-      .locator(".creation-actions")
-      .getByRole("button", { name: button, exact: true })
-      .click();
+  for (const [button, intent] of [["让 Morphz 起草", "创作文档"]] as const) {
+    await page.getByRole("button", { name: button, exact: true }).click();
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("这段草稿不能被入口覆盖");
     await expect(page.locator(".composer-intent")).toContainText(intent);
@@ -97,9 +91,7 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   await page.reload();
   await openInput(page);
   await expect(input).toHaveValue("这段草稿不能被入口覆盖");
-  await expect(page.locator(".composer-intent")).toContainText(
-    "制作表格或报告",
-  );
+  await expect(page.locator(".composer-intent")).toContainText("创作文档");
   await page.locator(".composer").screenshot({
     path: "test-results/composer-inline-intent.png",
     animations: "disabled",

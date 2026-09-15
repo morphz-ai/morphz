@@ -1,3 +1,4 @@
+import { seedCenter } from "./center-fixtures.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 
@@ -6,16 +7,31 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const label = await page
+    .locator(".library-collection")
+    .getAttribute("aria-label");
+  const project = boot.workspace.projects.find(
+    (p: { title: string }) => label === p.title + "的内容",
+  );
+  await seedCenter(
+    page,
+    {
+      type: "create-artifact",
+      projectId: project.id,
+      title: "整理品牌与产品资料",
+      content: {
+        kind: "document",
+        markdown:
+          "整理产品资料，核对文档、设计方案和本周工作安排。人和 Agent 围绕同一份内容协作。",
+      },
+    },
+    true,
+  );
   await page
-    .getByLabel("新对象标题", { exact: true })
-    .fill("整理品牌与产品资料");
-  await page
-    .getByLabel("新文档正文")
-    .fill(
-      "整理产品资料，核对文档、设计方案和本周工作安排。人和 Agent 围绕同一份内容协作。",
-    );
-  await page.getByRole("button", { name: "创建", exact: true }).click();
+    .locator(".artifact-card")
+    .filter({ hasText: "整理品牌与产品资料" })
+    .click();
   await expect(page.locator(".object-paper > h1")).toHaveText(
     "整理品牌与产品资料",
   );

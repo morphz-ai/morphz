@@ -45,8 +45,8 @@ export const kindLabel = {
   image: "图片",
   task: "事项",
   pdf: "PDF",
-  website: "网站",
-  interactive: "表格与报告",
+  website: "网页链接",
+  interactive: "表格",
 };
 export function ObjectIcon({ kind }: { kind: Content["kind"] }) {
   const Icon = {
@@ -467,7 +467,7 @@ export function ArtifactEditor({
           <details className="source-strip">
             <summary>
               {artifact.source.mode === "linked"
-                ? "外部资料 · 只读"
+                ? "旧同步副本 · 自动同步已停用"
                 : "导入副本"}
               {" · "}
               {artifact.source.relativePath}
@@ -478,7 +478,7 @@ export function ArtifactEditor({
             </summary>
             <small>
               {artifact.source.mode === "linked"
-                ? `最近确认 ${artifact.source.connection ? new Date(artifact.source.connection.checkedAt).toLocaleString("zh-CN") : "未知"}；原文件只读。`
+                ? "保留已有副本和历史版本；不会继续读取或同步原文件。"
                 : `原始内容保存在 v${artifact.source.importedRevision} · 不自动同步原文件`}
             </small>
           </details>
@@ -649,7 +649,7 @@ export function ArtifactEditor({
             {artifact.source && (
               <p>
                 {artifact.source.mode === "linked"
-                  ? "外部资料 · 原文件只读"
+                  ? "旧同步副本 · 自动同步已停用"
                   : "导入副本"}
                 {" · "}
                 {artifact.source.relativePath}
@@ -658,7 +658,7 @@ export function ArtifactEditor({
                 {artifact.source.connection?.status === "unavailable" &&
                   " · 来源暂不可用，保留上次版本"}
                 {artifact.source.mode === "linked"
-                  ? ` · 最近确认 ${artifact.source.connection ? new Date(artifact.source.connection.checkedAt).toLocaleString("zh-CN") : "未知"}`
+                  ? " · 保留已有副本和历史版本"
                   : ` · 原始内容保存在 v${artifact.source.importedRevision}，不自动同步原文件`}
               </p>
             )}

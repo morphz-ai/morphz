@@ -263,6 +263,45 @@ try {
     ).grants.length,
     0,
   );
+  // Catalog destination changes must remount the real permission scope, not
+  // merely change the list or transfer the previous workspace's grants.
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "内容", exact: true })
+    .click();
+  const scope = page.getByLabel("内容范围", { exact: true });
+  await scope.selectOption("first-project");
+  await page.getByLabel("让 Morphz 起草", { exact: true }).click();
+  await input.fill("TEST 项目 A 的内容草稿");
+  await directoryButton.click();
+  await expect(page.getByLabel("此对话的目录读写权限")).toContainText(
+    "example-repo",
+  );
+  const desk = after.workspace.projects.find((p) => p.kind === "desk");
+  await scope.selectOption(desk.id);
+  await page.getByLabel("让 Morphz 起草", { exact: true }).click();
+  await expect(input).not.toHaveValue("TEST 项目 A 的内容草稿");
+  await expect(page.getByLabel("此对话的目录读写权限")).toHaveCount(0);
+  await scope.selectOption("first-project");
+  await page.reload();
+  await page.getByLabel("让 Morphz 起草", { exact: true }).click();
+  await expect(input).toHaveValue("TEST 项目 A 的内容草稿");
+  await expect(page.getByLabel("此对话的目录读写权限")).toContainText(
+    "example-repo",
+  );
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect
+    .poll(async () => (await boot()).workspace.inputs.length)
+    .toBe(after.workspace.inputs.length + 1);
+  const scopedInput = (await boot()).workspace.inputs.at(-1);
+  assert.equal(scopedInput.projectId, "first-project");
+  assert.equal(scopedInput.conversationId, sent.conversationId);
+  assert.equal(scopedInput.directories.length, 1);
+  assert.equal(scopedInput.directories[0].path, realpathSync(repo));
+  await page
+    .getByRole("button", { name: "撤销 example-repo 的读写权限" })
+    .click();
+  await expect(page.getByLabel("此对话的目录读写权限")).toHaveCount(0);
   assert.deepEqual(errors, []);
   console.log(
     "PASS production Electron: explicit read-write directory grant; no file viewer/import/index/autosend; conversation/workspace scope; persisted permissions and drafts; revoke.",

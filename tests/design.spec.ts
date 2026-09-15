@@ -43,10 +43,8 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   ];
   for (const [title, body] of docs) {
     await projects();
-    await page
-      .locator(".library-authoring-options")
-      .getByRole("button", { name: "手动写文档", exact: true })
-      .click();
+    await page.getByLabel("其他内容创作", { exact: true }).click();
+    await page.getByRole("button", { name: "手动写文档", exact: true }).click();
     await page.getByLabel("新对象标题", { exact: true }).fill(title);
     await page.getByLabel("新文档正文").fill(body);
     await page.getByRole("button", { name: "创建", exact: true }).click();
@@ -82,7 +80,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
       });
     }
   }
-  await page.getByLabel("搜索内容标题").fill("产品交互笔记");
+  await page.getByLabel("搜索内容").fill("产品交互笔记");
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await page.getByLabel("清除搜索", { exact: true }).click();
   await page
@@ -92,7 +90,7 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   await expect(page.locator(".artifact-card")).toHaveCount(3);
   await page.getByRole("button", { name: "列表视图", exact: true }).click();
   await expect(page.locator(".artifact-list .artifact-card")).toHaveCount(3);
-  await page.getByLabel("搜索内容标题").fill("no-such-object");
+  await page.getByLabel("搜索内容").fill("no-such-object");
   await expect(
     page.getByRole("heading", { name: "没有找到匹配的内容" }),
   ).toBeVisible();

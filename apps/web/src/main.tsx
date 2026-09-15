@@ -7,6 +7,7 @@ import "./workflow.css";
 import "./visual-system.css";
 import "./inspector.css";
 import "./task-list.css";
+import "./content-catalog.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

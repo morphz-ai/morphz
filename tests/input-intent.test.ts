@@ -4,10 +4,20 @@ import { randomUUID } from "node:crypto";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
 import {
+  inputIntents,
+  inputIntentSchema,
+} from "../packages/core/src/input-intent.js";
+import {
   localAccess,
   operationSchema,
   stateSchema,
 } from "../packages/core/src/model.js";
+
+test("旧表格意图继续可读，不再将报告当作表格创作提示", () => {
+  assert.equal(inputIntentSchema.parse("interactive"), "interactive");
+  assert.equal(inputIntents.interactive.label, "制作表格");
+  assert.doesNotMatch(inputIntents.interactive.placeholder, /报告|Office/);
+});
 
 test("输入意图持久化并进入 Runtime，普通输入享有相同工具行为且不直接创建对象", () => {
   const store = new WorkspaceStore(":memory:");

@@ -21,16 +21,16 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
   await openLibrary(page);
   await action(
     page.getByRole("button", { name: "让 Morphz 起草", exact: true }),
-    "起草",
+    "起草文档",
   );
-  await action(
+  await expect(
     page.getByRole("button", { name: "导入资料", exact: true }),
-    "导入",
-  );
-  await action(
+  ).toHaveCount(0);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await expect(
     page.getByRole("button", { name: "手动写文档", exact: true }),
-    "写文档",
-  );
+  ).toHaveText("手动写文档");
+  await page.keyboard.press("Escape");
   await seedLibraryArtifact(page, "统一视觉规则回归", {
     kind: "document",
     markdown: "## 明确层级\n\n正文、辅助信息与操作不应混为一谈。",

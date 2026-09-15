@@ -30,7 +30,7 @@ export async function openLibrary(page: Page) {
   // the transient empty view and skip the required back action.
   await expect(async () => {
     if (await back.isVisible()) await back.click({ timeout: 1000 });
-    await expect(page.locator(".creation-actions")).toBeVisible({
+    await expect(page.locator(".content-actions")).toBeVisible({
       timeout: 1000,
     });
   }).toPass({ timeout: 6000 });

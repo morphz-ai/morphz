@@ -1,0 +1,272 @@
+/* The existing card/list catalog gains local actions, not a new page layout. */
+.app .library-collection .artifact-card {
+  position: relative;
+  min-width: 0;
+}
+.app .library-collection .artifact-card-open {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  color: inherit;
+}
+.app .library-collection .artifact-card-open:hover {
+  background: transparent;
+}
+.app .library-collection .artifact-card-heading {
+  padding-right: 66px;
+  min-height: 32px;
+}
+.app .library-collection .artifact-card-heading h2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.app .library-collection .content-item-actions {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.app .library-collection .content-item-actions > .icon-button {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  padding: 6px;
+}
+.app .library-collection .artifact-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
+.app .library-collection .artifact-grid .artifact-card-open {
+  flex: 1;
+}
+.app .library-collection .artifact-grid .artifact-preview {
+  min-height: 76px;
+  max-height: 164px;
+}
+.app .library-collection .artifact-preview p {
+  -webkit-line-clamp: 3;
+}
+.app .library-collection .artifact-preview[data-kind="pdf"] {
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--soft);
+}
+.app .library-collection .artifact-preview canvas {
+  display: block;
+  max-width: 85%;
+  max-height: 152px;
+  object-fit: contain;
+}
+.app .library-collection .artifact-preview small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.app .library-collection .artifact-caption {
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 2px;
+}
+.app .library-collection .artifact-caption > span:first-child {
+  flex: 1 1 100%;
+  font-weight: 400;
+}
+.app .library-collection .artifact-caption .content-origin {
+  color: var(--muted);
+  font-weight: 400;
+}
+.app .library-collection .content-related {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.app .library-collection .content-related > span {
+  flex-shrink: 0;
+}
+.app .library-collection .content-related button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.app .library-collection .content-related button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .library-collection .content-related svg {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+}
+.app .library-collection .content-domain {
+  display: block;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app .library-collection .content-table-preview table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 4px 0;
+  font-size: 11px;
+}
+.app .library-collection .content-table-preview :is(th, td) {
+  text-align: left;
+  padding: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--hairline);
+}
+.app .library-collection .content-table-preview th {
+  font-weight: 500;
+}
+.app .library-collection .content-table-preview p {
+  -webkit-line-clamp: 1;
+}
+.app .library-collection .artifact-list .artifact-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 10px 76px 10px 8px;
+}
+.app .library-collection .artifact-list .artifact-card-heading {
+  padding-right: 0;
+  min-height: 0;
+}
+.app .library-collection .artifact-list .artifact-caption {
+  padding: 2px 0 0 24px;
+}
+.app .library-collection .artifact-list .artifact-caption > span:first-child {
+  flex: 0 1 auto;
+}
+.app .library-collection .artifact-list .content-origin {
+  flex: 0 1 auto;
+}
+.app .library-collection .artifact-list .content-related {
+  padding-left: 24px;
+}
+.app .library-collection .content-match {
+  margin: 5px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.app .library-collection .library-caption {
+  align-items: center;
+  padding: 8px 0;
+}
+.app .library-collection .library-caption select {
+  width: auto;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: transparent;
+  border-color: transparent;
+}
+.app .content-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.app .content-actions .secondary-action {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+.app .content-actions small {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .content-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: var(--soft);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.app .content-feedback > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .content-search-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+.app .content-search-note button {
+  color: var(--accent);
+}
+.app .content-load-more {
+  display: block;
+  margin: 14px auto;
+}
+.app .content-metadata-dialog {
+  max-width: min(var(--ui-dialog-width), 480px);
+}
+.app .content-metadata-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.app .content-metadata-dialog .field {
+  margin: 0;
+}
+.app .content-move-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .app .library-collection .library-controls {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .app .library-collection .search-field {
+    flex: 1;
+    min-width: 100px;
+  }
+  .app .library-collection .filter-tabs {
+    flex-wrap: wrap;
+  }
+  .app .content-actions small {
+    max-width: 70px;
+  }
+}
