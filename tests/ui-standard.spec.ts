@@ -183,7 +183,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
 }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("交流阅读验证");
+  await page.getByLabel("项目名称", { exact: true }).fill("交流阅读验证");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "交流阅读验证", exact: true }),

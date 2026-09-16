@@ -219,57 +219,29 @@ test("长文保存在现有顶栏，快捷键保存；查看旧版本时明确�
   await expect(page.locator(".object-toolbar")).toContainText("v2");
 });
 
-test("来源读取失败可重试，不伪装空列表；操作失败不被后台刷新清除", async ({
-  page,
-}) => {
+test("旧同步桥不再触发后台读取，也不重新暴露同步入口", async ({ page }) => {
   await page.addInitScript(() => {
-    let calls = 0;
-    const source = {
-      id: "test-source",
-      projectId: "first-project",
-      label: "合成资料",
-      enabled: false,
-      count: 2,
-      error: "",
-      lastSync: null,
-    };
+    Reflect.set(window, "legacySourceCalls", 0);
     Reflect.set(window, "morphzDesktop", {
       sources: {
         list: async () => {
-          if (++calls === 1) throw new Error("fixture read failure");
-          return [source];
-        },
-        choose: async (projectId: string) => {
-          source.projectId = projectId;
-          return [source];
-        },
-        control: async () => {
-          throw new Error("同步未启动，请重新尝试。");
+          Reflect.set(
+            window,
+            "legacySourceCalls",
+            Number(Reflect.get(window, "legacySourceCalls")) + 1,
+          );
+          throw new Error("Legacy polling must not start");
         },
       },
     });
   });
   await page.goto("/");
   await page.getByLabel("工作空间选项", { exact: true }).click();
-  // Await Chromium's presented hit-test surface above a restored app iframe.
-  await page.getByRole("group", { name: "工作空间操作" }).screenshot();
-  await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
-    .click();
-  await expect(page.getByRole("dialog", { name: "导入资料" })).toBeVisible();
-  await page.getByRole("button", { name: "连接来源", exact: true }).click();
-  const source = page.getByRole("region", { name: "连接来源", exact: true });
-  await expect(source.getByRole("alert")).toContainText("无法读取本机来源");
-  await expect(source.locator(".source-empty")).toHaveCount(0);
-  await source.getByRole("button", { name: "重新读取", exact: true }).click();
-  await expect(source.getByRole("alert")).toHaveCount(0);
-  // Choosing is a simulated native authorization result in this UI-only test.
-  await source.getByRole("button", { name: "选择目录", exact: true }).click();
-  await source
-    .getByRole("button", { name: "开始只读同步", exact: true })
-    .click();
-  await expect(source.getByRole("alert")).toContainText("同步未启动");
-  await page.waitForTimeout(3200);
-  await expect(source.getByRole("alert")).toContainText("同步未启动");
-  await source.screenshot({ path: "test-results/experience-source.png" });
+  await expect(page.getByRole("group", { name: "工作空间操作" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() => Reflect.get(window, "legacySourceCalls")),
+  ).toBe(0);
 });

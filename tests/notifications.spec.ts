@@ -109,6 +109,14 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
     "通知设置未保存，请重试。",
   );
   await page.setViewportSize({ width: 380, height: 540 });
+  // Wait for the responsive layout after the viewport change, not a stale
+  // pre-resize bounding box. Keep the same strict containment bound.
+  await expect
+    .poll(async () => {
+      const rect = (await dialog.boundingBox())!;
+      return rect.x + rect.width;
+    })
+    .toBeLessThanOrEqual(361);
   const small = (await dialog.boundingBox())!;
   expect(small.x).toBeGreaterThanOrEqual(19);
   expect(small.x + small.width).toBeLessThanOrEqual(361);

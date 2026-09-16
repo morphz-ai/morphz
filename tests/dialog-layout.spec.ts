@@ -286,11 +286,10 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
 
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
-    .click();
-  const library = page.getByRole("dialog", { name: "导入资料", exact: true });
-  await expect(library).toBeVisible();
-  expect((await library.boundingBox())!.width).toBeGreaterThanOrEqual(620);
-  await assertContained(library);
+  await expect(
+    page.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  await assertContained(
+    page.getByRole("group", { name: "工作空间操作", exact: true }),
+  );
 });

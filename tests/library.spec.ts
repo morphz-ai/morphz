@@ -8,7 +8,7 @@ test("旧导入副本仍可阅读、引用和打开历史版本，但不再进�
   await page.goto("/");
   const name = "旧资料验证-" + Date.now();
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("新对象标题").fill(name);
+  await page.getByLabel("项目名称", { exact: true }).fill(name);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   const boot = await (await page.request.get("/api/workspace")).json();
   const project = boot.workspace.projects.find(

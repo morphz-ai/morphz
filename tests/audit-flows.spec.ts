@@ -121,7 +121,7 @@ test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不
       markdown: "[打开 B](artifact:" + b + ")\n\nA 的正文",
     },
   });
-  await page.getByLabel("搜索内容标题").fill("返回测试 A");
+  await page.getByLabel("搜索内容").fill("返回测试 A");
   await page
     .locator(".artifact-card")
     .filter({ hasText: "返回测试 A" })
@@ -135,7 +135,7 @@ test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不
   await openInput(page);
   await expect(input).toHaveValue("A 的未发送草稿");
   await page.getByLabel("返回上一位置").click();
-  await expect(page.getByLabel("搜索内容标题")).toHaveValue("返回测试 A");
+  await expect(page.getByLabel("搜索内容")).toHaveValue("返回测试 A");
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await page.getByLabel("前往下一位置").click();
   await expect(page.locator(".object-paper > h1")).toHaveText("返回测试 A");
@@ -145,40 +145,23 @@ test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不
   await page.screenshot({ path: "test-results/audit-navigation.png" });
 });
 
-test("资料页直接导入文档与图片，凭据文件仍被拒绝", async ({ page }) => {
+test("Web 内容页不展示无法原位访问的文件入口，不再展示导入同步", async ({
+  page,
+}) => {
   await desk(page);
-  await page.getByRole("button", { name: "导入资料", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "导入资料", exact: true });
-  await dialog.getByLabel("选择资料文件").setInputFiles([
-    {
-      name: "审计资料.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from("# 资料\n导入内容"),
-    },
-    {
-      name: "审计图片.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    },
-    {
-      name: ".env.png",
-      mimeType: "image/png",
-      buffer: Buffer.from("not-an-image"),
-    },
-  ]);
-  await expect(dialog.getByText(/隐藏文件、依赖目录/)).toBeVisible();
-  await dialog
-    .getByRole("button", { name: "导入 2 份资料", exact: true })
-    .click();
-  await expect(dialog.getByRole("status")).toHaveText("已导入 2 份");
-  await dialog
-    .getByRole("button", { name: "打开", exact: true })
-    .last()
-    .click();
-  await expect(page.locator(".object-paper > h1")).toHaveText("审计图片");
+  const before = await (await page.request.get("/api/workspace")).json();
+  await expect(
+    page.getByRole("button", { name: "导入资料", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "打开文件", exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("工作空间选项").click();
+  await expect(
+    page.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  const after = await (await page.request.get("/api/workspace")).json();
+  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
 });
 
 test("标记通知已读失败不阻止打开，恢复后补记；失去权限时拒绝读取", async ({

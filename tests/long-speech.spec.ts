@@ -1,3 +1,5 @@
+import { seedLegacyDocument } from "./center-fixtures.js";
+import { openLibrary } from "./application-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { openTranscription } from "./interaction-helpers.js";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
@@ -88,7 +90,7 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
   );
 });
 
-test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷新恢复", async ({
+test("旧百万字 TXT 副本仍可连续朗读、暂停不预取、章节跳转与刷新恢复", async ({
   page,
 }) => {
   test.setTimeout(90000);
@@ -108,30 +110,19 @@ test("百万字 TXT 导入、连续朗读、暂停不预取、章节跳转与刷
     });
   });
   await page.goto("/");
-  await page.getByLabel("工作空间选项").click();
-  // Restored out-of-process application frames can still own the old hit-test
-  // region until the top-layer menu is painted. Wait for presentation before
-  // a real click; keep the menu and import path in this acceptance test.
+  await openLibrary(page);
+  const boot = await (await page.request.get("/api/workspace")).json();
+  const label = await page
+    .locator(".library-collection")
+    .getAttribute("aria-label");
+  const project = boot.workspace.projects.find(
+    (p: { title: string }) => label === p.title + "的内容",
+  );
+  await seedLegacyDocument(page, project.id, "百万字朗读.txt", source);
   await page
-    .getByRole("group", { name: "工作空间操作", exact: true })
-    .screenshot();
-  await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .locator(".artifact-card")
+    .filter({ hasText: "百万字朗读" })
     .click();
-  const importer = page.getByRole("dialog", { name: "导入资料", exact: true });
-  await expect(importer).toBeVisible();
-  await importer.getByLabel("选择资料文件").setInputFiles({
-    name: "百万字朗读.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from(source),
-  });
-  await importer
-    .getByRole("button", { name: "导入 1 份资料", exact: true })
-    .click();
-  await expect(importer.getByRole("status")).toHaveText("已导入 1 份", {
-    timeout: 20000,
-  });
-  await importer.getByRole("button", { name: "打开", exact: true }).click();
   await page.getByRole("button", { name: "朗读对象", exact: true }).click();
   const reader = page.getByRole("region", { name: "朗读对象", exact: true });
   await expect(

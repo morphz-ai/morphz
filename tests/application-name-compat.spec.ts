@@ -76,7 +76,7 @@ for (const legacy of [false, true])
           page.locator(`iframe[title="${manifest.title}应用界面"]`),
         ).toHaveCSS("pointer-events", "none");
         const title = `名称兼容-${legacy}-${index}-${crypto.randomUUID()}`;
-        await page.getByLabel("新对象标题").fill(title);
+        await page.getByLabel("项目名称", { exact: true }).fill(title);
         await page.getByRole("button", { name: "创建", exact: true }).click();
         await expect(page.getByRole("dialog")).toHaveCount(0);
         const snapshot = await (

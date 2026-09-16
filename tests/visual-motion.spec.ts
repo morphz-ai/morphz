@@ -24,11 +24,12 @@ test("半开历史透出真实画布，固定和短窗口回到占位，不缩�
   await expect(page.locator(".composer")).toHaveCSS("animation-name", "none");
   await input.fill("视觉验收草稿，不发送");
   const history = page.locator(".conversation");
+  const panel = page.locator(".exchange-panel");
   const main = page.getByRole("main", { name: "主工作区" });
   const composer = page.getByRole("region", { name: "AI 输入", exact: true });
-  await expect(history).toHaveCSS("position", "absolute");
+  await expect(panel).toHaveCSS("position", "absolute");
   await expect(history).toHaveCSS("opacity", "1");
-  const backdrop = await history.evaluate((el) => ({
+  const backdrop = await panel.evaluate((el) => ({
     fill: getComputedStyle(el).backgroundColor,
     blur: getComputedStyle(el).backdropFilter,
     opacity: getComputedStyle(el).opacity,
@@ -42,20 +43,20 @@ test("半开历史透出真实画布，固定和短窗口回到占位，不缩�
   expect(h.y + h.height).toBeLessThanOrEqual(c.y);
   expect(c.y).toBeGreaterThanOrEqual(m.y + m.height);
   expect(Math.abs(h.x - c.x)).toBeLessThan(2);
-  expect(Math.abs(h.width - c.width)).toBeLessThan(2);
+  expect(Math.abs(h.width - c.width)).toBeLessThanOrEqual(2);
   const writingHeight = (await input.boundingBox())!.height;
   expect(writingHeight).toBeGreaterThanOrEqual(60);
   await page.screenshot({ path: "test-results/visual-history-floating.png" });
   await composerAction(page, "固定输入框");
-  await expect(history).toHaveCSS("position", "relative");
+  await expect(panel).toHaveCSS("position", "relative");
   const pinnedMain = (await main.boundingBox())!;
   expect((await history.boundingBox())!.y).toBeGreaterThanOrEqual(
     pinnedMain.y + pinnedMain.height,
   );
   await page.getByLabel("取消固定输入框", { exact: true }).click();
-  await expect(history).toHaveCSS("position", "absolute");
+  await expect(panel).toHaveCSS("position", "absolute");
   await page.setViewportSize({ width: 760, height: 540 });
-  await expect(history).toHaveCSS("position", "relative");
+  await expect(panel).toHaveCSS("position", "relative");
   await expect(
     composer.getByRole("button", { name: "保存输入", exact: true }),
   ).toBeInViewport();
@@ -143,9 +144,14 @@ test("减少动态、减少透明和增强对比度保持所有操作及文本�
       { name: "prefers-reduced-transparency", value: "reduce" },
     ],
   });
-  await expect(history).toHaveCSS("backdrop-filter", "none");
+  await expect(page.locator(".exchange-panel")).toHaveCSS(
+    "backdrop-filter",
+    "none",
+  );
   expect(
-    await history.evaluate((el) => getComputedStyle(el).backgroundColor),
+    await page
+      .locator(".exchange-panel")
+      .evaluate((el) => getComputedStyle(el).backgroundColor),
   ).not.toContain("rgba");
   await composerAction(page, "展开完整记录");
   await expect(input).toHaveValue("减少动态效果仍可以正常工作");

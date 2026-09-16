@@ -13,7 +13,13 @@ import {
   type Page,
   type ElectronApplication,
 } from "@playwright/test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID, randomBytes } from "node:crypto";
@@ -29,6 +35,12 @@ import {
   contentSchema,
   type InputAttachment,
 } from "../packages/core/src/model.js";
+import { openExecutionPanel } from "../tests/interaction-helpers.js";
+import { LocalFiles } from "../packages/application/src/local-files.js";
+import type {
+  LocalFileReference,
+  DirectoryGrant,
+} from "../packages/core/src/local-files.js";
 
 const live = process.argv.includes("--live");
 let streamApp: ElectronApplication | undefined;
@@ -68,6 +80,29 @@ const runtimeDirectory = join(directory, "runtime"),
 mkdirSync(runtimeDirectory, { mode: 0o700 });
 mkdirSync(workDirectory, { mode: 0o700 });
 const store = new WorkspaceStore(join(workDirectory, "workspace.sqlite"));
+const localFiles = new LocalFiles(
+  join(workDirectory, "local-files.json"),
+  store,
+);
+const externalPath = join(directory, "external.txt");
+writeFileSync(externalPath, "external-original-marker-4821");
+const externalReference = localFiles.select(
+  externalPath,
+  "first-project",
+  localAccess,
+).reference;
+const authorizedRoot = join(directory, "agent-work");
+mkdirSync(authorizedRoot);
+writeFileSync(
+  join(authorizedRoot, "main.ts"),
+  "export const runtimeValue = 1;\n",
+);
+const directoryGrant = localFiles.authorizeDirectory(
+  authorizedRoot,
+  "first-project",
+  "first-project",
+  localAccess,
+);
 const source = store.execute(
   {
     commandId: randomUUID(),
@@ -83,6 +118,9 @@ const source = store.execute(
 const namespace = randomUUID(),
   runtimeToken = randomBytes(32).toString("hex");
 let stage = 0,
+  directoryPhase = false,
+  localFilePhase = false,
+  sawExternalResult = false,
   imagePhase = false,
   sawOriginalImage = false,
   taskPhase = false,
@@ -114,7 +152,58 @@ const provider = createServer(async (request, response) => {
   const result = store.snapshot().artifacts.find((a) => a.title === "测试交付");
   let args: unknown;
   let toolName = "host_morphz";
-  if (imagePhase) {
+  if (directoryPhase) {
+    if (stage++ === 0)
+      args = {
+        action: "directory",
+        directory: {
+          grantId: directoryGrant.grantId,
+          operation: "read",
+          path: "main.ts",
+        },
+      };
+    else if (stage === 2) {
+      const message = input.messages
+        .filter((m: { role: string }) => m.role === "tool")
+        .at(-1);
+      const raw =
+        typeof message?.content === "string"
+          ? message.content
+          : JSON.stringify(message?.content);
+      assert.ok(
+        raw?.includes("runtimeValue = 1"),
+        "actual model sees original content from scoped directory read",
+      );
+      const version = raw.match(/[a-f0-9]{64}/)?.[0];
+      assert.ok(version, "write uses version returned by actual Host read");
+      args = {
+        action: "directory",
+        directory: {
+          grantId: directoryGrant.grantId,
+          operation: "write",
+          path: "main.ts",
+          text: "export const runtimeValue = 2;\n",
+          expectedVersion: version,
+        },
+      };
+    } else {
+      assert.equal(
+        readFileSync(join(authorizedRoot, "main.ts"), "utf8"),
+        "export const runtimeValue = 2;\n",
+      );
+    }
+  } else if (localFilePhase) {
+    args = stage++ === 0 ? { action: "local-file" } : undefined;
+    if (!args) {
+      sawExternalResult = JSON.stringify(input.messages).includes(
+        "external-original-marker-4821",
+      );
+      assert.ok(
+        sawExternalResult,
+        "Actual Runtime invocation must receive the scoped original file through the Host callback",
+      );
+    }
+  } else if (imagePhase) {
     args = undefined;
   } else if (taskPhase) {
     args =
@@ -248,13 +337,8 @@ const provider = createServer(async (request, response) => {
               { index: 0, function: { arguments: args.slice(0, cut) } },
             ],
           });
-          await streamWindow
-            .getByRole("button", {
-              name: "查看这项正在处理的工作",
-              exact: true,
-            })
-            .last()
-            .click();
+          await openExecutionPanel(streamWindow);
+          await streamWindow.locator(".execution-work-row").first().click();
           const row = streamWindow
             .locator('.message-tool[data-tool-status="generating"]')
             .first();
@@ -377,7 +461,14 @@ const app = createAppServer(store, {
   port: workPort,
   webRoot: resolve("dist/web"),
   runtime: bridge,
-  agentTools: runtimeAgentTools(store, bridge, manifest.token),
+  localFiles,
+  agentTools: runtimeAgentTools(
+    store,
+    bridge,
+    manifest.token,
+    undefined,
+    localFiles,
+  ),
 });
 await new Promise<void>((r) => app.listen(workPort, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${workPort}`;
@@ -450,9 +541,9 @@ try {
         .getByRole("button", { name: /向 Morphz 输入/ })
         .click();
     await streamWindow.getByLabel("AI 输入内容").focus();
-    await streamWindow.locator(".composer-floating-tools").hover();
+    await streamWindow.locator(".exchange-view-tools").hover();
     await streamWindow.getByLabel("展开完整记录", { exact: true }).click();
-    await streamWindow.locator(".composer-floating-tools").hover();
+    await streamWindow.locator(".exchange-view-tools").hover();
     await streamWindow.getByLabel("固定输入框", { exact: true }).click();
   }
   async function send(
@@ -460,6 +551,8 @@ try {
     artifactId: string | null = null,
     conversationId?: string,
     attachments?: InputAttachment[],
+    localFile?: LocalFileReference,
+    directories?: DirectoryGrant[],
   ) {
     const boot = (await (await fetch(origin + "/api/workspace")).json()) as {
       csrfToken: string;
@@ -483,6 +576,8 @@ try {
           selection: "",
           targetActantId: "morphz-agent",
           ...(attachments ? { attachments } : {}),
+          ...(localFile ? { localFile } : {}),
+          ...(directories ? { directories } : {}),
         },
       }),
     });
@@ -514,7 +609,10 @@ try {
       (e: { event_id: string }) => e.event_id === delivery.rootId,
     );
     assert.equal(accepted.message.format.id, "morphz.application.input");
-    assert.equal(accepted.message.format.version, "2");
+    assert.equal(
+      accepted.message.format.version,
+      directories ? "3" : localFile ? "2" : "1",
+    );
     assert.equal(
       accepted.message.content.value.text,
       body,
@@ -588,9 +686,11 @@ try {
     );
     await streamWindow.getByLabel("返回上一位置").click();
     await streamWindow.reload();
+    await openExecutionPanel(streamWindow);
+    await streamWindow.getByText("最近结束", { exact: false }).click();
     await streamWindow
-      .getByRole("button", { name: "查看这项工作的执行记录", exact: true })
-      .last()
+      .locator(".execution-recent .execution-work-row")
+      .first()
       .click();
     await expect(streamWindow.locator(".execution-job")).not.toHaveCount(0);
     await expect(
@@ -629,17 +729,16 @@ try {
       (await executionPanel.boundingBox())!.width <= 340,
       "窄桌面执行面板不挤压为三条窄列",
     );
-    await expect(
-      executionPanel.getByRole("button", { name: "关闭执行面板", exact: true }),
-    ).toBeVisible();
+    const executionToggle = streamWindow.locator(".inspector-toggle");
+    await expect(executionToggle).toBeVisible();
+    await expect(executionToggle).toHaveAttribute("aria-expanded", "true");
     await streamWindow.screenshot({
       path: join(directory, "desktop-execution-narrow.png"),
       animations: "disabled",
     });
-    await executionPanel
-      .getByRole("button", { name: "关闭执行面板", exact: true })
-      .click();
+    await executionToggle.click();
     await expect(executionPanel).toHaveCount(0);
+    await expect(executionToggle).toHaveAttribute("aria-expanded", "false");
     console.log(
       "PASS: real Electron → center SSE → Runtime WebSocket: partial text and tool arguments visible before provider completion; final deduplication, two-sided layout and reload history. Screenshots:",
       directory,
@@ -690,6 +789,59 @@ try {
     ).available,
   );
   if (!live) assert.ok(providerCalls >= 8);
+  if (!live) {
+    const beforeExternal = store.snapshot().artifacts;
+    localFilePhase = true;
+    stage = 0;
+    const { accepted } = await send(
+      "按需读取这份原文件，不导入、不创建对象。",
+      null,
+      undefined,
+      undefined,
+      externalReference,
+    );
+    assert.deepEqual(
+      accepted.message.content.value.localFile,
+      externalReference,
+    );
+    assert.ok(sawExternalResult);
+    assert.deepEqual(store.snapshot().artifacts, beforeExternal);
+    assert.equal(
+      store.search({ query: "external-original-marker-4821" }, localAccess)
+        .total,
+      0,
+    );
+    localFiles.revoke(externalReference.grantId, "first-project", localAccess);
+    localFilePhase = false;
+    console.log(
+      "PASS: actual Runtime v2 input → scoped Host file read → model tool result; no import/index; existing v1 unchanged.",
+    );
+    directoryPhase = true;
+    stage = 0;
+    const directoryInput = await send(
+      "TEST 在授权目录中读取 main.ts，再将 runtimeValue 改为 2。",
+      null,
+      undefined,
+      undefined,
+      undefined,
+      [directoryGrant],
+    );
+    assert.deepEqual(
+      directoryInput.accepted.message.content.value.directories,
+      [directoryGrant],
+    );
+    assert.equal(
+      readFileSync(join(authorizedRoot, "main.ts"), "utf8"),
+      "export const runtimeValue = 2;\n",
+    );
+    assert.deepEqual(store.snapshot().artifacts, beforeExternal);
+    assert.equal(store.search({ query: "runtimeValue" }, localAccess).total, 0);
+    localFiles.revoke(directoryGrant.grantId, "first-project", localAccess);
+    directoryPhase = false;
+    console.log(
+      "PASS: actual Runtime v3 input → authorized directory read → versioned original-file write → persisted tool receipt; no artifacts/index.",
+    );
+  }
   if (!live) {
     understandingRound = 1;
     understandingStage = 0;
@@ -849,10 +1001,7 @@ try {
       );
       await page.getByLabel("收起 AI 输入框").click();
       await page
-        .getByRole("button", { name: "打开事项", exact: true })
-        .filter({
-          has: page.getByRole("heading", { name: "核对宣传文案", exact: true }),
-        })
+        .getByRole("button", { name: "打开事项：核对宣传文案", exact: true })
         .click();
       await expect(
         page.getByRole("heading", { name: "核对宣传文案", exact: true }),

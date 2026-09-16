@@ -86,13 +86,15 @@ test("half-open history has a translucent boundary without dimming text or resiz
       "recent",
     );
     const history = page.locator(".conversation");
+    const surface = page.locator(".exchange-panel");
     await expect(history).toHaveCSS("opacity", "1");
-    await expect(history).toHaveCSS(
+    await expect(surface).toHaveCSS("opacity", "1");
+    await expect(surface).toHaveCSS(
       "backdrop-filter",
       "blur(20px) saturate(1.08)",
     );
     expect(
-      await history.evaluate((el) => getComputedStyle(el).boxShadow),
+      await surface.evaluate((el) => getComputedStyle(el).boxShadow),
     ).not.toBe("none");
     const inputBounds = (await page.getByLabel("AI 输入内容").boundingBox())!;
     expect(inputBounds.height).toBeGreaterThanOrEqual(60);
@@ -102,6 +104,7 @@ test("half-open history has a translucent boundary without dimming text or resiz
       "history",
     );
     await expect(history).toHaveCSS("backdrop-filter", "none");
+    await expect(surface).toHaveCSS("backdrop-filter", "none");
     expect((await page.getByLabel("AI 输入内容").boundingBox())!.height).toBe(
       inputBounds.height,
     );

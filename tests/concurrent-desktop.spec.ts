@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 
 test("并发交付按时间追加，运行入口打开精确详情，固定与调宽不改变会话", async ({
   page,
@@ -52,6 +52,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
           threads: [
             {
               id: "background-thread",
+              kind: "execution",
               inputId: input.id,
               rootId: "root-a",
               sessionId: "session-a",
@@ -84,10 +85,12 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(page.getByText("材料还在整理中", { exact: true })).toBeVisible();
   const marker = page.getByRole("button", {
-    name: "查看这项正在处理的工作",
+    name: "后台执行中",
     exact: true,
   });
-  await marker.click();
+  await expect(marker).toHaveCount(0);
+  await openExecutionPanel(page);
+  await page.locator(".execution-work-row").filter({ hasText: inputA }).click();
   const panel = page.getByRole("complementary", { name: "执行面板" });
   await expect(panel.getByText(inputA, { exact: true })).toBeVisible();
   await expect(
@@ -159,7 +162,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   await page.screenshot({ path: "test-results/concurrent-execution-dark.png" });
   await page.setViewportSize({ width: 760, height: 540 });
   await expect(panel).toHaveAttribute("data-inspector-mode", "overlay");
-  await expect(panel.getByRole("button", { name: "隐藏右侧栏" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "隐藏右侧栏" })).toBeVisible();
   // DOMRect can report 340.00003 CSS px after the panel transition.
   await expect
     .poll(async () => (await panel.boundingBox())!.width)
@@ -167,6 +170,6 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   await page.screenshot({
     path: "test-results/concurrent-execution-narrow.png",
   });
-  await panel.getByRole("button", { name: "隐藏右侧栏" }).click();
+  await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await expect(panel).toHaveCount(0);
 });

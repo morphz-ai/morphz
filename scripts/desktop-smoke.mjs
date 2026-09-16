@@ -1,6 +1,6 @@
 import { _electron, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -123,9 +123,16 @@ try {
     "桌面快捷键检查",
   );
   const web = await (await fetch(`${origin}/api/workspace`)).json();
-  const desktop = await window.evaluate(
-    async () => await (await fetch("/api/workspace")).json(),
-  );
+  const desktop = await window.evaluate(async () => {
+    const result = await window.morphzDesktop.application.invoke({
+      id: crypto.randomUUID(),
+      method: "workspace",
+    });
+    if (!result.ok) throw new Error(JSON.stringify(result));
+    return result.value;
+  });
+  assert.equal(desktop.centerId, web.centerId);
+  assert.equal(desktop.principalId, web.principalId);
   assert.equal(desktop.workspace.id, web.workspace.id);
   assert.equal(desktop.workspace.revision, web.workspace.revision);
   const desktopInput = window.getByLabel("AI 输入内容");
@@ -138,7 +145,7 @@ try {
   await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(desktopInput).toBeFocused();
   await expect(desktopInput).toHaveValue("原生输入区验收，不发送");
-  await window.locator(".composer-floating-tools").hover();
+  await window.locator(".composer-media-tools").hover();
   await window.getByLabel("固定输入框", { exact: true }).click();
   await window
     .getByRole("main", { name: "主工作区" })
@@ -157,56 +164,39 @@ try {
   await window.getByRole("button", { name: "电光青", exact: true }).click();
   await window.screenshot({ path: "test-results/desktop-light.png" });
   await window.getByRole("button", { name: "外观设置", exact: true }).click();
-  const sourceDir = join(dir, "source-fixture");
-  mkdirSync(sourceDir);
-  writeFileSync(
-    join(sourceDir, "native-source.md"),
-    "Initial native source text",
-  );
-  // The OS chooser result is deterministic in this isolated test; the real main
-  // process, preload boundary, filesystem and center synchronization all run.
-  await app.evaluate(({ dialog }, path) => {
-    dialog.showOpenDialog = async () => ({
-      canceled: false,
-      filePaths: [path],
-    });
-  }, sourceDir);
+  // Remote centers must not gain local file access or restart retired sync.
+  // The embedded production test covers authorized original-file access.
   await window.getByLabel("工作空间选项").click();
-  await window
-    .getByRole("button", { name: "资料导入与来源", exact: true })
-    .click();
-  const importer = window.getByRole("dialog", { name: "导入资料" });
-  await importer.getByRole("button", { name: "连接来源", exact: true }).click();
-  await importer.getByRole("button", { name: "选择目录", exact: true }).click();
-  await expect(importer.getByText(/尚未读取内容/)).toBeVisible();
-  await importer
-    .getByRole("button", { name: "开始只读同步", exact: true })
-    .click();
   await expect(
-    importer.getByRole("button", { name: "暂停同步", exact: true }),
-  ).toBeEnabled();
-  await importer.screenshot({ path: "test-results/desktop-sources.png" });
-  await importer.getByRole("button", { name: "暂停同步", exact: true }).click();
-  writeFileSync(
-    join(sourceDir, "native-source.md"),
-    "Updated native source text",
+    window.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  await window.keyboard.press("Escape");
+  await assert.rejects(
+    window.evaluate(() =>
+      window.morphzDesktop.sources.choose("first-project", "directory"),
+    ),
+    /已停用/,
   );
-  await importer.getByRole("button", { name: "恢复同步", exact: true }).click();
-  await expect(
-    importer.getByRole("button", { name: "暂停同步", exact: true }),
-  ).toBeEnabled();
-  const synced = await window.evaluate(
-    async () => (await (await fetch("/api/workspace")).json()).workspace,
+  await assert.rejects(
+    window.evaluate(() =>
+      window.morphzDesktop.sources.control(
+        "11111111-1111-4111-8111-111111111111",
+        "refresh",
+      ),
+    ),
+    /已停用/,
   );
-  assert.equal(synced.artifacts[0].revision, 2);
-  assert.equal(
-    synced.artifacts[0].content.markdown,
-    "Updated native source text",
+  await assert.rejects(
+    window.evaluate(() =>
+      window.morphzDesktop.files.choose("first-project", "file"),
+    ),
+    /本机文件打开参数无效/,
   );
-  assert.equal(synced.artifacts[0].source.mode, "linked");
-  await importer
-    .getByRole("button", { name: "关闭资料导入", exact: true })
-    .click();
+  const afterSource = await (await fetch(`${origin}/api/workspace`)).json();
+  assert.deepEqual(
+    afterSource.workspace.artifacts,
+    desktop.workspace.artifacts,
+  );
   assert.equal(
     await window.evaluate(() => typeof window.morphzDesktop.sources.readPath),
     "undefined",
@@ -216,13 +206,17 @@ try {
     .setInputFiles("examples/applications/scratchpad.json");
   await window.getByRole("button", { name: "允许并安装" }).click();
   await window
-    .getByRole("button", { name: "工作便笺 1.0.0", exact: true })
+    .getByRole("button", { name: "工作便笺 1.1.0", exact: true })
     .click();
   const application = window.frameLocator('iframe[title="工作便笺应用界面"]');
   await expect(application.locator("#status")).toContainText("已连接");
   await application.locator("#note").fill("真实桌面的独立认知应用");
   await application.getByRole("button", { name: "保存便笺状态" }).click();
   await expect(application.locator("#status")).toContainText("已保存");
+  await application.getByRole("button", { name: "保存为文档" }).click();
+  await expect(application.locator("#status")).toContainText(
+    "文档已保存到工作空间",
+  );
   assert.deepEqual(
     await application.locator("body").evaluate(() => ({
       node: typeof window.require,
@@ -417,6 +411,12 @@ try {
   await expect(
     notifications.getByRole("heading", { name: "通知", exact: true }),
   ).toBeFocused();
+  await expect(
+    notifications.getByRole("group", { name: "提醒范围" }),
+  ).toBeHidden();
+  await notifications
+    .getByRole("button", { name: "通知设置", exact: true })
+    .click();
   const notificationBounds = await notifications.boundingBox();
   assert.ok(
     notificationBounds.x >= 0 &&
@@ -479,17 +479,23 @@ try {
     name: "原生多对话验收的会话",
     exact: true,
   });
+  await expect(projectChats.locator(".conversation-choice")).toHaveCount(0);
+  await window.getByLabel("AI 输入内容").fill("第二对话草稿，不发送");
   await expect(
-    projectChats.getByLabel("打开对话：对话 2", { exact: true }),
+    projectChats.getByLabel("继续草稿：对话 1", { exact: true }),
   ).toHaveAttribute("aria-current", "true");
   await expect(
     window.getByLabel("关闭应用 内容", { exact: true }),
   ).toBeVisible();
-  await window.getByLabel("AI 输入内容").fill("第二对话草稿，不发送");
-  await projectChats.getByLabel("对话操作：对话 2", { exact: true }).click();
-  await window.getByLabel("归档：对话 2", { exact: true }).click();
-  await expect(window.getByLabel("AI 输入内容")).toHaveCount(0);
-  await window.getByRole("button", { name: "恢复对话", exact: true }).click();
+  await projectChats.getByLabel("草稿操作：对话 1", { exact: true }).click();
+  await window.getByLabel("丢弃草稿：对话 1", { exact: true }).click();
+  await expect(
+    projectChats.getByLabel("继续草稿：对话 1", { exact: true }),
+  ).toHaveCount(0);
+  await projectChats
+    .getByRole("button", { name: "已丢弃草稿 · 1", exact: true })
+    .click();
+  await projectChats.getByLabel("恢复草稿：对话 1", { exact: true }).click();
   if (!(await window.getByLabel("AI 输入内容").isVisible()))
     await window.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(window.getByLabel("AI 输入内容")).toHaveValue(
@@ -520,7 +526,7 @@ try {
   );
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   console.log(
-    "PASS: native fixed global dialogue, project conversations, preserved application, archive/restore and independent drafts.",
+    "PASS: native fixed global dialogue, project-local unsent drafts, preserved application, discard/restore and independent drafts.",
   );
   // The global content view reuses actual objects without launching a library
   // application or moving their workspace/conversation ownership.

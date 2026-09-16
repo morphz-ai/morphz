@@ -26,6 +26,52 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
   try {
     const page = await desktop.firstWindow();
     await expect(page.locator(".app")).toBeVisible();
+    // Inspect Chromium's actual native-region CSS as well as DOM clicks:
+    // Playwright's renderer input alone does not exercise macOS hit-testing.
+    for (const [width, zoom] of [
+      [1440, 1],
+      [1000, 1],
+      [1440, 2],
+    ]) {
+      await desktop.evaluate(
+        ({ BrowserWindow }, { width, zoom }) => {
+          const window = BrowserWindow.getAllWindows()[0]!;
+          window.setSize(width, 900);
+          window.webContents.setZoomFactor(zoom);
+        },
+        { width: width!, zoom: zoom! },
+      );
+      const toggle = page.locator(".inspector-toggle");
+      await toggle.click();
+      await expect(page.locator(".inspector-header")).toBeVisible();
+      await expect
+        .poll(async () => {
+          const header = (await page
+            .locator(".inspector-header")
+            .boundingBox())!;
+          const controls = (await page
+            .locator(".workspace-inspector-controls")
+            .boundingBox())!;
+          return header.x + header.width <= controls.x;
+        })
+        .toBe(true);
+      await page.getByRole("button", { name: "切换右栏内容" }).click();
+      const menu = page.getByRole("group", { name: "右栏内容" });
+      const regions = await menu.evaluate((element) => [
+        getComputedStyle(element).getPropertyValue("-webkit-app-region"),
+        getComputedStyle(element, "::backdrop").getPropertyValue(
+          "-webkit-app-region",
+        ),
+      ]);
+      expect(regions).toEqual(["no-drag", "no-drag"]);
+      await toggle.click();
+      await expect(page.locator(".workspace-inspector")).toHaveCount(0);
+    }
+    await desktop.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      window.webContents.setZoomFactor(1);
+      window.setSize(1440, 960);
+    });
     await expect(page.locator("html")).toHaveAttribute(
       "data-native-material",
       /sidebar|solid/,

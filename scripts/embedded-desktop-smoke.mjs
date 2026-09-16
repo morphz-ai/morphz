@@ -155,17 +155,37 @@ try {
   await page
     .getByRole("button", { name: "内嵌 Electron 隔离验收", exact: true })
     .click();
-  await page.getByLabel("工作空间选项").click();
+  // Retained pre-migration PDF compatibility; no new UI import entry.
+  const imported = await page.evaluate(
+    async ({ projectId, data }) => {
+      const bridge = window.morphzDesktop.application;
+      const boot = await bridge.invoke({
+        id: crypto.randomUUID(),
+        method: "workspace",
+      });
+      return bridge.invoke({
+        id: crypto.randomUUID(),
+        method: "pdf.import",
+        identityGeneration: boot.value.csrfToken,
+        params: {
+          commandId: crypto.randomUUID(),
+          projectId,
+          relativePath: "reader.pdf",
+          data: new Uint8Array(data),
+        },
+      });
+    },
+    {
+      projectId: state.first.value.entityId,
+      data: [...readFileSync("tests/fixtures/reader.pdf")],
+    },
+  );
+  assert.equal(imported.ok, true, JSON.stringify(imported));
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
-    .getByRole("button", { name: "资料导入与来源", exact: true })
+    .getByRole("button", { name: "查看本空间内容", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", { name: "导入资料" });
-  await dialog
-    .getByLabel("选择资料文件")
-    .setInputFiles("tests/fixtures/reader.pdf");
-  await dialog.getByRole("button", { name: "导入 1 份资料" }).click();
-  await expect(dialog.getByRole("status")).toHaveText("已导入 1 份");
-  await dialog.getByRole("button", { name: "打开", exact: true }).click();
+  await page.locator(".artifact-card").filter({ hasText: "reader" }).click();
   await expect(page.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
   await expect(page.locator(".pdf-text-layer")).toContainText("合成测试资料");
   await page.getByRole("button", { name: "PDF 下一页" }).click();
@@ -187,39 +207,36 @@ try {
       });
     }, source);
     const projectId = state.first.value.entityId;
-    const grant = await page.evaluate(async (projectId) => {
-      const grants = await window.morphzDesktop.sources.choose(
-        projectId,
-        "file",
-      );
-      return grants[0];
-    }, projectId);
-    await page.evaluate(
-      (id) => window.morphzDesktop.sources.control(id, "resume"),
-      grant.id,
+    const grant = await page.evaluate(
+      (projectId) => window.morphzDesktop.files.choose(projectId, "file"),
+      projectId,
     );
+    assert.equal(grant.text, "Embedded source revision one");
     writeFileSync(source, "Embedded source revision two");
-    await page.evaluate(
-      (id) => window.morphzDesktop.sources.control(id, "refresh"),
-      grant.id,
+    const refreshed = await page.evaluate(
+      ({ projectId, grantId }) =>
+        window.morphzDesktop.files.read({ projectId, grantId, path: "" }),
+      { projectId, grantId: grant.reference.grantId },
     );
+    assert.equal(refreshed.text, "Embedded source revision two");
     const sourceState = await page.evaluate(async () => {
       const result = await window.morphzDesktop.application.invoke({
         id: crypto.randomUUID(),
         method: "workspace",
       });
-      const artifact = result.value.workspace.artifacts.find(
+      return result.value.workspace.artifacts.filter(
         (item) => item.source?.mode === "linked",
-      );
-      return { revision: artifact.revision, body: artifact.content.markdown };
+      ).length;
     });
-    assert.deepEqual(sourceState, {
-      revision: 2,
-      body: "Embedded source revision two",
-    });
+    assert.equal(
+      sourceState,
+      0,
+      "Original file is not imported or synchronized",
+    );
     await page.evaluate(
-      (id) => window.morphzDesktop.sources.control(id, "pause"),
-      grant.id,
+      ({ projectId, grantId }) =>
+        window.morphzDesktop.files.revoke({ projectId, grantId }),
+      { projectId, grantId: grant.reference.grantId },
     );
     // A native third-party view receives a synthetic page in its own session;
     // no application HTTP service or external network is involved.
@@ -384,7 +401,7 @@ try {
     );
   }
   console.log(
-    "Embedded Electron: bundled morphz:// UI, secure preload, direct SQLite, idempotent receipt, real PDF import/render, native read-only source sync, isolated native browser, sandbox iframe, reload storage and close/activate lifecycle passed; no TCP listener.",
+    "Embedded Electron: bundled morphz:// UI, secure preload, direct SQLite, idempotent receipt, retained PDF compatibility/render, native in-place file read without sync, isolated native browser, sandbox iframe, reload storage and close/activate lifecycle passed; no TCP listener.",
   );
 } finally {
   await app?.close();
