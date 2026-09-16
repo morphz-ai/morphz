@@ -15,15 +15,28 @@ import { SelectionActions } from "./SelectionActions.js";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type Pdf = Extract<Content, { kind: "pdf" }>;
-export function PdfAttachment({ url }: { url: string }) {
+export function PdfAttachment({
+  url,
+  data,
+  toolbarTarget,
+}: {
+  url?: string;
+  data?: string;
+  toolbarTarget?: HTMLElement | null;
+}) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null),
     [error, setError] = useState(""),
     [page, setPage] = useState(1);
   const root = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(600);
   useEffect(() => {
+    setPage(1);
+    setError("");
+    setPdf(null);
     const task = getDocument({
-      url,
+      ...(data
+        ? { data: Uint8Array.from(atob(data), (c) => c.charCodeAt(0)) }
+        : { url }),
       cMapUrl: "/pdfjs/cmaps/",
       cMapPacked: true,
       standardFontDataUrl: "/pdfjs/standard_fonts/",
@@ -46,33 +59,41 @@ export function PdfAttachment({ url }: { url: string }) {
       observer.disconnect();
       void task.destroy();
     };
-  }, [url]);
+  }, [url, data]);
+  const controls = pdf && (
+    <div className="pdf-controls">
+      <button
+        disabled={page <= 1}
+        aria-label={toolbarTarget ? "PDF 上一页" : "附件上一页"}
+        onClick={() => setPage(page - 1)}
+      >
+        <ChevronLeft />
+      </button>
+      <span>
+        {page} / {pdf.numPages}
+      </span>
+      <button
+        disabled={page >= pdf.numPages}
+        aria-label={toolbarTarget ? "PDF 下一页" : "附件下一页"}
+        onClick={() => setPage(page + 1)}
+      >
+        <ChevronRight />
+      </button>
+    </div>
+  );
   return (
     <div ref={root}>
       {error ? (
         <p role="alert">{error}</p>
       ) : pdf ? (
         <>
-          <div className="pdf-controls">
-            <button
-              disabled={page <= 1}
-              aria-label="附件上一页"
-              onClick={() => setPage(page - 1)}
-            >
-              <ChevronLeft />
-            </button>
-            <span>
-              {page} / {pdf.numPages}
-            </span>
-            <button
-              disabled={page >= pdf.numPages}
-              aria-label="附件下一页"
-              onClick={() => setPage(page + 1)}
-            >
-              <ChevronRight />
-            </button>
-          </div>
-          <Page key={page} pdf={pdf} number={page} width={width} />
+          {toolbarTarget ? createPortal(controls, toolbarTarget) : controls}
+          <Page
+            key={`${page}:${width}`}
+            pdf={pdf}
+            number={page}
+            width={width}
+          />
         </>
       ) : (
         <p>正在读取 PDF…</p>

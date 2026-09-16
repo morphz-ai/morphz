@@ -10,7 +10,7 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   await page.goto("/");
   const title = "PDF 阅读-" + Date.now();
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("新对象标题").fill(title);
+  await page.getByLabel("项目名称", { exact: true }).fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   // Seed a retained pre-migration PDF, not a new UI import workflow.
   const boot = await (await page.request.get("/api/workspace")).json();
