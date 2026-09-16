@@ -142,6 +142,43 @@ try {
         path: `test-results/content-electron-${width}-${zoom}-${layout}.png`,
       });
     }
+    await page.getByLabel("打开内容：TEST 内容页验收", { exact: true }).click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(
+      "TEST 内容页验收",
+    );
+    await page
+      .getByRole("button", {
+        name: before.projects.find((p) => p.id === "first-project").title,
+        exact: true,
+      })
+      .click();
+    await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+    const recent = page.getByRole("region", { name: "继续工作", exact: true });
+    await expect(
+      recent.getByRole("heading", { name: "继续工作" }),
+    ).toBeVisible();
+    await expect(
+      recent.getByRole("button", { name: "继续打开：TEST 内容页验收" }),
+    ).toBeInViewport();
+    await expect(recent.locator(".workspace-recent-meta")).toContainText(
+      "文档",
+    );
+    await expect(
+      page.getByRole("region", { name: "应用", exact: true }),
+    ).toBeVisible();
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    );
+    await page.reload();
+    await expect(
+      recent.getByRole("button", { name: "继续打开：TEST 内容页验收" }),
+    ).toBeInViewport();
+    await page.screenshot({
+      path: `test-results/workspace-launcher-electron-${width}-${zoom}.png`,
+    });
+    await nav.getByRole("button", { name: "内容", exact: true }).click();
   }
   await page
     .getByLabel("让智能体处理：TEST 内容页验收", { exact: true })
@@ -177,6 +214,7 @@ try {
       metadataUndo: true,
       draftScope: true,
       zoom200: true,
+      launcherRecency: true,
     }),
   );
 } finally {

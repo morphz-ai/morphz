@@ -38,6 +38,7 @@ import {
   inConversation,
   discussionId,
   applicationFor,
+  isContentArtifact,
 } from "../../../packages/core/src/model.js";
 import {
   actorName,
@@ -99,6 +100,7 @@ import { useDesktopAppearance } from "./useDesktopAppearance.js";
 import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
 import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
+import { contentVisits, visitContent } from "./recent-content.js";
 
 type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type InspectorSelection =
@@ -242,6 +244,9 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
 function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
+  const [recentContentVisits, setRecentContentVisits] = useState(() =>
+    contentVisits(readLocal<unknown>("recent-content", [])),
+  );
   // The catalog and its composer share a destination. Keep the existing
   // catalog preference key so returning/reloading restores the same scope.
   const [contentScope, setContentScope] = useState(
@@ -531,6 +536,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     interaction === "recent" ||
     interaction === "history";
   const historyVisible = dialogueCanvas || interaction === "history";
+  function recordContentVisit(id: string) {
+    setRecentContentVisits((previous) => {
+      const next = visitContent(previous, id);
+      try {
+        writeLocal("recent-content", next);
+      } catch {
+        setNotice("最近打开记录暂时无法保存，内容不受影响。");
+      }
+      return next;
+    });
+  }
   const inputPinned = !!prefs.pinnedInputs?.[exchangeKey];
   const keepExchangeOpen = useExchangeFocus({
     root: exchange,
@@ -897,6 +913,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     const generation = ++navigationGeneration.current;
     setOpeningObject(true);
     try {
+      const opened = await client.resolveArtifact(id);
+      if (generation !== navigationGeneration.current) return;
+      if (!opened || opened.projectId !== workspaceId)
+        throw new Error("内容暂时无法读取，请检查连接或访问权限后重试。");
       // Catalog and task navigation are views, not application launches.
       // Keep the workspace's current application intact when reading from them.
       const result = applicationWorkspaceOpen
@@ -931,6 +951,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             }
           : {}),
       });
+      // Only successful explicit opens affect recency. Restoring an old
+      // application when returning to its workspace is not a new file open.
+      if (isContentArtifact(opened)) recordContentVisit(id);
       return navigationGeneration.current;
     } catch (e) {
       setNotice((e as Error).message);
@@ -2077,6 +2100,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
                   activeId={activeId}
+                  recentContentVisits={recentContentVisits}
                   enabled={applicationWorkspaceOpen}
                   onActivate={activateApplication}
                   onOpen={open}

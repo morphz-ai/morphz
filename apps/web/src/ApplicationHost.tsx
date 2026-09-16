@@ -32,8 +32,13 @@ import {
   applicationFor,
   operationSchema,
   spaceKind,
-  isContentArtifact,
 } from "../../../packages/core/src/model.js";
+import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import {
+  recentContent,
+  contentVisitTime,
+  type ContentVisit,
+} from "./recent-content.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
@@ -59,6 +64,7 @@ export function ApplicationHost({
   client,
   workspaceId,
   activeId,
+  recentContentVisits = [],
   children,
   onActivate,
   onOpen,
@@ -77,6 +83,7 @@ export function ApplicationHost({
   client: WorkspaceClient;
   workspaceId: string;
   activeId: string | null;
+  recentContentVisits?: ContentVisit[];
   children: ReactNode;
   onActivate: (id: string | null) => void;
   onOpen: (id: string) => void;
@@ -94,6 +101,11 @@ export function ApplicationHost({
     (i) => i.workspaceId === workspaceId && i.status === "open",
   );
   const active = instances.find((i) => i.id === activeId);
+  const recent = recentContent(
+    recentContentVisits,
+    state.artifacts,
+    workspaceId,
+  );
   const applications = [
     browserApplication,
     ...state.applications.filter(
@@ -301,48 +313,70 @@ export function ApplicationHost({
       {toolbarTarget && createPortal(toolbar, toolbarTarget)}
       {!active && (
         <div className="application-launcher">
-          {state.artifacts.some(
-            (a) => a.projectId === workspaceId && isContentArtifact(a),
-          ) && (
-            <div className="workspace-recent" aria-label="继续工作">
-              {state.artifacts
-                .filter(
-                  (a) => a.projectId === workspaceId && isContentArtifact(a),
-                )
-                .slice(-4)
-                .reverse()
-                .map((a) => (
-                  <button key={a.id} onClick={() => onOpen(a.id)}>
-                    <FileText />
-                    <span>{a.title}</span>
-                  </button>
-                ))}
+          <section className="workspace-section" aria-label="继续工作">
+            <div className="workspace-section-heading">
+              <h2>继续工作</h2>
+              <span>最近打开的内容</span>
             </div>
-          )}
-          <div
-            className="application-grid"
-            role="list"
-            aria-label="应用列表"
-            aria-busy={busy}
-          >
-            {applications.map((app) => (
-              <div role="listitem" key={`${app.id}@${app.version}`}>
-                <button
-                  type="button"
-                  className="application-tile"
-                  aria-label={`${app.title} ${app.version}`}
-                  disabled={busy}
-                  onClick={() => void launch(app)}
-                >
-                  <span className="application-icon">
-                    <AppIcon app={app} />
-                  </span>
-                  <strong>{app.title}</strong>
-                  <small>{app.description}</small>
-                </button>
-              </div>
-            ))}
-          </div>
+            {recent.length ? (
+              <ul className="workspace-recent" aria-label="最近打开的内容">
+                {recent.map(({ artifact: a, openedAt }) => (
+                  <li key={a.id}>
+                    <button
+                      type="button"
+                      onClick={() => onOpen(a.id)}
+                      aria-label={`继续打开：${a.title}`}
+                      title={`${a.title} · ${kindLabel[a.content.kind]} · ${contentVisitTime(openedAt)} 打开`}
+                    >
+                      <ObjectIcon kind={a.content.kind} />
+                      <span className="workspace-recent-text">
+                        <span className="workspace-recent-title">
+                          {a.title}
+                        </span>
+                        <span className="workspace-recent-meta">
+                          <span>{kindLabel[a.content.kind]}</span>
+                          <time dateTime={new Date(openedAt).toISOString()}>
+                            {contentVisitTime(openedAt)}
+                          </time>
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="workspace-recent-empty">暂无最近打开的内容</p>
+            )}
+          </section>
+          <section className="workspace-section" aria-label="应用">
+            <div className="workspace-section-heading">
+              <h2>应用</h2>
+            </div>
+            <div
+              className="application-grid"
+              role="list"
+              aria-label="应用列表"
+              aria-busy={busy}
+            >
+              {applications.map((app) => (
+                <div role="listitem" key={`${app.id}@${app.version}`}>
+                  <button
+                    type="button"
+                    className="application-tile"
+                    aria-label={`${app.title} ${app.version}`}
+                    disabled={busy}
+                    onClick={() => void launch(app)}
+                  >
+                    <span className="application-icon">
+                      <AppIcon app={app} />
+                    </span>
+                    <strong>{app.title}</strong>
+                    <small>{app.description}</small>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
       )}
       {instances.map((instance) => {
