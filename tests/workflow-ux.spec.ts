@@ -292,7 +292,9 @@ test("notification settings are not list filters and dialog centers in content",
   const dialog = page.getByRole("dialog", { name: "通知", exact: true });
   await expect(dialog.getByRole("radio")).toHaveCount(0);
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
-  await expect(dialog.getByRole("radio")).toHaveCount(3);
+  await expect(dialog.getByRole("radio")).toHaveCount(2);
+  await expect(dialog.getByRole("radio", { name: "全部提醒" })).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "不提示" })).toBeVisible();
   const content = await page.locator(".workspace").boundingBox();
   const bounds = await dialog.boundingBox();
   expect(

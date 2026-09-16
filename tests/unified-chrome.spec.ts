@@ -75,7 +75,7 @@ test("页面标题与操作共用顶栏，内容无第二层标题区；窄窗�
       .getByLabel("搜索项目", { exact: true })
       .fill("不存在的项目-单层界面");
     await expect(
-      page.getByRole("heading", { name: "没有找到这个项目" }),
+      page.getByRole("heading", { name: "在使用中项目中未找到结果" }),
     ).toBeVisible();
     await connected();
     await bar.getByLabel("搜索项目", { exact: true }).clear();
