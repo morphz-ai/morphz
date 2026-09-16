@@ -70,7 +70,7 @@ test("负责人、状态、日期与搜索分开；详情返回及刷新保留�
   await expect(list.getByRole("checkbox", { name: /等待交接/ })).toHaveCount(0);
   await page
     .getByRole("group", { name: "事项负责人", exact: true })
-    .getByRole("button", { name: "Agent", exact: true })
+    .getByRole("button", { name: "智能体", exact: true })
     .click();
   await expect(list.locator(".task-row")).toHaveCount(2);
   await expect(list.getByRole("checkbox")).toHaveCount(0);
@@ -164,6 +164,9 @@ test("失败不假装完成；窄窗筛选可操作且无溢出", async ({ page 
     await expect(trigger).toBeVisible();
     await trigger.click();
     const panel = page.getByRole("group", { name: "筛选事项", exact: true });
+    await expect(
+      panel.getByLabel("事项负责人筛选").locator('option[value="agent"]'),
+    ).toHaveText("智能体");
     await panel.getByLabel("事项负责人筛选").selectOption("all");
     await panel.getByLabel("事项状态筛选").selectOption("open");
     await expect(panel.getByLabel("搜索事项")).toHaveValue(prefix);
@@ -283,7 +286,7 @@ test("等待明确指向前置事项；失败与未完成交付不混入等待�
   await page.reload();
   await page
     .getByRole("group", { name: "事项负责人", exact: true })
-    .getByRole("button", { name: "Agent", exact: true })
+    .getByRole("button", { name: "智能体", exact: true })
     .click();
   await page
     .getByLabel("事项状态筛选")
@@ -440,7 +443,7 @@ test("Agent 待确认卡片突出审批且保留停止，打开记录不自动�
   await page.reload();
   await page
     .getByRole("group", { name: "事项负责人", exact: true })
-    .getByRole("button", { name: "Agent", exact: true })
+    .getByRole("button", { name: "智能体", exact: true })
     .click();
   await page.getByRole("button", { name: "看板视图", exact: true }).click();
   const row = page.locator(`[data-task-id="${agent}"]`);
@@ -533,7 +536,7 @@ test("失败执行保留记录和重试，重试请求失败不伪装成功；�
   await page.reload();
   await page
     .getByRole("group", { name: "事项负责人", exact: true })
-    .getByRole("button", { name: "Agent", exact: true })
+    .getByRole("button", { name: "智能体", exact: true })
     .click();
   await page
     .getByRole("button", {

@@ -77,7 +77,7 @@ export function TaskRunPanel({
     icon: <Play />,
     disabled: busy || !connected,
     title: !connected
-      ? "连接 Agent 后可以开始执行"
+      ? "连接智能体后可以开始执行"
       : "按当前事项开始一次新的执行，已有结果保留",
     onSelect: () =>
       void perform(() =>

@@ -12,7 +12,7 @@ import {
 export type TaskArtifact = Artifact & { content: TaskContent };
 export const taskOwners = {
   mine: "我的",
-  agent: "Agent",
+  agent: "智能体",
   all: "全部",
 } as const;
 export const taskStates = {

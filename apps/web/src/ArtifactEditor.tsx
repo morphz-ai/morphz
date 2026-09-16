@@ -766,7 +766,7 @@ export function TaskFields({
             .filter((a) => members.includes(a.principalId))
             .map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} · {a.kind === "human" ? "人" : "Agent"}
+                {a.name} · {a.kind === "human" ? "人" : "智能体"}
               </option>
             ))}
         </select>
