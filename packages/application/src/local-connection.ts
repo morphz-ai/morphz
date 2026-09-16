@@ -43,7 +43,7 @@ export class LocalApplicationConnection {
     const identity = this.application.options.identity;
     const authentication = identity?.authenticate(this.cookie);
     if (identity && !authentication)
-      throw new AuthenticationRequired("请连接中心，或重新验证已失效的身份。");
+      throw new AuthenticationRequired("请登录后继续操作。");
     return authentication;
   }
   private session(expected?: string) {

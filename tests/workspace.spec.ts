@@ -154,7 +154,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   }
   expect(errors).toEqual([]);
 });
-test("多端旧版本冲突不会覆盖中心，草稿刷新后恢复", async ({
+test("多端旧版本冲突不会覆盖已保存内容，草稿刷新后恢复", async ({
   page,
   context,
 }) => {
@@ -182,6 +182,12 @@ test("多端旧版本冲突不会覆盖中心，草稿刷新后恢复", async ({
   await expect(other.locator(".conflict-banner")).toBeVisible({
     timeout: 8000,
   });
+  await expect(other.locator(".conflict-banner")).toContainText(
+    "当前已保存 v2",
+  );
+  await expect(other.locator(".conflict-banner")).not.toContainText("中心");
+  await other.getByText("对照最新内容", { exact: true }).click();
+  await expect(other.locator(".conflict-banner")).toContainText("第一端保存");
   await expect(other.getByLabel("文档正文")).toHaveValue("第二端的未保存草稿");
   await expect(other.getByRole("button", { name: "保存版本" })).toBeDisabled();
   other.on("dialog", (dialog) => void dialog.accept());
@@ -208,7 +214,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await expect(
     page.locator(".primary-panel").getByRole("log", { name: "对话消息" }),
   ).toContainText("请围绕这个对象继续讨论。");
-  await expect(page.locator(".model-status")).toContainText("Agent 未连接");
+  await expect(page.locator(".model-status")).toContainText("尚未连接智能体");
   await expect(page.locator(".runtime-notice")).toHaveCount(0);
   await page.getByRole("button", { name: "展开批注栏" }).click();
   await expect(

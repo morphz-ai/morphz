@@ -31,6 +31,9 @@ import {
   SquareBottomDashedScissors,
   Brain,
   ListChecks,
+  Settings2,
+  UserRound,
+  LogOut,
 } from "lucide-react";
 import {
   inboxFor,
@@ -50,6 +53,7 @@ import {
 import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
+import { ModelSettingsDialog } from "./ModelSettings.js";
 import {
   inputIntents,
   type InputIntent,
@@ -180,14 +184,14 @@ const labels: Record<View, string> = {
 };
 export function App() {
   const client = useWorkspace();
-  if (client.authenticationRequired) return <CenterLogin client={client} />;
+  if (client.authenticationRequired) return <WorkspaceLogin client={client} />;
   if (!client.boot)
     return (
       <main className="connection-screen">
         <BrandMark />
         <h1>Morphz</h1>
-        <p>{client.error || "正在连接中心…"}</p>
-        <button onClick={() => void client.refresh()}>重新连接</button>
+        <p>{client.error || "正在打开工作空间…"}</p>
+        <button onClick={() => void client.refresh()}>重试</button>
       </main>
     );
   storageScope(client.boot.centerId, client.boot.principalId);
@@ -198,14 +202,18 @@ export function App() {
     />
   );
 }
-function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
+function WorkspaceLogin({
+  client,
+}: {
+  client: ReturnType<typeof useWorkspace>;
+}) {
   const [token, setToken] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   return (
     <main className="connection-screen">
       <BrandMark />
-      <h1>连接工作中心</h1>
+      <h1>登录 Morphz</h1>
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -215,14 +223,14 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
             await client.login(token.trim());
             setToken("");
           } catch (e) {
-            setError(e instanceof Error ? e.message : "连接失败。");
+            setError(e instanceof Error ? e.message : "登录失败，请重试。");
           } finally {
             setBusy(false);
           }
         }}
       >
         <label>
-          连接凭据
+          登录凭据
           <input
             autoFocus
             type="password"
@@ -233,9 +241,10 @@ function CenterLogin({ client }: { client: ReturnType<typeof useWorkspace> }) {
             maxLength={128}
           />
         </label>
+        <p>使用管理员提供的登录凭据，不是模型 API Key。</p>
         {error && <p role="alert">{error}</p>}
         <button className="button primary" disabled={busy || !token.trim()}>
-          {busy ? "连接中…" : "连接"}
+          {busy ? "登录中…" : "登录"}
         </button>
       </form>
     </main>
@@ -274,6 +283,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [speechRecording, setSpeechRecording] = useState(false);
   const [notice, setNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
+    [modelSettingsOpen, setModelSettingsOpen] = useState(false),
     [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
     [uploadingDrafts, setUploadingDrafts] = useState<Record<string, boolean>>(
       {},
@@ -558,6 +568,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       !!speech ||
       !!capture ||
       searchOpen ||
+      connectionOpen ||
+      modelSettingsOpen ||
       !!creating ||
       !!executions ||
       directoryPickerScope === directoryScope ||
@@ -1327,7 +1339,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           !client.boot?.capabilities.conversationOnFirstInput
         )
           throw new Error(
-            "工作中心需要更新后才能开始新会话；草稿已保留，现有会话仍可使用。",
+            "当前版本不支持新建会话，请更新应用；草稿已保留，现有会话仍可使用。",
           );
         const receipt = await client.execute(
           {
@@ -1443,7 +1455,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return (
       <div className="startup">
         <h1>Morphz</h1>
-        <p>{client.error ? "暂时无法连接本机中心。" : "正在打开工作空间…"}</p>
+        <p>
+          {client.error
+            ? "暂时无法打开工作空间，请重试。"
+            : "正在打开工作空间…"}
+        </p>
         {client.error && (
           <>
             <button onClick={() => void client.refresh()}>
@@ -1618,6 +1634,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       />
     </div>
   );
+  const connectionLabel = !client.online
+    ? "应用连接中断"
+    : client.boot!.runtime.connected
+      ? "智能体已连接"
+      : client.boot!.runtime.configured
+        ? "智能体连接异常"
+        : "智能体未连接";
+  const identityLabel = actorName(state, client.boot!.actantId);
+  const connected = client.online && client.boot!.runtime.connected;
   return (
     <div
       className={
@@ -1708,21 +1733,54 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               )}
             </div>
             <Notifications client={client} onOpen={openUser} />
+            <button
+              className="icon-button connection-compact"
+              aria-label="连接详情"
+              title={`${identityLabel} · ${connectionLabel}`}
+              onClick={() => setConnectionOpen(true)}
+            >
+              <UserRound />
+              <span className="presence-dot" data-online={connected} />
+            </button>
+            {client.boot!.capabilities.modelSettings && (
+              <button
+                className="icon-button model-settings-compact"
+                aria-label="模型与账号"
+                title="模型与账号"
+                onClick={() => setModelSettingsOpen(true)}
+              >
+                <Settings2 />
+              </button>
+            )}
+            {client.boot!.capabilities.teamAuthentication && (
+              <button
+                className="icon-button identity-compact"
+                aria-label="退出当前身份"
+                title="退出当前身份"
+                onClick={() =>
+                  void client.logout().catch((e) => setNotice(e.message))
+                }
+              >
+                <LogOut />
+              </button>
+            )}
           </div>
         </div>
-        <div className="space-label">{state.name}</div>
-        <button
-          className="sidebar-search"
-          onClick={() => setSearchOpen(true)}
-          aria-label="搜索资料"
-        >
-          <Search />
-          <span>搜索</span>
-          <kbd>{mac ? "⌘K" : "Ctrl+K"}</kbd>
-        </button>
-        <nav aria-label="主导航">
-          {(["dialogue", "inbox", "content", "desk", "projects"] as View[]).map(
-            (view) => {
+        <div className="sidebar-navigation">
+          <div className="space-label">{state.name}</div>
+          <button
+            className="sidebar-search"
+            onClick={() => setSearchOpen(true)}
+            aria-label="搜索资料"
+          >
+            <Search />
+            <span>搜索</span>
+            <kbd>{mac ? "⌘K" : "Ctrl+K"}</kbd>
+          </button>
+          <nav aria-label="主导航">
+            {(
+              ["dialogue", "inbox", "content", "desk", "projects"] as View[]
+            ).map((view) => {
               const Icon = {
                 dialogue: MessageCircle,
                 inbox: Inbox,
@@ -1741,131 +1799,156 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   {view === "inbox" && <small>{tasks.length}</small>}
                 </button>
               );
-            },
-          )}
-        </nav>
-        <div className="sidebar-section">
-          <div className="section-label">
-            项目
-            <button
-              aria-label="新建项目"
-              onClick={() => setCreating("project")}
-            >
-              <Plus />
-            </button>
-          </div>
-          {state.projects
-            .filter(
-              (p) =>
-                spaceKind(p) === "project" && projectStatus(p) === "active",
-            )
-            .sort(
-              (a, b) =>
-                projectActivity(
-                  state,
-                  b,
-                  client.boot!.runtime.messages,
-                ).localeCompare(
-                  projectActivity(state, a, client.boot!.runtime.messages),
-                ) || a.title.localeCompare(b.title, "zh-CN"),
-            )
-            .map((p) => (
-              <ProjectConversations
-                key={p.id}
-                client={client}
-                projectId={p.id}
-                title={p.title}
-                active={
-                  prefs.view === "projects" &&
-                  prefs.projectOpen &&
-                  navigationProject?.id === p.id
-                }
-                selectedId={conversationId}
-                startedIds={startedConversations}
-                drafts={[
-                  ...state.conversations.filter(
-                    (c) =>
-                      c.projectId === p.id &&
-                      c.id !== p.id &&
-                      !startedConversations.has(c.id) &&
-                      hasConversationDraft(c.id),
-                  ),
-                  ...Object.values(conversationDrafts).filter(
-                    (c) =>
-                      c.projectId === p.id &&
-                      !startedConversations.has(c.id) &&
-                      hasConversationDraft(c.id),
-                  ),
-                ]}
-                defaultConversationId={
-                  sharedDefault ? defaultConversation! : p.id
-                }
-                onOpen={() => openProject(p.id)}
-                onSelect={(id) => selectConversation(p.id, id)}
-                onCreate={(title) => createProjectConversation(p.id, title)}
-                onManage={manageProject}
-                onDiscardDraft={discardConversationDraft}
-                discardedDrafts={Object.values(discardedDrafts)
-                  .filter((d) => d.conversation.projectId === p.id)
-                  .map((d) => d.conversation)}
-                onRestoreDraft={restoreConversationDraft}
-              />
-            ))}
-          {state.projects.some((p) => p.deletedAt || p.archivedAt) && (
-            <button
-              className="project-archive-directory"
-              onClick={() => {
-                writeLocal("project-directory", {
-                  query: "",
-                  sort: "recent",
-                  status: state.projects.some(
-                    (p) => p.archivedAt && !p.deletedAt,
-                  )
-                    ? "archived"
-                    : "deleted",
-                });
-                setProjectDirectoryVersion((v) => v + 1);
-                navigate("projects");
-              }}
-            >
-              已归档 / 已删除
-            </button>
-          )}
-        </div>
-        <div className="sidebar-bottom">
-          <span className="avatar">我</span>
-          <div>
-            {actorName(state, client.boot!.actantId)}
-            <small>
-              <span className="presence-dot" data-online={client.online} />
+            })}
+          </nav>
+          <div className="sidebar-section">
+            <div className="section-label">
+              项目
               <button
-                className="connection-summary"
-                aria-label="连接详情"
-                onClick={() => setConnectionOpen(true)}
+                aria-label="新建项目"
+                onClick={() => setCreating("project")}
               >
-                {client.online ? "工作中心已连接" : "工作中心已断开"}
+                <Plus />
               </button>
-              {!client.online && (
+            </div>
+            <div className="sidebar-project-list">
+              {state.projects
+                .filter(
+                  (p) =>
+                    spaceKind(p) === "project" && projectStatus(p) === "active",
+                )
+                .sort(
+                  (a, b) =>
+                    projectActivity(
+                      state,
+                      b,
+                      client.boot!.runtime.messages,
+                    ).localeCompare(
+                      projectActivity(state, a, client.boot!.runtime.messages),
+                    ) || a.title.localeCompare(b.title, "zh-CN"),
+                )
+                .map((p) => (
+                  <ProjectConversations
+                    key={p.id}
+                    client={client}
+                    projectId={p.id}
+                    title={p.title}
+                    active={
+                      prefs.view === "projects" &&
+                      prefs.projectOpen &&
+                      navigationProject?.id === p.id
+                    }
+                    selectedId={conversationId}
+                    startedIds={startedConversations}
+                    drafts={[
+                      ...state.conversations.filter(
+                        (c) =>
+                          c.projectId === p.id &&
+                          c.id !== p.id &&
+                          !startedConversations.has(c.id) &&
+                          hasConversationDraft(c.id),
+                      ),
+                      ...Object.values(conversationDrafts).filter(
+                        (c) =>
+                          c.projectId === p.id &&
+                          !startedConversations.has(c.id) &&
+                          hasConversationDraft(c.id),
+                      ),
+                    ]}
+                    defaultConversationId={
+                      sharedDefault ? defaultConversation! : p.id
+                    }
+                    onOpen={() => openProject(p.id)}
+                    onSelect={(id) => selectConversation(p.id, id)}
+                    onCreate={(title) => createProjectConversation(p.id, title)}
+                    onManage={manageProject}
+                    onDiscardDraft={discardConversationDraft}
+                    discardedDrafts={Object.values(discardedDrafts)
+                      .filter((d) => d.conversation.projectId === p.id)
+                      .map((d) => d.conversation)}
+                    onRestoreDraft={restoreConversationDraft}
+                  />
+                ))}
+              {state.projects.some((p) => p.deletedAt || p.archivedAt) && (
                 <button
-                  className="icon-button"
-                  aria-label="重新连接工作中心"
-                  title="重新连接"
-                  onClick={() => void client.refresh()}
+                  className="project-archive-directory"
+                  onClick={() => {
+                    writeLocal("project-directory", {
+                      query: "",
+                      sort: "recent",
+                      status: state.projects.some(
+                        (p) => p.archivedAt && !p.deletedAt,
+                      )
+                        ? "archived"
+                        : "deleted",
+                    });
+                    setProjectDirectoryVersion((v) => v + 1);
+                    navigate("projects");
+                  }}
                 >
-                  <RefreshCw />
+                  已归档 / 已删除
                 </button>
               )}
-            </small>
+            </div>
           </div>
-          {client.boot?.capabilities.teamAuthentication && (
+        </div>
+        <div className="sidebar-bottom">
+          <div className="sidebar-identity-row">
             <button
-              title="退出当前身份"
-              className="icon-button"
-              onClick={() =>
-                void client.logout().catch((e) => setNotice(e.message))
-              }
+              className="connection-summary"
+              aria-label="连接详情"
+              title={`${identityLabel} · ${connectionLabel} · 查看连接详情`}
+              onClick={() => setConnectionOpen(true)}
             >
-              <X size={16} />
+              <span className="avatar" aria-hidden="true">
+                <UserRound />
+              </span>
+              <span className="sidebar-identity">
+                <span className="sidebar-identity-name">{identityLabel}</span>
+                <span className="sidebar-connection-state">
+                  <span className="presence-dot" data-online={connected} />
+                  <span>{connectionLabel}</span>
+                </span>
+              </span>
+              <ChevronRight
+                className="sidebar-entry-chevron"
+                aria-hidden="true"
+              />
+            </button>
+            {!client.online && (
+              <button
+                className="icon-button"
+                aria-label="重新连接应用"
+                title="重新连接"
+                onClick={() => void client.refresh()}
+              >
+                <RefreshCw />
+              </button>
+            )}
+            {client.boot!.capabilities.teamAuthentication && (
+              <button
+                aria-label="退出当前身份"
+                title="退出当前身份"
+                className="icon-button"
+                onClick={() =>
+                  void client.logout().catch((e) => setNotice(e.message))
+                }
+              >
+                <LogOut />
+              </button>
+            )}
+          </div>
+          {client.boot!.capabilities.modelSettings && (
+            <button
+              className="sidebar-model-settings"
+              onClick={() => setModelSettingsOpen(true)}
+            >
+              <Settings2 />
+              <span>模型与账号</span>
+              <ChevronRight
+                className="sidebar-entry-chevron"
+                aria-hidden="true"
+              />
             </button>
           )}
         </div>
@@ -2428,12 +2511,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               !client.boot!.runtime.connected)) && (
                             <small className="model-status">
                               {!client.online
-                                ? "工作中心已断开"
+                                ? "应用连接中断"
                                 : draft.taskResult
-                                  ? `${actorName(state, client.boot!.actantId)} · 提交到工作中心`
+                                  ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
                                   : client.boot!.runtime.configured
-                                    ? "连接中 · 消息将保留并排队"
-                                    : "Agent 未连接"}
+                                    ? client.boot!.runtime.error
+                                      ? "智能体连接异常 · 消息已保留"
+                                      : "正在连接智能体"
+                                    : "尚未连接智能体 · 输入只会保存"}
                               {(!client.online || !draft.taskResult) && (
                                 <button
                                   className="text-button"
@@ -2903,6 +2988,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         <ConnectionDetails
           client={client}
           onClose={() => setConnectionOpen(false)}
+        />
+      )}
+      {modelSettingsOpen && (
+        <ModelSettingsDialog
+          onChanged={() => void client.refresh()}
+          onClose={() => setModelSettingsOpen(false)}
         />
       )}
       {speech &&

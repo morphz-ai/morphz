@@ -148,7 +148,7 @@ export function createAppServer(
       ) {
         json(res, 401, {
           code: "authentication_required",
-          message: "请连接中心，或重新验证已失效的身份。",
+          message: "请登录后继续操作。",
         });
         return;
       }
@@ -199,6 +199,15 @@ export function createAppServer(
       const task = /^\/api\/tasks\/([a-zA-Z0-9_-]+)\/runtime$/.exec(
         url.pathname,
       );
+      if (
+        ["/api/model-settings/read", "/api/model-settings/update"].includes(
+          url.pathname,
+        )
+      )
+        throw new DomainError(
+          "forbidden",
+          "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
+        );
       if (req.method === "GET") {
         if (url.pathname === "/api/health") {
           json(res, 200, {
@@ -403,6 +412,39 @@ export function createAppServer(
               ),
             );
           json(res, 200, { disconnected: true });
+          return;
+        }
+        if (
+          ["/api/connection/check", "/api/connection/configure"].includes(
+            url.pathname,
+          )
+        ) {
+          const controller = new AbortController();
+          const abort = () => {
+            if (!res.writableEnded) controller.abort();
+          };
+          req.on("aborted", abort);
+          res.on("close", abort);
+          try {
+            // HTTP callers may inspect, but never reconfigure a host's local credentials.
+            if (url.pathname.endsWith("configure"))
+              throw new DomainError(
+                "forbidden",
+                "请在本机 Morphz 中设置连接；远端中心请联系管理员。",
+              );
+            const result = await business.connectionDetails(controller.signal);
+            if (!controller.signal.aborted)
+              json(res, 200, {
+                ...result,
+                configurable: false,
+                endpoint: undefined,
+                version: undefined,
+                modelSettingsAvailable: undefined,
+              });
+          } finally {
+            req.off("aborted", abort);
+            res.off("close", abort);
+          }
           return;
         }
         if (url.pathname === "/api/notifications") {

@@ -218,8 +218,7 @@ export default function PdfReader({
         if (!stopped) setPdf(value);
       })
       .catch(() => {
-        if (!stopped)
-          setError("PDF 原文件暂时无法读取，请检查中心连接后重新打开。");
+        if (!stopped) setError("PDF 原文件暂时无法读取，请重试或重新打开。");
       });
     const observer = new ResizeObserver((entries) => {
       const available = Math.floor(entries[0]?.contentRect.width ?? 600);

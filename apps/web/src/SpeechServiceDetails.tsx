@@ -29,8 +29,8 @@ export function SpeechServiceDetails({
       <p>
         {status
           ? status.configured
-            ? `当前服务：${status.providerLabel || (status.provider === "doubao" ? "豆包" : status.provider) || "工作中心配置的语音服务"}。`
-            : "工作中心尚未配置语音服务。"
+            ? `当前服务：${status.providerLabel || (status.provider === "doubao" ? "豆包" : status.provider) || "已配置的语音服务"}。`
+            : "尚未配置语音服务。"
           : failed
             ? "暂时无法读取服务信息。"
             : "正在读取服务信息…"}

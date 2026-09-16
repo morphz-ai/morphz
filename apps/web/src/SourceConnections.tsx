@@ -151,7 +151,7 @@ export default function SourceConnections({
                 onClick={() => {
                   if (
                     window.confirm(
-                      "断开来源并停止读取？中心已保存的版本和批注会保留。",
+                      "断开来源并停止读取？已保存的版本和批注会保留。",
                     )
                   )
                     void run(() => api.control(source.id, "remove"));

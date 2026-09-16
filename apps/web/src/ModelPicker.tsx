@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Brain } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
 import {
@@ -33,6 +33,14 @@ export function ModelPicker({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [error, setError] = useState("");
   const [attempt, retry] = useState(0);
+  const picker = useRef<HTMLDivElement>(null);
+  const select = useRef<HTMLSelectElement>(null);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const refresh = () => retry((value) => value + 1);
+    window.addEventListener("morphz:models-changed", refresh);
+    return () => window.removeEventListener("morphz:models-changed", refresh);
+  }, []);
   useEffect(() => {
     if (disabled) return;
     const controller = new AbortController();
@@ -48,6 +56,15 @@ export function ModelPicker({
       });
     return () => controller.abort();
   }, [attempt, disabled]);
+  useLayoutEffect(() => {
+    // Retry removes its own button while loading. Keep focus inside this
+    // stable control so an unpinned composer does not collapse; never steal
+    // focus if the user has moved elsewhere while the request was pending.
+    if (document.activeElement !== picker.current) return;
+    if (error) retryButton.current?.focus({ preventScroll: true });
+    else if (catalog && !disabled)
+      select.current?.focus({ preventScroll: true });
+  }, [catalog, error, disabled]);
   const selected = catalog?.options.find(
     (m) => m.id === (value || catalog.current),
   );
@@ -60,10 +77,15 @@ export function ModelPicker({
     : catalog?.current || current || "默认模型";
   return (
     <>
-      <div className={`model-picker${compact ? " model-picker-compact" : ""}`}>
+      <div
+        ref={picker}
+        tabIndex={-1}
+        className={`model-picker${compact ? " model-picker-compact" : ""}`}
+      >
         <label>
           {!compact && label}
           <select
+            ref={select}
             aria-label={label}
             title={
               compact
@@ -92,7 +114,14 @@ export function ModelPicker({
         {error && (
           <small role="alert">
             模型列表暂不可用。
-            <button onClick={() => retry(attempt + 1)} title={error}>
+            <button
+              ref={retryButton}
+              onClick={() => {
+                picker.current?.focus({ preventScroll: true });
+                retry(attempt + 1);
+              }}
+              title={error}
+            >
               重试
             </button>
           </small>
@@ -112,9 +141,15 @@ export function ModelPicker({
         <label
           className="composer-reasoning"
           title={
-            catalog?.reasoning
-              ? "仅用于下一次发送；默认沿用 Runtime 设置。实际支持以所选模型为准。"
-              : "工作中心尚未接通推理设置，请更新中心后重试。"
+            disabled
+              ? "连接智能体后可设置推理强度。"
+              : error
+                ? "暂时无法读取模型设置，请重试。"
+                : !catalog
+                  ? "正在读取模型设置…"
+                  : !catalog.reasoning
+                    ? "当前运行服务不支持推理强度设置。"
+                    : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。"
           }
         >
           <Brain aria-hidden="true" />

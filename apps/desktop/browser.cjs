@@ -33,13 +33,13 @@ class DesktopBrowser {
     const r = await this.request(this.centerURL + "/api/workspace", {
       signal: AbortSignal.timeout(4000),
     });
-    if (!r.ok) throw new Error("中心未连接。");
+    if (!r.ok) throw new Error("暂时无法读取应用数据，请重试。");
     return r.json();
   }
   async post(path, body, c) {
     const boot = await this.boot();
     if (boot.centerId !== c.centerId || boot.principalId !== c.principalId)
-      throw new Error("中心或身份已变化，请重新打开网站。");
+      throw new Error("工作空间或登录身份已变化，请重新打开网站。");
     if (this.application) {
       const method =
         path === "/api/browser/desktop/register"
@@ -70,7 +70,7 @@ class DesktopBrowser {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(4000),
     });
-    if (!r.ok) throw new Error("浏览器与中心的连接失效，请关闭后重新打开。");
+    if (!r.ok) throw new Error("浏览器与应用的连接失效，请关闭后重新打开。");
     return r.json();
   }
   async open(target) {

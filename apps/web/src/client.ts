@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import {
+  connectionDetailsSchema,
+  type ConfigureConnection,
+} from "../../../packages/core/src/connection.js";
 import { taskRuntimeSchema } from "../../../packages/core/src/task-runtime.js";
 import {
   migrateLegacyLocalState,
@@ -47,6 +51,7 @@ const bootSchema = z.object({
     conversationOnFirstInput: z.boolean().default(false),
     localFiles: z.boolean().default(false),
     agentDirectories: z.boolean().default(false),
+    modelSettings: z.boolean().default(false),
     taskCompletion: z.boolean().default(false),
   }),
   runtime: conversationRuntimeSchema.default(disconnectedRuntime),
@@ -166,7 +171,9 @@ export function useWorkspace() {
           setAuthenticationRequired(true);
         }
         setOnline(false);
-        setError(e instanceof Error ? e.message : "无法连接中心。");
+        setError(
+          e instanceof Error ? e.message : "暂时无法读取应用数据，请重试。",
+        );
       } finally {
         refreshing.current = null;
       }
@@ -230,7 +237,7 @@ export function useWorkspace() {
     applicationInstanceId?: string,
     externalCommandId?: string,
   ): Promise<Receipt> {
-    if (!current.current) throw new Error("请先连接本机中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     const identity = current.current,
       scope = `${identity.centerId}:${identity.principalId}`,
       { readLocal, writeLocal } = scopedStorage(scope);
@@ -288,7 +295,7 @@ export function useWorkspace() {
     }
   }
   async function upload(file: File) {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     if (file.size > 6 * 1024 * 1024) throw new Error("图片不能超过 6 MB。");
     const identityGeneration = current.current.csrfToken;
     return applicationCall("asset.add", await file.arrayBuffer(), {
@@ -297,7 +304,7 @@ export function useWorkspace() {
     }) as Promise<{ assetId: string; mime: string }>;
   }
   async function uploadAttachment(file: File) {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     if (file.size > 20 * 1024 * 1024) throw new Error("附件不能超过 20 MB。");
     const identityGeneration = current.current.csrfToken;
     return applicationCall(
@@ -314,7 +321,7 @@ export function useWorkspace() {
     projectId: string,
     relativePath: string,
   ): Promise<Receipt> {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     if (file.size > maxPdfBytes) throw new Error("PDF 不能超过 20 MB。");
     const identity = current.current,
       { readLocal, writeLocal } = scopedStorage(
@@ -350,7 +357,7 @@ export function useWorkspace() {
     return receipt;
   }
   async function dispatchInput(inputId: string) {
-    if (!current.current) throw new Error("请先连接本机中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     await applicationCall("input.send", inputId, {
       identityGeneration: current.current.csrfToken,
       signal: AbortSignal.timeout(8000),
@@ -368,7 +375,7 @@ export function useWorkspace() {
       throw new Error("事项不可用或已无访问权限。");
   }
   async function cancelInput(inputId: string) {
-    if (!current.current) throw new Error("请先连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     await applicationCall("input.cancel", inputId, {
       identityGeneration: current.current.csrfToken,
       signal: AbortSignal.timeout(8000),
@@ -399,7 +406,7 @@ export function useWorkspace() {
       action: "pause" | "resume" | "cancel" | "stop";
     },
   ) {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     return applicationCall(
       control ? "task.control" : "task.snapshot",
       control ? { id: taskId, ...control } : taskId,
@@ -425,7 +432,7 @@ export function useWorkspace() {
       );
   }
   async function controlExecution(command: ExecutionControl) {
-    if (!current.current) throw new Error("请先连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     if (
       command.action.type === "allow-once" ||
       command.action.type === "deny"
@@ -465,7 +472,7 @@ export function useWorkspace() {
     wav: Blob,
     signal: AbortSignal,
   ) {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     const identityGeneration = current.current.csrfToken;
     return z
       .object({ text: z.string().max(30000) })
@@ -482,7 +489,7 @@ export function useWorkspace() {
     text: string,
     signal: AbortSignal,
   ) {
-    if (!current.current) throw new Error("尚未连接中心。");
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     const data = await applicationCall(
       "speech.synthesize",
       { scope, text },
@@ -497,7 +504,7 @@ export function useWorkspace() {
         | { action: "settings"; mode: "all" | "off" }
         | { action: "read"; ids: string[] },
     ) => {
-      if (!current.current) throw new Error("尚未连接中心。");
+      if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
       return applicationCall(
         command ? "notifications.control" : "notifications.read",
         command,
@@ -507,6 +514,17 @@ export function useWorkspace() {
         },
       );
     },
+    checkConnection: async (signal: AbortSignal) =>
+      connectionDetailsSchema.parse(
+        await applicationCall("connection.check", undefined, { signal }),
+      ),
+    configureConnection: async (
+      params: ConfigureConnection,
+      signal: AbortSignal,
+    ) =>
+      connectionDetailsSchema.parse(
+        await applicationCall("connection.configure", params, { signal }),
+      ),
     authenticationRequired,
     login,
     logout,

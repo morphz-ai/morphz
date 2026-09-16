@@ -35,8 +35,8 @@ test("保存回执和断线不增设底栏或挤动页面；关键信息留在�
   await page.route("**/api/workspace", (route) =>
     route.fulfill({ status: 503, json: { message: "隔离测试断线" } }),
   );
-  await expect(page.locator(".model-status")).toContainText("工作中心已断开");
-  await expect(page.getByLabel("重新连接工作中心")).toBeVisible();
+  await expect(page.locator(".model-status")).toContainText("应用连接中断");
+  await expect(page.getByLabel("重新连接应用")).toBeVisible();
   expect(await page.locator(".workspace-body").boundingBox()).toEqual(before);
   expect(await page.locator(".composer").boundingBox()).toEqual(composerBefore);
   await expect(
@@ -44,9 +44,9 @@ test("保存回执和断线不增设底栏或挤动页面；关键信息留在�
   ).toBeDisabled();
   await expect(input).toHaveValue("断线时保留草稿");
   await page.unroute("**/api/workspace");
-  await page.getByLabel("重新连接工作中心").click();
-  await expect(page.getByText("工作中心已连接", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("重新连接工作中心")).toHaveCount(0);
+  await page.getByLabel("重新连接应用").click();
+  await expect(page.getByText("智能体未连接", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("重新连接应用")).toHaveCount(0);
   await expect(page.locator(".statusbar")).toHaveCount(0);
   await openInput(page);
   await expect(input).toHaveValue("断线时保留草稿");

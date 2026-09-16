@@ -1426,13 +1426,57 @@ body:has(dialog[open]) .cognitive-application-frame {
   padding: 0;
 }
 .app .connection-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   justify-content: flex-start;
-  padding: 0;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 8px;
   background: none;
   border: 0;
-  font: inherit;
-  color: inherit;
+  color: var(--ink);
   text-align: left;
+}
+.sidebar-identity-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+.sidebar-identity {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.sidebar-identity-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.sidebar-identity-name,
+.sidebar-connection-state > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-connection-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+.sidebar-entry-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+  margin-left: auto;
+}
+.app :is(.connection-summary, .sidebar-model-settings):hover:not(:disabled) {
+  background: var(--nav-hover);
 }
 .app .model-status > button {
   display: inline;
@@ -1468,6 +1512,37 @@ body:has(dialog[open]) .cognitive-application-frame {
   font-size: 12px;
   line-height: 1.6;
 }
+.connection-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.connection-setup {
+  display: grid;
+  gap: 12px;
+}
+.connection-setup label {
+  display: grid;
+  gap: 5px;
+  font-size: 13px;
+}
+.connection-setup input {
+  min-width: 0;
+  width: 100%;
+}
+.connection-setup .dialog-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.connection-error-detail {
+  margin-top: 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.connection-checked {
+  display: block;
+  margin-top: 12px;
+}
 .conversation {
   scrollbar-width: none;
 }
@@ -1497,8 +1572,7 @@ body:has(dialog[open]) .cognitive-application-frame {
 .workspace-notice > span {
   padding-top: 3px;
 }
-.app .workspace-notice .icon-button,
-.app .sidebar-bottom small .icon-button {
+.app .workspace-notice .icon-button {
   width: 24px;
   min-width: 24px;
   height: 24px;
@@ -1531,6 +1605,191 @@ body:has(dialog[open]) .cognitive-application-frame {
   padding: 8px 12px 12px;
   overflow: auto;
 }
+.model-settings {
+  display: grid;
+  gap: var(--ui-space-3, 12px);
+  min-width: 0;
+  outline: none;
+}
+.model-settings h3 {
+  margin: 0;
+  font-size: 1em;
+}
+.model-settings label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.model-settings input,
+.model-settings select {
+  width: 100%;
+  min-width: 0;
+}
+.model-settings p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.model-default-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.model-default-form small {
+  grid-column: 1 / -1;
+}
+.model-settings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+.model-settings-section-heading h3,
+.model-account-list strong,
+.model-enabled-list label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.model-settings-section-heading > button {
+  flex-shrink: 0;
+}
+.model-settings .dialog-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.model-settings > .secondary-action {
+  justify-self: start;
+}
+.model-settings .model-add-account {
+  min-height: 32px;
+}
+.model-settings :is(input:not([type="checkbox"]), select) {
+  min-height: 36px;
+}
+.model-default-form > .primary {
+  min-height: 36px;
+}
+.model-account-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.model-account-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.model-account-list li > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.model-account-list button {
+  flex-shrink: 0;
+}
+.model-api-form,
+.model-login,
+.model-login form {
+  display: grid;
+  gap: 12px;
+}
+.app .model-connection-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--ui-radius-control);
+  background: var(--soft);
+}
+.app .model-connection-modes button {
+  min-height: 32px;
+  justify-content: center;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.app .model-connection-modes button[aria-pressed="true"] {
+  background: var(--selection);
+  color: var(--ink);
+  font-weight: 600;
+}
+.app
+  .model-connection-modes
+  button:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--hover);
+}
+.model-service-list {
+  display: grid;
+  gap: 8px;
+}
+.app .model-service-list .model-service-button {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  text-align: left;
+  white-space: normal;
+}
+.model-service-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.model-service-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.create-dialog > header > .model-settings-heading {
+  align-items: center;
+  gap: 4px;
+}
+.model-enabled-list {
+  display: grid;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+.model-enabled-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+.model-enabled-list input {
+  width: auto;
+  flex-shrink: 0;
+}
+.model-user-code {
+  user-select: all;
+  letter-spacing: 0.08em;
+}
+@media (max-width: 480px) {
+  .model-default-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .create-dialog:has(.task-fields),
 .create-dialog:has(.task-grid) {
   --ui-dialog-width: 640px;
@@ -1999,6 +2258,35 @@ summary:focus-visible {
   margin: 4px 0 8px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+.app .sidebar-model-settings {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.sidebar-model-settings > svg:first-child {
+  margin-inline: 7px;
+}
+.app :is(.model-settings-compact, .connection-compact, .identity-compact) {
+  display: none;
+}
+@media (max-width: 560px) {
+  .app :is(.model-settings-compact, .connection-compact, .identity-compact) {
+    display: inline-flex;
+  }
+  .connection-compact {
+    position: relative;
+  }
+  .connection-compact .presence-dot {
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+  }
 }
 .notification-modes {
   display: flex;

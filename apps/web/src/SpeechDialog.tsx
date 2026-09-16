@@ -174,8 +174,7 @@ export function SpeechDialog({
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted)
-          setError("无法读取语音配置，请检查中心连接。");
+        if (!controller.signal.aborted) setError("无法读取语音配置，请重试。");
       });
     const hidden = () => {
       if (document.hidden && capture.current) {
@@ -396,9 +395,7 @@ export function SpeechDialog({
         </div>
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
-        {configured === false && (
-          <p role="status">工作中心尚未配置语音服务。</p>
-        )}
+        {configured === false && <p role="status">尚未配置语音服务。</p>}
       </section>,
       inlineTarget,
     );
@@ -432,7 +429,7 @@ export function SpeechDialog({
         </button>
       </header>
       <SpeechServiceDetails client={client} mode="dictate" />
-      {configured === false && <p role="status">工作中心尚未配置语音服务。</p>}
+      {configured === false && <p role="status">尚未配置语音服务。</p>}
       <div className="voice-recorder" data-recording={phase === "recording"}>
         <Mic />
         <strong>

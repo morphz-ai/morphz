@@ -34,7 +34,7 @@ function connectionFromArgs(args, defaultDirectory) {
     directories.length > 1 ||
     (centers.length && directories.length)
   )
-    throw new Error("请选择一个本机工作区或一个远端中心，不能混用。");
+    throw new Error("请选择一个本机数据目录或一个远端工作空间，不能混用。");
   if (centers.length) {
     const url = new URL(centers[0].slice(9));
     if (
@@ -66,7 +66,7 @@ function connectionFromArgs(args, defaultDirectory) {
 }
 function centerFromArgs(args) {
   const values = args.filter((a) => a.startsWith("--center="));
-  if (values.length > 1) throw new Error("只能指定一个中心。");
+  if (values.length > 1) throw new Error("只能指定一个应用服务地址。");
   const value =
     values[0]?.slice(9) ??
     (args.includes("--development")
@@ -84,7 +84,7 @@ function centerFromArgs(args) {
     Number(u.port) < 1024 ||
     Number(u.port) > 65535
   )
-    throw new Error("本轮桌面只连接明确指定的本地中心 HTTP 地址。");
+    throw new Error("兼容模式仅接受明确指定的本机 HTTP 服务地址。");
   return u.origin;
 }
 module.exports = {

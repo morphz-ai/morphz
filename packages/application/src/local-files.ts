@@ -107,7 +107,7 @@ export class LocalFiles {
         throw new Error("本地文件引用记录权限无效。");
       this.saved = savedSchema.parse(JSON.parse(readFileSync(file, "utf8")));
       if (this.saved.centerId !== store.identity())
-        throw new Error("文件引用不属于当前中心。");
+        throw new Error("文件引用不属于当前工作空间。");
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       this.saved = { version: 1, centerId: store.identity(), grants: [] };

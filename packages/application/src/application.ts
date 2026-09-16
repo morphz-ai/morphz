@@ -6,7 +6,10 @@ import {
   checkConversation,
   applicationFor,
   type AccessContext,
+  localAccess,
 } from "../../../packages/core/src/model.js";
+import { unconfiguredConnection } from "../../core/src/connection.js";
+import type { LocalRuntimeConnection } from "./runtime-connection.js";
 import { readArtifact } from "../../../packages/core/src/retrieval.js";
 import { disconnectedRuntime } from "../../../packages/core/src/conversation.js";
 import {
@@ -38,6 +41,7 @@ export type ApplicationOptions = {
   browser?: BrowserBroker;
   speech?: SpeechProvider;
   localFiles?: LocalFiles;
+  connectionSetup?: LocalRuntimeConnection;
 };
 export class ApplicationUnavailable extends Error {
   readonly status = 503;
@@ -94,13 +98,13 @@ export class Application {
     readonly options: ApplicationOptions = {},
   ) {
     if (!options.identity && requiresIdentity(store))
-      throw new Error("此中心已启用身份认证，不能在缺失身份配置时启动。");
+      throw new Error("当前应用数据已启用身份认证，不能在缺失身份配置时启动。");
     if (options.identity && options.runtime && !options.runtime.teamIdentity)
       throw new Error(
-        "多人中心需要 trusted_gateway Runtime 连接，不能使用单用户管理令牌。",
+        "多人工作空间需要 trusted_gateway Runtime 连接，不能使用单用户管理令牌。",
       );
     if (!options.identity && options.runtime?.teamIdentity)
-      throw new Error("trusted_gateway 连接必须启用中心身份认证。");
+      throw new Error("trusted_gateway 连接必须启用应用身份认证。");
     this.notifications = new Notifications(store);
   }
   session(access: AccessContext, assertActive: () => void = () => {}) {
@@ -151,6 +155,12 @@ export class ApplicationSession {
         conversationOnFirstInput: true,
         localFiles: !!this.options.localFiles,
         agentDirectories: !!this.options.localFiles,
+        modelSettings:
+          !!this.options.runtime &&
+          !!this.options.connectionSetup &&
+          !this.options.identity &&
+          this.access.principalId === localAccess.principalId &&
+          this.access.actantId === localAccess.actantId,
         taskCompletion: true,
       },
       runtime:
@@ -166,6 +176,56 @@ export class ApplicationSession {
           ]),
       ),
     };
+  }
+  async connectionDetails(signal: AbortSignal) {
+    this.active();
+    const details = this.options.runtime
+      ? await this.options.runtime.inspectConnection(signal)
+      : { ...unconfiguredConnection };
+    this.active();
+    const owner =
+      !this.options.identity &&
+      this.access.principalId === localAccess.principalId &&
+      this.access.actantId === localAccess.actantId;
+    return {
+      ...details,
+      ...(owner ? this.options.connectionSetup?.details() : {}),
+    };
+  }
+  async configureConnection(raw: unknown, signal: AbortSignal) {
+    this.active();
+    if (
+      this.options.identity ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId ||
+      !this.options.connectionSetup
+    )
+      throw new DomainError(
+        "forbidden",
+        "只有本机工作区的本人可以设置连接；远端或多人工作空间请联系管理员。",
+      );
+    return this.options.connectionSetup.configure(
+      raw,
+      () => this.active(),
+      signal,
+    );
+  }
+  async modelSettings(raw: unknown, signal: AbortSignal, write = false) {
+    this.active();
+    if (
+      this.options.identity ||
+      !this.options.connectionSetup ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId
+    )
+      throw new DomainError(
+        "forbidden",
+        "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
+      );
+    const settings = this.runtime().modelSettings;
+    return write
+      ? settings.apply(raw, signal, () => this.active())
+      : settings.read(signal, () => this.active());
   }
   async command(raw: unknown) {
     this.active();
@@ -230,7 +290,7 @@ export class ApplicationSession {
     if (operation.type !== "record-input") return;
     if (operation.directories?.length) {
       if (!this.options.localFiles)
-        throw new DomainError("invalid", "此中心不支持本机目录授权。");
+        throw new DomainError("invalid", "当前应用不支持本机目录授权。");
       for (const directory of operation.directories)
         this.options.localFiles.validateDirectory(
           directory,
@@ -243,7 +303,7 @@ export class ApplicationSession {
     if (!this.options.localFiles)
       throw new DomainError(
         "invalid",
-        "此中心不支持本机文件引用；未上传文件。",
+        "当前应用不支持本机文件引用；未上传文件。",
       );
     this.options.localFiles.validate(
       operation.localFile,
@@ -283,7 +343,7 @@ export class ApplicationSession {
       .parse(raw);
     const files = this.options.localFiles;
     if (!files)
-      throw new DomainError("invalid", "目录授权仅在本机桌面中心可用。");
+      throw new DomainError("invalid", "目录授权仅在本机桌面应用可用。");
     if (revoke) {
       if (
         !request.grantId ||
@@ -311,7 +371,7 @@ export class ApplicationSession {
       .strict()
       .parse(raw);
     if (!this.options.localFiles)
-      throw new DomainError("invalid", "本机文件访问仅在本机桌面中心可用。");
+      throw new DomainError("invalid", "本机文件访问仅在本机桌面应用可用。");
     try {
       return revoke
         ? this.options.localFiles.revoke(
@@ -648,6 +708,10 @@ export function invokeApplication(
   switch (method) {
     case "workspace":
       return session.workspace(identityGeneration);
+    case "connection.check":
+      return session.connectionDetails(signal);
+    case "connection.configure":
+      return session.configureConnection(params, signal);
     case "command":
       return session.command(params);
     case "message":
@@ -670,6 +734,10 @@ export function invokeApplication(
       return session.localFiles(params, true);
     case "models":
       return session.models();
+    case "model-settings.read":
+      return session.modelSettings(undefined, signal);
+    case "model-settings.update":
+      return session.modelSettings(params, signal, true);
     case "asset.add":
       return session.addAsset(params);
     case "attachment.add":

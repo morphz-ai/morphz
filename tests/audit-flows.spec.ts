@@ -290,7 +290,7 @@ test("交付回执直接打开准确版本；没有回执时不猜测产物", as
   await page.screenshot({ path: "test-results/audit-delivery.png" });
 });
 
-test("只保留紧凑连接提示；详情区分中心与 Agent，模型故障不能伪装可选", async ({
+test("只保留紧凑连接提示；详情区分应用数据与智能体，模型故障不能伪装可选", async ({
   page,
 }) => {
   await page.goto("/");
@@ -300,11 +300,95 @@ test("只保留紧凑连接提示；详情区分中心与 Agent，模型故障�
     .locator(".model-status")
     .getByRole("button", { name: "连接详情", exact: true })
     .click();
-  await expect(page.getByRole("dialog", { name: "连接详情" })).toContainText(
-    "尚未配置",
-  );
+  const details = page.getByRole("dialog", { name: "连接详情" });
+  await expect(details).toContainText("应用数据");
+  await expect(details).toContainText("可访问");
+  await expect(details).toContainText("尚未连接");
+  await expect(details).not.toContainText("工作中心");
   await page.screenshot({ path: "test-results/audit-connection.png" });
   await page.keyboard.press("Escape");
   await openInput(page);
   await expect(page.getByLabel("本次输入模型")).toBeDisabled();
+  await expect(page.locator(".composer-reasoning")).toHaveAttribute(
+    "title",
+    "连接智能体后可设置推理强度。",
+  );
+});
+
+test("推理设置区分加载、读取失败和旧服务缺少能力，不误报需要更新中心", async ({
+  page,
+}) => {
+  await page.route("**/api/workspace", async (route) => {
+    const response = await route.fetch({
+      headers: { ...route.request().headers(), "if-none-match": "" },
+    });
+    const boot: Boot = await response.json();
+    boot.runtime.configured = true;
+    boot.runtime.connected = true;
+    await route.fulfill({ response, json: boot });
+  });
+  let release!: () => void;
+  const firstRequest = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  let reasoningSupported = false;
+  await page.route("**/api/models", async (route) => {
+    requests++;
+    if (requests === 1) {
+      await firstRequest;
+      await route.fulfill({
+        status: 503,
+        json: { message: "测试：暂时无法读取模型目录" },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        current: "model-a",
+        options: [{ id: "model-a", label: "模型 A" }],
+        ...(reasoningSupported
+          ? { reasoning: { current: null, levels: ["low", "high"] } }
+          : {}),
+      },
+    });
+  });
+  try {
+    await page.goto("/");
+    const input = await openInput(page);
+    await input.fill("模型设置异常时保留草稿");
+    const hint = page.locator(".composer-reasoning");
+    const effort = page.getByLabel("本次输入推理强度");
+    await expect(hint).toHaveAttribute("title", "正在读取模型设置…");
+    await expect(effort).toBeDisabled();
+    release();
+    await expect(hint).toHaveAttribute(
+      "title",
+      "暂时无法读取模型设置，请重试。",
+    );
+    await expect(effort).toBeDisabled();
+    await page
+      .locator(".model-picker")
+      .getByRole("button", { name: "重试", exact: true })
+      .click();
+    await expect(page.getByLabel("本次输入模型")).toBeEnabled();
+    await expect(page.getByLabel("本次输入模型")).toBeFocused();
+    await expect(hint).toHaveAttribute(
+      "title",
+      "当前运行服务不支持推理强度设置。",
+    );
+    await expect(effort).toBeDisabled();
+    await expect(input).toHaveValue("模型设置异常时保留草稿");
+    reasoningSupported = true;
+    await page.reload();
+    await openInput(page);
+    await expect(effort).toBeEnabled();
+    await expect(hint).toHaveAttribute(
+      "title",
+      "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。",
+    );
+    await expect(input).toHaveValue("模型设置异常时保留草稿");
+  } finally {
+    release();
+  }
 });

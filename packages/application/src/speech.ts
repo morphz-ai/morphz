@@ -108,7 +108,7 @@ export class SpeechService implements SpeechProvider {
     work: () => Promise<T>,
   ) {
     if (!this.configured())
-      throw failure("工作中心尚未配置语音服务，请先完成服务配置。");
+      throw failure("尚未配置语音服务，请先完成服务配置。");
     if (this.active.has(principal))
       throw failure("已有语音请求正在处理，请等待完成或取消。");
     signal.throwIfAborted();

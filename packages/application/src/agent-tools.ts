@@ -58,6 +58,7 @@ const requestSchema = z
   .object({
     action: z.enum([
       "read-input",
+      "connection-status",
       "projects",
       "conversations",
       "bookmarks",
@@ -220,6 +221,8 @@ export const workToolDefinition = {
   },
 };
 workToolDefinition.description +=
+  " connection-status reads current Runtime reachability and default-model configuration. It does not call a model, resend messages, restart work or change settings, and never returns credentials or private connection URLs. Describe the returned state accurately; configured is not proof of a successful model request. Only the Human can update local connection credentials in Connection Details.";
+workToolDefinition.description +=
   " Project management: projects(management={action:'list'|'create'|'rename'|'archive'|'restore'|'delete',projectId?,revision?,title?,status:'active'|'archived'|'deleted'|'all',query?,offset?,limit<=50}). conversations uses the same management envelope with action list/rename/archive/restore and conversationId for writes. List first, use current revisions and exact IDs; the host verifies the actual initiating Human and equal membership boundaries. Do not infer permission to organize from ordinary discussion. Archive/delete preserve data; deletion is recoverable, never erases external files. Active executions and scheduled work block retirement: do not automatically stop them. Report blockers. Restore before new work in retired projects. Conversation archive retains running replies and drafts, and never stops execution. Creating a conversation still requires its first Human input; no empty Agent-created sessions.";
 workToolDefinition.description +=
   " Content catalog: list(contentOnly=true,sort='updated'|'created'|'title',offset,limit<=50) excludes tasks and public-understanding state documents and returns creator, origin and related work. Public understanding remains accessible through the workspace inspector and explicit read/list, not deliverable search. Retained website objects are legacy links, not generated sites. organize-content(artifactId,revision,metadata={title?,projectId?}) patches only the name or owning workspace without copying the body or rewriting historical inputs. It shares the Human UI's revision and permission checks. This invocation cannot move content outside its authorized project. Moving linked content or crossing different membership sets is forbidden. Read and reconsider on conflict; never replace the body just to rename content.";
@@ -314,7 +317,7 @@ export function prepareHostTools(
             JSON.stringify(contextPrefixes),
       )
     )
-      throw new Error("Host 工具配置与当前中心不匹配，未覆盖原配置。");
+      throw new Error("Host 工具配置与当前应用数据不匹配，未覆盖原配置。");
     token = tool.token;
   }
   const value = JSON.stringify(
@@ -367,6 +370,9 @@ export class AgentTools {
         scope: ToolScope,
       ): Promise<unknown>;
     },
+    private connectionStatus?: () => Promise<
+      import("../../core/src/connection.js").ConnectionDetails
+    >,
   ) {}
   authenticate(authorization: string | undefined): boolean {
     const expected = Buffer.from(`Bearer ${this.token}`),
@@ -387,6 +393,15 @@ export class AgentTools {
     scope: ToolScope,
   ): unknown {
     const args = envelope.arguments;
+    if (args.action === "connection-status") {
+      checkProject(this.store.snapshot(), scope.projectId, scope.access);
+      if (!this.connectionStatus)
+        throw new DomainError("invalid", "此宿主尚不支持连接检查。");
+      return this.connectionStatus().then((connection) => {
+        checkProject(this.store.snapshot(), scope.projectId, scope.access);
+        return { ok: true, connection };
+      });
+    }
     if (args.action === "projects" || args.action === "conversations") {
       const state = this.store.snapshot(),
         request = args.management;
@@ -1445,5 +1460,6 @@ export function runtimeAgentTools(
           runtime.collaboration.control(id, run, revision, action),
         ),
     },
+    () => runtime.inspectConnection(),
   );
 }

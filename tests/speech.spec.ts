@@ -3,6 +3,57 @@ import { openLibrary } from "./application-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
 
+test("语音未配置与读取失败分别提示，不要求连接工作中心，也不启动麦克风", async ({
+  page,
+}) => {
+  let failed = false;
+  await page.addInitScript(() => {
+    Reflect.set(window, "microphoneRequests", 0);
+    Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
+      value: async () => {
+        Reflect.set(
+          window,
+          "microphoneRequests",
+          Reflect.get(window, "microphoneRequests") + 1,
+        );
+        throw new Error("本用例不允许启动麦克风");
+      },
+    });
+  });
+  await page.route("**/api/speech/status", (route) =>
+    route.fulfill(
+      failed
+        ? { status: 503, json: { message: "测试：配置读取失败" } }
+        : { json: { configured: false, provider: null } },
+    ),
+  );
+  await page.goto("/");
+  await openTranscription(page);
+  const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
+  await expect(dialog.getByRole("status")).toHaveText("尚未配置语音服务。");
+  await expect(
+    dialog.getByRole("button", { name: "开始录音", exact: true }),
+  ).toBeDisabled();
+  await dialog.getByText("语音服务与隐私", { exact: true }).click();
+  await expect(dialog.locator(".speech-service-details")).toContainText(
+    "尚未配置语音服务。",
+  );
+  await expect(dialog).not.toContainText("工作中心");
+  await page.keyboard.press("Escape");
+  failed = true;
+  await openTranscription(page);
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "无法读取语音配置，请重试。",
+  );
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "开始录音", exact: true }),
+  ).toBeDisabled();
+  expect(
+    await page.evaluate(() => Reflect.get(window, "microphoneRequests")),
+  ).toBe(0);
+});
+
 test("明确开始后分段识别，结束停止采集，文字确认后保留对象批注范围", async ({
   page,
 }) => {

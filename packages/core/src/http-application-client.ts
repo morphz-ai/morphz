@@ -103,6 +103,19 @@ export class HttpApplicationClient {
       case "models":
         path = "/api/models";
         break;
+      case "connection.check":
+        path = "/api/connection/check";
+        post();
+        break;
+      case "connection.configure":
+        path = "/api/connection/configure";
+        post(params);
+        break;
+      case "model-settings.read":
+      case "model-settings.update":
+        path = "/api/" + method.replace(".", "/");
+        post(params);
+        break;
       case "asset.add":
         path = "/api/assets";
         post();

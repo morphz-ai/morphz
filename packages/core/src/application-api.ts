@@ -2,6 +2,8 @@
 // Both hosts call the same business layer; only their transport adapters differ.
 export const applicationMethods = [
   "workspace",
+  "connection.check",
+  "connection.configure",
   "login",
   "logout",
   "command",
@@ -15,6 +17,8 @@ export const applicationMethods = [
   "directories.revoke",
   "local-files.revoke",
   "models",
+  "model-settings.read",
+  "model-settings.update",
   "asset.add",
   "attachment.add",
   "pdf.import",

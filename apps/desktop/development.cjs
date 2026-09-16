@@ -3,7 +3,7 @@ const developmentOrigin = "http://127.0.0.1:65419";
 function rendererURL(center, hot, packaged) {
   if (!hot) return center;
   if (packaged || center === developmentOrigin)
-    throw new Error("热更新仅用于开发壳，且必须指定独立的中心地址。");
+    throw new Error("热更新仅用于开发壳，且必须指定独立的应用服务地址。");
   return developmentOrigin;
 }
 
@@ -57,7 +57,7 @@ async function loadDevelopmentWindow(window, center, uiURL) {
   const current = await window.webContents.executeJavaScript(readPreferences);
   if (previous && current && previous.centerId !== current.centerId)
     throw new Error(
-      "开发界面连接了不同中心；拒绝迁移偏好。请检查 Vite 的 API 代理。",
+      "开发界面连接了不同工作空间；拒绝迁移偏好。请检查 Vite 的 API 代理。",
     );
   const entries = preferenceSeed(previous, current);
   if (entries.length) {

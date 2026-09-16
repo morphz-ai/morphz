@@ -812,7 +812,7 @@ function SandboxApplication({
       allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
       src={`/api/application-view/${encodeURIComponent(instance.id)}`}
       onLoad={surfaceLoaded}
-      onError={() => onNotice("应用界面未能加载，内容仍保存在中心。")}
+      onError={() => onNotice("应用界面未能加载，已保存的内容仍保留。")}
     />
   );
 }

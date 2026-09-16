@@ -395,11 +395,11 @@ export function ArtifactEditor({
       {conflict && (
         <div className="conflict-banner" role="alert">
           <p>
-            中心已有 v{artifact.revision}。下方保留的是基于 v
+            当前已保存 v{artifact.revision}。下方保留的是基于 v
             {draft.baseRevision} 的草稿，不会自动覆盖新版本。
           </p>
           <details>
-            <summary>对照中心最新内容</summary>
+            <summary>对照最新内容</summary>
             <pre>
               {artifact.title +
                 "\n\n" +

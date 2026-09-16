@@ -43,6 +43,8 @@ import type { IdentityCenter } from "./identity.js";
 import type { BrowserBroker } from "./browser.js";
 import { ConversationFeed } from "./conversation-feed.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
+import { inspectRuntimeConnection } from "./runtime-connection.js";
+import { RuntimeModelSettings } from "./model-settings.js";
 
 const configSchema = z
   .object({
@@ -387,6 +389,7 @@ export class RuntimeBridge {
     );
   }
   readonly executions: ExecutionControls;
+  readonly modelSettings = new RuntimeModelSettings(() => this.config);
   readonly collaboration: Collaboration;
   private state: z.infer<typeof storedSchema>;
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
@@ -398,9 +401,10 @@ export class RuntimeBridge {
     private store: WorkspaceStore,
     private config: RuntimeConfig,
     private identity?: IdentityCenter,
+    persistOnConstruction = true,
   ) {
     if (this.teamIdentity && !identity)
-      throw new Error("可信网关适配需要中心身份目录。");
+      throw new Error("可信网关适配需要应用身份配置。");
     this.collaboration = new Collaboration(store, {
       session: async (projectId, artifactId) => {
         const workspace = this.store.snapshot();
@@ -485,7 +489,7 @@ export class RuntimeBridge {
     this.state.connected = false;
     for (const delivery of this.state.deliveries)
       if (delivery.state === "sending") delivery.state = "queued";
-    this.save();
+    if (persistOnConstruction) this.save();
   }
   private save() {
     this.store.saveRuntimeState(this.state);
@@ -924,6 +928,29 @@ export class RuntimeBridge {
       }
     }
     return catalog;
+  }
+  inspectConnection(signal?: AbortSignal) {
+    return inspectRuntimeConnection(
+      this.config,
+      signal,
+      this.teamIdentity ? this.principalId("morphz-service") : undefined,
+    );
+  }
+  validateConnection(config: RuntimeConfig) {
+    if (
+      config.url !== this.config.url ||
+      config.namespace !== this.config.namespace ||
+      config.identityMode !== this.config.identityMode
+    )
+      throw new DomainError(
+        "conflict",
+        "连接与原会话不匹配，原连接没有被替换。",
+      );
+  }
+  updateConnection(config: RuntimeConfig) {
+    this.validateConnection(config);
+    // Keep the bridge, feeds, Sessions and durable delivery identities intact.
+    this.config = config;
   }
   async validateModel(model: string) {
     return this.validateInference(model);

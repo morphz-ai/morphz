@@ -31,6 +31,7 @@ import {
   prepareLocalHostTools,
 } from "../../packages/application/src/host-tools-ipc.js";
 import { runtimeAgentTools } from "../../packages/application/src/agent-tools.js";
+import { LocalRuntimeConnection } from "../../packages/application/src/runtime-connection.js";
 import {
   appContentSecurityPolicy,
   applicationViewPolicy,
@@ -116,7 +117,7 @@ export async function openEmbeddedApplication(
       }
     }
     const connection = new LocalApplicationConnection(application, cookie);
-    const manifest = config
+    let manifest = config
       ? prepareLocalHostTools(
           directory,
           config.namespace,
@@ -128,12 +129,59 @@ export async function openEmbeddedApplication(
         manifest.endpoint,
         runtimeAgentTools(store, runtime, manifest.token, browser, localFiles),
       );
+    if (!identity)
+      application.options.connectionSetup = new LocalRuntimeConnection(
+        directory,
+        store,
+        async (next) => {
+          if (runtime) {
+            const current = runtime;
+            current.validateConnection(next);
+            return {
+              commit: () => current.updateConnection(next),
+              discard: async () => {},
+            };
+          }
+          const candidate = new RuntimeBridge(store, next, undefined, false);
+          candidate.attachBrowser(browser);
+          const prepared = prepareLocalHostTools(
+            directory,
+            next.namespace,
+            false,
+          );
+          const listener = await listenLocalHostTools(
+            prepared.endpoint,
+            runtimeAgentTools(
+              store,
+              candidate,
+              prepared.token,
+              browser,
+              localFiles,
+            ),
+          );
+          return {
+            commit() {
+              runtime = candidate;
+              tools = listener;
+              manifest = prepared;
+              application.options.runtime = candidate;
+              candidate.start();
+            },
+            async discard() {
+              await listener.close();
+              await candidate.stop();
+            },
+          };
+        },
+      );
     runtime?.start();
     let stopping: Promise<void> | undefined;
     return {
       connection,
       localFiles,
-      manifestPath: manifest?.path,
+      get manifestPath() {
+        return manifest?.path;
+      },
       persistAuthentication() {
         authentication.save(connection.authenticationCookie());
       },

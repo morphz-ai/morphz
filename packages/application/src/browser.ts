@@ -84,7 +84,7 @@ export class BrowserBroker {
         receipt.status =
           receipt.status === "executing" ? "unknown" : "rejected";
         receipt.result =
-          "中心重启，旧控制权已失效。执行中的结果未知，请先查看页面核对，不要重复提交。";
+          "应用已重新启动，旧控制权已失效。执行中的结果未知，请先查看页面核对，不要重复提交。";
       }
     this.save();
   }

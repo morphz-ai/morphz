@@ -432,7 +432,7 @@ else {
       for (const action of ["read", "revoke"])
         ipcMain.handle("files:" + action, async (event, request) => {
           requireMain(event);
-          if (!host) throw new Error("当前不是本机工作中心。");
+          if (!host) throw new Error("本机文件访问仅在本机桌面应用可用。");
           const boot = await application.call("workspace");
           return application.call("local-files." + action, request, {
             identityGeneration: boot.csrfToken,

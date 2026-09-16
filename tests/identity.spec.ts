@@ -44,13 +44,22 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
   });
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   try {
+    const unauthenticated = await page.request.get(
+      `http://127.0.0.1:${port}/api/workspace`,
+    );
+    expect(unauthenticated.status()).toBe(401);
+    expect((await unauthenticated.json()).message).toBe("请登录后继续操作。");
     await page.goto(`http://127.0.0.1:${port}`);
+    await page.getByLabel("登录凭据").fill("c".repeat(64));
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+    await expect(page.getByRole("alert")).toHaveText("登录凭据无效或已撤销。");
+    await expect(page.locator(".app")).toHaveCount(0);
     const login = async (i: number) => {
       await expect(
-        page.getByRole("heading", { name: "连接工作中心" }),
+        page.getByRole("heading", { name: "登录 Morphz" }),
       ).toBeVisible();
-      await page.getByLabel("连接凭据").fill(tokens[i]!);
-      await page.getByRole("button", { name: "连接", exact: true }).click();
+      await page.getByLabel("登录凭据").fill(tokens[i]!);
+      await page.getByRole("button", { name: "登录", exact: true }).click();
       await expect(page.locator(".sidebar-bottom")).toContainText(
         `测试成员${i + 1}`,
       );
@@ -75,7 +84,7 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     config.members[0]!.enabled = false;
     identity.replaceConfiguration(config);
     await expect(
-      page.getByRole("heading", { name: "连接工作中心" }),
+      page.getByRole("heading", { name: "登录 Morphz" }),
     ).toBeVisible({ timeout: 5000 });
     await expect(page.locator(".app")).toHaveCount(0);
     await page.screenshot({ path: "test-results/identity-connection.png" });

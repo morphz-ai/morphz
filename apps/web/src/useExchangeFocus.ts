@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { flushSync } from "react-dom";
 
 /** Leaving the exchange changes layout only; drafts and work remain untouched. */
 export function useExchangeFocus(options: {
@@ -57,7 +58,10 @@ export function useExchangeFocus(options: {
         )
           return;
         if (engaged === snapshot.scope) engaged = null;
-        snapshot.onLeave();
+        // Commit while this frame's focus/generation checks are still true.
+        // A deferred hide can otherwise land after the user has refocused the
+        // input (for example just after closing a settings dialog).
+        flushSync(snapshot.onLeave);
       });
       pending.add(frame);
     }

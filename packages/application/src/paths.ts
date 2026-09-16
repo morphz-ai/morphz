@@ -39,7 +39,7 @@ export function dataDirectory(
     );
   if (hasCenter(current) && hasCenter(legacy))
     throw new Error(
-      "发现两份应用中心；请用 MORPHZ_APP_DATA_DIR 明确选择，未移动或合并数据。",
+      "发现两份应用数据；请用 MORPHZ_APP_DATA_DIR 明确选择，未移动或合并数据。",
     );
   return hasCenter(legacy) ? legacy : current;
 }

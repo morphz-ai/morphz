@@ -91,7 +91,7 @@ export class IdentityCenter {
         actor.kind !== "human" ||
         actor.principalId !== member.principalId
       )
-        throw new Error("身份配置未绑定到中心中已有的 Human。");
+        throw new Error("身份配置未绑定到已有用户。");
     }
     this.config = config;
     this.sessions = this.sessions.filter(
@@ -147,7 +147,7 @@ export class IdentityCenter {
         timingSafeEqual(bytes, Buffer.from(m.loginTokenHash, "hex")),
     );
     if (!/^[a-f0-9]{64}$/.test(token) || !member)
-      throw new DomainError("forbidden", "连接凭据无效或已撤销。");
+      throw new DomainError("forbidden", "登录凭据无效或已撤销。");
     this.access(member);
     const secret = randomBytes(32).toString("hex"),
       csrf = randomBytes(32).toString("hex");
@@ -155,7 +155,10 @@ export class IdentityCenter {
       (s) => s.expiresAt > now && this.current(s),
     );
     if (this.sessions.length >= 4000)
-      throw new DomainError("invalid", "中心连接数量已达上限。");
+      throw new DomainError(
+        "invalid",
+        "登录会话数量已达上限，请稍后重试或联系管理员。",
+      );
     this.sessions.push({
       hash: digest(secret),
       csrf,

@@ -271,6 +271,15 @@ kbd {
 .sidebar-section {
   margin-top: 25px;
 }
+.sidebar-navigation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  margin: -2px -2px 0;
+  scrollbar-width: thin;
+}
 .section-label {
   display: flex;
   align-items: center;
@@ -285,6 +294,7 @@ kbd {
   justify-content: space-between;
   margin-bottom: 4px;
   min-height: 25px;
+  flex-shrink: 0;
 }
 .sidebar .section-label button {
   padding: 4px;
@@ -321,23 +331,15 @@ kbd {
 }
 .sidebar-bottom {
   margin-top: auto;
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 24px 9px 3px;
+  display: grid;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 12px 0 0;
   font-size: 12px;
 }
 .sidebar-bottom .avatar {
   width: 30px;
   height: 30px;
-}
-.sidebar-bottom small {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 10px;
-  margin-top: 2px;
 }
 .presence-dot,
 .connection-dot {
@@ -2033,6 +2035,10 @@ kbd {
   .sidebar nav {
     display: flex;
     gap: 4px;
+  }
+  .sidebar-navigation {
+    flex: none;
+    overflow: visible;
   }
   .sidebar nav button {
     flex: 1;
