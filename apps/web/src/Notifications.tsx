@@ -4,22 +4,22 @@ import { Bell, X, Settings2 } from "lucide-react";
 import { z } from "zod";
 import { RequestError, scopedStorage, type WorkspaceClient } from "./client.js";
 const schema = z.object({
-  mode: z.enum(["all", "high", "off"]),
+  mode: z.enum(["all", "off"]),
+  needsReview: z.boolean().default(false),
   unread: z.number(),
   items: z.array(
     z.object({
       id: z.string(),
       artifactId: z.string(),
       title: z.string(),
-      priority: z.enum(["high", "normal", "low"]),
       reason: z.string(),
       read: z.boolean(),
+      readAliases: z.array(z.string()).default([]),
     }),
   ),
 });
 const notificationModes = [
-  { value: "all", label: "全部事项" },
-  { value: "high", label: "仅高优先级" },
+  { value: "all", label: "全部提醒" },
   { value: "off", label: "不提示" },
 ] as const;
 export function Notifications({
@@ -31,6 +31,7 @@ export function Notifications({
 }) {
   const [view, setView] = useState<z.infer<typeof schema>>({
       mode: "all",
+      needsReview: false,
       unread: 0,
       items: [],
     }),
@@ -90,9 +91,16 @@ export function Notifications({
         .then((v) => {
           if (alive && version === generation.current) {
             const next = schema.parse(v);
-            const visible = new Set(next.items.map((i) => i.id));
-            for (const id of pendingReads.current)
-              if (!visible.has(id)) pendingReads.current.delete(id);
+            const visible = new Map(
+              next.items.flatMap((i) =>
+                [i.id, ...i.readAliases].map((id) => [id, i.id] as const),
+              ),
+            );
+            for (const id of [...pendingReads.current]) {
+              pendingReads.current.delete(id);
+              const canonical = visible.get(id);
+              if (canonical) pendingReads.current.add(canonical);
+            }
             rememberReads();
             setView(next);
             setLoadError("");
@@ -138,13 +146,14 @@ export function Notifications({
     <>
       <button
         className="icon-button notification-trigger"
-        aria-label={`通知${view.unread ? `，${view.unread} 项未读` : ""}`}
+        aria-label={`通知${view.needsReview ? "，提醒范围待确认" : view.unread ? `，${view.unread} 项未读` : ""}`}
+        title={view.needsReview ? "提醒范围待确认" : "通知"}
         onClick={() => setOpen(true)}
       >
         <Bell size={17} />
-        {view.unread > 0 && (
+        {(view.needsReview || view.unread > 0) && (
           <span className="notification-badge" aria-hidden="true">
-            {view.unread > 99 ? "99+" : view.unread}
+            {view.needsReview ? "!" : view.unread > 99 ? "99+" : view.unread}
           </span>
         )}
       </button>
@@ -162,7 +171,8 @@ export function Notifications({
             <button
               className="icon-button"
               aria-label="通知设置"
-              aria-expanded={settings}
+              aria-expanded={settings || view.needsReview}
+              disabled={view.needsReview}
               onClick={() => setSettings(!settings)}
             >
               <Settings2 />
@@ -175,7 +185,12 @@ export function Notifications({
               <X />
             </button>
           </header>
-          {settings && (
+          {view.needsReview && (
+            <p className="notification-review" role="status">
+              旧提醒范围已停用，请重新选择。
+            </p>
+          )}
+          {(settings || view.needsReview) && (
             <fieldset
               aria-busy={busy}
               className="notification-preferences"
@@ -215,7 +230,7 @@ export function Notifications({
               <button
                 key={i.id}
                 data-unread={!i.read}
-                aria-label={`${i.read ? "" : "未读，"}${i.title}，${i.priority === "high" ? "高优先级，" : ""}${i.reason}`}
+                aria-label={`${i.read ? "" : "未读，"}${i.title}，${i.reason}`}
                 onClick={async () => {
                   setError("");
                   try {
@@ -243,10 +258,7 @@ export function Notifications({
                 }}
               >
                 <strong>{i.title}</strong>
-                <small>
-                  {i.priority === "high" ? "高优先级 · " : ""}
-                  {i.reason}
-                </small>
+                <small>{i.reason}</small>
               </button>
             ))}
             {!view.items.length && !error && !loadError && (

@@ -427,7 +427,7 @@ try {
       notificationBounds.y + notificationBounds.height <= viewport.height,
   );
   await expect(
-    notifications.getByRole("radio", { name: "仅高优先级" }),
+    notifications.getByRole("radio", { name: "全部提醒" }),
   ).toBeVisible();
   await window.bringToFront();
   await window.evaluate(

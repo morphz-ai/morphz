@@ -1995,6 +1995,11 @@ summary:focus-visible {
   flex: 1;
   max-width: 282px;
 }
+.notification-review {
+  margin: 4px 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 .notification-modes {
   display: flex;
   gap: 2px;

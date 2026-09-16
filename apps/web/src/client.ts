@@ -494,7 +494,7 @@ export function useWorkspace() {
   return {
     notifications: async (
       command?:
-        | { action: "settings"; mode: "all" | "high" | "off" }
+        | { action: "settings"; mode: "all" | "off" }
         | { action: "read"; ids: string[] },
     ) => {
       if (!current.current) throw new Error("尚未连接中心。");
