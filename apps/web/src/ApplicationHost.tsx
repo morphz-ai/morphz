@@ -395,17 +395,12 @@ export function ApplicationHost({
           >
             {app.ui.type === "builtin" && app.ui.view === "browser" ? (
               <BrowserHost
+                client={client}
                 activeView={foreground && active?.id === instance.id}
                 onReturn={() => onActivate(null)}
                 returnLabel={spaceKind(space) === "desk" ? "工作台" : "项目"}
                 onInput={onInput}
                 projectId={workspaceId}
-                savedURLs={state.artifacts.flatMap((artifact) =>
-                  artifact.projectId === workspaceId &&
-                  artifact.content.kind === "website"
-                    ? [artifact.content.url]
-                    : [],
-                )}
                 initialURL={
                   typeof instance.state.url === "string"
                     ? instance.state.url
@@ -422,23 +417,6 @@ export function ApplicationHost({
                         state: { ...instance.state, url: page.url },
                       })
                       .catch((e) => onNotice(e.message));
-                }}
-                onSave={async (url, title) => {
-                  if (
-                    client.boot!.workspace.artifacts.some(
-                      (a) =>
-                        a.projectId === workspaceId &&
-                        a.content.kind === "website" &&
-                        a.content.url === url,
-                    )
-                  )
-                    return;
-                  await client.execute({
-                    type: "create-artifact",
-                    projectId: workspaceId,
-                    title: (title || url).slice(0, 180),
-                    content: { kind: "website", url, description: "" },
-                  });
                 }}
               />
             ) : app.ui.type === "builtin" ? (

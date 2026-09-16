@@ -138,8 +138,10 @@ else {
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
-      browser?.close();
       application.invalidate();
+      // Revoke browser access on the fresh connection; invalidating afterward
+      // would abort the asynchronous exchange that clears the broker grant.
+      browser?.close();
     };
     window.webContents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isInPlace) releaseRenderer();
@@ -149,8 +151,8 @@ else {
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
-      browser?.stop();
       application.invalidate();
+      browser?.stop();
     });
     window.on("closed", () => {
       browser = null;

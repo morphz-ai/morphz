@@ -10,6 +10,7 @@ import { BrowserBroker } from "../apps/service/src/browser.js";
 import { AgentTools } from "../apps/service/src/agent-tools.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { localAccess } from "../packages/core/src/model.js";
+import { seedLegacyWebsite } from "../tests/legacy-website-fixture.js";
 
 const directory = mkdtempSync(join(tmpdir(), "morphz-browser-test-"));
 const workPort = Number(process.env.MORPHZ_APP_BROWSER_TEST_PORT ?? 65426);
@@ -36,7 +37,8 @@ const site = createServer(async (req, res) => {
 });
 await new Promise<void>((r) => site.listen(0, "127.0.0.1", r));
 const siteURL = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
-const website = store.execute(
+const website = seedLegacyWebsite(
+  join(directory, "workspace.sqlite"),
   {
     commandId: randomUUID(),
     operation: {
@@ -289,6 +291,9 @@ try {
     await ui.evaluate(() => window.morphzDesktop!.browser.state()),
     null,
   );
+  // Reload must actively revoke the broker grant, not wait for its 10s lease
+  // to expire after the native page has already closed.
+  await expect.poll(() => call({}), { timeout: 2000 }).toEqual({ pages: [] });
   await ui.getByRole("button", { name: "打开网站", exact: true }).click();
   await expect
     .poll(async () =>

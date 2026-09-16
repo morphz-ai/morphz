@@ -609,6 +609,7 @@ export function ArtifactEditor({
             <p>历史网站地址：{shown.content.url}。打开当前版本后可访问网页。</p>
           ) : (
             <BrowserHost
+              client={client}
               key={artifact.id}
               artifact={artifact}
               autoOpen={autoOpenWebsite}

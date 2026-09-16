@@ -221,9 +221,7 @@ test("browser has an address field before creating an object; attachment draft p
     .click();
 });
 
-test("browser bookmark reflects persisted content after reload", async ({
-  page,
-}) => {
+test("浏览器仍能导航和恢复地址，不再把收藏写进内容", async ({ page }) => {
   await page.addInitScript(() => {
     let current: any = null;
     (window as any).morphzDesktop = {
@@ -267,14 +265,10 @@ test("browser bookmark reflects persisted content after reload", async ({
     name: "保存网页到内容",
     exact: true,
   });
-  await expect(bookmark).toBeEnabled();
-  await bookmark.click();
-  await expect(bookmark).toHaveAttribute("aria-pressed", "true");
-  await expect(bookmark).toBeDisabled();
+  await expect(bookmark).toHaveCount(0);
   await page.reload();
   await expect(address).toHaveValue("https://example.com/bookmark-test");
-  await expect(bookmark).toHaveAttribute("aria-pressed", "true");
-  await expect(bookmark).toBeDisabled();
+  await expect(bookmark).toHaveCount(0);
   const boot = await page.request.get("/api/workspace").then((r) => r.json());
   expect(
     boot.workspace.artifacts.filter(
@@ -282,7 +276,7 @@ test("browser bookmark reflects persisted content after reload", async ({
         a.content.kind === "website" &&
         a.content.url === "https://example.com/bookmark-test",
     ),
-  ).toHaveLength(1);
+  ).toHaveLength(0);
 });
 
 test("notification settings are not list filters and dialog centers in content", async ({

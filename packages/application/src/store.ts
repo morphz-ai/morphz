@@ -15,6 +15,7 @@ import type { ArtifactOutput } from "../../../packages/core/src/conversation.js"
 import {
   applyCommand,
   commandSchema,
+  bookmarkOwner,
   DomainError,
   initialWorkspace,
   ensureDiscussions,
@@ -330,6 +331,7 @@ export class WorkspaceStore {
     validateNew?: () => void,
   ): Receipt {
     const command = commandSchema.parse(raw);
+    const isBookmark = command.operation.type.startsWith("bookmark-");
     const management = [
       "create-project",
       "update-project",
@@ -340,7 +342,7 @@ export class WorkspaceStore {
         JSON.stringify({
           command,
           access,
-          ...(management && originInputId
+          ...(isBookmark || (management && originInputId)
             ? { originInputId: originInputId ?? null }
             : {}),
         }),
@@ -348,6 +350,7 @@ export class WorkspaceStore {
       .digest("hex");
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (isBookmark) bookmarkOwner(this.snapshot(), access, originInputId);
       if (management) {
         const state = this.snapshot(),
           op = command.operation;

@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { seedLegacyWebsite } from "./legacy-website-fixture.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { BrowserBroker } from "../apps/service/src/browser.js";
 import { localAccess } from "../packages/core/src/model.js";
@@ -29,14 +33,19 @@ test("浏览器只允许网站地址，不将第三方页面提升为应用", ()
     assert.throws(() => browserURL(url));
 });
 test("浏览器控制：授权、版本、接管、超时和未知结果都不能触发重复提交", () => {
-  const store = new WorkspaceStore(":memory:");
+  const filename = join(
+    mkdtempSync(join(tmpdir(), "morphz-browser-")),
+    "workspace.sqlite",
+  );
+  const store = new WorkspaceStore(filename);
   let now = 100000;
   const broker = new BrowserBroker(store, () => now);
   const scope = {
     projectId: "first-project",
     access: { principalId: "morphz-service", actantId: "morphz-agent" },
   };
-  const a = store.execute(
+  const a = seedLegacyWebsite(
+    filename,
     {
       commandId: randomUUID(),
       operation: {
@@ -131,7 +140,11 @@ test("快速切换或关闭网站会取消尚未完成的打开请求", async ()
   }
 });
 test("桌面回执接续在丢回执、对象改版和重启后仍然只创建一次输入", () => {
-  const store = new WorkspaceStore(":memory:"),
+  const filename = join(
+    mkdtempSync(join(tmpdir(), "morphz-browser-")),
+    "workspace.sqlite",
+  );
+  const store = new WorkspaceStore(filename),
     scope = {
       projectId: "first-project",
       access: { principalId: "morphz-service", actantId: "morphz-agent" },
@@ -142,7 +155,8 @@ test("桌面回执接续在丢回执、对象改版和重启后仍然只创建�
         url: "https://example.com/",
         description: "",
       },
-      artifactId = store.execute(
+      artifactId = seedLegacyWebsite(
+        filename,
         {
           commandId: randomUUID(),
           operation: {

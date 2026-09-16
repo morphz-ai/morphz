@@ -8,6 +8,7 @@ import "./visual-system.css";
 import "./inspector.css";
 import "./task-list.css";
 import "./content-catalog.css";
+import "./browser-bookmarks.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

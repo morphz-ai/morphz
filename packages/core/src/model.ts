@@ -13,6 +13,7 @@ import {
 } from "./sources.js";
 import { pdfContentSchema, pdfImportIssue } from "./pdf.js";
 import { websiteURL } from "./browser.js";
+import { bookmarkSchema, bookmarkOperations } from "./bookmarks.js";
 import { interactiveSchema, interactiveText } from "./interactive.js";
 import {
   applicationManifestSchema,
@@ -307,6 +308,7 @@ export const stateSchema = z
     ),
     conversations: z.array(discussionSchema).default([]),
     artifacts: z.array(artifactSchema),
+    bookmarks: z.array(bookmarkSchema).default([]),
     taskOrder: z.array(id).default([]),
     taskOrderRevision: z.number().int().nonnegative().default(0),
     applications: z
@@ -393,6 +395,7 @@ export const stateSchema = z
 export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
+  ...bookmarkOperations,
   z
     .object({
       type: z.literal("reorder-tasks"),
@@ -722,6 +725,7 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     conversations: [],
     applicationInstances: [],
     artifacts: [],
+    bookmarks: [],
     taskOrder: [],
     taskOrderRevision: 0,
     relations: [],
@@ -831,6 +835,34 @@ function checkContent(state: Workspace, projectId: string, content: Content) {
 }
 
 /** Pure, shared command boundary. Identity comes from a trusted adapter, never the command body. */
+export function bookmarkOwner(
+  state: Workspace,
+  access: AccessContext,
+  inputId?: string,
+) {
+  const actor = state.actants.find(
+    (a) => a.id === access.actantId && a.principalId === access.principalId,
+  );
+  if (!actor) throw new DomainError("forbidden", "参与者与主体不匹配。");
+  if (actor.kind === "human") return actor.principalId;
+  // Only the persisted initiating input can delegate this person's bookmarks.
+  // Neither the model nor a project containing multiple people chooses an owner.
+  const input = state.inputs.find(
+    (i) => i.id === inputId && i.targetActantId === actor.id,
+  );
+  const human = state.actants.find(
+    (a) =>
+      a.id === input?.author.actantId &&
+      a.principalId === input.author.principalId &&
+      a.kind === "human",
+  );
+  if (!input || !human)
+    throw new DomainError("forbidden", "收藏操作需要发起用户的实际输入。");
+  checkProject(state, input.projectId, access);
+  checkProject(state, input.projectId, input.author);
+  return human.principalId;
+}
+
 export function applyCommand(
   current: Workspace,
   command: Command,
@@ -945,6 +977,74 @@ export function applyCommand(
       );
   }
   let entityId = command.commandId;
+  if (
+    op.type === "bookmark-add" ||
+    op.type === "bookmark-update" ||
+    op.type === "bookmark-remove" ||
+    op.type === "bookmark-restore"
+  ) {
+    const owner = bookmarkOwner(state, access, originInputId);
+    if (op.type === "bookmark-add") {
+      const existing = state.bookmarks.find(
+        (b) => b.ownerPrincipalId === owner && b.url === op.url && !b.deletedAt,
+      );
+      if (existing) entityId = existing.id;
+      else
+        state.bookmarks.push({
+          id: entityId,
+          ownerPrincipalId: owner,
+          title: op.title,
+          url: op.url,
+          revision: 1,
+          createdBy: access,
+          updatedBy: access,
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        });
+    } else {
+      const bookmark = state.bookmarks.find(
+        (b) => b.id === op.bookmarkId && b.ownerPrincipalId === owner,
+      );
+      if (!bookmark)
+        throw new DomainError("not_found", "收藏不存在或不可访问。");
+      if (bookmark.revision !== op.expectedRevision)
+        throw new DomainError("conflict", "收藏已被修改，请重新查看后再操作。");
+      if ((op.type === "bookmark-restore") !== !!bookmark.deletedAt)
+        throw new DomainError("conflict", "收藏状态已改变，请重新查看。");
+      const url = op.type === "bookmark-update" ? op.url : bookmark.url;
+      if (
+        op.type !== "bookmark-remove" &&
+        state.bookmarks.some(
+          (b) =>
+            b.id !== bookmark.id &&
+            b.ownerPrincipalId === owner &&
+            !b.deletedAt &&
+            b.url === url,
+        )
+      )
+        throw new DomainError("conflict", "这个网址已经收藏，原收藏未改动。");
+      if (op.type === "bookmark-update") {
+        bookmark.title = op.title;
+        bookmark.url = op.url;
+      }
+      bookmark.deletedAt = op.type === "bookmark-remove" ? now : null;
+      bookmark.updatedBy = access;
+      bookmark.updatedAt = now;
+      bookmark.revision++;
+      entityId = bookmark.id;
+    }
+  }
+  if (
+    (op.type === "create-artifact" || op.type === "revise-artifact") &&
+    op.content.kind === "website" &&
+    (op.type === "create-artifact" ||
+      getArtifact(state, op.artifactId).content.kind !== "website")
+  )
+    throw new DomainError(
+      "invalid",
+      "已停止新建网页收藏内容对象。请使用浏览器收藏操作；已保存的旧网页仍可访问。",
+    );
   if (
     op.type === "create-artifact" &&
     op.content.kind === "document" &&

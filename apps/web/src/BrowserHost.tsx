@@ -7,32 +7,31 @@ import {
   Hand,
   Globe,
   ShieldCheck,
-  Bookmark,
   MessageCircle,
 } from "lucide-react";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { BrowserView } from "./desktop.js";
 import { registerNativeBrowserLayout } from "./native-browser-layout.js";
+import type { WorkspaceClient } from "./client.js";
+import { BrowserBookmarks } from "./BrowserBookmarks.js";
 
 export function BrowserHost({
+  client,
   artifact,
   autoOpen = false,
   projectId,
   initialURL = "",
   onPage,
-  onSave,
-  savedURLs = [],
   onReturn,
   onInput,
   returnLabel = "工作空间",
   activeView = true,
 }: {
+  client: WorkspaceClient;
   artifact?: Artifact;
   projectId?: string;
   initialURL?: string;
   onPage?: (page: BrowserView | null) => void;
-  onSave?: (url: string, title: string) => Promise<void>;
-  savedURLs?: readonly string[];
   onReturn?: () => void;
   onInput?: () => void;
   returnLabel?: string;
@@ -48,7 +47,6 @@ export function BrowserHost({
     ),
     [error, setError] = useState(""),
     [opening, setOpening] = useState(false);
-  const [saving, setSaving] = useState(false);
   const activeViewRef = useRef(activeView);
   activeViewRef.current = activeView;
   const latestOnPage = useRef(onPage);
@@ -288,31 +286,42 @@ export function BrowserHost({
             onChange={(e) => setURL(e.target.value)}
           />
         </form>
-        {onSave && (
-          <button
-            aria-label="保存网页到内容"
-            aria-pressed={!!page && savedURLs.includes(page.url)}
-            title={
-              page && savedURLs.includes(page.url)
-                ? "已保存到内容"
-                : "保存网页到内容"
-            }
-            disabled={!page || saving || savedURLs.includes(page.url)}
-            onClick={async () => {
-              if (!page) return;
-              setSaving(true);
-              try {
-                await onSave(page.url, page.title);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : "保存失败。");
-              } finally {
-                setSaving(false);
+        <BrowserBookmarks
+          client={client}
+          url={page?.url ?? url}
+          title={page?.title ?? artifact?.title ?? ""}
+          readCurrentTitle={
+            page && desktop
+              ? async () => {
+                  const current = await desktop.state();
+                  if (
+                    current?.pageId !== page.pageId ||
+                    current.url !== page.url
+                  )
+                    throw new Error("页面已变化，请核对后重新收藏。");
+                  return current.title;
+                }
+              : undefined
+          }
+          onOpen={async (address) => {
+            if (!desktop) throw new Error("请在桌面应用中打开网页。");
+            if (page) setPage(await desktop.navigate(page.pageId, address));
+            else {
+              // Unlike automatic reopening, a bookmark is an explicit navigation.
+              const p = await desktop.open({
+                projectId: projectId ?? artifact!.projectId,
+                url: address,
+              });
+              if (!mounted.current) {
+                await desktop.close(p.pageId);
+                return;
               }
-            }}
-          >
-            <Bookmark />
-          </button>
-        )}
+              active.current = p.pageId;
+              setPage(p);
+              setURL(p.url);
+            }
+          }}
+        />
         <button
           className="browser-assistance"
           aria-label={page?.granted ? "我来接管" : "允许 Agent 协助"}
