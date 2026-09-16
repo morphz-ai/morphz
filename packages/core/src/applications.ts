@@ -45,6 +45,16 @@ export const applicationManifestSchema = z
   })
   .strict();
 export type ApplicationManifest = z.infer<typeof applicationManifestSchema>;
+
+/** Presentation-only correction for the bundled example's old launcher copy.
+ * Installed HTML, protocol, permissions, versions and saved instances stay intact.
+ */
+export function applicationDescription(app: ApplicationManifest) {
+  return app.id === "example.scratchpad" &&
+    app.description === "宿主协议示例：独立界面、状态恢复、保存对象与协作输入。"
+    ? "记下想法，保存为文档，或交给 Morphz 继续整理。"
+    : app.description;
+}
 export const applicationStateSchema = z
   .record(z.string().max(100), z.json())
   .refine(

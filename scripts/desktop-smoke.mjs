@@ -206,7 +206,7 @@ try {
     .setInputFiles("examples/applications/scratchpad.json");
   await window.getByRole("button", { name: "允许并安装" }).click();
   await window
-    .getByRole("button", { name: "工作便笺 1.1.0", exact: true })
+    .getByRole("button", { name: "工作便笺 1.1.1", exact: true })
     .click();
   const application = window.frameLocator('iframe[title="工作便笺应用界面"]');
   await expect(application.locator("#status")).toContainText("已连接");

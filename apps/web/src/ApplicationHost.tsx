@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import {
   applicationManifestSchema,
+  applicationDescription,
   applicationMessageSchema,
   objectsApplication,
   browserApplication,
@@ -371,7 +372,7 @@ export function ApplicationHost({
                       <AppIcon app={app} />
                     </span>
                     <strong>{app.title}</strong>
-                    <small>{app.description}</small>
+                    <small>{applicationDescription(app)}</small>
                   </button>
                 </div>
               ))}
@@ -517,7 +518,7 @@ function InstallApplication({
           <X />
         </button>
       </header>
-      <p>{app.description}</p>
+      <p>{applicationDescription(app)}</p>
       <p className="muted">
         {app.id} · {app.version}
       </p>

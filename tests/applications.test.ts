@@ -13,6 +13,7 @@ import {
 } from "../packages/core/src/model.js";
 import {
   applicationManifestSchema,
+  applicationDescription,
   objectsApplication,
 } from "../packages/core/src/applications.js";
 import { workspaceFor } from "../apps/service/src/identity.js";
@@ -27,6 +28,21 @@ const app = applicationManifestSchema.parse({
   permissions: ["artifacts.read", "artifacts.write", "input.compose"],
   harness: { id: "test-harness", version: "1.0.0" },
   ui: { type: "sandbox", html: "<!doctype html><p>App</p>" },
+});
+test("旧便笺的启动台说明使用日常语言，不改包、状态或第三方应用说明", () => {
+  const description = "宿主协议示例：独立界面、状态恢复、保存对象与协作输入。";
+  const legacy = { ...app, id: "example.scratchpad", description };
+  const before = JSON.stringify(legacy);
+  assert.equal(
+    applicationDescription(legacy),
+    "记下想法，保存为文档，或交给 Morphz 继续整理。",
+  );
+  assert.equal(JSON.stringify(legacy), before);
+  assert.equal(applicationDescription({ ...app, description }), description);
+  assert.equal(
+    applicationDescription({ ...legacy, description: "自定义说明" }),
+    "自定义说明",
+  );
 });
 test("应用实例和原对话随工作台原子保存为项目，重启、关闭和重开都不复制内容", () => {
   const directory = mkdtempSync(join(tmpdir(), "mw-apps-")),

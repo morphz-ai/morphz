@@ -1,9 +1,9 @@
 {
   "format": "morphz-app/v1",
   "id": "example.scratchpad",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "title": "工作便笺",
-  "description": "宿主协议示例：独立界面、状态恢复、保存对象与协作输入。",
+  "description": "记下想法，保存为文档，或交给 Morphz 继续整理。",
   "icon": "document",
   "permissions": ["artifacts.read", "artifacts.write", "input.compose"],
   "harness": null,

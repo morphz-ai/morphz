@@ -149,9 +149,12 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toContainText("填入输入草稿");
   await page.getByRole("button", { name: "允许并安装" }).click();
   const tile = page.getByRole("button", {
-    name: "工作便笺 1.1.0",
+    name: "工作便笺 1.1.1",
     exact: true,
   });
+  await expect(tile).toContainText(
+    "记下想法，保存为文档，或交给 Morphz 继续整理。",
+  );
   await tile.focus();
   await expect(page.locator("iframe")).toHaveCount(0);
   await tile.press("Enter");
@@ -185,7 +188,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
-    .getByRole("button", { name: "工作便笺 1.1.0", exact: true })
+    .getByRole("button", { name: "工作便笺 1.1.1", exact: true })
     .press("Space");
   await expect(app.locator("#note")).toHaveValue(
     "我的应用状态：保留这段文字。",
