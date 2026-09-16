@@ -236,9 +236,21 @@
   margin-right: auto;
   white-space: nowrap;
 }
+.empty-state-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .project-directory-toolbar .search-field {
   width: min(200px, 32%);
   height: 32px;
+}
+.project-directory-narrow .composer-more {
+  width: auto;
+  gap: 4px;
+  padding-inline: 6px;
+  font-size: 12px;
 }
 .app .matter-collection,
 .app .project-directory {

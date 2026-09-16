@@ -23,6 +23,47 @@ async function menu(page: Page, title: string, action: string) {
     .click();
 }
 
+test("项目空态明确筛选范围，可清除搜索或返回使用中，刷新不偷改筛选", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const title = "TEST 筛选边界 " + Date.now();
+  await create(page, title);
+  await directory(page);
+  await page.getByLabel("项目排序").selectOption("name");
+  await page.getByLabel("项目范围", { exact: true }).selectOption("deleted");
+  await page.getByLabel("搜索项目", { exact: true }).fill(title);
+  await page.reload();
+  await expect(page.getByLabel("项目范围", { exact: true })).toHaveValue(
+    "deleted",
+  );
+  await expect(page.locator(".project-scope-count")).toHaveText(
+    "已删除 · 0 项",
+  );
+  await expect(
+    page.getByRole("heading", { name: "在已删除项目中未找到结果" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "清除搜索", exact: true }).click();
+  await expect(page.getByLabel("搜索项目", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("搜索项目", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("项目范围", { exact: true })).toHaveValue(
+    "deleted",
+  );
+  await page.getByLabel("搜索项目", { exact: true }).fill(title);
+  await page
+    .getByRole("button", { name: "查看使用中的项目", exact: true })
+    .click();
+  await expect(page.getByLabel("项目范围", { exact: true })).toHaveValue(
+    "active",
+  );
+  await expect(page.getByLabel("搜索项目", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("项目排序")).toHaveValue("name");
+  await expect(page.getByLabel("搜索项目", { exact: true })).toBeFocused();
+  await expect(
+    page.getByLabel("打开项目：" + title, { exact: true }),
+  ).toBeVisible();
+});
+
 test("项目统一管理：改名同步两处，归档与删除可恢复，目录查找与排序往返保留", async ({
   page,
 }) => {

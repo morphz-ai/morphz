@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { scopedStorage } from "./client.js";
 import {
   projectActivity,
@@ -65,6 +65,7 @@ export function ProjectDirectory({
       : "active",
   );
   const [storageError, setStorageError] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
     try {
       storage.writeLocal("project-directory", { query, sort, status });
@@ -124,13 +125,16 @@ export function ProjectDirectory({
       {toolbarTarget &&
         createPortal(
           <div className="project-directory-toolbar">
-            <span>{projects.length} 个项目</span>
+            <span className="project-scope-count">
+              {statusLabel} · {projects.length} 项
+            </span>
             <div className="project-directory-wide">
               {scopeControl("项目范围")}
             </div>
             <label className="search-field">
               <Search />
               <input
+                ref={searchInput}
                 aria-label="搜索项目"
                 value={query}
                 placeholder="搜索项目"
@@ -145,7 +149,12 @@ export function ProjectDirectory({
                 below
                 label={`筛选项目：${statusLabel}`}
                 menuLabel="筛选项目"
-                triggerIcon={<SlidersHorizontal />}
+                triggerIcon={
+                  <>
+                    <SlidersHorizontal />
+                    <span>{statusLabel}</span>
+                  </>
+                }
                 options={[]}
                 modelControl={
                   <div className="task-filter-panel">
@@ -210,13 +219,43 @@ export function ProjectDirectory({
           <Search />
           <h2>
             {query.trim()
-              ? "没有找到这个项目"
+              ? `在${statusLabel}项目中未找到结果`
               : status === "archived"
                 ? "没有已归档项目"
                 : status === "deleted"
                   ? "没有已删除项目"
                   : "还没有项目"}
           </h2>
+          <div className="empty-state-actions">
+            {query.trim() && (
+              <button
+                className="secondary-action"
+                onClick={() => {
+                  setQuery("");
+                  searchInput.current?.focus();
+                }}
+              >
+                清除搜索
+              </button>
+            )}
+            {status !== "active" ? (
+              <button
+                className="secondary-action"
+                onClick={() => {
+                  setStatus("active");
+                  setQuery("");
+                  searchInput.current?.focus();
+                }}
+              >
+                查看使用中的项目
+              </button>
+            ) : !query.trim() ? (
+              <button className="secondary-action" onClick={onCreate}>
+                <Plus />
+                新建项目
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
     </section>
