@@ -208,7 +208,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     await route.fulfill({ response });
   });
   await page.getByRole("button", { name: "保存为项目", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("认知应用验收");
+  await page.getByLabel("项目名称", { exact: true }).fill("认知应用验收");
   // Present the native modal above the out-of-process frame before mouse input.
   await page.evaluate(
     () =>

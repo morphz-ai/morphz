@@ -72,7 +72,12 @@ export function taskGroups(
   const filtered = state.artifacts.filter((a): a is TaskArtifact => {
     if (a.content.kind !== "task") return false;
     const project = state.projects.find((p) => p.id === a.projectId);
-    if (!project?.members.includes(principalId)) return false;
+    if (
+      !project?.members.includes(principalId) ||
+      project.deletedAt ||
+      project.archivedAt
+    )
+      return false;
     if (options.projectId && options.projectId !== a.projectId) return false;
     const assigneeId = a.content.assigneeId;
     const actor = state.actants.find((actor) => actor.id === assigneeId);

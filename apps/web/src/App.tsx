@@ -58,6 +58,16 @@ import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
+import {
+  ProjectMenu,
+  ProjectActionDialog,
+  type ProjectAction,
+} from "./ProjectManagement.js";
+import {
+  projectActivity,
+  projectStatus,
+  type Project,
+} from "../../../packages/core/src/projects.js";
 import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
@@ -310,6 +320,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   >(() => readLocal(draftKey("conversations"), {}));
   const conversationDraftsRef = useRef(conversationDrafts);
   conversationDraftsRef.current = conversationDrafts;
+  const [projectAction, setProjectAction] = useState<{
+    project: Project;
+    action: ProjectAction;
+  } | null>(null);
+  const [projectDirectoryVersion, setProjectDirectoryVersion] = useState(0);
+  const [discardedDrafts, setDiscardedDrafts] = useState<
+    Record<
+      string,
+      { conversation: ConversationDraft; drafts: Record<string, InputDraft> }
+    >
+  >(() => readLocal(draftKey("discarded-conversations"), {}));
+  const manageProject = (project: Project, action: ProjectAction) =>
+    setProjectAction({ project, action });
   const sendPending = useRef(false);
   const startedConversations = new Set([
     ...(state?.inputs.map(discussionId) ?? []),
@@ -402,7 +425,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ? personalSpace("dialogue")?.id
     : navigationProject?.id;
   const applicationWorkspaceOpen =
-    prefs.view === "desk" || (prefs.view === "projects" && prefs.projectOpen);
+    (prefs.view === "desk" ||
+      (prefs.view === "projects" && prefs.projectOpen)) &&
+    !!project &&
+    projectStatus(project) === "active";
   const activeId =
     project && applicationWorkspaceOpen
       ? prefs.applications?.[project.id] === null
@@ -610,7 +636,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     current.index = index;
     restoring.current = true;
     setRestoredPlace(next);
-    setPrefs((previous) => ({ ...previous, ...next }));
+    setPrefs((previous) => {
+      const restored = { ...previous, ...next };
+      try {
+        writeLocal("preferences", restored);
+      } catch {
+        setNotice("当前位置暂时无法持久保存。");
+      }
+      return restored;
+    });
     setTrailVersion((v) => v + 1);
   }
   useEffect(() => {
@@ -984,6 +1018,77 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setConversationDrafts(next);
     }
     selectConversation(workspaceId, pending.id, true);
+  }
+  function discardConversationDraft(id: string) {
+    if (sendPending.current) {
+      setNotice("消息正在提交，请等待结果后整理草稿。");
+      return;
+    }
+    const conversation =
+      Object.values(conversationDrafts).find((c) => c.id === id) ??
+      state?.conversations.find((c) => c.id === id);
+    if (!conversation) return;
+    const discarded = {
+      ...discardedDrafts,
+      [id]: {
+        conversation: {
+          ...conversation,
+          inputId:
+            "inputId" in conversation
+              ? conversation.inputId
+              : crypto.randomUUID(),
+        },
+        drafts: Object.fromEntries(
+          Object.entries(drafts).filter(([key]) => key.startsWith(id + ":")),
+        ),
+      },
+    };
+    const remaining = { ...conversationDrafts };
+    if (remaining[conversation.projectId]?.id === id)
+      delete remaining[conversation.projectId];
+    const remainingInputs = Object.fromEntries(
+      Object.entries(drafts).filter(([key]) => !key.startsWith(id + ":")),
+    );
+    try {
+      writeLocal(draftKey("discarded-conversations"), discarded);
+      writeLocal(draftKey("inputs"), remainingInputs);
+      writeLocal(draftKey("conversations"), remaining);
+      setDiscardedDrafts(discarded);
+      setDrafts(remainingInputs);
+      setConversationDrafts(remaining);
+      conversationDraftsRef.current = remaining;
+      if (conversationId === id) openProject(conversation.projectId);
+    } catch {
+      setNotice("草稿整理未完成，原文仍保留，请重试。");
+    }
+  }
+  function restoreConversationDraft(id: string) {
+    const saved = discardedDrafts[id];
+    if (!saved) return;
+    const pending = conversationDrafts[saved.conversation.projectId];
+    if (pending && pending.id !== id && hasConversationDraft(pending.id)) {
+      setNotice("请先发送或丢弃当前项目的新草稿，再恢复这份草稿。");
+      return;
+    }
+    const inputs = { ...drafts, ...saved.drafts },
+      next = {
+        ...conversationDrafts,
+        [saved.conversation.projectId]: saved.conversation,
+      },
+      trash = { ...discardedDrafts };
+    delete trash[id];
+    try {
+      writeLocal(draftKey("inputs"), inputs);
+      writeLocal(draftKey("conversations"), next);
+      writeLocal(draftKey("discarded-conversations"), trash);
+      setDrafts(inputs);
+      setConversationDrafts(next);
+      conversationDraftsRef.current = next;
+      setDiscardedDrafts(trash);
+      selectConversation(saved.conversation.projectId, id, true);
+    } catch {
+      setNotice("草稿恢复失败，保存的原文仍在，请重试。");
+    }
   }
   function openProject(id: string) {
     // An explicit project click means its default conversation, not whichever
@@ -1627,7 +1732,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </button>
           </div>
           {state.projects
-            .filter((p) => spaceKind(p) === "project")
+            .filter(
+              (p) =>
+                spaceKind(p) === "project" && projectStatus(p) === "active",
+            )
+            .sort(
+              (a, b) =>
+                projectActivity(
+                  state,
+                  b,
+                  client.boot!.runtime.messages,
+                ).localeCompare(
+                  projectActivity(state, a, client.boot!.runtime.messages),
+                ) || a.title.localeCompare(b.title, "zh-CN"),
+            )
             .map((p) => (
               <ProjectConversations
                 key={p.id}
@@ -1662,8 +1780,34 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 onOpen={() => openProject(p.id)}
                 onSelect={(id) => selectConversation(p.id, id)}
                 onCreate={(title) => createProjectConversation(p.id, title)}
+                onManage={manageProject}
+                onDiscardDraft={discardConversationDraft}
+                discardedDrafts={Object.values(discardedDrafts)
+                  .filter((d) => d.conversation.projectId === p.id)
+                  .map((d) => d.conversation)}
+                onRestoreDraft={restoreConversationDraft}
               />
             ))}
+          {state.projects.some((p) => p.deletedAt || p.archivedAt) && (
+            <button
+              className="project-archive-directory"
+              onClick={() => {
+                writeLocal("project-directory", {
+                  query: "",
+                  sort: "recent",
+                  status: state.projects.some(
+                    (p) => p.archivedAt && !p.deletedAt,
+                  )
+                    ? "archived"
+                    : "deleted",
+                });
+                setProjectDirectoryVersion((v) => v + 1);
+                navigate("projects");
+              }}
+            >
+              已归档 / 已删除
+            </button>
+          )}
         </div>
         <div className="sidebar-bottom">
           <span className="avatar">我</span>
@@ -1794,6 +1938,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     <button onClick={() => openProject(project.id)}>
                       {project.title}
                     </button>
+                    <ProjectMenu project={project} onAction={manageProject} />
                   </>
                 )}
                 {artifact && (
@@ -1923,6 +2068,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   onInput={showInput}
                   onBrowserPage={setBrowserPage}
                   toolbarTarget={toolbarTarget}
+                  projectControls={
+                    spaceKind(project) === "project" ? (
+                      <ProjectMenu project={project} onAction={manageProject} />
+                    ) : undefined
+                  }
                   client={client}
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
@@ -2027,11 +2177,40 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     />
                   ) : prefs.view === "projects" && !prefs.projectOpen ? (
                     <ProjectDirectory
+                      key={projectDirectoryVersion}
                       toolbarTarget={pageToolbarTarget}
                       state={state}
                       onOpen={openProject}
                       onCreate={() => setCreating("project")}
+                      onManage={manageProject}
+                      messages={client.boot!.runtime.messages}
                     />
+                  ) : projectStatus(project) !== "active" ? (
+                    <section className="retired-project">
+                      <h2>{project.deletedAt ? "已删除项目" : "已归档项目"}</h2>
+                      <p>会话、内容和事项仍保留。恢复项目后可以继续工作。</p>
+                      <button
+                        className="secondary-action"
+                        onClick={() => manageProject(project, "restore")}
+                      >
+                        恢复项目
+                      </button>
+                      {state.conversations
+                        .filter(
+                          (c) =>
+                            c.projectId === project.id &&
+                            c.id !== project.id &&
+                            startedConversations.has(c.id),
+                        )
+                        .map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => selectConversation(project.id, c.id)}
+                          >
+                            {c.title}
+                          </button>
+                        ))}
+                    </section>
                   ) : (
                     <ObjectCollection
                       key={
@@ -2102,7 +2281,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   />
                 )}
                 <div className="composer-dock">
-                  {selectedConversation?.archivedAt ? (
+                  {projectStatus(project) !== "active" ? (
+                    <div className="archived-conversation-note">
+                      <span>
+                        项目{project.deletedAt ? "已删除" : "已归档"}
+                        ，原数据与草稿仍保留。
+                      </span>
+                      <button onClick={() => manageProject(project, "restore")}>
+                        恢复项目
+                      </button>
+                    </div>
+                  ) : selectedConversation?.archivedAt ? (
                     <div className="archived-conversation-note">
                       <span>对话已归档，历史和后台工作仍保留。</span>
                       <button
@@ -2670,6 +2859,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           }}
         />
       )}
+      {projectAction && (
+        <ProjectActionDialog
+          key={`${projectAction.project.id}:${projectAction.action}`}
+          {...projectAction}
+          client={client}
+          onClose={() => setProjectAction(null)}
+          onSaved={(id, action) => {
+            setProjectAction(null);
+            if (
+              (action === "archive" || action === "delete") &&
+              project.id === id
+            )
+              navigate("projects");
+          }}
+        />
+      )}
       {connectionOpen && (
         <ConnectionDetails
           client={client}
@@ -2870,17 +3075,24 @@ function CreateDialog({
       {kind === "document"
         ? toolbarTarget && createPortal(heading, toolbarTarget)
         : heading}
-      <label className="field">
-        标题
-        <input
-          autoFocus={kind === "document"}
-          aria-label="新对象标题"
-          maxLength={180}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
-        />
-      </label>
+      <div className={kind === "document" ? undefined : "project-name-row"}>
+        <label className="field">
+          {kind === "document" ? "标题" : "项目名称"}
+          <input
+            autoFocus={kind === "document"}
+            aria-label={kind === "document" ? "新对象标题" : "项目名称"}
+            maxLength={180}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+        </label>
+        {kind !== "document" && (
+          <button className="primary" disabled={busy || !title.trim()}>
+            {busy ? "保存中…" : kind === "save-project" ? "保存为项目" : "创建"}
+          </button>
+        )}
+      </div>
       {kind === "document" && (
         <label className="field">
           正文 · Markdown
@@ -2893,17 +3105,21 @@ function CreateDialog({
           />
         </label>
       )}
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-      <footer>
-        <button type="button" onClick={onClose} disabled={busy}>
-          取消
-        </button>
-        <button className="primary" disabled={busy || !title.trim()}>
-          {busy ? "保存中…" : kind === "save-project" ? "保存为项目" : "创建"}
-        </button>
-      </footer>
+      {error && (
+        <div role="alert" className="form-error">
+          {error}
+        </div>
+      )}
+      {kind === "document" && (
+        <footer>
+          <button type="button" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button className="primary" disabled={busy || !title.trim()}>
+            {busy ? "保存中…" : "创建"}
+          </button>
+        </footer>
+      )}
     </form>
   );
   if (kind === "document")
@@ -2915,7 +3131,7 @@ function CreateDialog({
   return (
     <dialog
       ref={dialog}
-      className="create-dialog"
+      className="create-dialog project-dialog"
       onCancel={(e) => {
         e.preventDefault();
         if (!busy) onClose();

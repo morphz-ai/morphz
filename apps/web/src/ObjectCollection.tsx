@@ -89,7 +89,7 @@ export function ObjectCollection({
   );
   const scope = !catalog
     ? project.id
-    : projects.some((p) => p.id === catalogScope)
+    : projects.some((p) => p.id === catalogScope && !p.deletedAt)
       ? catalogScope
       : "all";
   const [editing, setEditing] = useState<{
@@ -103,7 +103,11 @@ export function ObjectCollection({
   } | null>(null);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  const contentObjects = objects.filter(isContentArtifact);
+  const contentObjects = objects.filter(
+    (a) =>
+      isContentArtifact(a) &&
+      !projects.find((p) => p.id === a.projectId)?.deletedAt,
+  );
   const scopedObjects = contentObjects.filter(
     (a) => scope === "all" || a.projectId === scope,
   );
@@ -211,11 +215,13 @@ export function ObjectCollection({
                 onChange={(e) => onScopeChange?.(e.target.value)}
               >
                 <option value="all">全部工作空间</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title}
-                  </option>
-                ))}
+                {projects
+                  .filter((p) => !p.deletedAt)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
               </select>
             )}
             <label

@@ -99,7 +99,9 @@ export function ContentMetadata({
                   .filter(
                     (p) =>
                       p.id === original.projectId ||
-                      ["project", "desk"].includes(p.kind ?? "project"),
+                      (!p.archivedAt &&
+                        !p.deletedAt &&
+                        ["project", "desk"].includes(p.kind ?? "project")),
                   )
                   .map((p) => (
                     <option value={p.id} key={p.id}>

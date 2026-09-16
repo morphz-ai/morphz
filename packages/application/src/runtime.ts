@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertProjectWritable } from "../../core/src/projects.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1233,7 +1234,9 @@ export class RuntimeBridge {
     const workspace = this.store.snapshot();
     const input = workspace.inputs.find((item) => item.id === inputId);
     if (!input) throw new DomainError("invalid", "输入不存在。");
-    checkProject(workspace, input.projectId, this.actor());
+    assertProjectWritable(
+      checkProject(workspace, input.projectId, this.actor()),
+    );
     const conversation = checkConversation(
       workspace,
       input.projectId,

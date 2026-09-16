@@ -467,7 +467,7 @@ try {
   await window.getByLabel("AI 输入内容").fill("原生全局对话草稿，不发送");
   await expect(window.locator(".conversation")).toBeVisible();
   await window.getByRole("button", { name: "新建项目", exact: true }).click();
-  await window.getByLabel("新对象标题", { exact: true }).fill("原生多对话验收");
+  await window.getByLabel("项目名称", { exact: true }).fill("原生多对话验收");
   await window.getByRole("button", { name: "创建", exact: true }).click();
   await window
     .getByRole("button", { name: "查看本空间内容", exact: true })

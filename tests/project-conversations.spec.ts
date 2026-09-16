@@ -134,7 +134,7 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
 
 async function newProject(page: Page, title: string) {
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill(title);
+  await page.getByLabel("项目名称", { exact: true }).fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(
     page.locator('.sidebar-project[data-active="true"] .project-link'),

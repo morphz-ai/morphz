@@ -13,7 +13,7 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   ).toBeVisible();
   for (const label of ["导航甲", "导航乙"]) {
     await page.getByRole("button", { name: "新建项目", exact: true }).click();
-    await page.getByLabel("新对象标题", { exact: true }).fill(label);
+    await page.getByLabel("项目名称", { exact: true }).fill(label);
     await page.getByRole("button", { name: "创建", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: label, exact: true }),

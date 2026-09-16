@@ -144,6 +144,7 @@ export function searchArtifacts(
   if (request.projectId) checkProject(state, request.projectId, access);
   const projects = new Map(
     state.projects
+      .filter((p) => !p.deletedAt)
       .filter(
         (p) =>
           p.members.includes(access.principalId) &&

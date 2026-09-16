@@ -251,8 +251,13 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
   const create = page.getByRole("dialog", { name: "新建项目", exact: true });
   await expect(create).toBeVisible();
   expect((await create.boundingBox())!.width).toBeLessThanOrEqual(480);
-  await expect(create.locator("footer")).toHaveCSS("padding-top", "0px");
-  await expect(create.locator("footer")).toHaveCSS("margin-top", "12px");
+  await expect(create.locator("footer")).toHaveCount(0);
+  const nameRow = create.locator(".project-name-row");
+  await expect(nameRow.getByLabel("项目名称", { exact: true })).toBeVisible();
+  await expect(
+    nameRow.getByRole("button", { name: "创建", exact: true }),
+  ).toBeVisible();
+  expect((await create.boundingBox())!.height).toBeLessThan(190);
   await assertContained(create);
   await page.keyboard.press("Escape");
 

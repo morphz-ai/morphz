@@ -22,6 +22,7 @@ export class SearchIndex {
     db.exec(`
       CREATE TABLE IF NOT EXISTS search_actor (id TEXT PRIMARY KEY, principal TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS search_project (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS search_deleted_project (id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS search_member (project TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY(project, principal));
       CREATE TABLE IF NOT EXISTS search_object (rowid INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, project TEXT NOT NULL, revision INTEGER NOT NULL, title TEXT NOT NULL, title_fold TEXT NOT NULL, body TEXT NOT NULL, body_fold TEXT NOT NULL, meta TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS search_object_project ON search_object(project);
@@ -40,7 +41,7 @@ export class SearchIndex {
   sync(state: Workspace) {
     // Authority and projection share the caller's transaction. Never index first and authorize later.
     this.db.exec(
-      "DELETE FROM search_actor; DELETE FROM search_project; DELETE FROM search_member; DELETE FROM asset_project;",
+      "DELETE FROM search_actor; DELETE FROM search_project; DELETE FROM search_deleted_project; DELETE FROM search_member; DELETE FROM asset_project;",
     );
     const actor = this.db.prepare(
         "INSERT INTO search_actor(id,principal) VALUES(?,?)",
@@ -57,6 +58,10 @@ export class SearchIndex {
     for (const a of state.actants) actor.run(a.id, a.principalId);
     for (const p of state.projects) {
       project.run(p.id, p.title);
+      if (p.deletedAt)
+        this.db
+          .prepare("INSERT INTO search_deleted_project(id) VALUES(?)")
+          .run(p.id);
       for (const principal of p.members) member.run(p.id, principal);
     }
     const revisions = new Map(
@@ -154,7 +159,8 @@ export class SearchIndex {
       )
         throw new DomainError("forbidden", "没有访问这个项目的权限。");
     }
-    let where = "m.principal=?";
+    let where =
+      "m.principal=? AND NOT EXISTS (SELECT 1 FROM search_deleted_project d WHERE d.id=o.project)";
     const params: SQLInputValue[] = [access.principalId];
     for (const term of terms) {
       where +=

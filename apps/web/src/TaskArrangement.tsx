@@ -167,6 +167,8 @@ export function TaskProperties({
   const projects = state.projects.filter(
     (p) =>
       p.members.includes(client.boot!.principalId) &&
+      !p.archivedAt &&
+      !p.deletedAt &&
       (p.kind === "project" ||
         !p.kind ||
         (p.kind === "inbox" &&

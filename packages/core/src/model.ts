@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertProjectWritable, projectManager } from "./projects.js";
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
 import {
@@ -297,6 +298,10 @@ export const stateSchema = z
           createdAt: timestamp,
           kind: z.enum(["project", "desk", "inbox", "dialogue"]).optional(),
           ownerPrincipalId: id.optional(),
+          revision: z.number().int().positive().optional(),
+          updatedAt: timestamp.optional(),
+          archivedAt: timestamp.nullable().optional(),
+          deletedAt: timestamp.nullable().optional(),
         })
         .strict(),
     ),
@@ -529,6 +534,15 @@ export const operationSchema = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("create-project"), title }).strict(),
+  z
+    .object({
+      type: z.literal("update-project"),
+      projectId: id,
+      expectedRevision: z.number().int().positive(),
+      title: title.optional(),
+      state: z.enum(["active", "archived", "deleted"]).optional(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal("import-document"),
@@ -822,6 +836,7 @@ export function applyCommand(
   command: Command,
   access: AccessContext,
   now = new Date().toISOString(),
+  originInputId?: string,
 ): { state: Workspace; receipt: Receipt } {
   const actor = current.actants.find((a) => a.id === access.actantId);
   if (!actor || actor.principalId !== access.principalId)
@@ -829,6 +844,54 @@ export function applyCommand(
   const state = structuredClone(current),
     op = command.operation;
   ensureDiscussions(state);
+  // Reads and historical references remain valid. New work cannot mutate a
+  // retired container; lifecycle commands are the explicit recovery path.
+  if (op.type !== "update-project") {
+    const targets = new Set<string>();
+    if ("projectId" in op) targets.add(op.projectId);
+    if ("workspaceId" in op) targets.add(op.workspaceId);
+    if ("artifactId" in op && op.artifactId) {
+      const artifact = state.artifacts.find((a) => a.id === op.artifactId);
+      if (artifact) targets.add(artifact.projectId);
+    }
+    if ("taskId" in op) {
+      const task = state.artifacts.find((a) => a.id === op.taskId);
+      if (task) targets.add(task.projectId);
+    }
+    if (op.type === "arrange-task" && op.changes.projectId)
+      targets.add(op.changes.projectId);
+    if (op.type === "reorder-tasks")
+      for (const id of op.taskIds) {
+        const task = state.artifacts.find((a) => a.id === id);
+        if (task) targets.add(task.projectId);
+      }
+    if (op.type === "organize-content" && op.changes.projectId)
+      targets.add(op.changes.projectId);
+    if (op.type === "update-conversation") {
+      const conversation = state.conversations.find(
+        (c) => c.id === op.conversationId,
+      );
+      if (conversation) targets.add(conversation.projectId);
+    }
+    if ("instanceId" in op) {
+      const instance = state.applicationInstances.find(
+        (i) => i.id === op.instanceId,
+      );
+      if (
+        instance &&
+        op.type !== "set-application-state" &&
+        op.type !== "close-application"
+      )
+        targets.add(instance.workspaceId);
+    }
+    if (op.type === "link-artifacts")
+      for (const id of [op.fromId, op.toId]) {
+        const artifact = state.artifacts.find((a) => a.id === id);
+        if (artifact) targets.add(artifact.projectId);
+      }
+    for (const id of targets)
+      assertProjectWritable(checkProject(state, id, access));
+  }
   // An application frame never receives a general-purpose command capability.
   if (command.applicationInstanceId) {
     const instance = state.applicationInstances.find(
@@ -1354,8 +1417,13 @@ export function applyCommand(
         : conversation!.projectId,
       access,
     );
-    if (actor.kind !== "human" || spaceKind(project) !== "project")
+    if (
+      (op.type === "create-conversation" && actor.kind !== "human") ||
+      spaceKind(project) !== "project"
+    )
       throw new DomainError("forbidden", "只有项目成员可以管理项目内的对话。");
+    if (op.type === "update-conversation")
+      projectManager(state, access, originInputId, project.id);
     if (op.type === "create-conversation") {
       state.conversations.push({
         id: entityId,
@@ -1461,12 +1529,40 @@ export function applyCommand(
     instance.revision++;
     instance.updatedAt = now;
     entityId = instance.id;
+  } else if (op.type === "update-project") {
+    projectManager(state, access, originInputId, op.projectId);
+    const project = checkProject(state, op.projectId, access);
+    if (spaceKind(project) !== "project")
+      throw new DomainError(
+        "invalid",
+        "只能管理命名项目，不能删除默认工作空间。",
+      );
+    if ((project.revision ?? 1) !== op.expectedRevision)
+      throw new DomainError("conflict", "项目已发生变化，请核对后重试。");
+    if (op.title === undefined && op.state === undefined)
+      throw new DomainError("invalid", "需要指定项目变更。");
+    if (project.deletedAt && op.state !== "active")
+      throw new DomainError("conflict", "请先恢复已删除项目。");
+    if (op.title !== undefined) project.title = op.title;
+    if (op.state === "active") {
+      project.archivedAt = null;
+      project.deletedAt = null;
+    }
+    if (op.state === "archived") project.archivedAt = now;
+    if (op.state === "deleted") project.deletedAt = now;
+    project.revision = (project.revision ?? 1) + 1;
+    project.updatedAt = now;
+    entityId = project.id;
   } else if (op.type === "create-project") {
+    const owner = projectManager(state, access, originInputId);
     state.projects.push({
       id: entityId,
       title: op.title,
-      members: [access.principalId, "morphz-service"],
+      members: [owner.principalId, "morphz-service"],
+      ownerPrincipalId: owner.principalId,
       createdAt: now,
+      revision: 1,
+      updatedAt: now,
     });
   } else if (
     op.type === "create-artifact" ||
@@ -1786,7 +1882,11 @@ export function inboxFor(state: Workspace, principalId: string) {
         actants.has(a.content.assigneeId) &&
         !["completed", "cancelled"].includes(a.content.execution) &&
         state.projects.some(
-          (p) => p.id === a.projectId && p.members.includes(principalId),
+          (p) =>
+            p.id === a.projectId &&
+            !p.deletedAt &&
+            !p.archivedAt &&
+            p.members.includes(principalId),
         ),
     )
     .sort((a, b) => {

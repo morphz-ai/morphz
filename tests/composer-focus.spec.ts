@@ -237,7 +237,7 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
   // Create an empty workspace instead of assuming the workbench is empty.
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
   const projectName = "空记录布局验收-" + randomUUID();
-  await page.getByLabel("新对象标题", { exact: true }).fill(projectName);
+  await page.getByLabel("项目名称", { exact: true }).fill(projectName);
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await page
     .getByLabel("新建项目对话：" + projectName, { exact: true })

@@ -302,6 +302,7 @@ export function TaskList({
     >
       <option value="">全部项目</option>
       {state.projects
+        .filter((p) => !p.deletedAt && !p.archivedAt)
         .filter(
           (p) =>
             !p.kind ||

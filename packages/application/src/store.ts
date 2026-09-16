@@ -9,6 +9,7 @@ import {
   taskRuntimeSchema,
 } from "../../../packages/core/src/task-runtime.js";
 import { z } from "zod";
+import { projectManager } from "../../core/src/projects.js";
 import type { SearchRequest } from "../../../packages/core/src/retrieval.js";
 import type { ArtifactOutput } from "../../../packages/core/src/conversation.js";
 import {
@@ -266,6 +267,62 @@ export class WorkspaceStore {
         ),
     );
   }
+  projectBlockers(projectId: string, ownInputId?: string): string[] {
+    const state = this.snapshot();
+    const runtime = z
+      .object({
+        deliveries: z
+          .array(z.object({ inputId: z.string(), state: z.string() }))
+          .default([]),
+      })
+      .parse(this.runtimeState() ?? {});
+    const blockers = runtime.deliveries
+      .filter(
+        (d) =>
+          d.inputId !== ownInputId &&
+          ["queued", "sending", "running"].includes(d.state) &&
+          state.inputs.some(
+            (i) => i.id === d.inputId && i.projectId === projectId,
+          ),
+      )
+      .map(() => "有对话正在执行或等待投递");
+    const saved = z
+      .object({
+        runs: z
+          .array(
+            z
+              .object({
+                taskId: z.string(),
+                watchSourceIds: z.array(z.string()).default([]),
+              })
+              .passthrough(),
+          )
+          .default([]),
+      })
+      .parse(this.serviceState("collaboration") ?? {});
+    for (const task of state.artifacts.filter(
+      (a) => a.projectId === projectId && a.content.kind === "task",
+    )) {
+      if (task.content.kind !== "task") continue;
+      const content = task.content;
+      const taskState = taskRuntimeSchema.parse({
+        runs: saved.runs
+          .filter((r) => r.taskId === task.id)
+          .map((r) => ({ ...r, hasSourceWatch: r.watchSourceIds.length > 0 })),
+      });
+      if (
+        taskRunBusy(content, taskState) ||
+        taskState.runs.some((r) =>
+          taskRunBusy(
+            { ...content, runRequested: r.run },
+            { ...taskState, runs: [r] },
+          ),
+        )
+      )
+        blockers.push(`「${task.title}」仍有执行或待执行安排`);
+    }
+    return [...new Set(blockers)];
+  }
   execute(
     raw: unknown,
     access: AccessContext,
@@ -273,11 +330,39 @@ export class WorkspaceStore {
     validateNew?: () => void,
   ): Receipt {
     const command = commandSchema.parse(raw);
+    const management = [
+      "create-project",
+      "update-project",
+      "update-conversation",
+    ].includes(command.operation.type);
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify({ command, access }))
+      .update(
+        JSON.stringify({
+          command,
+          access,
+          ...(management && originInputId
+            ? { originInputId: originInputId ?? null }
+            : {}),
+        }),
+      )
       .digest("hex");
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (management) {
+        const state = this.snapshot(),
+          op = command.operation;
+        projectManager(
+          state,
+          access,
+          originInputId,
+          op.type === "update-project"
+            ? op.projectId
+            : op.type === "update-conversation"
+              ? state.conversations.find((c) => c.id === op.conversationId)
+                  ?.projectId
+              : undefined,
+        );
+      }
       const previous = this.db
         .prepare("SELECT fingerprint,receipt FROM commands WHERE id=?")
         .get(command.commandId) as
@@ -306,6 +391,14 @@ export class WorkspaceStore {
             ? op.artifactId
             : null;
       const currentState = this.snapshot();
+      if (op.type === "update-project" && op.state && op.state !== "active") {
+        const blockers = this.projectBlockers(op.projectId, originInputId);
+        if (blockers.length)
+          throw new DomainError(
+            "conflict",
+            `${blockers.join("；")}。请先停止并确认结束，再${op.state === "deleted" ? "删除" : "归档"}项目。`,
+          );
+      }
       const task = currentState.artifacts.find((a) => a.id === taskId);
       if (task?.content.kind === "task") {
         const currentTask = task.content;
@@ -429,7 +522,13 @@ export class WorkspaceStore {
         !this.asset(op.content.assetId)?.mime.startsWith("image/")
       )
         throw new DomainError("invalid", "图片尚未上传或已经不可用。");
-      const { state, receipt } = applyCommand(this.snapshot(), command, access);
+      const { state, receipt } = applyCommand(
+        this.snapshot(),
+        command,
+        access,
+        undefined,
+        originInputId,
+      );
       const output =
         originInputId &&
         (op.type === "create-artifact" || op.type === "revise-artifact")

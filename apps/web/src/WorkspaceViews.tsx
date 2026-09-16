@@ -1,8 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { scopedStorage } from "./client.js";
+import {
+  projectActivity,
+  projectStatus,
+  type ProjectStatus,
+  type Project,
+} from "../../../packages/core/src/projects.js";
+import { ProjectMenu, type ProjectAction } from "./ProjectManagement.js";
+import { ComposerOptions } from "./ComposerOptions.js";
+import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import { createPortal } from "react-dom";
-import { ArrowUpRight, Folder, Plus, Search, Clock3 } from "lucide-react";
+import {
+  ArrowUpRight,
+  Folder,
+  Plus,
+  Search,
+  Clock3,
+  SlidersHorizontal,
+} from "lucide-react";
 import {
   spaceKind,
+  isContentArtifact,
   type Workspace,
   type Artifact,
 } from "../../../packages/core/src/model.js";
@@ -20,22 +38,79 @@ export function ProjectDirectory({
   onOpen,
   onCreate,
   toolbarTarget,
+  onManage,
+  messages,
 }: {
   state: Workspace;
   onOpen: (id: string) => void;
   onCreate: () => void;
   toolbarTarget: HTMLElement | null;
+  onManage: (project: Project, action: ProjectAction) => void;
+  messages: ConversationRuntime["messages"];
 }) {
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("recent");
+  const [storage] = useState(() => scopedStorage());
+  const [saved] = useState(() =>
+    storage.readLocal<{ query: string; sort: string; status: ProjectStatus }>(
+      "project-directory",
+      { query: "", sort: "recent", status: "active" },
+    ),
+  );
+  const [query, setQuery] = useState(
+    typeof saved?.query === "string" ? saved.query : "",
+  );
+  const [sort, setSort] = useState(saved?.sort === "name" ? "name" : "recent");
+  const [status, setStatus] = useState<ProjectStatus>(
+    saved?.status === "archived" || saved?.status === "deleted"
+      ? saved.status
+      : "active",
+  );
+  const [storageError, setStorageError] = useState("");
+  useEffect(() => {
+    try {
+      storage.writeLocal("project-directory", { query, sort, status });
+      setStorageError("");
+    } catch {
+      setStorageError("筛选暂时无法保存，当前页面仍可使用。");
+    }
+  }, [query, sort, status, storage]);
+  const statusLabel =
+    status === "active"
+      ? "使用中"
+      : status === "archived"
+        ? "已归档"
+        : "已删除";
+  const scopeControl = (label: string) => (
+    <select
+      aria-label={label}
+      value={status}
+      onChange={(e) => setStatus(e.target.value as ProjectStatus)}
+    >
+      <option value="active">使用中</option>
+      <option value="archived">已归档</option>
+      <option value="deleted">已删除</option>
+    </select>
+  );
+  const sortControl = (label: string) => (
+    <select
+      aria-label={label}
+      value={sort}
+      onChange={(e) => setSort(e.target.value)}
+    >
+      <option value="recent">最近活动</option>
+      <option value="name">名称</option>
+    </select>
+  );
   const updated = (id: string) =>
-    state.artifacts
-      .filter((a) => a.projectId === id)
-      .reduce((latest, a) => (a.updatedAt > latest ? a.updatedAt : latest), "");
+    projectActivity(
+      state,
+      state.projects.find((p) => p.id === id)!,
+      messages,
+    );
   const projects = state.projects
     .filter(
       (p) =>
         spaceKind(p) === "project" &&
+        projectStatus(p) === status &&
         p.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
     )
     .sort((a, b) =>
@@ -49,10 +124,10 @@ export function ProjectDirectory({
       {toolbarTarget &&
         createPortal(
           <div className="project-directory-toolbar">
-            <span>
-              {state.projects.filter((p) => spaceKind(p) === "project").length}{" "}
-              个项目
-            </span>
+            <span>{projects.length} 个项目</span>
+            <div className="project-directory-wide">
+              {scopeControl("项目范围")}
+            </div>
             <label className="search-field">
               <Search />
               <input
@@ -62,14 +137,24 @@ export function ProjectDirectory({
                 onChange={(e) => setQuery(e.target.value)}
               />
             </label>
-            <select
-              aria-label="项目排序"
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-            >
-              <option value="recent">最近更新</option>
-              <option value="name">名称</option>
-            </select>
+            <div className="project-directory-wide">
+              {sortControl("项目排序")}
+            </div>
+            <div className="project-directory-narrow">
+              <ComposerOptions
+                below
+                label={`筛选项目：${statusLabel}`}
+                menuLabel="筛选项目"
+                triggerIcon={<SlidersHorizontal />}
+                options={[]}
+                modelControl={
+                  <div className="task-filter-panel">
+                    <label>范围{scopeControl("筛选项目范围")}</label>
+                    <label>排序{sortControl("筛选项目排序")}</label>
+                  </div>
+                }
+              />
+            </div>
             <button
               className="secondary-action"
               onClick={onCreate}
@@ -82,41 +167,56 @@ export function ProjectDirectory({
           </div>,
           toolbarTarget,
         )}
+      {storageError && (
+        <p className="form-error" role="alert">
+          {storageError}
+        </p>
+      )}
       <div className="project-grid">
         {projects.map((p) => {
           const objects = state.artifacts.filter((a) => a.projectId === p.id);
-          const latest = [...objects].sort((a, b) =>
-            b.updatedAt.localeCompare(a.updatedAt),
-          )[0]?.updatedAt;
+          const latest = updated(p.id);
           const todo = objects.filter(pending).length;
           return (
-            <button
-              key={p.id}
-              className="project-card"
-              onClick={() => onOpen(p.id)}
-            >
-              <span className="project-card-top">
-                <span className="project-folder">
-                  <Folder />
+            <article key={p.id} className="project-card">
+              <ProjectMenu project={p} onAction={onManage} />
+              <button
+                className="project-card-open"
+                aria-label={`打开项目：${p.title}`}
+                onClick={() => onOpen(p.id)}
+              >
+                <span className="project-card-top">
+                  <span className="project-folder">
+                    <Folder />
+                  </span>
+                  <ArrowUpRight />
                 </span>
-                <ArrowUpRight />
-              </span>
-              <h2>{p.title}</h2>
-              <p>
-                {objects.length} 项内容{todo ? " · " + todo + " 项待推进" : ""}
-              </p>
-              <span className="project-card-bottom">
-                <Clock3 />
-                {latest ? "更新于 " + dateLabel(latest) : "尚无内容"}
-              </span>
-            </button>
+                <h2>{p.title}</h2>
+                <p>
+                  {objects.filter(isContentArtifact).length} 项内容
+                  {todo ? " · " + todo + " 项待推进" : ""}
+                </p>
+                <span className="project-card-bottom">
+                  <Clock3 />
+                  {"最近活动 " + dateLabel(latest)}
+                </span>
+              </button>
+            </article>
           );
         })}
       </div>
       {!projects.length && (
         <div className="empty-state">
           <Search />
-          <h2>{query.trim() ? "没有找到这个项目" : "还没有项目"}</h2>
+          <h2>
+            {query.trim()
+              ? "没有找到这个项目"
+              : status === "archived"
+                ? "没有已归档项目"
+                : status === "deleted"
+                  ? "没有已删除项目"
+                  : "还没有项目"}
+          </h2>
         </div>
       )}
     </section>

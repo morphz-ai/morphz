@@ -68,6 +68,7 @@ export function ApplicationHost({
   enabled = true,
   foreground = true,
   toolbarTarget,
+  projectControls,
   onBrowserPage,
   onInput,
 }: {
@@ -85,6 +86,7 @@ export function ApplicationHost({
   enabled?: boolean;
   foreground?: boolean;
   toolbarTarget: HTMLElement | null;
+  projectControls?: ReactNode;
 }) {
   const state = client.boot!.workspace;
   const space = state.projects.find((p) => p.id === workspaceId)!;
@@ -196,6 +198,7 @@ export function ApplicationHost({
         <Grid2X2 />
       </button>
       {!active && <h1 className="toolbar-title">{space.title}</h1>}
+      {projectControls}
       {active?.applicationId !== objectsApplication.id && (
         <button
           className="workspace-content"

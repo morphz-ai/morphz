@@ -61,7 +61,7 @@ test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({
 test("单行应用标签、固定资料工具区与侧栏全局操作", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("新建项目", { exact: true }).click();
-  await page.getByLabel("新对象标题", { exact: true }).fill("紧凑工作空间验收");
+  await page.getByLabel("项目名称", { exact: true }).fill("紧凑工作空间验收");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page).toHaveTitle("紧凑工作空间验收 — Morphz");
   await openLibrary(page);
@@ -89,7 +89,10 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   expect(top.height).toBe(48);
   const chrome = page.locator(".library-chrome");
   const before = (await chrome.boundingBox())!;
-  expect(before.y).toBe(top.y + top.height);
+  await page.screenshot({ path: "test-results/project-content-chrome.png" });
+  const actions = (await page.locator(".content-actions").boundingBox())!;
+  expect(actions.y).toBe(top.y + top.height);
+  expect(before.y).toBe(actions.y + actions.height);
   expect(before.height).toBeLessThan(110);
 
   const boot = await (await page.request.get("/api/workspace")).json();
