@@ -1,17 +1,22 @@
 import { test, expect, type Page } from "@playwright/test";
 import { seedCenter } from "./center-fixtures.js";
 import { humanTask } from "./artifact-fixtures.js";
+import { openSettings } from "./settings-helpers.js";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
-async function prepare(page: Page) {
+async function prepare(
+  page: Page,
+  runtime?: { configured: boolean; connected: boolean },
+) {
   await page.route("**/api/workspace", async (route) => {
     const { "if-none-match": _etag, ...headers } = route.request().headers();
     const response = await route.fetch({ headers });
     const boot = await response.json();
     boot.capabilities.modelSettings = true;
+    if (runtime) Object.assign(boot.runtime, runtime);
     const human = boot.workspace.actants.find(
       (a: { id: string }) => a.id === boot.actantId,
     );
@@ -54,7 +59,9 @@ async function prepare(page: Page) {
   );
 }
 
-test("侧栏身份与操作独立对齐，项目再多也不挤走底部入口", async ({ page }) => {
+test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且不被项目挤走", async ({
+  page,
+}) => {
   await prepare(page);
   for (let i = 0; i < 22; i++)
     await seedCenter(page, {
@@ -68,12 +75,8 @@ test("侧栏身份与操作独立对齐，项目再多也不挤走底部入口",
   ]) {
     await page.setViewportSize(size);
     const footer = page.locator(".sidebar-bottom");
-    const details = footer.getByRole("button", {
-      name: "连接详情",
-      exact: true,
-    });
     const models = footer.getByRole("button", {
-      name: "模型与账号",
+      name: "设置",
       exact: true,
     });
     await expect(models).toBeInViewport();
@@ -83,17 +86,28 @@ test("侧栏身份与操作独立对齐，项目再多也不挤走底部入口",
       .boundingBox())!;
     expect(navigation.y + navigation.height).toBeLessThanOrEqual(before.y);
     expect(before.y + before.height).toBeLessThanOrEqual(size.height);
-    expect(before.height).toBeLessThanOrEqual(106);
-    const identity = (await page.locator(".sidebar-identity").boundingBox())!;
+    expect(before.height).toBeLessThanOrEqual(64);
+    await expect(footer.getByRole("button")).toHaveCount(1);
+    const identity = (await footer.locator(".profile-identity").boundingBox())!;
     const avatar = (await footer.locator(".avatar").boundingBox())!;
     expect(
       Math.abs(identity.y + identity.height / 2 - avatar.y - avatar.height / 2),
     ).toBeLessThan(1);
+    const name = footer.locator(".profile-name");
+    const status = footer.locator(".profile-status");
+    await expect(name).toHaveText("TEST 较长的工作空间使用者名称");
+    await expect(status).toHaveText("智能体未连接");
+    await expect(status).toBeInViewport();
+    const nameBox = (await name.boundingBox())!;
+    const statusBox = (await status.boundingBox())!;
+    expect(statusBox.y).toBeGreaterThanOrEqual(nameBox.y + nameBox.height);
+    expect(statusBox.x).toBeCloseTo(nameBox.x, 1);
     await expect(footer.locator(".avatar")).toHaveText("");
-    for (const target of [details, models]) {
+    for (const target of [models]) {
       const box = (await target.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(32);
-      expect(box.width).toBeGreaterThan(210);
+      expect(box.width).toBeGreaterThanOrEqual(32);
+      expect(box.x).toBeGreaterThanOrEqual(identity.x + identity.width);
       expect(
         await target.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       ).toBe(true);
@@ -115,21 +129,90 @@ test("侧栏身份与操作独立对齐，项目再多也不挤走底部入口",
       .scrollIntoViewIfNeeded();
     expect(await footer.boundingBox()).toEqual(before);
     await expect(models).toBeInViewport();
+    const menu = page.getByRole("group", { name: "用户菜单", exact: true });
+    await status.click();
+    await expect(menu).toHaveCount(0);
+    await expect(footer.getByRole("button", { name: "用户菜单" })).toHaveCount(
+      0,
+    );
+    await expect(footer.locator(".sidebar-entry-chevron")).toHaveCount(0);
+    await page.screenshot({
+      path: `test-results/ui-profile-menu-${size.width}.png`,
+    });
     await models.press("Enter");
+    await expect(page.locator(".settings-dialog :focus")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(models).toBeFocused();
+    await openSettings(page, "模型与账号");
     await expect(
-      page.getByRole("dialog", { name: "模型设置", exact: true }),
+      page.getByRole("dialog", { name: "设置", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(models).toBeFocused();
-    await details.press("Enter");
+    await openSettings(page, "智能体连接");
     await expect(
-      page.getByRole("dialog", { name: "连接详情", exact: true }),
+      page.getByRole("dialog", { name: "设置", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(details).toBeFocused();
+    await expect(models).toBeFocused();
     await page.screenshot({
       path: `test-results/ui-sidebar-${size.width}.png`,
     });
+  }
+});
+
+test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持续可读", async ({
+  page,
+}) => {
+  const runtime = { configured: true, connected: true };
+  await prepare(page, runtime);
+  await page.goto("/");
+  const trigger = page.locator(".profile-summary:visible");
+  const status = page.locator(".sidebar-bottom .profile-status");
+  const menu = page.getByRole("group", { name: "用户菜单", exact: true });
+  for (const state of [
+    { configured: true, connected: true, label: "智能体已连接" },
+    { configured: true, connected: false, label: "智能体连接异常" },
+    { configured: false, connected: false, label: "智能体未连接" },
+    { configured: true, connected: true, label: "智能体已连接" },
+  ]) {
+    runtime.configured = state.configured;
+    runtime.connected = state.connected;
+    await expect(status).toHaveText(state.label);
+    await expect(status).toBeInViewport();
+    await expect(status.locator(".presence-dot")).toHaveAttribute(
+      "data-online",
+      String(state.connected),
+    );
+    await expect(trigger).toHaveAccessibleDescription(
+      `TEST 较长的工作空间使用者名称 · ${state.label}`,
+    );
+    await expect(menu).toBeHidden();
+    await status.click();
+    await expect(menu).toHaveCount(0);
+    await expect(page.locator(".sidebar-entry-chevron")).toHaveCount(0);
+    await expect(
+      page.getByText(state.label, { exact: true }).filter({ visible: true }),
+    ).toHaveCount(1);
+  }
+  for (const width of [380, 320]) {
+    await page.setViewportSize({ width, height: 540 });
+    await expect(trigger).toBeInViewport();
+    await expect(trigger).toHaveAccessibleDescription(
+      "TEST 较长的工作空间使用者名称 · 智能体已连接",
+    );
+    await expect(trigger).not.toHaveAttribute("tabindex", "0");
+    const settings = page.getByRole("button", { name: "设置", exact: true });
+    await expect(settings).toBeInViewport();
+    await settings.press("Space");
+    await expect(
+      page.getByRole("dialog", { name: "设置", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: `test-results/ui-profile-menu-${width}.png`,
+    });
+    await page.keyboard.press("Escape");
+    await expect(settings).toBeFocused();
   }
 });
 
@@ -169,13 +252,11 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
           .getByRole("button", { name: new RegExp(`^${label}(?: |$)`) })
           .click();
         await expect(
-          page.getByRole("button", { name: "模型与账号", exact: true }),
+          page.getByRole("button", { name: "设置", exact: true }),
         ).toBeInViewport();
         await expect(
-          page
-            .locator(".sidebar")
-            .getByRole("button", { name: "连接详情", exact: true }),
-        ).toBeInViewport();
+          page.locator(".sidebar-model-settings, .connection-summary"),
+        ).toHaveCount(0);
         expect(
           await page
             .locator(".app")
@@ -190,10 +271,10 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
   }
   const trigger = page
     .locator(".sidebar")
-    .getByRole("button", { name: "连接详情", exact: true });
-  await trigger.click();
+    .getByRole("button", { name: "设置", exact: true });
+  await openSettings(page, "智能体连接");
   await expect(
-    page.getByRole("dialog", { name: "连接详情", exact: true }),
+    page.getByRole("dialog", { name: "设置", exact: true }),
   ).toContainText("尚未连接");
   await page.keyboard.press("Escape");
   await expect(trigger).toBeFocused();
@@ -201,11 +282,18 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
   await page.route("**/api/workspace", (route) =>
     route.fulfill({ status: 503, json: { message: "TEST 断线" } }),
   );
-  await expect(page.locator(".sidebar-connection-state")).toHaveText(
+  await expect(
+    page.locator(".sidebar-bottom .profile-warning"),
+  ).toHaveAttribute("aria-label", "应用连接中断");
+  await expect(page.locator(".sidebar-bottom .profile-status")).toHaveText(
     "应用连接中断",
   );
   await expect(
-    page.getByLabel("重新连接应用", { exact: true }),
+    page.locator(".sidebar-bottom .profile-status"),
+  ).toBeInViewport();
+  await openSettings(page, "智能体连接");
+  await expect(
+    page.getByRole("button", { name: "重新连接", exact: true }),
   ).toBeInViewport();
 });
 
@@ -216,8 +304,7 @@ test("设置表单的长账号名和模型 ID 不挤压动作，窄窗操作可�
   await page.goto("/");
   for (const width of [1380, 760, 320]) {
     await page.setViewportSize({ width, height: 540 });
-    await page.getByRole("button", { name: "模型与账号", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+    const dialog = await openSettings(page, "模型与账号");
     await dialog.getByRole("button", { name: "选择模型", exact: true }).click();
     const read = dialog.getByRole("button", {
       name: "读取并测试",
@@ -257,5 +344,63 @@ test("设置表单的长账号名和模型 ID 不挤压动作，窄窗操作可�
       await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     ).toBe(true);
     await page.keyboard.press("Escape");
+  }
+});
+
+test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返回可见齿轮", async ({
+  page,
+}) => {
+  await prepare(page);
+  await page.route("**/api/workspace", async (route) => {
+    const { "if-none-match": _etag, ...headers } = route.request().headers();
+    const response = await route.fetch({ headers });
+    const boot = await response.json();
+    boot.capabilities.teamAuthentication = true;
+    await route.fulfill({ response, json: boot });
+  });
+  await page.goto("/");
+  const trigger = page.getByRole("button", { name: "用户菜单", exact: true });
+  await trigger.click();
+  const menu = page.getByRole("group", { name: "用户菜单", exact: true });
+  await expect(menu.getByRole("button")).toHaveText(["退出登录"]);
+  await expect(
+    menu.getByRole("button", { name: "设置", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "内容", exact: true })
+    .click();
+  await expect(menu).toBeHidden();
+  await expect(
+    page.getByRole("heading", { name: "内容", exact: true }),
+  ).toBeVisible();
+  await trigger.press("Enter");
+  await expect(
+    menu.getByRole("button", { name: "退出当前身份", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  for (const width of [380, 1380]) {
+    await openSettings(page, "外观");
+    await page.setViewportSize({ width, height: 540 });
+    await page.keyboard.press("Escape");
+    const settings = page.getByRole("button", { name: "设置", exact: true });
+    await expect(settings).toBeFocused();
+    await settings.press("Space");
+    await expect(
+      page.getByRole("dialog", { name: "设置", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(settings).toBeFocused();
+    await trigger.press("Space");
+    await expect(menu).toBeInViewport();
+    await expect(menu.getByRole("button")).toHaveText(["退出登录"]);
+    if (width < 560)
+      await expect(menu.locator(".profile-menu-summary")).toContainText(
+        "智能体未连接",
+      );
+    else await expect(menu.locator(".profile-menu-summary")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
   }
 });

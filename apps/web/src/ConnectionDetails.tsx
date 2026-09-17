@@ -15,6 +15,60 @@ export function ConnectionDetails({
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   useModal(dialog, closeButton);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [models, setModels] = useState(false);
+  return (
+    <dialog
+      ref={dialog}
+      className="create-dialog connection-dialog"
+      aria-label={models ? "模型设置" : "连接详情"}
+      onCancel={(event) => {
+        if (modelBusy) event.preventDefault();
+        else onClose();
+      }}
+    >
+      {models ? (
+        <ModelSettings
+          onChanged={() => void client.refresh()}
+          onBusy={setModelBusy}
+          exitLocked={modelBusy}
+          closeButton={closeButton}
+          onClose={onClose}
+          onBack={() => {
+            setModels(false);
+            requestAnimationFrame(() => closeButton.current?.focus());
+          }}
+        />
+      ) : (
+        <ConnectionSettings
+          client={client}
+          onClose={onClose}
+          closeButton={closeButton}
+          onModels={() => setModels(true)}
+          onBusy={setModelBusy}
+        />
+      )}
+    </dialog>
+  );
+}
+
+/** The same connection controls are used by Settings and contextual recovery. */
+export function ConnectionSettings({
+  client,
+  onClose,
+  closeButton,
+  onModels,
+  onBusy,
+  embedded = false,
+}: {
+  client: WorkspaceClient;
+  onClose: () => void;
+  closeButton: React.RefObject<HTMLButtonElement | null>;
+  onModels: () => void;
+  onBusy: (busy: boolean) => void;
+  embedded?: boolean;
+}) {
+  const body = useRef<HTMLDivElement>(null);
   const runtime = client.boot!.runtime;
   const latest = useRef(client);
   latest.current = client;
@@ -27,11 +81,13 @@ export function ConnectionDetails({
   const [details, setDetails] = useState<Details | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [models, setModels] = useState(false);
-  const [modelBusy, setModelBusy] = useState(false);
   const [endpoint, setEndpoint] = useState("");
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
+  useEffect(() => {
+    onBusy(busy && editing);
+  }, [busy, editing, onBusy]);
+  useEffect(() => () => onBusy(false), [onBusy]);
   useEffect(() => {
     if (editing) (endpoint ? credentialInput : addressInput).current?.focus();
   }, [editing]);
@@ -43,7 +99,7 @@ export function ConnectionDetails({
     if (
       target &&
       (document.activeElement === document.body ||
-        document.activeElement === dialog.current)
+        document.activeElement === body.current?.closest("dialog"))
     )
       (target === "setup" ? setupButton : checkButton).current?.focus();
   }, [editing, busy]);
@@ -142,184 +198,156 @@ export function ConnectionDetails({
         ? "更新连接凭据"
         : "连接设置";
   return (
-    <dialog
-      ref={dialog}
-      className="create-dialog connection-dialog"
-      aria-label={models ? "模型设置" : "连接详情"}
-      onCancel={(event) => {
-        if (modelBusy) event.preventDefault();
-        else onClose();
-      }}
-    >
-      {!models && (
-        <header>
-          <h2>连接详情</h2>
-          <div className="dialog-actions">
-            <button
-              ref={checkButton}
-              className="secondary-action"
-              disabled={busy}
-              onClick={() => void check()}
-            >
-              <RefreshCw size={14} />
-              {busy ? "检查中…" : !client.online ? "重新连接" : "检查连接"}
-            </button>
+    <div ref={body} className="connection-settings">
+      <header>
+        <h2>{embedded ? "智能体连接" : "连接详情"}</h2>
+        <div className="dialog-actions">
+          <button
+            ref={checkButton}
+            className="secondary-action"
+            disabled={busy}
+            onClick={() => void check()}
+          >
+            <RefreshCw size={14} />
+            {busy ? "检查中…" : !client.online ? "重新连接" : "检查连接"}
+          </button>
+          {!embedded && (
             <button
               ref={closeButton}
               className="icon-button"
               aria-label="关闭连接详情"
+              disabled={busy && editing}
               onClick={onClose}
             >
               <X />
             </button>
-          </div>
-        </header>
-      )}
-      {models ? (
-        <ModelSettings
-          onBusy={setModelBusy}
-          exitLocked={modelBusy}
-          closeButton={closeButton}
-          onClose={onClose}
-          onBack={() => {
-            setModels(false);
-            void check();
-            requestAnimationFrame(() => closeButton.current?.focus());
-          }}
-          onChanged={() => {
-            void latest.current.refresh();
-          }}
-        />
-      ) : (
-        <>
-          <dl className="connection-facts">
-            <dt>应用数据</dt>
-            <dd>{client.online ? "可访问" : "暂不可访问"}</dd>
-            <dt>智能体</dt>
-            <dd>{client.online ? serviceLabel : "待确认"}</dd>
-            <dt>当前模型</dt>
-            <dd>{client.online ? modelLabel : "待确认"}</dd>
-          </dl>
-          {!client.online ? (
-            <p role="status">暂时无法读取应用数据，草稿已保留。请重新连接。</p>
-          ) : (
-            details?.message && <p role="status">{details.message}</p>
           )}
-          {client.online &&
-            details &&
-            !details.configurable &&
-            (details.state !== "connected" ||
-              ["not-configured", "unavailable"].includes(
-                details.modelState,
-              )) && (
-              <p className="muted">
-                请联系此工作空间的管理员检查连接和模型配置，然后重新检查。
-              </p>
-            )}
-          {error && <p role="alert">{error}</p>}
-          {editing ? (
-            <form
-              className="connection-setup"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void save();
+        </div>
+      </header>
+      <dl className="connection-facts">
+        <dt>应用数据</dt>
+        <dd>{client.online ? "可访问" : "暂不可访问"}</dd>
+        <dt>智能体</dt>
+        <dd>{client.online ? serviceLabel : "待确认"}</dd>
+        <dt>当前模型</dt>
+        <dd>{client.online ? modelLabel : "待确认"}</dd>
+      </dl>
+      {!client.online ? (
+        <p role="status">暂时无法读取应用数据，草稿已保留。请重新连接。</p>
+      ) : (
+        details?.message && <p role="status">{details.message}</p>
+      )}
+      {client.online &&
+        details &&
+        !details.configurable &&
+        (details.state !== "connected" ||
+          ["not-configured", "unavailable"].includes(details.modelState)) && (
+          <p className="muted">
+            请联系此工作空间的管理员检查连接和模型配置，然后重新检查。
+          </p>
+        )}
+      {error && <p role="alert">{error}</p>}
+      {editing ? (
+        <form
+          className="connection-setup"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <label>
+            运行服务地址
+            <input
+              ref={addressInput}
+              type="url"
+              value={endpoint}
+              readOnly={!!details?.endpoint}
+              required
+              placeholder="http://127.0.0.1:18089"
+              onChange={(event) => setEndpoint(event.target.value)}
+            />
+          </label>
+          <label>
+            连接凭据
+            <input
+              ref={credentialInput}
+              type="password"
+              value={token}
+              required
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setToken(event.target.value)}
+            />
+          </label>
+          <small className="muted">
+            使用本机运行服务提供的连接凭据，不是模型 API Key。
+          </small>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="secondary-action"
+              disabled={busy}
+              onClick={() => {
+                finishEditing();
+                setError("");
               }}
             >
-              <label>
-                运行服务地址
-                <input
-                  ref={addressInput}
-                  type="url"
-                  value={endpoint}
-                  readOnly={!!details?.endpoint}
-                  required
-                  placeholder="http://127.0.0.1:18089"
-                  onChange={(event) => setEndpoint(event.target.value)}
-                />
-              </label>
-              <label>
-                连接凭据
-                <input
-                  ref={credentialInput}
-                  type="password"
-                  value={token}
-                  required
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setToken(event.target.value)}
-                />
-              </label>
-              <small className="muted">
-                使用本机运行服务提供的连接凭据，不是模型 API Key。
-              </small>
-              <div className="dialog-actions">
-                <button
-                  type="button"
-                  className="secondary-action"
-                  disabled={busy}
-                  onClick={() => {
-                    finishEditing();
-                    setError("");
-                  }}
-                >
-                  取消设置
-                </button>
-                <button
-                  className="primary"
-                  disabled={
-                    busy || !client.online || !endpoint.trim() || !token.trim()
-                  }
-                >
-                  {busy ? "验证中…" : "验证并连接"}
-                </button>
-              </div>
-            </form>
-          ) : (
-            <div className="connection-actions">
-              {client.online && details?.configurable && (
-                <button
-                  ref={setupButton}
-                  className="secondary-action"
-                  disabled={busy}
-                  onClick={startEditing}
-                >
-                  <Settings2 size={14} />
-                  {setupLabel}
-                </button>
-              )}
-              {client.online &&
-                details?.state === "connected" &&
-                details.modelSettingsAvailable && (
-                  <button
-                    className="secondary-action"
-                    disabled={busy}
-                    title="管理账号和默认模型"
-                    onClick={() => setModels(true)}
-                  >
-                    <Settings2 size={14} />
-                    设置模型
-                  </button>
-                )}
-            </div>
+              取消设置
+            </button>
+            <button
+              className="primary"
+              disabled={
+                busy || !client.online || !endpoint.trim() || !token.trim()
+              }
+            >
+              {busy ? "验证中…" : "验证并连接"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="connection-actions">
+          {client.online && details?.configurable && (
+            <button
+              ref={setupButton}
+              className="secondary-action"
+              disabled={busy}
+              onClick={startEditing}
+            >
+              <Settings2 size={14} />
+              {setupLabel}
+            </button>
           )}
-          {(client.error || runtime.error) && (
-            <details className="connection-error-detail">
-              <summary>错误详情</summary>
-              <p>{client.error || runtime.error}</p>
-            </details>
-          )}
-          {details?.checkedAt && !busy && (
-            <small className="muted connection-checked">
-              上次检查{" "}
-              {new Date(details.checkedAt).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              })}
-            </small>
-          )}
-        </>
+          {client.online &&
+            details?.state === "connected" &&
+            details.modelSettingsAvailable && (
+              <button
+                className="secondary-action"
+                disabled={busy}
+                title="管理账号和默认模型"
+                onClick={onModels}
+              >
+                <Settings2 size={14} />
+                设置模型
+              </button>
+            )}
+        </div>
       )}
-    </dialog>
+      {(client.error || runtime.error) && (
+        <details className="connection-error-detail">
+          <summary>错误详情</summary>
+          <p>{client.error || runtime.error}</p>
+        </details>
+      )}
+      {details?.checkedAt && !busy && (
+        <small className="muted connection-checked">
+          上次检查{" "}
+          {new Date(details.checkedAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
+        </small>
+      )}
+    </div>
   );
 }

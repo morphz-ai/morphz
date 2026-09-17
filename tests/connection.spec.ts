@@ -1,16 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
+import { openSettings } from "./settings-helpers.js";
 import {
   unconfiguredConnection,
   type ConnectionDetails,
 } from "../packages/core/src/connection.js";
 
 async function openDetails(page: Page) {
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "连接详情" });
+  const dialog = await openSettings(page, "智能体连接");
   await expect(dialog).toBeVisible();
   await expect(
     dialog.getByRole("button", { name: "检查连接", exact: true }),
@@ -54,7 +51,7 @@ test("未配置可进入设置；焦点、取消、Esc 和草稿恢复正常，�
   await input.fill("连接检查过程中保留的草稿");
   const dialog = await openDetails(page);
   await expect(
-    dialog.getByRole("button", { name: "关闭连接详情" }),
+    dialog.getByRole("button", { name: "智能体连接", exact: true }),
   ).toBeFocused();
   await expect(dialog).toContainText("尚未连接");
   await dialog.getByRole("button", { name: "连接智能体", exact: true }).click();
@@ -76,7 +73,7 @@ test("未配置可进入设置；焦点、取消、Esc 和草稿恢复正常，�
   await expect(
     page
       .locator(".sidebar-bottom")
-      .getByRole("button", { name: "连接详情", exact: true }),
+      .getByRole("button", { name: "设置", exact: true }),
   ).toBeFocused();
   await openInput(page);
   await expect(input).toHaveValue("连接检查过程中保留的草稿");
@@ -161,7 +158,7 @@ test("凭据失败保留输入，成功后退出设置；模型未配置有真�
   await expect(dialog).toContainText("尚未配置");
   await dialog.getByRole("button", { name: "设置模型", exact: true }).click();
   await expect(
-    page.getByRole("dialog", { name: "模型设置", exact: true }),
+    page.getByRole("dialog", { name: "设置", exact: true }),
   ).toContainText("添加账号");
   expect(await page.evaluate(() => (window as any).__settings)).toBeUndefined();
   expect(saves).toBe(2);
@@ -185,15 +182,11 @@ test("重试期间禁止重复点击；关闭迟到检查再打开不会污染�
       .catch(() => {});
   });
   await page.goto("/");
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: "连接详情" });
+  const dialog = await openSettings(page, "智能体连接");
   await expect(
     dialog.getByRole("button", { name: "检查中…", exact: true }),
   ).toBeDisabled();
-  await dialog.getByRole("button", { name: "关闭连接详情" }).click();
+  await dialog.getByRole("button", { name: "关闭设置" }).click();
   release();
   await openDetails(page);
   await expect(dialog).toContainText("test-model");

@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator } from "@playwright/test";
 
 test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦点保留", async ({
@@ -41,9 +42,10 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
     }, token);
   for (const appearance of ["亮色", "暗色"]) {
     for (const theme of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
-      await page.getByRole("button", { name: "外观设置", exact: true }).click();
+      await openSettings(page, "外观");
       await page.getByRole("button", { name: appearance, exact: true }).click();
       await page.getByRole("button", { name: theme, exact: true }).click();
+      await page.keyboard.press("Escape");
       await away.hover();
       await expect(create).toHaveCSS("opacity", "0");
       // A named Session, not its project parent, owns the selected state.

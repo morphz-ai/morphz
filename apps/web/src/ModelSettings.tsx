@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { ArrowLeft, ArrowUpRight, Plus, RefreshCw, X } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
-import { useModal } from "./useModal.js";
 import { modelLabel } from "../../../packages/core/src/inference.js";
 import {
   modelSettingsSchema,
@@ -18,6 +17,7 @@ export function ModelSettings({
   onClose,
   closeButton,
   exitLocked,
+  embedded = false,
 }: {
   onChanged: () => void;
   onBusy: (busy: boolean) => void;
@@ -25,6 +25,7 @@ export function ModelSettings({
   onClose: () => void;
   closeButton: RefObject<HTMLButtonElement | null>;
   exitLocked: boolean;
+  embedded?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<ModelSettingsSnapshot | null>(null);
   const [view, setView] = useState<"main" | "add" | "models">("main");
@@ -243,18 +244,22 @@ export function ModelSettings({
                 ? "添加账号"
                 : view === "models"
                   ? "选择模型"
-                  : "模型设置"}
+                  : embedded
+                    ? "模型与账号"
+                    : "模型设置"}
           </h2>
         </div>
-        <button
-          ref={closeButton}
-          className="icon-button"
-          aria-label="关闭模型设置"
-          disabled={exitLocked}
-          onClick={onClose}
-        >
-          <X />
-        </button>
+        {!embedded && (
+          <button
+            ref={closeButton}
+            className="icon-button"
+            aria-label="关闭模型设置"
+            disabled={exitLocked}
+            onClick={onClose}
+          >
+            <X />
+          </button>
+        )}
       </header>
       <div className="model-settings" ref={body} tabIndex={-1} aria-busy={busy}>
         {error && <p role="alert">{error}</p>}
@@ -792,38 +797,5 @@ export function ModelSettings({
         )}
       </div>
     </>
-  );
-}
-
-/** Direct account management uses the same form and mutation/exit guards. */
-export function ModelSettingsDialog({
-  onChanged,
-  onClose,
-}: {
-  onChanged: () => void;
-  onClose: () => void;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const closeButton = useRef<HTMLButtonElement>(null);
-  const [busy, setBusy] = useState(false);
-  useModal(dialog, closeButton);
-  return (
-    <dialog
-      ref={dialog}
-      className="create-dialog connection-dialog"
-      aria-label="模型设置"
-      onCancel={(event) => {
-        if (busy) event.preventDefault();
-        else onClose();
-      }}
-    >
-      <ModelSettings
-        onChanged={onChanged}
-        onBusy={setBusy}
-        onClose={onClose}
-        closeButton={closeButton}
-        exitLocked={busy}
-      />
-    </dialog>
   );
 }

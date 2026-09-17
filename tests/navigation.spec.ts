@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
@@ -41,9 +42,10 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   await expect(
     page.getByRole("region", { name: "认知应用工作空间" }),
   ).not.toContainText("导航甲文档");
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "暗色", exact: true }).click();
   await page.getByRole("button", { name: "电光青", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect(page.locator(".sidebar")).toHaveCSS("width", "280px");
   await expect(page.locator(".sidebar")).toHaveCSS(
     "background-color",

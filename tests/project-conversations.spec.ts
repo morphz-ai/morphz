@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { seedCenter } from "./center-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
@@ -536,9 +537,10 @@ test("项目多对话：不切应用，独立草稿、引用和消息，重命�
   await expect(projectGroup(page).getByLabel("对话操作：持续对话")).toHaveCount(
     0,
   );
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "暗色", exact: true }).click();
   await page.getByRole("button", { name: "电光青", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page.screenshot({
     path: "test-results/project-conversations-dark.png",
   });

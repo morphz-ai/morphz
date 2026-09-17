@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { seedCenter } from "./center-fixtures.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
@@ -38,9 +39,10 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
 
   for (const appearance of ["亮色", "暗色"]) {
     for (const color of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
-      await page.getByRole("button", { name: "外观设置", exact: true }).click();
+      await openSettings(page, "外观");
       await page.getByRole("button", { name: appearance, exact: true }).click();
       await page.getByRole("button", { name: color, exact: true }).click();
+      await page.keyboard.press("Escape");
       await page.keyboard.press("Control+k");
       const search = page.getByRole("dialog", { name: "搜索资料" });
       const field = page.getByLabel("全文搜索");
@@ -159,13 +161,16 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         name: "通知设置",
         exact: true,
       });
-      if ((await settings.getAttribute("aria-expanded")) === "false")
-        await settings.click();
-      await expect(notifications.locator("input:checked + span")).toHaveCSS(
+      await settings.click();
+      const preferences = page.getByRole("dialog", {
+        name: "设置",
+        exact: true,
+      });
+      await expect(preferences.locator("input:checked + span")).toHaveCSS(
         "background-color",
         appearance === "亮色" ? "rgb(255, 255, 255)" : "rgb(48, 48, 48)",
       );
-      await notifications.screenshot({
+      await preferences.screenshot({
         path: `test-results/notifications-${appearance}-${color}.png`,
       });
       await page.keyboard.press("Escape");

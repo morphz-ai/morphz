@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
@@ -137,7 +138,7 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
     }),
   ).toHaveCount(0);
   for (const color of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
-    await page.getByRole("button", { name: "外观设置" }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: color, exact: true }).click();
   }
   await page.reload();

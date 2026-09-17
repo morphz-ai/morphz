@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { openLibrary } from "./application-helpers.js";
@@ -77,7 +78,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   await expect(page.locator(".topbar .input-toggle")).toHaveCount(0);
   await expect(page.locator(".library-collection h1")).toHaveCount(0);
   await expect(
-    page.locator(".sidebar-header").getByLabel("外观设置", { exact: true }),
+    page.getByRole("button", { name: "设置", exact: true }),
   ).toBeVisible();
   await expect(
     page.locator(".sidebar-header").getByRole("button", { name: /^通知/ }),
@@ -129,11 +130,13 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   expect((await tabs.boundingBox())!.y).toBeGreaterThanOrEqual(top.y);
   await page.screenshot({ path: "test-results/compact-library.png" });
 
-  await page.getByLabel("外观设置", { exact: true }).click();
+  await openSettings(page, "外观");
   const appearance = page.getByRole("region", { name: "外观设置面板" });
   expect((await appearance.boundingBox())!.x).toBeGreaterThanOrEqual(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByLabel("外观设置", { exact: true })).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: "设置", exact: true }),
+  ).toBeFocused();
   await page.locator(".sidebar-header .notification-trigger").click();
   await expect(
     page.getByRole("dialog", { name: "通知", exact: true }),
@@ -182,7 +185,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   ).toBe(false);
   await page.getByLabel("显示侧边栏", { exact: true }).click();
   await expect(
-    page.locator(".sidebar-header").getByLabel("外观设置", { exact: true }),
+    page.getByRole("button", { name: "设置", exact: true }),
   ).toBeVisible();
   await tabs.getByRole("tab", { name: "内容", exact: true }).click();
   await page.locator(".composer-reopen").click();

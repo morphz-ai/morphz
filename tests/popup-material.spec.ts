@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
@@ -21,8 +22,8 @@ test("外观模式的选中面不与底槽或悬停混淆，系统模式和键�
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
-  const menu = page.getByLabel("外观设置面板");
+  await openSettings(page, "外观");
+  const menu = page.getByRole("region", { name: "外观设置面板", exact: true });
   const modes = menu.locator(".mode-options");
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
@@ -110,7 +111,7 @@ test("外观模式的选中面不与底槽或悬停混淆，系统模式和键�
     });
   }
   await page.reload();
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(page, "外观");
   await expect(
     modes.getByRole("button", { name: "跟随系统", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
@@ -123,14 +124,16 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
     const dialogs = [];
-    for (const name of ["搜索资料", "通知", "连接详情"]) {
-      await page
-        .getByRole("complementary", { name: "工作空间导航" })
-        .getByRole("button", {
-          name: name === "通知" ? /^通知(?:，|$)/ : name,
-          exact: name !== "通知",
-        })
-        .click();
+    for (const name of ["搜索资料", "通知", "设置"]) {
+      if (name === "设置") await openSettings(page, "外观");
+      else
+        await page
+          .getByRole("complementary", { name: "工作空间导航" })
+          .getByRole("button", {
+            name: name === "通知" ? /^通知(?:，|$)/ : name,
+            exact: name !== "通知",
+          })
+          .click();
       const dialog = page.getByRole("dialog", { name, exact: true });
       dialogs.push(await material(dialog));
       const mask = await dialog.evaluate(
@@ -152,7 +155,9 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
         : "rgba(39, 39, 39, 0.98)",
     );
     await page.getByRole("button", { name: "外观设置", exact: true }).click();
-    const appearance = await material(page.getByLabel("外观设置面板"));
+    const appearance = await material(
+      page.getByRole("group", { name: "外观设置面板", exact: true }),
+    );
     await page.keyboard.press("Escape");
     await page
       .getByRole("button", { name: "工作空间选项", exact: true })
@@ -231,7 +236,9 @@ test("弹窗与菜单在系统、原生辅助功能和独立网页上方使用�
     // The sidebar menu remains available in both native and HTML layouts;
     // native browser chrome and composer geometry have their own regressions.
     await page.getByRole("button", { name: "外观设置", exact: true }).click();
-    const thin = await material(page.getByLabel("外观设置面板"));
+    const thin = await material(
+      page.getByRole("group", { name: "外观设置面板", exact: true }),
+    );
     expect(thin.fill).toBe(thick.fill);
     expect(thin.blur).toBe("none");
     expect(thin.edge).toBe(thick.edge);

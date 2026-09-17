@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { humanTask } from "./artifact-fixtures.js";
 import { localDay } from "../apps/web/src/task-list.js";
@@ -189,7 +190,7 @@ test("失败不假装完成；窄窗筛选可操作且无溢出", async ({ page 
     .getByRole("button", { name: "全部", exact: true })
     .click();
   await page.screenshot({ path: "test-results/task-list-light.png" });
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "暗色", exact: true }).click();
   await page.keyboard.press("Escape");
   // Color transitions finish after the menu closes. Do not capture a mixed

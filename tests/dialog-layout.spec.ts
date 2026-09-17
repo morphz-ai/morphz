@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { openInput, openTranscription } from "./interaction-helpers.js";
 
@@ -261,9 +262,9 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
   await assertContained(create);
   await page.keyboard.press("Escape");
 
-  await page.locator(".connection-summary").click();
+  await openSettings(page, "智能体连接");
   const connection = page.getByRole("dialog", {
-    name: "连接详情",
+    name: "设置",
     exact: true,
   });
   await expect(

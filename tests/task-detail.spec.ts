@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
@@ -37,7 +38,7 @@ test("事项默认阅读，不铺字段表单；四主题与窄窗口的留白�
   if (await page.getByLabel("收起 AI 输入框").isVisible())
     await page.getByLabel("收起 AI 输入框").click();
   for (const theme of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
-    await page.getByLabel("外观设置", { exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: theme, exact: true }).click();
     await page.keyboard.press("Escape");
     for (const width of [1440, 760]) {
@@ -63,10 +64,10 @@ test("事项默认阅读，不铺字段表单；四主题与窄窗口的留白�
       expect(response.y + response.height - bounds.y).toBeLessThan(410);
     }
   }
-  await page.getByLabel("外观设置", { exact: true }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "电光青", exact: true }).click();
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByLabel("外观设置", { exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1280, height: 800 });

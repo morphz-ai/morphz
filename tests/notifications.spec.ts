@@ -1,6 +1,10 @@
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
 import { test, expect } from "@playwright/test";
+import { openSettings } from "./settings-helpers.js";
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 test("旧提醒范围需要明确选择，不再出现高优先级选项", async ({ page }) => {
   let mode = "off",
     needsReview = true;
@@ -15,17 +19,21 @@ test("旧提醒范围需要明确选择，不再出现高优先级选项", async
   await page
     .getByRole("button", { name: "通知，提醒范围待确认", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", { name: "通知", exact: true });
-  await expect(dialog.getByRole("status")).toHaveText(
+  let dialog = page.getByRole("dialog", { name: "通知", exact: true });
+  await expect(dialog.getByRole("status")).toContainText(
     "旧提醒范围已停用，请重新选择。",
   );
+  await expect(dialog.getByRole("radio")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(dialog.getByRole("radio")).toHaveCount(2);
   await expect(
     dialog.getByRole("radio", { name: "不提示", exact: true }),
-  ).toBeChecked();
+  ).not.toBeChecked();
   await dialog.getByRole("radio", { name: "全部提醒", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveCount(0);
-  await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await openSettings(page, "通知");
   await expect(
     dialog.getByRole("radio", { name: "全部提醒", exact: true }),
   ).toBeChecked();
@@ -96,10 +104,13 @@ test("通知可打开事项，已读与提醒范围刷新后保留", async ({ pa
     dialog.getByRole("button", { name: /通知设置验证/ }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
-  await dialog.getByRole("radio", { name: "不提示", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await settings.getByRole("radio", { name: "不提示", exact: true }).click();
   await expect(
-    dialog.getByRole("radio", { name: "不提示", exact: true }),
+    settings.getByRole("radio", { name: "不提示", exact: true }),
   ).toBeChecked();
+  await page.keyboard.press("Escape");
+  await page.locator(".notification-trigger").click();
   await dialog.getByRole("button", { name: /通知设置验证/ }).click();
   await expect(dialog).toHaveCount(0);
   await expect(
@@ -109,8 +120,10 @@ test("通知可打开事项，已读与提醒范围刷新后保留", async ({ pa
   await page.getByRole("button", { name: "通知", exact: true }).click();
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
   await expect(
-    dialog.getByRole("radio", { name: "不提示", exact: true }),
+    settings.getByRole("radio", { name: "不提示", exact: true }),
   ).toBeChecked();
+  await page.keyboard.press("Escape");
+  await page.locator(".notification-trigger").click();
   await expect(
     dialog.getByRole("button", { name: /通知设置验证/ }),
   ).toHaveAttribute("data-unread", "false");
@@ -127,7 +140,7 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
   });
   await page.goto("/");
   await page.getByRole("button", { name: "通知", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "通知", exact: true });
+  let dialog = page.getByRole("dialog", { name: "通知", exact: true });
   await expect(
     dialog.getByRole("heading", { name: "通知", exact: true }),
   ).toBeFocused();
@@ -142,11 +155,13 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
   const list = (await dialog.locator(".notification-list").boundingBox())!;
   expect(list.y - header.y - header.height).toBeLessThanOrEqual(4);
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "设置", exact: true });
   const all = dialog.getByRole("radio", { name: "全部提醒", exact: true });
   await all.click();
   await expect(all).toBeChecked();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "通知", exact: true }).click();
+  await page.locator(".notification-trigger").click();
+  await page.getByRole("button", { name: "通知设置", exact: true }).click();
   await all.focus();
   await expect(all).toBeFocused();
   await all.press("ArrowRight");
@@ -157,14 +172,16 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
     "2px",
   );
   await page.keyboard.press("Shift+Tab");
-  await expect(dialog.getByRole("button", { name: "关闭通知" })).toBeFocused();
+  await expect(
+    dialog.getByRole("button", { name: "智能体连接", exact: true }),
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(
     page.getByRole("button", { name: "通知", exact: true }),
   ).toBeFocused();
   await page.reload();
   await page.getByRole("button", { name: "通知", exact: true }).click();
-  await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
+  await page.getByRole("button", { name: "通知设置", exact: true }).click();
   await expect(dialog.getByRole("radio", { name: "不提示" })).toBeChecked();
   await page.route("**/api/notifications", async (route) => {
     if (route.request().method() === "POST") {

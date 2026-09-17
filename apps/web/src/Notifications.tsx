@@ -22,12 +22,123 @@ const notificationModes = [
   { value: "all", label: "全部提醒" },
   { value: "off", label: "不提示" },
 ] as const;
+
+export function NotificationPreferences({
+  client,
+  onBusy,
+}: {
+  client: WorkspaceClient;
+  onBusy: (busy: boolean) => void;
+}) {
+  const [view, setView] = useState<z.infer<typeof schema> | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const alive = useRef(false),
+    pending = useRef(false),
+    current = useRef(client);
+  current.current = client;
+  async function load() {
+    setError("");
+    try {
+      const next = schema.parse(await current.current.notifications());
+      if (alive.current) setView(next);
+    } catch {
+      if (alive.current) setError("暂时无法读取通知设置，请重试。");
+    }
+  }
+  useEffect(() => {
+    alive.current = true;
+    void load();
+    return () => {
+      alive.current = false;
+      onBusy(false);
+    };
+  }, [onBusy]);
+  async function change(mode: "all" | "off") {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    onBusy(true);
+    setError("");
+    try {
+      const next = schema.parse(
+        await current.current.notifications({ action: "settings", mode }),
+      );
+      window.dispatchEvent(new Event("morphz:notifications-changed"));
+      if (alive.current) setView(next);
+    } catch {
+      if (alive.current) setError("通知设置未保存，请重试。");
+    } finally {
+      pending.current = false;
+      if (alive.current) {
+        setBusy(false);
+        onBusy(false);
+      }
+    }
+  }
+  return (
+    <section className="notification-settings" aria-label="通知偏好">
+      <header>
+        <h2>通知</h2>
+      </header>
+      {error && <p role="alert">{error}</p>}
+      {!view &&
+        (error ? (
+          <button className="secondary-action" onClick={() => void load()}>
+            重试
+          </button>
+        ) : (
+          <p role="status">正在读取通知设置…</p>
+        ))}
+      {view?.needsReview && (
+        <p className="notification-review" role="status">
+          旧提醒范围已停用，请重新选择。
+        </p>
+      )}
+      {view && (
+        <fieldset
+          className="notification-preferences"
+          aria-busy={busy}
+          aria-describedby="notification-mode-hint"
+        >
+          <legend>提醒范围</legend>
+          <div className="notification-modes">
+            {notificationModes.map((mode) => (
+              <label key={mode.value}>
+                <input
+                  type="radio"
+                  name="notification-mode"
+                  value={mode.value}
+                  checked={!view.needsReview && view.mode === mode.value}
+                  aria-disabled={busy}
+                  onClick={(event) => {
+                    if (busy) event.preventDefault();
+                  }}
+                  onChange={() => {
+                    if (!busy) void change(mode.value);
+                  }}
+                />
+                <span>{mode.label}</span>
+              </label>
+            ))}
+          </div>
+          <p className="muted" id="notification-mode-hint">
+            仅影响未读提示，不改变事项或通知记录。
+          </p>
+        </fieldset>
+      )}
+    </section>
+  );
+}
+
 export function Notifications({
   client,
   onOpen,
+  onSettings,
 }: {
   client: WorkspaceClient;
   onOpen: (id: string) => void;
+  onSettings: () => void;
 }) {
   const [view, setView] = useState<z.infer<typeof schema>>({
       mode: "all",
@@ -36,12 +147,9 @@ export function Notifications({
       items: [],
     }),
     [open, setOpen] = useState(false),
-    [settings, setSettings] = useState(false),
     [error, setError] = useState(""),
-    [loadError, setLoadError] = useState(""),
-    [busy, setBusy] = useState(false);
-  const generation = useRef(0),
-    operating = useRef(false);
+    [loadError, setLoadError] = useState("");
+  const generation = useRef(0);
   const storage = useState(() => scopedStorage())[0];
   const pendingReads = useRef(
     new Set(
@@ -63,6 +171,7 @@ export function Notifications({
     }
   }
   const dialog = useRef<HTMLDialogElement>(null),
+    trigger = useRef<HTMLButtonElement>(null),
     heading = useRef<HTMLHeadingElement>(null),
     current = useRef(client);
   current.current = client;
@@ -70,7 +179,7 @@ export function Notifications({
     let alive = true,
       refreshing = false;
     const refresh = async () => {
-      if (refreshing || operating.current) return;
+      if (refreshing) return;
       refreshing = true;
       const version = generation.current;
       if (pendingReads.current.size) {
@@ -116,35 +225,27 @@ export function Notifications({
     };
     refresh();
     const timer = setInterval(refresh, 3000);
+    const changed = () => {
+      generation.current++;
+      void refresh();
+    };
+    window.addEventListener("morphz:notifications-changed", changed);
     return () => {
       alive = false;
       clearInterval(timer);
+      window.removeEventListener("morphz:notifications-changed", changed);
     };
   }, []);
   useModal(dialog, heading, open);
-  async function change(
-    command: Parameters<WorkspaceClient["notifications"]>[0],
-  ) {
-    if (operating.current) return false;
-    operating.current = true;
-    generation.current++;
-    setBusy(true);
-    setError("");
-    try {
-      setView(schema.parse(await client.notifications(command)));
-      setError("");
-      return true;
-    } catch {
-      setError("通知设置未保存，请重试。");
-      return false;
-    } finally {
-      operating.current = false;
-      setBusy(false);
-    }
+  function settings() {
+    setOpen(false);
+    trigger.current?.focus();
+    onSettings();
   }
   return (
     <>
       <button
+        ref={trigger}
         className="icon-button notification-trigger"
         aria-label={`通知${view.needsReview ? "，提醒范围待确认" : view.unread ? `，${view.unread} 项未读` : ""}`}
         title={view.needsReview ? "提醒范围待确认" : "通知"}
@@ -171,9 +272,7 @@ export function Notifications({
             <button
               className="icon-button"
               aria-label="通知设置"
-              aria-expanded={settings || view.needsReview}
-              disabled={view.needsReview}
-              onClick={() => setSettings(!settings)}
+              onClick={settings}
             >
               <Settings2 />
             </button>
@@ -188,42 +287,11 @@ export function Notifications({
           {view.needsReview && (
             <p className="notification-review" role="status">
               旧提醒范围已停用，请重新选择。
+              <button className="secondary-action" onClick={settings}>
+                设置提醒范围
+              </button>
             </p>
           )}
-          {(settings || view.needsReview) && (
-            <fieldset
-              aria-busy={busy}
-              className="notification-preferences"
-              aria-describedby="notification-mode-hint"
-              title="提醒范围：仅影响未读提示，不改变事项或通知记录。"
-            >
-              <legend className="visually-hidden">提醒范围</legend>
-              <div className="notification-modes">
-                {notificationModes.map((mode) => (
-                  <label key={mode.value}>
-                    <input
-                      type="radio"
-                      name="notification-mode"
-                      value={mode.value}
-                      checked={view.mode === mode.value}
-                      aria-disabled={busy}
-                      onClick={(event) => {
-                        if (busy) event.preventDefault();
-                      }}
-                      onChange={() => {
-                        if (!busy)
-                          void change({ action: "settings", mode: mode.value });
-                      }}
-                    />
-                    <span>{mode.label}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          )}
-          <p className="visually-hidden" id="notification-mode-hint">
-            仅影响未读提示，不改变事项或通知记录。
-          </p>
           {(error || loadError) && <p role="alert">{error || loadError}</p>}
           <div className="notification-list">
             {view.items.map((i) => (

@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import {
@@ -328,7 +329,7 @@ test("搜索翻页、切换查询与失败重试；卡片/列表窄窗可见且�
   await page.getByRole("button", { name: "重试", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByLabel("外观设置", { exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     for (const width of [1440, 760, 390]) {

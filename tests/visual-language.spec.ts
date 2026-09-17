@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
@@ -50,8 +51,9 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
   );
 
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByRole("button", { name: "外观设置", exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
+    await page.keyboard.press("Escape");
     await page.locator(".object-paper > h1").click();
     await page.screenshot({
       path: `test-results/visual-actions-${appearance}.png`,

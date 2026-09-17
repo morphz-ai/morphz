@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-test-helpers.mjs";
 import { _electron, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -159,11 +160,64 @@ try {
   console.log(
     "PASS: native composer focus expands history, outside clicks collapse, pin keeps it open, and drafts survive.",
   );
-  await window.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(window, "外观");
   await window.getByRole("button", { name: "亮色", exact: true }).click();
   await window.getByRole("button", { name: "电光青", exact: true }).click();
+  await window.keyboard.press("Escape");
   await window.screenshot({ path: "test-results/desktop-light.png" });
-  await window.getByRole("button", { name: "外观设置", exact: true }).click();
+
+  const appearance = window.getByRole("button", {
+    name: "外观设置",
+    exact: true,
+  });
+  const appearanceBox = await appearance.boundingBox();
+  await window.mouse.click(
+    appearanceBox.x + appearanceBox.width / 2,
+    appearanceBox.y + appearanceBox.height / 2,
+  );
+  const quickAppearance = window.getByRole("group", {
+    name: "外观设置面板",
+    exact: true,
+  });
+  await expect(quickAppearance).toBeVisible();
+  await quickAppearance
+    .getByRole("button", { name: "暗色", exact: true })
+    .click();
+  await quickAppearance
+    .getByRole("button", { name: "更多外观设置", exact: true })
+    .click();
+  const settings = window.getByRole("dialog", { name: "设置", exact: true });
+  await expect(
+    settings.getByRole("button", { name: "暗色", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await settings.getByLabel("阅读字号").selectOption("large");
+  await settings.getByLabel("动画效果").selectOption("reduce");
+  await expect(settings).toHaveCSS("animation-name", "none");
+  await openSettings(window, "输入");
+  await settings.getByLabel("发送快捷键").selectOption("mod-enter");
+  await window.keyboard.press("Escape");
+  await desktopInput.fill("TEST 本机发送偏好，不发送");
+  await desktopInput.press("Enter");
+  await expect(desktopInput).toHaveValue("TEST 本机发送偏好，不发送\n");
+  await window.reload();
+  const inputEntry = window.getByRole("button", { name: /向 Morphz 输入/ });
+  await expect(desktopInput.or(inputEntry)).toBeVisible();
+  if (await inputEntry.isVisible()) await inputEntry.click();
+  await expect(desktopInput).toHaveValue("TEST 本机发送偏好，不发送\n");
+  await openSettings(window, "输入");
+  await expect(settings.getByLabel("发送快捷键")).toHaveValue("mod-enter");
+  await settings.getByLabel("发送快捷键").selectOption("enter");
+  await openSettings(window, "外观");
+  await expect(settings.getByLabel("阅读字号")).toHaveValue("large");
+  await settings.getByLabel("阅读字号").selectOption("standard");
+  await settings.getByLabel("动画效果").selectOption("system");
+  await settings.getByRole("button", { name: "亮色", exact: true }).click();
+  await window.keyboard.press("Escape");
+  await desktopInput.fill("");
+  console.log(
+    "PASS: native appearance quick menu, shared settings, reading/motion choices and multiline-send preference persist without sending a message.",
+  );
+
   // Remote centers must not gain local file access or restart retired sync.
   // The embedded production test covers authorized original-file access.
   await window.getByLabel("工作空间选项").click();
@@ -239,7 +293,7 @@ try {
     window.locator(".topbar").getByRole("tab", { name: "工作便笺" }),
   ).toBeVisible();
   await expect(
-    window.locator(".sidebar-header").getByLabel("外观设置", { exact: true }),
+    window.getByRole("button", { name: "设置", exact: true }),
   ).toBeVisible();
   await expect(
     window.locator(".sidebar-header .notification-trigger"),
@@ -417,7 +471,8 @@ try {
   await notifications
     .getByRole("button", { name: "通知设置", exact: true })
     .click();
-  const notificationBounds = await notifications.boundingBox();
+  const preferences = window.getByRole("dialog", { name: "设置", exact: true });
+  const notificationBounds = await preferences.boundingBox();
   assert.ok(
     notificationBounds.x >= 0 &&
       notificationBounds.x + notificationBounds.width <= viewport.width,
@@ -427,7 +482,7 @@ try {
       notificationBounds.y + notificationBounds.height <= viewport.height,
   );
   await expect(
-    notifications.getByRole("radio", { name: "全部提醒" }),
+    preferences.getByRole("radio", { name: "全部提醒" }),
   ).toBeVisible();
   await window.bringToFront();
   await window.evaluate(

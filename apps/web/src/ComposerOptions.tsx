@@ -23,19 +23,29 @@ export function ComposerOptions({
   unread,
   options,
   label = "更多输入选项",
+  description,
   menuLabel = "输入选项",
   below = false,
   modelControl,
   triggerIcon = <MoreHorizontal />,
+  triggerClassName = "icon-button composer-more",
+  menuClassName = "",
+  header,
+  content,
 }: {
   model?: string;
   unread?: boolean;
   options: ComposerOption[];
   label?: string;
+  description?: string;
   menuLabel?: string;
   below?: boolean;
   modelControl?: ReactNode;
   triggerIcon?: ReactNode;
+  triggerClassName?: string;
+  menuClassName?: string;
+  header?: ReactNode;
+  content?: (close: () => void) => ReactNode;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -94,9 +104,10 @@ export function ComposerOptions({
     <>
       <button
         ref={trigger}
-        className="icon-button composer-more"
+        className={triggerClassName}
         aria-label={label}
-        title={label}
+        aria-description={description}
+        title={description ? `${label} · ${description}` : label}
         aria-controls={id}
         aria-expanded={open}
         aria-describedby={unread ? `${id}-unread` : undefined}
@@ -114,7 +125,7 @@ export function ComposerOptions({
         id={id}
         popover="manual"
         inert={!open}
-        className="composer-options"
+        className={`composer-options ${menuClassName}`}
         role="group"
         aria-label={menuLabel}
         onKeyDown={(event) => {
@@ -151,6 +162,8 @@ export function ComposerOptions({
           }
         }}
       >
+        {header}
+        {open && content?.(closeToTrigger)}
         {options.map((option) => (
           <button
             key={option.label}

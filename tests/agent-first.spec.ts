@@ -36,17 +36,28 @@ test("保存回执和断线不增设底栏或挤动页面；关键信息留在�
     route.fulfill({ status: 503, json: { message: "隔离测试断线" } }),
   );
   await expect(page.locator(".model-status")).toContainText("应用连接中断");
-  await expect(page.getByLabel("重新连接应用")).toBeVisible();
+  await expect(
+    page.locator(".sidebar-bottom .profile-warning"),
+  ).toHaveAttribute("aria-label", "应用连接中断");
   expect(await page.locator(".workspace-body").boundingBox()).toEqual(before);
   expect(await page.locator(".composer").boundingBox()).toEqual(composerBefore);
   await expect(
     page.getByRole("button", { name: "保存输入", exact: true }),
   ).toBeDisabled();
   await expect(input).toHaveValue("断线时保留草稿");
+  await page
+    .locator(".model-status")
+    .getByRole("button", { name: "连接详情", exact: true })
+    .click();
+  const details = page.getByRole("dialog", { name: "连接详情", exact: true });
   await page.unroute("**/api/workspace");
-  await page.getByLabel("重新连接应用").click();
-  await expect(page.getByText("智能体未连接", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("重新连接应用")).toHaveCount(0);
+  await details.getByRole("button", { name: /^(重新连接|检查连接)$/ }).click();
+  await expect(details).toContainText("可访问");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".model-status")).toContainText("尚未连接智能体");
+  await expect(
+    page.getByRole("button", { name: "保存输入", exact: true }),
+  ).toBeEnabled();
   await expect(page.locator(".statusbar")).toHaveCount(0);
   await openInput(page);
   await expect(input).toHaveValue("断线时保留草稿");

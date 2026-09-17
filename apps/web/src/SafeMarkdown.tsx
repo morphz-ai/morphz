@@ -35,11 +35,14 @@ const markdownComponents = {
     useLayoutEffect(() => {
       const elapsed = Date.now() - at;
       const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const reduced = () =>
+        motion.matches ||
+        document.documentElement.dataset.appMotion === "reduce";
       if (
         !element.current ||
         !Number.isFinite(at) ||
         elapsed >= STREAM_TEXT_DURATION ||
-        motion.matches
+        reduced()
       )
         return;
       const animation = element.current.animate(
@@ -53,11 +56,13 @@ const markdownComponents = {
       // old text on a formatting change or a concurrent token update.
       animation.currentTime = Math.max(0, elapsed);
       const reduce = () => {
-        if (motion.matches) animation.cancel();
+        if (reduced()) animation.cancel();
       };
       motion.addEventListener("change", reduce);
+      window.addEventListener("morphz:motion-preference-changed", reduce);
       return () => {
         motion.removeEventListener("change", reduce);
+        window.removeEventListener("morphz:motion-preference-changed", reduce);
         animation.cancel();
       };
     }, [at, offset]);

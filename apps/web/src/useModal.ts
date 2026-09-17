@@ -1,11 +1,14 @@
-import { useLayoutEffect, type RefObject } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 
 /** Native dialog owns modality; explicitly restore selection and initiating focus. */
 export function useModal(
   dialog: RefObject<HTMLDialogElement | null>,
   initialFocus?: RefObject<HTMLElement | null>,
   open = true,
+  fallbackFocus?: (origin: HTMLElement) => HTMLElement | null,
 ) {
+  const fallback = useRef(fallbackFocus);
+  fallback.current = fallbackFocus;
   useLayoutEffect(() => {
     const origin = document.activeElement as HTMLElement | null;
     const textOrigin =
@@ -90,7 +93,8 @@ export function useModal(
       if (origin?.isConnected && !document.querySelector("dialog[open]")) {
         const returnTarget = origin.getClientRects().length
           ? origin
-          : origin.closest("details")?.querySelector<HTMLElement>("summary");
+          : (origin.closest("details")?.querySelector<HTMLElement>("summary") ??
+            fallback.current?.(origin));
         returnTarget?.focus({ preventScroll: true });
         if (textOrigin && textSelection)
           textOrigin.setSelectionRange(...textSelection);

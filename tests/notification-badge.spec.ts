@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 
 test("通知角标固定高度、数字居中、零隐藏、大数封顶且不撑开工具按钮", async ({
@@ -9,7 +10,7 @@ test("通知角标固定高度、数字居中、零隐藏、大数封顶且不�
   );
   await page.goto("/");
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByLabel("外观设置", { exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     for (const count of [1, 12, 1000, 0]) {
@@ -41,11 +42,9 @@ test("通知角标固定高度、数字居中、零隐藏、大数封顶且不�
       expect(
         await badge.evaluate((el) => el.scrollWidth <= el.clientWidth),
       ).toBe(true);
-      await page
-        .locator(".sidebar-header")
-        .screenshot({
-          path: `test-results/notification-badge-${appearance}-${count}.png`,
-        });
+      await page.locator(".sidebar-header").screenshot({
+        path: `test-results/notification-badge-${appearance}-${count}.png`,
+      });
     }
   }
 });

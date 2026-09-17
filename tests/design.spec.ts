@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
@@ -63,9 +64,10 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   await projects();
   for (const appearance of ["亮色", "暗色"]) {
     for (const color of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
-      await page.getByRole("button", { name: "外观设置", exact: true }).click();
+      await openSettings(page, "外观");
       await page.getByRole("button", { name: appearance, exact: true }).click();
       await page.getByRole("button", { name: color, exact: true }).click();
+      await page.keyboard.press("Escape");
       await expect(page.locator(".app")).toHaveCSS(
         "color-scheme",
         appearance === "亮色" ? "light" : "dark",
@@ -111,9 +113,10 @@ test("桌面视觉与真实集合操作：检索、筛选、布局、侧边栏�
   await page.reload();
   await expect(page.locator(".sidebar")).toBeHidden();
   await page.getByRole("button", { name: "显示侧边栏", exact: true }).click();
-  await page.getByRole("button", { name: "外观设置", exact: true }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "亮色", exact: true }).click();
   await page.getByRole("button", { name: "电光青", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page
     .locator(".artifact-card")
     .filter({ hasText: "围绕对象，一起工作" })

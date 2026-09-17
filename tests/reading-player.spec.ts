@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 import { openLibrary } from "./application-helpers.js";
@@ -56,8 +57,9 @@ test("紧凑朗读控件不重复标题，短句显示真实音频进度，展�
     "这是一句简短的朗读内容。",
   );
   await reader.getByRole("button", { name: "朗读内容与章节" }).click();
-  await page.getByRole("button", { name: "外观设置" }).click();
+  await openSettings(page, "外观");
   await page.getByRole("button", { name: "暗色", exact: true }).click();
+  await page.keyboard.press("Escape");
   await reader.screenshot({ path: "test-results/reading-player-dark.png" });
   await reader.getByRole("button", { name: "继续朗读" }).click();
   await expect

@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { seedCenter } from "./center-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
@@ -337,7 +338,7 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
     .getByRole("button", { name: "收起 AI 输入框", exact: true })
     .click();
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByLabel("外观设置", { exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     for (const width of [1440, 760]) {

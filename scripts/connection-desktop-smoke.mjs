@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-test-helpers.mjs";
 import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -66,9 +67,13 @@ try {
   const before = await snapshot();
   const trigger = page
     .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true });
-  await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "连接详情" });
+    .getByRole("button", { name: "设置", exact: true });
+  const identity = page.locator(".sidebar-bottom .profile-summary");
+  const status = identity.locator(".profile-status");
+  await expect(status).toHaveText("智能体未连接");
+  await expect(status).toBeInViewport();
+  await openSettings(page, "智能体连接");
+  const dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("button", { name: "连接智能体", exact: true }).click();
   await dialog.getByLabel("运行服务地址").fill(endpoint);
   await dialog.getByLabel("连接凭据").fill("wrong-fixture-token");
@@ -128,7 +133,7 @@ try {
       );
     }).toPass({ timeout: 3000 });
     assert.ok(await dialog.evaluate((e) => e.scrollWidth <= e.clientWidth + 1));
-    for (const name of ["取消设置", "关闭连接详情"]) {
+    for (const name of ["取消设置", "关闭设置"]) {
       const button = dialog.getByRole("button", { name, exact: true });
       await button.scrollIntoViewIfNeeded();
       assert.ok(
@@ -145,7 +150,22 @@ try {
     });
   }
   await dialog.getByRole("button", { name: "取消设置" }).click();
-  await dialog.getByRole("button", { name: "关闭连接详情" }).click();
+  await dialog.getByRole("button", { name: "关闭设置" }).click();
+  await expect(status).toHaveText("智能体已连接");
+  await expect(status).toBeInViewport();
+  await expect(identity).toHaveAccessibleDescription("我 · 智能体已连接");
+  assert.ok(await trigger.evaluate((e) => e.scrollWidth <= e.clientWidth + 1));
+  await status.click();
+  const menu = page.getByRole("group", { name: "用户菜单", exact: true });
+  await expect(menu).toHaveCount(0);
+  await trigger.click();
+  await expect(dialog).toBeInViewport();
+  await page.screenshot({ path: "test-results/profile-menu-desktop-200.png" });
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await page.screenshot({
+    path: "test-results/profile-status-desktop-200.png",
+  });
   const after = await snapshot();
   assert.equal(after.centerId, before.centerId);
   assert.equal(after.principalId, before.principalId);
@@ -191,6 +211,7 @@ try {
       dataPreserved: true,
       nativeZoom200: true,
       modelNotConfigured: true,
+      visibleProfileStatus: true,
     }),
   );
 } finally {

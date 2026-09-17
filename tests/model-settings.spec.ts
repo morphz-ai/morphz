@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 import type { ModelSettingsSnapshot } from "../packages/core/src/model-settings.js";
@@ -79,12 +80,8 @@ async function prepare(page: Page) {
 }
 async function open(page: Page) {
   await page.goto("/");
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  await page.getByRole("button", { name: "设置模型", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(
     dialog.getByRole("button", { name: "添加账号", exact: true }),
   ).toBeEnabled();
@@ -102,9 +99,9 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("TEST 直接模型设置保留输入");
-  const trigger = page.getByRole("button", { name: "模型与账号", exact: true });
-  await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  const trigger = page.getByRole("button", { name: "设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(
     dialog.getByRole("button", { name: "添加账号", exact: true }),
   ).toBeEnabled();
@@ -120,7 +117,7 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
   ).toBeVisible();
   await dialog.getByRole("button", { name: "返回模型设置" }).click();
   await expect(
-    dialog.getByRole("heading", { name: "模型设置", exact: true }),
+    dialog.getByRole("heading", { name: "模型与账号", exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(trigger).toBeFocused();
@@ -129,7 +126,7 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
   // Closing restores an outside control. An old leave callback must not
   // commit later and hide the newer input focus when the user returns quickly.
   for (let attempt = 0; attempt < 4; attempt++) {
-    await trigger.click();
+    await openSettings(page, "模型与账号");
     await expect(dialog).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
@@ -138,7 +135,7 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
     await expect(input).toHaveValue("TEST 直接模型设置保留输入");
   }
   await page.setViewportSize({ width: 380, height: 540 });
-  await trigger.click();
+  await openSettings(page, "模型与账号");
   await expect(
     dialog.getByRole("button", { name: "添加账号", exact: true }),
   ).toBeVisible();
@@ -151,9 +148,97 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
 test("未提供本机管理能力时不展示不可用的模型入口", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+  await openSettings(page);
   await expect(
     page.getByRole("button", { name: "模型与账号", exact: true }),
   ).toHaveCount(0);
+});
+test("统一设置切换分类保留账号表单，保存期间禁止离开，关闭后不存密钥", async ({
+  page,
+}) => {
+  await prepare(page);
+  let writes = 0;
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/model-settings/update", async (route) => {
+    writes++;
+    await pending;
+    await route.fulfill({ status: 503, json: { message: "测试保存失败" } });
+  });
+  const dialog = await open(page);
+  const navigation = dialog.getByRole("navigation", { name: "设置分类" });
+  await dialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
+  const frame = await dialog.boundingBox();
+  const closePosition = await dialog
+    .getByRole("button", { name: "关闭设置", exact: true })
+    .boundingBox();
+  await expect(navigation.getByRole("button")).toHaveText([
+    "模型与账号",
+    "外观",
+    "输入",
+    "通知",
+    "智能体连接",
+  ]);
+  await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
+  await dialog.getByRole("button", { name: "API Key", exact: true }).click();
+  await dialog.getByLabel("名称", { exact: true }).fill("分类切换保留表单");
+  await dialog
+    .getByLabel("API 地址", { exact: true })
+    .fill("https://example.com/v1");
+  await dialog
+    .getByLabel("API Key", { exact: true })
+    .fill("fixture-category-secret");
+  await dialog.getByLabel("模型", { exact: true }).fill("test-model");
+  for (const name of ["外观", "通知", "智能体连接"]) {
+    await navigation.getByRole("button", { name, exact: true }).click();
+    await expect(
+      navigation.getByRole("button", { name, exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    await expect(dialog.getByLabel("API Key", { exact: true })).toBeHidden();
+    expect(await dialog.boundingBox()).toEqual(frame);
+    expect(
+      await dialog
+        .getByRole("button", { name: "关闭设置", exact: true })
+        .boundingBox(),
+    ).toEqual(closePosition);
+  }
+  await navigation
+    .getByRole("button", { name: "模型与账号", exact: true })
+    .click();
+  await expect(dialog.getByLabel("名称", { exact: true })).toHaveValue(
+    "分类切换保留表单",
+  );
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue(
+    "fixture-category-secret",
+  );
+  expect(writes).toBe(0);
+  await dialog.getByRole("button", { name: "保存连接", exact: true }).click();
+  await expect(
+    navigation.getByRole("button", { name: "外观", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "关闭设置", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  release();
+  await expect(dialog.getByRole("alert")).toHaveText("测试保存失败");
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue(
+    "fixture-category-secret",
+  );
+  await page.keyboard.press("Escape");
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
+    "fixture-category-secret",
+  );
+  await openSettings(page, "模型与账号");
+  await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
+  await dialog.getByRole("button", { name: "API Key", exact: true }).click();
+  await expect(dialog.getByLabel("API Key", { exact: true })).toBeEmpty();
 });
 test("模型设置在原窗口内；默认修改立即刷新目录，不跳 Dashboard，不发消息", async ({
   page,
@@ -173,11 +258,11 @@ test("模型设置在原窗口内；默认修改立即刷新目录，不跳 Dash
   await expect(dialog.getByLabel("默认模型", { exact: true })).toHaveValue(
     "second",
   );
-  await dialog.getByRole("button", { name: "关闭模型设置" }).click();
+  await dialog.getByRole("button", { name: "关闭设置" }).click();
   await expect(
     page
       .locator(".sidebar-bottom")
-      .getByRole("button", { name: "连接详情", exact: true }),
+      .getByRole("button", { name: "设置", exact: true }),
   ).toBeFocused();
   expect(operations).toEqual([
     { action: "default", model: "second", expectedCurrent: "first" },
@@ -208,12 +293,8 @@ test("API失败保留表单；成功清除密钥；取消、Esc 不残留秘密�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("TEST 设置模型时保留草稿");
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  await page.getByRole("button", { name: "设置模型", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
   await dialog.getByRole("button", { name: "API Key", exact: true }).click();
   await dialog.getByLabel("名称", { exact: true }).fill("TEST 接入");
@@ -300,7 +381,7 @@ test("OAuth只打开授权页；回调后进入模型选择；不会把未登录
   expect(await page.evaluate(() => (window as any).__opened)).toEqual([
     ["https://example.com/authorize", "_blank", "noopener,noreferrer"],
   ]);
-  await dialog.getByRole("button", { name: "关闭模型设置" }).click();
+  await dialog.getByRole("button", { name: "关闭设置" }).click();
   expect(cancelCount).toBe(0);
 });
 test("关闭未完成授权会取消本次登录，重新打开不会恢复授权码", async ({
@@ -339,7 +420,7 @@ test("关闭未完成授权会取消本次登录，重新打开不会恢复授�
   await expect.poll(() => cancels).toBe(1);
   await open(page);
   await expect(
-    page.getByRole("dialog", { name: "模型设置", exact: true }),
+    page.getByRole("dialog", { name: "设置", exact: true }),
   ).not.toContainText("等待账号授权");
 });
 test("读取失败可以原地重试，模型服务不可用不伪造登录入口", async ({ page }) => {
@@ -353,12 +434,8 @@ test("读取失败可以原地重试，模型服务不可用不伪造登录入�
       : r.fulfill({ json: state }),
   );
   await page.goto("/");
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  await page.getByRole("button", { name: "设置模型", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await dialog.getByRole("button", { name: "重新加载" }).click();
   await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
   await expect(dialog).toContainText("暂时无法读取登录方式");
@@ -381,20 +458,16 @@ test("读取设置期间仍可关闭，迟到响应不重开窗口", async ({ pa
     await r.fulfill({ json: state }).catch(() => {});
   });
   await page.goto("/");
-  await page
-    .locator(".sidebar-bottom")
-    .getByRole("button", { name: "连接详情", exact: true })
-    .click();
-  await page.getByRole("button", { name: "设置模型", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(dialog).toContainText("正在读取模型设置");
-  await dialog.getByRole("button", { name: "关闭模型设置" }).click();
+  await dialog.getByRole("button", { name: "关闭设置" }).click();
   await expect(dialog).toHaveCount(0);
   release();
   await expect(
     page
       .locator(".sidebar-bottom")
-      .getByRole("button", { name: "连接详情", exact: true }),
+      .getByRole("button", { name: "设置", exact: true }),
   ).toBeFocused();
 });
 
@@ -420,7 +493,10 @@ test("添加账号有明确标题、连接按钮与单级返回，键盘操作�
   await expect(
     dialog.getByRole("heading", { name: "添加账号", exact: true }),
   ).toBeVisible();
-  await expect(dialog.locator("header")).toHaveCount(1);
+  await expect(dialog.locator(".settings-content header:visible")).toHaveCount(
+    1,
+  );
+  await expect(dialog.getByRole("button", { name: "关闭设置" })).toHaveCount(1);
   await expect(dialog.getByRole("button", { name: /^返回/ })).toHaveCount(1);
   const providers = dialog
     .getByRole("group", { name: "可连接的账号" })
@@ -444,7 +520,7 @@ test("添加账号有明确标题、连接按钮与单级返回，键盘操作�
     .getByRole("button", { name: "返回模型设置", exact: true })
     .click();
   await expect(
-    dialog.getByRole("heading", { name: "模型设置", exact: true }),
+    dialog.getByRole("heading", { name: "模型与账号", exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
   const connect = dialog.getByRole("button", {
@@ -465,13 +541,13 @@ test("添加账号有明确标题、连接按钮与单级返回，键盘操作�
   await expect(connect).toBeEnabled();
   await expect(connect).toHaveText(/登录并连接/);
   await dialog.getByRole("button", { name: "返回模型设置" }).click();
-  await dialog.getByRole("button", { name: "返回连接详情" }).click();
-  const details = page.getByRole("dialog", { name: "连接详情", exact: true });
+  await dialog.getByRole("button", { name: "智能体连接", exact: true }).click();
+  const details = dialog;
   await expect(
-    details.getByRole("heading", { name: "连接详情", exact: true }),
+    details.getByRole("heading", { name: "智能体连接", exact: true }),
   ).toBeVisible();
   await expect(
-    details.getByRole("button", { name: "关闭连接详情" }),
+    details.getByRole("button", { name: "智能体连接", exact: true }),
   ).toBeFocused();
   expect(await page.evaluate(() => (window as any).__opened)).toEqual([]);
 });

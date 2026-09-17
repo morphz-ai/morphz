@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-test-helpers.mjs";
 import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -197,8 +198,8 @@ try {
   const input = page.getByLabel("AI 输入内容");
   await input.fill("TEST 模型配置期间保留的草稿");
   assert.equal(original.capabilities.modelSettings, true);
-  await page.getByRole("button", { name: "模型与账号", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "模型设置", exact: true });
+  await openSettings(page, "模型与账号");
+  const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(
     dialog.getByRole("button", { name: "返回连接详情" }),
   ).toHaveCount(0);
@@ -283,7 +284,7 @@ try {
     .getByRole("button", { name: "返回模型设置", exact: true })
     .click();
   await expect(
-    dialog.getByRole("heading", { name: "模型设置", exact: true }),
+    dialog.getByRole("heading", { name: "模型与账号", exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "添加账号", exact: true }).click();
   await dialog.getByRole("button", { name: "API Key", exact: true }).click();
@@ -377,11 +378,9 @@ try {
   await dialog.getByRole("button", { name: "设为默认", exact: true }).click();
   await expect(dialog).toContainText("默认模型已保存");
   await capture("test-results/model-settings-default-saved.png");
-  await dialog
-    .getByRole("button", { name: "关闭模型设置", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "关闭设置", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "模型与账号", exact: true }),
+    page.getByRole("button", { name: "设置", exact: true }),
   ).toBeFocused();
   if (await page.getByRole("button", { name: /向 Morphz 输入/ }).isVisible())
     await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
@@ -389,10 +388,10 @@ try {
   await expect(page.getByLabel("本次输入模型")).toContainText("fixture-second");
   for (let attempt = 0; attempt < 4; attempt++) {
     const models = page.getByRole("button", {
-      name: "模型与账号",
+      name: "设置",
       exact: true,
     });
-    await models.click();
+    await openSettings(page, "模型与账号");
     await expect(
       dialog.getByRole("button", { name: "添加账号", exact: true }),
     ).toBeEnabled();

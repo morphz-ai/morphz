@@ -17,7 +17,6 @@ import {
   Library,
   MessageCircle,
   MessageSquareText,
-  Palette,
   PanelsTopLeft,
   Plus,
   X,
@@ -31,9 +30,6 @@ import {
   SquareBottomDashedScissors,
   Brain,
   ListChecks,
-  Settings2,
-  UserRound,
-  LogOut,
 } from "lucide-react";
 import {
   inboxFor,
@@ -53,7 +49,14 @@ import {
 import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
-import { ModelSettingsDialog } from "./ModelSettings.js";
+import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
+import { ProfileMenu } from "./ProfileMenu.js";
+import { AppearanceMenu } from "./AppearanceControls.js";
+import {
+  interfacePreferences,
+  shouldSubmitInput,
+  type InterfacePreferences,
+} from "./interface-preferences.js";
 import {
   inputIntents,
   type InputIntent,
@@ -110,13 +113,11 @@ type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type InspectorSelection =
   | { view: "execution"; scope: ExecutionScope }
   | { view: "understanding" | "collaboration" };
-type Preferences = {
+type Preferences = InterfacePreferences & {
   taskList?: TaskListOptions;
   executionPinned?: boolean;
   executionWidth?: number;
   inspectorWidth?: number;
-  accent: "cyan" | "iris" | "coral" | "mono";
-  appearance: "system" | "light" | "dark";
   view: View;
   projectId: string;
   artifactId: string | null;
@@ -162,8 +163,7 @@ type NavigationPlace = Pick<
   | "applications"
 >;
 const defaultPrefs: Preferences = {
-  accent: "cyan",
-  appearance: "system",
+  ...interfacePreferences({}),
   view: "desk",
   projectId: "first-project",
   artifactId: null,
@@ -268,10 +268,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return {
       ...defaultPrefs,
       ...p,
+      ...interfacePreferences(p),
       projectOpen: p.projectOpen ?? p.view === "projects",
-      accent: ["cyan", "iris", "coral", "mono"].includes(p.accent ?? "")
-        ? p.accent!
-        : defaultPrefs.accent,
       view: ["dialogue", "inbox", "content", "desk", "projects"].includes(
         p.view ?? "",
       )
@@ -283,7 +281,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [speechRecording, setSpeechRecording] = useState(false);
   const [notice, setNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
-    [modelSettingsOpen, setModelSettingsOpen] = useState(false),
+    [settingsSection, setSettingsSection] = useState<SettingsSection | null>(
+      null,
+    ),
     [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
     [uploadingDrafts, setUploadingDrafts] = useState<Record<string, boolean>>(
       {},
@@ -316,7 +316,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ),
     [understandingOpen, setUnderstandingOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
-    [themeOpen, setThemeOpen] = useState(false),
     [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null),
     [detailToolbarTarget, setDetailToolbarTarget] =
       useState<HTMLDivElement | null>(null),
@@ -388,7 +387,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null),
-    theme = useRef<HTMLDivElement>(null),
     spaceOptions = useRef<HTMLDivElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const [importing, setImporting] = useState(false);
@@ -569,7 +567,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       !!capture ||
       searchOpen ||
       connectionOpen ||
-      modelSettingsOpen ||
+      settingsSection !== null ||
       !!creating ||
       !!executions ||
       directoryPickerScope === directoryScope ||
@@ -846,7 +844,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       try {
         writeLocal("preferences", next);
       } catch {
-        setNotice("外观设置暂时无法持久保存。");
+        setNotice("设置暂时无法持久保存。");
       }
       return next;
     });
@@ -1232,20 +1230,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         if (creating) return;
         e.preventDefault();
         if (!e.repeat) {
-          setThemeOpen(false);
           if (inputVisible && !dialogueCanvas) hideInput();
           else showInput();
         }
       } else if (e.key === "Escape") {
         if (creating) return;
-        if (themeOpen) {
-          e.preventDefault();
-          setThemeOpen(false);
-          theme.current?.querySelector<HTMLButtonElement>("button")?.focus();
-        } else if (
-          inspectorOpen &&
-          !input.current?.contains(document.activeElement)
-        ) {
+        if (inspectorOpen && !input.current?.contains(document.activeElement)) {
           e.preventDefault();
           closeInspector();
         } else if (
@@ -1264,21 +1254,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     dialogueCanvas,
     contextKey,
     creating,
-    themeOpen,
     mobileCollaboration,
     executions,
     understandingOpen,
     collaborationVisible,
     speech,
   ]);
-  useEffect(() => {
-    function outside(e: PointerEvent) {
-      if (!theme.current?.contains(e.target as Node)) setThemeOpen(false);
-    }
-    window.addEventListener("pointerdown", outside);
-    return () => window.removeEventListener("pointerdown", outside);
-  }, []);
   useDesktopAppearance(prefs.appearance);
+  useLayoutEffect(() => {
+    document.documentElement.dataset.appMotion = prefs.motion;
+    window.dispatchEvent(new Event("morphz:motion-preference-changed"));
+    return () => {
+      delete document.documentElement.dataset.appMotion;
+    };
+  }, [prefs.motion]);
   async function send(asAnnotation = draft.annotation === true) {
     if (
       !project ||
@@ -1643,6 +1632,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : "智能体未连接";
   const identityLabel = actorName(state, client.boot!.actantId);
   const connected = client.online && client.boot!.runtime.connected;
+  const profileMenu = {
+    name: identityLabel,
+    status: connectionLabel,
+    connected,
+    onSettings: () =>
+      setSettingsSection(
+        client.boot!.capabilities.modelSettings ? "models" : "appearance",
+      ),
+    onLogout: client.boot!.capabilities.teamAuthentication
+      ? () => void client.logout().catch((e) => setNotice(e.message))
+      : undefined,
+  };
   return (
     <div
       className={
@@ -1658,6 +1659,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       }
       data-accent={prefs.accent}
       data-appearance={prefs.appearance}
+      data-text-size={prefs.textSize}
       data-desktop={
         /Electron\//.test(navigator.userAgent) && mac ? "mac" : undefined
       }
@@ -1673,97 +1675,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             <span>Morphz</span>
           </div>
           <div className="sidebar-tools">
-            <div className="theme-wrap" ref={theme}>
-              <button
-                className="icon-button"
-                title="外观设置"
-                aria-label="外观设置"
-                aria-expanded={themeOpen}
-                onClick={() => setThemeOpen(!themeOpen)}
-              >
-                <Palette />
-              </button>
-              {themeOpen && (
-                <section className="theme-menu" aria-label="外观设置面板">
-                  <span className="section-label">外观模式</span>
-                  <div className="mode-options">
-                    {(["system", "light", "dark"] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        aria-pressed={prefs.appearance === mode}
-                        onClick={() => prefer({ appearance: mode })}
-                      >
-                        {
-                          { system: "跟随系统", light: "亮色", dark: "暗色" }[
-                            mode
-                          ]
-                        }
-                      </button>
-                    ))}
-                  </div>
-                  <span className="section-label">主题色</span>
-                  <div className="color-options">
-                    {(["cyan", "iris", "coral", "mono"] as const).map(
-                      (color) => (
-                        <button
-                          key={color}
-                          aria-pressed={prefs.accent === color}
-                          onClick={() => {
-                            prefer({ accent: color });
-                            setThemeOpen(false);
-                            theme.current
-                              ?.querySelector<HTMLButtonElement>("button")
-                              ?.focus();
-                          }}
-                        >
-                          <span className={"swatch " + color} />
-                          {
-                            {
-                              cyan: "电光青",
-                              iris: "鸢尾紫",
-                              coral: "暖珊瑚",
-                              mono: "纯单色",
-                            }[color]
-                          }
-                        </button>
-                      ),
-                    )}
-                  </div>
-                </section>
-              )}
-            </div>
-            <Notifications client={client} onOpen={openUser} />
-            <button
-              className="icon-button connection-compact"
-              aria-label="连接详情"
-              title={`${identityLabel} · ${connectionLabel}`}
-              onClick={() => setConnectionOpen(true)}
-            >
-              <UserRound />
-              <span className="presence-dot" data-online={connected} />
-            </button>
-            {client.boot!.capabilities.modelSettings && (
-              <button
-                className="icon-button model-settings-compact"
-                aria-label="模型与账号"
-                title="模型与账号"
-                onClick={() => setModelSettingsOpen(true)}
-              >
-                <Settings2 />
-              </button>
-            )}
-            {client.boot!.capabilities.teamAuthentication && (
-              <button
-                className="icon-button identity-compact"
-                aria-label="退出当前身份"
-                title="退出当前身份"
-                onClick={() =>
-                  void client.logout().catch((e) => setNotice(e.message))
-                }
-              >
-                <LogOut />
-              </button>
-            )}
+            <AppearanceMenu
+              prefs={prefs}
+              onPreference={prefer}
+              onSettings={() => setSettingsSection("appearance")}
+            />
+            <Notifications
+              client={client}
+              onOpen={openUser}
+              onSettings={() => setSettingsSection("notifications")}
+            />
+            <ProfileMenu {...profileMenu} compact />
           </div>
         </div>
         <div className="sidebar-navigation">
@@ -1893,64 +1815,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           </div>
         </div>
         <div className="sidebar-bottom">
-          <div className="sidebar-identity-row">
-            <button
-              className="connection-summary"
-              aria-label="连接详情"
-              title={`${identityLabel} · ${connectionLabel} · 查看连接详情`}
-              onClick={() => setConnectionOpen(true)}
-            >
-              <span className="avatar" aria-hidden="true">
-                <UserRound />
-              </span>
-              <span className="sidebar-identity">
-                <span className="sidebar-identity-name">{identityLabel}</span>
-                <span className="sidebar-connection-state">
-                  <span className="presence-dot" data-online={connected} />
-                  <span>{connectionLabel}</span>
-                </span>
-              </span>
-              <ChevronRight
-                className="sidebar-entry-chevron"
-                aria-hidden="true"
-              />
-            </button>
-            {!client.online && (
-              <button
-                className="icon-button"
-                aria-label="重新连接应用"
-                title="重新连接"
-                onClick={() => void client.refresh()}
-              >
-                <RefreshCw />
-              </button>
-            )}
-            {client.boot!.capabilities.teamAuthentication && (
-              <button
-                aria-label="退出当前身份"
-                title="退出当前身份"
-                className="icon-button"
-                onClick={() =>
-                  void client.logout().catch((e) => setNotice(e.message))
-                }
-              >
-                <LogOut />
-              </button>
-            )}
-          </div>
-          {client.boot!.capabilities.modelSettings && (
-            <button
-              className="sidebar-model-settings"
-              onClick={() => setModelSettingsOpen(true)}
-            >
-              <Settings2 />
-              <span>模型与账号</span>
-              <ChevronRight
-                className="sidebar-entry-chevron"
-                aria-hidden="true"
-              />
-            </button>
-          )}
+          <ProfileMenu {...profileMenu} />
         </div>
       </aside>
       <div
@@ -1970,7 +1835,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               expanded={prefs.sidebar}
               controls="workspace-sidebar"
               onClick={() => {
-                setThemeOpen(false);
                 prefer({ sidebar: !prefs.sidebar });
               }}
             />
@@ -1985,7 +1849,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             expanded={prefs.sidebar}
             controls="workspace-sidebar"
             onClick={() => {
-              setThemeOpen(false);
               prefer({ sidebar: !prefs.sidebar });
             }}
           />
@@ -2487,10 +2350,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           }
                           onKeyDown={(event) => {
                             if (
-                              event.key === "Enter" &&
-                              !event.shiftKey &&
-                              !event.nativeEvent.isComposing &&
-                              event.keyCode !== 229
+                              shouldSubmitInput(
+                                event.nativeEvent,
+                                prefs.sendShortcut,
+                              )
                             ) {
                               event.preventDefault();
                               if (client.online) void send();
@@ -2990,10 +2853,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           onClose={() => setConnectionOpen(false)}
         />
       )}
-      {modelSettingsOpen && (
-        <ModelSettingsDialog
-          onChanged={() => void client.refresh()}
-          onClose={() => setModelSettingsOpen(false)}
+      {settingsSection !== null && (
+        <SettingsDialog
+          client={client}
+          initialSection={settingsSection}
+          prefs={prefs}
+          onPreference={prefer}
+          onClose={() => setSettingsSection(null)}
         />
       )}
       {speech &&

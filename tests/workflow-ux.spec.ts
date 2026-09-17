@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openInput, composerAction } from "./interaction-helpers.js";
 
@@ -76,7 +77,7 @@ test("half-open history has a translucent boundary without dimming text or resiz
   await page.goto("/");
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   for (const appearance of ["亮色", "暗色"]) {
-    await page.getByRole("button", { name: "外观设置", exact: true }).click();
+    await openSettings(page, "外观");
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     await openInput(page);
@@ -289,9 +290,10 @@ test("notification settings are not list filters and dialog centers in content",
   const back = page.getByRole("button", { name: "返回工作空间", exact: true });
   if (await back.isVisible()) await back.click();
   await page.getByRole("button", { name: /^通知/ }).click();
-  const dialog = page.getByRole("dialog", { name: "通知", exact: true });
+  let dialog = page.getByRole("dialog", { name: "通知", exact: true });
   await expect(dialog.getByRole("radio")).toHaveCount(0);
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(dialog.getByRole("radio")).toHaveCount(2);
   await expect(dialog.getByRole("radio", { name: "全部提醒" })).toBeVisible();
   await expect(dialog.getByRole("radio", { name: "不提示" })).toBeVisible();

@@ -1425,42 +1425,47 @@ body:has(dialog[open]) .cognitive-application-frame {
 .task-fields .model-picker {
   padding: 0;
 }
-.app .connection-summary {
+.profile-controls {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.app .profile-settings {
+  flex-shrink: 0;
+}
+.app .profile-trigger {
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
   justify-content: flex-start;
   gap: 10px;
-  min-height: 52px;
+  min-height: 44px;
+  width: 100%;
   padding: 6px 8px;
   background: none;
   border: 0;
   color: var(--ink);
   text-align: left;
 }
-.sidebar-identity-row {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 2px;
-}
-.sidebar-identity {
+.profile-identity {
   display: grid;
+  gap: 2px;
   flex: 1;
   min-width: 0;
-  gap: 2px;
 }
-.sidebar-identity-name {
+.profile-name {
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
-}
-.sidebar-identity-name,
-.sidebar-connection-state > span:last-child {
+  line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sidebar-connection-state {
+.profile-menu-summary > span,
+.profile-status {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1475,7 +1480,13 @@ body:has(dialog[open]) .cognitive-application-frame {
   color: var(--muted);
   margin-left: auto;
 }
-.app :is(.connection-summary, .sidebar-model-settings):hover:not(:disabled) {
+.profile-status > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app button.profile-trigger:hover:not(:disabled),
+.app .profile-trigger[aria-expanded="true"] {
   background: var(--nav-hover);
 }
 .app .model-status > button {
@@ -1508,7 +1519,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.connection-dialog > p {
+.connection-settings > p {
   font-size: 12px;
   line-height: 1.6;
 }
@@ -2259,33 +2270,207 @@ summary:focus-visible {
   color: var(--text-secondary);
   font-size: 12px;
 }
-.app .sidebar-model-settings {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 6px 8px;
-  font-size: 13px;
-  color: var(--ink);
-}
-.sidebar-model-settings > svg:first-child {
-  margin-inline: 7px;
-}
-.app :is(.model-settings-compact, .connection-compact, .identity-compact) {
+.app .profile-controls-compact {
   display: none;
 }
 @media (max-width: 560px) {
-  .app :is(.model-settings-compact, .connection-compact, .identity-compact) {
+  .app .profile-controls-compact {
     display: inline-flex;
   }
-  .connection-compact {
-    position: relative;
+}
+.app .profile-compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+}
+.app .profile-compact .avatar {
+  width: 24px;
+  height: 24px;
+  background: none;
+}
+.profile-warning {
+  color: var(--warning, var(--ink));
+  font-size: 13px;
+}
+.profile-menu {
+  min-width: 220px;
+  max-width: calc(100vw - 16px);
+}
+.profile-menu-summary {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.profile-menu-summary strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-dialog {
+  --ui-dialog-width: 760px;
+  container-type: inline-size;
+}
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  height: min(480px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+.settings-dialog > header {
+  flex-shrink: 0;
+}
+.settings-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 144px minmax(0, 1fr);
+  gap: 20px;
+}
+.settings-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+.app .settings-navigation button {
+  min-height: 36px;
+  font-size: 13px;
+  padding: 8px;
+  gap: 8px;
+  justify-content: flex-start;
+  white-space: nowrap;
+}
+.app .settings-navigation button[aria-current="page"] {
+  background: var(--selection);
+  color: var(--ink);
+  font-weight: 600;
+}
+.settings-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  margin: -2px;
+}
+.settings-content > [hidden] {
+  display: none;
+}
+.settings-content header,
+.connection-settings > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  margin-bottom: 12px;
+}
+.settings-content h2,
+.connection-settings h2 {
+  font-size: 14px;
+  margin: 0;
+}
+.settings-content .notification-preferences {
+  margin: 0;
+  max-width: none;
+}
+.notification-settings legend {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.notification-settings p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.appearance-settings .mode-options {
+  margin-top: 8px;
+}
+.appearance-settings .color-options {
+  margin-top: 8px;
+}
+.app .appearance-menu {
+  width: min(272px, calc(100vw - 16px));
+  padding: 12px;
+}
+.appearance-menu .appearance-more {
+  margin-top: 12px;
+  width: 100%;
+  justify-content: center;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 20px;
+  font-size: 13px;
+}
+.settings-row > span {
+  flex: 1 1 180px;
+}
+.settings-row small,
+.settings-note {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 4px;
+}
+.settings-row select {
+  max-width: 100%;
+  min-width: 130px;
+}
+.reading-size-preview {
+  font-size: 15px;
+  line-height: 1.7;
+  padding: 8px 12px;
+  background: var(--soft);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.reading-size-preview[data-size="large"] {
+  font-size: 17px;
+}
+.reading-size-preview[data-size="larger"] {
+  font-size: 19px;
+}
+.settings-subheading {
+  margin: 24px 0 12px;
+  font-size: 13px;
+}
+.settings-shortcuts {
+  margin: 0 0 16px;
+}
+.settings-shortcuts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  font-size: 13px;
+}
+.settings-shortcuts dd {
+  margin: 0;
+}
+@container (max-width: 580px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
   }
-  .connection-compact .presence-dot {
-    position: absolute;
-    right: 5px;
-    bottom: 5px;
+  .settings-navigation {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .app .settings-navigation button {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 6px;
   }
 }
 .notification-modes {

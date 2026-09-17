@@ -913,13 +913,16 @@
   -webkit-backdrop-filter: var(--popup-blur);
   backdrop-filter: var(--popup-blur);
 }
-.app .theme-menu .mode-options {
+.app :is(.theme-menu, .appearance-settings) .mode-options {
   background: light-dark(#e5e5e5, #303030);
 }
-.app .theme-menu .mode-options button {
+.app :is(.theme-menu, .appearance-settings) .mode-options button {
   color: var(--text-secondary);
 }
-.app .theme-menu .mode-options button[aria-pressed="true"] {
+.app
+  :is(.theme-menu, .appearance-settings)
+  .mode-options
+  button[aria-pressed="true"] {
   /* A choice is a control state, not another raised popup surface. In dark
      menus --surface-raised and the segmented track can intentionally match. */
   background: light-dark(#ffffff, #555555);
@@ -1166,4 +1169,39 @@
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Local reading preferences never rescale the shell, PDF canvas or hosted apps. */
+.app[data-text-size="large"] {
+  --reading-increment: 2px;
+}
+.app[data-text-size="larger"] {
+  --reading-increment: 4px;
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body, .conversation-message > p, .reply-content) {
+  font-size: calc(15px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body, .reply-content)
+  pre {
+  font-size: calc(12px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body h3, .reply-content :is(h1, h2, h3)) {
+  font-size: calc(17px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"]) .document-body h1 {
+  font-size: calc(27px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"]) .document-body h2 {
+  font-size: calc(21px + var(--reading-increment));
+}
+:root[data-app-motion="reduce"] .app *,
+:root[data-app-motion="reduce"] .app *::before,
+:root[data-app-motion="reduce"] .app *::after,
+:root[data-app-motion="reduce"] .app dialog::backdrop {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
 }

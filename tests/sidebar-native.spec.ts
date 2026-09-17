@@ -1,3 +1,4 @@
+import { openSettings } from "./settings-helpers.js";
 import { test, expect, _electron } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -90,7 +91,7 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
       ["暗色", "dark"],
       ["跟随系统", "system"],
     ]) {
-      await page.getByRole("button", { name: "外观设置", exact: true }).click();
+      await openSettings(page, "外观");
       await page.getByRole("button", { name: label, exact: true }).click();
       await expect
         .poll(() =>

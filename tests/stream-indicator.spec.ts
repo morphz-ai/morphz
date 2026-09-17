@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
+import { openSettings } from "./settings-helpers.js";
 
 test("流式标记跟随真实帧状态，结束、断线与参数生成完毕即停止动效", async ({
   page,
@@ -178,6 +179,42 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
     .toBe("none");
   expect(await message.boundingBox()).toEqual(before);
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await emit({
+    text: "这一段正在逐步输出，新的内容已到达。继续验证本机动画偏好。",
+  });
+  const localFresh = paragraph.locator(".stream-text-reveal");
+  await expect(localFresh.first()).toBeVisible();
+  await localFresh.evaluateAll((elements) => {
+    for (const element of elements)
+      for (const animation of element.getAnimations()) animation.pause();
+  });
+  const settings = await openSettings(page, "外观");
+  await settings.getByLabel("动画效果").selectOption("reduce");
+  await expect
+    .poll(() =>
+      localFresh.evaluateAll(
+        (elements) => elements.flatMap((el) => el.getAnimations()).length,
+      ),
+    )
+    .toBe(0);
+  await page.keyboard.press("Escape");
+  await emit({
+    text: "这一段正在逐步输出，新的内容已到达。继续验证本机动画偏好。此时直接展示正文。",
+  });
+  await expect(paragraph).toContainText("此时直接展示正文。");
+  expect(
+    await localFresh.evaluateAll(
+      (elements) => elements.flatMap((el) => el.getAnimations()).length,
+    ),
+  ).toBe(0);
+  await expect
+    .poll(() =>
+      paragraph.evaluate((el) => getComputedStyle(el, "::after").animationName),
+    )
+    .toBe("none");
+  await openSettings(page, "外观");
+  await settings.getByLabel("动画效果").selectOption("system");
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: "test-results/stream-indicator.png" });
   await emit({ streaming: false });
   await expect(message.locator(".stream-text-reveal")).toHaveCount(0);

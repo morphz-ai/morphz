@@ -66,12 +66,14 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     };
     await login(0);
     await page.getByLabel("AI 输入内容").fill("只有甲可见的未发送草稿");
+    await page.getByRole("button", { name: "用户菜单", exact: true }).click();
     await page.getByRole("button", { name: "退出当前身份" }).click();
     await login(1);
     await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
     await page.getByLabel("AI 输入内容").fill("乙的草稿");
     await page.reload();
     await expect(page.getByLabel("AI 输入内容")).toHaveValue("乙的草稿");
+    await page.getByRole("button", { name: "用户菜单", exact: true }).click();
     await page.getByRole("button", { name: "退出当前身份" }).click();
     await login(0);
     await openInput(page);
