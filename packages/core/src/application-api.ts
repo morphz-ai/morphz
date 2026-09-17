@@ -29,6 +29,7 @@ export const applicationMethods = [
   "task.control",
   "speech.status",
   "speech.transcribe",
+  "speech.stream",
   "speech.synthesize",
   "notifications.read",
   "notifications.control",

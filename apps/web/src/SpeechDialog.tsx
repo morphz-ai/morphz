@@ -27,6 +27,8 @@ import {
 } from "./client.js";
 import { SpeechCapture } from "./speech-capture.js";
 import { SpeechQueue } from "./speech-queue.js";
+import { LiveDictation } from "./live-dictation.js";
+import { speechFrameMilliseconds } from "../../../packages/core/src/speech-stream.js";
 import { ReadAloud, type ReaderState } from "./read-aloud.js";
 import { SpeechServiceDetails } from "./SpeechServiceDetails.js";
 import {
@@ -44,10 +46,12 @@ export function SpeechDialog({
   onTranscript,
   controls,
   onRecording,
+  transcriptLimit = 30000,
 }: {
   inlineTarget?: HTMLElement;
-  onTranscript?: (text: string) => void;
-  controls?: Ref<{ toggle(): void }>;
+  onTranscript?: (text: string, previous: string) => void;
+  transcriptLimit?: number;
+  controls?: Ref<{ toggle(): void; interrupt(): void }>;
   onRecording?: (recording: boolean) => void;
   client: WorkspaceClient;
   scope: SpeechScope;
@@ -81,12 +85,12 @@ export function SpeechDialog({
   const [storage] = useState(() => scopedStorage());
   const consentKey = (provider: string) => `dictation-consent:v1:${provider}`;
   const queue = useRef<SpeechQueue | null>(null);
+  const live = useRef<LiveDictation | null>(null);
   function makeQueue() {
     return new SpeechQueue({
       transcribe: (wav, signal) => client.transcribe(scope, wav, signal),
       text: (value) => {
         if (alive.current) {
-          onTranscript?.(value);
           setAttempt((previous) => ({ ...previous, hasText: true }));
           setText((previous) => (previous ? previous + "\n" + value : value));
         }
@@ -117,22 +121,28 @@ export function SpeechDialog({
     capture.current = null;
     clearTimer();
     queue.current?.cancel();
+    live.current?.cancel();
+    live.current = null;
   }
   async function finish() {
     const current = capture.current;
     if (!current) return;
+    const token = epoch.current,
+      session = live.current;
     capture.current = null;
     clearTimer();
     setPhase("finishing");
     try {
       await current.finish();
-      if (alive.current)
+      await session?.finish();
+      if (alive.current && token === epoch.current)
         setAttempt((previous) => ({ ...previous, finished: true }));
     } catch (e) {
-      if (alive.current)
+      session?.cancel();
+      if (alive.current && token === epoch.current)
         setError(e instanceof Error ? e.message : "语音输入结束失败。");
     } finally {
-      if (alive.current) setPhase("idle");
+      if (alive.current && token === epoch.current) setPhase("idle");
     }
   }
   useModal(dialog, undefined, !inlineTarget);
@@ -141,6 +151,12 @@ export function SpeechDialog({
     onRecording?.(phase === "recording");
   }, [phase]);
   useImperativeHandle(controls, () => ({
+    interrupt() {
+      if (phase === "idle") return;
+      cancel();
+      setPhase("idle");
+      setNotice("已停止听写，继续编辑即可。");
+    },
     toggle() {
       if (phase === "permission") {
         cancel();
@@ -158,8 +174,16 @@ export function SpeechDialog({
       .speechStatus(controller.signal)
       .then((s) => {
         if (controller.signal.aborted) return;
-        setConfigured(s.configured && !!s.provider);
+        setConfigured(
+          s.configured &&
+            !!s.provider &&
+            (!inlineTarget || s.streaming === true),
+        );
         if (!s.configured || !s.provider) return;
+        if (inlineTarget && !s.streaming) {
+          setError("当前语音服务不支持实时听写，请检查服务配置。");
+          return;
+        }
         const next = {
           provider: s.provider,
           label:
@@ -177,9 +201,15 @@ export function SpeechDialog({
         if (!controller.signal.aborted) setError("无法读取语音配置，请重试。");
       });
     const hidden = () => {
-      if (document.hidden && capture.current) {
-        setNotice("窗口已隐藏，麦克风已停止；正在收尾已采集的语音。");
-        void finish();
+      if (document.hidden && (capture.current || live.current?.active)) {
+        if (inlineTarget) {
+          cancel();
+          setPhase("idle");
+          setNotice("窗口已隐藏，听写已停止；已识别文字保留。");
+        } else {
+          setNotice("窗口已隐藏，麦克风已停止；正在收尾已采集的语音。");
+          void finish();
+        }
       }
     };
     document.addEventListener("visibilitychange", hidden);
@@ -204,6 +234,46 @@ export function SpeechDialog({
     setNotice("");
     setAttempt({ finished: false, hasText: false });
     setPhase("permission");
+    let session: LiveDictation | undefined;
+    if (inlineTarget) {
+      let call: ReturnType<WorkspaceClient["createSpeechStream"]>;
+      try {
+        call = client.createSpeechStream(scope);
+      } catch {
+        setPhase("idle");
+        setError("应用连接已变化，请重新开始听写。");
+        return;
+      }
+      session = new LiveDictation(
+        call,
+        (value, previous) => {
+          if (!alive.current || token !== epoch.current) return;
+          if (value.length > transcriptLimit)
+            throw new Error(
+              "输入框已达长度上限，听写已停止；已显示文字保留，请先发送或整理。",
+            );
+          onTranscript?.(value, previous);
+          setAttempt((old) => ({ ...old, hasText: !!value.trim() }));
+        },
+        (message) => {
+          if (!alive.current || token !== epoch.current) return;
+          capture.current?.cancel();
+          capture.current = null;
+          clearTimer();
+          setError(message);
+          setPhase("idle");
+        },
+        () => {
+          if (!alive.current || token !== epoch.current) return;
+          capture.current?.cancel();
+          capture.current = null;
+          clearTimer();
+          setAttempt((old) => ({ ...old, finished: true }));
+          setPhase("idle");
+        },
+      );
+      live.current = session;
+    }
     const current = new SpeechCapture(
       (wav) => queue.current!.enqueue(wav),
       (message) => {
@@ -215,10 +285,22 @@ export function SpeechDialog({
       (value) => {
         if (alive.current) setLevel(value);
       },
+      session
+        ? {
+            frameSeconds: speechFrameMilliseconds / 1000,
+            pcm: (data) => session!.enqueue(data),
+          }
+        : undefined,
     );
     capture.current = current;
     try {
       await current.start();
+      if (
+        alive.current &&
+        token === epoch.current &&
+        capture.current === current
+      )
+        await session?.start();
       if (
         !alive.current ||
         token !== epoch.current ||
@@ -236,6 +318,7 @@ export function SpeechDialog({
       setPhase("recording");
     } catch (e) {
       if (alive.current && token === epoch.current) {
+        session?.cancel();
         capture.current = null;
         setPhase("idle");
         setError(e instanceof Error ? e.message : "无法开始语音输入。");
@@ -328,7 +411,7 @@ export function SpeechDialog({
             {phase === "recording"
               ? `正在听写 ${seconds}s`
               : phase === "permission"
-                ? "正在打开麦克风…"
+                ? "正在连接麦克风与语音服务…"
                 : phase === "finishing"
                   ? "正在结束听写…"
                   : pending
@@ -395,7 +478,9 @@ export function SpeechDialog({
         </div>
         {error && <p role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
-        {configured === false && <p role="status">尚未配置语音服务。</p>}
+        {configured === false && !error && (
+          <p role="status">尚未配置语音服务。</p>
+        )}
       </section>,
       inlineTarget,
     );

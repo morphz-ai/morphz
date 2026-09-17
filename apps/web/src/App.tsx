@@ -7,6 +7,7 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
+import { replaceDictationTail } from "./live-dictation.js";
 import {
   ArrowUp,
   AudioLines,
@@ -277,7 +278,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : defaultPrefs.view,
     };
   });
-  const dictationControls = useRef<{ toggle(): void } | null>(null);
+  const dictationControls = useRef<{
+    toggle(): void;
+    interrupt(): void;
+  } | null>(null);
   const [speechRecording, setSpeechRecording] = useState(false);
   const [notice, setNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
@@ -858,6 +862,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
   }
   function setDraft(key: string, value: InputDraft) {
+    if (key === currentContext.current && value.body !== drafts[key]?.body)
+      dictationControls.current?.interrupt();
     updateDraft(key, () => value);
   }
   function updateDraft(key: string, update: (value: InputDraft) => InputDraft) {
@@ -1190,6 +1196,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   function closeSpeech() {
+    dictationControls.current?.interrupt();
     if (speech && !speech.modal && speech.key === currentContext.current) {
       // Restore a stable control before the inline close button unmounts.
       // Closing dictation is not leaving the surrounding composer.
@@ -1278,6 +1285,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       uploadingDrafts[contextKey]
     )
       return;
+    dictationControls.current?.interrupt();
     const key = contextKey,
       captured = { ...draft };
     const firstConversation = selectedDraft;
@@ -2339,15 +2347,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           onFocus={() => {
                             if (!conversationVisible) setInteraction("recent");
                           }}
-                          onChange={(e) =>
+                          onChange={(e) => {
                             setDraft(contextKey, {
                               ...draft,
                               body: e.target.value,
                               revision: artifact
                                 ? (draft.revision ?? artifact.revision)
                                 : null,
-                            })
-                          }
+                            });
+                          }}
                           onKeyDown={(event) => {
                             if (
                               shouldSubmitInput(
@@ -2870,13 +2878,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             controls={speech.modal ? undefined : dictationControls}
             onRecording={speech.modal ? undefined : setSpeechRecording}
             inlineTarget={speech.modal ? undefined : dictationSlot!}
+            transcriptLimit={30000 - draft.body.length - (draft.body ? 1 : 0)}
             onTranscript={
               speech.modal
                 ? undefined
-                : (text) =>
+                : (text, previous) =>
                     updateDraft(speech.key, (saved) => ({
                       ...saved,
-                      body: [saved.body, text].filter(Boolean).join("\n"),
+                      body: replaceDictationTail(saved.body, text, previous),
                       revision: speech.scope.revision ?? null,
                     }))
             }

@@ -165,6 +165,16 @@ export class HttpApplicationClient {
       case "speech.status":
         path = "/api/speech/status";
         break;
+      case "speech.stream": {
+        path = "/api/speech/stream";
+        const p = fields(params);
+        post(
+          p.action === "push"
+            ? { ...p, data: Array.from(new Uint8Array(binary(p.data))) }
+            : p,
+        );
+        break;
+      }
       case "speech.transcribe":
       case "speech.synthesize": {
         const p = fields(params),

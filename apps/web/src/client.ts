@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import {
+  speechStreamStateSchema,
+  type SpeechStreamCommand,
+} from "../../../packages/core/src/speech-stream.js";
+import {
   connectionDetailsSchema,
   type ConfigureConnection,
 } from "../../../packages/core/src/connection.js";
@@ -464,8 +468,27 @@ export function useWorkspace() {
         provider: z.string().min(1).nullable(),
         providerLabel: z.string().min(1).nullable().optional(),
         segmentSeconds: z.number().optional(),
+        streaming: z.boolean().optional(),
       })
       .parse(await applicationCall("speech.status", undefined, { signal }));
+  }
+  function createSpeechStream(scope: SpeechScope) {
+    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
+    const identityGeneration = current.current.csrfToken,
+      id = crypto.randomUUID();
+    type Action = SpeechStreamCommand extends infer T
+      ? T extends SpeechStreamCommand
+        ? Omit<T, "scope" | "id">
+        : never
+      : never;
+    return async (command: Action, signal: AbortSignal) =>
+      speechStreamStateSchema.parse(
+        await applicationCall(
+          "speech.stream",
+          { ...command, id, scope },
+          { identityGeneration, signal },
+        ),
+      );
   }
   async function transcribe(
     scope: SpeechScope,
@@ -529,6 +552,7 @@ export function useWorkspace() {
     login,
     logout,
     speechStatus,
+    createSpeechStream,
     transcribe,
     synthesize,
     taskRuntime,

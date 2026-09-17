@@ -34,6 +34,11 @@ import { IdentityCenter, workspaceFor, requiresIdentity } from "./identity.js";
 import { Notifications } from "./notifications.js";
 import { extractPdf } from "./pdf.js";
 import type { LocalFiles } from "./local-files.js";
+import {
+  speechScopeSchema as speechScope,
+  speechStreamCommandSchema,
+} from "../../core/src/speech-stream.js";
+import { SpeechStreams } from "./speech-stream.js";
 
 export type ApplicationOptions = {
   runtime?: RuntimeBridge;
@@ -70,13 +75,6 @@ export function applicationFailure(error: unknown): ApplicationFailure {
   };
 }
 const identifier = z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/);
-const speechScope = z
-  .object({
-    projectId: z.string().min(1).max(100),
-    artifactId: z.string().min(1).optional(),
-    revision: z.number().int().positive().optional(),
-  })
-  .strict();
 export const conversationScope = z
   .object({ projectId: z.string().min(1), conversationId: z.string().min(1) })
   .strict();
@@ -93,6 +91,7 @@ function bytes(value: unknown, limit: number): Buffer {
 /** Plain application logic. No listener, URL router, Electron or transport state. */
 export class Application {
   readonly notifications: Notifications;
+  readonly speechStreams: SpeechStreams;
   constructor(
     readonly store: WorkspaceStore,
     readonly options: ApplicationOptions = {},
@@ -106,6 +105,7 @@ export class Application {
     if (!options.identity && options.runtime?.teamIdentity)
       throw new Error("trusted_gateway 连接必须启用应用身份认证。");
     this.notifications = new Notifications(store);
+    this.speechStreams = new SpeechStreams(options.speech);
   }
   session(access: AccessContext, assertActive: () => void = () => {}) {
     return new ApplicationSession(this, access, assertActive);
@@ -564,6 +564,7 @@ export class ApplicationSession {
       provider: this.options.speech?.provider.id ?? null,
       providerLabel: this.options.speech?.provider.label ?? null,
       segmentSeconds: maxSpeechSegmentSeconds,
+      streaming: !!this.options.speech?.openStream,
     };
   }
   private checkSpeech(raw: unknown) {
@@ -581,6 +582,17 @@ export class ApplicationSession {
         throw new DomainError("forbidden", "对象不属于当前项目。");
     }
     return scope;
+  }
+  speechStream(raw: unknown, signal: AbortSignal) {
+    const command = speechStreamCommandSchema.parse(raw);
+    return this.application.speechStreams.call(
+      command,
+      this.access.principalId,
+      () => {
+        this.checkSpeech(command.scope);
+      },
+      signal,
+    );
   }
   async transcribe(raw: unknown, signal: AbortSignal) {
     const { scope, data } = z
@@ -758,6 +770,8 @@ export function invokeApplication(
       return session.speechStatus();
     case "speech.transcribe":
       return session.transcribe(params, signal);
+    case "speech.stream":
+      return session.speechStream(params, signal);
     case "speech.synthesize":
       return session.synthesize(params, signal);
     case "notifications.read":

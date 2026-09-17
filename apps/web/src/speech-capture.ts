@@ -16,6 +16,7 @@ export class SpeechCapture {
     private onSegment: (wav: Blob) => void,
     private onError: (message: string) => void,
     private onLevel?: (level: number) => void,
+    private live?: { frameSeconds: number; pcm: (data: Uint8Array) => void },
   ) {}
   async start() {
     try {
@@ -49,20 +50,26 @@ export class SpeechCapture {
       );
       if (this.cancelled) return;
       const node = new AudioWorkletNode(context, "morphz-speech-capture", {
-        processorOptions: { segmentSeconds: speechCaptureSegmentSeconds },
+        processorOptions: {
+          segmentSeconds:
+            this.live?.frameSeconds ?? speechCaptureSegmentSeconds,
+        },
       });
       this.node = node;
       node.port.onmessage = (
         event: MessageEvent<{ pcm?: ArrayBuffer; finished?: boolean }>,
       ) => {
         if (this.cancelled) return;
-        if (event.data.pcm)
-          this.onSegment(
-            new Blob(
-              [new Uint8Array(wavFromPCM(new Uint8Array(event.data.pcm)))],
-              { type: "audio/wav" },
-            ),
-          );
+        if (event.data.pcm) {
+          if (this.live) this.live.pcm(new Uint8Array(event.data.pcm));
+          else
+            this.onSegment(
+              new Blob(
+                [new Uint8Array(wavFromPCM(new Uint8Array(event.data.pcm)))],
+                { type: "audio/wav" },
+              ),
+            );
+        }
         if (event.data.finished) this.finishAck?.();
       };
       node.onprocessorerror = () =>

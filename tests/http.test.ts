@@ -103,6 +103,7 @@ test("语音能力状态由提供方报告，不绑定豆包或暴露配置凭�
       "provider",
       "providerLabel",
       "segmentSeconds",
+      "streaming",
     ]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

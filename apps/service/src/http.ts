@@ -456,9 +456,11 @@ export function createAppServer(
           return;
         }
         if (
-          ["/api/speech/transcribe", "/api/speech/synthesize"].includes(
-            url.pathname,
-          )
+          [
+            "/api/speech/transcribe",
+            "/api/speech/synthesize",
+            "/api/speech/stream",
+          ].includes(url.pathname)
         ) {
           const controller = new AbortController(),
             abort = () => {
@@ -467,7 +469,13 @@ export function createAppServer(
           req.on("aborted", abort);
           res.on("close", abort);
           try {
-            if (url.pathname.endsWith("transcribe")) {
+            if (url.pathname.endsWith("stream")) {
+              const result = await business.speechStream(
+                await jsonBody(req, 40000),
+                controller.signal,
+              );
+              if (!controller.signal.aborted) json(res, 200, result);
+            } else if (url.pathname.endsWith("transcribe")) {
               if (req.headers["content-type"] !== "audio/wav")
                 throw new DomainError("invalid", "需要 WAV 录音。");
               const result = await business.transcribe(
@@ -663,6 +671,7 @@ export function createAppServer(
   return Object.assign(server, {
     closeStreams: () => {
       for (const close of streams) close();
+      application.speechStreams.close();
     },
   });
 }

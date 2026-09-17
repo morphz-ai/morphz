@@ -108,13 +108,35 @@ test("首次授权后听写直接在输入框内追加，停止立即停采且�
   });
   await page.route("**/api/speech/status", (r) =>
     r.fulfill({
-      json: { configured: true, provider: "doubao", segmentSeconds: 30 },
+      json: {
+        configured: true,
+        provider: "doubao",
+        segmentSeconds: 30,
+        streaming: true,
+      },
     }),
   );
   let uploads = 0;
-  await page.route("**/api/speech/transcribe", (r) => {
-    uploads++;
-    return r.fulfill({ json: { text: "合成听写内容" } });
+  let finished = false;
+  await page.route("**/api/speech/stream", async (r) => {
+    const { id, action } = r.request().postDataJSON();
+    if (action === "push") uploads++;
+    if (action === "finish") finished = true;
+    if (action === "read")
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    return r.fulfill({
+      json: {
+        id,
+        revision: uploads + (finished ? 1 : 0),
+        text: finished ? "合成听写内容" : uploads ? "合成听写" : "",
+        status:
+          action === "cancel"
+            ? "cancelled"
+            : finished
+              ? "complete"
+              : "listening",
+      },
+    });
   });
   await page.goto("/");
   const input = await openInput(page);
@@ -130,7 +152,9 @@ test("首次授权后听写直接在输入框内追加，停止立即停采且�
   await consent.getByRole("button", { name: "允许并开始听写" }).click();
   const voice = page.getByRole("region", { name: "听写", exact: true });
   await expect(voice).toBeVisible();
-  expect(uploads).toBe(0);
+  await expect.poll(() => uploads).toBeGreaterThan(0);
+  await expect(input).toHaveValue("已有草稿\n合成听写");
+  await expect(voice).toHaveAttribute("data-recording", "true");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect
     .poll(() =>

@@ -188,6 +188,7 @@ export async function openEmbeddedApplication(
       close() {
         return (stopping ??= (async () => {
           connection.close();
+          application.speechStreams.close();
           await tools?.close();
           await runtime?.stop();
           store.close();

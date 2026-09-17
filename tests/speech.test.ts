@@ -28,6 +28,13 @@ test("语音识别二进制帧的序列、压缩和最终结果解析", () => {
   payload.copy(response, 12);
   assert.deepEqual(asrResponse(response), { last: true, text: "合成测试" });
   assert.throws(() => asrResponse(response.subarray(0, 10)));
+  const noAudio = Buffer.alloc(12);
+  noAudio.set([0x11, 0xf0, 0x10, 0]);
+  noAudio.writeInt32BE(45000002, 4);
+  assert.deepEqual(asrResponse(noAudio), { last: true, text: "" });
+  assert.throws(() => asrResponse(noAudio.subarray(0, 8)));
+  noAudio.writeInt32BE(45000081, 4);
+  assert.throws(() => asrResponse(noAudio), /45000081/); // Packet timeout is not silence.
 });
 test("TTS 接受分片 JSON，密钥仅在官方请求头，错误不能回传密钥", async () => {
   const service = new SpeechService(

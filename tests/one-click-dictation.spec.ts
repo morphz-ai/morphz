@@ -27,6 +27,35 @@ async function syntheticMicrophone(page: Page) {
   await page.route("**/api/speech/transcribe", (route) =>
     route.fulfill({ json: { text: "合成听写" } }),
   );
+  const streams = new Map<
+    string,
+    { id: string; text: string; revision: number; status: string }
+  >();
+  await page.route("**/api/speech/stream", async (route) => {
+    const command = route.request().postDataJSON();
+    let state = streams.get(command.id);
+    if (!state) {
+      state = { id: command.id, text: "", revision: 0, status: "listening" };
+      streams.set(command.id, state);
+    }
+    if (command.action === "push" && !state.text) {
+      expect(command.data.length).toBeLessThanOrEqual(6400);
+      state.text = "合成听";
+      state.revision++;
+    }
+    if (command.action === "finish") {
+      state.text = "合成听写";
+      state.status = "complete";
+      state.revision++;
+    }
+    if (command.action === "cancel") {
+      state.status = "cancelled";
+      state.revision++;
+    }
+    if (command.action === "read")
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    await route.fulfill({ json: state });
+  });
 }
 
 async function stopped(page: Page) {
@@ -47,7 +76,12 @@ test("首次许可明确服务，之后单击即听写；同一按钮停止、�
   await syntheticMicrophone(page);
   await page.route("**/api/speech/status", (route) =>
     route.fulfill({
-      json: { configured: true, provider: "doubao", providerLabel: "豆包" },
+      json: {
+        configured: true,
+        provider: "doubao",
+        providerLabel: "豆包",
+        streaming: true,
+      },
     }),
   );
   await page.goto("/");
@@ -70,6 +104,8 @@ test("首次许可明确服务，之后单击即听写；同一按钮停止、�
   await consent.getByRole("button", { name: "允许并开始听写" }).click();
   await expect(voice).toHaveAttribute("data-recording", "true");
   await expect(mic).toHaveAttribute("aria-pressed", "true");
+  await expect(input).toHaveValue("保留草稿\n合成听", { timeout: 3000 });
+  await expect(voice).toHaveAttribute("data-recording", "true");
   await expect
     .poll(() =>
       voice
@@ -125,7 +161,9 @@ test("从听写切换独立转写会停采，不让旧识别队列串入另一�
 }) => {
   await syntheticMicrophone(page);
   await page.route("**/api/speech/status", (route) =>
-    route.fulfill({ json: { configured: true, provider: "doubao" } }),
+    route.fulfill({
+      json: { configured: true, provider: "doubao", streaming: true },
+    }),
   );
   await page.goto("/");
   await openInput(page);
@@ -164,6 +202,7 @@ test("可撤销授权，服务变更重新确认；拒绝或读取配置时关�
     await route.fulfill({
       json: {
         configured: true,
+        streaming: true,
         provider,
         providerLabel: provider === "doubao" ? "豆包" : "测试识别服务",
       },
@@ -225,7 +264,9 @@ test("等待系统麦克风授权时关闭，不因迟到的允许结果开始�
     }),
   );
   await page.route("**/api/speech/status", (route) =>
-    route.fulfill({ json: { configured: true, provider: "doubao" } }),
+    route.fulfill({
+      json: { configured: true, provider: "doubao", streaming: true },
+    }),
   );
   await page.goto("/");
   await openInput(page);
@@ -248,4 +289,128 @@ test("等待系统麦克风授权时关闭，不因迟到的允许结果开始�
   await expect(
     page.getByRole("region", { name: "听写", exact: true }),
   ).toHaveCount(0);
+});
+
+test("实时听写中手工编辑立即停采，迟到结果不能覆盖草稿；重新开始不覆盖上一段", async ({
+  page,
+}) => {
+  await syntheticMicrophone(page);
+  await page.route("**/api/speech/status", (route) =>
+    route.fulfill({
+      json: { configured: true, provider: "doubao", streaming: true },
+    }),
+  );
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("原稿");
+  const mic = page.getByRole("button", { name: "语音输入", exact: true });
+  const voice = page.getByRole("region", { name: "听写", exact: true });
+  await mic.click();
+  await page.getByRole("button", { name: "允许并开始听写" }).click();
+  await expect(input).toHaveValue("原稿\n合成听", { timeout: 3000 });
+  await input.fill("这是我的手工修正");
+  await stopped(page);
+  await expect(voice).toContainText("已停止听写，继续编辑即可");
+  await expect(input).toHaveValue("这是我的手工修正");
+  await mic.click();
+  await expect(input).toHaveValue("这是我的手工修正\n合成听", {
+    timeout: 3000,
+  });
+  await mic.click();
+  await expect(input).toHaveValue("这是我的手工修正\n合成听写");
+  await expect(page.getByLabel("取消发送")).toHaveCount(0);
+});
+
+test("流式服务中断会关麦克风并保留已有文字，不能悄悄退回分段转写", async ({
+  page,
+}) => {
+  await syntheticMicrophone(page);
+  let fail = false;
+  await page.route("**/api/speech/status", (route) =>
+    route.fulfill({
+      json: { configured: true, provider: "doubao", streaming: true },
+    }),
+  );
+  await page.route("**/api/speech/stream", async (route) => {
+    const { id, action } = route.request().postDataJSON();
+    if (action === "read")
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    await route.fulfill({
+      json: {
+        id,
+        revision: fail ? 2 : action === "open" ? 0 : 1,
+        text: action === "open" ? "" : "已经识别的文字",
+        status: fail ? "error" : "listening",
+        ...(fail ? { error: "测试网络中断" } : {}),
+      },
+    });
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await page.getByRole("button", { name: "语音输入", exact: true }).click();
+  await page.getByRole("button", { name: "允许并开始听写" }).click();
+  await expect(input).toHaveValue("已经识别的文字");
+  fail = true;
+  await expect(
+    page.getByRole("region", { name: "听写", exact: true }),
+  ).toContainText("测试网络中断");
+  await stopped(page);
+  await expect(input).toHaveValue("已经识别的文字");
+});
+
+test("停止后等待尾句时隐藏窗口，也取消旧流并忽略迟到最终结果", async ({
+  page,
+}) => {
+  await syntheticMicrophone(page);
+  await page.route("**/api/speech/status", (route) =>
+    route.fulfill({
+      json: { configured: true, provider: "doubao", streaming: true },
+    }),
+  );
+  let release: (() => void) | undefined;
+  await page.route("**/api/speech/stream", async (route) => {
+    const command = route.request().postDataJSON();
+    if (command.action !== "finish") return route.fallback();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await route.fulfill({
+      json: {
+        id: command.id,
+        revision: 99,
+        text: "不能覆盖草稿的迟到结果",
+        status: "complete",
+      },
+    });
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("保留草稿");
+  const mic = page.getByRole("button", { name: "语音输入", exact: true });
+  const voice = page.getByRole("region", { name: "听写", exact: true });
+  await mic.click();
+  await page.getByRole("button", { name: "允许并开始听写" }).click();
+  await expect(input).toHaveValue("保留草稿\n合成听");
+  await mic.click();
+  await expect(voice).toContainText("正在结束听写");
+  await expect.poll(() => !!release).toBe(true);
+  await stopped(page);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(voice).toContainText("窗口已隐藏，听写已停止");
+  release!();
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await voice.getByRole("button", { name: "关闭听写" }).click();
+  await expect(input).toHaveValue("保留草稿\n合成听");
 });

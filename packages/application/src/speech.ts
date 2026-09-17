@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import WebSocket from "ws";
+import { maxSpeechFrameBytes } from "../../core/src/speech-stream.js";
 import { z } from "zod";
 import { DomainError } from "../../../packages/core/src/model.js";
 import {
@@ -51,6 +52,12 @@ export function asrResponse(raw: Uint8Array) {
   if (flags & 4) integer();
   if (type === 15) {
     const code = integer();
+    if (code === 45000002) {
+      const length = integer();
+      if (length < 0 || length > audioLimit || cursor + length !== b.length)
+        throw failure("语音响应大小无效。");
+      return { last: true, text: "" };
+    }
     throw failure(
       `语音识别服务拒绝请求（${code}）。请检查语音模型权限及额度。`,
     );
@@ -89,6 +96,18 @@ export interface SpeechProvider {
     wav: Uint8Array,
     signal: AbortSignal,
   ): Promise<string>;
+  openStream?(
+    principal: string,
+    result: (text: string, final: boolean) => void,
+    error: (message: string) => void,
+  ): SpeechDuplex;
+}
+
+export interface SpeechDuplex {
+  ready: Promise<void>;
+  write(pcm: Uint8Array): void;
+  finish(): void;
+  close(): void;
 }
 
 /** Current Doubao adapter. Credentials and transport stay in the center process. */
@@ -98,9 +117,152 @@ export class SpeechService implements SpeechProvider {
   constructor(
     private key: string | undefined,
     private fetcher: typeof fetch = fetch,
+    private socket: (
+      url: string,
+      options: WebSocket.ClientOptions,
+    ) => WebSocket = (url, options) => new WebSocket(url, options),
   ) {}
   configured() {
     return !!this.key?.trim();
+  }
+  openStream(
+    principal: string,
+    result: (text: string, final: boolean) => void,
+    error: (message: string) => void,
+  ): SpeechDuplex {
+    if (!this.configured()) throw failure("尚未配置语音服务。");
+    if (this.active.has(principal))
+      throw failure("已有语音请求正在处理，请等待完成或取消。");
+    this.active.add(principal);
+    let ws: WebSocket;
+    try {
+      ws = this.socket(
+        "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async",
+        {
+          headers: {
+            "X-Api-Key": this.key!,
+            "X-Api-Resource-Id": "volc.seedasr.sauc.duration",
+            "X-Api-Request-Id": randomUUID(),
+            "X-Api-Connect-Id": randomUUID(),
+            "X-Api-Sequence": "-1",
+          },
+          maxPayload: 1000000,
+          handshakeTimeout: 10000,
+        },
+      );
+    } catch {
+      this.active.delete(principal);
+      throw failure("无法连接语音识别服务。");
+    }
+    let done = false,
+      ending = false,
+      sequence = 2,
+      latest = "";
+    let resolveReady!: () => void, rejectReady!: (error: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    // A cancelled opening handshake must not leave an unhandled rejection.
+    void ready.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const close = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      this.active.delete(principal);
+      rejectReady(failure("语音连接已关闭。"));
+      ws.terminate();
+    };
+    const fail = (message: string) => {
+      if (done) return;
+      close();
+      error(message);
+    };
+    ws.on("open", () => {
+      if (done) return;
+      ws.send(
+        asrFrame(
+          Buffer.from(
+            JSON.stringify({
+              user: { uid: randomUUID() },
+              audio: {
+                format: "pcm",
+                codec: "raw",
+                rate: 16000,
+                bits: 16,
+                channel: 1,
+              },
+              request: {
+                model_name: "bigmodel",
+                enable_itn: true,
+                enable_punc: true,
+                enable_ddc: true,
+                show_utterances: true,
+                enable_nonstream: false,
+                result_type: "full",
+              },
+            }),
+          ),
+          1,
+          false,
+        ),
+      );
+      // Optimized duplex may not answer until audio arrives. Never wait for an ACK.
+      resolveReady();
+    });
+    ws.on("message", (data) => {
+      if (done) return;
+      try {
+        const response = asrResponse(Buffer.from(data as Buffer));
+        if (response.text) latest = response.text;
+        if (response.last) close();
+        if (response.text || response.last) result(latest, response.last);
+      } catch {
+        fail("语音服务返回异常，已识别文字保留；未自动重试。");
+      }
+    });
+    ws.on("error", () => fail("语音连接中断，已识别文字保留；请重新开始。"));
+    ws.on("close", () =>
+      fail("语音连接提前关闭，已识别文字保留；请重新开始。"),
+    );
+    ws.on("unexpected-response", (_request, response) => {
+      response.resume();
+      fail(
+        `语音连接失败（HTTP ${response.statusCode}），请检查语音模型权限与额度。`,
+      );
+    });
+    return {
+      ready,
+      write: (pcm) => {
+        if (done || ending || ws.readyState !== WebSocket.OPEN)
+          throw failure("语音连接已停止，请重新开始。");
+        if (
+          !pcm.byteLength ||
+          pcm.byteLength > maxSpeechFrameBytes ||
+          pcm.byteLength % 2
+        )
+          throw failure("语音帧格式无效。");
+        if (ws.bufferedAmount > 160000) {
+          fail("语音网络传输跟不上，已停止听写；已识别文字保留。");
+          throw failure("语音网络传输跟不上。");
+        }
+        ws.send(asrFrame(pcm, sequence++, true));
+      },
+      finish: () => {
+        if (done || ending) return;
+        if (ws.readyState !== WebSocket.OPEN)
+          throw failure("语音连接尚未就绪。");
+        ending = true;
+        ws.send(asrFrame(new Uint8Array(), sequence++, true, true));
+        timer = setTimeout(
+          () => fail("语音收尾超时，已识别文字保留；请检查后继续。"),
+          12000,
+        );
+        timer.unref();
+      },
+      close,
+    };
   }
   private async run<T>(
     principal: string,
