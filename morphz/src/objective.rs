@@ -721,7 +721,7 @@ impl Tool for ObjectiveUpdateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
-            description: "Explicitly submit Runtime control state for the current long-term Objective. completed first persists finalizing intent, then the Runtime asks you for a complete final reply in the same Activation; the Objective, Activation, and Thread complete atomically only when that reply is committed. completed requires a truthful reason and existing evidence refs. Keep status active with wait_condition when waiting for a definite event. Use blocked only after the same genuine blocker has been confirmed in at least three consecutive Objective Evaluations and the Runtime cannot wait automatically and no reliable progress path remains. The Agent cannot pause or cancel through this tool.".to_string(),
+            description: "Explicitly submit Runtime control state for the current long-term Objective. completed first persists finalizing intent, then the Runtime asks you for a complete final reply in the same Activation; the Objective, Activation, and Thread complete atomically only when that reply is committed. completed requires a truthful reason and existing evidence refs. Keep status active with wait_condition when waiting for a definite event. If the task, delegation, or group has already ended, the update succeeds without waiting and returns resolved_wait; consume that result and continue the Objective. Use blocked only after the same genuine blocker has been confirmed in at least three consecutive Objective Evaluations and the Runtime cannot wait automatically and no reliable progress path remains. The Agent cannot pause or cancel through this tool.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -825,7 +825,8 @@ impl Tool for ObjectiveUpdateTool {
                 .into());
             }
         }
-        let (status, wait_condition) = match args.status {
+        let mut resolved_wait = None;
+        let mutation = match args.status {
             AgentObjectiveStatus::Completed => {
                 if wait_condition.is_some() {
                     return Err("a completed Objective cannot carry a wait_condition".into());
@@ -878,28 +879,32 @@ impl Tool for ObjectiveUpdateTool {
                             .into(),
                     );
                 }
-                (ObjectiveStatus::Blocked, None)
+                Box::pin(self.supervisor.update_state(
+                    &args.objective_id,
+                    args.base_revision,
+                    ObjectiveStatus::Blocked,
+                    None,
+                    Some(reason),
+                ))
+                .await?
             }
             AgentObjectiveStatus::Active => {
                 let wait_condition = wait_condition.ok_or(
                     "objective_update with status=active must carry a deterministic wait_condition; continue execution when no wait is needed instead of submitting an empty status update",
                 )?;
-                self.supervisor
-                    .validate_wait_condition(&objective, &wait_condition)
-                    .await?;
-                (ObjectiveStatus::Active, Some(wait_condition))
+                // Keep the nested transition/reconciliation future off the
+                // tool-dispatch stack, including on small Runtime worker stacks.
+                let (mutation, result) = Box::pin(self.supervisor.update_wait_state(
+                    &objective,
+                    args.base_revision,
+                    wait_condition,
+                    reason,
+                ))
+                .await?;
+                resolved_wait = result;
+                mutation
             }
         };
-        let mutation = self
-            .supervisor
-            .update_state(
-                &args.objective_id,
-                args.base_revision,
-                status,
-                wait_condition,
-                Some(reason),
-            )
-            .await?;
         Ok(serde_json::to_string_pretty(
             &crate::local_time::localized_runtime_json(match mutation {
                 ObjectiveMutation::Updated(updated) => json!({
@@ -908,11 +913,14 @@ impl Tool for ObjectiveUpdateTool {
                     "revision": updated.revision,
                     "objective_status": updated.status,
                     "wait_condition": updated.wait_condition,
+                    "resolved_wait": resolved_wait,
                     "evidence_refs": args.evidence_refs,
                     "next_action": if updated.status == ObjectiveStatus::Blocked {
                         "Return ordinary text with no tools explaining the blocker. The Runtime stops automatic continuation until explicitly resumed."
                     } else if updated.wait_condition.is_some() {
                         "Return ordinary text explaining the wait, or call no_reply when no message is needed. The Runtime wakes the Objective when the condition is satisfied."
+                    } else if resolved_wait.is_some() {
+                        "The requested wait is already resolved. Consume resolved_wait and read its result Event when result_event_id is present, then continue advancing the active Objective. A failed or cancelled dependency does not complete the Objective. Do not register the same wait again."
                     } else {
                         "Continue advancing the Objective."
                     }
@@ -1912,30 +1920,46 @@ impl ObjectiveSupervisor {
         Ok(job)
     }
 
+    /// Strict registration check for callers that require a pending wait.
+    /// objective_update instead uses update_wait_state to consume ready results.
     pub async fn validate_wait_condition(
         &self,
         objective: &ObjectiveRecord,
         wait: &ObjectiveWaitCondition,
     ) -> Result<(), DynError> {
+        if let Some(result) = self.resolve_wait_condition(objective, wait).await? {
+            return Err(format!(
+                "wait is already terminal; a wait cannot be registered. Continue the Objective using the existing result: {result}"
+            ).into());
+        }
+        Ok(())
+    }
+
+    /// Validate ownership before classifying readiness. A terminal dependency
+    /// is a normal resolved wait, not an invalid Objective update. Return only
+    /// its bounded result projection; the complete output remains in its Event.
+    async fn resolve_wait_condition(
+        &self,
+        objective: &ObjectiveRecord,
+        wait: &ObjectiveWaitCondition,
+    ) -> Result<Option<JsonValue>, DynError> {
         match wait {
             ObjectiveWaitCondition::ToolTask { task_id } => {
                 let job = self.resolve_tool_task_wait(objective, task_id).await?;
                 if job.status.is_terminal() {
-                    return Err(format!(
-                        "tool_task '{}' is already terminal (status={}{}); a wait cannot be registered. Continue the Objective using the existing result",
-                        task_id,
-                        job.status.as_str(),
-                        job.result_event_id
-                            .as_deref()
-                            .map(|event_id| format!(", result_event_id={event_id}"))
-                            .unwrap_or_default()
-                    )
-                    .into());
+                    return Ok(Some(json!({
+                        "wait_condition": wait,
+                        "status": job.status,
+                        "result_event_id": job.result_event_id,
+                        "result_refs": job.result_refs,
+                        "error": job.error,
+                        "exit_code": job.exit_code
+                    })));
                 }
             }
             ObjectiveWaitCondition::Delegation { delegation_id } => {
                 let Some(store) = self.delegations.as_ref() else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 let delegation = store
                     .get_delegation(delegation_id)
@@ -1966,17 +1990,11 @@ impl ObjectiveSupervisor {
                         | DelegationStatus::Failed
                         | DelegationStatus::Cancelled
                 ) {
-                    return Err(format!(
-                        "delegation '{}' is already terminal (status={}{}); a wait cannot be registered. Continue the Objective using the existing result",
-                        delegation_id,
-                        delegation.status.as_str(),
-                        delegation
-                            .result_event_id
-                            .as_deref()
-                            .map(|event_id| format!(", result_event_id={event_id}"))
-                            .unwrap_or_default()
-                    )
-                    .into());
+                    return Ok(Some(json!({
+                        "wait_condition": wait,
+                        "status": delegation.status,
+                        "result_event_id": delegation.result_event_id
+                    })));
                 }
             }
             ObjectiveWaitCondition::ThreadGroup { group_id } => {
@@ -2003,17 +2021,86 @@ impl ObjectiveSupervisor {
                     .into());
                 }
                 if group.status.is_terminal() {
-                    return Err(format!(
-                        "thread_group '{}' is already terminal (status={}); a wait cannot be registered. Consume the existing Outcome and continue",
-                        group_id,
-                        group.status.as_str()
-                    )
-                    .into());
+                    return Ok(Some(json!({
+                        "wait_condition": wait,
+                        "status": group.status,
+                        "result_event_id": group.barrier_event_id,
+                        "terminal_summary": group.terminal_summary
+                    })));
                 }
             }
             _ => {}
         }
-        Ok(())
+        Ok(None)
+    }
+
+    async fn update_wait_state(
+        self: &Arc<Self>,
+        objective: &ObjectiveRecord,
+        expected_revision: u64,
+        wait: ObjectiveWaitCondition,
+        reason: &str,
+    ) -> Result<(ObjectiveMutation, Option<JsonValue>), DynError> {
+        if objective.revision != expected_revision {
+            return Ok((
+                ObjectiveMutation::Conflict {
+                    current: objective.clone(),
+                },
+                None,
+            ));
+        }
+        let mut resolved = self.resolve_wait_condition(objective, &wait).await?;
+        let mut mutation = Box::pin(self.update_state(
+            &objective.id,
+            expected_revision,
+            ObjectiveStatus::Active,
+            if resolved.is_some() {
+                None
+            } else {
+                Some(wait.clone())
+            },
+            Some(reason),
+        ))
+        .await?;
+        if let ObjectiveMutation::Updated(updated) = &mutation {
+            if resolved.is_none() {
+                // Completion may race the initial read and wait registration.
+                // update_state reconciles durable dependencies, so its original
+                // mutation receipt may already be stale. Do not tell the Agent
+                // to wait on a result that reconciliation has just consumed.
+                resolved = self.resolve_wait_condition(updated, &wait).await?;
+                if resolved.is_some() {
+                    mutation = match self.store.get_objective(&updated.id).await? {
+                        Some(current)
+                            if current.status == ObjectiveStatus::Active
+                                && current.generation == updated.generation
+                                && current.active_evaluation_id == updated.active_evaluation_id
+                                && current.wait_condition.is_none() =>
+                        {
+                            ObjectiveMutation::Updated(current)
+                        }
+                        Some(current)
+                            if current.revision == updated.revision
+                                && current.wait_condition.as_ref() == Some(&wait) =>
+                        {
+                            // CAS protects a concurrent pause, amendment, or
+                            // replacement wait. Never retry against a new revision.
+                            Box::pin(self.update_state(
+                                &current.id,
+                                current.revision,
+                                ObjectiveStatus::Active,
+                                None,
+                                Some(reason),
+                            ))
+                            .await?
+                        }
+                        Some(current) => ObjectiveMutation::Conflict { current },
+                        None => ObjectiveMutation::NotFound,
+                    };
+                }
+            }
+        }
+        Ok((mutation, resolved))
     }
 
     pub fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
@@ -5542,6 +5629,10 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
 mod continuation_tests;
 
 #[cfg(test)]
+#[path = "objective/wait_tests.rs"]
+mod wait_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::OrchestratorConfig;
@@ -5640,7 +5731,10 @@ mod tests {
         assert!(provider_failure_is_recoverable("hard_deadline_exceeded"));
     }
 
-    async fn seed_objective_bundle(store: &SqliteStore, suffix: &str) -> ObjectiveRecord {
+    pub(super) async fn seed_objective_bundle(
+        store: &SqliteStore,
+        suffix: &str,
+    ) -> ObjectiveRecord {
         let agent_id = format!("agent-{suffix}");
         let context_id = format!("context-{suffix}");
         let session_id = format!("session-{suffix}");
@@ -7146,7 +7240,7 @@ mod tests {
         assert!(!text.contains("Choose exactly one"));
     }
 
-    async fn seed_background_execution_job(
+    pub(super) async fn seed_background_execution_job(
         store: &SqliteStore,
         objective: &ObjectiveRecord,
         suffix: &str,
@@ -7205,7 +7299,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn seed_delegation(
+    pub(super) async fn seed_delegation(
         store: &SqliteStore,
         objective: &ObjectiveRecord,
         suffix: &str,
@@ -7870,7 +7964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_task_wait_accepts_only_live_runtime_background_jobs() {
+    async fn tool_task_wait_validates_runtime_jobs_and_resolves_terminal_results() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
@@ -7932,19 +8026,19 @@ mod tests {
             crate::memory::ExecutionJobMutation::Updated(_)
         ));
         let ended = supervisor
-            .validate_wait_condition(
+            .resolve_wait_condition(
                 &objective,
                 &ObjectiveWaitCondition::ToolTask { task_id: job.id },
             )
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(ended.contains("already terminal"));
-        assert!(ended.contains("result-tool-wait-live"));
+            .unwrap()
+            .unwrap();
+        assert_eq!(ended["status"], "cancelled");
+        assert_eq!(ended["result_event_id"], "result-tool-wait-live");
     }
 
     #[tokio::test]
-    async fn delegation_wait_accepts_only_live_routed_delegations() {
+    async fn delegation_wait_validates_routes_and_resolves_terminal_results() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
@@ -7995,17 +8089,17 @@ mod tests {
             .await
             .unwrap());
         let ended = supervisor
-            .validate_wait_condition(
+            .resolve_wait_condition(
                 &objective,
                 &ObjectiveWaitCondition::Delegation {
                     delegation_id: delegation.id,
                 },
             )
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(ended.contains("already terminal"));
-        assert!(ended.contains("delegation-wait-result"));
+            .unwrap()
+            .unwrap();
+        assert_eq!(ended["status"], "completed");
+        assert_eq!(ended["result_event_id"], "delegation-wait-result");
     }
 
     #[tokio::test]

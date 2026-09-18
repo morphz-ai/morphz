@@ -148,6 +148,8 @@ resource_available(kind)
 - **正在等待可确定事件**：`status=active, wait_condition=...`，Runtime 登记唤醒条件，不重复调用模型；
 - **无法自动恢复的阻塞**：`status=blocked`，通知使用者并等待显式 resume。
 
+`objective_update(status=active, wait_condition=...)` 提交时，如果同路由、同身份的后台任务、委派或本 Objective 监督的 ThreadGroup 已经终结，这是正常的异步竞态，不是更新失败：Runtime 通过 revision CAS 提交 active 状态，不保留该等待，并在成功响应的 `resolved_wait` 中返回终态和已有结果 Event 引用（后台任务还包括退出码、错误及结果引用）。Agent 消费结果后继续推进 Objective；依赖失败不代表 Objective 完成。提交期间依赖才终结时，由持久化等待核对消除过期等待，响应使用核对后的状态与版本。不存在、跨路由、跨身份的依赖仍然拒绝；版本冲突仍返回冲突，不覆盖新状态。
+
 如果把等待也建模成 `blocked`，后台任务、审批和限额恢复都需要人工恢复；如果只保留 `active`，Supervisor 又会形成无进展的自动轮询。因此两个维度必须独立。
 
 ## 6. 状态机
