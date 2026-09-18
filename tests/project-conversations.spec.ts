@@ -591,8 +591,12 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
   await page.route("**/api/messages", async (route) => {
     const result = await page.request.post("/api/commands", {
       data: route.request().postDataJSON(),
-      headers: { "X-MorphzWork-Token": boot.csrfToken },
+      headers: {
+        "X-MorphzWork-Token": boot.csrfToken,
+        Origin: new URL(page.url()).origin,
+      },
     });
+    expect(result.ok()).toBe(true);
     await route.fulfill({ response: result });
   });
   await (await openInput(page)).fill("独立会话的首条输入");
