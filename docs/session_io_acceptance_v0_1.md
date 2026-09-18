@@ -65,7 +65,7 @@ Set the following test-only environment variables explicitly before the relevant
 
 The separate PostgreSQL resource-concurrency test uses `MORPHZ_SESSION_IO_TEST_POSTGRES_URL` and its full test name `session_io::output::concurrent_tests::postgres_concurrent_resource_delivery_retries_preserve_committed_bytes` with `--ignored`.
 
-Dashboard: `npm test`, `npm run lint`, `npm run build`. In the paired Desktop workspace: `npm test`, `npm run typecheck`, build, then `MORPHZWORK_RUNTIME_BINARY=/absolute/current/morphz npm run test:runtime-tools -- --stream-ui --storage-fence`. That script creates a fresh center and database and explicitly fences only that fixture. It never loads a personal center or project `.env`.
+Dashboard: `npm test`, `npm run lint`, `npm run build` in `dashboard/`. Application tests now live in this repository's `application/`: run `npm test`, `npm run typecheck`, `npm run build`, then `npm run test:runtime-tools -- --stream-ui --storage-fence`. Integration scripts default to this repository's `target/debug/morphz`; use `MORPHZ_APP_RUNTIME_BINARY=/absolute/current/morphz` only to select another explicit test binary. The script creates a fresh center and database and explicitly fences only that fixture. It never loads a personal center or project `.env`. These are current rerun instructions; the historical acceptance results above are unchanged.
 
 ## What this does not claim
 

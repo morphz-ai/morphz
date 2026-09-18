@@ -19,7 +19,7 @@ export async function seedLibraryArtifact(
   expect(project, "The fixture must use the visible workspace").toBeTruthy();
   const response = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: {

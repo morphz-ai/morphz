@@ -5,6 +5,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
+import { createAppServer } from "../apps/service/src/http.js";
 import { prepareLocalHostTools } from "../packages/application/src/host-tools-ipc.js";
 import { workInputFormats } from "../packages/application/src/session-io.js";
 import {
@@ -26,6 +28,80 @@ const {
   desktopBootstrap,
   compatibleBootstrap,
 } = require("../scripts/desktop-bundle.mjs");
+
+test("current input contracts use canonical names while legacy formats remain registered", () => {
+  const current = workInputFormats.filter(
+    (format) => format.id === "morphz.application.input",
+  );
+  assert.deepEqual(
+    current.map((format) => format.version),
+    ["4", "3", "2", "1"],
+  );
+  for (const format of current) {
+    assert.equal(format.publisher, "Morphz application");
+    assert.match(format.contract, /host_morphz/);
+    assert.doesNotMatch(JSON.stringify(format), /morphz[ _-]?work(?![a-z])/i);
+  }
+});
+
+test("legacy HTTP headers retry the same command without duplicates or a CSRF bypass", async () => {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const store = new WorkspaceStore(":memory:");
+  const server = createAppServer(store, { port, webRoot: "/nonexistent" });
+  await new Promise<void>((resolve) =>
+    server.listen(port, "127.0.0.1", resolve),
+  );
+  const origin = `http://127.0.0.1:${port}`;
+  try {
+    const boot = await (await fetch(origin + "/api/workspace")).json();
+    const command = {
+      commandId: randomUUID(),
+      operation: { type: "create-project", title: "Header compatibility" },
+    };
+    const post = (headers: Record<string, string>) =>
+      fetch(origin + "/api/commands", {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify(command),
+      });
+    const first = await post({ "X-MorphzWork-Token": boot.csrfToken });
+    assert.equal(first.status, 200);
+    const receipt = await first.json();
+    const after = store.snapshot();
+    const acceptedHeaders: Record<string, string>[] = [
+      { "X-Morphz-Token": boot.csrfToken },
+      {
+        "X-Morphz-Token": boot.csrfToken,
+        "X-MorphzWork-Token": boot.csrfToken,
+      },
+    ];
+    for (const headers of acceptedHeaders) {
+      const response = await post(headers);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), receipt);
+      assert.deepEqual(store.snapshot(), after);
+    }
+    const rejectedHeaders: Record<string, string>[] = [
+      { "X-Morphz-Token": "", "X-MorphzWork-Token": boot.csrfToken },
+      { "X-Morphz-Token": boot.csrfToken, "X-MorphzWork-Token": "wrong" },
+      { "X-MorphzWork-Token": "wrong" },
+    ];
+    for (const headers of rejectedHeaders) {
+      assert.equal((await post(headers)).status, 403);
+      assert.deepEqual(store.snapshot(), after);
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
 
 test("旧输入注册定义摘要不变；旧单工具清单升级保留 token 和作用范围", () => {
   const digests = workInputFormats

@@ -8,7 +8,9 @@ const { DesktopCapture } = createRequire(import.meta.url)(
   "../apps/desktop/capture.cjs",
 );
 test("自绘选区确认前不读取像素，确认后只读取选定范围，取消不启动截图", async () => {
-  const temporary = await mkdtemp(join(tmpdir(), "morphzwork-region-unit-"));
+  const temporary = await mkdtemp(
+    join(tmpdir(), "morphz-application-region-unit-"),
+  );
   let choose!: (value: unknown) => void;
   let calls = 0;
   const capture = new DesktopCapture({
@@ -55,7 +57,9 @@ test("自绘选区确认前不读取像素，确认后只读取选定范围，�
   }
 });
 test("截图必须交互选择，只返回本次 PNG，并清理临时文件", async () => {
-  const temporary = await mkdtemp(join(tmpdir(), "morphzwork-capture-unit-"));
+  const temporary = await mkdtemp(
+    join(tmpdir(), "morphz-application-capture-unit-"),
+  );
   try {
     const service = new DesktopCapture({
       platform: "darwin",
@@ -98,7 +102,7 @@ test("截图必须交互选择，只返回本次 PNG，并清理临时文件", a
 
 test("截图取消会中止在途选择、清理临时文件并允许再次选择", async () => {
   const temporary = await mkdtemp(
-    join(tmpdir(), "morphzwork-capture-cancel-unit-"),
+    join(tmpdir(), "morphz-application-capture-cancel-unit-"),
   );
   let signalStarted!: () => void;
   const started = {

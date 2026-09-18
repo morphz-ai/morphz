@@ -5,11 +5,11 @@
 
 ## 一个 Agent，多个参与者
 
-MorphzWork 支持团队成员以各自的身份与同一个 Agent 对话。Agent 在共享项目认知上理解不同成员的请求，主动分派事务，接收结果并协调后续工作。
+Morphz 应用支持团队成员以各自的身份与同一个 Agent 对话。Agent 在共享项目认知上理解不同成员的请求，主动分派事务，接收结果并协调后续工作。
 
 Principal（主体）是稳定的身份与授权来源。在团队交互中，每个人对应经过认证的主体身份。它不只是姓名、头像或提示词中的角色描述。
 
-Morphz Runtime 已定义主体及其沿执行因果路径的身份绑定。MorphzWork 的团队体验应对接这套契约，而不是额外建立一套仅在界面有效的身份。Runtime 的身份基础不等于团队邀请、成员 Inbox 和细粒度共享策略已经完成；这些仍需实现与验证。参见[主体与授权](https://morphz.ai/docs/principals-and-authority)。
+Morphz Runtime 已定义主体及其沿执行因果路径的身份绑定。Morphz 应用的团队体验应对接这套契约，而不是额外建立一套仅在界面有效的身份。Runtime 的身份基础不等于团队邀请、成员 Inbox 和细粒度共享策略已经完成；这些仍需实现与验证。参见[主体与授权](https://morphz.ai/docs/principals-and-authority)。
 
 ## 身份、会话与设备分别处理
 

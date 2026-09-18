@@ -20,7 +20,7 @@ test("PDF 真实画布、中文文字层、分页引用、批注与重开", asyn
   const imported = await page.request.post("/api/import/pdf", {
     headers: {
       Origin: new URL(page.url()).origin,
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       "X-Command-Id": randomUUID(),
       "X-Project-Id": project.id,
       "X-Source-Path": "reader.pdf",

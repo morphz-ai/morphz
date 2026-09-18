@@ -16,7 +16,7 @@ Session remains a Context-owned IO route. A request's format does not create a s
 | Output | `deliver_message` validates complete outputs against the accepted root contract. Ordinary final Chat replies use the same output validation. Required outputs are checked at terminal delivery. |
 | Transport | Capability discovery, JSON submission/history and versioned SSE with durable cursors, draft sequence numbers, replaceable snapshots and explicit reset. |
 | Resources | Staged uploads, attachment-only Chat and committed references use the authenticated import pipeline. Typed outputs own their attachment copies. |
-| Clients | Dashboard has a generic read-only inspector. Desktop sends new text/image Work inputs as `morphzwork.input@1`; image bytes use resumable staging. |
+| Clients | Dashboard has a generic read-only inspector. The application uses the versioned `morphz.application.input` family for new inputs; image bytes use resumable staging. Historical format definitions and queued requests remain unchanged. |
 | Upgrade | Explicit SQLite/PostgreSQL writer fence; compatible connection markers, old-writer rejection, immutable version/coverage manifest and backup-only downgrade. |
 
 The input's `text` display hint is not the authoritative Context representation. Neither a rules prefix nor serialized domain JSON is inserted into the user's text. Stable Work behavior belongs to the host tool/format contract; dynamic scope is data. Actual object creation still requires the authenticated host tool and its durable receipt.
@@ -193,7 +193,7 @@ Draft storage is bounded to 64 attempts and 256 KiB per draft; the connection al
 
 ## Desktop migration
 
-The paired Desktop implementation installs `morphzwork.input@1` once through its host manifest. A new text input contains only the original text, input/workspace/Actant IDs, optional intent/selection and an exact object revision reference. The host independently resolves the root input and permissions; none of these data fields grants authority.
+The application now lives in this repository's `application/`. Its host manifest registers `morphz.application.input` (v1 ordinary input, v2 legacy local-file reference support, v3 directory grants, v4 directed continuation) alongside immutable legacy `morphzwork.input` definitions for existing work. New requests select the version for their actual fields; this does not rewrite queued requests or require Runtime to implement application business rules. A new text input contains the original text, input/workspace/Actant IDs, optional intent/selection and an exact object revision reference. The host independently resolves the root input and permissions; none of these data fields grants authority.
 
 Rules previously prepended to every user message now live in the stable host tool contract. Large object bodies are read with the existing versioned object tool. `read-input` returns the actual invocation's immutable scope when handling standard Chat/attachments. It cannot select an arbitrary input ID.
 

@@ -186,7 +186,7 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
   const title = "下一次输入的关联事项";
   const created = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": initial.csrfToken,
+      "X-Morphz-Token": initial.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: {

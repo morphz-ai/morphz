@@ -14,7 +14,7 @@ async function command(page: Page, operation: Command["operation"]) {
   const boot = await snapshot(page);
   const response = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: { commandId: randomUUID(), operation },

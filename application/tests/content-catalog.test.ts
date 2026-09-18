@@ -143,7 +143,7 @@ test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具�
       }));
     const envelope = (args: unknown) => ({
       protocol: 1,
-      tool: "host_morphz_work",
+      tool: "host_morphz",
       invocation: {
         job_id: randomUUID(),
         tool_call_id: "call",

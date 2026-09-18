@@ -167,7 +167,9 @@ test("导入拒绝隐藏文件、越界路径、凭据、二进制、私钥和�
 });
 
 test("旧数据库无来源字段可升级，保留原对象，旧版本不能重新打开新库", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphzwork-migration-"));
+  const directory = mkdtempSync(
+    join(tmpdir(), "morphz-application-migration-"),
+  );
   const path = join(directory, "workspace.sqlite");
   try {
     const store = new WorkspaceStore(path);

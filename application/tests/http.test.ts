@@ -24,7 +24,7 @@ test("首发建会话 HTTP 契约：无效输入不创建，丢回执重试返�
     const headers = {
       Origin: origin,
       "Content-Type": "application/json",
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
     };
     const request = {
       commandId: randomUUID(),
@@ -122,7 +122,7 @@ test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
     const headers = {
       Origin: origin,
       "Content-Type": "application/json",
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
     };
     const request = {
       commandId: randomUUID(),
@@ -143,10 +143,7 @@ test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
       (await post(request, { Origin: "https://evil.example" })).status,
       403,
     );
-    assert.equal(
-      (await post(request, { "X-MorphzWork-Token": "" })).status,
-      403,
-    );
+    assert.equal((await post(request, { "X-Morphz-Token": "" })).status, 403);
     const badHost = await new Promise<number | undefined>((resolve, reject) => {
       const req = httpRequest(
         origin + "/api/workspace",

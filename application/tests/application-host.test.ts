@@ -62,7 +62,7 @@ test("共享业务层：本地调用与 Web HTTP 复用同一命令回执、修�
         headers: {
           Origin: origin,
           "Content-Type": "application/json",
-          "X-MorphzWork-Token": remote.csrfToken,
+          "X-Morphz-Token": remote.csrfToken,
         },
         body: JSON.stringify(data),
       });

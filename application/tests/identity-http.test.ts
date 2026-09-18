@@ -132,7 +132,7 @@ test("两个真实 HTTP 身份：登录、文件和对象隔离、共享项目�
           Cookie: cookieB,
           Origin: origin,
           "Content-Type": "application/json",
-          "X-MorphzWork-Token": token,
+          "X-Morphz-Token": token,
         },
         body: JSON.stringify({ commandId: randomUUID(), operation }),
       });

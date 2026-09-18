@@ -126,7 +126,7 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   );
   const revised = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: {

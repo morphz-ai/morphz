@@ -9,7 +9,7 @@ import {
 } from "../apps/service/src/environment.js";
 
 test("服务端 .env 仅加载允许的密钥，不覆盖宿主环境或修改其他进程选项", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphzwork-env-"));
+  const directory = mkdtempSync(join(tmpdir(), "morphz-application-env-"));
   try {
     const filename = join(directory, ".env");
     writeFileSync(
@@ -42,29 +42,35 @@ test("默认配置位置跟随工程，不跟随进程启动目录；源码和�
   assert.equal(compiled, source);
 });
 
-test("配置缺省可启动，显式路径错误不静默忽略，测试可禁用项目 .env", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphzwork-env-"));
+test("新旧配置名称均验证显式路径，空值可禁用 .env；不覆盖新配置", () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-application-env-"));
   try {
     const missing = join(directory, "missing.env");
     assert.doesNotThrow(() => loadServiceEnvironment({}, missing));
-    assert.throws(
-      () => loadServiceEnvironment({ MORPHZWORK_ENV_FILE: missing }),
-      /无法读取服务端环境配置/,
-    );
-    assert.throws(
-      () => loadServiceEnvironment({ MORPHZWORK_ENV_FILE: "relative.env" }),
-      /必须是绝对路径/,
-    );
-    const env = { MORPHZWORK_ENV_FILE: "" };
-    loadServiceEnvironment(env, missing);
-    assert.deepEqual(env, { MORPHZWORK_ENV_FILE: "" });
+    for (const name of ["MORPHZ_APP_ENV_FILE", "MORPHZWORK_ENV_FILE"]) {
+      assert.throws(
+        () => loadServiceEnvironment({ [name]: missing }),
+        /无法读取服务端环境配置/,
+      );
+      assert.throws(
+        () => loadServiceEnvironment({ [name]: "relative.env" }),
+        /必须是绝对路径/,
+      );
+      const env = { [name]: "" };
+      loadServiceEnvironment(env, missing);
+      assert.deepEqual(env, { [name]: "" });
+    }
+    const current = { MORPHZ_APP_ENV_FILE: "", MORPHZWORK_ENV_FILE: missing };
+    const before = { ...current };
+    loadServiceEnvironment(current);
+    assert.deepEqual(current, before);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 test("错误报告不包含配置内容", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphzwork-env-"));
+  const directory = mkdtempSync(join(tmpdir(), "morphz-application-env-"));
   try {
     const filename = join(directory, ".env");
     writeFileSync(filename, "DOUBAO_API_KEY=" + "fixture-secret".repeat(12000));

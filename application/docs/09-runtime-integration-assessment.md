@@ -6,7 +6,7 @@
 
 ## 结论
 
-Session、Principal 绑定、Objective、线程控制、历史事件和 Edge 作业通道已有可复用基础。MorphzWork 不需要再建立一个执行调度器。
+Session、Principal 绑定、Objective、线程控制、历史事件和 Edge 作业通道已有可复用基础。Morphz 应用不需要再建立一个执行调度器。
 
 但通用 Inbox、指派给人的工作、事项级模型策略和浏览器交接，不能直接当成现有 Dashboard 接口的另一种展示。需要补齐产品契约，并区分管理员操作与普通参与者操作。这些是目标产品的接入缺口，不等同于本轮发现了 Runtime 故障。
 

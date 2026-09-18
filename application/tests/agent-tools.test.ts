@@ -26,7 +26,7 @@ const route: HostInvocation = {
 };
 const envelope = (args: unknown, job = randomUUID()) => ({
   protocol: 1,
-  tool: "host_morphz_work",
+  tool: "host_morphz",
   invocation: { ...route, job_id: job },
   arguments: args,
 });
@@ -392,7 +392,9 @@ test("Agent 参数不能扩大项目范围或冒充身份；读取分页绑定�
 });
 
 test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中心重绑定", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphzwork-host-tools-")),
+  const directory = mkdtempSync(
+      join(tmpdir(), "morphz-application-host-tools-"),
+    ),
     namespace = randomUUID();
   const first = prepareHostTools(directory, 65420, namespace),
     second = prepareHostTools(directory, 65420, namespace);
@@ -428,7 +430,9 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
     () => prepareHostTools(directory, 65420, namespace, true),
     /不匹配/,
   );
-  const teamDirectory = mkdtempSync(join(tmpdir(), "morphzwork-team-tools-"));
+  const teamDirectory = mkdtempSync(
+    join(tmpdir(), "morphz-application-team-tools-"),
+  );
   const team = prepareHostTools(teamDirectory, 65420, namespace, true);
   assert.equal(
     prepareHostTools(teamDirectory, 65420, namespace, true).token,
@@ -468,7 +472,7 @@ test("Host HTTP 不接受 UI 令牌、浏览器来源或缺少服务凭据的调
       });
     assert.equal((await post({})).status, 403);
     assert.equal(
-      (await post({ "X-MorphzWork-Token": snapshot.csrfToken })).status,
+      (await post({ "X-Morphz-Token": snapshot.csrfToken })).status,
       403,
     );
     assert.equal(

@@ -3,9 +3,11 @@
 日期：2026-09-06  
 状态：架构设计草案；命令与分发流程不代表已实现能力
 
+本文保留早期多端与分发目标；当前源码已合入主仓库 `application/`。现行启动与模块边界见[应用 README](../README.md)、[共享应用层](./24-shared-application-host.md)和[整合记录](./25-repository-integration.md)。Mobile、浏览器扩展及下文拟议安装命令尚未提供。
+
 ## Runtime 与应用边界
 
-Morphz Runtime 提供认知、调度、执行和持久状态。MorphzWork 提供 Web、Desktop、Mobile 和浏览器扩展等用户入口。
+Morphz Runtime 提供认知、调度、执行和持久状态。Morphz 应用提供 Web、Desktop、Mobile 和浏览器扩展等用户入口。
 
 应用通过明确的 API／SDK 使用 Runtime，不直接依赖其数据库和内部实现。各端共享同一个中心的会话、任务和相关认知；本机能力通过授权接入。
 

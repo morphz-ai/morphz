@@ -103,7 +103,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   const invoke = async (operation: unknown) => {
     const response = await page.request.post("/api/commands", {
       headers: {
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         Origin: "http://127.0.0.1:65421",
       },
       data: { commandId: crypto.randomUUID(), operation },

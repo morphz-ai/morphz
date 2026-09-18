@@ -712,6 +712,7 @@ try {
       }
       if (result.table === "execution_jobs") {
         assert.equal(row.thread_id, acceptance.threadId);
+        // The 2026-09-12 cutover used this name; its receipts are immutable.
         assert.equal(row.tool_name, "host_morphz_work");
         assert.equal(row.status, "succeeded");
         const request = JSON.parse(row.request_json);

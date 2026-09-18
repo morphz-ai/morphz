@@ -168,7 +168,7 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
       };
       const result = (await tools.call({
         protocol: 1,
-        tool: "host_morphz_work",
+        tool: "host_morphz",
         invocation: route,
         arguments: {
           action: "create-document",

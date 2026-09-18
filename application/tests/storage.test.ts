@@ -18,7 +18,7 @@ const create = (): Command => ({
   },
 });
 test("重启恢复、幂等请求与冲突不会静默丢数据", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-store-test-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-store-test-")),
     path = join(dir, "workspace.sqlite");
   try {
     const first = new WorkspaceStore(path),
@@ -51,7 +51,9 @@ test("重启恢复、幂等请求与冲突不会静默丢数据", () => {
   }
 });
 test("两个存储连接使用同一版本权威", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-concurrency-test-")),
+  const dir = mkdtempSync(
+      join(tmpdir(), "morphz-application-concurrency-test-"),
+    ),
     a = new WorkspaceStore(join(dir, "db")),
     b = new WorkspaceStore(join(dir, "db"));
   try {
@@ -80,7 +82,7 @@ test("两个存储连接使用同一版本权威", () => {
   }
 });
 test("未来数据库版本与损坏记录不得自动重置", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-version-test-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-version-test-")),
     path = join(dir, "db");
   try {
     const db = new DatabaseSync(path);
@@ -134,7 +136,7 @@ test("默认数据位置不依赖当前目录；显式路径必须绝对", () =>
     "/users/test/.local/share/morphz/application",
   );
   assert.throws(
-    () => dataDirectory({ MORPHZWORK_DATA_DIR: "data" }),
+    () => dataDirectory({ MORPHZ_APP_DATA_DIR: "data" }),
     /绝对路径/,
   );
   assert.equal(

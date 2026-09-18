@@ -115,8 +115,8 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
 test("桌面内嵌宿主直接打开原 SQLite，重开保留对象与命令回执且没有 HTTP 服务", async () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-embedded-"));
   const profile = join(directory, "profile");
-  const previous = process.env.MORPHZWORK_ENV_FILE;
-  process.env.MORPHZWORK_ENV_FILE = "";
+  const previous = process.env.MORPHZ_APP_ENV_FILE;
+  process.env.MORPHZ_APP_ENV_FILE = "";
   let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
   try {
     host = await openEmbeddedApplication(directory, profile);
@@ -147,8 +147,8 @@ test("桌面内嵌宿主直接打开原 SQLite，重开保留对象与命令回�
     assert.notEqual(reopened.csrfToken, boot.csrfToken);
   } finally {
     await host?.close();
-    if (previous === undefined) delete process.env.MORPHZWORK_ENV_FILE;
-    else process.env.MORPHZWORK_ENV_FILE = previous;
+    if (previous === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
+    else process.env.MORPHZ_APP_ENV_FILE = previous;
     rmSync(directory, { recursive: true });
   }
 });
@@ -387,7 +387,7 @@ test("Runtime 本地回调不使用 HTTP，认证和真实 job 幂等写入保�
     );
     const request = {
       protocol: 1,
-      tool: "host_morphz_work",
+      tool: "host_morphz",
       arguments: {
         action: "create-document",
         title: "真实 IPC 写入",

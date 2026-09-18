@@ -38,7 +38,7 @@ test("同空间跨应用与对象共用 Session，各输入固定 Harness，并�
     const ids: string[] = [];
     for (const name of ["writing", "editing"]) {
       const manifest = applicationManifestSchema.parse({
-        format: "morphz-work-app/v1",
+        format: "morphz-app/v1",
         id: `test.${name}`,
         version: "1.0.0",
         title: name,

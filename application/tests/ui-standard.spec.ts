@@ -197,7 +197,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
   for (let i = 0; i < 16; i++) {
     const response = await page.request.post("/api/commands", {
       headers: {
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         Origin: "http://127.0.0.1:65421",
       },
       data: {

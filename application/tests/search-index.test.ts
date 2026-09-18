@@ -335,7 +335,7 @@ test("PDF 多词可跨页匹配，但单词不能跨页拼接；引用仍是某�
   }
 });
 test("索引更新与修订原子提交，冲突和重启不会留下过期或重复结果", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-index-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-index-")),
     path = join(dir, "db");
   try {
     const store = new WorkspaceStore(path);
@@ -373,7 +373,7 @@ test("索引更新与修订原子提交，冲突和重启不会留下过期或�
   }
 });
 test("检索计数、原文和原始文件在授权投影内过滤；未关联上传不可公开读取", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-index-access-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-index-access-")),
     path = join(dir, "db");
   try {
     const store = new WorkspaceStore(path);

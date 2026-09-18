@@ -12,7 +12,7 @@ async function fixture(
     const response = await page.request.post("/api/commands", {
       headers: {
         Origin: new URL(page.url()).origin,
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
       },
       data: { commandId: randomUUID(), operation },
     });

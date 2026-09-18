@@ -235,7 +235,7 @@ test("智能体管理共用命令、实际用户授权、版本和持久幂等�
     }));
     const envelope = (action: string, management: unknown) => ({
       protocol: 1,
-      tool: "host_morphz_work",
+      tool: "host_morphz",
       invocation: {
         job_id: randomUUID(),
         tool_call_id: "call",

@@ -85,7 +85,7 @@ async function command(page: Page, operation: Command["operation"]) {
   const boot = await (await page.request.get("/api/workspace")).json();
   const res = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: { commandId: randomUUID(), operation },

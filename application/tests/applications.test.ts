@@ -19,7 +19,7 @@ import {
 import { workspaceFor } from "../apps/service/src/identity.js";
 
 const app = applicationManifestSchema.parse({
-  format: "morphz-work-app/v1",
+  format: "morphz-app/v1",
   id: "test.notes",
   version: "1.0.0",
   title: "测试应用",
@@ -31,7 +31,12 @@ const app = applicationManifestSchema.parse({
 });
 test("旧便笺的启动台说明使用日常语言，不改包、状态或第三方应用说明", () => {
   const description = "宿主协议示例：独立界面、状态恢复、保存对象与协作输入。";
-  const legacy = { ...app, id: "example.scratchpad", description };
+  const legacy = {
+    ...app,
+    format: "morphz-work-app/v1" as const,
+    id: "example.scratchpad",
+    description,
+  };
   const before = JSON.stringify(legacy);
   assert.equal(
     applicationDescription(legacy),

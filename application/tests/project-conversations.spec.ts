@@ -215,7 +215,7 @@ test("旧空会话不占列表，已有草稿可恢复；只发附件才落库�
   const post = async (operation: unknown) => {
     const response = await page.request.post("/api/commands", {
       headers: {
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         Origin: new URL(page.url()).origin,
       },
       data: { commandId: crypto.randomUUID(), operation },
@@ -592,7 +592,7 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
     const result = await page.request.post("/api/commands", {
       data: route.request().postDataJSON(),
       headers: {
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         Origin: new URL(page.url()).origin,
       },
     });

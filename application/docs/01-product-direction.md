@@ -5,7 +5,7 @@
 
 ## 产品出发点
 
-MorphzWork 探索人与 AI 如何共同推进工作。现实中的工作既包含人交给 AI 的任务，也包含 AI 为实现目标而安排给人或其他 Agent 的事务。工作还会跨越聊天、开发环境、网页、手机和团队成员。
+Morphz 应用探索人与 AI 如何共同推进工作。现实中的工作既包含人交给 AI 的任务，也包含 AI 为实现目标而安排给人或其他 Agent 的事务。工作还会跨越聊天、开发环境、网页、手机和团队成员。
 
 产品关注的使用摩擦包括：AI 提出的行动计划留在聊天中，用户需要自行记住和执行；用户要把 AI 写的内容复制到网页；跨应用操作之后，还需要回到原会话重复说明结果。
 
@@ -63,7 +63,7 @@ Agent 的安排需要考虑截止时间、预计耗时、优先级、依赖和�
 
 ## 产品边界
 
-- MorphzWork 是完整应用产品的探索，不局限于 Desktop，也不只是 Runtime Dashboard 的包装。
+- Morphz 应用是完整应用产品的探索，不局限于 Desktop，也不只是 Runtime Dashboard 的包装。
 - 日常聊天保留轻量体验，不要求每句话都成为正式事务。
-- 多端应用属于同一 MorphzWork 产品，通过明确的 API／SDK 使用 Morphz Runtime。
+- 多端应用属于同一 Morphz 应用产品，通过明确的 API／SDK 使用 Morphz Runtime。
 - Web App 设计为完整用户入口，面向云端和自托管；CLI 按需获取兼容发布包并启动，二进制仅内嵌 Dashboard。Desktop 可额外安装，详见[应用架构与分发](./05-application-architecture-and-distribution.md)。

@@ -420,7 +420,7 @@ test("HTTP 检查继续验证 CSRF，远端不能配置本机连接", async () =
     const boot = await (await fetch(origin + "/api/workspace")).json();
     const headers = {
       Origin: origin,
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       "Content-Type": "application/json",
     };
     assert.equal(

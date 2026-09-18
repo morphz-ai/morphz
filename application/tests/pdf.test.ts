@@ -18,7 +18,7 @@ test("PDF 原文提取、按页引用、可信内容与重启保存", async () =
   assert.match(pages[0]!, /DESIGN NOTES/);
   assert.match(pages[1]!, /durable butterfly/);
   assert.match(pages[1]!, /合成测试资料/);
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-pdf-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-pdf-")),
     file = join(dir, "db");
   const store = new WorkspaceStore(file);
   try {
@@ -163,7 +163,7 @@ test("PDF HTTP 导入经过请求验证、权限检查与幂等写入", async ()
     )) as { csrfToken: string };
     const headers = {
       Origin: origin,
-      "X-MorphzWork-Token": boot.csrfToken,
+      "X-Morphz-Token": boot.csrfToken,
       "X-Command-Id": randomUUID(),
       "X-Project-Id": "first-project",
       "X-Source-Path": "reader.pdf",

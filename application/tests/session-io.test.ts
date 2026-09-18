@@ -173,7 +173,7 @@ test("read-input resolves only the actual invocation scope, never a model-select
     }));
     const request = {
       protocol: 1,
-      tool: "host_morphz_work",
+      tool: "host_morphz",
       invocation: {
         job_id: "test-job",
         tool_call_id: "test-call",

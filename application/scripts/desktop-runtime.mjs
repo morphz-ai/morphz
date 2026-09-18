@@ -91,6 +91,8 @@ const child = spawn(
       MORPHZ_DASHBOARD_TOKEN: config.token,
       MORPHZ_HOST_TOOLS_FILE: manifest,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
+      // Persisted model routes may reference the old key name. Supply both
+      // without rewriting the existing configuration or credential reference.
       MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,
       MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key,
     },

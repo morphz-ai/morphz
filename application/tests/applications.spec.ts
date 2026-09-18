@@ -298,7 +298,7 @@ test("独立应用界面拒绝宿主访问、外连和越权命令", async ({ pa
   const invoke = (operation: unknown) =>
     page.request.post("/api/commands", {
       headers: {
-        "X-MorphzWork-Token": boot.csrfToken,
+        "X-Morphz-Token": boot.csrfToken,
         Origin: "http://127.0.0.1:65421",
       },
       data: { commandId: crypto.randomUUID(), operation },

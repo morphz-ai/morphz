@@ -142,7 +142,7 @@ const job = {
   revision: 7,
   session_id: "session-1",
   context_id: "context-1",
-  tool_name: "host_morphz_work",
+  tool_name: "host_morphz",
   target_id: "local",
   thread_id: "thread-1",
   status: "running",

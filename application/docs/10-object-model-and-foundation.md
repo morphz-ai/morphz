@@ -1,10 +1,10 @@
 # 对象模型与工程基础
 
-状态：对象工程基础与本机 Runtime 对话已接入；不代表完整 MorphzWork 产品、任务执行 UI 或团队部署已完成。
+状态：早期对象模型与工程基础记录，不代表当前完整产品能力。现行内容、事项、目录授权与检索边界以[应用 README](../README.md)和[实施记录](./13-implementation-status.md)为准；下文的导入与优先级字段等早期约定不能用来恢复已收缩的入口。
 
 ## 产品抽象
 
-MorphzWork 围绕 **Actant + InputBox + Artifacts + Views** 组织。
+Morphz 应用围绕 **Actant + InputBox + Artifacts + Views** 组织。
 
 对象可以由人创作、由 Agent 产出或从外部导入。文档、图片和任务属于同一个 Artifact 体系，彼此以显式关系连接。任务看板、收件箱、文档库等是这些对象的视图，不另建相互脱节的数据副本。
 

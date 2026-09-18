@@ -31,7 +31,7 @@ test("当前理解非模态核对，更新只准备统一草稿，不发送技�
   expect(after.workspace.inputs.length).toBe(before.workspace.inputs.length);
   expect(after.workspace.conversations).toEqual(before.workspace.conversations);
   expect(await input.inputValue()).not.toMatch(
-    /context_tx|host_morphz_work|mw-public|Session/,
+    /context_tx|host_morphz(?:_work)?|mw-public|Session/,
   );
   await panel.screenshot({ path: "test-results/experience-understanding.png" });
   await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
@@ -53,7 +53,7 @@ test("当前理解来源可打开，窄窗核对和关闭不丢草稿或遮住�
   );
   const created = await page.request.post("/api/commands", {
     headers: {
-      "X-MorphzWork-Token": initial.csrfToken,
+      "X-Morphz-Token": initial.csrfToken,
       Origin: "http://127.0.0.1:65421",
     },
     data: {

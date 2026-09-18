@@ -24,7 +24,7 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 test("来源选择仅遍历明确范围，不进入隐藏/依赖目录，不读取链接或替换后的授权路径", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-source-bounds-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-source-bounds-")),
     library = join(dir, "library");
   mkdirSync(library);
   try {
@@ -52,7 +52,7 @@ test("来源选择仅遍历明确范围，不进入隐藏/依赖目录，不读�
   }
 });
 test("桌面来源真实 HTTP 同步、重启去重、暂停、文件删除保留版本，以及中心身份变更停发", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphzwork-source-flow-")),
+  const dir = mkdtempSync(join(tmpdir(), "morphz-application-source-flow-")),
     library = join(dir, "library"),
     config = join(dir, "profile", "grants.json");
   mkdirSync(library);
