@@ -2,6 +2,7 @@ import { z } from "zod";
 import { assertProjectWritable, projectManager } from "./projects.js";
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
+import { continuationSchema } from "./continuation.js";
 import {
   localFileReferenceSchema,
   directoryGrantSchema,
@@ -345,6 +346,7 @@ export const stateSchema = z
       z
         .object({
           id,
+          continuation: continuationSchema.optional(),
           projectId: id,
           conversationId: id.optional(),
           artifactId: id.nullable(),
@@ -615,6 +617,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      continuation: continuationSchema.optional(),
       model: z.string().trim().min(1).max(256).optional(),
       reasoningEffort: reasoningEffortSchema.optional(),
       conversationId: id.optional(),
@@ -1817,6 +1820,41 @@ export function applyCommand(
       createdAt: now,
     });
   } else if (op.type === "record-input") {
+    const original = op.continuation
+      ? state.inputs.find((i) => i.id === op.continuation!.inputId)
+      : undefined;
+    if (op.continuation) {
+      if (
+        !original ||
+        original.continuation?.mode === "supplement" ||
+        original.projectId !== op.projectId ||
+        discussionId(original) !== discussionId(op) ||
+        original.author.principalId !== access.principalId ||
+        original.author.actantId !== access.actantId ||
+        original.targetActantId !== op.targetActantId ||
+        actor.kind !== "human"
+      )
+        throw new DomainError(
+          "forbidden",
+          "不能补充其他身份或工作范围的执行。",
+        );
+      if (
+        op.newConversation ||
+        op.applicationInstanceId ||
+        op.directories?.length ||
+        op.localFile ||
+        op.browser ||
+        op.artifactId !== original.artifactId ||
+        op.artifactRevision !== original.artifactRevision ||
+        op.selection ||
+        op.model ||
+        op.reasoningEffort
+      )
+        throw new DomainError(
+          "invalid",
+          "补充沿用原工作的对象、模型和权限，不改变执行范围。",
+        );
+    }
     if (
       op.localFile &&
       (op.artifactId || op.applicationInstanceId || op.browser)
@@ -1903,6 +1941,7 @@ export function applyCommand(
       throw new DomainError("invalid", "未选择对象时不能附带版本或原文。");
     state.inputs.push({
       id: entityId,
+      ...(op.continuation ? { continuation: op.continuation } : {}),
       projectId: op.projectId,
       conversationId,
       artifactId: op.artifactId,
@@ -1927,6 +1966,17 @@ export function applyCommand(
               version: app.version,
               harness: app.harness,
             },
+          }
+        : {}),
+      ...(original && op.continuation?.mode === "follow-up"
+        ? {
+            application: original.application,
+            directories: original.directories,
+            localFile: original.localFile,
+            browser: original.browser,
+            selection: original.selection,
+            model: original.model,
+            reasoningEffort: original.reasoningEffort,
           }
         : {}),
       createdAt: now,

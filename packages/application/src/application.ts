@@ -39,6 +39,7 @@ import {
   speechStreamCommandSchema,
 } from "../../core/src/speech-stream.js";
 import { SpeechStreams } from "./speech-stream.js";
+import { ContinuationConflict, SupplementUnconfirmed } from "./continuation.js";
 
 export type ApplicationOptions = {
   runtime?: RuntimeBridge;
@@ -52,6 +53,18 @@ export class ApplicationUnavailable extends Error {
   readonly status = 503;
 }
 export function applicationFailure(error: unknown): ApplicationFailure {
+  if (error instanceof ContinuationConflict)
+    return {
+      status: 409,
+      code: `work_${error.reason}`,
+      message: error.message,
+    };
+  if (error instanceof SupplementUnconfirmed)
+    return {
+      status: 503,
+      code: "supplement_unconfirmed",
+      message: error.message,
+    };
   if (error instanceof DomainError)
     return {
       status: { not_found: 404, forbidden: 403, conflict: 409, invalid: 400 }[
@@ -153,6 +166,7 @@ export class ApplicationSession {
         runtime: this.options.runtime?.snapshot().connected ?? false,
         teamAuthentication: !!this.options.identity,
         conversationOnFirstInput: true,
+        directedInput: this.options.runtime?.supportsDirectedInput ?? false,
         localFiles: !!this.options.localFiles,
         agentDirectories: !!this.options.localFiles,
         modelSettings:
@@ -231,6 +245,14 @@ export class ApplicationSession {
     this.active();
     const command = commandSchema.parse(raw),
       op = command.operation;
+    if (
+      op.type === "record-input" &&
+      op.continuation &&
+      !this.store.hasCommand(command.commandId)
+    )
+      await this.runtime().as(this.access, () =>
+        this.runtime().validateContinuation(op.continuation!),
+      );
     const chosen =
       op.type === "record-input"
         ? op.model
@@ -266,22 +288,19 @@ export class ApplicationSession {
       command = commandSchema.parse(raw);
     if (command.operation.type !== "record-input")
       throw new DomainError("invalid", "消息入口只接受输入。");
-    const { model, reasoningEffort } = command.operation;
-    if (model || reasoningEffort)
-      await runtime.as(this.access, () =>
-        runtime.validateInference(model, reasoningEffort),
-      );
-    this.active();
-    const receipt = this.store.execute(command, this.access, undefined, () =>
-      this.validateLocalInput(command.operation),
-    );
+    const receipt = await this.command(command);
     runtime.as(this.access, () => runtime.enqueue(receipt.entityId));
+    if (command.operation.continuation?.mode === "supplement")
+      await runtime.as(this.access, () =>
+        runtime.confirmSupplement(receipt.entityId),
+      );
     return receipt;
   }
-  sendInput(inputId: unknown) {
+  async sendInput(inputId: unknown) {
     const runtime = this.runtime(),
       id = identifier.parse(inputId);
     runtime.as(this.access, () => runtime.enqueue(id));
+    await runtime.as(this.access, () => runtime.confirmSupplement(id));
     return { accepted: true };
   }
   private validateLocalInput(

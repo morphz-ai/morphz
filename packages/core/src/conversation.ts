@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { executionAttentionSchema } from "./execution.js";
+import { continuationSchema } from "./continuation.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
   inputId: z.string(),
@@ -26,6 +27,7 @@ export const activitySchema = z.object({
       lifecycle: z.string(),
       revision: z.number(),
       updatedAt: z.string(),
+      continuation: continuationSchema.optional(),
     }),
   ),
 });
@@ -44,6 +46,10 @@ export const deliverySchema = z.object({
   retryable: z.boolean().default(false),
   cancellable: z.boolean().optional(),
   cancelRequested: z.boolean().optional(),
+  supplement: z
+    .enum(["pending", "delivered", "rejected", "unknown"])
+    .optional(),
+  rejection: z.enum(["closed", "changed", "forbidden", "invalid"]).optional(),
 });
 export const conversationRuntimeSchema = z.object({
   activity: activitySchema.optional(),

@@ -243,14 +243,16 @@ export class HttpApplicationClient {
     )
       return this.workspace;
     if (!response.ok) {
-      let message = "请求失败。";
+      let message = "请求失败。",
+        code: string | undefined;
       try {
         const failure = await response.json();
         if (typeof failure?.message === "string") message = failure.message;
+        if (typeof failure?.code === "string") code = failure.code;
       } catch {}
       if (epoch !== this.epoch)
         throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
-      throw new ApplicationRequestError(response.status, message);
+      throw new ApplicationRequestError(response.status, message, code);
     }
     const value: unknown = wav
       ? new Uint8Array(await response.arrayBuffer())

@@ -6,6 +6,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import { workInputRequest } from "./session-io.js";
 import {
+  continuationTarget,
+  ContinuationConflict,
+  SupplementUnconfirmed,
+} from "./continuation.js";
+import type { InputContinuation } from "../../core/src/continuation.js";
+import {
   modelOptionSchema,
   reasoningEffortSchema,
   reasoningLevels,
@@ -111,6 +117,7 @@ const storedSchema = z.object({
   namespace: z.string(),
   endpoint: z.string(),
   connected: z.boolean(),
+  directedInput: z.boolean().default(false),
   model: z.string(),
   error: z.string(),
   publications: z
@@ -141,6 +148,7 @@ const storedSchema = z.object({
     deliverySchema.extend({
       sessionId: z.string(),
       rootId: z.string().nullable(),
+      acceptedEventId: z.string().optional(),
       request: z.record(z.string(), z.unknown()),
       resourceUploads: z
         .array(
@@ -471,6 +479,7 @@ export class RuntimeBridge {
           endpoint: config.url,
           ...(config.identityMode ? { identityMode: config.identityMode } : {}),
           connected: false,
+          directedInput: false,
           model: "",
           error: "",
           publications: {},
@@ -493,6 +502,9 @@ export class RuntimeBridge {
   }
   private save() {
     this.store.saveRuntimeState(this.state);
+  }
+  get supportsDirectedInput() {
+    return this.state.connected && this.state.directedInput;
   }
   private executionBinding(scope: ExecutionScope) {
     const workspace = this.store.snapshot();
@@ -830,6 +842,11 @@ export class RuntimeBridge {
           error?: { code?: string };
         } | null;
         const code = error?.error?.code;
+        if (code === "unsupported_activation_mode")
+          throw new UpstreamError(
+            response.status,
+            "当前 Runtime 不支持这种输入方式；补充未送达，草稿已保留。请更新 Runtime 后重试。",
+          );
         if (
           response.status === 404 ||
           code === "unsupported_io_version" ||
@@ -989,9 +1006,16 @@ export class RuntimeBridge {
         ? {
             activity: {
               ...this.state.activity,
-              threads: this.state.activity.threads.filter(
-                (t) => !projects || projects.has(t.projectId),
-              ),
+              threads: this.state.activity.threads
+                .filter((t) => !projects || projects.has(t.projectId))
+                .map((t) => {
+                  const owner = inputs.find((i) => i.id === t.inputId)?.author;
+                  return !access ||
+                    (owner?.principalId === access.principalId &&
+                      owner.actantId === access.actantId)
+                    ? t
+                    : { ...t, continuation: undefined };
+                }),
             },
           }
         : {}),
@@ -1010,13 +1034,25 @@ export class RuntimeBridge {
             ),
         )
         .map(
-          ({ inputId, state, error, rootId, sessionId, cancelRequested }) => ({
+          ({
             inputId,
             state,
             error,
-            retryable: state === "failed" && !rootId,
+            rootId,
+            sessionId,
+            cancelRequested,
+            supplement,
+            rejection,
+          }) => ({
+            inputId,
+            state,
+            error,
+            ...(supplement ? { supplement } : {}),
+            ...(rejection ? { rejection } : {}),
+            retryable: state === "failed" && !rootId && !rejection,
             cancelRequested,
             cancellable:
+              !supplement &&
               !cancelRequested &&
               (state === "queued" ||
                 (state === "running" &&
@@ -1095,16 +1131,18 @@ export class RuntimeBridge {
               z.object({
                 intent: z.string().nullable().optional(),
                 phase: z.string(),
-                thread: z.object({
-                  id: z.string(),
-                  kind: z.string().optional(),
-                  session_id: z.string(),
-                  context_id: z.string(),
-                  root_turn_id: z.string(),
-                  lifecycle: z.string(),
-                  revision: z.number(),
-                  updated_at: z.string(),
-                }),
+                thread: z
+                  .object({
+                    id: z.string(),
+                    kind: z.string().optional(),
+                    session_id: z.string(),
+                    context_id: z.string(),
+                    root_turn_id: z.string(),
+                    lifecycle: z.string(),
+                    revision: z.number(),
+                    updated_at: z.string(),
+                  })
+                  .passthrough(),
               }),
             ),
           })
@@ -1150,6 +1188,9 @@ export class RuntimeBridge {
             lifecycle: t.lifecycle,
             revision: t.revision,
             updatedAt: t.updated_at,
+            ...(input && this.state.directedInput
+              ? { continuation: continuationTarget(t, input.id, t.id) }
+              : {}),
           });
         }
       }
@@ -1257,6 +1298,107 @@ export class RuntimeBridge {
     if (sharedDefault) this.state.sessions[sessionId]!.sharedDefault = true;
     return sessionId;
   }
+  async validateContinuation(target: InputContinuation) {
+    const workspace = this.store.snapshot(),
+      input = workspace.inputs.find((i) => i.id === target.inputId),
+      actor = this.actor();
+    if (
+      !input ||
+      input.continuation?.mode === "supplement" ||
+      input.author.principalId !== actor.principalId ||
+      input.author.actantId !== actor.actantId
+    )
+      throw new DomainError("forbidden", "不能补充其他身份的执行。");
+    assertProjectWritable(checkProject(workspace, input.projectId, actor));
+    if (
+      checkConversation(workspace, input.projectId, discussionId(input), actor)
+        .archivedAt
+    )
+      throw new DomainError("conflict", "此对话已归档，请先恢复；草稿已保留。");
+    const delivery = this.state.deliveries.find(
+      (d) => d.inputId === input.id && d.rootId && !d.supplement,
+    );
+    if (!delivery)
+      throw new DomainError(
+        "conflict",
+        "原工作尚未绑定到实际执行，未发送补充。",
+      );
+    // A follow-up is an explicit new request. It need not revive a closed generation.
+    if (target.mode === "follow-up") return;
+    if (!this.supportsDirectedInput)
+      throw new DomainError(
+        "invalid",
+        "当前 Runtime 尚未支持定向补充；草稿已保留，请更新连接后重试。",
+      );
+    let detail: unknown;
+    try {
+      detail = await this.request(
+        `/api/contexts/${this.contextId(input.projectId)}/threads/${target.threadId}`,
+      );
+    } catch (e) {
+      if (e instanceof UpstreamError && e.status === 404)
+        throw new ContinuationConflict("closed");
+      throw e;
+    }
+    const thread = z
+      .object({
+        snapshot: z.object({
+          thread: z
+            .object({
+              id: z.string(),
+              session_id: z.string(),
+              context_id: z.string(),
+              root_turn_id: z.string(),
+              initiating_principal_id: z.string().nullable(),
+            })
+            .passthrough(),
+        }),
+      })
+      .parse(detail).snapshot.thread;
+    const expectedPrincipal = this.teamIdentity
+      ? this.principalId(actor.principalId)
+      : this.state.sessions[delivery.sessionId]?.runtimePrincipalId;
+    if (
+      thread.id !== target.threadId ||
+      thread.session_id !== delivery.sessionId ||
+      thread.context_id !== this.contextId(input.projectId) ||
+      thread.root_turn_id !== delivery.rootId ||
+      !expectedPrincipal ||
+      thread.initiating_principal_id !== expectedPrincipal
+    )
+      throw new DomainError("forbidden", "补充目标不属于原请求，未发送。");
+    const current = continuationTarget(thread, input.id, thread.id);
+    if (!current) throw new ContinuationConflict("closed");
+    if (
+      current.generation !== target.generation ||
+      current.objective?.id !== target.objective?.id ||
+      current.objective?.generation !== target.objective?.generation
+    )
+      throw new ContinuationConflict("changed");
+  }
+  async confirmSupplement(inputId: string) {
+    const initial = this.state.deliveries.find((d) => d.inputId === inputId);
+    if (!initial?.supplement) return;
+    const deadline = Date.now() + 12000;
+    if (initial.state === "queued") void this.tick();
+    while (Date.now() < deadline) {
+      const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
+      if (!delivery?.supplement) return;
+      if (delivery.acceptedEventId) return;
+      if (delivery.rejection === "closed" || delivery.rejection === "changed")
+        throw new ContinuationConflict(delivery.rejection);
+      if (delivery.rejection === "forbidden")
+        throw new DomainError("forbidden", "原工作不再允许补充，草稿已保留。");
+      if (delivery.rejection === "invalid")
+        throw new DomainError(
+          "invalid",
+          delivery.error || "补充未送达，请检查输入；草稿已保留。",
+        );
+      if (delivery.state === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new SupplementUnconfirmed();
+  }
   enqueue(inputId: string) {
     const workspace = this.store.snapshot();
     const input = workspace.inputs.find((item) => item.id === inputId);
@@ -1270,30 +1412,63 @@ export class RuntimeBridge {
       discussionId(input),
       this.actor(),
     );
+    if (
+      input.continuation &&
+      (input.author.principalId !== this.actor().principalId ||
+        input.author.actantId !== this.actor().actantId)
+    )
+      throw new DomainError("forbidden", "不能代替其他人投递补充。");
     const previous = this.state.deliveries.find(
       (item) => item.inputId === inputId,
     );
     if (previous) {
       // Never create a new client_message_id when the acceptance is unknown.
-      if (previous.state === "failed" && !previous.rootId) {
+      if (
+        previous.state === "failed" &&
+        !previous.rootId &&
+        !previous.acceptedEventId &&
+        !previous.rejection
+      ) {
         previous.state = "queued";
         previous.error = null;
         this.save();
       }
       return;
     }
-    const sessionId = this.objectSession(
-      input.projectId,
-      input.artifactId,
-      discussionId(input),
-      !this.teamIdentity &&
-        workspace.projects.some(
-          (p) =>
-            p.id === conversation.projectId &&
-            p.kind === "dialogue" &&
-            p.id === conversation.id,
-        ),
-    );
+    const originalDelivery =
+      input.continuation?.mode === "supplement"
+        ? this.state.deliveries.find(
+            (d) =>
+              d.inputId === input.continuation!.inputId &&
+              d.rootId &&
+              !d.supplement,
+          )
+        : undefined;
+    if (
+      input.continuation &&
+      (input.author.principalId !== this.actor().principalId ||
+        input.author.actantId !== this.actor().actantId)
+    )
+      throw new DomainError("forbidden", "不能代替其他人投递补充。");
+    if (input.continuation?.mode === "supplement" && !originalDelivery)
+      throw new DomainError(
+        "conflict",
+        "原工作尚未绑定到实际执行，未发送补充。",
+      );
+    const sessionId =
+      originalDelivery?.sessionId ??
+      this.objectSession(
+        input.projectId,
+        input.artifactId,
+        discussionId(input),
+        !this.teamIdentity &&
+          workspace.projects.some(
+            (p) =>
+              p.id === conversation.projectId &&
+              p.kind === "dialogue" &&
+              p.id === conversation.id,
+          ),
+      );
     const artifact = workspace.artifacts.find(
       (item) => item.id === input.artifactId,
     );
@@ -1324,6 +1499,9 @@ export class RuntimeBridge {
       input,
       input.model ||
         (version?.content.kind === "task" ? version.content.model : null),
+      input.continuation
+        ? workspace.inputs.find((i) => i.id === input.continuation!.inputId)
+        : undefined,
     );
     for (const attachment of input.attachments ?? []) {
       const asset = this.store.asset(attachment.assetId);
@@ -1370,6 +1548,9 @@ export class RuntimeBridge {
       error: null,
       retryable: false,
       cancelRequested: false,
+      ...(input.continuation?.mode === "supplement"
+        ? { supplement: "pending" as const }
+        : {}),
       // Bytes remain in the private outbox, never in a domain JSON message.
       // Existing saved deliveries are not regenerated during this upgrade.
       request,
@@ -1564,6 +1745,31 @@ export class RuntimeBridge {
       this.state.connected = true;
       this.state.model = status.model;
       this.state.error = "";
+      try {
+        const io = z
+          .object({
+            enabled: z.boolean(),
+            directed_input: z.boolean().default(false),
+            formats: z
+              .array(
+                z.object({
+                  definition: z.object({ id: z.string(), version: z.string() }),
+                }),
+              )
+              .default([]),
+          })
+          .parse(await this.request("/api/session-io/capabilities"));
+        this.state.directedInput =
+          io.enabled &&
+          io.directed_input &&
+          io.formats.some(
+            (f) =>
+              f.definition.id === "morphz.application.input" &&
+              f.definition.version === "4",
+          );
+      } catch {
+        this.state.directedInput = false;
+      }
       for (const delivery of this.state.deliveries.filter(
         (item) => item.state === "queued",
       )) {
@@ -1658,15 +1864,56 @@ export class RuntimeBridge {
                 this.teamIdentity ? input.author : undefined,
               ),
             );
-          delivery.rootId = receipt.event_id;
-          delivery.state = "running";
+          if (input.continuation?.mode === "supplement") {
+            // This receipt identifies the steering event, NOT a new execution root.
+            delivery.acceptedEventId = receipt.event_id;
+            delivery.supplement = "delivered";
+            delivery.state = "completed";
+          } else {
+            delivery.rootId = receipt.event_id;
+            delivery.state = "running";
+          }
           delivery.error = null;
         } catch (error) {
           delivery.state = "failed";
+          if (delivery.supplement) {
+            delivery.supplement =
+              error instanceof UpstreamError &&
+              [400, 403, 404, 409, 422].includes(error.status)
+                ? "rejected"
+                : "unknown";
+            if (
+              error instanceof UpstreamError &&
+              [400, 403, 404, 409, 422].includes(error.status)
+            ) {
+              delivery.rejection =
+                error.status === 403 ? "forbidden" : "invalid";
+              const target = this.store
+                .snapshot()
+                .inputs.find((i) => i.id === delivery.inputId)?.continuation;
+              if (target) {
+                try {
+                  await this.as(
+                    this.store
+                      .snapshot()
+                      .inputs.find((i) => i.id === delivery.inputId)!.author,
+                    () => this.validateContinuation(target),
+                  );
+                } catch (e) {
+                  if (e instanceof ContinuationConflict)
+                    delivery.rejection = e.reason;
+                }
+              }
+            }
+          }
           delivery.error =
-            error instanceof UpstreamError
-              ? error.message
-              : "发送结果未确认。重试将核对同一个请求，不会重复执行。";
+            delivery.rejection === "closed"
+              ? new ContinuationConflict("closed").message
+              : delivery.rejection === "changed"
+                ? new ContinuationConflict("changed").message
+                : error instanceof UpstreamError
+                  ? error.message
+                  : "发送结果未确认。重试将核对同一个请求，不会重复执行。";
         }
         this.save();
       }

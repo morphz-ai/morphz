@@ -324,6 +324,11 @@ export class WorkspaceStore {
     }
     return [...new Set(blockers)];
   }
+  hasCommand(commandId: string) {
+    return !!this.db
+      .prepare("SELECT 1 FROM commands WHERE id=?")
+      .get(commandId);
+  }
   execute(
     raw: unknown,
     access: AccessContext,

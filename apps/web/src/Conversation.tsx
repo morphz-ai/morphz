@@ -20,6 +20,7 @@ import { ObjectIcon } from "./ArtifactEditor.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import { conversationDate } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
+import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
 export type ExchangePosition = {
   top: number;
@@ -41,6 +42,7 @@ export function Conversation({
   positions,
   revealInputId,
   onInspect,
+  onSupplement,
   focusedArtifactId,
   focusedApplicationId,
   toolbarTarget,
@@ -61,6 +63,7 @@ export function Conversation({
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
   onInspect?: (inputId: string) => void;
+  onSupplement?: (target: InputContinuation) => void;
 }) {
   const [allHistory, setAllHistory] = useState(false);
   useEffect(
@@ -401,16 +404,33 @@ export function Conversation({
                     (a) => a.scope.inputId === item.id,
                   ) ?? [])
                 : [];
-              const status = !delivery
-                ? "已保存 · 未发送"
-                : {
-                    queued: "",
-                    sending: "",
-                    running: "",
-                    completed: "",
-                    failed: "执行失败",
-                    cancelled: "已取消",
-                  }[delivery.state];
+              const targets =
+                item &&
+                item.continuation?.mode !== "supplement" &&
+                runtime.activity?.available &&
+                runtime.connected &&
+                client.online
+                  ? runtime.activity.threads.filter(
+                      (t) => t.inputId === item.id && t.continuation,
+                    )
+                  : [];
+              const status = delivery?.supplement
+                ? {
+                    pending: "补充待送达",
+                    delivered: "补充已送达",
+                    rejected: "补充未送达",
+                    unknown: "补充送达待确认",
+                  }[delivery.supplement]
+                : !delivery
+                  ? "已保存 · 未发送"
+                  : {
+                      queued: "",
+                      sending: "",
+                      running: "",
+                      completed: "",
+                      failed: "执行失败",
+                      cancelled: "已取消",
+                    }[delivery.state];
               const control = responseControls.get(id);
               const stopControl = control && (
                 <StopResponse
@@ -434,6 +454,7 @@ export function Conversation({
                     data-message-id={id}
                     data-starts-turn={startsTurn || undefined}
                     data-background-execution={activeBranch || undefined}
+                    data-supplement-target={targets.length > 0 || undefined}
                     aria-description={
                       activeBranch ? "这条消息的后台执行仍在进行" : undefined
                     }
@@ -445,6 +466,20 @@ export function Conversation({
                       undefined
                     }
                   >
+                    {item?.continuation && (
+                      <button
+                        className="message-source"
+                        onClick={() => onInspect?.(item.continuation!.inputId)}
+                      >
+                        {item.continuation.mode === "supplement"
+                          ? "补充给："
+                          : "接着处理："}
+                        {state.inputs
+                          .find((i) => i.id === item.continuation!.inputId)
+                          ?.body.slice(0, 50) || "原工作"}
+                        <ChevronRight size={12} />
+                      </button>
+                    )}
                     {reply?.inputId &&
                       onInspect &&
                       (timeline[index - 1]?.input?.id ??
@@ -546,6 +581,18 @@ export function Conversation({
                     )}
                     {(reply?.kind !== "tool" || stopControl) && (
                       <div className="message-meta">
+                        {item && onSupplement && targets.length > 0 && (
+                          <button
+                            className="message-execution-link"
+                            onClick={() =>
+                              targets.length === 1
+                                ? onSupplement(targets[0]!.continuation!)
+                                : onInspect?.(item.id)
+                            }
+                          >
+                            {targets.length === 1 ? "补充要求" : "选择补充分支"}
+                          </button>
+                        )}
                         {item && activeBranch && onInspect && (
                           <button
                             className="message-execution-link"

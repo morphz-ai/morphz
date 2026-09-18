@@ -88,6 +88,7 @@ export async function applicationCall(
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
+          reply.error.code,
         );
       value = reply.value;
     }

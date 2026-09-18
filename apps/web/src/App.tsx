@@ -99,6 +99,9 @@ import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
+import type { Operation } from "../../../packages/core/src/model.js";
+import type { InputContinuation } from "../../../packages/core/src/continuation.js";
+import { RequestError } from "./application-transport.js";
 import type { BrowserView } from "./desktop.js";
 import { Notifications } from "./Notifications.js";
 import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
@@ -136,6 +139,10 @@ type Preferences = InterfacePreferences & {
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };
 type InputDraft = {
+  continuation?: InputContinuation;
+  continuationLabel?: string;
+  continuationFailure?: "closed" | "changed" | "unknown";
+  pendingSupplement?: { commandId: string; operation: Operation };
   attachments?: InputAttachment[];
   annotation?: boolean;
   model?: string;
@@ -1288,12 +1295,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     dictationControls.current?.interrupt();
     const key = contextKey,
       captured = { ...draft };
-    const firstConversation = selectedDraft;
+    const firstConversation = captured.continuation ? undefined : selectedDraft;
+    if (captured.continuation) asAnnotation = false;
     sendPending.current = true;
     setSending(true);
     setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
       if (
+        !captured.continuation &&
         canAuthorizeDirectories &&
         (directoryState.scope !== directoryScope || !directoryState.ready)
       )
@@ -1303,11 +1312,58 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         (!artifact || !captured.selection || !captured.revision)
       )
         throw new Error("选区已失效，请重新选择文字。");
-      if ((asAnnotation || captured.taskResult) && captured.attachments?.length)
+      if (
+        !captured.continuation &&
+        (asAnnotation || captured.taskResult) &&
+        captured.attachments?.length
+      )
         throw new Error(
           "批注与事项结果暂不支持附件，请移除附件或改为发送消息；草稿已保留。",
         );
-      if (captured.taskResult && !asAnnotation) {
+      if (captured.continuation) {
+        const original = state!.inputs.find(
+          (i) => i.id === captured.continuation!.inputId,
+        );
+        if (!original) throw new Error("原请求已不可用，草稿已保留。");
+        if (
+          !client.boot?.capabilities.directedInput ||
+          !client.boot.runtime.configured
+        )
+          throw new Error("当前连接不支持定向补充，草稿已保留。");
+        const command = captured.pendingSupplement ?? {
+          commandId: crypto.randomUUID(),
+          operation: {
+            type: "record-input" as const,
+            continuation: captured.continuation,
+            projectId: original.projectId,
+            conversationId: discussionId(original),
+            artifactId: original.artifactId,
+            artifactRevision: original.artifactRevision,
+            selection: "",
+            body: captured.body,
+            targetActantId: original.targetActantId,
+            ...(captured.attachments?.length
+              ? { attachments: captured.attachments }
+              : {}),
+          },
+        };
+        // Persist the immutable retry payload before IPC/HTTP can lose a receipt.
+        updateDraft(key, (old) => ({
+          ...old,
+          pendingSupplement: command,
+          continuationFailure: undefined,
+        }));
+        const receipt = await client.execute(
+          command.operation,
+          true,
+          undefined,
+          command.commandId,
+        );
+        setRevealedInputs((old) => ({
+          ...old,
+          [conversationId]: receipt.entityId,
+        }));
+      } else if (captured.taskResult && !asAnnotation) {
         if (captured.taskResult.taskId !== artifact?.id)
           throw new Error("请回到这件事项后提交结果，草稿已保留。");
         await client.execute({
@@ -1408,7 +1464,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               key,
               generation: navigationGeneration.current,
             };
-        } else if (!captured.taskResult) {
+        } else if (captured.continuation || !captured.taskResult) {
           setMobileCollaboration(false);
           setInteraction(afterSend(latestInteraction.current));
           if (latestInteraction.current !== "hidden")
@@ -1420,6 +1476,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         }
       }
     } catch (e) {
+      if (captured.continuation) {
+        const reason =
+          e instanceof RequestError && e.code === "work_closed"
+            ? "closed"
+            : e instanceof RequestError && e.status < 500 && e.status !== 408
+              ? "changed"
+              : "unknown";
+        updateDraft(key, (old) => ({
+          ...old,
+          continuationFailure: reason,
+          ...(reason !== "unknown" ? { pendingSupplement: undefined } : {}),
+        }));
+      }
       setInputErrors((old) => ({
         ...old,
         [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
@@ -1428,6 +1497,37 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       sendPending.current = false;
       setSending(false);
     }
+  }
+  function supplement(target: InputContinuation) {
+    if (sending || draft.pendingSupplement) {
+      setNotice("请先核对当前补充的送达结果，再切换目标。");
+      return;
+    }
+    const original = state?.inputs.find((i) => i.id === target.inputId);
+    if (
+      !original ||
+      original.author.principalId !== client.boot?.principalId ||
+      original.author.actantId !== client.boot.actantId
+    )
+      return;
+    dictationControls.current?.interrupt();
+    const branch = client.boot!.runtime.activity?.threads.find(
+      (t) => t.id === target.threadId,
+    );
+    const label =
+      branch?.kind === "execution" && branch.title !== original.body
+        ? `${original.body.slice(0, 60)} · ${branch.title}`
+        : original.body;
+    setDraft(contextKey, {
+      ...draft,
+      continuation: target,
+      continuationLabel: label,
+      continuationFailure: undefined,
+    });
+    setInputErrors((old) => ({ ...old, [contextKey]: "" }));
+    if (rightInspector.mode === "overlay") closeInspector();
+    showInput();
+    requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
   }
   async function importImage(image: File | undefined) {
     if (!image || !project || importing) return;
@@ -2241,6 +2341,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     positions={exchangePositions.current}
                     revealInputId={revealedInputs[conversationId] ?? null}
                     onInspect={inspectExecution}
+                    onSupplement={
+                      client.boot!.capabilities.directedInput
+                        ? supplement
+                        : undefined
+                    }
                     state={state}
                     runtime={client.boot!.runtime}
                     projectId={conversationProjectId}
@@ -2295,7 +2400,51 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     >
                       <div ref={setAttachmentSlot} />
                       <div ref={setDictationSlot} />
-                      {draft.selection && (
+                      {draft.continuation && (
+                        <div
+                          className="composer-continuation"
+                          role="group"
+                          aria-label="补充目标"
+                        >
+                          <span
+                            title={
+                              draft.continuationLabel ||
+                              state.inputs.find(
+                                (i) => i.id === draft.continuation!.inputId,
+                              )?.body
+                            }
+                          >
+                            {draft.continuation.mode === "follow-up"
+                              ? "接着处理："
+                              : "补充给："}
+                            {draft.continuationLabel ||
+                              state.inputs.find(
+                                (i) => i.id === draft.continuation!.inputId,
+                              )?.body ||
+                              "原工作已不可用"}
+                          </span>
+                          <button
+                            className="icon-button"
+                            aria-label="取消补充，改为普通输入"
+                            disabled={sending || !!draft.pendingSupplement}
+                            onClick={() => {
+                              setDraft(contextKey, {
+                                ...draft,
+                                continuation: undefined,
+                                continuationFailure: undefined,
+                              });
+                              setInputErrors((old) => ({
+                                ...old,
+                                [contextKey]: "",
+                              }));
+                              input.current?.focus();
+                            }}
+                          >
+                            <X />
+                          </button>
+                        </div>
+                      )}
+                      {draft.selection && !draft.continuation && (
                         <div className="selection-quote">
                           <blockquote>{draft.selection}</blockquote>
                           <button
@@ -2312,7 +2461,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           </button>
                         </div>
                       )}
-                      {draft.annotation && (
+                      {draft.annotation && !draft.continuation && (
                         <div className="annotation-mode">
                           <span>保存为批注</span>
                           <button
@@ -2332,18 +2481,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           ref={input}
                           aria-label="AI 输入内容"
                           placeholder={
-                            draft.annotation
-                              ? "写下批注…"
-                              : draft.taskResult
-                                ? "写下结果；提交后将以你的身份完成这件事项…"
-                                : draft.intent
-                                  ? inputIntents[draft.intent].placeholder
-                                  : "提出想法，或让工作继续…"
+                            draft.continuation
+                              ? "补充这项工作的要求…"
+                              : draft.annotation
+                                ? "写下批注…"
+                                : draft.taskResult
+                                  ? "写下结果；提交后将以你的身份完成这件事项…"
+                                  : draft.intent
+                                    ? inputIntents[draft.intent].placeholder
+                                    : "提出想法，或让工作继续…"
                           }
                           rows={2}
                           maxLength={30000}
                           value={draft.body}
-                          disabled={sending}
+                          disabled={sending || !!draft.pendingSupplement}
                           onFocus={() => {
                             if (!conversationVisible) setInteraction("recent");
                           }}
@@ -2374,16 +2525,50 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           {inputErrors[contextKey]}
                         </p>
                       )}
+                      {draft.continuationFailure === "closed" &&
+                        draft.continuation && (
+                          <div className="continuation-follow-up">
+                            {!inputErrors[contextKey] && (
+                              <small>原工作已结束，补充未送达。 </small>
+                            )}
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setDraft(contextKey, {
+                                  ...draft,
+                                  continuation: {
+                                    ...draft.continuation!,
+                                    mode: "follow-up",
+                                  },
+                                  continuationFailure: undefined,
+                                  pendingSupplement: undefined,
+                                });
+                                setInputErrors((old) => ({
+                                  ...old,
+                                  [contextKey]: "",
+                                }));
+                                input.current?.focus();
+                              }}
+                            >
+                              作为后续请求继续
+                            </button>
+                          </div>
+                        )}
+                      {draft.pendingSupplement && !sending && (
+                        <small className="continuation-pending" role="status">
+                          正在核对原投递；确认前保留这份草稿，请勿另发一遍。
+                        </small>
+                      )}
                       <div className="composer-actions">
                         <div className="composer-footer-info">
                           {(!client.online ||
-                            draft.taskResult ||
+                            (draft.taskResult && !draft.continuation) ||
                             (!draft.annotation &&
                               !client.boot!.runtime.connected)) && (
                             <small className="model-status">
                               {!client.online
                                 ? "应用连接中断"
-                                : draft.taskResult
+                                : draft.taskResult && !draft.continuation
                                   ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
                                   : client.boot!.runtime.configured
                                     ? client.boot!.runtime.error
@@ -2401,7 +2586,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             </small>
                           )}
                           <div className="composer-meta">
-                            {
+                            {!draft.continuation && (
                               <span
                                 className="context-chip"
                                 title={
@@ -2415,53 +2600,54 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 {contextTitle}
                                 {draft.revision ? " · v" + draft.revision : ""}
                               </span>
-                            }
-                            {(draft.taskResult || draft.intent) && (
-                              <div
-                                className={
-                                  "composer-intent" +
-                                  (draft.taskResult
-                                    ? " task-result-intent"
-                                    : "")
-                                }
-                              >
-                                <span
-                                  title={
-                                    draft.taskResult
-                                      ? "提交结果并完成事项"
-                                      : inputIntents[draft.intent!].label
-                                  }
-                                >
-                                  {draft.taskResult
-                                    ? `提交结果并完成 · v${draft.taskResult.revision}`
-                                    : inputIntents[draft.intent!].label}
-                                </span>
-                                <button
-                                  className="icon-button"
-                                  aria-label={
-                                    draft.taskResult
-                                      ? "改为普通输入"
-                                      : "移除输入意图"
-                                  }
-                                  title={
-                                    draft.taskResult
-                                      ? "改为普通输入，不完成事项"
-                                      : "移除输入意图"
-                                  }
-                                  onClick={() => {
-                                    const {
-                                      taskResult: _,
-                                      intent: __,
-                                      ...rest
-                                    } = draft;
-                                    setDraft(contextKey, rest);
-                                    input.current?.focus();
-                                  }}
-                                >
-                                  <X />
-                                </button>
-                              </div>
                             )}
+                            {!draft.continuation &&
+                              (draft.taskResult || draft.intent) && (
+                                <div
+                                  className={
+                                    "composer-intent" +
+                                    (draft.taskResult
+                                      ? " task-result-intent"
+                                      : "")
+                                  }
+                                >
+                                  <span
+                                    title={
+                                      draft.taskResult
+                                        ? "提交结果并完成事项"
+                                        : inputIntents[draft.intent!].label
+                                    }
+                                  >
+                                    {draft.taskResult
+                                      ? `提交结果并完成 · v${draft.taskResult.revision}`
+                                      : inputIntents[draft.intent!].label}
+                                  </span>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={
+                                      draft.taskResult
+                                        ? "改为普通输入"
+                                        : "移除输入意图"
+                                    }
+                                    title={
+                                      draft.taskResult
+                                        ? "改为普通输入，不完成事项"
+                                        : "移除输入意图"
+                                    }
+                                    onClick={() => {
+                                      const {
+                                        taskResult: _,
+                                        intent: __,
+                                        ...rest
+                                      } = draft;
+                                      setDraft(contextKey, rest);
+                                      input.current?.focus();
+                                    }}
+                                  >
+                                    <X />
+                                  </button>
+                                </div>
+                              )}
                           </div>
                         </div>
                         <div className="composer-floating-tools">
@@ -2471,6 +2657,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             aria-label="输入工具"
                           >
                             {((!draft.annotation && !draft.taskResult) ||
+                              !!draft.continuation ||
                               !!draft.attachments?.length) && (
                               <MessageAttachments
                                 key={`attachments:${contextKey}`}
@@ -2479,10 +2666,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 client={client}
                                 attachments={draft.attachments ?? []}
                                 allowAdd={
-                                  !draft.annotation && !draft.taskResult
+                                  !!draft.continuation ||
+                                  (!draft.annotation && !draft.taskResult)
                                 }
                                 disabled={
-                                  sending || !!uploadingDrafts[contextKey]
+                                  sending ||
+                                  !!draft.pendingSupplement ||
+                                  !!uploadingDrafts[contextKey]
                                 }
                                 onBusy={(busy) =>
                                   setUploadingDrafts((old) => ({
@@ -2510,8 +2700,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 projectId={project.id}
                                 conversationId={conversationId}
                                 identity={client.boot!.csrfToken}
-                                previewTarget={attachmentSlot}
-                                disabled={sending || !client.online}
+                                previewTarget={
+                                  draft.continuation ? null : attachmentSlot
+                                }
+                                disabled={
+                                  sending ||
+                                  !client.online ||
+                                  !!draft.continuation
+                                }
                                 onSelecting={(selecting) =>
                                   setDirectoryPickerScope((current) =>
                                     selecting
@@ -2530,13 +2726,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 }
                               />
                             )}
-                            {!draft.annotation && !draft.taskResult && (
+                            {((!draft.annotation && !draft.taskResult) ||
+                              !!draft.continuation) && (
                               <button
                                 className="icon-button"
                                 aria-label="截图输入"
                                 title={`截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`}
                                 disabled={
                                   sending ||
+                                  !!draft.pendingSupplement ||
                                   !!uploadingDrafts[contextKey] ||
                                   !client.online ||
                                   (draft.attachments?.length ?? 0) >= 8
@@ -2568,7 +2766,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               data-recording={speechRecording || undefined}
                               title={speechRecording ? "停止听写" : "开始听写"}
                               disabled={
-                                (sending || !client.online) && !speechRecording
+                                (sending ||
+                                  !!draft.pendingSupplement ||
+                                  !client.online) &&
+                                !speechRecording
                               }
                               onClick={() => {
                                 if (speech?.key === contextKey && !speech.modal)
@@ -2605,6 +2806,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                         reserveOnly: !draft.selection,
                                         icon: <MessageSquarePlus />,
                                         disabled:
+                                          !!draft.continuation ||
                                           !draft.body.trim() ||
                                           sending ||
                                           !client.online,
@@ -2646,59 +2848,73 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             </div>
                           )}
                         </div>
-                        {!draft.annotation && !draft.taskResult && (
-                          <div className="composer-preferences">
-                            <ModelPicker
-                              compact
-                              current={client.boot!.runtime.model}
-                              value={draft.model}
-                              reasoning={{
-                                value: draft.reasoningEffort,
-                                onChange: (reasoningEffort) =>
+                        {draft.continuation ? (
+                          <small className="composer-preferences continuation-model">
+                            沿用原工作设置
+                          </small>
+                        ) : (
+                          !draft.annotation &&
+                          !draft.taskResult && (
+                            <div className="composer-preferences">
+                              <ModelPicker
+                                compact
+                                current={client.boot!.runtime.model}
+                                value={draft.model}
+                                reasoning={{
+                                  value: draft.reasoningEffort,
+                                  onChange: (reasoningEffort) =>
+                                    setDraft(contextKey, {
+                                      ...draft,
+                                      reasoningEffort,
+                                    }),
+                                }}
+                                disabled={
+                                  sending ||
+                                  !client.online ||
+                                  !client.boot!.runtime.connected
+                                }
+                                onChange={(model) =>
                                   setDraft(contextKey, {
                                     ...draft,
-                                    reasoningEffort,
-                                  }),
-                              }}
-                              disabled={
-                                sending ||
-                                !client.online ||
-                                !client.boot!.runtime.connected
-                              }
-                              onChange={(model) =>
-                                setDraft(contextKey, {
-                                  ...draft,
-                                  model: model || undefined,
-                                })
-                              }
-                            />
-                          </div>
+                                    model: model || undefined,
+                                  })
+                                }
+                              />
+                            </div>
+                          )
                         )}
                         <div className="inline composer-input-tools">
                           <button
                             className="send"
                             aria-label={
-                              draft.annotation
-                                ? "保存批注"
-                                : draft.taskResult
-                                  ? "提交结果并完成事项"
-                                  : client.boot!.runtime.configured
-                                    ? "发送消息"
-                                    : "保存输入"
+                              draft.continuation
+                                ? draft.pendingSupplement
+                                  ? "核对补充送达"
+                                  : draft.continuation.mode === "follow-up"
+                                    ? "发送后续请求"
+                                    : "发送补充"
+                                : draft.annotation
+                                  ? "保存批注"
+                                  : draft.taskResult
+                                    ? "提交结果并完成事项"
+                                    : client.boot!.runtime.configured
+                                      ? "发送消息"
+                                      : "保存输入"
                             }
                             disabled={
                               (!draft.body.trim() &&
                                 !draft.attachments?.length) ||
                               sending ||
                               !!uploadingDrafts[contextKey] ||
-                              (canAuthorizeDirectories &&
+                              (!draft.continuation &&
+                                canAuthorizeDirectories &&
                                 (directoryState.scope !== directoryScope ||
                                   !directoryState.ready)) ||
                               !client.online
                             }
                             onClick={() => void send()}
                           >
-                            {draft.annotation ? (
+                            {draft.annotation && !draft.continuation ? (
                               <MessageSquarePlus />
                             ) : (
                               <ArrowUp />
@@ -2738,6 +2954,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
             onClose={closeInspector}
             onSelect={setExecutions}
+            onSupplement={
+              client.boot!.capabilities.directedInput ? supplement : undefined
+            }
             onOpen={openUser}
           />
         )}

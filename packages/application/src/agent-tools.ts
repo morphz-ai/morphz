@@ -701,7 +701,15 @@ export class AgentTools {
           getArtifact(state, input.artifactId).projectId,
           scope.access,
         );
-      return { ok: true, input: workInputData(input) };
+      return {
+        ok: true,
+        input: workInputData(
+          input,
+          input.continuation
+            ? state.inputs.find((i) => i.id === input.continuation!.inputId)
+            : undefined,
+        ),
+      };
     }
     if (
       args.action === "list-applications" ||

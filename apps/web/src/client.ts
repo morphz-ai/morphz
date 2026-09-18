@@ -53,6 +53,7 @@ const bootSchema = z.object({
     runtime: z.boolean(),
     teamAuthentication: z.boolean(),
     conversationOnFirstInput: z.boolean().default(false),
+    directedInput: z.boolean().default(false),
     localFiles: z.boolean().default(false),
     agentDirectories: z.boolean().default(false),
     modelSettings: z.boolean().default(false),
@@ -281,7 +282,11 @@ export function useWorkspace() {
         command,
         {
           identityGeneration: identity.csrfToken,
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(
+            operation.type === "record-input" && operation.continuation
+              ? 25000
+              : 8000,
+          ),
         },
       )) as Receipt;
       writeLocal(key, null);
@@ -292,7 +297,12 @@ export function useWorkspace() {
       if (e instanceof RequestError) {
         // A server error can occur after commit. Keep its identity until a
         // successful receipt or a definitive client-side rejection is known.
-        if (e.status < 500 && e.status !== 408) writeLocal(key, null);
+        if (
+          e.status < 500 &&
+          e.status !== 408 &&
+          !(operation.type === "record-input" && operation.continuation)
+        )
+          writeLocal(key, null);
         await refresh();
       }
       throw e;

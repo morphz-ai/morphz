@@ -1597,6 +1597,46 @@ body:has(dialog[open]) .cognitive-application-frame {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.composer-continuation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--soft);
+  font-size: 12px;
+}
+.composer-continuation > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .composer-continuation .icon-button {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 4px;
+}
+.continuation-model,
+.continuation-pending {
+  color: var(--muted);
+  font-size: 12px;
+}
+.continuation-pending {
+  display: block;
+  margin: 4px;
+}
+.continuation-follow-up {
+  margin: 4px;
+}
+.execution-supplement {
+  margin-bottom: 12px;
+}
 .application-launcher {
   width: 100%;
   padding: 8px 20px 24px;

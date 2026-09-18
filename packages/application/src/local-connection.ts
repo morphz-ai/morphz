@@ -90,6 +90,7 @@ export class LocalApplicationConnection {
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
+          reply.error.code,
         );
       return reply.value;
     } finally {

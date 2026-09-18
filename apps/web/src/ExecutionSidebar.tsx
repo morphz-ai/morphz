@@ -13,6 +13,7 @@ import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import type { ComposerOption } from "./ComposerOptions.js";
+import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
 export function ExecutionSidebar({
   client,
@@ -23,6 +24,7 @@ export function ExecutionSidebar({
   onPin,
   onClose,
   onSelect,
+  onSupplement,
   onOpen,
   viewOptions,
 }: {
@@ -34,6 +36,7 @@ export function ExecutionSidebar({
   onPin: () => void;
   onClose: () => void;
   onSelect: (scope: ExecutionScope) => void;
+  onSupplement?: (target: InputContinuation) => void;
   onOpen: (id: string, revision?: number) => void;
   viewOptions?: ComposerOption[];
 }) {
@@ -53,6 +56,11 @@ export function ExecutionSidebar({
   const thread = currentThread ?? initialThread;
   const detail = !!(scope.inputId || scope.threadId);
   const branches = threads.filter((t) => t.inputId === scope.inputId);
+  const supplementTarget = scope.threadId
+    ? currentThread?.continuation
+    : branches.filter((t) => t.continuation).length === 1
+      ? branches.find((t) => t.continuation)?.continuation
+      : undefined;
   const streamConversation = scope.conversationId ?? scope.projectId;
   const streamProject =
     state.conversations.find((c) => c.id === streamConversation)?.projectId ??
@@ -69,6 +77,7 @@ export function ExecutionSidebar({
   );
   const liveTools = messages.filter((m) => m.tool && m.streaming);
   const entries = runtime.deliveries.flatMap((d) => {
+    if (d.supplement) return [];
     const source = state.inputs.find((i) => i.id === d.inputId);
     return source &&
       (allWork ||
@@ -345,6 +354,19 @@ export function ExecutionSidebar({
         )}
         {detail ? (
           <>
+            {supplementTarget && onSupplement && (
+              <button
+                className="button execution-supplement"
+                disabled={
+                  !client.online ||
+                  !runtime.connected ||
+                  !runtime.activity?.available
+                }
+                onClick={() => onSupplement(supplementTarget)}
+              >
+                补充要求
+              </button>
+            )}
             {scope.threadId && (
               <section className="execution-origin">
                 <p>{thread?.title ?? "执行分支"}</p>
