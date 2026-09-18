@@ -540,6 +540,87 @@ async fn typed_input_reaches_context_and_retries_do_not_duplicate_execution() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn directed_typed_input_preserves_root_and_idempotency_after_completion() {
+    let temp = TempDir::new().unwrap();
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let client = Arc::new(Fixture {
+        gate: Some(gate.clone()),
+        ..Default::default()
+    });
+    let runtime = runtime(&temp, client, registry()).await;
+    let session = session(&runtime).await;
+    let principal = &runtime.identity().principal_id;
+    let original = session
+        .send_io_as_principal(request("original"), principal)
+        .await
+        .unwrap();
+    let target = runtime
+        .session_thread_by_root(session.id(), &original.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut supplement = request("supplement");
+    supplement.activation.input_destination = Some(morphz::steering::InputDestination::Thread {
+        thread_id: target.id.clone(),
+        generation: target.generation,
+    });
+    let mut stale = supplement.clone();
+    stale.client_message_id = "stale".into();
+    stale.activation.input_destination = Some(morphz::steering::InputDestination::Thread {
+        thread_id: target.id.clone(),
+        generation: target.generation + 1,
+    });
+    assert_eq!(
+        session
+            .send_io_as_principal(stale, principal)
+            .await
+            .unwrap_err()
+            .code,
+        "idempotency_conflict"
+    );
+    assert_eq!(
+        session
+            .send_io_as_principal(supplement.clone(), "someone-else")
+            .await
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    let accepted = session
+        .send_io_as_principal(supplement.clone(), principal)
+        .await
+        .unwrap();
+    assert_eq!(accepted.topic, "chat/steering");
+    assert_eq!(accepted.payload["root_turn_id"], original.id);
+    assert_eq!(accepted.payload["thread_id"], target.id);
+    assert!(runtime
+        .session_thread_by_root(session.id(), &accepted.id)
+        .await
+        .unwrap()
+        .is_none());
+    gate.add_permits(10);
+    terminal(&runtime, &original.id).await;
+    let retry = session
+        .send_io_as_principal(supplement, principal)
+        .await
+        .unwrap();
+    assert_eq!(accepted, retry);
+    let mut ended = request("after-completion");
+    ended.activation.input_destination = Some(morphz::steering::InputDestination::Thread {
+        thread_id: target.id,
+        generation: target.generation,
+    });
+    assert_eq!(
+        session
+            .send_io_as_principal(ended, principal)
+            .await
+            .unwrap_err()
+            .code,
+        "idempotency_conflict"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn required_typed_output_is_real_durable_io_and_not_a_physical_success_claim() {
     let temp = TempDir::new().unwrap();
     let runtime = runtime(

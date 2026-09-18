@@ -10,6 +10,30 @@ fn enabled() -> Registry {
 }
 
 #[test]
+fn directed_typed_input_is_bound_without_overriding_the_original_route() {
+    let registry = enabled();
+    assert_eq!(registry.capabilities()["directed_input"], true);
+    assert_eq!(Registry::default().capabilities()["directed_input"], false);
+    let mut input = request("null");
+    input.activation.input_destination = Some(crate::steering::InputDestination::Thread {
+        thread_id: "thread-a".into(),
+        generation: 1,
+    });
+    let fingerprint = input.fingerprint("human");
+    let accepted = registry.bind(input.clone(), "human").unwrap();
+    assert_eq!(accepted.request_fingerprint, fingerprint);
+    assert_eq!(
+        accepted.request.activation.input_destination,
+        input.activation.input_destination
+    );
+    input.activation.model_alias = Some("another-model".into());
+    assert_eq!(
+        registry.bind(input, "human").unwrap_err().code,
+        "unsupported_activation_mode"
+    );
+}
+
+#[test]
 fn output_validation_uses_frozen_limits_and_definitions() {
     let registry = enabled();
     let input = registry.bind(request("null"), "a").unwrap();

@@ -479,7 +479,7 @@ impl Registry {
     pub fn capabilities(&self) -> Value {
         json!({"experimental":true,"enabled":self.enabled,"io_versions":if self.enabled {vec!["1"]} else {vec![]},
             "stream_versions":["1"],"encodings":["json","utf8","resource"],"resources":true,"generic_json":self.allow_generic,
-            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,
+            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":self.enabled,
             "activation_modes":["evaluate"],"schema_keywords":schema::KEYWORDS,"schema_numeric_constants":"int64-or-uint64-only","limits":self.limits,
             "formats":self.definitions.values().map(|definition| json!({"definition":definition,"schema_hash":definition.schema.as_ref().map(hash),"contract_hash":definition.contract.as_ref().map(hash)})).collect::<Vec<_>>()})
     }
@@ -588,10 +588,15 @@ impl Registry {
                 "Only evaluate is supported",
             ));
         }
-        if request.activation.input_destination.is_some() {
+        if request.activation.input_destination.is_some()
+            && (request.activation.model_alias.is_some()
+                || request.activation.reasoning_effort.is_some()
+                || request.activation.target_id.is_some()
+                || request.activation.harness.is_some())
+        {
             return Err(IoError::new(
                 "unsupported_activation_mode",
-                "Directed typed input is not yet supported",
+                "Directed input inherits the existing work route; model, reasoning, Target and Harness overrides are not allowed",
             ));
         }
         let input = self.resolve(
