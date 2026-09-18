@@ -8308,7 +8308,11 @@ async fn interrupt_dialogue_turn_in_transaction(
     session: &SessionRecord,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, Box<dyn std::error::Error + Send + Sync>> {
-    let running = sqlx::query(
+    // A context_tx pass completes its Activation, not its DialogueTurn.
+    // Follow the current Thread generation rather than the original user's
+    // activation_signals link. Include queued continuations and the durable
+    // receipt handoff before a successor Activation has been materialized.
+    let thinking = sqlx::query(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
@@ -8325,15 +8329,34 @@ async fn interrupt_dialogue_turn_in_transaction(
            JOIN threads thread
              ON thread.id = signal.thread_id
             AND thread.generation = signal.thread_generation
-           JOIN activation_signals link ON link.signal_id = signal.id
-           JOIN thread_activations activation ON activation.id = link.activation_id
+           JOIN thread_activations activation
+             ON activation.root_turn_id = thread.root_turn_id
+            AND activation.generation = thread.generation
            WHERE activation.session_id = ?
-             AND activation.status = 'running'
-             AND activation.trigger_kind = 'chat/user_message'
+             AND (
+               activation.status = 'running'
+               OR (activation.status = 'queued' AND activation.parent_activation_id IS NOT NULL)
+               OR (activation.status = 'completed' AND EXISTS (
+                 SELECT 1 FROM thread_signals receipt
+                 WHERE receipt.thread_id = thread.id
+                   AND receipt.thread_generation = thread.generation
+                   AND receipt.parent_activation_id = activation.id
+                   AND receipt.kind = 'chat/tool_output'
+                   AND receipt.status = 'pending'
+               ))
+             )
              AND activation.dialogue_lane_released_at IS NULL
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
+             AND NOT EXISTS (
+               SELECT 1 FROM thread_activations released
+               WHERE released.root_turn_id = thread.root_turn_id
+                 AND released.generation = thread.generation
+                 AND released.dialogue_lane_released_at IS NOT NULL
+             )
+           ORDER BY CASE activation.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                    activation.created_at DESC, activation.id
            LIMIT 1"#,
     )
     .bind(&session.id)
@@ -8341,8 +8364,8 @@ async fn interrupt_dialogue_turn_in_transaction(
     .bind(&session.id)
     .fetch_optional(&mut **tx)
     .await?;
-    let (row, provider_wait) = if let Some(row) = running {
-        (row, false)
+    let row = if let Some(row) = thinking {
+        row
     } else {
         // A Provider wait terminalizes only the physical Activation. The
         // logical DialogueTurn deliberately remains open behind a durable
@@ -8425,7 +8448,7 @@ async fn interrupt_dialogue_turn_in_transaction(
         else {
             return Ok(None);
         };
-        (row, true)
+        row
     };
 
     let interrupted = InterruptedDialogueTurn {
@@ -8465,8 +8488,8 @@ async fn interrupt_dialogue_turn_in_transaction(
     .execute(&mut **tx)
     .await?;
 
-    if provider_wait {
-        // Fence every still-local recovery Activation and retire every pending
+    {
+        // Fence every still-local continuation and retire every pending
         // dependency in the same transaction as the Thread cancellation. A
         // concurrent recovery either wins before this transaction (and is
         // cancelled below) or observes the cancelled dependency/Thread; it
@@ -8495,21 +8518,6 @@ async fn interrupt_dialogue_turn_in_transaction(
         .bind(thread_generation)
         .execute(&mut **tx)
         .await?;
-    } else {
-        let activation = sqlx::query(
-            r#"UPDATE thread_activations
-               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
-                   lease_expires_at = NULL, updated_at = ?
-               WHERE id = ? AND status = 'running'
-                 AND dialogue_lane_released_at IS NULL"#,
-        )
-        .bind(&now)
-        .bind(&interrupted.activation_id)
-        .execute(&mut **tx)
-        .await?;
-        if activation.rows_affected() != 1 {
-            return Err("DialogueTurn 在原子打断期间越过了 Execution 边界".into());
-        }
     }
     let thread = sqlx::query(
         r#"UPDATE threads

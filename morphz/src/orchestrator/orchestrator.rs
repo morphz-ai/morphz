@@ -20479,11 +20479,21 @@ impl Orchestrator {
     /// transaction has already fenced as cancelled. Persistent Thread and
     /// Activation state remain authoritative; this only removes model-call
     /// latency between the durable cancellation and task observation.
-    pub fn notify_dialogue_interruption(&self, activation_id: &str) {
+    pub fn notify_dialogue_interruption(
+        &self,
+        session_id: &str,
+        interrupted: &crate::memory::InterruptedDialogueTurn,
+    ) {
         self.activation_cancellations.request(
-            activation_id,
+            &interrupted.activation_id,
             "A newer message replaced this DialogueTurn before Execution began",
         );
+        self.activation_admission.forget(&interrupted.activation_id);
+        // A maintenance handoff may retain the lane without a live model
+        // future to observe cancellation. Ingress already fenced the entire
+        // Thread; release only that exact root, never a replacement owner.
+        self.dialogue_thread_gate(session_id)
+            .release(&interrupted.root_turn_id);
     }
 
     /// Resume scheduler admission for the oldest durable mailbox Signal. If
@@ -23651,6 +23661,53 @@ mod tests {
 
         assert!(gate.owns("turn-a").await);
         assert!(gate.release("turn-a"));
+    }
+
+    #[tokio::test]
+    async fn interrupted_maintenance_handoff_releases_only_its_retained_lane() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("handoff.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let config = crate::config::OrchestratorConfig::default();
+        let context_engine = Arc::new(
+            ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+                .with_session_store(Arc::clone(&store) as Arc<dyn crate::memory::SessionStore>),
+        );
+        let orchestrator = Orchestrator::new_test_with_context_engine(
+            Arc::new(InMemoryEventBus::new()),
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            None,
+            Arc::clone(&store) as Arc<dyn crate::memory::ActionGroupStore>,
+            Arc::new(NeverCalledClient),
+            Arc::new(Registry::new()),
+            config,
+            context_engine,
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            None,
+        )
+        .unwrap();
+        let gate = orchestrator.dialogue_thread_gate("session-handoff");
+        gate.acquire("turn-a").await;
+        let mut lease = DialogueThreadLease::new(Arc::clone(&gate), "turn-a");
+        lease.retain_for_continuation();
+        drop(lease);
+        let interrupted = crate::memory::InterruptedDialogueTurn {
+            activation_id: "completed-maintenance".into(),
+            root_turn_id: "turn-a".into(),
+            thread_id: "thread-a".into(),
+        };
+        orchestrator.notify_dialogue_interruption("session-handoff", &interrupted);
+        tokio::time::timeout(std::time::Duration::from_secs(1), gate.acquire("turn-b"))
+            .await
+            .expect("an interrupted handoff has no live future to release its retained lane");
+        orchestrator.notify_dialogue_interruption("session-handoff", &interrupted);
+        assert!(
+            gate.owns("turn-b").await,
+            "a stale notification cannot release the replacement lane"
+        );
     }
 
     #[test]

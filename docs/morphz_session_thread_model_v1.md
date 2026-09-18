@@ -124,6 +124,7 @@ Runtime 重启时也按 Thread 语义恢复：
 
 - 每条新用户消息都把有效发送模式固化为 `interrupt`、`parallel` 或 `follow_up`。未显式选择时，`orchestrator.interrupt_dialogue_on_new_message=true` 解析为 `interrupt`，`false` 解析为严格 `follow_up`；
 - `interrupt` 会原子取消尚未形成 Execution Thread 的 DialogueTurn，并按 Event History 顺序重放尚未回复的输入；若前一轮已经形成物理执行，则不取消它，新 DialogueTurn 与其并发；
+- `context_tx` 维护不跨越物理执行边界：同一 Thread generation 内正在运行、排队或仅留下待领取回执的续跑都可被打断。原子取消整轮的未完成 Activation，再重放已读取或已确认的用户 Signal；已提交的维护事实保留，工具回执不作为用户输入重放。任何先前 Activation 已释放物理执行通道时，整轮不再属于自动打断范围；
 - `parallel` 始终创建独立 DialogueTurn，并在持久化准入和进程内 Dialogue Gate 两层绕过 Session 串行通道；
 - `follow_up` 也创建独立 DialogueTurn，但在根 Event 中保存前一条用户消息的 Thread 因果边，只有该 Thread 已终结且 `delivery_status` 不再是 `pending/deferred` 后才允许求值；
 - 已经形成持久物理工具计划的 Execution Thread 继续按 exactly-once 边界恢复；

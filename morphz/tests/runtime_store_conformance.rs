@@ -61,6 +61,8 @@ use tempfile::{NamedTempFile, TempDir};
 use tokio::sync::Barrier;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
+#[path = "support/dialogue_maintenance_interrupt.rs"]
+mod dialogue_maintenance_interrupt;
 #[path = "support/interrupt_frontier.rs"]
 mod interrupt_frontier;
 type AttentionFuture<'a> = Pin<
@@ -2037,6 +2039,7 @@ async fn assert_dialogue_interruption_conformance<S>(store: Arc<S>)
 where
     S: morphz::memory::RuntimeStore + 'static,
 {
+    dialogue_maintenance_interrupt::assert_maintenance_interrupt(store.as_ref()).await;
     let session_id = "conformance-dialogue-interruption";
     store
         .create_session(NewSession {

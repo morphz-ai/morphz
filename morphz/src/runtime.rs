@@ -10916,7 +10916,7 @@ impl SessionHandle {
                     self.runtime
                         .inner
                         .orchestrator
-                        .notify_dialogue_interruption(&interrupted.activation_id);
+                        .notify_dialogue_interruption(&self.id, interrupted);
                 }
                 let event_id = event.id.clone();
                 let dispatch_started = std::time::Instant::now();
@@ -12631,6 +12631,7 @@ mod tests {
 
     struct InterruptibleDialogueClient {
         calls: AtomicU64,
+        maintenance_before_interrupt: bool,
         first_entered: Arc<tokio::sync::Notify>,
         observed_combined_input: Arc<AtomicBool>,
         observed_interrupted_attachment: Arc<AtomicBool>,
@@ -13914,6 +13915,16 @@ mod tests {
 
     #[tokio::test]
     async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
+        assert_dialogue_interrupt_replays_inputs(false).await;
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn new_message_interrupts_context_maintenance_continuation_and_replays_inputs() {
+        assert_dialogue_interrupt_replays_inputs(true).await;
+    }
+
+    async fn assert_dialogue_interrupt_replays_inputs(maintenance_before_interrupt: bool) {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -13923,6 +13934,7 @@ mod tests {
         let observed_attachment_workspace_path = Arc::new(AtomicBool::new(false));
         let client = Arc::new(InterruptibleDialogueClient {
             calls: AtomicU64::new(0),
+            maintenance_before_interrupt,
             first_entered: first_entered.clone(),
             observed_combined_input: observed_combined_input.clone(),
             observed_interrupted_attachment: observed_interrupted_attachment.clone(),
@@ -14017,7 +14029,10 @@ mod tests {
             tokio::fs::read(workspace_path).await.unwrap(),
             b"interrupted-image-bytes"
         );
-        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            client.calls.load(Ordering::SeqCst),
+            2 + u64::from(maintenance_before_interrupt)
+        );
 
         let attempt_states = runtime
             .query_events(QueryFilter {
@@ -14931,10 +14946,32 @@ mod tests {
         async fn create_completion(
             &self,
             messages: Vec<Message>,
-            _tools: Vec<ToolDefinition>,
+            tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if call == 0 {
+            if call == 0 && self.maintenance_before_interrupt {
+                assert!(tools.iter().any(|tool| tool.name == "context_tx"));
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "interrupted-maintenance-tx".into(),
+                        r#type: "function".into(),
+                        func_name: "context_tx".into(),
+                        arguments: json!({
+                            "transaction": "(context-tx (base-version 0) (reason interruption-regression) (create interrupted-maintenance (fact committed)))"
+                        }).to_string(),
+                    }],
+                });
+            }
+            if call == u64::from(self.maintenance_before_interrupt) {
+                if self.maintenance_before_interrupt {
+                    let prompt = messages
+                        .iter()
+                        .map(|message| message.content.as_str())
+                        .collect::<String>();
+                    assert!(prompt.contains("(id interrupted-maintenance)") && prompt.contains("(fact committed)"),
+                        "the interrupted request must be a real continuation after committed context_tx");
+                }
                 self.first_entered.notify_one();
                 return std::future::pending().await;
             }

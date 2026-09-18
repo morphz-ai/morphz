@@ -260,7 +260,11 @@ async fn interrupt_dialogue_turn_in_tx(
     session_id: &str,
     event: &Event,
 ) -> Result<Option<InterruptedDialogueTurn>, StoreError> {
-    let running = sqlx::query(
+    // A context_tx pass completes its Activation, not its DialogueTurn.
+    // Follow the current Thread generation rather than the original user's
+    // activation_signals link. Include queued continuations and the durable
+    // receipt handoff before a successor Activation has been materialized.
+    let thinking = sqlx::query(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
@@ -277,15 +281,34 @@ async fn interrupt_dialogue_turn_in_tx(
            JOIN threads thread
              ON thread.id = signal.thread_id
             AND thread.generation = signal.thread_generation
-           JOIN activation_signals link ON link.signal_id = signal.id
-           JOIN thread_activations activation ON activation.id = link.activation_id
+           JOIN thread_activations activation
+             ON activation.root_turn_id = thread.root_turn_id
+            AND activation.generation = thread.generation
            WHERE activation.session_id = $1
-             AND activation.status = 'running'
-             AND activation.trigger_kind = 'chat/user_message'
+             AND (
+               activation.status = 'running'
+               OR (activation.status = 'queued' AND activation.parent_activation_id IS NOT NULL)
+               OR (activation.status = 'completed' AND EXISTS (
+                 SELECT 1 FROM thread_signals receipt
+                 WHERE receipt.thread_id = thread.id
+                   AND receipt.thread_generation = thread.generation
+                   AND receipt.parent_activation_id = activation.id
+                   AND receipt.kind = 'chat/tool_output'
+                   AND receipt.status = 'pending'
+               ))
+             )
              AND activation.dialogue_lane_released_at IS NULL
              AND thread.kind = 'dialogue_turn'
              AND thread.status = 'open'
              AND thread.control_state = 'active'
+             AND NOT EXISTS (
+               SELECT 1 FROM thread_activations released
+               WHERE released.root_turn_id = thread.root_turn_id
+                 AND released.generation = thread.generation
+                 AND released.dialogue_lane_released_at IS NOT NULL
+             )
+           ORDER BY CASE activation.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                    activation.created_at DESC, activation.id
            LIMIT 1
            FOR UPDATE OF activation, thread, signal"#,
     )
@@ -293,8 +316,8 @@ async fn interrupt_dialogue_turn_in_tx(
     .bind(&event.id)
     .fetch_optional(&mut **tx)
     .await?;
-    let (row, provider_wait) = if let Some(row) = running {
-        (row, false)
+    let row = if let Some(row) = thinking {
+        row
     } else {
         // A Provider wait terminalizes only the physical Activation. The
         // logical DialogueTurn remains open behind a durable Resource
@@ -371,7 +394,7 @@ async fn interrupt_dialogue_turn_in_tx(
         else {
             return Ok(None);
         };
-        (row, true)
+        row
     };
 
     let interrupted = InterruptedDialogueTurn {
@@ -407,8 +430,8 @@ async fn interrupt_dialogue_turn_in_tx(
     .execute(&mut **tx)
     .await?;
 
-    if provider_wait {
-        // Retire every still-local recovery Activation and pending dependency
+    {
+        // Retire every still-local continuation and pending dependency
         // in the same transaction as the logical Thread cancellation.
         sqlx::query(
             r#"UPDATE thread_activations
@@ -434,23 +457,6 @@ async fn interrupt_dialogue_turn_in_tx(
         .bind(thread_generation)
         .execute(&mut **tx)
         .await?;
-    } else {
-        let activation = sqlx::query(
-            r#"UPDATE thread_activations
-               SET revision = revision + 1, status = 'cancelled', claimed_by = NULL,
-                   lease_expires_at = NULL, updated_at = $1
-               WHERE id = $2 AND status = 'running'
-                 AND dialogue_lane_released_at IS NULL"#,
-        )
-        .bind(&now)
-        .bind(&interrupted.activation_id)
-        .execute(&mut **tx)
-        .await?;
-        if activation.rows_affected() != 1 {
-            return Err(
-                "DialogueTurn crossed the Execution boundary while being interrupted".into(),
-            );
-        }
     }
     let thread = sqlx::query(
         r#"UPDATE threads
@@ -876,27 +882,45 @@ async fn claim_ordered_message_fast_path(
              ORDER BY request.created_at DESC, request.event_id DESC
              LIMIT 1
            ),
-           running_candidate AS MATERIALIZED (
+           thinking_candidate AS MATERIALIZED (
              SELECT activation.id AS activation_id,
                     activation.root_turn_id AS root_turn_id,
                     thread.id AS thread_id,
-                    thread.generation AS thread_generation,
-                    FALSE AS provider_wait
+                    thread.generation AS thread_generation
              FROM predecessor
              JOIN thread_signals signal ON signal.event_id = predecessor.event_id
              JOIN threads thread
                ON thread.id = signal.thread_id
               AND thread.generation = signal.thread_generation
-             JOIN activation_signals link ON link.signal_id = signal.id
-             JOIN thread_activations activation ON activation.id = link.activation_id
+             JOIN thread_activations activation
+               ON activation.root_turn_id = thread.root_turn_id
+              AND activation.generation = thread.generation
              WHERE $17 = 'interrupt'
                AND activation.session_id = $1
-               AND activation.status = 'running'
-               AND activation.trigger_kind = 'chat/user_message'
+               AND (
+                 activation.status = 'running'
+                 OR (activation.status = 'queued' AND activation.parent_activation_id IS NOT NULL)
+                 OR (activation.status = 'completed' AND EXISTS (
+                   SELECT 1 FROM thread_signals receipt
+                   WHERE receipt.thread_id = thread.id
+                     AND receipt.thread_generation = thread.generation
+                     AND receipt.parent_activation_id = activation.id
+                     AND receipt.kind = 'chat/tool_output'
+                     AND receipt.status = 'pending'
+                 ))
+               )
                AND activation.dialogue_lane_released_at IS NULL
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
                AND thread.control_state = 'active'
+               AND NOT EXISTS (
+                 SELECT 1 FROM thread_activations released
+                 WHERE released.root_turn_id = thread.root_turn_id
+                   AND released.generation = thread.generation
+                   AND released.dialogue_lane_released_at IS NOT NULL
+               )
+             ORDER BY CASE activation.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+                      activation.created_at DESC, activation.id
              LIMIT 1
              FOR UPDATE OF activation, thread, signal
            ),
@@ -917,8 +941,7 @@ async fn claim_ordered_message_fast_path(
                     ) AS activation_id,
                     waiting_activation.root_turn_id AS root_turn_id,
                     thread.id AS thread_id,
-                    thread.generation AS thread_generation,
-                    TRUE AS provider_wait
+                    thread.generation AS thread_generation
              FROM predecessor
              JOIN thread_signals signal ON signal.event_id = predecessor.event_id
              JOIN threads thread
@@ -937,7 +960,7 @@ async fn claim_ordered_message_fast_path(
               AND waiting_activation.root_turn_id = thread.root_turn_id
               AND waiting_activation.generation = thread.generation
              WHERE $17 = 'interrupt'
-               AND NOT EXISTS (SELECT 1 FROM running_candidate)
+               AND NOT EXISTS (SELECT 1 FROM thinking_candidate)
                AND thread.session_id = $1
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
@@ -956,7 +979,7 @@ async fn claim_ordered_message_fast_path(
              FOR UPDATE OF dependency, thread, signal, waiting_activation
            ),
            interrupted_candidate AS MATERIALIZED (
-             SELECT * FROM running_candidate
+             SELECT * FROM thinking_candidate
              UNION ALL
              SELECT * FROM provider_wait_candidate
            ),
@@ -1075,26 +1098,17 @@ async fn claim_ordered_message_fast_path(
                  status = 'cancelled', claimed_by = NULL,
                  lease_expires_at = NULL, updated_at = $5
              FROM interrupted_candidate interrupted
-             WHERE (
-                 NOT interrupted.provider_wait
-                 AND activation.id = interrupted.activation_id
-                 AND activation.status = 'running'
-                 AND activation.dialogue_lane_released_at IS NULL
-               ) OR (
-                 interrupted.provider_wait
-                 AND activation.root_turn_id = interrupted.root_turn_id
-                 AND activation.generation = interrupted.thread_generation
-                 AND activation.status IN ('queued', 'running')
-                 AND activation.dialogue_lane_released_at IS NULL
-               )
+             WHERE activation.root_turn_id = interrupted.root_turn_id
+               AND activation.generation = interrupted.thread_generation
+               AND activation.status IN ('queued', 'running')
+               AND activation.dialogue_lane_released_at IS NULL
              RETURNING activation.id
            ),
            cancelled_dependencies AS (
              UPDATE scheduler_dependencies dependency
              SET status = 'cancelled', updated_at = $5
              FROM interrupted_candidate interrupted
-             WHERE interrupted.provider_wait
-               AND dependency.owner_kind = 'thread'
+             WHERE dependency.owner_kind = 'thread'
                AND dependency.owner_id = interrupted.thread_id
                AND dependency.owner_generation = interrupted.thread_generation
                AND dependency.status = 'pending'
@@ -1269,8 +1283,6 @@ async fn claim_ordered_message_fast_path(
                   (SELECT activation_id FROM interrupted_candidate) AS interrupted_activation_id,
                   (SELECT root_turn_id FROM interrupted_candidate) AS interrupted_root_turn_id,
                   (SELECT thread_id FROM interrupted_candidate) AS interrupted_thread_id,
-                  (SELECT provider_wait FROM interrupted_candidate) AS interrupted_provider_wait,
-                  (SELECT COUNT(*) FROM cancelled_activations) AS cancelled_activation_count,
                   (SELECT COUNT(*) FROM cancelled_thread) AS cancelled_thread_count,
                   (SELECT COUNT(*) FROM session_touch) AS touched_session_count"#,
     )
@@ -1339,19 +1351,8 @@ async fn claim_ordered_message_fast_path(
         let interrupted_activation_id = row.get::<Option<String>, _>("interrupted_activation_id");
         let interrupted_root_turn_id = row.get::<Option<String>, _>("interrupted_root_turn_id");
         let interrupted_thread_id = row.get::<Option<String>, _>("interrupted_thread_id");
-        let provider_wait = row
-            .get::<Option<bool>, _>("interrupted_provider_wait")
-            .unwrap_or(false);
         if interrupted_thread_id.is_some() && cancelled_thread_count != 1 {
             return Err("DialogueTurn terminated while being interrupted".into());
-        }
-        if interrupted_thread_id.is_some()
-            && !provider_wait
-            && row.get::<i64, _>("cancelled_activation_count") != 1
-        {
-            return Err(
-                "DialogueTurn crossed the Execution boundary while being interrupted".into(),
-            );
         }
         let payload = row
             .get::<Option<JsonValue>, _>("accepted_payload")
