@@ -39,6 +39,35 @@ install Node/Electron. Root README commands provide one checkout entry point. Ap
 separate Web, native macOS and actual Runtime-contract jobs; existing Runtime release tags do not
 publish the application. Production npm/Electron package notices have a dedicated generated inventory.
 
+### Agreed independent-release naming
+
+Runtime and Desktop have independent versions and release schedules in this repository. The
+application name shown to users remains **Morphz**. A release tag identifies a source revision;
+it is neither the application name nor the installer filename.
+
+| Purpose | Convention | Example |
+| --- | --- | --- |
+| Runtime release tag | Preserve `vX.Y.Z` | `v0.1.2` |
+| Desktop release tag | `desktop-vX.Y.Z` | `desktop-v0.1.0` |
+| Desktop installer filename | `Morphz-Desktop-<version>-<platform>-<arch>.<format>` | `Morphz-Desktop-0.1.0-macos-arm64.dmg` |
+
+The Desktop version is shared across its supported platform/architecture packages; platform
+names do not create separate version sequences. `0.1.0` and the installer above are naming
+examples, not an existing Desktop release or a claim that an installer has been produced.
+Mobile remains unimplemented; no mobile release workflow is added by this agreement.
+
+The Desktop release workflow still needs implementation. It must validate its tag against the
+Desktop version metadata, test the exact packaged Runtime version/build and required capabilities,
+and record that pairing in the release manifest. It must not silently select the newest Runtime
+at build or install time. Routine pushes run checks; an explicit matching release tag authorizes
+the corresponding release workflow, subject to its validation and signing gates.
+
+Runtime installers and `morphz update` currently resolve the repository-wide latest release.
+Desktop releases must not replace that Runtime `latest` designation; the Desktop release/update
+channel must resolve Desktop releases explicitly. Packaging, signing/notarization, compatibility
+validation and the Desktop update channel remain separate implementation work. This naming
+agreement does not add those capabilities or change existing development launchers and data paths.
+
 ## Paths and existing installations
 
 Integration scripts resolve the Runtime binary relative to this repository, not a sibling
