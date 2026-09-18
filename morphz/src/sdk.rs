@@ -1097,7 +1097,7 @@ impl MorphzSdk {
                 &thread.id,
                 expected_revision,
                 ThreadControlAction::Cancel,
-                "The user stopped this MorphzWork input",
+                "The user stopped this input",
             )
             .await
             .map_err(SdkError::internal)

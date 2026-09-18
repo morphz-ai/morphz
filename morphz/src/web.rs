@@ -16106,6 +16106,15 @@ account = "xai-account"
             .into_response();
             assert_eq!(response.status(), status);
         }
+        let cancelled = runtime
+            .session_thread_by_root("scoped-cancel", "root-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cancelled.result_text.as_deref(),
+            Some("The user stopped this input")
+        );
         let other = runtime
             .session_thread_by_root("scoped-cancel", "root-b")
             .await
