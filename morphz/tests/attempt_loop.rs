@@ -5651,6 +5651,68 @@ async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
     assert_eq!(context.state.frames[0].id, "first");
 }
 
+async fn assert_context_rejection_lineage(
+    store: &Arc<SqliteStore>,
+    session_id: &str,
+    expected_ids: &[&str],
+    physical_call_id: &str,
+) {
+    let outputs = wait_for_topic(store, "chat/tool_output", session_id).await;
+    let receipts: Vec<_> = outputs
+        .iter()
+        .filter(|event| {
+            event.payload.get("tool_call_id") == Some(&json!("context_tx_batch_rejected"))
+        })
+        .collect();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "retain one batch receipt and one continuation"
+    );
+    let receipt = receipts[0];
+    assert_eq!(
+        receipt.payload.get("rejected_context_tx_ids"),
+        Some(&json!(expected_ids))
+    );
+    assert_eq!(receipt.payload.get("tool_status"), Some(&json!("rejected")));
+    assert_eq!(
+        receipt.payload.get("caused_by"),
+        Some(&json!("context_tx_batch_rejected"))
+    );
+    assert!(
+        outputs.iter().any(|event| {
+            event.payload.get("tool_call_id") == Some(&json!(physical_call_id))
+                && event.payload.get("tool_status") == Some(&json!("success"))
+        }),
+        "sibling physical work must still complete"
+    );
+    for topic in ["chat/assistant_call", "runtime/tool_calls_selected"] {
+        let events = wait_for_topic(store, topic, session_id).await;
+        let event = events
+            .iter()
+            .find(|event| event.payload.get("attempt_id") == receipt.payload.get("attempt_id"))
+            .expect("rejection must retain its request and selection");
+        assert_eq!(
+            event.payload.get("rejected_context_tx_ids"),
+            Some(&json!(expected_ids))
+        );
+        for field in ["context_id", "session_id", "activation_id"] {
+            assert!(receipt.payload.get(field).is_some());
+            assert_eq!(event.payload.get(field), receipt.payload.get(field));
+        }
+        if topic == "chat/assistant_call" {
+            let continuations = event.payload["continuation_tool_calls"].as_array().unwrap();
+            let batch = continuations
+                .iter()
+                .find(|call| call["id"] == "context_tx_batch_rejected")
+                .expect("Provider continuation must retain the synthetic batch call");
+            let arguments: serde_json::Value =
+                serde_json::from_str(batch["function"]["arguments"].as_str().unwrap()).unwrap();
+            assert_eq!(arguments["runtime_rejected_batch"], true);
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_distinct_context_transactions_are_rejected_then_combined_atomically() {
     let session_id = "attempt_distinct_context_tx";
@@ -5700,6 +5762,13 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
     assert_eq!(replies.len(), 1);
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
     assert_eq!(assistant_calls.len(), 3);
+    assert_context_rejection_lineage(
+        &store,
+        session_id,
+        &["context-1", "context-2"],
+        "read-evidence",
+    )
+    .await;
     assert_eq!(
         assistant_calls[0]
             .payload
@@ -5811,6 +5880,13 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         "budget exhaustion must reject execution without destabilizing the Provider schema"
     );
     assert!(tools_seen[1].contains(&"read".to_string()));
+    assert_context_rejection_lineage(
+        &store,
+        session_id,
+        &["context-over-budget"],
+        "read-still-allowed",
+    )
+    .await;
 
     let context = orchestrator
         .get_current_context_view(session_id)

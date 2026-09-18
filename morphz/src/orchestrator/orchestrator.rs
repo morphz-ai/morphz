@@ -18689,6 +18689,10 @@ impl Orchestrator {
             ("calls".to_string(), json!(selected_call_previews)),
             ("deduplicated_count".to_string(), json!(deduplicated_count)),
             ("rejected_count".to_string(), json!(rejected_count)),
+            (
+                "rejected_context_tx_ids".to_string(),
+                json!(rejected_context_tx_ids),
+            ),
             ("rejection_status".to_string(), json!(rejection_status)),
             (
                 "action_group_wake_policy".to_string(),
@@ -19565,6 +19569,13 @@ impl Orchestrator {
                         json!("context_tx_batch_rejected"),
                     ),
                     ("caused_by".to_string(), json!("context_tx_batch_rejected")),
+                    // Keep the synthetic batch identity for Provider continuation
+                    // and Action-group wakeups, but retain the original requests
+                    // so consumers can terminate their visible call lifecycles.
+                    (
+                        "rejected_context_tx_ids".to_string(),
+                        json!(rejected_context_tx_ids),
+                    ),
                     ("tool_name".to_string(), json!("context_tx")),
                     ("tool_status".to_string(), json!("rejected")),
                     (

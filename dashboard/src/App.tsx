@@ -1646,7 +1646,7 @@ function toolCallTone(status: string): 'running' | 'succeeded' | 'failed' {
   return 'failed'
 }
 
-const ExecutionToolCalls = memo(function ExecutionToolCalls({
+export const ExecutionToolCalls = memo(function ExecutionToolCalls({
   calls,
   targetLabels,
   locale,

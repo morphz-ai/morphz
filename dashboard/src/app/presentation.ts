@@ -183,15 +183,26 @@ function objectFromJson(value: string): Record<string, unknown> {
   }
 }
 
+export const CONTEXT_TX_BATCH_REJECTED_ID = 'context_tx_batch_rejected'
+
+/** Original model requests rejected by Runtime's single batch receipt. */
+export function rejectedContextTxCallIds(payload: Record<string, unknown>): string[] {
+  if (!Array.isArray(payload.rejected_context_tx_ids)) return []
+  return [...new Set(payload.rejected_context_tx_ids
+    .filter((id): id is string => typeof id === 'string')
+    .map(id => id.trim())
+    .filter(id => id.length > 0 && id !== CONTEXT_TX_BATCH_REJECTED_ID))]
+}
+
 /**
  * Assistant Call events use the provider-shaped `function` envelope while
  * Runtime selection events use a flattened call. Normalising both here keeps
  * the execution lane independent from provider wire formats.
  */
 export function assistantToolCalls(payload: Record<string, unknown>): PresentedToolCall[] {
-  // A normal Assistant Call uses `tool_calls`; a continued reasoning attempt
-  // is persisted as `continuation_tool_calls`. Both describe the same durable
-  // call lifecycle and must survive a Dashboard refresh.
+  // Keep both original requests and continuation-only calls. A Runtime batch
+  // rejection also has a synthetic continuation envelope for the Provider;
+  // that control record is not an additional model request.
   const rawCalls = [
     ...(Array.isArray(payload.tool_calls) ? payload.tool_calls : []),
     ...(Array.isArray(payload.continuation_tool_calls) ? payload.continuation_tool_calls : []),
@@ -219,7 +230,10 @@ export function assistantToolCalls(payload: Record<string, unknown>): PresentedT
       truncated: typeof call.truncated === 'boolean' ? call.truncated : undefined,
     })
   }
-  return calls
+  if (rejectedContextTxCallIds(payload).length === 0) return calls
+  return calls.filter(call => !(call.id === CONTEXT_TX_BATCH_REJECTED_ID
+    && call.name === 'context_tx'
+    && objectFromJson(call.arguments).runtime_rejected_batch === true))
 }
 
 function stringField(value: Record<string, unknown>, ...names: string[]) {

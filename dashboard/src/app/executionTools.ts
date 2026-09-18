@@ -1,4 +1,4 @@
-import { assistantToolCalls, type PresentedToolCall } from './presentation.ts'
+import { assistantToolCalls, CONTEXT_TX_BATCH_REJECTED_ID, rejectedContextTxCallIds, type PresentedToolCall } from './presentation.ts'
 
 export interface ToolTimelineEvent {
   timestamp: string
@@ -82,16 +82,43 @@ export function executionTargetIds(argumentsText: string): string[] {
     .filter(item => item.length > 0 && item !== 'target-default'))]
 }
 
+function rejectionRoute(payload: Record<string, unknown>): string | undefined {
+  const context = nonEmptyString(payload.context_id)
+  const session = nonEmptyString(payload.session_id)
+  const attempt = nonEmptyString(payload.attempt_id) ?? nonEmptyString(payload.activation_id)
+  return context && session && attempt ? JSON.stringify([context, session, attempt]) : undefined
+}
+
 /** Build the durable call/result projection used by execution-output cards. */
 export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): ToolTimelineItem[] {
   const calls = new Map<string, ToolTimelineItem>()
   const backgroundTaskOwners = new Map<string, string>()
-  for (const event of events) {
-    const selectedCalls = event.topic === 'chat/assistant_call'
+  const inputs = events.map(event => ({
+    event,
+    selectedCalls: event.topic === 'chat/assistant_call'
       ? assistantToolCalls(event.payload)
       : event.topic === 'runtime/tool_calls_selected' && Array.isArray(event.payload.calls)
         ? assistantToolCalls({ tool_calls: event.payload.calls })
-        : []
+        : [],
+  }))
+  const rejectedByRoute = new Map<string, Set<string>>()
+  const origins = new Map<string, Array<{ route?: string; call: PresentedToolCall; timestamp: string }>>()
+  // Historical receipts lack original IDs, but their Assistant Call durably
+  // records them. Index that explicit lineage before projecting outputs so
+  // paginated/out-of-order history works without matching by name or time.
+  for (const { event, selectedCalls } of inputs) {
+    const route = rejectionRoute(event.payload)
+    for (const call of selectedCalls) {
+      const sources = origins.get(call.id) ?? []
+      sources.push({ route, call, timestamp: event.timestamp })
+      origins.set(call.id, sources)
+    }
+    if (!route || !['chat/assistant_call', 'runtime/tool_calls_selected'].includes(event.topic)) continue
+    const ids = rejectedByRoute.get(route) ?? new Set<string>()
+    for (const id of rejectedContextTxCallIds(event.payload)) ids.add(id)
+    rejectedByRoute.set(route, ids)
+  }
+  for (const { event, selectedCalls } of inputs) {
     if (selectedCalls.length > 0) {
       for (const call of selectedCalls) {
         const previous = calls.get(call.id)
@@ -122,6 +149,34 @@ export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): Too
     if (event.type !== 'tool_output' && event.topic !== 'chat/tool_output') continue
     const id = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : ''
     if (!id) continue
+    if (id === CONTEXT_TX_BATCH_REJECTED_ID
+      && event.payload.tool_name === 'context_tx' && event.payload.tool_status === 'rejected') {
+      const route = rejectionRoute(event.payload)
+      const explicitIds = rejectedContextTxCallIds(event.payload)
+      const rejectedIds = explicitIds.length > 0 ? explicitIds : [...(rejectedByRoute.get(route ?? '') ?? [])]
+      // A receipt cannot relabel a call from another route, or a physical tool.
+      // With no provable lineage, retain the standalone receipt below.
+      if (route && rejectedIds.length > 0 && rejectedIds.every(originalId =>
+        (origins.get(originalId) ?? []).every(origin => origin.route === route && origin.call.name === 'context_tx'))) {
+        for (const originalId of rejectedIds) {
+          const source = origins.get(originalId)?.reduce((best, origin) =>
+            toolArgumentsQuality(origin.call) > toolArgumentsQuality(best.call) ? origin : best)
+          const previous = calls.get(originalId)
+          const original = previous ?? source?.call
+          calls.set(originalId, {
+            id: originalId,
+            name: 'context_tx',
+            arguments: original?.arguments ?? '{}',
+            arguments_chars: original?.arguments_chars,
+            truncated: original?.truncated,
+            timestamp: previous?.timestamp ?? source?.timestamp ?? event.timestamp,
+            status: 'rejected',
+            result: typeof event.payload.text === 'string' ? event.payload.text : '',
+          })
+        }
+        continue
+      }
+    }
     const taskId = nonEmptyString(event.payload.task_id)
     const taskStatus = nonEmptyString(event.payload.task_status)
     const isBackgroundLaunch = event.payload.execution === 'background'
