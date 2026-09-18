@@ -2353,6 +2353,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     client={client}
                     onOpen={openUser}
                     onRetry={async (id) => {
+                      // Retrying removes this focused button once the outbox
+                      // advances. Hand focus to a stable control before that
+                      // update, not after a reply that may outlive navigation.
+                      input.current?.focus({ preventScroll: true });
                       try {
                         await client.dispatchInput(id);
                       } catch (error) {
