@@ -17,6 +17,11 @@ async function menu(page: Page, title: string, action: string) {
     .getByRole("group", { name: title + "的会话", exact: true })
     .getByLabel("项目操作：" + title, { exact: true })
     .click();
+  await expect(
+    page
+      .getByRole("group", { name: "项目操作", exact: true })
+      .getByRole("button"),
+  ).toHaveText(["重命名", "归档", "删除"]);
   await page
     .getByRole("group", { name: "项目操作", exact: true })
     .getByRole("button", { name: action + "：" + title, exact: true })
@@ -71,6 +76,9 @@ test("项目统一管理：改名同步两处，归档与删除可恢复，目�
   const title = "TEST 项目管理 " + Date.now();
   await create(page, title);
   await menu(page, title, "重命名项目");
+  await expect(
+    page.getByRole("dialog", { name: "重命名项目", exact: true }),
+  ).toBeVisible();
   await page.getByLabel("项目名称", { exact: true }).fill(title + " 已改名");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   const renamed = title + " 已改名";
@@ -91,6 +99,12 @@ test("项目统一管理：改名同步两处，归档与删除可恢复，目�
     .locator(".project-card")
     .getByLabel("项目操作：" + renamed, { exact: true })
     .click();
+  await expect(
+    page
+      .locator(".project-card")
+      .getByRole("group", { name: "项目操作", exact: true })
+      .getByRole("button"),
+  ).toHaveText(["重命名", "归档", "删除"]);
   await page
     .getByRole("button", { name: "归档项目：" + renamed, exact: true })
     .click();
@@ -110,6 +124,12 @@ test("项目统一管理：改名同步两处，归档与删除可恢复，目�
     .locator(".project-card")
     .getByLabel("项目操作：" + renamed, { exact: true })
     .click();
+  await expect(
+    page
+      .locator(".project-card")
+      .getByRole("group", { name: "项目操作", exact: true })
+      .getByRole("button"),
+  ).toHaveText(["重命名", "恢复", "删除"]);
   await page
     .getByRole("button", { name: "删除项目：" + renamed, exact: true })
     .click();
@@ -124,6 +144,12 @@ test("项目统一管理：改名同步两处，归档与删除可恢复，目�
     .locator(".project-card")
     .getByLabel("项目操作：" + renamed, { exact: true })
     .click();
+  await expect(
+    page
+      .locator(".project-card")
+      .getByRole("group", { name: "项目操作", exact: true })
+      .getByRole("button"),
+  ).toHaveText(["恢复"]);
   await page
     .getByRole("button", { name: "恢复项目：" + renamed, exact: true })
     .click();

@@ -16,6 +16,12 @@ export const projectActionLabel = {
   restore: "恢复项目",
   delete: "删除项目",
 };
+const projectMenuActionLabel: Record<ProjectAction, string> = {
+  rename: "重命名",
+  archive: "归档",
+  restore: "恢复",
+  delete: "删除",
+};
 export function ProjectMenu({
   project,
   onAction,
@@ -37,7 +43,7 @@ export function ProjectMenu({
       below
       options={actions.map((action) => ({
         label: `${projectActionLabel[action]}：${project.title}`,
-        text: projectActionLabel[action],
+        text: projectMenuActionLabel[action],
         icon:
           action === "rename" ? (
             <Pencil />
