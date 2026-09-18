@@ -1,0 +1,220 @@
+# 剧本工作室：功能契约、运行与验收
+
+状态：首版功能及 2026-09-19 创作目录调整已实现，隔离工程验证通过。2026-09-18（Asia/Shanghai）23:33 修复后的全量测试 314/314 和完整构建通过；23:34 正式 Electron 入口工作流及收尾通过；23:39 使用独立编译的兼容 Runtime，正式 builtin／编剧 Harness／内嵌 Host 联合工作流及收尾通过。已检查正式入口截图、保存后清理警告，以及落盘 DOCX 的字节、ZIP/XML。上述首版验收未部署或重启用户当前应用；后续加载状态见下文。此文档区分隔离工程证据、真实模型质量与合作方验收，不将合成样例作为客户案例。
+
+## 2026-09-19：创作目录与正文工作区
+
+按用户确认的方向，剧本内部导航改为「概览／全剧大纲／分集剧本（集 → 场）／设定与角色／参考资料」。目录直接投影原有六类条目、稳定 ID、排序和父集关系，不迁移或删除数据，不要求按目录顺序创作。未归属分场仍保留可见入口，选中内容的祖先自动展开；折叠状态按身份、应用实例和剧本隔离保存，支持方向键、Home／End 和 Tab。
+
+概览优先展示开始创作与创作简报，选中条目后以正文为主体。权限／模型处理许可仍保留状态与设置入口，结构检查和导出历史改为按需展开。新增入口使用具体创作名称，在分组或集旁操作时预选条目类型及父集；从条目回到总览统一使用「概览」。不另造全局导航、聊天或检查器，也不改变候选、人工审阅／锁稿、版本冲突、共享输入或项目／Session 的绑定规则。
+
+导航复用宿主紧凑列表、控件和主题。工作区宽度不超过 680 CSS px 时，目录默认收成一行当前位置，打开后聚焦当前条目，Escape 或选择条目后收起并返回有效焦点；宽屏仍保持侧边树形目录。当前选中态即时更新，避免旧条目的背景过渡造成两个位置同时选中的错觉。
+
+01:15:47（Asia/Shanghai）本轮产品代码的类型检查、生产构建、315/315 单元／集成、8/8 剧本界面回归以及正式 Electron 入口工作流／收尾通过。正式入口使用隔离合成数据，覆盖人工审阅锁稿、冻结 DOCX 实际保存、取消／失败／历史重试及保存后清理警告，没有发送模型输入。不是全应用 E2E，也不是用户当前窗口验收。
+
+01:19:55 补强原生截图前的焦点、目录收起、两帧绘制等待及可见正文断言后，8/8 界面回归再次通过；这次仅修改测试，没有再次修改产品行为。原生 200% 截图及几何记录一致：目录收起，正文占满工作区宽度，焦点和未提交文字可见且保留。该测试窗口仍需纵向滚动，不代表 200% 下全部工具和表单同时可见。截图与几何记录在 `/Users/shafreeck/.morphz/artifacts/script-writing-ui-paint-20260919`；正式入口证据在 `/Users/shafreeck/.morphz/artifacts/script-studio-desktop-WWBqED`。
+
+保留失败与修正的边界：首次界面回归为 7/8，失败来自组件重挂载后已消失的瞬时保存提示，断言改为检查确切持久版本、正文和已保存状态；首次正式入口检查使用已移除的 `.script-back` 定位，改为语义化「概览」入口后重跑通过，没有删除业务断言。视觉检查还发现过选中态歧义与窄窗／200% 目录拥挤，随后增加上述即时选中态及折叠导航。较早的 200% 原生截图与 DOM 收起状态不一致，补强截图同步后重新核对；不把绘制时序假设写成已确认根因。
+
+本次只调整应用 UI、相关自动化与正式说明，保留既有正文、历史、草稿、附件和权限；未提交、推送或发布。下节「未重启」是 00:35 弹窗修复的历史边界：另一个输入格式修复流程已于 00:59:32 正常重开同一用户 Desktop，并验证原中心与 profile，不能据此宣称之后的导航构建已在用户窗口加载。本线程没有再次重启或自动重发输入。当前用户窗口视觉验收、独立 Runtime 的生产生成链路、真实编剧质量、Word 视觉／打印和合作方验收仍不能由本轮隔离回归替代。
+
+## 2026-09-19：弹窗与构思入口修正
+
+剧本弹窗现在复用宿主 `create-dialog`、共用控件和 `useModal`：统一圆角、细边框、标题／关闭行、主次按钮及焦点返回；短表单通过 `--ui-dialog-width` 使用 420px 基线，复杂表单使用 580px，窄窗随可用空间收缩，长错误在表单内换行。不是另造一套工作室主题。
+
+「构思新剧」及空态「向 Morphz 描述想法」只设置共享输入的可移除 `script` 意图并聚焦，提示留在 placeholder，不再把模板写进正文。重复点击保留原文、换行和附件，不发送、不创建剧本、不更换项目／会话。已有固定版本生成、定向补充、批注或结果提交请求时保留原请求并提示，不将其改绑为新剧构思。既有草稿中的模板文字不自动清理，以免误删人工修改。
+
+00:35（Asia/Shanghai）当前修复的类型检查、生产构建、315/315 单元／集成与 7/7 剧本界面回归通过。覆盖重复点击、空正文不能提交、正文／附件／意图移除与刷新恢复、人工提交后的原文与应用范围、固定版本生成保护、弹窗紧凑几何、长错误、窄窗、键盘焦点，以及隔离内嵌 Electron 四主题明暗和真实 200% 缩放。测试使用合成数据，不连接真实模型；隔离窗口和中心在用例结束时关闭清理。
+
+本轮构建不等于用户运行窗口已加载修复；未为这两项反馈重启用户 Desktop 或独立 Runtime，也未删除现有草稿。`script` 同时进入前后端共享输入校验，已运行的内嵌宿主不会因刷新页面而重载，需要在安全的正常重开时加载同一构建，不能仅刷新前端便声称完整修复已生效。此轮不扩大为真实编剧质量、完整生产 Harness 链路或用户窗口验收，不提交、推送或发布。
+
+## 1. 产品边界
+
+在同一工作空间内完成「企划／授权原作 → 设定角色 → 全剧及分集规划 → 分场正文 → 候选审改 → 人工审阅锁稿 → Word 交付」。工作室复用现有身份、项目、持续对话、共享输入、版本和执行记录，不另建聊天、账号、数据库服务或执行调度器。
+
+- Runtime 负责真实执行身份、权限、调度、取消、恢复和执行事实。
+- 应用领域层负责正式稿、版本、候选、审阅、权利声明和导出记录。线程结束不等于稿件通过。
+- 编剧 Harness 负责读取版本化证据、有界创作及审稿；Mind 仅维护带项目和版本来源的认知引用，不是正式稿数据库。
+- Desktop 使用现有内嵌业务层和 Unix Host 回调，不增加应用 HTTP 服务。Web 仍使用同一业务契约的 HTTP 适配器。
+- 不包含图像／视频生成、数字演员交易、实时多人共编或影视 ERP。
+
+真实空工作空间没有内置示例剧本。自动化测试使用显式命名的合成资料和独立数据库。
+
+## 2. 数据及人工权威
+
+`Workspace.scriptProductions` 默认为空，兼容旧工作空间。每部剧保存制作要求 `brief`、指定审阅人、元数据历史、模板、条目、候选、审阅及导出记录。
+
+六类条目：`source`、`setting`、`character`、`outline`、`episode`、`scene`。每条有稳定 ID、正文 `revision`、独立 `workflowRevision`、完整历史版本及工作流事件。正文含父集、排序、精确原作引用、依赖版本、角色、时间地点、观众／角色获知信息、伏笔兑现及制作说明。
+
+三类信息不可混写：
+
+1. **来源事实**：同项目原作的确切版本和可核对原文引用。
+2. **人工稿／批准设定**：正式版本和真实 Human 的审阅决定。
+3. **AI 候选**：与实际输入、基版及材料版本绑定，等待人决定；不自动成为正式稿。
+
+资料权利声明和允许第三方模型处理资料，必须由 Human 确认。非空声明不是系统完成法律审核的证明。Agent 可以按明确普通输入建立空剧本／条目；不能确认权利、直接编辑正式剧情、采纳、批准、锁稿、解锁或导出。
+
+模型处理许可也不授予直接写正式稿的权限。领域层对 Agent 的 `create-item` 逐字段检查空骨架：允许标题、顺序，以及空分场指向当前父集的必要关联；正文、来源、额外依赖、改编标记、时间地点、人物获知信息和制作说明等创作字段仍须走固定版本候选与人工采纳。Human 的直接创建／编辑不受这条 Agent 限制替代。
+
+## 3. 生产工作流
+
+### 编辑与恢复
+
+正文保存使用 revision CAS。工作流动作另检查 workflow revision，迟到批准不能覆盖后来变更。历史恢复产生新正文版本，不改写旧历史。锁定正文禁止直接编辑；指定审阅人提供原因解锁后才可返工。
+
+界面的未保存正文按中心、身份、窗口、项目、条目及基版保存在本机草稿中。隐藏应用不取消任务；刷新或后台新版本不应覆盖 dirty 草稿。冲突须保留草稿并明确基版，不静默以最新版本覆盖。
+
+### 生成与候选
+
+「生成／改写／连续性／影响检查」先将文本及 `scriptGeneration` 准备到共享输入，**点击快捷动作不等于发送**。只有人工发送才创建不可变输入并固定：
+
+- `productionId`、`targetId`、`baseRevision`、`contextRevision`；
+- `purpose` 和所有需要的依赖／材料版本；
+- 候选数量、输出字符及自审工序限制；
+- 当前应用的确切版本和已配置的 Harness 引用。
+
+选中其他条目不修改已准备请求的基版，也不切换 Session 或启动普通内容应用。未保存编辑不能冒充已持久正文。
+
+Agent 先 `read-input`，再 `script/read-generation`，按确切 revision 分页读取 `script/read-item` 的 `draftJson`；需拼齐全部页面才能解析。固定生成输入只能使用本次授权范围，不能经通用对象工具读写扩大范围。
+
+`submit-candidate` 由 Host 取得真实 inputId／作者／项目，不接受模型伪造。候选不覆盖正式稿；人工采纳在同一领域事务复核目标、上下文和依赖版本。生成期间人工改稿或上游变更，使旧候选不可直接采纳；可拒绝旧候选或重新准备新请求。
+
+### 审阅、连续性与跨集返工
+
+审阅意见绑定条目版本，可包含真实 quote。`blocking` 只是意见严重度，不是模型获得审批权限。有效阻断意见必须由人明确处理，另存一版不能绕过。
+
+迟到的旧稿／旧材料意见由领域标记为历史意见，不撤销新稿及下游当前批准。指定 Human 才能批准、退回、锁定和原因解锁。
+
+上游改变沿依赖图使下游批准失效，**不改写锁定正文**。先检查影响范围，再按依赖次序解锁、修改／更新引用、重新审阅锁稿。结构问题列表只证明版本／依赖／未解决意见状态，不证明人物动机、剧情因果等语义已由模型检查，更不保证制作质量。
+
+### Word 导出
+
+Human 先执行 `record-export`，固定有效锁定稿、确切版本、制作上下文和模板。取得持久回执后，从刷新后的快照查回 export ID，再调用：
+
+```ts
+buildScriptDocx(production, exportId): Uint8Array
+```
+
+输出是真正 OOXML OPC `.docx`，不是给文本或普通 ZIP 改扩展名。历史导出按 `metadataHistory` 和指定正文版本重现，后续修改不应改变同一 export ID 的字节；缺历史报错，不退回当前稿。
+
+可配置范围：模板标题、是否含制作说明／连续性信息、分集分页、字体、字号、场景标题。尚不支持任意合作方 Word 模板导入。生成器限制最多 5000 条目、400 万源字符、1600 万正文 XML 字符和 32 MiB ZIP。
+
+Desktop 通过受限 `scriptExports.save` 桥请求主进程保存：renderer 只提供中心、身份、剧本和冻结导出记录 ID，不提供任意文件路径或字节。主进程从当前授权快照重建 DOCX，打开系统保存目的地对话框，并在选择后及发布文件前复核身份、项目权限和导出字节。取消不写入；未发布文件的错误不显示已保存，失败可从导出历史重试同一回执，不另建导出记录。发布成功后若临时文件清理失败，仍返回 `saved`，附 `temporary-file-cleanup-failed` 警告；界面明确提示文件已经保存、需检查保存目录中的临时文件而无需重复导出。发布前的清理失败也明确报错，不承诺“失败必然没有文件”或“临时文件必然清净”。成功回执包含文件名、字节数和 SHA-256，不回传完整本机路径。第三方网页与沙箱的通用下载限制仍保留。
+
+安全检查不是全平台文件系统 CAS 或跨系统事务：拥有目的地目录写权限的本机进程仍可能在末次检查后竞态修改路径，远端撤权和本机发布亦不构成原子提交；崩溃、断电与不同文件系统语义未穷尽。受限 renderer 不能直接指定路径或字节，但不据此宣称抵御所有本机攻击。
+
+原生对话期间暂停输入自动收起；完成后先解除导出按钮禁用，再恢复有效的原按钮焦点，不抢占后来导航。Web 保留浏览器下载方式：发起下载不等于已写入磁盘。无论哪条通路，文件已保存都不等于制作方已收件或已验收，ZIP／XML 校验也不等于 Microsoft Word 的视觉／打印验收。
+
+## 4. 权限、幂等和故障边界
+
+- Human UI 和 Host 共用 `script-command` 领域规则；第三方沙箱不会因内置工作室获得额外命令权限。
+- Host 根据实际 Runtime thread/root 回查原始输入，不信当前页面、模型传入项目或任意 inputId。
+- 固定生成读取和新提交复核原 Human、目标 Agent、项目成员、资料许可及实际执行状态。取消／撤权后阻止新访问和写入；此前已提交结果不回滚。
+- store 在同事务中校验执行状态及命令指纹。相同命令保留重试身份；同输入的相同候选跨 tool call 去重。成功旧回执可核对，但仍须实时权限。
+- 输入已保存、投递已接受、模型已结束、候选已落库、人工已采纳是不同状态。未知回执不新建输入重试。
+- Session IO 新剧本输入使用 v5；旧 v1–v4 及已排队的请求／client_message_id 不原地重写。Runtime Registry 校验使用其支持的显式结构 descriptor，发送前 `workInputData` 另执行完整 `scriptGenerationSchema.parse`。数值、材料、版本、许可和权限仍由应用入库／发送／Host／领域边界检查；Registry 结构校验不冒充完整业务校验。
+- 关闭页签、隐藏输入或切换工作空间不隐式取消正在执行的工作。
+
+## 5. 预算：可执行限制与未支持部分
+
+| 限制              | 当前边界                         | 含义                                               |
+| ----------------- | -------------------------------- | -------------------------------------------------- |
+| 固定材料          | 120000 字符、最多 200 个条目引用 | 应用准入校验，不是模型 token 数                    |
+| 候选数量          | 每输入 1–3，通常只需 1 份        | 应用候选提交限制                                   |
+| 单候选输出        | 请求设置 100–50000 字符          | 应用拒绝超限提交，不代表生成过程中不会先花费 token |
+| 自审工序          | 0–2 次                           | Harness 工序指导，不是确定性模型调用计数或费用熔断 |
+| token／金额硬上限 | 尚未接入每次剧本请求             | 不得展示为已支持；需实际 Runtime 契约与计费证据    |
+
+已核对的 Session IO `Activation` 有模型、推理强度、目标、Harness 与投递目标字段，没有单次剧本 token／费用预算字段。Runtime 的 Objective token budget、Context 容量上限是不同控制面，不能冒充本功能已经接入硬费用限额。未授权前不为此修改 Runtime 内核。
+
+## 6. Harness 与运行方式
+
+源码包：`application/harnesses/script-studio.hns`，声明 `morphz.script-studio@1.0.0`。正式 builtin 同样固定此确切引用。创作工具上界为 `host_morphz`、`context_tx`、`recall`；Runtime 另外附加 `no_reply` 结束／等待控制，不增加物理工具权限。不允许 shell、任意文件、网络、子 Agent 或新长期目标。实际 Host action 仍受领域授权，工具存在不增加权限。
+
+**包文件存在不等于用户 Runtime 已安装。** 正式入口固定版本后，不静默回退普通聊天；实际运行前，操作者需在应用连接的同一个 Runtime 存储／配置中安装包并核对精确版本。不要装进另一个 HOME、临时库或默认 CLI 配置后就认为当前 Desktop 可用。相同 ID／版本不得覆盖不同内容，后续规则更新必须换版本。
+
+安装使用既有 Runtime 的 `harness install` 和 `harness list`，保留其原有工作目录、配置文件和存储环境。例如在仓库根目录，核对以下两个变量确实属于目标 Runtime 后执行（不是要求创建新 Runtime）：
+
+```sh
+./target/debug/morphz harness install application/harnesses/script-studio.hns --cwd "$RUNTIME_WORKSPACE" --config-file "$RUNTIME_CONFIG" --format json
+./target/debug/morphz harness list --cwd "$RUNTIME_WORKSPACE" --config-file "$RUNTIME_CONFIG" --format json
+```
+
+上述命令是经过隔离注册验证的操作方式，不是本轮已在用户环境执行的部署记录。正在运行的 Registry 热加载未验证；如需按现有运维方式正常重开，先核对授权、在途工作和数据保护，不能杀掉用户进程来完成测试。已有输入的 Harness 快照和 outbox 不回写；重新加载 UI／启动应用也不得重放旧输入。
+
+构建、类型与测试入口（在 `application/` 中）：
+
+```sh
+npm run typecheck
+npm test
+npm run build
+./node_modules/.bin/tsx scripts/script-studio-runtime-smoke.ts
+./node_modules/.bin/playwright test tests/e2e/script-studio.spec.ts
+node scripts/script-studio-desktop-smoke.mjs
+```
+
+联合脚本使用兼容的 `../target/debug/morphz`，或显式 `MORPHZ_APP_RUNTIME_BINARY`。Runtime 必须同时具备编译特性 `experimental-session-io` 和运行时激活的 `session-io`；默认构建未必包含它，仅设置环境开关不能补上缺失的编译特性。本脚本只为自己启动的隔离 Runtime 设置 `MORPHZ_EXPERIMENTAL_FEATURES=session-io`。
+
+若默认二进制不兼容，可在 `application/` 中使用独立构建目录验证，不替换仓库默认产物或正在运行的用户 Runtime：
+
+```sh
+SCRIPT_RUNTIME_TARGET="$HOME/.morphz/workspace/.morphz/tmp/script-studio-runtime-build"
+(cd .. && cargo build --locked -p morphz --bin morphz --features experimental-session-io --target-dir "$SCRIPT_RUNTIME_TARGET")
+MORPHZ_APP_RUNTIME_BINARY="$SCRIPT_RUNTIME_TARGET/debug/morphz" ./node_modules/.bin/tsx scripts/script-studio-runtime-smoke.ts
+```
+
+脚本只创建隔离 HOME、Runtime／应用 SQLite 和合成 Provider，保留带路径的结果或失败证据，检查子进程清理；不连接用户中心或调用付费模型。它强制使用正式 `morphz.script-studio` builtin 和确切 Harness，不以 fixture 回退遮盖缺少绑定。正式入口是指真实产品 manifest／应用调用链，不等于用户当前运行窗口已部署。
+
+`script-studio-desktop-smoke.mjs` 在构建后使用正式 `apps/desktop/main.cjs`、受限 preload 和隔离中心，禁止应用 TCP 监听。它验证创建编辑、草稿恢复、compose 不发送、人工审阅锁稿、取消／失败／历史重试、真实 DOCX 落盘、发布后清理失败警告、既有下载隔离以及关闭重开和自身进程收尾。macOS 下只对本次创建的 Electron 子进程 PID 使用 AppKit 激活，并检查真实 `BrowserWindow.isFocused()`；不伪造焦点、不操作用户已有应用。截图在 DOM 断言后等待绘制。系统保存选择器的返回值由确定性夹具提供，未验收真实 OS 选择器视觉交互；本脚本不调用模型。
+
+正常 Desktop 继续使用现有启动方式和用户指定的同一应用、profile、中心。不能为手动验收另开第二中心，也不能以自动化临时窗口代替用户当前窗口。已有授权不意味着可在这次任务中擅自重启用户开发进程；切换运行入口必须核对本轮授权和在途工作。
+
+## 7. 备份与恢复
+
+应用的 `workspace.sqlite` 含正式业务及命令回执。在线备份须使用 SQLite backup API，不能只复制活跃 `.sqlite` 而遗漏 WAL。现有 `npm run backup:center` 从明确配置的中心生成权限受限的备份；操作前核对中心身份，不把测试路径套到用户数据库。
+
+恢复应先保存原库及当前运行状态，停止所有对应写入者后由明确授权的恢复流程执行，保留身份、旧输入和命令回执，不重放历史模型请求。自动测试应在独立临时目录证明：备份可 `integrity_check`、恢复后剧本／候选／审批／导出一致、同一命令不重复落库、历史 DOCX 字节相同。这些检查不等于用户生产库已经备份或恢复。
+
+## 8. 验收矩阵与当前证据
+
+以下时间均为 2026-09-18，Asia/Shanghai。测试计数按实际运行分别记录，不跨轮次累加。
+
+| 里程碑     | 必须核验                                                                      | 当前证据边界                                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 接入与规格 | builtin、共享领域／Host、固定版本与实际 Harness                               | 23:39 正式 builtin 联合脚本通过：持久安装／跨进程 list／重开、精确挂载契约与工具范围、不可变输入                                                                                                                                   |
+| 一集闭环   | 编辑 → 真实执行链生成候选 → 人工审改 → 锁稿 → DOCX                            | 23:39 真实 Runtime 经 Unix IPC 完成候选持久化、人工采纳审阅锁稿、8206 字节 DOCX、应用重开且不重放模型及进程收尾；Provider 为固定合成回复                                                                                           |
+| 多集返工   | 连续多集、上游变化、锁稿保护、影响、逐集重审                                  | `tests/script-studio-workflow.test.ts`：持久 SQLite 三集／分场、返工重审、在线备份 integrity_check／重开、回执重试、历史 DOCX 不变；19:41 专项 1/1，亦包含于当前 314 项                                                            |
+| 界面       | 草稿刷新、CAS、compose 不发送、实际发送固定版本、候选与导出、主题／缩放／键盘 | 四 spec 历史日志 19 passed，原生缩放专项另计 1/1。23:34 正式 Electron 全流程通过，包括真实窗口激活及保存警告；已审阅 editing／locked-export 历史截图和本轮 warning 截图。200% 正文空间较紧，不把静态图当全控件可达性或 OS 命中证明 |
+| 工程       | 全量测试、类型／构建、恢复和进程收尾                                          | 23:33 `npm test` 314 tests / 314 pass / 0 fail / 0 cancelled / 0 skipped；完整 build 含 typecheck、Vite、服务端 tsc。23:34 Desktop 与 23:39 Runtime 两条独立链路均 workflow and teardown PASS                                      |
+| 业务       | 授权材料、真实模型、主编审改、合作方模板及制作接收                            | 尚未验收，需真实业务输入                                                                                                                                                                                                           |
+
+### 变更定位
+
+- 领域与 DOCX：`packages/core/src/script-studio.ts`、`script-studio-commands.ts`、`script-studio-docx.ts`；工作空间模型和 builtin 注册在同包现有 `model.ts`、`applications.ts`。
+- Host／持久化／输入：`packages/application/src/script-studio-tools.ts`，以及既有 `agent-tools.ts`、`identity.ts`、`store.ts`、`session-io.ts` 的必要接入。
+- UI：`apps/web/src/ScriptStudio.tsx`、`ScriptStudioEditor.tsx`、`script-studio.css`，复用 `App`、`ApplicationHost`、client 和 Desktop 桥。
+- 原生保存：`apps/desktop/script-export.cjs`，通过既有 `main.cjs`／`preload.cjs` 暴露受限接口。
+- 编剧工序：`harnesses/script-studio.hns`；回归位于 `tests/script-studio*.test.ts`、`tests/script-export.test.ts`、`tests/e2e/script-studio.spec.ts`，联合专项位于 `scripts/script-studio-{runtime,desktop}-smoke.*`。
+
+本轮没有提交、推送、部署、重启用户应用或修改 Runtime 内核源码；现有用户／Codex 未提交工作仍保留。
+
+### 最新证据入口
+
+1. **全量测试与构建**：`~/.morphz/artifacts/script-studio-release-sWlnrT/node-test.log`、`build.log`。314 项含新增的 Agent 新建正文旁路回归；此前 33 项领域／Host 定向通过不额外累加。Vite 的大于 500 kB chunk 提示仍存在。最初串联任务 `job_a0ddda51485c9ce00081988b1af0ab4c596c9b4b00e8c015d2ccab29b77f1bd3` 在这些步骤通过后，因默认 Runtime 缺编译特性而整体 exit 1；不能把整项任务写为成功。
+2. **正式 builtin／Runtime 联合验证**：`~/.morphz/workspace/.morphz/tmp/morphz-script-runtime-7xSWv5/`，含 `result.json` 与 `synthetic-script.docx`；日志 `~/.morphz/artifacts/job_fc69ba3ddfcc239cb04b3b96b8b2e881d51b983b3433825be3ad219e1ec1dcf2.log`。显式使用独立 target-dir 中的兼容二进制，`succeeded / exit 0`，5 次合成 Provider 请求，`productionBuiltinBound=true`，DOCX 8206 字节、SHA-256 `90f00536ea02ae057a26fc1dd58815ca70ee15cbb6330bae91c61a7a6c90d1f2`；最后包含 workflow **and teardown** PASS。
+3. **正式 Desktop**：`~/.morphz/artifacts/script-studio-desktop-o4gd5Y/`，含 `result.json`、截图及两份 DOCX；任务 `job_a4d1b3b6454c9e76e95b680ddfe6d3833d9c70549f489bec0e5af0cc7d10e9ed` 为 `succeeded / exit 0`。测试 Electron 正常退出，临时中心移除，`pageErrors=[]`，没有模型输入。只激活本次子进程且保留真实焦点断言；AppKit 兼容选项的弃用警告不作为产品错误。
+4. **独立文件及收尾校验**：`~/.morphz/artifacts/job_9803899d2f4e2ca22da3d4d927d3aba6ddd33e40fb1e6bfc0d3fd16e256c9c1c.log`。两份 Desktop DOCX 均 8109 字节、SHA-256 `7c2fc6dbb2efc69c22137e1f9bce7079e2d57c6eeab1ab8c13ff871c9b0c5ccc`，七个 OPC 部件、CRC/XML、确切条目／导出 ID／正文、无外部关系、历史字节一致及夹具／暂存清理均通过。
+5. **警告可见性**：本轮 `saved-with-cleanup-warning.png`（SHA-256 `88825b2eb2767ed28b5f0912b68a81aaf72793a6c59a3fd768c352e8f042dad2`）已实际审阅。顶部明确显示 warning 文件名、8109 字节、临时文件清理失败、检查 `.morphz-script-*.tmp` 及无需重复导出；此视口文字可读、未见重叠。图中 12 集／每集 120 秒是项目配置，不是已生成 12 集；未选中条目的空白区也不是正文验收。
+
+这些结果不证明用户当前 Runtime 已安装 Harness、真实模型写作质量、真实 OS 保存选择器交互、标题栏 OS 命中、Microsoft Word 视觉／打印或合作方验收。DOCX 分支的 10 项 Node 回归、无 Node 浏览器与 Node 字节一致性、独立 Python ZIP/XML 校验属于各自范围的补充证据。
+
+### 保留的失败与修复记录
+
+- 首轮 Registry 拒绝 `exclusiveMinimum`，仅改 `minimum` 仍不兼容；已以 v5 结构 descriptor＋应用完整校验修复，未修改 Runtime。隔离 Agent 缺合成账户绑定、将 Runtime 附加的 `no_reply` 误判成工具越界，也分别定位修正，未删除权限断言或更改用户凭据。
+- 20:02 首次通过使用明确 fixture 应用；20:04 才是正式 builtin 强制绑定后的通过，旧证据保留在 `morphz-script-runtime-aDuyvW`，不与本轮合并计数。
+- Desktop 首先暴露通用下载拦截阻止导出，修复采用受限原生通路而非开放任意下载。取消后的 DOM 焦点失败在 21:59 修正 React 提交／解除禁用顺序，22:00 才通过；旧证据 `script-studio-desktop-BoYWfw` 保留。
+- 22:48 的 warning 命名截图只捕获到普通保存消息，不能据文件名证明警告可见；增加绘制等待后，本轮实际图像才显示清理警告。23:22／23:26 还曾因 Electron 未获系统前台焦点而失败；本轮用精确测试 PID 的 AppKit 激活解决，未伪造焦点状态。
+- 23:29 源码审查发现普通 Agent 可在模型许可后经新建条目写正式正文。先加入失败回归，再在领域层独立于许可强制空骨架；23:31 领域／Host 33 项及类型检查通过，23:33 全量 314 项包含这两条新回归。
+- 23:33 默认 Runtime 缺少 `experimental-session-io`，在生成链路之前报 `NotCompiled`；改用隔离 target-dir 编译既有源码及显式二进制路径，23:39 联合链路通过。没有替换或重启用户 Runtime。
+
+合作方还需提供：原创／改编主流程、真实授权素材及模型处理许可、集数时长和制作约束、现用模板、通过／退稿样本、主编与制片验收人。建议后续按留出样本及同模型聊天基线比较人工审改时间、重大连续性错误和每集总成本；这是后续业务评估方法，不是已经得到的收益结论。

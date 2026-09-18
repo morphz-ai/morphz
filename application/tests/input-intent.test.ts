@@ -19,6 +19,12 @@ test("旧表格意图继续可读，不再将报告当作表格创作提示", ()
   assert.doesNotMatch(inputIntents.interactive.placeholder, /报告|Office/);
 });
 
+test("新剧构思使用独立意图与占位提示，不将模板写入正文", () => {
+  assert.equal(inputIntentSchema.parse("script"), "script");
+  assert.equal(inputIntents.script.label, "构思新剧");
+  assert.match(inputIntents.script.placeholder, /想法|题材/);
+});
+
 test("输入意图持久化并进入 Runtime，普通输入享有相同工具行为且不直接创建对象", () => {
   const store = new WorkspaceStore(":memory:");
   const bridge = new RuntimeBridge(store, {
@@ -33,6 +39,7 @@ test("输入意图持久化并进入 Runtime，普通输入享有相同工具行
       "document",
       "website",
       "interactive",
+      "script",
     ] as const) {
       const receipt = store.execute(
         {
@@ -54,7 +61,8 @@ test("输入意图持久化并进入 Runtime，普通输入享有相同工具行
     }
     const saved = stateSchema.parse(store.snapshot());
     assert.equal(saved.artifacts.length, 0);
-    assert.equal(saved.inputs.length, 5);
+    assert.equal(saved.inputs.length, 6);
+    assert.equal(saved.inputs[5]!.intent, "script");
     assert.equal(saved.inputs[1]!.intent, "task");
     const runtime = store.runtimeState() as {
       deliveries: {
@@ -93,6 +101,10 @@ test("输入意图持久化并进入 Runtime，普通输入享有相同工具行
     assert.equal(
       runtime.deliveries[0]!.request.message.content.value.intent,
       undefined,
+    );
+    assert.equal(
+      runtime.deliveries[5]!.request.message.content.value.intent,
+      "script",
     );
     assert.throws(() =>
       operationSchema.parse({

@@ -213,6 +213,9 @@ export function workspaceFor(
       projectIds.has(c.projectId),
     ),
     artifacts,
+    scriptProductions: state.scriptProductions.filter((p) =>
+      projectIds.has(p.projectId),
+    ),
     bookmarks: state.bookmarks.filter(
       (b) => b.ownerPrincipalId === access.principalId,
     ),

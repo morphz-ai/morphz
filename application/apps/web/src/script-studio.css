@@ -1,0 +1,652 @@
+.script-studio {
+  height: 100%;
+  min-height: 280px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+  background: var(--paper);
+  container-type: inline-size;
+}
+.script-studio :is(button, input, select, textarea),
+.script-dialog :is(button, input, select, textarea) {
+  font: inherit;
+}
+.script-studio :is(button, select),
+.script-dialog :is(button, select) {
+  min-height: 30px;
+}
+.script-studio button svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.script-toolbar,
+.script-editor-header,
+.script-edit-actions,
+.script-workflow,
+.script-outline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.script-toolbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.script-export-status {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.script-toolbar > select {
+  max-width: min(260px, 45%);
+}
+.script-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.script-toolbar-spacer {
+  flex: 1;
+}
+.script-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 224px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.script-directory {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.script-directory-toggle {
+  display: none;
+}
+.script-outline {
+  flex: 1;
+  padding: 8px;
+  overflow: auto;
+  min-height: 0;
+  border-right: 1px solid var(--hairline);
+}
+.script-outline-actions {
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+.script-outline :is(.script-tree-row, .script-nav-disclosure) {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  border: 0;
+  border-radius: 5px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  min-height: 32px;
+}
+/* Current location changes immediately; do not cross-fade the old selection
+   into a second apparent current row while the editor has already changed. */
+.script-outline .script-tree-row,
+.script-nav-entry {
+  transition: none;
+}
+.script-outline :is(.script-tree-row, .script-nav-disclosure):hover,
+.script-nav-heading:hover,
+.script-nav-entry:hover {
+  background: var(--hover);
+}
+.script-outline .script-tree-row[aria-current="true"],
+.script-nav-entry:has(> .script-tree-row[aria-current="true"]) {
+  background: var(--selection);
+  color: var(--ink);
+  box-shadow: inset 2px 0 var(--accent, var(--ink));
+  font-weight: 600;
+}
+.script-outline :is(.script-tree-row, .script-nav-disclosure) > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.script-outline :is(.script-tree-row, .script-nav-disclosure) > small {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.script-nav-group {
+  margin-top: 4px;
+}
+.script-nav-heading,
+.script-nav-entry {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 5px;
+}
+.script-nav-heading > .script-nav-disclosure,
+.script-nav-entry > .script-tree-row {
+  flex: 1;
+  width: 0;
+}
+.script-nav-heading > .script-nav-disclosure:hover,
+.script-nav-entry > .script-tree-row:hover,
+.script-nav-entry > .script-tree-row[aria-current="true"] {
+  background: transparent;
+  box-shadow: none;
+}
+.script-nav-heading[data-contains-current] > .script-nav-disclosure,
+.script-nav-entry[data-contains-current] > .script-episode-toggle {
+  color: var(--ink);
+}
+.script-outline .script-overview-link {
+  color: var(--ink);
+  padding-left: 9px;
+}
+.script-outline .script-nav-disclosure {
+  font-weight: 500;
+  gap: 5px;
+}
+.script-outline .script-nav-disclosure > .script-chevron {
+  width: 12px;
+  height: 12px;
+}
+.script-outline .script-chevron {
+  transition: transform 120ms ease;
+}
+.script-outline [aria-expanded="true"] > .script-chevron {
+  transform: rotate(90deg);
+}
+.script-outline .script-nav-add,
+.script-outline .script-episode-toggle {
+  flex: 0 0 26px;
+  width: 26px;
+  min-height: 32px;
+  height: 32px;
+  padding: 4px;
+  background: transparent;
+}
+.script-outline .script-nav-add {
+  opacity: 0;
+}
+.script-outline .script-outline-actions .icon-button,
+.script-nav-heading:is(:hover, :focus-within) .script-nav-add,
+.script-nav-entry:is(:hover, :focus-within) .script-nav-add,
+.script-outline .script-nav-add[aria-expanded="true"] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .script-outline .script-nav-add {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .script-outline .script-chevron {
+    transition: none;
+  }
+}
+.script-nav-children {
+  margin-left: 15px;
+}
+.script-scene-list {
+  margin-left: 20px;
+  padding-left: 5px;
+  border-left: 1px solid var(--hairline);
+}
+.script-outline .script-nav-empty {
+  margin: 3px 6px 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.script-unassigned > span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 6px;
+}
+.script-main {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 16px 32px;
+}
+.script-editor {
+  min-width: 0;
+}
+.script-overview {
+  max-width: 860px;
+  margin: 0;
+}
+.script-overview section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+}
+.script-overview h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.script-overview p {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.script-writing-start {
+  margin-bottom: 16px;
+}
+.script-writing-list {
+  display: grid;
+  margin-top: 4px;
+}
+.script-writing-list > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+.script-writing-list > button:hover {
+  background: var(--hover);
+}
+.script-writing-list > button > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.script-writing-list small {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.script-brief {
+  margin-bottom: 12px;
+}
+.script-brief-format {
+  color: var(--text-secondary);
+}
+.script-brief dl {
+  margin: 6px 0;
+}
+.script-brief dl > div {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr);
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.script-brief dt {
+  color: var(--muted);
+}
+.script-brief dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.script-overview .script-permission {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: left;
+  white-space: normal;
+  padding-left: 0;
+  height: auto;
+}
+.script-overview-details {
+  border-top: 1px solid var(--hairline);
+}
+.script-overview-details > summary {
+  padding: 8px 0;
+}
+.script-overview-details p {
+  margin: 6px 0;
+}
+.script-editor-header {
+  margin-bottom: 8px;
+}
+.script-editor-header strong {
+  flex: 1;
+  min-width: 100px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.script-editor-header small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.script-edit-status {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.script-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.script-tabs button {
+  border: 0;
+  border-radius: 4px 4px 0 0;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--muted);
+}
+.script-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  background: var(--soft);
+  box-shadow: inset 0 -2px var(--accent, var(--ink));
+}
+.script-edit-fields,
+.script-review-form,
+.script-history {
+  display: grid;
+  gap: 10px;
+}
+.script-studio label,
+.script-dialog label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+/* Canvas fields are denser; dialogs inherit the host's shared controls. */
+.script-studio
+  :is(input:not([type="checkbox"]), textarea, select):not(dialog *) {
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  color: var(--ink);
+  background: var(--surface-control);
+}
+.script-studio textarea,
+.script-dialog textarea {
+  resize: vertical;
+  line-height: 1.65;
+}
+.script-studio .script-text {
+  width: 100%;
+  min-height: clamp(220px, 38vh, 600px);
+  line-height: 1.8;
+  padding: 14px;
+  font-size: 14px;
+}
+.script-studio .script-text:read-only {
+  background: var(--soft);
+}
+.script-studio details,
+.script-dialog details {
+  margin: 7px 0;
+}
+.script-studio summary,
+.script-dialog summary {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 0;
+  color: var(--text-secondary);
+}
+.script-studio fieldset,
+.script-dialog fieldset {
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  margin: 10px 0;
+  padding: 10px;
+  min-width: 0;
+}
+.script-studio legend,
+.script-dialog legend {
+  font-size: 12px;
+  padding: 0 4px;
+  color: var(--muted);
+}
+.script-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 10px;
+}
+.script-studio .script-checkbox,
+.script-dialog .script-checkbox {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0;
+}
+.script-checkbox input {
+  margin: 0;
+  flex-shrink: 0;
+}
+.script-dependency {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+.script-dependency label {
+  flex: 1;
+}
+.script-dependency select {
+  max-width: 145px;
+}
+.script-metadata > label {
+  margin: 10px 0;
+}
+.script-hint,
+.script-studio small,
+.script-dialog small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.script-error,
+.script-warning {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent, var(--ink));
+  background: var(--soft);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.script-editor > :is(.script-error, .script-warning) {
+  margin-left: 0;
+  margin-right: 0;
+}
+.script-workflow {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+.script-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+}
+.script-empty p {
+  font-weight: 600;
+  margin: 0;
+}
+.script-candidates > article,
+.script-review {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.script-candidates > article > header {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.script-studio :is(pre, blockquote, p),
+.script-dialog :is(pre, blockquote, p) {
+  overflow-wrap: anywhere;
+}
+.script-studio pre,
+.script-dialog pre {
+  font: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  line-height: 1.75;
+}
+.script-studio blockquote,
+.script-dialog blockquote {
+  margin: 8px 0;
+  padding: 5px 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+.script-source {
+  padding-bottom: 8px;
+}
+.script-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.script-diff > section {
+  min-width: 0;
+  padding: 8px;
+  background: var(--soft);
+  border-radius: 5px;
+}
+.script-diff strong {
+  font-size: 11px;
+  color: var(--muted);
+}
+.script-diff-before {
+  text-decoration: line-through;
+  background: var(--selection);
+}
+.script-diff-after {
+  font-weight: 600;
+  background: var(--selection);
+}
+/* Reuse create-dialog for material, border, radius, heading and actions.
+   Only content width and field layout belong to the studio. */
+.script-dialog {
+  --ui-dialog-width: 580px;
+}
+.script-dialog-compact {
+  --ui-dialog-width: 420px;
+}
+.script-dialog > form {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.script-dialog :is(input:not([type="checkbox"]), textarea, select) {
+  width: 100%;
+  max-width: 100%;
+}
+.script-dialog > form > footer {
+  margin-top: 0;
+}
+.script-dialog [role="alert"] {
+  overflow-wrap: anywhere;
+}
+.script-dialog :is(p, blockquote) {
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 0;
+}
+.script-source-preview {
+  max-height: 200px;
+  overflow: auto;
+  background: var(--soft);
+  padding: 10px;
+}
+.script-dialog .script-settings > details > label {
+  margin: 10px 0;
+}
+@container (max-width: 680px) {
+  .script-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .script-directory {
+    flex: 0 0 auto;
+    max-height: 50%;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .script-studio .script-directory-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 36px;
+    width: 100%;
+    min-width: 0;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 0;
+    text-align: left;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .script-directory-toggle:hover {
+    background: var(--hover);
+  }
+  .script-directory-toggle > strong {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .script-directory-toggle[aria-expanded="true"] > .script-chevron {
+    transform: rotate(90deg);
+  }
+  .script-directory:not([data-expanded="true"]) > .script-outline {
+    display: none;
+  }
+  .script-outline {
+    max-height: 240px;
+    border: 0;
+  }
+  .script-main {
+    flex: 1;
+    min-height: 0;
+    padding: 10px;
+  }
+  .script-diff {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container (max-width: 460px) {
+  .script-toolbar > select {
+    max-width: 100%;
+  }
+}

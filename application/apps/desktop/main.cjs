@@ -35,6 +35,7 @@ const {
 } = require("./appearance.cjs");
 const { rendererURL } = require("./development.cjs");
 const { registerApplicationBridge } = require("./application-bridge.cjs");
+const { createScriptExportSaver } = require("./script-export.cjs");
 const {
   restorePath,
   emptyPage,
@@ -72,6 +73,7 @@ else {
   let application;
   let connection;
   let preferences;
+  let scriptExports;
   function requireMain(event) {
     if (
       !window ||
@@ -138,6 +140,7 @@ else {
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
+      scriptExports?.invalidate();
       application.invalidate();
       // Revoke browser access on the fresh connection; invalidating afterward
       // would abort the asynchronous exchange that clears the broker grant.
@@ -151,6 +154,7 @@ else {
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
+      scriptExports?.invalidate();
       application.invalidate();
       browser?.stop();
     });
@@ -280,6 +284,18 @@ else {
       }
       registerApplicationBridge(ipcMain, application, requireMain, () =>
         host?.persistAuthentication(),
+      );
+      const { buildScriptDocx } =
+        await import("../../dist/service/packages/core/src/script-studio-docx.js");
+      scriptExports = createScriptExportSaver({
+        connection: application,
+        requireMain,
+        getWindow: () => window,
+        dialog,
+        buildDocx: buildScriptDocx,
+      });
+      ipcMain.handle("script-exports:save", (event, request) =>
+        scriptExports.save(event, request),
       );
       if (process.platform === "darwin") {
         app.setActivationPolicy("regular");

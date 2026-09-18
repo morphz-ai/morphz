@@ -52,6 +52,24 @@ declare global {
           }) => void,
         ): () => void;
       };
+      scriptExports?: {
+        save(request: {
+          centerId: string;
+          principalId: string;
+          productionId: string;
+          exportId: string;
+        }): Promise<
+          | { status: "cancelled"; exportId: string }
+          | {
+              status: "saved";
+              exportId: string;
+              filename: string;
+              bytes: number;
+              sha256: string;
+              warning?: "temporary-file-cleanup-failed";
+            }
+        >;
+      };
       appearance?: {
         setMode(
           mode: "system" | "light" | "dark",

@@ -567,6 +567,9 @@ export function useWorkspace() {
     synthesize,
     taskRuntime,
     boot,
+    // Read the refreshed identity-bound snapshot after an awaited command.
+    // React's captured boot value may still refer to the previous render.
+    getSnapshot: () => current.current,
     online,
     error,
     refresh,

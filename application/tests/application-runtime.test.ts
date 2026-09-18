@@ -4,7 +4,81 @@ import { randomUUID } from "node:crypto";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
 import { localAccess, type Operation } from "../packages/core/src/model.js";
-import { applicationManifestSchema } from "../packages/core/src/applications.js";
+import {
+  applicationManifestSchema,
+  scriptStudioApplication,
+} from "../packages/core/src/applications.js";
+
+test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写已排队输入", () => {
+  const store = new WorkspaceStore(":memory:");
+  const config = {
+    namespace: randomUUID(),
+    url: "http://127.0.0.1:12345",
+    token: "test-only",
+  };
+  const bridge = new RuntimeBridge(store, config);
+  const execute = (operation: Operation) =>
+    store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
+  try {
+    const harness = { id: "morphz.script-studio", version: "1.0.0" };
+    assert.deepEqual(scriptStudioApplication.harness, harness);
+    const applicationInstanceId = execute({
+      type: "launch-application",
+      workspaceId: "local-worktable",
+      applicationId: scriptStudioApplication.id,
+      applicationVersion: scriptStudioApplication.version,
+    });
+    const inputId = execute({
+      type: "record-input",
+      projectId: "local-worktable",
+      applicationInstanceId,
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      body: "TEST 只讨论创作要求，不生成正文。",
+      targetActantId: "morphz-agent",
+    });
+    const saved = store
+      .snapshot()
+      .inputs.find((input) => input.id === inputId)!;
+    assert.deepEqual(saved.application?.harness, harness);
+    assert.equal(saved.application?.id, scriptStudioApplication.id);
+    bridge.enqueue(inputId);
+    type Ledger = {
+      deliveries: {
+        inputId: string;
+        request: {
+          client_message_id: string;
+          activation: {
+            harness: { id: string; version: string };
+            dispatch_mode: string;
+          };
+        };
+      }[];
+    };
+    const before = store.runtimeState() as Ledger;
+    assert.equal(before.deliveries.length, 1);
+    assert.equal(before.deliveries[0]!.inputId, inputId);
+    assert.equal(before.deliveries[0]!.request.client_message_id, inputId);
+    assert.deepEqual(before.deliveries[0]!.request.activation.harness, harness);
+    assert.equal(
+      before.deliveries[0]!.request.activation.dispatch_mode,
+      "parallel",
+    );
+    const restarted = new RuntimeBridge(store, config);
+    restarted.enqueue(inputId);
+    assert.deepEqual(
+      (store.runtimeState() as Ledger).deliveries,
+      before.deliveries,
+    );
+    assert.deepEqual(
+      store.snapshot().inputs.find((input) => input.id === inputId),
+      saved,
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test("同空间跨应用与对象共用 Session，各输入固定 Harness，并行调度；保存项目后路由不变", () => {
   const store = new WorkspaceStore(":memory:");

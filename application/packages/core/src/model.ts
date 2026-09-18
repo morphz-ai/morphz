@@ -1,4 +1,13 @@
 import { z } from "zod";
+import {
+  scriptGenerationSchema,
+  scriptOperationSchema,
+  scriptProductionSchema,
+} from "./script-studio.js";
+import {
+  applyScriptCommand,
+  validateScriptGeneration,
+} from "./script-studio-commands.js";
 import { assertProjectWritable, projectManager } from "./projects.js";
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
@@ -22,6 +31,7 @@ import {
   applicationStateSchema,
   objectsApplication,
   browserApplication,
+  scriptStudioApplication,
 } from "./applications.js";
 
 export const id = z
@@ -308,6 +318,7 @@ export const stateSchema = z
         .strict(),
     ),
     conversations: z.array(discussionSchema).default([]),
+    scriptProductions: z.array(scriptProductionSchema).default([]),
     artifacts: z.array(artifactSchema),
     bookmarks: z.array(bookmarkSchema).default([]),
     taskOrder: z.array(id).default([]),
@@ -347,6 +358,7 @@ export const stateSchema = z
         .object({
           id,
           continuation: continuationSchema.optional(),
+          scriptGeneration: scriptGenerationSchema.optional(),
           projectId: id,
           conversationId: id.optional(),
           artifactId: id.nullable(),
@@ -397,6 +409,7 @@ export const stateSchema = z
 export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
+  scriptOperationSchema,
   ...bookmarkOperations,
   z
     .object({
@@ -618,6 +631,7 @@ export const operationSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("record-input"),
       continuation: continuationSchema.optional(),
+      scriptGeneration: scriptGenerationSchema.optional(),
       model: z.string().trim().min(1).max(256).optional(),
       reasoningEffort: reasoningEffortSchema.optional(),
       conversationId: id.optional(),
@@ -726,6 +740,7 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     ],
     applications: [],
     conversations: [],
+    scriptProductions: [],
     applicationInstances: [],
     artifacts: [],
     bookmarks: [],
@@ -980,7 +995,16 @@ export function applyCommand(
       );
   }
   let entityId = command.commandId;
-  if (
+  if (op.type === "script-command") {
+    entityId = applyScriptCommand(
+      state,
+      op.command,
+      access,
+      command.commandId,
+      now,
+      originInputId,
+    );
+  } else if (
     op.type === "bookmark-add" ||
     op.type === "bookmark-update" ||
     op.type === "bookmark-remove" ||
@@ -1939,8 +1963,21 @@ export function applyCommand(
         throw new DomainError("invalid", "选中内容与对象版本不匹配。");
     } else if (op.artifactRevision !== null || (op.selection && !op.localFile))
       throw new DomainError("invalid", "未选择对象时不能附带版本或原文。");
+    if (op.scriptGeneration) {
+      if (op.continuation)
+        throw new DomainError("invalid", "剧本生成请求不能改绑已有工作。");
+      validateScriptGeneration(
+        state,
+        op.scriptGeneration,
+        op.projectId,
+        access,
+      );
+    }
     state.inputs.push({
       id: entityId,
+      ...(op.scriptGeneration
+        ? { scriptGeneration: structuredClone(op.scriptGeneration) }
+        : {}),
       ...(op.continuation ? { continuation: op.continuation } : {}),
       projectId: op.projectId,
       conversationId,
@@ -2012,6 +2049,11 @@ export function applicationFor(
     version === objectsApplication.version
   )
     return objectsApplication;
+  if (
+    applicationId === scriptStudioApplication.id &&
+    version === scriptStudioApplication.version
+  )
+    return scriptStudioApplication;
   const app = state.applications.find(
     (a) =>
       a.id === applicationId &&

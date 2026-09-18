@@ -10,6 +10,7 @@ import {
 } from "../../../packages/core/src/task-runtime.js";
 import { z } from "zod";
 import { projectManager } from "../../core/src/projects.js";
+import { assertScriptAccess } from "../../core/src/script-studio-commands.js";
 import type { SearchRequest } from "../../../packages/core/src/retrieval.js";
 import type { ArtifactOutput } from "../../../packages/core/src/conversation.js";
 import {
@@ -347,7 +348,9 @@ export class WorkspaceStore {
         JSON.stringify({
           command,
           access,
-          ...(isBookmark || (management && originInputId)
+          ...(isBookmark ||
+          command.operation.type === "script-command" ||
+          (management && originInputId)
             ? { originInputId: originInputId ?? null }
             : {}),
         }),
@@ -371,6 +374,13 @@ export class WorkspaceStore {
               : undefined,
         );
       }
+      if (command.operation.type === "script-command")
+        assertScriptAccess(
+          this.snapshot(),
+          command.operation.command,
+          access,
+          originInputId,
+        );
       const previous = this.db
         .prepare("SELECT fingerprint,receipt FROM commands WHERE id=?")
         .get(command.commandId) as
@@ -387,6 +397,32 @@ export class WorkspaceStore {
         return JSON.parse(previous.receipt) as Receipt;
       }
       const op = command.operation;
+      if (
+        op.type === "script-command" &&
+        this.snapshot().actants.some(
+          (a) => a.id === access.actantId && a.kind === "agent",
+        )
+      ) {
+        const runtime = this.runtimeState() as {
+          deliveries?: {
+            inputId: string;
+            state: string;
+            cancelRequested?: boolean;
+          }[];
+        } | null;
+        const delivery = runtime?.deliveries?.find(
+          (d) => d.inputId === originInputId,
+        );
+        if (
+          !delivery ||
+          !["sending", "running"].includes(delivery.state) ||
+          delivery.cancelRequested
+        )
+          throw new DomainError(
+            "forbidden",
+            "剧本执行已停止、结束或尚未获准执行；迟到结果不能写入。",
+          );
+      }
       validateNew?.();
       // Enforce the execution boundary inside the same transaction as the edit.
       // A stale UI (or a generic revise command) cannot silently retarget work.

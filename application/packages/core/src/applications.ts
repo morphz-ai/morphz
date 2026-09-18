@@ -30,7 +30,7 @@ export const applicationManifestSchema = z
       z
         .object({
           type: z.literal("builtin"),
-          view: z.enum(["objects", "browser"]),
+          view: z.enum(["objects", "browser", "script-studio"]),
           presentation: z.enum(["workspace", "immersive"]).optional(),
         })
         .strict(),
@@ -97,6 +97,18 @@ export const browserApplication: ApplicationManifest = {
   permissions: ["input.compose"],
   harness: null,
   ui: { type: "builtin", view: "browser", presentation: "workspace" },
+};
+
+export const scriptStudioApplication: ApplicationManifest = {
+  format: applicationManifestFormat,
+  id: "morphz.script-studio",
+  version: "1.0.0",
+  title: "剧本工作室",
+  description: "从创作要求到分集分场、候选审改与锁稿交付。",
+  icon: "film",
+  permissions: ["input.compose"],
+  harness: { id: "morphz.script-studio", version: "1.0.0" },
+  ui: { type: "builtin", view: "script-studio", presentation: "workspace" },
 };
 
 export const applicationMessageSchema = z.discriminatedUnion("method", [

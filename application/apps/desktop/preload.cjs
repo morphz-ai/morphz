@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld(
           },
         })
       : undefined,
+    scriptExports: process.argv.includes("--morphz-application-bridge")
+      ? Object.freeze({
+          save: (request) => ipcRenderer.invoke("script-exports:save", request),
+        })
+      : undefined,
     appearance: Object.freeze({
       setMode: (mode) => ipcRenderer.invoke("appearance:mode", mode),
       onChange: (callback) => {

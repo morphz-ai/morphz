@@ -26,6 +26,7 @@ import {
   applicationMessageSchema,
   objectsApplication,
   browserApplication,
+  scriptStudioApplication,
   type ApplicationManifest,
   type ApplicationInstance,
 } from "../../../packages/core/src/applications.js";
@@ -41,6 +42,9 @@ import {
   type ContentVisit,
 } from "./recent-content.js";
 import type { WorkspaceClient } from "./client.js";
+import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
+import type { InputIntent } from "../../../packages/core/src/input-intent.js";
+import { ScriptStudio } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
 import type { BrowserView } from "./desktop.js";
@@ -70,6 +74,7 @@ export function ApplicationHost({
   onActivate,
   onOpen,
   onCompose,
+  onComposeIntent,
   onSaveProject,
   onNotice,
   enabled = true,
@@ -78,9 +83,11 @@ export function ApplicationHost({
   projectControls,
   onBrowserPage,
   onInput,
+  onNativeDialog,
 }: {
   onBrowserPage?: (page: BrowserView | null) => void;
   onInput?: () => void;
+  onNativeDialog?: (open: boolean) => void;
   client: WorkspaceClient;
   workspaceId: string;
   activeId: string | null;
@@ -88,7 +95,12 @@ export function ApplicationHost({
   children: ReactNode;
   onActivate: (id: string | null) => void;
   onOpen: (id: string) => void;
-  onCompose: (text: string, artifactId?: string) => void;
+  onCompose: (
+    text: string,
+    artifactId?: string,
+    scriptGeneration?: ScriptGeneration,
+  ) => void;
+  onComposeIntent: (intent: InputIntent) => void;
   onSaveProject: () => void;
   onNotice: (message: string) => void;
   enabled?: boolean;
@@ -109,6 +121,7 @@ export function ApplicationHost({
   );
   const applications = [
     browserApplication,
+    scriptStudioApplication,
     ...state.applications.filter(
       (a) =>
         a.installedBy === client.boot!.principalId ||
@@ -420,6 +433,18 @@ export function ApplicationHost({
                       .catch((e) => onNotice(e.message));
                 }}
               />
+            ) : app.ui.type === "builtin" && app.ui.view === "script-studio" ? (
+              <ScriptStudio
+                onNativeDialog={onNativeDialog}
+                client={client}
+                instance={instance}
+                activeView={foreground && active?.id === instance.id}
+                onCompose={(text, generation) =>
+                  onCompose(text, undefined, generation)
+                }
+                onConceive={() => onComposeIntent("script")}
+                onNotice={onNotice}
+              />
             ) : app.ui.type === "builtin" ? (
               children
             ) : (
@@ -581,7 +606,11 @@ function SandboxApplication({
   manifest: ApplicationManifest;
   active: boolean;
   onOpen: (id: string) => void;
-  onCompose: (text: string, artifactId?: string) => void;
+  onCompose: (
+    text: string,
+    artifactId?: string,
+    scriptGeneration?: ScriptGeneration,
+  ) => void;
   onNotice: (text: string) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null),

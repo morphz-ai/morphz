@@ -138,7 +138,10 @@ type Preferences = InterfacePreferences & {
   selectedConversations?: Record<string, string>;
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };
+import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
+
 type InputDraft = {
+  scriptGeneration?: ScriptGeneration;
   continuation?: InputContinuation;
   continuationLabel?: string;
   continuationFailure?: "closed" | "changed" | "unknown";
@@ -478,6 +481,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   );
   const artifact = state?.artifacts.find(
     (a) =>
+      activeInstance?.applicationId !== "morphz.script-studio" &&
       a.projectId === project?.id &&
       a.id ===
         (restoredPlace
@@ -525,6 +529,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [directoryPickerScope, setDirectoryPickerScope] = useState<
     string | null
   >(null);
+  const [nativeExportDialog, setNativeExportDialog] = useState(false);
   function conversationKey(workspaceId: string) {
     return workspaceId === project?.id
       ? conversationId
@@ -581,6 +586,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       settingsSection !== null ||
       !!creating ||
       !!executions ||
+      nativeExportDialog ||
       directoryPickerScope === directoryScope ||
       !!uploadingDrafts[contextKey],
     onLeave: () => setInteraction("hidden"),
@@ -1153,6 +1159,21 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     requestAnimationFrame(() => input.current?.focus());
   }
   function composeIntent(intent: InputIntent) {
+    if (
+      intent === "script" &&
+      (sending ||
+        draft.pendingSupplement ||
+        draft.continuation ||
+        draft.annotation ||
+        draft.taskResult ||
+        draft.scriptGeneration)
+    ) {
+      setNotice(
+        "输入中已有另一份请求，请先完成或明确移除原请求，再构思新剧。原草稿保留。",
+      );
+      showInput();
+      return;
+    }
     if (intent === "website") {
       void openBrowser();
       return;
@@ -1415,6 +1436,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               : null,
             selection: captured.selection,
             body: captured.body,
+            ...(captured.scriptGeneration
+              ? { scriptGeneration: captured.scriptGeneration }
+              : {}),
             ...(canAuthorizeDirectories && directoryState.grants.length
               ? { directories: directoryState.grants }
               : {}),
@@ -2142,6 +2166,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               )}
               <div className="object-surface" hidden={creating === "document"}>
                 <ApplicationHost
+                  onNativeDialog={setNativeExportDialog}
                   onInput={showInput}
                   onBrowserPage={setBrowserPage}
                   toolbarTarget={toolbarTarget}
@@ -2166,8 +2191,51 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     savingWorkspace.current = project.id;
                     setCreating("save-project");
                   }}
-                  onCompose={(text, artifactId) => {
-                    if (artifactId) {
+                  onComposeIntent={composeIntent}
+                  onCompose={(text, artifactId, scriptGeneration) => {
+                    if (scriptGeneration) {
+                      const production = state.scriptProductions.find(
+                        (p) =>
+                          p.id === scriptGeneration.productionId &&
+                          p.projectId === project.id,
+                      );
+                      const target = production?.items.find(
+                        (i) => i.id === scriptGeneration.targetId,
+                      );
+                      if (
+                        !production ||
+                        !target ||
+                        target.revision !== scriptGeneration.baseRevision ||
+                        production.revision !== scriptGeneration.contextRevision
+                      ) {
+                        setNotice(
+                          "剧本引用已有变化，请重新准备请求；原草稿保留。",
+                        );
+                        return;
+                      }
+                      if (
+                        draft.pendingSupplement ||
+                        draft.continuation ||
+                        draft.annotation ||
+                        draft.taskResult ||
+                        draft.intent === "script" ||
+                        (draft.scriptGeneration &&
+                          JSON.stringify(draft.scriptGeneration) !==
+                            JSON.stringify(scriptGeneration))
+                      ) {
+                        setNotice(
+                          "输入中已有另一份请求。请先发送或明确移除原剧本请求，再准备新请求。",
+                        );
+                        return;
+                      }
+                      setDraft(contextKey, {
+                        ...draft,
+                        revision: null,
+                        selection: "",
+                        scriptGeneration: structuredClone(scriptGeneration),
+                        body: [draft.body, text].filter(Boolean).join("\n"),
+                      });
+                    } else if (artifactId) {
                       const target = state.artifacts.find(
                         (a) =>
                           a.id === artifactId && a.projectId === project.id,
@@ -2590,6 +2658,44 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             </small>
                           )}
                           <div className="composer-meta">
+                            {draft.scriptGeneration && (
+                              <span
+                                className="composer-intent"
+                                data-testid="script-input-reference"
+                              >
+                                剧本请求 ·{" "}
+                                {state.scriptProductions
+                                  .find(
+                                    (p) =>
+                                      p.id ===
+                                      draft.scriptGeneration!.productionId,
+                                  )
+                                  ?.items.find(
+                                    (i) =>
+                                      i.id === draft.scriptGeneration!.targetId,
+                                  )
+                                  ?.versions.find(
+                                    (v) =>
+                                      v.revision ===
+                                      draft.scriptGeneration!.baseRevision,
+                                  )?.draft.title ??
+                                  draft.scriptGeneration.targetId}{" "}
+                                · v{draft.scriptGeneration.baseRevision}
+                                <button
+                                  type="button"
+                                  className="icon-button"
+                                  aria-label="移除剧本请求引用"
+                                  disabled={sending}
+                                  onClick={() => {
+                                    const { scriptGeneration: _, ...rest } =
+                                      draft;
+                                    setDraft(contextKey, rest);
+                                  }}
+                                >
+                                  <X />
+                                </button>
+                              </span>
+                            )}
                             {!draft.continuation && (
                               <span
                                 className="context-chip"

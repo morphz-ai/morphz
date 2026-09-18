@@ -7,6 +7,7 @@ export const inputIntentSchema = z.enum([
   "document",
   "website",
   "interactive",
+  "script",
 ]);
 export type InputIntent = z.infer<typeof inputIntentSchema>;
 export const inputIntents: Record<
@@ -24,6 +25,10 @@ export const inputIntents: Record<
   website: {
     label: "添加网站",
     placeholder: "粘贴网址，也可以说明接下来想在网站上做什么…",
+  },
+  script: {
+    label: "构思新剧",
+    placeholder: "描述新剧的想法、题材或创作要求…",
   },
   interactive: {
     // Retained for existing drafts and historical inputs, not a creation menu.
