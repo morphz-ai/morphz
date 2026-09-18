@@ -1,0 +1,5 @@
+# Preserve binary document fixtures without line-ending conversion.
+*.pdf binary
+
+# Markdown uses trailing spaces for explicit line breaks.
+*.md whitespace=-blank-at-eol

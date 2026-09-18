@@ -1,0 +1,80 @@
+.browser-bookmarks-dialog {
+  --ui-dialog-width: 480px;
+}
+.browser-bookmarks-dialog .dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.browser-bookmarks-dialog .dialog-heading h2 {
+  flex: 1;
+}
+.browser-bookmarks-dialog > input {
+  width: 100%;
+}
+.browser-bookmarks-dialog .bookmark-list {
+  max-height: min(50dvh, 400px);
+  overflow: auto;
+  margin-top: 8px;
+}
+.browser-bookmarks-dialog .bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.browser-bookmarks-dialog .bookmark-row > button {
+  flex-shrink: 0;
+  min-width: 32px;
+  min-height: 32px;
+}
+.browser-bookmarks-dialog .bookmark-row .bookmark-open {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 8px;
+}
+.bookmark-open strong,
+.bookmark-open small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookmark-open small {
+  color: var(--text-secondary);
+}
+.browser-bookmarks-dialog form {
+  display: grid;
+  gap: 12px;
+}
+.browser-bookmarks-dialog label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.browser-bookmarks-dialog input {
+  min-width: 0;
+}
+.bookmark-edit-actions,
+.bookmark-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.bookmark-inline-error {
+  font-size: 12px;
+  max-width: 180px;
+}
+.browser-bookmarks-dialog svg {
+  width: 16px;
+  height: 16px;
+}
+@media (pointer: coarse) {
+  .browser-bookmarks-dialog .bookmark-row > button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

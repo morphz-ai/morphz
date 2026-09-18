@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>截图选区 — Morphz</title>
+    <link rel="stylesheet" href="region-picker.css" />
+    <script src="region-picker.js" defer></script>
+  </head>
+  <body>
+    <svg class="shade" aria-hidden="true">
+      <path id="shade" fill-rule="evenodd" />
+    </svg>
+    <div class="hint" role="status">
+      <strong>截图</strong>
+      <button id="cancel" aria-label="取消截图">取消 <kbd>Esc</kbd></button>
+    </div>
+    <div id="selection" hidden aria-hidden="true"></div>
+    <output id="size" hidden aria-label="选区尺寸"></output>
+  </body>
+</html>

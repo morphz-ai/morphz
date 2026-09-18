@@ -1,0 +1,1207 @@
+/* Shared visual language. HIG principles, not Apple-prescribed CSS values.
+   Geometry/behavior stay in ui.css and workflow.css; this layer owns material
+   and motion. No transitions on user text, live deltas or native view bounds. */
+.app,
+.startup,
+.connection-screen,
+.selection-actions {
+  --bg: light-dark(#f7f7f8, #19191b);
+  --paper: light-dark(#fdfdfd, #202022);
+  --side: light-dark(#f1f1f3, #18181a);
+  --soft: light-dark(#f4f4f6, #29292c);
+  --hover: light-dark(#e8e8ec, #303034);
+  --ink: light-dark(#1f2024, #f4f4f6);
+  --text-secondary: light-dark(#494b54, #c6c7cd);
+  --muted: light-dark(#64666f, #a4a5ae);
+  --selection: light-dark(#e4e5e9, #383940);
+  --line: light-dark(#dedee3, #38383d);
+  --hairline: light-dark(#eaeaec, #303034);
+  --line-strong: light-dark(#c6c6ce, #515158);
+  --surface-raised: light-dark(#ffffff, #2b2b2f);
+  --surface-glass: light-dark(#fcfcfdba, #222224dd);
+  --surface-menu: light-dark(#ffffff, #272727);
+  --popup-solid: light-dark(#ffffff, #272727);
+  --surface-dialog: light-dark(#fffffffa, #272727fa);
+  --surface-popover: light-dark(#fffffff2, #262626f2);
+  --popup-blur: blur(20px);
+  --popup-line: light-dark(#dcdcdc, #454545);
+  --popup-hairline: light-dark(#e9e9e9, #383838);
+  --popup-control-border: light-dark(#cecece, #5b5b5b);
+  --popup-backdrop: light-dark(#0000001f, #00000040);
+  --control-fill: light-dark(#f4f4f6, #32343a);
+  --control-border: light-dark(#d5d6dc, #53555f);
+  --surface-control: light-dark(#ffffffb8, #ffffff07);
+  --edge-highlight: light-dark(#ffffffcc, #ffffff0c);
+  --elevation-small: 0 1px 2px light-dark(#17171f08, #00000020);
+  --elevation-floating:
+    0 8px 28px light-dark(#17171f12, #00000030),
+    0 1px 3px light-dark(#17171f08, #00000020);
+  --elevation-modal:
+    0 18px 48px light-dark(#00000020, #00000048),
+    0 2px 8px light-dark(#0000000c, #00000030);
+  --elevation-popover:
+    0 8px 24px light-dark(#00000014, #00000030),
+    0 1px 3px light-dark(#0000000a, #00000024);
+  --material-blur: blur(20px) saturate(1.08);
+  --motion-feedback: 110ms;
+  --motion-surface: 180ms;
+  --motion-reveal: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0.75, 0.25, 1);
+  --motion-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* The native sidebar material shows only through this navigation plane. Web and
+   older shells use the same tint/edges on a solid base, not simulated wallpaper. */
+.app {
+  --sidebar-base: light-dark(#edeef2, #242424);
+  --sidebar-wash: linear-gradient(
+    165deg,
+    light-dark(#ffffff70, #ffffff09),
+    transparent 48%,
+    light-dark(#d6d8e118, #11111112)
+  );
+  --sidebar-fill: var(--sidebar-base);
+  --sidebar-edge: light-dark(#989ba824, #00000040);
+  --nav-hover: light-dark(#ffffff70, #ffffff0b);
+  --nav-selected: light-dark(#ffffffae, #ffffff16);
+  --nav-selected-top: light-dark(#ffffffb8, #ffffff0a);
+  --nav-selected-edge: light-dark(#a8aab62e, #ffffff0d);
+  --nav-selected-light: light-dark(#ffffffed, #ffffff20);
+  --nav-selected-shadow: light-dark(#22263b0d, #00000028);
+}
+:root[data-native-material="sidebar"] .app {
+  background: transparent;
+  --sidebar-fill: light-dark(#f0f1f45c, #1b1b1b52);
+}
+.app .sidebar {
+  background: var(--sidebar-wash), var(--sidebar-fill);
+  border-right-color: var(--sidebar-edge);
+  box-shadow: inset -1px 0 light-dark(#ffffff80, #ffffff07);
+}
+/* Even the gaps around the composer and a hidden sidebar remain opaque. */
+.app .workspace {
+  background: var(--paper);
+}
+.app :is(.topbar, .primary-panel, .browser-toolbar) {
+  background: var(--paper);
+}
+.app
+  :is(
+    button,
+    summary,
+    select,
+    .sidebar-project-heading,
+    .project-conversation-row,
+    .search-field,
+    .composer
+  ) {
+  transition:
+    background-color var(--motion-feedback) ease,
+    border-color var(--motion-feedback) ease,
+    color var(--motion-feedback) ease,
+    box-shadow var(--motion-feedback) ease;
+}
+.app button:active:not(:disabled) {
+  background-color: var(--hover);
+}
+.app :is(button, a, summary, [tabindex]):focus-visible {
+  outline-offset: 2px;
+}
+.app .outline {
+  background: var(--surface-control);
+  border-color: var(--line);
+  box-shadow: var(--elevation-small);
+}
+.app .primary {
+  box-shadow: var(--elevation-small);
+}
+.app .topbar :is(.outline, input, select) {
+  box-shadow: none;
+}
+/* Content, supporting prose and metadata are different reading levels.
+   Do not dim whole containers: controls and error states keep their own ink. */
+.app
+  :is(
+    .search-excerpt,
+    .artifact-preview p,
+    .project-card p,
+    .notification-list small,
+    .document-body blockquote,
+    .task-description,
+    .source-connections > p:not([role="alert"])
+  ) {
+  color: var(--text-secondary);
+}
+.app
+  :is(
+    .search-result-heading strong,
+    .artifact-card-heading h2,
+    .project-card h2,
+    .notification-list strong
+  ) {
+  color: var(--ink);
+  font-weight: 600;
+}
+.app
+  :is(
+    .search-result-meta,
+    .artifact-caption,
+    .library-caption,
+    .project-card-bottom,
+    .object-toolbar > span
+  ) {
+  color: var(--muted);
+}
+.app .search-result-open > svg {
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+/* Explicit action surfaces, not paragraph-colored sentences. Navigation and
+   icon-only window chrome retain their own quieter interaction treatment. */
+.app .secondary-action,
+.app .create-dialog > footer > button:not(.primary),
+.app .search-dialog > footer > button,
+.app .editor-actions > button:not(.primary) {
+  min-height: 28px;
+  padding: 4px 9px;
+  gap: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--control-fill);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.app .secondary-action:hover:not(:disabled),
+.app .create-dialog > footer > button:not(.primary):hover:not(:disabled),
+.app .search-dialog > footer > button:hover:not(:disabled),
+.app .editor-actions > button:not(.primary):hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--muted);
+}
+.app .secondary-action:active:not(:disabled) {
+  background: var(--selection);
+}
+.app .creation-actions .secondary-action strong {
+  font-weight: 500;
+}
+.app .secondary-action .creation-icon {
+  color: inherit;
+}
+.app .search-result-quote {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  box-shadow: none;
+}
+.app .search-result-quote svg {
+  stroke-width: 1.65;
+}
+/* The quoted-content bubble is an entry to collaboration, not a preset ask. */
+.app .search-result-quote:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--control-fill);
+}
+.app .search-result-quote:active:not(:disabled) {
+  color: var(--ink);
+  background: var(--hover);
+}
+.app .search-result-quote:focus-visible {
+  color: var(--ink);
+  background: var(--control-fill);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.app .search-scope select {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.app .workspace-search-results article:not([data-selected="true"]):hover {
+  background: var(--soft);
+}
+.selection-actions {
+  color: var(--ink);
+  background: var(--surface-popover);
+  border-color: var(--line);
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-popover);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.selection-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.selection-actions button:hover {
+  background: var(--hover);
+}
+.selection-actions button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.app .sidebar nav button,
+.app .sidebar .sidebar-project-heading,
+.app .sidebar .project-conversation-row {
+  border-radius: 8px;
+}
+.app .sidebar nav button:hover:not(:disabled),
+.app .sidebar .sidebar-project-heading:hover,
+.app .sidebar .project-conversation-row:hover {
+  background: var(--nav-hover);
+}
+.app .sidebar nav button[aria-current="page"],
+.app .sidebar .sidebar-project-heading[data-active="true"],
+.app .sidebar .project-conversation-row[data-selected="true"] {
+  background:
+    linear-gradient(var(--nav-selected-top), transparent), var(--nav-selected);
+  box-shadow:
+    inset 0 0 0 1px var(--nav-selected-edge),
+    inset 0 1px var(--nav-selected-light),
+    0 2px 5px var(--nav-selected-shadow);
+}
+/* A nested name/action never becomes a second glass tile inside its row. */
+.app
+  .sidebar
+  :is(.sidebar-project-heading, .project-conversation-row)
+  > button {
+  background: transparent;
+  box-shadow: none;
+}
+.app .sidebar :is(.project-link, .conversation-choice)[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 550;
+}
+.app .sidebar nav button:not([aria-current="page"]),
+.app .sidebar .project-link:not([aria-current="true"]),
+.app .sidebar .conversation-choice:not([aria-current="true"]) {
+  color: var(--text-secondary);
+}
+:root[data-window-active="false"] .app {
+  --nav-selected: light-dark(#d4d6dd70, #ffffff0f);
+  --nav-selected-top: transparent;
+  --nav-selected-light: light-dark(#ffffff60, #ffffff0a);
+  --nav-selected-shadow: transparent;
+}
+:root[data-window-active="false"]
+  .app
+  .sidebar
+  nav
+  button[aria-current="page"]
+  svg {
+  color: var(--text-secondary);
+}
+.message-peek,
+.project-new-conversation {
+  transition: opacity var(--motion-feedback) ease;
+}
+
+/* Results look like usable content, not a wall of outlined widgets. */
+.app :is(.artifact-grid .artifact-card, .project-card) {
+  background: var(--surface-control);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--elevation-small);
+}
+.app :is(.artifact-grid .artifact-card, .project-card):hover {
+  background: var(--soft);
+  border-color: var(--line-strong);
+}
+.app .application-tile {
+  gap: 10px;
+  padding: 18px 12px;
+}
+.app .application-icon {
+  background: var(--surface-control);
+  border-color: var(--line);
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-small);
+  color: var(--accent);
+  border-radius: 16px;
+}
+.app .application-tile:hover .application-icon {
+  border-color: var(--line-strong);
+}
+.app :is(.empty-state > svg, .empty-icon) {
+  color: var(--muted);
+  background: var(--soft);
+  border-color: var(--hairline);
+}
+.app :is(.artifact-list .artifact-card, .task-row) {
+  border-color: var(--hairline);
+}
+.app .object-paper {
+  background: transparent;
+}
+.app :is(.source-strip, .object-relations, .task-properties) {
+  border-color: var(--hairline);
+}
+.app :is(.annotation, .task-results, .delivery-object, .attachment-file) {
+  border-color: var(--line);
+  border-radius: 8px;
+}
+.app :is(.interactive-table th, .interactive-table td) {
+  border-color: var(--hairline);
+}
+.app :is(.interactive-table tbody tr):hover {
+  background: var(--soft);
+}
+.app .interactive-form .field > span {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.app .pdf-reader {
+  background: var(--bg);
+}
+
+/* Reading tools belong to the existing window bar, not a second page header. */
+.app .object-paper.pdf-paper {
+  max-width: 952px;
+  padding: 8px 16px 16px;
+}
+.app .pdf-paper .pdf-reader {
+  margin-top: 0;
+}
+.app .pdf-toolbar-slot .pdf-controls {
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+}
+.app .pdf-toolbar-slot .pdf-controls button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 4px;
+}
+.app .pdf-toolbar-slot label {
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.app .pdf-toolbar-slot select {
+  width: auto;
+  min-width: 44px;
+  height: 28px;
+  padding: 3px 4px;
+  background: transparent;
+  border-color: transparent;
+}
+.app .pdf-file-info {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.app .pdf-file-info p {
+  margin: 6px 0;
+}
+.app .topbar:has(.pdf-toolbar-slot) .breadcrumb {
+  min-width: 40px;
+}
+.app .topbar:has(.pdf-toolbar-slot) .detail-toolbar-slot {
+  flex-shrink: 0;
+}
+@container (max-width: 640px) {
+  .app .topbar:has(.pdf-toolbar-slot) .application-toolbar-slot {
+    min-width: 0;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .application-strip {
+    overflow-x: auto;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .navigation-history button:last-child {
+    display: none;
+  }
+  .app .topbar:has(.pdf-toolbar-slot) .object-toolbar {
+    gap: 2px;
+  }
+}
+
+/* Reading and writing share one frame. Transient history floats while the
+   measured input remains reserved; pinned/native/short layouts stay docked. */
+.primary-panel {
+  position: relative;
+}
+.exchange-surface {
+  position: relative;
+  z-index: 4;
+}
+.exchange-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  min-height: 0;
+  max-height: 100%;
+  margin: 0 auto 10px;
+  container: exchange / inline-size;
+}
+.exchange-panel[data-open] {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+}
+.exchange-panel[data-open]:has(.composer textarea:focus) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+.exchange-panel-header {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px 0;
+}
+.exchange-panel-header:not(:has(button)) {
+  display: none;
+}
+.exchange-scope {
+  flex: 1;
+  min-width: 0;
+}
+.exchange-scope .conversation-scope {
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exchange-panel > .conversation {
+  width: 100%;
+  margin: 0;
+  /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
+  padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
+  flex: 0 1 auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  scrollbar-gutter: auto;
+}
+.exchange-panel > .conversation:has(.conversation-empty) {
+  flex-basis: auto;
+  padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
+}
+.exchange-panel .conversation-empty {
+  padding: 0;
+}
+.exchange-panel .conversation-empty p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 24px;
+}
+.exchange-panel .composer-dock {
+  padding: 0;
+  background: transparent;
+}
+.app .composer {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--paper) 70%, var(--surface-raised));
+  border: 0;
+  border-radius: 0 0 15px 15px;
+  box-shadow: none;
+}
+.app .composer::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--hairline);
+  pointer-events: none;
+}
+.exchange-panel:not(:has(> .conversation)) .composer::before,
+.primary-panel[data-dialogue-canvas] .composer::before {
+  display: none;
+}
+.exchange-panel:not(:has(> .conversation)) .composer {
+  border-radius: 15px;
+  box-shadow: none;
+}
+.app .composer:focus-within {
+  border-color: transparent;
+}
+.app .composer textarea {
+  background: transparent;
+}
+.app .composer-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px 8px;
+  color: var(--muted);
+}
+.app .composer-actions > .composer-footer-info {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.app .composer-footer-info .composer-meta {
+  flex: 1;
+  min-width: 0;
+}
+.app .composer-floating-tools {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+  width: max-content;
+  max-width: calc(100% - 16px);
+  padding: 0;
+  border: 0;
+  background: none;
+  opacity: 0;
+  transition: opacity var(--motion-feedback) var(--motion-ease);
+}
+.app .composer:hover .composer-floating-tools,
+.app .composer:focus-within .composer-floating-tools {
+  opacity: 1;
+}
+/* Keep the input and its floating controls one continuous pointer region. */
+.app .composer-floating-tools::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.app .composer-actions > .composer-preferences {
+  grid-column: 2;
+  grid-row: 1;
+}
+.app .composer-actions > .composer-input-tools {
+  grid-column: 3;
+  grid-row: 1;
+}
+.app :is(.composer-media-tools, .exchange-view-tools) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.app .exchange-view-tools {
+  flex: 0 0 auto;
+}
+.app .composer-unread {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
+  position: relative;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  border: 0;
+  color: var(--text-secondary);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  box-shadow:
+    inset 0 1px 0 var(--line),
+    0 2px 5px var(--shadow);
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-group-start {
+  margin-left: 8px;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-reserved {
+  visibility: hidden;
+  pointer-events: none;
+}
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button > svg {
+  position: relative;
+  width: 16px;
+  height: 16px;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button[aria-pressed="true"],
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button:hover:not(:disabled) {
+  background: var(--soft);
+}
+@container exchange (max-width: 540px) {
+  .app .composer-actions {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .app .composer-actions > .composer-footer-info {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+  .app .composer-actions > .composer-preferences {
+    grid-column: 1;
+    grid-row: 2;
+    max-width: 100%;
+  }
+  .app .composer-actions > .composer-input-tools {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .exchange-panel-header {
+    flex-wrap: wrap;
+  }
+}
+.app .composer-preferences {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-left: auto;
+}
+.app .composer-actions > .composer-input-tools {
+  margin-left: 0;
+}
+.app .model-picker-compact {
+  padding: 0;
+  min-width: 0;
+  max-width: 230px;
+}
+.app .model-picker-compact select {
+  field-sizing: content;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.app .model-picker-compact small {
+  margin: 0;
+}
+.app .composer-reasoning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  min-height: 32px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.app .composer-reasoning svg {
+  width: 14px;
+  height: 14px;
+}
+.app .composer-reasoning select {
+  field-sizing: content;
+  min-height: 32px;
+  border: 0;
+  padding: 4px 2px;
+  background: transparent;
+  font-size: 12px;
+}
+.app .composer-reasoning small {
+  white-space: normal;
+  max-width: 7em;
+}
+@media (pointer: coarse) {
+  .app .composer-floating-tools {
+    opacity: 1;
+  }
+  .app :is(.composer-media-tools, .exchange-view-tools) {
+    gap: 0;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app .composer-floating-tools {
+    transition: none;
+  }
+}
+.app .composer-input-tools .send:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.app .composer-input-tools .send:not(:disabled):hover {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+.app .composer-input-tools .send:disabled {
+  background: var(--soft);
+  opacity: 0.55;
+}
+.primary-panel[data-interaction="recent"] .exchange-panel[data-open] {
+  background: var(--surface-glass);
+  -webkit-backdrop-filter: var(--material-blur);
+  backdrop-filter: var(--material-blur);
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-floating);
+}
+.primary-panel[data-interaction="history"] .exchange-panel,
+.primary-panel[data-interaction="history"] .exchange-panel > .conversation {
+  flex: 1 1 0;
+}
+/* The dedicated dialogue page remains a flat reading canvas. */
+.primary-panel[data-dialogue-canvas] .exchange-panel,
+.primary-panel[data-dialogue-canvas]
+  .exchange-panel:has(.composer textarea:focus) {
+  border-color: transparent;
+  background: transparent;
+}
+.app .primary-panel[data-dialogue-canvas] .composer {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: none;
+}
+.app .primary-panel[data-dialogue-canvas] .composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+@media (max-width: 850px) {
+  .exchange-panel {
+    width: calc(100% - 24px);
+  }
+}
+@media (min-height: 650px) {
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .exchange-surface {
+    flex: 0 0 auto;
+    height: calc(var(--composer-dock-height, 130px) + 12px);
+  }
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .exchange-panel {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    translate: -50% 0;
+    max-height: calc(100dvh - 80px);
+    margin: 0;
+  }
+  .primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
+    height: auto;
+    max-height: min(34dvh, 360px);
+    flex-basis: auto;
+  }
+  .app:not(.application-browser-workspace)
+    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+    .conversation:has(.conversation-empty) {
+    height: auto;
+  }
+}
+.application-browser-workspace
+  .primary-panel[data-interaction="recent"]
+  .exchange-panel[data-open] {
+  /* The native web view is a separate compositor, not a CSS backdrop. */
+  background: var(--soft);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.conversation .human-message {
+  background: var(--soft);
+  border-radius: 14px 14px 5px 14px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 40%, transparent);
+}
+.app .primary-panel[data-interaction="recent"] .conversation {
+  /* Metadata must stay readable even above a black image or white PDF. */
+  --muted: light-dark(#45454b, #bdbdc4);
+}
+.app .delivery-object {
+  background: var(--surface-control);
+  border-color: var(--line);
+}
+.app .composer-reopen,
+.app .new-exchange {
+  background: var(--surface-menu);
+  border-color: var(--line);
+  box-shadow: var(--elevation-floating);
+  backdrop-filter: var(--material-blur);
+}
+
+/* Neutral popup content stays independent of the canvas and brand accent.
+   Accessibility edges come from the host so local tokens cannot weaken them. */
+.app
+  :is(
+    .create-dialog,
+    .search-dialog,
+    .attachment-preview-dialog,
+    .composer-options,
+    .theme-menu,
+    .workspace-options-menu
+  ),
+.selection-actions {
+  --soft: light-dark(#f4f4f4, #303030);
+  --hover: light-dark(#e8e8e8, #373737);
+  --ink: light-dark(#202020, #f4f4f4);
+  --text-secondary: light-dark(#4b4b4b, #c8c8c8);
+  --muted: light-dark(#626262, #b0b0b0);
+  --selection: light-dark(#e4e4e4, #3a3a3a);
+  --surface-raised: light-dark(#ffffff, #303030);
+  --control-fill: light-dark(#f4f4f4, #333333);
+  --control-border: var(--popup-control-border);
+  --line: var(--popup-line);
+  --hairline: var(--popup-hairline);
+  color: var(--ink);
+}
+/* Dense dialogs use a thicker material than short, anchored menus. Only the
+   fill is translucent; labels and hit surfaces retain full opacity. */
+.app :is(.create-dialog, .search-dialog, .attachment-preview-dialog) {
+  background: var(--surface-dialog);
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-modal);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.app dialog::backdrop {
+  background: var(--popup-backdrop);
+}
+.app .attachment-preview-dialog:has(> pre) {
+  --ui-dialog-width: 680px;
+}
+.app :is(.composer-options, .theme-menu, .workspace-options-menu) {
+  background: var(--surface-popover);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px var(--edge-highlight),
+    var(--elevation-popover);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.app :is(.theme-menu, .appearance-settings) .mode-options {
+  background: light-dark(#e5e5e5, #303030);
+}
+.app :is(.theme-menu, .appearance-settings) .mode-options button {
+  color: var(--text-secondary);
+}
+.app
+  :is(.theme-menu, .appearance-settings)
+  .mode-options
+  button[aria-pressed="true"] {
+  /* A choice is a control state, not another raised popup surface. In dark
+     menus --surface-raised and the segmented track can intentionally match. */
+  background: light-dark(#ffffff, #555555);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: none;
+}
+.app.application-browser-workspace,
+:root:has(.application-browser-workspace) .selection-actions {
+  /* WebContentsView is a separate compositor, not a CSS backdrop. */
+  --surface-dialog: var(--popup-solid);
+  --surface-popover: var(--popup-solid);
+  --popup-blur: none;
+}
+.app .workspace-search-controls,
+.app .search-scope,
+.app .search-help {
+  background: transparent;
+  border-color: var(--hairline);
+}
+.app .workspace-search-results article {
+  border-color: var(--hairline);
+}
+.app .workspace-search-results article[data-selected="true"] {
+  background: var(--selection);
+}
+.app .notification-list article {
+  border-color: var(--hairline);
+}
+.app .notification-modes {
+  background: var(--soft);
+}
+.app .notification-modes input:checked + span {
+  background: var(--surface-raised);
+  box-shadow: var(--elevation-small);
+}
+.workspace :is(.execution-sidebar, .understanding-panel, .collaboration) {
+  background: var(--soft);
+  border-left-color: var(--line);
+}
+.workspace :is(.execution-sidebar-header, .understanding-panel > header) {
+  background: transparent;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 6px;
+}
+.workspace .collaboration {
+  padding: 0 12px 12px;
+}
+.workspace .collaboration > header {
+  min-height: 42px;
+  gap: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.workspace .collaboration h2 {
+  margin: 0;
+  flex-shrink: 0;
+}
+.workspace .collaboration-context {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace .collaboration-scroll {
+  padding-top: 12px;
+}
+.app .execution-details :is(pre, .execution-result) {
+  background: var(--surface-control);
+  border-radius: 6px;
+}
+.app .browser-toolbar form {
+  background: var(--soft);
+  border-color: var(--hairline);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.app .browser-toolbar form:focus-within {
+  border-color: var(--line-strong);
+}
+.app .read-aloud-player {
+  background: var(--surface-menu);
+  border-color: var(--line);
+  border-radius: 12px;
+  box-shadow: var(--elevation-floating);
+  backdrop-filter: var(--material-blur);
+}
+.app .inline-dictation {
+  border-color: var(--hairline);
+}
+
+/* Directional, interruptible reveals. Individual translate/scale leave dialog
+   centering transforms untouched. Data changes never replay an entrance. */
+@keyframes surface-reveal {
+  from {
+    opacity: 0;
+    scale: 0.985;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+@keyframes inspector-reveal {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes dialog-reveal {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes exchange-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.app dialog[open] {
+  animation: dialog-reveal var(--motion-surface) var(--motion-ease);
+}
+.app :is(.execution-sidebar, .understanding-panel) {
+  animation: inspector-reveal var(--motion-reveal) var(--motion-ease);
+}
+.app :is(.read-aloud-player, .inline-dictation) {
+  animation: exchange-reveal var(--motion-reveal) var(--motion-ease);
+}
+/* Keep the native top-layer hit surface stable. Only the contents fade in;
+   dismissal is immediate, without a deferred display/overlay transition. */
+.app .composer-options:not(:popover-open) {
+  pointer-events: none;
+}
+@keyframes menu-content-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.app .composer-options:popover-open > * {
+  animation: menu-content-reveal var(--motion-surface) var(--motion-ease);
+}
+.app .theme-menu {
+  animation: surface-reveal var(--motion-surface) var(--motion-ease);
+}
+.app
+  :is(.execution-section-toggle > svg, .execution-input-text summary::before) {
+  transition: transform var(--motion-feedback) var(--motion-ease);
+}
+/* Screenshot selection must see the final clean canvas, never a fading layer. */
+.app:has(.capture-dialog[data-capturing="true"])
+  :is(.exchange-surface, dialog) {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app,
+  .selection-actions {
+    --surface-glass: var(--surface-raised);
+    --surface-menu: var(--surface-raised);
+    --material-blur: none;
+    --surface-dialog: var(--popup-solid);
+    --surface-popover: var(--popup-solid);
+    --popup-blur: none;
+    --sidebar-fill: var(--sidebar-base) !important;
+    --sidebar-wash: linear-gradient(transparent, transparent);
+  }
+}
+@media (prefers-contrast: more) {
+  .app,
+  .selection-actions {
+    --control-border: var(--ink);
+    --line: light-dark(#898992, #8e8e98);
+    --hairline: var(--line);
+    --line-strong: var(--ink);
+    --surface-glass: var(--surface-raised);
+    --surface-menu: var(--surface-raised);
+    --material-blur: none;
+    --surface-dialog: var(--popup-solid);
+    --surface-popover: var(--popup-solid);
+    --popup-blur: none;
+    --popup-line: light-dark(#898989, #989898);
+    --popup-hairline: var(--popup-line);
+    --popup-control-border: var(--ink);
+    --sidebar-fill: var(--sidebar-base) !important;
+    --sidebar-wash: linear-gradient(transparent, transparent);
+    --sidebar-edge: var(--ink);
+    --nav-selected-edge: var(--ink);
+    --nav-selected: var(--selection);
+    --nav-selected-top: transparent;
+  }
+}
+/* Electron also reports native accessibility settings explicitly, including
+   platforms where the matching Chromium media feature is not yet propagated. */
+:root:is([data-reduced-transparency="true"], [data-native-contrast="more"])
+  :is(.app, .selection-actions) {
+  --sidebar-fill: var(--sidebar-base);
+  --sidebar-wash: linear-gradient(transparent, transparent);
+  --surface-glass: var(--surface-raised);
+  --material-blur: none;
+  --surface-dialog: var(--popup-solid);
+  --surface-popover: var(--popup-solid);
+  --popup-blur: none;
+}
+:root[data-native-contrast="more"] :is(.app, .selection-actions) {
+  --popup-line: light-dark(#898989, #989898);
+  --popup-hairline: var(--popup-line);
+  --popup-control-border: var(--ink);
+}
+:root[data-native-contrast="more"] .app {
+  --sidebar-edge: var(--ink);
+  --nav-selected-edge: var(--ink);
+  --nav-selected: var(--selection);
+  --nav-selected-top: transparent;
+}
+:root[data-native-contrast="more"] .app .composer::before {
+  background: var(--popup-line);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app *,
+  .app *::before,
+  .app *::after,
+  .app dialog::backdrop {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Local reading preferences never rescale the shell, PDF canvas or hosted apps. */
+.app[data-text-size="large"] {
+  --reading-increment: 2px;
+}
+.app[data-text-size="larger"] {
+  --reading-increment: 4px;
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body, .conversation-message > p, .reply-content) {
+  font-size: calc(15px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body, .reply-content)
+  pre {
+  font-size: calc(12px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"])
+  :is(.document-body h3, .reply-content :is(h1, h2, h3)) {
+  font-size: calc(17px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"]) .document-body h1 {
+  font-size: calc(27px + var(--reading-increment));
+}
+.app:is([data-text-size="large"], [data-text-size="larger"]) .document-body h2 {
+  font-size: calc(21px + var(--reading-increment));
+}
+:root[data-app-motion="reduce"] .app *,
+:root[data-app-motion="reduce"] .app *::before,
+:root[data-app-motion="reduce"] .app *::after,
+:root[data-app-motion="reduce"] .app dialog::backdrop {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
