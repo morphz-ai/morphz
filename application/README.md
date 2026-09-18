@@ -2,6 +2,10 @@
 
 以对象为中心，让人与 Agent 共同推进工作。
 
+源码现位于 Morphz 主仓库的 `application/`，下文 npm 命令均在本目录执行；在仓库根目录
+可使用 `npm --prefix application`。原 MorphzWork 的提交历史完整保留，后续开发只在本仓库
+进行。合并边界、原配置切换与验证见[仓库整合记录](docs/25-repository-integration.md)。
+
 桌面优先的开发版本。已接入对象与资料库、Runtime 工具与任务安排、内置浏览器、交互产物、身份隔离和语音入口；实际验证情况见[实施记录](docs/13-implementation-status.md)。不是可公开部署的服务或已签名的桌面发行版。
 
 ## 本地运行
@@ -13,6 +17,10 @@ npm ci
 npm run build
 npm run desktop
 ```
+
+以上适用于全新安装。已有开发版继续从原 Morphz.app 打开；更新启动器前正常退出，保留
+其数据目录、profile、配置文件引用等选项。不要以裸 `npm run desktop` 覆盖显式配置。
+仓库合并不会要求建立新中心、重新登录或复制旧 `.env`。
 
 Desktop 内嵌共享应用业务层，直接打开本机 SQLite 和已构建界面 `morphz://app/`，不需要应用 HTTP 服务或 Vite。Morphz Runtime 保持独立。Web／远端模式才运行 HTTP 适配器：
 
@@ -71,7 +79,7 @@ node scripts/connect-local-runtime.mjs <Runtime进程PID> http://127.0.0.1:<Runt
 
 ## 语音服务
 
-豆包语音凭据使用项目根目录 `.env` 中的 `DOUBAO_API_KEY`，变量示例见 `.env.example`。应用宿主启动时读取，已由宿主环境提供的同名变量优先；不会加载任意 `.env` 变量来覆盖进程设置，也不将密钥传给界面。默认位置跟随工程而不是启动目录；也可用绝对路径 `MORPHZ_APP_ENV_FILE` 指定文件，空字符串表示不读取配置文件。
+豆包语音凭据使用应用目录 `application/.env` 中的 `DOUBAO_API_KEY`，变量示例见 `.env.example`。应用宿主启动时读取，已由宿主环境提供的同名变量优先；不会加载任意 `.env` 变量来覆盖进程设置，也不将密钥传给界面。默认位置跟随应用工程而不是启动目录；也可用绝对路径 `MORPHZ_APP_ENV_FILE` 指定原文件，空字符串表示不读取配置文件。仓库迁移不会复制或改写已有凭据文件。
 
 `.env` 已被忽略，不能提交、索引或作为模型资料；不要使用 `VITE_` 前缀。录音与上传分别确认，识别后可编辑再放入输入框；朗读明确发起并可停止。识别和合成都使用豆包 Plan 专用接口，凭据需具备对应服务权限。已用现有凭据验证真实合成与识别回环；配置存在仍不等于连接一定可用，服务失败会明确显示。
 
@@ -127,8 +135,27 @@ npm run test:runtime-identity
 
 ## 名称与兼容边界
 
-产品统一为 Morphz，应用工程包为 `morphz-application`，Runtime 仍是独立模块。当前 checkout 目录可以仍叫 `MorphzWork`；目录重命名和并入主仓库是独立操作，本次没有合并仓库。
+产品统一为 Morphz，应用工程包为 `morphz-application`，源码位于主仓库的 `application/`；Runtime 仍是独立模块。原 MorphzWork 仓库保留为历史与回退副本，不再作为日常开发源。仓库合并不迁移数据库、profile 或配置，也不重新命名历史协议。
 
 新应用包使用 `morphz-app/v1` 和 `morphz-app:*` 消息，新输入格式为 `morphz.application.input` v1，对象工具为 `host_morphz`，HTTP CSRF 标头为 `X-Morphz-Token`，终端存储键为 `morphz:`。已安装旧包继续使用原协议；旧输入格式定义保持原字节，旧工具名继续接受且沿用同一幂等命令身份。旧登录态与同中心、同身份的草稿可读取，新值优先，原始数据不删除。历史文档、消息、对象 ID、Context/Session 命名空间以及兼容测试中的旧名称有意保留，不代表当前产品仍叫 MorphzWork。
 
 已安装的兼容 macOS 开发启动器不会仅因名称更新被改写或重新签名；这避免破坏当前授权，但不代替未来正式发行所需的稳定签名与更新机制。
+
+## 仓库联测与许可证
+
+从 Morphz 仓库根目录构建联测用 Runtime：
+
+```sh
+cargo build --locked -p morphz --bin morphz --features experimental-session-io
+npm --prefix application run test:runtime-ipc
+npm --prefix application run test:continuation-runtime
+npm --prefix application run test:runtime-identity
+```
+
+脚本默认使用本仓库 `target/debug/morphz`（Windows 为 `morphz.exe`），不依赖当前工作目录
+或旧相邻仓库。可用 `MORPHZ_APP_RUNTIME_BINARY` 显式选择测试二进制；这不会更换正在运行
+的用户 Runtime。本地 SQLite、HTTP 和 Session IO 集成均使用隔离测试数据。
+
+原创应用源码遵循仓库根目录的 [Apache-2.0 许可证](../LICENSE)及[适用范围](../LICENSE_SCOPE.md)。
+第三方依赖保持各自条款，清单见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；
+品牌素材遵循 [TRADEMARKS.md](../TRADEMARKS.md)。此说明不是已完成正式签名安装包的声明。

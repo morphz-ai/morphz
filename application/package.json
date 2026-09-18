@@ -2,6 +2,7 @@
   "name": "morphz-application",
   "version": "0.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Object-centered workspace for human and agent collaboration",
   "engines": {
@@ -50,6 +51,9 @@
     "test:desktop-speech": "tsx scripts/desktop-speech-smoke.ts",
     "test:runtime-tools": "tsx scripts/runtime-tools-smoke.ts",
     "test:runtime-identity": "tsx scripts/runtime-identity-smoke.ts",
+    "test:runtime-ipc": "tsx scripts/runtime-ipc-smoke.ts",
+    "test:continuation-runtime": "tsx scripts/continuation-runtime-smoke.ts",
+    "test:embedded": "node scripts/embedded-desktop-smoke.mjs --production",
     "backup:center": "node scripts/backup-center.mjs",
     "format": "prettier --write apps packages scripts tests *.json *.ts",
     "format:check": "prettier --check apps packages scripts tests *.json *.ts"

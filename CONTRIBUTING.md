@@ -42,6 +42,23 @@ signer is authorized to contribute on the organization's behalf.
 A contributor who knows that a submission may be covered by a patent application or patent they
 control must follow the disclosure process in [PATENTS.md](PATENTS.md).
 
+## Application development
+
+The workspace application lives in `application/`. Read its `AGENTS.md` before changing it;
+its shared business rules, Web adapter, and embedded Desktop host stay separate from Runtime
+internals. Keep the existing Cargo workspace and the application npm lockfile independent.
+Runtime-only builds must not require Electron or mobile SDKs.
+
+Use Node.js 24.13 or newer for the application, even though the Dashboard has its own toolchain.
+From the repository root, use `npm ci --prefix application`,
+`npm --prefix application run build`, and `npm --prefix application test`.
+The application workflow checks Web, macOS Desktop, and actual Runtime contracts separately.
+Changes spanning an application contract and Runtime must include both sides and their tests in
+one pull request. No application or mobile release is implied by a Runtime release tag.
+
+See [the integration record](application/docs/25-repository-integration.md) for history,
+compatibility, and original-profile acceptance requirements.
+
 ## Source language
 
 Morphz uses English for identifiers, developer comments, doc comments, commit messages, raw

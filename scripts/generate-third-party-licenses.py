@@ -194,15 +194,35 @@ def npm_package_name(lock_path: str) -> str:
     return "/".join(parts[:2]) if parts[0].startswith("@") else parts[0]
 
 
-def dashboard_packages() -> list[tuple[str, str, str, list[Path]]]:
-    dashboard_root = REPOSITORY_ROOT / "dashboard"
-    lock = json.loads((dashboard_root / "package-lock.json").read_text(encoding="utf-8"))
+def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
+    package_root = REPOSITORY_ROOT / directory
+    lock = json.loads((package_root / "package-lock.json").read_text(encoding="utf-8"))
     packages = []
     for lock_path, package in lock["packages"].items():
-        if not lock_path.startswith("node_modules/") or package.get("dev", False):
+        # Electron is a development dependency in npm but the Desktop runtime
+        # itself is distributed. Chromium's separate notices remain with it.
+        electron = directory == "application" and lock_path == "node_modules/electron"
+        if not lock_path.startswith("node_modules/") or (
+            package.get("dev", False) and not electron
+        ):
             continue
-        package_directory = dashboard_root / lock_path
+        package_directory = package_root / lock_path
         paths = license_files(package_directory)
+        if directory == "application" and lock_path == "node_modules/pdfjs-dist":
+            # PDF.js ships fonts, character maps and WASM with their own notices.
+            for asset_directory in ("cmaps", "standard_fonts", "wasm", "iccs"):
+                paths.extend(license_files(package_directory / asset_directory))
+        if (
+            directory == "application"
+            and not paths
+            and lock_path.startswith("node_modules/@napi-rs/canvas-")
+            and package.get("license") == "MIT"
+            and package.get("version")
+            == lock["packages"].get("node_modules/@napi-rs/canvas", {}).get("version")
+        ):
+            # Optional platform binaries omit the license file; keep the matching
+            # canvas package's actual copyright notice, not an MIT template.
+            paths = license_files(package_root / "node_modules/@napi-rs/canvas")
         if not paths:
             paths = fallback_license_files(package["license"])
         packages.append(
@@ -226,7 +246,7 @@ def write_or_check(output: Path, content: str, check: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("ecosystem", choices=("rust", "dashboard"))
+    parser.add_argument("ecosystem", choices=("rust", "dashboard", "application"))
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
 
@@ -237,12 +257,19 @@ def main() -> int:
             "This bundle covers non-development Cargo dependencies reachable from the Morphz package across supported targets.",
             rust_packages(),
         )
-    else:
+    elif arguments.ecosystem == "dashboard":
         output = REPOSITORY_ROOT / "dashboard" / "THIRD_PARTY_LICENSES.md"
         content = render_bundle(
             "Third-Party Dashboard Licenses",
             "This bundle covers production npm dependencies used to build the Dashboard embedded in Morphz releases.",
-            dashboard_packages(),
+            npm_packages("dashboard"),
+        )
+    else:
+        output = REPOSITORY_ROOT / "application" / "THIRD_PARTY_LICENSES.md"
+        content = render_bundle(
+            "Third-Party Application Licenses",
+            "This bundle covers locked production npm dependencies and the Electron package used by the shared Desktop/Web application. Electron/Chromium binary notices, including LICENSES.chromium.html, must additionally accompany any distributed Electron runtime. This source inventory is not a signed release or a platform binary audit.",
+            npm_packages("application"),
         )
     write_or_check(output, content, arguments.check)
     return 0

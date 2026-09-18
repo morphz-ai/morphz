@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
@@ -120,8 +121,7 @@ writeFileSync(
   { mode: 0o600 },
 );
 const runtime = spawn(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ||
-    resolve("../Morphz/target/debug/morphz"),
+  runtimeBinaryPath(),
   [
     "serve",
     "--bind",

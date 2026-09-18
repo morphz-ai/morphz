@@ -10,6 +10,7 @@ import {
   existsSync,
 } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { parseEnv } from "node:util";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
@@ -157,9 +158,7 @@ const toml = `[llm]\nprovider = "development"\nmodel = ${JSON.stringify(route.mo
 // Preserve both files, then verify the effective model over its read-only API.
 if (existsSync(runtimeConfig)) privateText(runtimeConfig);
 else writeFileSync(runtimeConfig, toml, { mode: 0o600, flag: "wx" });
-const runtimeBinary = resolve(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
-);
+const runtimeBinary = runtimeBinaryPath();
 assert.ok(existsSync(runtimeBinary), "Build the compatible Runtime first");
 const children: ChildProcess[] = [];
 const env = {

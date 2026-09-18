@@ -11,15 +11,14 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import { localAccess, type Receipt } from "../packages/core/src/model.js";
 
-const binary = resolve(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
-);
+const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
 const directory = mkdtempSync(join(tmpdir(), "morphz-runtime-ipc-"));
 const runtimeDirectory = join(directory, "runtime"),

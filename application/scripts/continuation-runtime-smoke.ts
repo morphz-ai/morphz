@@ -10,15 +10,14 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import type { Receipt } from "../packages/core/src/model.js";
 
-const binary = resolve(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
-);
+const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary));
 const directory = mkdtempSync(join(tmpdir(), "morphz-continuation-")),
   runtimeDirectory = join(directory, "runtime"),

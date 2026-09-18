@@ -1,5 +1,12 @@
 # Morphz application work
 
+This application now lives at `application/` in the Morphz repository. Run its npm commands in
+this directory (or use `npm --prefix application` at the repository root). Runtime stays in
+`../morphz/`; use `scripts/runtime-path.mjs` for integration-test binary discovery. Do not rely on
+the former sibling MorphzWork checkout. Keep Runtime/Dashboard builds independent of Electron.
+The old checkout is historical fallback, not a second development source. The repository root's
+license/provenance rules apply; existing data paths and legacy protocol names remain compatible.
+
 Before changing desktop UI or interaction, read `docs/16-ui-design-standard.md` and the current implementation notes in `docs/13-implementation-status.md`. For application hosting and workspace/Session routing, also read `docs/15-cognitive-application-host.md`.
 
 The current Web/Desktop hosting target is `docs/24-shared-application-host.md`: share plain application logic, embed it in Desktop, and expose it through HTTP only for Web/remote clients. Desktop must not require a local application HTTP server or Vite. Runtime remains separate; its local object-tool callback must not reintroduce that HTTP dependency. Preserve existing data and authorization when changing transports.

@@ -118,6 +118,7 @@ themselves prove that every requirement is implemented.
 - `yao/` — the typed language used for deterministic evaluation programs;
 - `morphz-evals/` — evaluation framework and fixtures;
 - `extensions/` — optional capabilities outside the default core;
+- `application/` — shared workspace application, Desktop, Web, and application integration tests;
 - `dashboard/` — embedded web control surface and inspector;
 - `website/` — the Morphz technical website;
 - `docs/standards/` — public specifications and conformance work;
@@ -146,6 +147,25 @@ npm run build
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change and
 [GOVERNANCE.md](GOVERNANCE.md) for project and standards governance.
+
+The user-facing application is developed in this repository independently of the Runtime and
+Dashboard build. With Node.js 24.13 or newer, run from the repository root:
+
+```bash
+npm ci --prefix application
+npm --prefix application run build
+npm --prefix application test
+npm --prefix application run desktop
+```
+
+These commands describe a fresh local setup. Reopen an existing installation from its original
+app; preserve its recorded data directory, profile and environment-file reference during source
+migration instead of replacing them with bare launch defaults.
+
+See the [application guide](application/README.md) and
+[repository integration record](application/docs/25-repository-integration.md) for Web hosting,
+Runtime integration tests, existing-profile migration, and platform boundaries. Mobile remains
+planned; merging the source does not create a mobile release or synchronize local databases.
 
 ## Security
 

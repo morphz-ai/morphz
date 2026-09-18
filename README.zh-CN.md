@@ -107,6 +107,7 @@ Yao，以及 Mind Frame Exchange。Draft 标准描述的是评审目标，并不
 - `yao/`：确定性求值程序使用的类型化语言；
 - `morphz-evals/`：评测框架与测试夹具；
 - `extensions/`：默认核心之外的可选能力；
+- `application/`：共享工作空间应用、Desktop、Web 与应用集成测试；
 - `dashboard/`：内嵌的 Web 控制面与 Inspector；
 - `website/`：Morphz 技术主站；
 - `docs/standards/`：公开规范与一致性工作；
@@ -135,6 +136,23 @@ npm run build
 
 提交变更前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，项目与标准治理方式见
 [GOVERNANCE.md](GOVERNANCE.md)。
+
+面向用户的应用已并入本仓库，与 Runtime 和 Dashboard 分别构建。安装 Node.js 24.13
+或更新版本后，在仓库根目录运行：
+
+```bash
+npm ci --prefix application
+npm --prefix application run build
+npm --prefix application test
+npm --prefix application run desktop
+```
+
+以上是全新本机环境的启动方式。已有安装继续打开原应用；切换源码时保留启动器记录的
+数据目录、profile 和配置文件引用，不用不带参数的启动命令覆盖原配置。
+
+Web 宿主、Runtime 联测、既有配置切换和平台边界见[应用说明](application/README.md)
+与[仓库整合记录](application/docs/25-repository-integration.md)。Mobile 仍待开发；源码合并
+不代表移动版已发布，也不会自动同步本地数据库。
 
 ## 安全
 

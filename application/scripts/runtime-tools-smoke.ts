@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { randomUUID, randomBytes } from "node:crypto";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
@@ -67,9 +68,7 @@ if (live) {
   );
 }
 
-const binary = resolve(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
-);
+const binary = runtimeBinaryPath();
 assert.ok(
   existsSync(binary),
   "先构建 Morphz Runtime，或指定 MORPHZ_APP_RUNTIME_BINARY。",

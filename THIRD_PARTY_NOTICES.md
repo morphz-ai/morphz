@@ -29,6 +29,13 @@ generated from the locked dependency graphs and committed as:
 - [`THIRD_PARTY_LICENSES_RUST.md`](THIRD_PARTY_LICENSES_RUST.md);
 - [`dashboard/THIRD_PARTY_LICENSES.md`](dashboard/THIRD_PARTY_LICENSES.md).
 
+The shared Desktop/Web application has a separate inventory at
+[`application/THIRD_PARTY_LICENSES.md`](application/THIRD_PARTY_LICENSES.md). Regenerate it with
+`python3 scripts/generate-third-party-licenses.py application` after changing its lockfile.
+It includes production npm packages and Electron, even though npm classifies Electron as a
+development dependency. Electron/Chromium binary notices must also accompany distributed desktop
+bundles; the source inventory does not replace them or certify a mobile/desktop release.
+
 Run `python3 scripts/generate-third-party-licenses.py rust` and
 `python3 scripts/generate-third-party-licenses.py dashboard` after changing either lockfile. CI
 rejects stale inventories. When an upstream package declares a permissive SPDX license but omits a

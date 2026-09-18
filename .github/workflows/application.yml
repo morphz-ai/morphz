@@ -1,0 +1,123 @@
+name: Application
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "application/**"
+      - "morphz/**"
+      - "executor/**"
+      - "yao/**"
+      - "third_party/**"
+      - "Cargo.*"
+      - "LICENSE"
+      - "rust-toolchain.toml"
+      - "scripts/generate-third-party-licenses.py"
+      - ".github/workflows/application.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "application/**"
+      - "morphz/**"
+      - "executor/**"
+      - "yao/**"
+      - "third_party/**"
+      - "Cargo.*"
+      - "LICENSE"
+      - "rust-toolchain.toml"
+      - "scripts/generate-third-party-licenses.py"
+      - ".github/workflows/application.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Shared application and Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=low
+      - run: python3 ../scripts/generate-third-party-licenses.py application --check
+      - run: npm run build
+      - run: npm test
+      - run: npx playwright install --with-deps chrome
+      # Native macOS cases explicitly skip here and run in the Desktop job.
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: application-web-failures
+          path: application/test-results/
+          if-no-files-found: ignore
+
+  desktop:
+    name: Embedded Desktop (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      # Download the pinned runtime before timed UI tests, not on first launch.
+      - run: node node_modules/electron/install.js
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:embedded
+      - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: application-desktop-failures
+          path: application/test-results/
+          if-no-files-found: ignore
+
+  runtime-contract:
+    name: Application and Runtime contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: cargo build --locked -p morphz --bin morphz --features experimental-session-io
+      - run: npm ci --prefix application
+      - run: npm --prefix application run build
+      # Real Runtime, local synthetic provider, isolated databases; no user secrets.
+      - run: npm --prefix application run test:runtime-ipc
+      - run: npm --prefix application run test:continuation-runtime
+      - run: npm --prefix application run test:runtime-identity

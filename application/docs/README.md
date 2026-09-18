@@ -1,11 +1,14 @@
-# MorphzWork 产品设计文档
+# Morphz 应用产品设计文档
 
 日期：2026-09-06  
 状态：设计草案，不代表已发布功能或稳定协议
 
 MorphzWork 面向人与 AI 的共同工作：Agent 自主规划和协调事务，人和 Agent 都可以承担工作；Web、桌面端、移动端和浏览器扩展连接同一个中心，在实际工作发生的地方参与协作。
 
-界面对外统一使用 Morphz 品牌；MorphzWork 保留为工程项目名。早期文档中的产品称呼按此理解。
+当前应用源码已位于 Morphz 主仓库的 `application/`，包名为 `morphz-application`。
+MorphzWork 仅保留为旧仓库、兼容路径与历史文档中的称呼。实际实现以
+[实施记录](./13-implementation-status.md)、[共享应用层](./24-shared-application-host.md)
+和[仓库整合记录](./25-repository-integration.md)为准；下列早期草案不代表现状或发布承诺。
 
 产品需求从真实使用中的摩擦出发。Morphz 的认知、事务和调度能力用于支撑体验，不作为预先限定产品范围的功能清单。
 

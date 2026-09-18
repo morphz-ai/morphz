@@ -1,11 +1,13 @@
 import { openSettings } from "./settings-test-helpers.mjs";
+import { openInput } from "../tests/interaction-helpers.ts";
 import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { tmpdir } from "node:os";
 
 // Real Runtime, real production Desktop IPC. Provider and credentials are isolated
@@ -75,9 +77,7 @@ writeFileSync(
   JSON.stringify({ url: runtimeUrl, token, namespace: randomUUID() }),
   { mode: 0o600 },
 );
-const binary = resolve(
-  process.env.MORPHZ_APP_RUNTIME_BINARY ?? "../Morphz/target/debug/morphz",
-);
+const binary = runtimeBinaryPath();
 const runtimeEnv = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
@@ -195,7 +195,7 @@ try {
       return reply.value;
     });
   const original = await snapshot();
-  const input = page.getByLabel("AI 输入内容");
+  const input = await openInput(page);
   await input.fill("TEST 模型配置期间保留的草稿");
   assert.equal(original.capabilities.modelSettings, true);
   await openSettings(page, "模型与账号");
@@ -382,8 +382,7 @@ try {
   await expect(
     page.getByRole("button", { name: "设置", exact: true }),
   ).toBeFocused();
-  if (await page.getByRole("button", { name: /向 Morphz 输入/ }).isVisible())
-    await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
+  await openInput(page);
   await expect(input).toHaveValue("TEST 模型配置期间保留的草稿");
   await expect(page.getByLabel("本次输入模型")).toContainText("fixture-second");
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -397,15 +396,7 @@ try {
     ).toBeEnabled();
     await page.keyboard.press("Escape");
     await expect(models).toBeFocused();
-    const reopen = page.getByRole("button", { name: /向 Morphz 输入/ });
-    if (await reopen.isVisible()) await reopen.click();
-    await input.focus();
-    await page.evaluate(
-      () =>
-        new Promise((done) =>
-          requestAnimationFrame(() => requestAnimationFrame(done)),
-        ),
-    );
+    await openInput(page);
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("TEST 模型配置期间保留的草稿");
   }
