@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  scriptAuthorName,
+  scriptEventLabels,
+  scriptEventNote,
+  scriptExportContents,
+  scriptFieldValue,
+} from "../packages/core/src/script-studio-presentation.js";
+import {
   buildScriptDocx,
   scriptDocxLimits,
 } from "../packages/core/src/script-studio-docx.js";
@@ -302,7 +309,11 @@ test("script DOCX preserves Chinese, emoji, spaces, tabs and blank/newline struc
   assert.match(xml, /scene-a v1/);
   assert.match(xml, /hero v1/);
   assert.doesNotMatch(xml, /绝不应出现在交付文件的未选稿/);
-  assert.equal((xml.match(/<w:pageBreakBefore\/>/g) ?? []).length, 2);
+  assert.equal(
+    (xml.match(/<w:pageBreakBefore\/>/g) ?? []).length,
+    3,
+    "two episodes and a separate provenance appendix",
+  );
   assert.match(xml, /<w:pgSz w:w="11906" w:h="16838"\/>/);
   assert.match(
     xml,
@@ -335,7 +346,11 @@ test("script DOCX uses only pinned template options for notes, continuity, headi
     "伏笔兑现唯一标记",
   ])
     assert.ok(xml.includes(content));
-  assert.doesNotMatch(xml, /<w:pageBreakBefore/);
+  assert.equal(
+    (xml.match(/<w:pageBreakBefore\/>/g) ?? []).length,
+    1,
+    "only the appendix starts a new page",
+  );
   const styles = parts.get("word/styles.xml")!;
   assert.match(styles, /w:eastAsia="等线"/);
   assert.match(styles, /<w:sz w:val="36"\/>/);
@@ -370,6 +385,84 @@ test("script DOCX sorts by episode/order/stable ID and ignores storage/reference
   production.exports[0]!.items.reverse();
   assert.deepEqual(buildScriptDocx(production, "export-1"), before);
 });
+
+test("script DOCX delivers readable names and keeps identifiers only in the provenance appendix", () => {
+  const production = fixture();
+  const xml = document(production);
+  const split = xml.indexOf("附录：版本与来源追溯");
+  assert.ok(split > xml.indexOf("第二集场景正文"));
+  const body = xml.slice(0, split),
+    appendix = xml.slice(split);
+  assert.doesNotMatch(
+    body,
+    /export-1|source-original|scene-a|hero v1|human|reviewer|ISO 8601/,
+  );
+  assert.match(body, /出场角色：主角林舟/);
+  assert.match(appendix, /export-1/);
+  assert.match(appendix, /source-original v4/);
+  assert.match(appendix, /hero v1/);
+  assert.match(appendix, /human（reviewer）/);
+  const character = production.items.find((i) => i.id === "hero")!;
+  character.versions.push({
+    ...structuredClone(character.versions[0]!),
+    revision: 2,
+    draft: { ...currentDraftForTest(character), title: "后改名的角色" },
+  });
+  character.revision = 2;
+  assert.equal(
+    document(production),
+    xml,
+    "role names must come from pinned versions too",
+  );
+});
+
+test("script presentation resolves real identities and pinned titles without changing audit notes", () => {
+  const p = fixture();
+  assert.equal(
+    scriptAuthorName(author, [
+      {
+        id: author.actantId,
+        principalId: author.principalId,
+        name: "审阅人林舟",
+      },
+    ]),
+    "审阅人林舟",
+  );
+  assert.equal(
+    scriptAuthorName(author, [
+      {
+        id: author.actantId,
+        principalId: "another-principal",
+        name: "不可冒认",
+      },
+    ]),
+    "未命名参与者",
+  );
+  const event = {
+    action: "invalidate" as const,
+    author,
+    revision: 1,
+    createdAt: now,
+    note: "上游 ep-a 更新至 v1",
+  };
+  assert.equal(scriptEventNote(p, event), "上游「第一集」更新至 v1");
+  assert.equal(event.note, "上游 ep-a 更新至 v1");
+  assert.equal(
+    scriptEventNote(p, { ...event, action: "approve" }),
+    event.note,
+    "human notes are not rewritten",
+  );
+  assert.equal(scriptEventLabels["request-changes"], "退回修改");
+  assert.ok(scriptExportContents(p, p.exports[0]!).includes("第一集 · v1"));
+  assert.equal(
+    scriptFieldValue(p, draft(p, "scene-a"), "characters"),
+    "主角林舟",
+  );
+});
+
+function currentDraftForTest(item: ScriptItem) {
+  return item.versions.find((v) => v.revision === item.revision)!.draft;
+}
 
 test("script DOCX historical receipt is byte-identical after later edits, unlocks, metadata and template changes", () => {
   const production = fixture();

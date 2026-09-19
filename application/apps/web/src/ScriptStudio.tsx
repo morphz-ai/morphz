@@ -3,12 +3,17 @@ import { Download, FilePlus2, Settings2, X } from "lucide-react";
 import { flushSync } from "react-dom";
 import type { ApplicationInstance } from "../../../packages/core/src/applications.js";
 import {
+  harnessReadinessError,
+  scriptStudioApplication,
+} from "../../../packages/core/src/applications.js";
+import {
   currentScriptDraft,
   emptyScriptDraft,
   scriptItemKinds,
   scriptKindLabels,
   scriptIssues,
   scriptImpact,
+  scriptContextCurrent,
   type ScriptCommand,
   type ScriptGeneration,
   type ScriptItem,
@@ -19,6 +24,11 @@ import type { Receipt } from "../../../packages/core/src/model.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { ScriptItemEditor } from "./ScriptStudioEditor.js";
+import { scriptFocusReturn } from "./script-studio-focus.js";
+import {
+  scriptDisplayTime,
+  scriptExportContents,
+} from "../../../packages/core/src/script-studio-presentation.js";
 import {
   ScriptStudioNavigation,
   scriptCreateLabels,
@@ -29,11 +39,15 @@ type Props = {
   client: WorkspaceClient;
   instance: ApplicationInstance;
   activeView: boolean;
-  onCompose: (text: string, generation?: ScriptGeneration) => void;
+  onCompose: (
+    text: string,
+    generation?: ScriptGeneration,
+  ) => ScriptComposeResult;
   onConceive: () => void;
   onNotice: (text: string) => void;
   onNativeDialog?: (open: boolean) => void;
 };
+export type ScriptComposeResult = { ok: true } | { ok: false; error: string };
 export type ScriptRun = (command: ScriptCommand) => Promise<Receipt>;
 export function StudioDialog({
   title,
@@ -112,7 +126,17 @@ export function ScriptStudio({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [exportStatus, setExportStatus] = useState("");
+  const [exportStatus, setExportStatus] = useState<{
+    productionId: string;
+    message: string;
+  } | null>(null);
+  const studio = useRef<HTMLElement>(null);
+  const exportHistory = useRef<HTMLDetailsElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [exportSelection, setExportSelection] = useState<{
+    production: ScriptProduction;
+    trigger: HTMLButtonElement;
+  } | null>(null);
   const savingRef = useRef(false);
   const activeViewRef = useRef(activeView);
   activeViewRef.current = activeView;
@@ -138,7 +162,19 @@ export function ScriptStudio({
       a.id.localeCompare(b.id),
   );
   const canWrite = activeView && client.online && !busy && !saving;
+  const executionIssue =
+    boot.runtime.configured && boot.runtime.connected
+      ? harnessReadinessError(
+          scriptStudioApplication.harness!,
+          boot.runtime.harnesses,
+        )
+      : null;
   const choose = (nextProduction: string, nextItem = "") => {
+    setError("");
+    if (nextProduction !== production?.id) {
+      setExportStatus(null);
+      setHistoryOpen(false);
+    }
     setProductionId(nextProduction);
     setItemId(nextItem);
     try {
@@ -163,22 +199,50 @@ export function ScriptStudio({
     if (!activeView || !client.online || working.current)
       throw new Error("请在已连接的剧本工作区操作。");
     working.current = true;
+    // A rejected modal command stays open. Its temporarily disabled submit
+    // button needs its own return path; the workspace path must not escape it.
+    const restoreDialogFocus = scriptFocusReturn(
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+        "dialog",
+      ) ?? null,
+    );
+    const restoreFocus = scriptFocusReturn(
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+        ".script-editor",
+      ) ?? studio.current,
+    );
     setBusy(true);
     setError("");
     try {
       return await client.execute({ type: "script-command", command });
-    } catch (e) {
-      if (alive.current) setError((e as Error).message);
-      throw e;
     } finally {
       working.current = false;
       if (alive.current) setBusy(false);
+      restoreDialogFocus();
+      restoreFocus();
     }
   };
+  function focusCreated() {
+    requestAnimationFrame(() => {
+      if (
+        !alive.current ||
+        !activeViewRef.current ||
+        document.querySelector("dialog[open]")
+      )
+        return;
+      (
+        studio.current?.querySelector<HTMLElement>(
+          '.script-editor [aria-label="文稿标题"]',
+        ) ??
+        studio.current?.querySelector<HTMLElement>("[data-script-focus-anchor]")
+      )?.focus({ preventScroll: true });
+    });
+  }
   async function download(
     p: ScriptProduction,
     existingExportId: string | null,
     trigger: HTMLButtonElement,
+    selection?: { itemId: string; revision: number }[],
   ) {
     if (!activeView || !client.online || savingRef.current || working.current)
       return;
@@ -195,22 +259,18 @@ export function ScriptStudio({
     let nativeDialog = false;
     setSaving(true);
     setError("");
-    setExportStatus("");
+    setExportStatus(null);
     try {
       let exportId = existingExportId;
       let frozen = p;
       if (!exportId) {
-        const items = p.items.filter(
-          (i) => i.kind === "episode" || i.kind === "scene",
-        );
-        if (!items.length) throw new Error("请先完成分集与分场剧本。");
-        if (items.some((i) => i.status !== "locked"))
-          throw new Error("导出包含全部分集与分场，请先逐项审阅并锁稿。");
+        if (!selection?.length)
+          throw new Error("请选择已审阅锁稿的分集或分场。");
         const receipt = await run({
           action: "record-export",
           productionId: p.id,
           expectedRevision: p.revision,
-          items: items.map((i) => ({ itemId: i.id, revision: i.revision })),
+          items: selection,
           template: p.template,
         });
         const snapshot = client.getSnapshot();
@@ -247,15 +307,17 @@ export function ScriptStudio({
         if (receipt.exportId !== exportId)
           throw new Error("保存回执与导出记录不一致。");
         if (sameView())
-          setExportStatus(
-            receipt.status === "saved"
-              ? `Word 已保存：${receipt.filename}（${receipt.bytes} 字节）${
-                  receipt.warning === "temporary-file-cleanup-failed"
-                    ? "；临时文件清理失败，请检查保存目录中的 .morphz-script-*.tmp，无需重复导出。"
-                    : ""
-                }`
-              : "已取消保存；导出记录保留，可从历史重试。",
-          );
+          setExportStatus({
+            productionId: p.id,
+            message:
+              receipt.status === "saved"
+                ? `Word 已保存：${receipt.filename}（${receipt.bytes} 字节）${
+                    receipt.warning === "temporary-file-cleanup-failed"
+                      ? "；临时文件清理失败，请检查保存目录中的 .morphz-script-*.tmp，无需重复导出。"
+                      : ""
+                  }`
+                : "已取消保存；可到概览的导出历史重新下载。",
+          });
         return;
       }
       const bytes = buildScriptDocx(frozen, exportId);
@@ -272,9 +334,10 @@ export function ScriptStudio({
       a.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       if (sameView())
-        setExportStatus(
-          "Word 文件已生成并发起下载；保存位置以浏览器下载结果为准。",
-        );
+        setExportStatus({
+          productionId: p.id,
+          message: "Word 文件已生成并发起下载；保存位置以浏览器下载结果为准。",
+        });
     } catch (e) {
       if (sameView())
         setError(
@@ -301,10 +364,16 @@ export function ScriptStudio({
     }
   }
   return (
-    <section className="script-studio" aria-label="剧本工作区" aria-busy={busy}>
+    <section
+      ref={studio}
+      className="script-studio"
+      aria-label="剧本工作区"
+      aria-busy={busy}
+    >
       <header className="script-toolbar">
         <select
           aria-label="当前剧本"
+          data-script-focus-anchor={!item || undefined}
           value={production?.id ?? ""}
           onChange={(e) => choose(e.target.value)}
           disabled={!activeView || busy}
@@ -346,7 +415,10 @@ export function ScriptStudio({
               type="button"
               disabled={!canWrite}
               onClick={(event) =>
-                void download(production, null, event.currentTarget)
+                setExportSelection({
+                  production: structuredClone(production),
+                  trigger: event.currentTarget,
+                })
               }
             >
               <Download />
@@ -354,12 +426,32 @@ export function ScriptStudio({
             </button>
           </>
         )}
-        {exportStatus && (
+        {exportStatus?.productionId === production?.id && exportStatus && (
           <span className="script-export-status" role="status">
-            {exportStatus}
+            {exportStatus.message}{" "}
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                flushSync(() => {
+                  choose(production!.id);
+                  setHistoryOpen(true);
+                });
+                const summary = exportHistory.current?.querySelector("summary");
+                summary?.focus();
+                summary?.scrollIntoView({ block: "nearest" });
+              }}
+            >
+              查看导出历史
+            </button>
           </span>
         )}
       </header>
+      {executionIssue && (
+        <p className="script-warning" role="status">
+          {executionIssue} 手动编辑不受影响。
+        </p>
+      )}
       {error && (
         <p className="script-error" role="alert">
           {error}
@@ -554,15 +646,20 @@ export function ScriptStudio({
                 <details
                   className="script-overview-details"
                   key={`exports:${production.id}`}
+                  ref={exportHistory}
+                  open={historyOpen}
+                  onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
                 >
                   <summary>导出历史（{production.exports.length}）</summary>
                   <small>
                     按保存的版本和模板重新生成；不代表制作方已收到。
                   </small>
                   {production.exports.map((record) => (
-                    <p key={record.id}>
-                      <time>{new Date(record.createdAt).toLocaleString()}</time>{" "}
-                      · {record.items.length} 条 ·{" "}
+                    <article className="script-export-record" key={record.id}>
+                      <time>{scriptDisplayTime(record.createdAt)}</time>
+                      <p>
+                        {scriptExportContents(production, record).join("；")}
+                      </p>
                       <button
                         type="button"
                         disabled={!canWrite}
@@ -574,9 +671,16 @@ export function ScriptStudio({
                           )
                         }
                       >
-                        重新下载 {record.id.slice(0, 8)}
+                        重新下载
                       </button>
-                    </p>
+                      <details>
+                        <summary>追溯信息</summary>
+                        <small>
+                          导出记录：{record.id} · 项目规范 v
+                          {record.contextRevision}
+                        </small>
+                      </details>
+                    </article>
                   ))}
                 </details>
               </div>
@@ -594,8 +698,11 @@ export function ScriptStudio({
               projectId: instance.workspaceId,
               title,
             });
-            choose(receipt.entityId);
-            setDialog(null);
+            flushSync(() => {
+              choose(receipt.entityId);
+              setDialog(null);
+            });
+            focusCreated();
           }}
         />
       )}
@@ -607,8 +714,11 @@ export function ScriptStudio({
           run={run}
           onClose={() => setDialog(null)}
           onCreated={(id) => {
-            choose(production.id, id);
-            setDialog(null);
+            flushSync(() => {
+              choose(production.id, id);
+              setDialog(null);
+            });
+            focusCreated();
           }}
         />
       )}
@@ -621,7 +731,123 @@ export function ScriptStudio({
           onClose={() => setDialog(null)}
         />
       )}
+      {exportSelection && (
+        <ExportDialog
+          production={exportSelection.production}
+          onClose={() => setExportSelection(null)}
+          onSubmit={(selection) => {
+            const frozen = exportSelection;
+            flushSync(() => setExportSelection(null));
+            void download(frozen.production, null, frozen.trigger, selection);
+          }}
+        />
+      )}
     </section>
+  );
+}
+function ExportDialog({
+  production,
+  onClose,
+  onSubmit,
+}: {
+  production: ScriptProduction;
+  onClose: () => void;
+  onSubmit: (selection: { itemId: string; revision: number }[]) => void;
+}) {
+  const items = production.items
+    .filter((i) => i.kind === "episode" || i.kind === "scene")
+    .sort(
+      (a, b) =>
+        currentScriptDraft(a).order - currentScriptDraft(b).order ||
+        a.id.localeCompare(b.id),
+    );
+  const issues = scriptIssues(production);
+  const ready = (item: ScriptItem) =>
+    item.status === "locked" &&
+    !!item.approval &&
+    scriptContextCurrent(production, item.approval.contextRevision) &&
+    !issues.some((issue) => issue.itemId === item.id) &&
+    currentScriptDraft(item).dependencies.every((ref) => {
+      const dependency = production.items.find((i) => i.id === ref.itemId);
+      return (
+        !!dependency?.approval &&
+        dependency.approval.revision === ref.revision &&
+        scriptContextCurrent(production, dependency.approval.contextRevision)
+      );
+    });
+  const eligible = new Set(
+    items
+      .filter(
+        (item) =>
+          ready(item) &&
+          (item.kind !== "scene" ||
+            items.some(
+              (parent) =>
+                parent.id === currentScriptDraft(item).parentId &&
+                ready(parent),
+            )),
+      )
+      .map((i) => i.id),
+  );
+  const [selected, setSelected] = useState(() => new Set(eligible));
+  return (
+    <StudioDialog title="导出 Word" onClose={onClose}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (selected.size)
+            onSubmit(
+              items
+                .filter((i) => selected.has(i.id))
+                .map((i) => ({ itemId: i.id, revision: i.revision })),
+            );
+        }}
+      >
+        <p className="script-hint">
+          选择分集与分场；导出分场时同时包含所属集。未锁稿的内容可稍后交付。
+        </p>
+        <fieldset className="script-export-items">
+          <legend>导出内容</legend>
+          {items.map((item) => (
+            <label key={item.id} className="script-checkbox">
+              <input
+                type="checkbox"
+                checked={selected.has(item.id)}
+                disabled={!eligible.has(item.id)}
+                onChange={(event) =>
+                  setSelected((previous) => {
+                    const next = new Set(previous);
+                    if (event.target.checked) {
+                      next.add(item.id);
+                      const parentId = currentScriptDraft(item).parentId;
+                      if (parentId) next.add(parentId);
+                    } else {
+                      next.delete(item.id);
+                      for (const child of items)
+                        if (currentScriptDraft(child).parentId === item.id)
+                          next.delete(child.id);
+                    }
+                    return next;
+                  })
+                }
+              />
+              {scriptKindLabels[item.kind]} · {currentScriptDraft(item).title} ·
+              v{item.revision}
+              {!eligible.has(item.id) && " · 需完成审阅锁稿"}
+            </label>
+          ))}
+          {!items.length && <p>尚无分集或分场。</p>}
+        </fieldset>
+        <footer>
+          <button className="primary" type="submit" disabled={!selected.size}>
+            导出所选
+          </button>
+          <button className="secondary-action" type="button" onClick={onClose}>
+            取消
+          </button>
+        </footer>
+      </form>
+    </StudioDialog>
   );
 }
 function CreateDialog({
@@ -840,7 +1066,8 @@ function ProductionSettings({
         }}
       >
         <p className="script-hint">
-          规范变更会使已有生成请求和审批过期；不会覆盖锁稿正文。
+          创作要求、资料许可或审阅人变更需要重新审阅；改名和 Word
+          排版不影响已批准的稿件。
         </p>
         <label>
           剧名

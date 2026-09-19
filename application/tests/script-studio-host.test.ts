@@ -297,10 +297,17 @@ test("生成读取冻结历史和材料范围；分页不替换新稿，修改�
       generation: ScriptGeneration;
       stale: boolean;
       brief: { style: string };
+      target: { itemId: string; revision: number; kind: string; title: string };
     };
     assert.deepEqual(read.generation, request);
     assert.equal(read.stale, true);
     assert.equal(read.brief.style, "固定风格");
+    assert.deepEqual(read.target, {
+      itemId: f.targetId,
+      revision: request.baseRevision,
+      kind: "episode",
+      title: frozen.title,
+    });
     let json = "",
       offset = 0;
     for (;;) {
@@ -362,6 +369,216 @@ test("生成读取冻结历史和材料范围；分页不替换新稿，修改�
       index.items.find((i) => i.id === f.targetId)!.revision,
       request.baseRevision,
     );
+  } finally {
+    f.close();
+  }
+});
+
+test("结果恢复只读本次持久候选/意见：目录和正文分页、重开、去重与跨输入隔离", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input(f.generation());
+    f.delivery(inputId, "running");
+    const tool = () => f.tools(inputId);
+    const candidate = tool().call(f.candidate("可恢复的候选正文")) as {
+      receipt: { entityId: string };
+    };
+    const review = tool().call(
+      script({
+        action: "command",
+        command: {
+          action: "add-review",
+          productionId: f.productionId,
+          itemId: f.targetId,
+          itemRevision: 1,
+          quote: "人工原稿",
+          body: "合成的可定位意见",
+          severity: "note",
+        },
+      }),
+    ) as { receipt: { entityId: string } };
+    const saved = structuredClone(f.production());
+    f.reopen();
+    const ids: string[] = [];
+    for (let offset = 0; offset < 2; offset++) {
+      const page = tool().call(
+        script({ action: "read-results", offset, limit: 1 }),
+      ) as {
+        total: number;
+        hasMore: boolean;
+        results: { id: string; kind: string }[];
+      };
+      assert.equal(page.total, 2);
+      assert.equal(page.hasMore, offset === 0);
+      ids.push(page.results[0]!.id);
+      assert.ok(
+        !JSON.stringify(page).includes("可恢复的候选正文"),
+        "目录不能携带大正文",
+      );
+    }
+    assert.deepEqual(
+      ids.sort(),
+      [candidate.receipt.entityId, review.receipt.entityId].sort(),
+    );
+    for (const resultId of ids) {
+      let json = "";
+      for (;;) {
+        const page = tool().call(
+          script({
+            action: "read-result",
+            resultId,
+            offset: json.length,
+            limit: 19,
+          }),
+        ) as {
+          resultJson: string;
+          hasMore: boolean;
+          inputId: string;
+        };
+        assert.equal(page.inputId, inputId);
+        json += page.resultJson;
+        if (!page.hasMore) break;
+        assert.ok(json.length < 10_000);
+      }
+      const parsed = JSON.parse(json);
+      assert.equal(parsed.id, resultId);
+      if (resultId === candidate.receipt.entityId)
+        assert.equal(parsed.draft.text, "可恢复的候选正文");
+      else assert.equal(parsed.body, "合成的可定位意见");
+    }
+    assert.deepEqual(f.production(), saved, "核对结果不新增或改写候选");
+    const nextInput = f.input(f.generation());
+    f.delivery(nextInput, "running");
+    const next = f.tools(nextInput);
+    const empty = next.call(script({ action: "read-results" })) as {
+      total: number;
+    };
+    assert.equal(empty.total, 0);
+    for (const resultId of ids)
+      assert.throws(
+        () => next.call(script({ action: "read-result", resultId })),
+        /本次输入没有/,
+      );
+    assert.throws(
+      () => next.call(script({ action: "read-results", inputId })),
+      /Unrecognized|unrecognized/,
+    );
+    const ordinary = f.input();
+    f.delivery(ordinary, "running");
+    assert.throws(
+      () => f.tools(ordinary).call(script({ action: "read-results" })),
+      /没有版本固定/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("结果恢复不绕过停止、成员撤权、模型许可或原作迁出", () => {
+  for (const revoke of [
+    "cancel",
+    "completed",
+    "human",
+    "agent",
+    "model",
+    "source",
+  ] as const) {
+    const f = fixture();
+    try {
+      const artifactId = f.execute({
+        type: "create-artifact",
+        projectId: "first-project",
+        title: "合成授权原文",
+        content: { kind: "document", markdown: "获准原句" },
+      });
+      f.revise(f.targetId, {
+        sources: [{ artifactId, revision: 1, quote: "" }],
+      });
+      const inputId = f.input(f.generation());
+      f.delivery(inputId, "running");
+      const tools = f.tools(inputId);
+      const candidate = tools.call(f.candidate()) as {
+        receipt: { entityId: string };
+      };
+      if (revoke === "cancel") f.delivery(inputId, "running", true);
+      else if (revoke === "completed") f.delivery(inputId, "completed");
+      else if (revoke === "model")
+        f.metadata({ modelProcessingAllowed: false });
+      else if (revoke === "source") {
+        const other = f.execute({ type: "create-project", title: "原文迁出" });
+        f.execute({
+          type: "organize-content",
+          artifactId,
+          expectedRevision: 1,
+          changes: { projectId: other },
+        });
+      } else
+        f.mutateSyntheticState((state) => {
+          const principal =
+            revoke === "human" ? localAccess.principalId : agent.principalId;
+          const project = state.projects.find((p) => p.id === "first-project")!;
+          project.members = project.members.filter((p) => p !== principal);
+        });
+      assert.throws(
+        () => tools.call(script({ action: "read-results" })),
+        /未获准|没有访问|许可|原作版本/,
+      );
+      assert.throws(
+        () =>
+          tools.call(
+            script({
+              action: "read-result",
+              resultId: candidate.receipt.entityId,
+            }),
+          ),
+        /未获准|没有访问|许可|原作版本/,
+      );
+      assert.equal(f.production().candidates.length, 1);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test("读取精确版本的有效批准，不把新版批准当作历史稿批准", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input(f.generation());
+    f.delivery(inputId, "running");
+    const read = () =>
+      f.tools(inputId).call(
+        script({
+          action: "read-item",
+          productionId: f.productionId,
+          itemId: f.targetId,
+          revision: 1,
+        }),
+      ) as {
+        approvalForRequestedVersion: { revision: number } | null;
+        currentStatus: string;
+      };
+    assert.equal(read().approvalForRequestedVersion, null);
+    const approve = () => {
+      const scope = () => ({
+        productionId: f.productionId,
+        itemId: f.targetId,
+        expectedRevision: f.item(f.targetId).revision,
+        expectedWorkflowRevision: f.item(f.targetId).workflowRevision,
+      });
+      f.run({ action: "submit-review", ...scope() });
+      f.run({
+        action: "review-decision",
+        ...scope(),
+        decision: "approve",
+        note: "人工合成批准",
+      });
+    };
+    approve();
+    assert.equal(read().approvalForRequestedVersion?.revision, 1);
+    f.revise(f.targetId, { text: "已另行批准的新稿" });
+    approve();
+    assert.equal(read().currentStatus, "approved");
+    assert.equal(read().approvalForRequestedVersion, null);
   } finally {
     f.close();
   }
@@ -440,6 +657,64 @@ test("固定生成不能借通用对象工具或领域命令扩大范围、代�
     );
     assert.equal(f.item(f.targetId).status, "draft");
     assert.equal(f.item(f.targetId).revision, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test("影响检查可带入依赖目标的下游，不必把目标重复塞入材料列表", () => {
+  const f = fixture();
+  try {
+    const downstream = f.create("scene", {
+      parentId: f.targetId,
+      dependencies: [{ itemId: f.targetId, revision: 1 }],
+      text: "需要与本集设定一起核对的下游分场",
+    });
+    const hidden = f.create("scene", {
+      parentId: f.targetId,
+      dependencies: [{ itemId: f.targetId, revision: 1 }],
+      text: "未授权下游正文不能泄露",
+    });
+    const inputId = f.input(
+      f.generation({
+        purpose: "impact",
+        references: [{ itemId: downstream, revision: 1 }],
+      }),
+    );
+    f.delivery(inputId, "running");
+    const result = f
+      .tools(inputId)
+      .call(
+        script({
+          action: "impact",
+          productionId: f.productionId,
+          itemIds: [f.targetId],
+        }),
+      ) as {
+      affected: { id: string }[];
+      outOfScopeCount: number;
+      semanticQualityChecked: boolean;
+    };
+    assert.deepEqual(
+      result.affected.map((i) => i.id),
+      [downstream],
+    );
+    assert.equal(result.outOfScopeCount, 1);
+    assert.equal(result.semanticQualityChecked, false);
+    assert.throws(
+      () =>
+        f
+          .tools(inputId)
+          .call(
+            script({
+              action: "read-item",
+              productionId: f.productionId,
+              itemId: hidden,
+              revision: 1,
+            }),
+          ),
+      /只能读取/,
+    );
   } finally {
     f.close();
   }
@@ -633,6 +908,85 @@ test("人工撤销模型处理许可立即阻止继续读取、提交候选和�
   }
 });
 
+test("read-source 分页读取确切原作；引文不扩大范围，后台改版不替换原文，取消、撤回许可与迁出立即拒绝", () => {
+  const f = fixture();
+  try {
+    const text = "完整合成原作：" + "甲乙丙丁".repeat(120);
+    const artifactId = f.execute({
+      type: "create-artifact",
+      projectId: "first-project",
+      title: "合成原作",
+      content: { kind: "document", markdown: text },
+    });
+    f.revise(f.targetId, {
+      sources: [
+        { artifactId, revision: 1, quote: "" },
+        { artifactId, revision: 1, quote: "甲乙丙丁" },
+      ],
+    });
+    const request = f.generation(),
+      inputId = f.input(request);
+    f.delivery(inputId, "running");
+    const read = (sourceIndex: number, offset = 0, patch = {}) =>
+      f.tools(inputId).call(
+        script({
+          action: "read-source",
+          productionId: f.productionId,
+          itemId: f.targetId,
+          revision: request.baseRevision,
+          sourceIndex,
+          offset,
+          limit: 41,
+          ...patch,
+        }),
+      ) as { text: string; hasMore: boolean; revision: number; scope: string };
+    let full = "";
+    for (;;) {
+      const part = read(0, full.length);
+      full += part.text;
+      if (!part.hasMore) break;
+    }
+    assert.equal(full, text);
+    assert.equal(read(1).text, "甲乙丙丁");
+    assert.equal(read(1).scope, "quote");
+    assert.throws(() => read(2), /没有所指定/);
+    assert.throws(() => read(0, 0, { revision: 999 }), /只能读取/);
+    const hidden = f.create("source", {
+      text: "未选材料",
+      sources: [{ artifactId, revision: 1, quote: "" }],
+    });
+    assert.throws(
+      () => read(0, 0, { itemId: hidden, revision: 1 }),
+      /只能读取/,
+    );
+    f.execute({
+      type: "revise-artifact",
+      artifactId,
+      expectedRevision: 1,
+      title: "新版原作",
+      content: { kind: "document", markdown: "不可替换旧版本" },
+    });
+    assert.equal(read(0).text, text.slice(0, 41));
+    f.delivery(inputId, "running", true);
+    assert.throws(() => read(0), /未获准继续读取/);
+    f.delivery(inputId, "running");
+    f.metadata({ modelProcessingAllowed: false });
+    assert.throws(() => read(0), /许可/);
+    f.metadata({ modelProcessingAllowed: true });
+    assert.equal(read(0).text, text.slice(0, 41));
+    const other = f.execute({ type: "create-project", title: "合成其他项目" });
+    f.execute({
+      type: "organize-content",
+      artifactId,
+      expectedRevision: 2,
+      changes: { projectId: other },
+    });
+    assert.throws(() => read(0), /原作版本已不可用/);
+  } finally {
+    f.close();
+  }
+});
+
 test("原作移出授权项目后不能通过已固定的剧本副本继续读取", () => {
   const f = fixture();
   try {
@@ -666,7 +1020,7 @@ test("原作移出授权项目后不能通过已固定的剧本副本继续读�
             revision: request.baseRevision,
           }),
         ),
-      /原作引用已离开/,
+      /原作版本已不可用或不属于当前项目/,
     );
   } finally {
     f.close();

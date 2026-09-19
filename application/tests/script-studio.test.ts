@@ -22,6 +22,7 @@ import {
   type ScriptGeneration,
 } from "../packages/core/src/script-studio.js";
 import { workspaceFor } from "../packages/application/src/identity.js";
+import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
 
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
 function fixture() {
@@ -169,6 +170,95 @@ function fixture() {
     candidate,
   };
 }
+
+test("无变更保存不改版本；改名排版保留批准、候选和历史导出，创作变更不可反悔复活旧候选", () => {
+  const f = fixture();
+  f.metadata({ modelProcessingAllowed: true });
+  const done = f.create("episode", { text: "已经审阅的第一集" });
+  const pending = f.create("episode", { text: "待改写的第二集" });
+  const generation = f.generation(pending);
+  const inputId = f.input(generation);
+  const candidateId = f.candidate(inputId, {
+    ...currentScriptDraft(f.item(pending)),
+    text: "第二集候选",
+  });
+  f.approve(done, true);
+  const exported = () =>
+    f.run({
+      action: "record-export",
+      productionId: f.productionId,
+      expectedRevision: f.production().revision,
+      items: [{ itemId: done, revision: f.item(done).revision }],
+      template: f.production().template,
+    });
+  const exportId = exported();
+  const originalBytes = buildScriptDocx(f.production(), exportId);
+  const original = structuredClone(f.production());
+  f.metadata();
+  assert.deepEqual(
+    f.production(),
+    original,
+    "same settings are a domain no-op",
+  );
+  f.run({
+    action: "update-production",
+    productionId: f.productionId,
+    expectedRevision: f.production().revision,
+    title: "改名",
+    brief: f.production().brief,
+    reviewerPrincipalIds: f.production().reviewerPrincipalIds,
+    template: { ...f.production().template, fontSize: 14 },
+  });
+  assert.deepEqual(
+    f.item(done).approval,
+    original.items.find((i) => i.id === done)!.approval,
+  );
+  assert.equal(f.item(done).status, "locked");
+  assert.equal(
+    scriptCandidateStale(
+      f.production(),
+      f.production().candidates.find((c) => c.id === candidateId)!,
+    ),
+    false,
+  );
+  assert.doesNotThrow(
+    () => f.input(generation),
+    "prepared generation survives presentation-only changes",
+  );
+  exported();
+  assert.deepEqual(buildScriptDocx(f.production(), exportId), originalBytes);
+  f.metadata({ style: "新风格" });
+  assert.equal(f.item(done).approval, null);
+  assert.throws(exported, /审阅有效/);
+  f.metadata({ style: original.brief.style });
+  assert.equal(
+    scriptCandidateStale(
+      f.production(),
+      f.production().candidates.find((c) => c.id === candidateId)!,
+    ),
+    true,
+  );
+  assert.throws(() => f.input(generation), /创作要求已有新版本/);
+});
+
+test("整份原作正文计入生成材料预算，引文授权只计入实际引文", () => {
+  const f = fixture();
+  f.metadata({ modelProcessingAllowed: true });
+  const artifactId = f.execute({
+    type: "create-artifact",
+    projectId: "first-project",
+    title: "合成长原作",
+    content: { kind: "document", markdown: "合成原作".repeat(31_000) },
+  });
+  const target = f.create("episode", {
+    sources: [{ artifactId, revision: 1, quote: "" }],
+  });
+  assert.throws(() => f.input(f.generation(target)), /120000/);
+  f.revise(target, {
+    sources: [{ artifactId, revision: 1, quote: "合成原作" }],
+  });
+  assert.doesNotThrow(() => f.input(f.generation(target)));
+});
 
 test("剧本领域默认空并兼容旧 Workspace；入口是可恢复的 builtin，不创建 demo", () => {
   const initial = initialWorkspace();

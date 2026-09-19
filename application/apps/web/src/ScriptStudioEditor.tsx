@@ -1,4 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import {
+  scriptAuthorName,
+  scriptDisplayTime,
+  scriptEventLabels,
+  scriptEventNote,
+  scriptFieldLabels,
+  scriptFieldValue,
+} from "../../../packages/core/src/script-studio-presentation.js";
 import {
   currentScriptDraft,
   scriptCandidateStale,
@@ -14,20 +23,31 @@ import {
 } from "../../../packages/core/src/script-studio.js";
 import { quotedText } from "../../../packages/core/src/model.js";
 import { draftKey, scopedStorage, type WorkspaceClient } from "./client.js";
+import { scriptFocusReturn } from "./script-studio-focus.js";
 import {
   StudioDialog,
   scriptStatusLabels,
   type ScriptRun,
+  type ScriptComposeResult,
 } from "./ScriptStudio.js";
 
 type DraftState = { baseRevision: number; draft: ScriptDraft };
+type GenerationDraft = {
+  selected: string[];
+  characters: number;
+  count: number;
+  instruction: string;
+};
 type Props = {
   client: WorkspaceClient;
   production: ScriptProduction;
   item: ScriptItem;
   canWrite: boolean;
   run: ScriptRun;
-  onCompose: (text: string, generation?: ScriptGeneration) => void;
+  onCompose: (
+    text: string,
+    generation?: ScriptGeneration,
+  ) => ScriptComposeResult;
 };
 export function ScriptItemEditor({
   client,
@@ -57,13 +77,21 @@ export function ScriptItemEditor({
   >("edit");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [noteAction, setNoteAction] = useState<
-    "approve" | "request-changes" | "unlock" | null
-  >(null);
+  const [noteAction, setNoteAction] = useState<{
+    action: "approve" | "request-changes" | "unlock";
+    revision: number;
+    workflowRevision: number;
+  } | null>(null);
   const [generation, setGeneration] = useState<
     ScriptGeneration["purpose"] | null
   >(null);
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [generationDrafts, setGenerationDrafts] = useState<
+    Partial<Record<ScriptGeneration["purpose"], GenerationDraft>>
+  >({});
+  const tabId = useId();
+  const metadata = useRef<HTMLDetailsElement>(null);
+  const dependencies = useRef<HTMLFieldSetElement>(null);
   const [historyRevision, setHistoryRevision] = useState(item.revision);
   const [quote, setQuote] = useState("");
   const saving = useRef(false);
@@ -160,7 +188,7 @@ export function ScriptItemEditor({
   return (
     <div className="script-editor">
       <header className="script-editor-header">
-        <strong>
+        <strong tabIndex={-1} data-script-focus-anchor>
           {scriptKindLabels[item.kind]} · {current.title}
         </strong>
         <small role="status" className="script-edit-status">
@@ -175,6 +203,24 @@ export function ScriptItemEditor({
           保存文稿
         </button>
       </header>
+      {error && (
+        <div className="script-error script-editor-error" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            aria-label="关闭错误提示"
+            onClick={(event) => {
+              event.currentTarget
+                .closest(".script-editor")
+                ?.querySelector<HTMLElement>("[data-script-focus-anchor]")
+                ?.focus({ preventScroll: true });
+              setError("");
+            }}
+          >
+            关闭
+          </button>
+        </div>
+      )}
       {stale && dirty && (
         <p role="alert" className="script-warning">
           中心已有 v{item.revision}；此草稿仍基于 v{local.baseRevision}
@@ -200,11 +246,6 @@ export function ScriptItemEditor({
           锁稿正文只读。修改必须先由指定审阅人说明原因解锁。
         </p>
       )}
-      {error && (
-        <p className="script-error" role="alert">
-          {error}
-        </p>
-      )}
       <div className="script-tabs" role="tablist" aria-label="剧本文稿视图">
         {(
           [
@@ -225,15 +266,48 @@ export function ScriptItemEditor({
             key={key}
             type="button"
             role="tab"
+            id={`${tabId}-${key}`}
+            aria-controls={`${tabId}-${key}-panel`}
+            tabIndex={pane === key ? 0 : -1}
             aria-selected={pane === key}
-            onClick={() => setPane(key)}
+            onClick={() => {
+              setError("");
+              setPane(key);
+            }}
+            onKeyDown={(event) => {
+              const tabs = Array.from(
+                event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
+                  '[role="tab"]',
+                ),
+              );
+              const index = tabs.indexOf(event.currentTarget);
+              const next =
+                event.key === "ArrowRight"
+                  ? (index + 1) % tabs.length
+                  : event.key === "ArrowLeft"
+                    ? (index + tabs.length - 1) % tabs.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? tabs.length - 1
+                        : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              tabs[next]!.click();
+              tabs[next]!.focus();
+            }}
           >
             {label}
           </button>
         ))}
       </div>
       {pane === "edit" && (
-        <div className="script-edit-fields" role="tabpanel" aria-label="正文">
+        <div
+          id={`${tabId}-edit-panel`}
+          aria-labelledby={`${tabId}-edit`}
+          className="script-edit-fields"
+          role="tabpanel"
+        >
           <div className="script-edit-actions">
             {(
               [
@@ -287,7 +361,7 @@ export function ScriptItemEditor({
               }
             }}
           />
-          <details className="script-metadata">
+          <details ref={metadata} className="script-metadata">
             <summary>结构、来源与连续性信息</summary>
             <div className="script-form-grid">
               <label>
@@ -319,6 +393,7 @@ export function ScriptItemEditor({
                 <label>
                   所属分集
                   <select
+                    aria-label="所属分集"
                     value={draft.parentId ?? ""}
                     disabled={!editable}
                     onChange={(e) => {
@@ -389,7 +464,7 @@ export function ScriptItemEditor({
                   </label>
                 ))}
             </fieldset>
-            <fieldset>
+            <fieldset ref={dependencies} tabIndex={-1}>
               <legend>版本依赖</legend>
               <small>更换版本是显式编辑，不会被后台更新自动替换。</small>
               {production.items
@@ -419,6 +494,7 @@ export function ScriptItemEditor({
                       </label>
                       {ref && (
                         <select
+                          data-dependency-id={i.id}
                           aria-label={`${currentScriptDraft(i).title}依赖版本`}
                           disabled={!editable}
                           value={ref.revision}
@@ -482,7 +558,12 @@ export function ScriptItemEditor({
         </div>
       )}
       {pane === "candidates" && (
-        <div role="tabpanel" aria-label="候选" className="script-candidates">
+        <div
+          id={`${tabId}-candidates-panel`}
+          aria-labelledby={`${tabId}-candidates`}
+          role="tabpanel"
+          className="script-candidates"
+        >
           {!candidates.length && (
             <p className="script-hint">
               尚无候选。先准备生成请求，再由你发送；模型结果不会自动改写正式稿。
@@ -521,9 +602,23 @@ export function ScriptItemEditor({
                       )
                       .map((k) => (
                         <div key={k}>
-                          <strong>{k}</strong>
-                          <pre>{JSON.stringify(before[k], null, 2)}</pre>
-                          <pre>{JSON.stringify(c.draft[k], null, 2)}</pre>
+                          <strong>{scriptFieldLabels[k]}</strong>
+                          <pre>{scriptFieldValue(production, before, k)}</pre>
+                          <pre>{scriptFieldValue(production, c.draft, k)}</pre>
+                          {(
+                            [
+                              "sources",
+                              "dependencies",
+                              "characters",
+                              "parentId",
+                            ] as string[]
+                          ).includes(k) && (
+                            <details>
+                              <summary>追溯信息</summary>
+                              <pre>{JSON.stringify(before[k], null, 2)}</pre>
+                              <pre>{JSON.stringify(c.draft[k], null, 2)}</pre>
+                            </details>
+                          )}
                         </div>
                       ))}
                   </details>
@@ -572,7 +667,11 @@ export function ScriptItemEditor({
         </div>
       )}
       {pane === "reviews" && (
-        <div role="tabpanel" aria-label="审阅">
+        <div
+          id={`${tabId}-reviews-panel`}
+          aria-labelledby={`${tabId}-reviews`}
+          role="tabpanel"
+        >
           <ReviewForm
             item={item}
             production={production}
@@ -587,12 +686,18 @@ export function ScriptItemEditor({
               productionId={production.id}
               run={run}
               disabled={!canWrite}
+              authorName={scriptAuthorName(r.author, boot.workspace.actants)}
             />
           ))}
         </div>
       )}
       {pane === "history" && (
-        <div role="tabpanel" aria-label="历史" className="script-history">
+        <div
+          id={`${tabId}-history-panel`}
+          aria-labelledby={`${tabId}-history`}
+          role="tabpanel"
+          className="script-history"
+        >
           <label>
             查看版本
             <select
@@ -601,8 +706,8 @@ export function ScriptItemEditor({
             >
               {[...item.versions].reverse().map((v) => (
                 <option key={v.revision} value={v.revision}>
-                  v{v.revision} · {new Date(v.createdAt).toLocaleString()} ·{" "}
-                  {v.author.actantId}
+                  v{v.revision} · {scriptDisplayTime(v.createdAt)} ·{" "}
+                  {scriptAuthorName(v.author, boot.workspace.actants)}
                 </option>
               ))}
             </select>
@@ -664,25 +769,78 @@ export function ScriptItemEditor({
           <details>
             <summary>审阅与锁稿记录</summary>
             {[...item.events].reverse().map((event, n) => (
-              <p key={n}>
-                v{event.revision} · {event.action} · {event.author.actantId} ·{" "}
-                {new Date(event.createdAt).toLocaleString()}
-                <br />
-                {event.note}
-              </p>
+              <div key={n}>
+                <p>
+                  v{event.revision} · {scriptEventLabels[event.action]} ·{" "}
+                  {scriptAuthorName(event.author, boot.workspace.actants)} ·{" "}
+                  {scriptDisplayTime(event.createdAt)}
+                  <br />
+                  {scriptEventNote(production, event)}
+                </p>
+                <details>
+                  <summary>追溯信息</summary>
+                  <small>
+                    {event.author.actantId} · {event.author.principalId}
+                  </small>
+                  <p>{event.note}</p>
+                </details>
+              </div>
             ))}
           </details>
         </div>
       )}
       {pane === "checks" && (
-        <div role="tabpanel" aria-label="检查与影响">
+        <div
+          id={`${tabId}-checks-panel`}
+          aria-labelledby={`${tabId}-checks`}
+          role="tabpanel"
+        >
           <p className="script-hint">
             以下是确定性结构检查；语义连续性仍需生成检查和人工审阅。
           </p>
           {scriptIssues(production)
             .filter((i) => i.itemId === item.id)
             .map((issue, n) => (
-              <p key={n}>{issue.message}</p>
+              <div key={n} className="script-issue">
+                <p>{issue.message}</p>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => {
+                    if (issue.code === "unresolved-review") {
+                      flushSync(() => setPane("reviews"));
+                      document.getElementById(`${tabId}-reviews`)?.focus();
+                    } else {
+                      flushSync(() => setPane("edit"));
+                      if (metadata.current) metadata.current.open = true;
+                      const control =
+                        issue.code === "missing-parent"
+                          ? metadata.current?.querySelector<HTMLSelectElement>(
+                              'select[aria-label="所属分集"]',
+                            )
+                          : Array.from(
+                              dependencies.current?.querySelectorAll<HTMLSelectElement>(
+                                "select[data-dependency-id]",
+                              ) ?? [],
+                            ).find(
+                              (select) =>
+                                select.dataset.dependencyId ===
+                                  issue.relatedId && !select.disabled,
+                            );
+                      (control ?? dependencies.current)?.focus();
+                      (control ?? dependencies.current)?.scrollIntoView({
+                        block: "center",
+                      });
+                    }
+                  }}
+                >
+                  {issue.code === "unresolved-review"
+                    ? "处理意见"
+                    : editable
+                      ? "查看并更新引用"
+                      : "查看引用"}
+                </button>
+              </div>
             ))}
           {!scriptIssues(production).some((i) => i.itemId === item.id) && (
             <p>当前未发现结构性问题。</p>
@@ -714,14 +872,26 @@ export function ScriptItemEditor({
             <button
               type="button"
               disabled={!canWrite || dirty || item.status !== "in-review"}
-              onClick={() => setNoteAction("approve")}
+              onClick={() =>
+                setNoteAction({
+                  action: "approve",
+                  revision: item.revision,
+                  workflowRevision: item.workflowRevision,
+                })
+              }
             >
               批准此版本
             </button>
             <button
               type="button"
               disabled={!canWrite || dirty || item.status !== "in-review"}
-              onClick={() => setNoteAction("request-changes")}
+              onClick={() =>
+                setNoteAction({
+                  action: "request-changes",
+                  revision: item.revision,
+                  workflowRevision: item.workflowRevision,
+                })
+              }
             >
               退回修改
             </button>
@@ -738,7 +908,13 @@ export function ScriptItemEditor({
               <button
                 type="button"
                 disabled={!canWrite}
-                onClick={() => setNoteAction("unlock")}
+                onClick={() =>
+                  setNoteAction({
+                    action: "unlock",
+                    revision: item.revision,
+                    workflowRevision: item.workflowRevision,
+                  })
+                }
               >
                 说明原因并解锁
               </button>
@@ -749,22 +925,38 @@ export function ScriptItemEditor({
       {noteAction && (
         <NoteDialog
           title={
-            noteAction === "approve"
+            noteAction.action === "approve"
               ? "批准此版本"
-              : noteAction === "unlock"
+              : noteAction.action === "unlock"
                 ? "说明原因并解锁"
                 : "退回修改"
           }
-          required={noteAction !== "approve"}
+          required={noteAction.action !== "approve"}
+          context={`本次决定：v${noteAction.revision}`}
+          blocked={
+            noteAction.revision !== item.revision ||
+            noteAction.workflowRevision !== item.workflowRevision
+              ? "正文或审阅状态已变化，请关闭后重新核对；本次决定不会应用到新版本。"
+              : undefined
+          }
           onClose={() => setNoteAction(null)}
           onSubmit={async (note) => {
-            if (noteAction === "unlock")
-              await run({ action: "unlock-item", ...workflow, reason: note });
+            const pinnedWorkflow = {
+              ...workflow,
+              expectedRevision: noteAction.revision,
+              expectedWorkflowRevision: noteAction.workflowRevision,
+            };
+            if (noteAction.action === "unlock")
+              await run({
+                action: "unlock-item",
+                ...pinnedWorkflow,
+                reason: note,
+              });
             else
               await run({
                 action: "review-decision",
-                ...workflow,
-                decision: noteAction,
+                ...pinnedWorkflow,
+                decision: noteAction.action,
                 note,
               });
             setNoteAction(null);
@@ -776,11 +968,32 @@ export function ScriptItemEditor({
           production={production}
           item={item}
           purpose={generation}
+          value={
+            generationDrafts[generation] ?? {
+              selected: [],
+              characters: 8000,
+              count: 1,
+              instruction: "",
+            }
+          }
+          onChange={(value) =>
+            setGenerationDrafts((previous) => ({
+              ...previous,
+              [generation]: value,
+            }))
+          }
           quote={quote}
           onClose={() => setGeneration(null)}
           onCompose={(text, request) => {
-            onCompose(text, request);
-            setGeneration(null);
+            const result = onCompose(text, request);
+            if (result.ok) {
+              setGenerationDrafts((previous) => ({
+                ...previous,
+                [generation]: undefined,
+              }));
+              setGeneration(null);
+            }
+            return result;
           }}
         />
       )}
@@ -850,11 +1063,15 @@ function NoteDialog({
   required,
   onClose,
   onSubmit,
+  context,
+  blocked,
 }: {
   title: string;
   required: boolean;
   onClose: () => void;
   onSubmit: (note: string) => Promise<void>;
+  context?: string;
+  blocked?: string;
 }) {
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
@@ -864,16 +1081,29 @@ function NoteDialog({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (busy || blocked) return;
+          const form = e.currentTarget;
+          const restoreFocus = scriptFocusReturn(
+            form,
+            ((e.nativeEvent as SubmitEvent).submitter as HTMLElement | null) ??
+              (document.activeElement as HTMLElement | null),
+          );
           setBusy(true);
+          setError("");
           try {
             await onSubmit(note);
           } catch (e) {
             setError((e as Error).message);
           } finally {
-            setBusy(false);
+            // The modal owns this busy state, not the parent command. Wait for
+            // its control to be enabled before returning focus after failure.
+            if (form.isConnected) flushSync(() => setBusy(false));
+            restoreFocus();
           }
         }}
       >
+        {context && <p className="script-hint">{context}</p>}
+        {blocked && <p role="alert">{blocked}</p>}
         <label>
           说明
           <textarea
@@ -890,7 +1120,7 @@ function NoteDialog({
           <button
             className="primary"
             type="submit"
-            disabled={busy || (required && !note.trim())}
+            disabled={busy || !!blocked || (required && !note.trim())}
           >
             确认
           </button>
@@ -990,11 +1220,13 @@ function ReviewRow({
   productionId,
   run,
   disabled,
+  authorName,
 }: {
   review: ScriptReview;
   productionId: string;
   run: ScriptRun;
   disabled: boolean;
+  authorName: string;
 }) {
   const [resolving, setResolving] = useState(false);
   return (
@@ -1004,7 +1236,7 @@ function ReviewRow({
         {review.contextRevision
           ? ` · 制作规范 v${review.contextRevision}`
           : ""}{" "}
-        · {review.author.actantId} ·{" "}
+        · {authorName} ·{" "}
         {{ note: "建议", warning: "警告", blocking: "阻断" }[review.severity]} ·{" "}
         {review.resolvedAt
           ? "已解决"
@@ -1012,6 +1244,12 @@ function ReviewRow({
             ? "历史留档"
             : "待处理"}
       </small>
+      <details>
+        <summary>追溯信息</summary>
+        <small>
+          {review.author.actantId} · {review.author.principalId}
+        </small>
+      </details>
       {review.historicalOnly ? (
         <p className="script-hint">历史意见，不阻断当前稿</p>
       ) : !review.resolvedAt && review.severity === "blocking" ? (
@@ -1059,20 +1297,21 @@ function GenerationDialog({
   quote,
   onClose,
   onCompose,
+  value,
+  onChange,
 }: {
   production: ScriptProduction;
   item: ScriptItem;
   purpose: ScriptGeneration["purpose"];
   quote: string;
   onClose: () => void;
-  onCompose: (text: string, request: ScriptGeneration) => void;
+  onCompose: (text: string, request: ScriptGeneration) => ScriptComposeResult;
+  value: GenerationDraft;
+  onChange: (value: GenerationDraft) => void;
 }) {
   // Freeze the whole request context at open. A later refresh must not retarget it.
   const [frozen] = useState(() => structuredClone({ production, item }));
-  const [selected, setSelected] = useState<string[]>([]);
-  const [characters, setCharacters] = useState(8000);
-  const [count, setCount] = useState(1);
-  const [instruction, setInstruction] = useState("");
+  const { selected, characters, count, instruction } = value;
   const [error, setError] = useState("");
   const p = frozen.production,
     target = frozen.item;
@@ -1131,7 +1370,7 @@ function GenerationDialog({
             ];
             if (JSON.stringify({ brief: p.brief, materials }).length > 120000)
               throw new Error("材料超过 120000 字符，请缩小范围。");
-            onCompose(
+            const result = onCompose(
               `请对《${p.title}》的「${currentScriptDraft(target).title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，结果提交为候选或带引用的审阅意见，不覆盖正式稿，不代替人工批准。`,
               {
                 productionId: p.id,
@@ -1145,6 +1384,7 @@ function GenerationDialog({
                 maxReviewPasses: 1,
               },
             );
+            if (!result.ok) setError(result.error);
           } catch (e) {
             setError((e as Error).message);
           }
@@ -1157,10 +1397,13 @@ function GenerationDialog({
         <label>
           本次要求
           <textarea
+            aria-label="本次要求"
             rows={3}
             maxLength={5000}
             value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
+            onChange={(e) =>
+              onChange({ ...value, instruction: e.target.value })
+            }
           />
         </label>
         {quote && <blockquote>{quote}</blockquote>}
@@ -1174,11 +1417,12 @@ function GenerationDialog({
                   type="checkbox"
                   checked={selected.includes(i.id)}
                   onChange={(e) =>
-                    setSelected(
-                      e.target.checked
+                    onChange({
+                      ...value,
+                      selected: e.target.checked
                         ? [...selected, i.id]
                         : selected.filter((id) => id !== i.id),
-                    )
+                    })
                   }
                 />
                 {currentScriptDraft(i).title} · v{i.revision}
@@ -1193,7 +1437,9 @@ function GenerationDialog({
               min={1}
               max={3}
               value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
+              onChange={(e) =>
+                onChange({ ...value, count: Number(e.target.value) })
+              }
             />
           </label>
           <label>
@@ -1203,7 +1449,9 @@ function GenerationDialog({
               min={100}
               max={50000}
               value={characters}
-              onChange={(e) => setCharacters(Number(e.target.value))}
+              onChange={(e) =>
+                onChange({ ...value, characters: Number(e.target.value) })
+              }
             />
           </label>
         </div>

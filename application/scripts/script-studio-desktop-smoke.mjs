@@ -428,6 +428,10 @@ try {
   });
   await focusOwnWindow();
   await button("导出 Word").click();
+  await page
+    .getByRole("dialog", { name: "导出 Word", exact: true })
+    .getByRole("button", { name: "导出所选", exact: true })
+    .click();
   await expect(page.locator(".script-export-status")).toContainText(
     "已取消保存",
   );

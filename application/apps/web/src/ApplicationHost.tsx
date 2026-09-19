@@ -44,7 +44,7 @@ import {
 import type { WorkspaceClient } from "./client.js";
 import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
 import type { InputIntent } from "../../../packages/core/src/input-intent.js";
-import { ScriptStudio } from "./ScriptStudio.js";
+import { ScriptStudio, type ScriptComposeResult } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
 import type { BrowserView } from "./desktop.js";
@@ -99,7 +99,7 @@ export function ApplicationHost({
     text: string,
     artifactId?: string,
     scriptGeneration?: ScriptGeneration,
-  ) => void;
+  ) => ScriptComposeResult;
   onComposeIntent: (intent: InputIntent) => void;
   onSaveProject: () => void;
   onNotice: (message: string) => void;

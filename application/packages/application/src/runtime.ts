@@ -51,6 +51,7 @@ import { ConversationFeed } from "./conversation-feed.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { inspectRuntimeConnection } from "./runtime-connection.js";
 import { RuntimeModelSettings } from "./model-settings.js";
+import { harnessReadinessError } from "../../core/src/applications.js";
 
 const configSchema = z
   .object({
@@ -215,6 +216,7 @@ export function settles(
   );
 }
 export class RuntimeBridge {
+  private loadedHarnesses: { id: string; version: string }[] | null = null;
   private feeds = new Set<ConversationFeed>();
   private publish<
     T extends {
@@ -1021,6 +1023,7 @@ export class RuntimeBridge {
         : {}),
       configured: true,
       connected: this.state.connected,
+      harnesses: this.state.connected ? this.loadedHarnesses : null,
       model: this.state.model,
       error: this.state.error,
       deliveries: this.state.deliveries
@@ -1750,6 +1753,9 @@ export class RuntimeBridge {
           .object({
             enabled: z.boolean(),
             directed_input: z.boolean().default(false),
+            harnesses: z
+              .array(z.object({ id: z.string(), version: z.string() }))
+              .optional(),
             formats: z
               .array(
                 z.object({
@@ -1759,6 +1765,7 @@ export class RuntimeBridge {
               .default([]),
           })
           .parse(await this.request("/api/session-io/capabilities"));
+        this.loadedHarnesses = io.enabled ? (io.harnesses ?? null) : null;
         this.state.directedInput =
           io.enabled &&
           io.directed_input &&
@@ -1769,6 +1776,7 @@ export class RuntimeBridge {
           );
       } catch {
         this.state.directedInput = false;
+        this.loadedHarnesses = null;
       }
       for (const delivery of this.state.deliveries.filter(
         (item) => item.state === "queued",
@@ -1778,6 +1786,15 @@ export class RuntimeBridge {
         delivery.state = "sending";
         this.save();
         try {
+          const activation = delivery.request.activation as
+            { harness?: { id: string; version: string } } | undefined;
+          if (activation?.harness) {
+            const issue = harnessReadinessError(
+              activation.harness,
+              this.loadedHarnesses,
+            );
+            if (issue) throw new UpstreamError(422, issue);
+          }
           await this.ensureSession(delivery.sessionId);
           // Establish observers before the model can emit its first text chunk.
           await Promise.all([...this.feeds].map((feed) => feed.sync()));

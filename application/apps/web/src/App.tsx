@@ -2208,39 +2208,42 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         target.revision !== scriptGeneration.baseRevision ||
                         production.revision !== scriptGeneration.contextRevision
                       ) {
-                        setNotice(
-                          "剧本引用已有变化，请重新准备请求；原草稿保留。",
-                        );
-                        return;
+                        return {
+                          ok: false,
+                          error: "剧本引用已有变化，请关闭后重新准备请求；原草稿保留。",
+                        };
                       }
                       if (
+                        sending ||
                         draft.pendingSupplement ||
                         draft.continuation ||
                         draft.annotation ||
                         draft.taskResult ||
-                        draft.intent === "script" ||
-                        (draft.scriptGeneration &&
-                          JSON.stringify(draft.scriptGeneration) !==
-                            JSON.stringify(scriptGeneration))
+                        draft.body.trim() ||
+                        draft.attachments?.length ||
+                        (draft.intent && draft.intent !== "script") ||
+                        draft.scriptGeneration
                       ) {
-                        setNotice(
-                          "输入中已有另一份请求。请先发送或明确移除原剧本请求，再准备新请求。",
-                        );
-                        return;
+                        return {
+                          ok: false,
+                          error: "输入框中已有未发送的内容或请求。请先处理原输入，再准备本次请求；这里填写的要求已保留。",
+                        };
                       }
                       setDraft(contextKey, {
                         ...draft,
+                        intent: undefined,
                         revision: null,
                         selection: "",
                         scriptGeneration: structuredClone(scriptGeneration),
-                        body: [draft.body, text].filter(Boolean).join("\n"),
+                        body: text,
                       });
                     } else if (artifactId) {
                       const target = state.artifacts.find(
                         (a) =>
                           a.id === artifactId && a.projectId === project.id,
                       );
-                      if (!target) return;
+                      if (!target)
+                        return { ok: false, error: "引用的内容已不可用。" };
                       prefer({ artifactId: target.id });
                       const key = conversationId + ":" + target.id;
                       setDraft(key, {
@@ -2256,6 +2259,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         body: [draft.body, text].filter(Boolean).join("\n"),
                       });
                     showInput();
+                    return { ok: true };
                   }}
                 >
                   {artifact ? (

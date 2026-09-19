@@ -41,7 +41,7 @@ assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
 const harnessFile = fileURLToPath(
   new URL("../harnesses/script-studio.hns", import.meta.url),
 );
-const harnessRef = { id: "morphz.script-studio", version: "1.0.0" };
+const harnessRef = scriptStudioApplication.harness!;
 const directory = mkdtempSync(join(tmpdir(), "morphz-script-runtime-"));
 const runtimeDirectory = join(directory, "runtime");
 const workDirectory = join(directory, "application");
@@ -112,6 +112,12 @@ const provider = createServer(async (req, res) => {
     assert.ok(
       mountedContext.includes("bounded-process"),
       "Actual request must mount the writing contract",
+    );
+    assert.ok(
+      mountedContext.includes("review-before-submit") &&
+        mountedContext.includes("script-studio/targeted-rewrite") &&
+        mountedContext.includes("script-studio/quality-and-handoff"),
+      "Actual request must mount professional craft Mind, not just tool permissions",
     );
     if (lastToolCallId) {
       const result = messages.findLast(
@@ -323,12 +329,30 @@ try {
     );
     return result.stdout;
   };
+  cli([
+    "harness",
+    "install",
+    fileURLToPath(
+      new URL("../harnesses/legacy/script-studio-1.0.0.hns", import.meta.url),
+    ),
+  ]);
   cli(["harness", "install", harnessFile]);
+  cli([
+    "harness",
+    "install",
+    fileURLToPath(
+      new URL("../harnesses/legacy/script-studio-1.1.0.hns", import.meta.url),
+    ),
+  ]);
   const registered = cli(["harness", "list"]);
   assert.ok(
     registered.includes(harnessRef.id) &&
       registered.includes(harnessRef.version),
     "Package must be listed by a second process reading the persisted registry",
+  );
+  assert.ok(
+    registered.includes("1.0.0"),
+    "Legacy package remains available for immutable retries",
   );
   assert.equal(providerCalls, 0, "Installing a Harness must not call a model");
   runtime = spawn(

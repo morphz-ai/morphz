@@ -107,9 +107,25 @@ export const scriptStudioApplication: ApplicationManifest = {
   description: "从创作要求到分集分场、候选审改与锁稿交付。",
   icon: "film",
   permissions: ["input.compose"],
-  harness: { id: "morphz.script-studio", version: "1.0.0" },
+  // New inputs snapshot this execution package; existing inputs/retries keep
+  // their immutable Harness reference. The builtin UI protocol stays v1.
+  harness: { id: "morphz.script-studio", version: "1.1.1" },
   ui: { type: "builtin", view: "script-studio", presentation: "workspace" },
 };
+
+/** null/absent means unverified, never an empty installed registry. */
+export function harnessReadinessError(
+  required: { id: string; version: string },
+  loaded: { id: string; version: string }[] | null | undefined,
+): string | null {
+  if (!loaded)
+    return "运行服务尚未提供应用执行包的就绪检查，请更新并检查运行服务；输入会保留，不会改用普通聊天。";
+  if (
+    !loaded.some((h) => h.id === required.id && h.version === required.version)
+  )
+    return `运行服务尚未加载应用执行包 ${required.id}@${required.version}。请在当前运行服务安装并加载该版本，再重试原输入。`;
+  return null;
+}
 
 export const applicationMessageSchema = z.discriminatedUnion("method", [
   z.object({ method: z.literal("ready") }).strict(),

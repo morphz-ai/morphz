@@ -224,6 +224,7 @@
   min-width: 0;
   min-height: 0;
   padding: 12px 16px 32px;
+  scroll-padding-top: 76px;
 }
 .script-editor {
   min-width: 0;
@@ -327,6 +328,12 @@
 }
 .script-editor-header {
   margin-bottom: 8px;
+  position: sticky;
+  top: -12px;
+  z-index: 2;
+  padding: 8px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--hairline);
 }
 .script-editor-header strong {
   flex: 1;
@@ -479,6 +486,17 @@
   margin-left: 0;
   margin-right: 0;
 }
+.script-editor-error {
+  margin: 0 0 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--surface-raised);
+}
+.script-editor-error > span {
+  flex: 1;
+  min-width: 0;
+}
 .script-workflow {
   margin-top: 14px;
   padding-top: 10px;
@@ -556,14 +574,29 @@
    Only content width and field layout belong to the studio. */
 .script-dialog {
   --ui-dialog-width: 580px;
+  overflow: hidden;
+}
+.script-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.script-dialog > header {
+  flex-shrink: 0;
 }
 .script-dialog-compact {
   --ui-dialog-width: 420px;
 }
 .script-dialog > form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-block: 8px 64px;
+}
+.script-dialog > form > * {
+  flex-shrink: 0;
 }
 .script-dialog :is(input:not([type="checkbox"]), textarea, select) {
   width: 100%;
@@ -571,6 +604,12 @@
 }
 .script-dialog > form > footer {
   margin-top: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-block: 8px;
+  background: var(--surface-raised);
+  border-top: 1px solid var(--hairline);
 }
 .script-dialog [role="alert"] {
   overflow-wrap: anywhere;
@@ -641,6 +680,9 @@
     min-height: 0;
     padding: 10px;
   }
+  .script-editor-header {
+    top: -10px;
+  }
   .script-diff {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -649,4 +691,17 @@
   .script-toolbar > select {
     max-width: 100%;
   }
+}
+.script-export-items {
+  max-height: min(50vh, 28rem);
+  overflow: auto;
+  display: grid;
+  gap: var(--space-2, 8px);
+}
+.script-export-record {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.script-issue {
+  margin-block: 10px;
 }

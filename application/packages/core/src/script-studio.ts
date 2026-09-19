@@ -232,7 +232,7 @@ export const scriptProductionSchema = z
     projectId: id,
     title,
     revision,
-    // Metadata/rights/brief changes invalidate outstanding generation and approval.
+    // Metadata CAS is separate from creative validity (see scriptContextCurrent).
     brief: scriptBriefSchema,
     reviewerPrincipalIds: z.array(id).min(1).max(50),
     createdBy: author,
@@ -271,6 +271,31 @@ export const scriptProductionSchema = z
   })
   .strict();
 export type ScriptProduction = z.infer<typeof scriptProductionSchema>;
+
+export function scriptCreativeContext(
+  value: Pick<ScriptProduction, "brief" | "reviewerPrincipalIds">,
+) {
+  return JSON.stringify([value.brief, [...value.reviewerPrincipalIds].sort()]);
+}
+
+/** Presentation changes keep evidence valid. An intervening creative change,
+ * even if later reverted, must never resurrect an old candidate or approval. */
+export function scriptContextCurrent(
+  production: ScriptProduction,
+  revision: number,
+) {
+  const original = production.metadataHistory.find(
+    (m) => m.revision === revision,
+  );
+  if (!original || revision > production.revision) return false;
+  const context = scriptCreativeContext(original);
+  return (
+    scriptCreativeContext(production) === context &&
+    production.metadataHistory.every(
+      (m) => m.revision <= revision || scriptCreativeContext(m) === context,
+    )
+  );
+}
 
 const scope = { productionId: id };
 const itemScope = { ...scope, itemId: id, expectedRevision: revision };
@@ -464,7 +489,7 @@ export function scriptCandidateStale(
   candidate: ScriptCandidate,
 ) {
   return (
-    production.revision !== candidate.contextRevision ||
+    !scriptContextCurrent(production, candidate.contextRevision) ||
     production.items.find((i) => i.id === candidate.targetId)?.revision !==
       candidate.baseRevision ||
     candidate.references.some(

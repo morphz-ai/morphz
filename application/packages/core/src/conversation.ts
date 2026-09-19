@@ -56,6 +56,10 @@ export const conversationRuntimeSchema = z.object({
   attention: executionAttentionSchema.optional(),
   configured: z.boolean(),
   connected: z.boolean(),
+  harnesses: z
+    .array(z.object({ id: z.string(), version: z.string() }))
+    .nullable()
+    .optional(),
   model: z.string(),
   error: z.string(),
   deliveries: z.array(deliverySchema),

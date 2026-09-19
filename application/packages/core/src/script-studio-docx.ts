@@ -338,16 +338,6 @@ export function buildScriptDocx(
   document.add(`${declaration}<w:document xmlns:w="${wns}"><w:body>`);
   document.paragraph(metadata.title, "Title");
   document.paragraph(template.title, "Subtitle");
-  document.field(
-    "剧本项目 / 企划版本",
-    `${productionId} / v${record.contextRevision}`,
-  );
-  document.field("导出记录", record.id);
-  document.field("导出记录时间（ISO 8601）", record.createdAt);
-  document.field(
-    "导出人",
-    `${record.createdBy.actantId}（${record.createdBy.principalId}）`,
-  );
   document.field("本次交付", `${items.length} 个条目的指定历史版本`);
   document.field(
     "创作要求",
@@ -370,7 +360,7 @@ export function buildScriptDocx(
       item.kind === "scene" ? "Heading2" : "Heading1",
       pageBreak,
     );
-    document.field("文稿来源", `${item.id} v${item.revision}`);
+    document.field("文稿版本", `v${item.revision}`);
     document.field(
       "创作依据",
       { original: "原创", source: "原作资料", adaptation: "改编设定" }[
@@ -384,7 +374,13 @@ export function buildScriptDocx(
       draft.characters
         .map(
           (id) =>
-            `${id} v${draft.dependencies.find((r) => r.itemId === id)!.revision}`,
+            production.items
+              .find((i) => i.id === id)!
+              .versions.find(
+                (v) =>
+                  v.revision ===
+                  draft.dependencies.find((r) => r.itemId === id)!.revision,
+              )!.draft.title,
         )
         .join("、"),
     );
@@ -395,15 +391,6 @@ export function buildScriptDocx(
       document.field("观众已知", draft.audienceKnowledge);
       document.field("角色已知", draft.characterKnowledge);
       document.field("伏笔与兑现", draft.setupPayoff);
-    }
-    if (draft.dependencies.length)
-      document.field(
-        "依赖版本",
-        draft.dependencies.map((r) => `${r.itemId} v${r.revision}`).join("；"),
-      );
-    for (const source of draft.sources) {
-      document.field("原作引用", `${source.artifactId} v${source.revision}`);
-      if (source.quote) document.field("原文", source.quote);
     }
   };
   // Supporting material is ordered by kind, then authored order and stable ID.
@@ -419,6 +406,40 @@ export function buildScriptDocx(
       .filter((i) => i.kind === "scene" && i.draft.parentId === episode.id)
       .sort(byOrder))
       renderItem(scene);
+  }
+  // Keep complete provenance in a clearly separated appendix, not between dialogue.
+  // All names are resolved from the pinned historical versions, never live metadata.
+  document.paragraph("附录：版本与来源追溯", "Heading1", true);
+  document.field(
+    "剧本项目 / 企划版本",
+    `${productionId} / v${record.contextRevision}`,
+  );
+  document.field("导出记录", record.id);
+  document.field(
+    "导出时间（UTC）",
+    new Date(record.createdAt)
+      .toISOString()
+      .replace("T", " ")
+      .replace(".000Z", "")
+      .replace(/Z$/, ""),
+  );
+  document.field(
+    "导出人标识",
+    `${record.createdBy.actantId}（${record.createdBy.principalId}）`,
+  );
+  for (const item of items.slice().sort(byOrder)) {
+    document.paragraph(`${item.draft.title} · v${item.revision}`, "Heading2");
+    document.field("文稿来源", `${item.id} v${item.revision}`);
+    for (const ref of item.draft.dependencies) {
+      const title = production.items
+        .find((i) => i.id === ref.itemId)!
+        .versions.find((v) => v.revision === ref.revision)!.draft.title;
+      document.field("依赖版本", `${title} · ${ref.itemId} v${ref.revision}`);
+    }
+    for (const source of item.draft.sources) {
+      document.field("原作引用", `${source.artifactId} v${source.revision}`);
+      if (source.quote) document.field("原文", source.quote);
+    }
   }
   document.add(
     '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>',

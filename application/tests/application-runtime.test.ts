@@ -20,7 +20,7 @@ test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写
   const execute = (operation: Operation) =>
     store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
   try {
-    const harness = { id: "morphz.script-studio", version: "1.0.0" };
+    const harness = { id: "morphz.script-studio", version: "1.1.1" };
     assert.deepEqual(scriptStudioApplication.harness, harness);
     const applicationInstanceId = execute({
       type: "launch-application",
@@ -74,6 +74,19 @@ test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写
     assert.deepEqual(
       store.snapshot().inputs.find((input) => input.id === inputId),
       saved,
+    );
+    // Model a persisted pre-upgrade outbox: it must not be retargeted by a
+    // newer builtin binding, even if enqueue is called again after restart.
+    before.deliveries[0]!.request.activation.harness = {
+      id: "morphz.script-studio",
+      version: "1.0.0",
+    };
+    store.saveRuntimeState(before);
+    const legacyBridge = new RuntimeBridge(store, config);
+    legacyBridge.enqueue(inputId);
+    assert.deepEqual(
+      (store.runtimeState() as Ledger).deliveries,
+      before.deliveries,
     );
   } finally {
     store.close();

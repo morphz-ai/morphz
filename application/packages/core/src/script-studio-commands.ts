@@ -13,6 +13,8 @@ import {
   emptyScriptBrief,
   emptyScriptDraft,
   scriptCandidateStale,
+  scriptContextCurrent,
+  scriptCreativeContext,
   scriptImpact,
   scriptIssues,
   type ScriptCommand,
@@ -150,7 +152,11 @@ export function validateScriptGeneration(
   requireHuman(state, access);
   if (!production.brief.modelProcessingAllowed)
     throw new DomainError("forbidden", "尚未确认这些资料可交给模型处理。");
-  requireVersion(production.revision, generation.contextRevision);
+  if (!scriptContextCurrent(production, generation.contextRevision))
+    throw new DomainError(
+      "conflict",
+      "创作要求已有新版本，请重新核对生成请求。",
+    );
   const target = getScriptItem(production, generation.targetId);
   requireVersion(target.revision, generation.baseRevision);
   assertUnique(
@@ -163,7 +169,10 @@ export function validateScriptGeneration(
       ref.revision,
     );
   const pinned = new Map(
-    generation.references.map((r) => [r.itemId, r.revision]),
+    [
+      { itemId: generation.targetId, revision: generation.baseRevision },
+      ...generation.references,
+    ].map((r) => [r.itemId, r.revision]),
   );
   const visited = new Set<string>();
   const verifyDependencies = (item: ScriptItem) => {
@@ -192,7 +201,14 @@ export function validateScriptGeneration(
       currentScriptDraft(getScriptItem(production, r.itemId)),
     ),
   ];
-  if (JSON.stringify({ brief: production.brief, materials }).length > 120_000)
+  // Count the actual authorized source text, not only its short reference ID.
+  const sources = materials.flatMap((draft) =>
+    draft.sources.map((ref) => scriptSourceText(state, production, ref).text),
+  );
+  if (
+    JSON.stringify({ brief: production.brief, materials, sources }).length >
+    120_000
+  )
     throw new DomainError(
       "invalid",
       "本次剧本材料超过 120000 字符，请缩小生成范围。",
@@ -206,20 +222,31 @@ function validateScriptDraftSources(
   production: ScriptProduction,
   draft: ScriptDraft,
 ) {
-  for (const ref of draft.sources) {
-    const source = getArtifact(state, ref.artifactId);
-    const version = source.versions.find((v) => v.revision === ref.revision);
-    if (
-      source.projectId !== production.projectId ||
-      (version?.projectId && version.projectId !== production.projectId) ||
-      !version ||
-      (ref.quote && !quotedText(version.content).includes(ref.quote))
-    )
-      throw new DomainError(
-        "forbidden",
-        "引用的原作版本已不可用或不属于当前项目。",
-      );
-  }
+  for (const ref of draft.sources) scriptSourceText(state, production, ref);
+}
+
+/** Exact, live-authorized source version. An excerpt grants that excerpt only. */
+export function scriptSourceText(
+  state: Workspace,
+  production: ScriptProduction,
+  ref: ScriptDraft["sources"][number],
+) {
+  const source = getArtifact(state, ref.artifactId);
+  const version = source.versions.find((v) => v.revision === ref.revision);
+  if (
+    source.projectId !== production.projectId ||
+    !version ||
+    (version.projectId && version.projectId !== production.projectId) ||
+    (ref.quote && !quotedText(version.content).includes(ref.quote))
+  )
+    throw new DomainError(
+      "forbidden",
+      "引用的原作版本已不可用或不属于当前项目。",
+    );
+  return {
+    title: version.title,
+    text: ref.quote || quotedText(version.content),
+  };
 }
 
 /** Recheck live actor and initiating Human memberships, including durable receipt replay. */
@@ -321,7 +348,7 @@ function assertApprovable(production: ScriptProduction, item: ScriptItem) {
     if (
       !upstream.approval ||
       upstream.approval.revision !== ref.revision ||
-      upstream.approval.contextRevision !== production.revision
+      !scriptContextCurrent(production, upstream.approval.contextRevision)
     )
       throw new DomainError("conflict", "依赖的上游尚未批准或需要重新审阅。");
   }
@@ -417,6 +444,14 @@ export function applyScriptCommand(
       )
     )
       throw new DomainError("invalid", "审阅人必须是本项目的人工成员。");
+    const creativeChanged =
+      scriptCreativeContext(production) !== scriptCreativeContext(command);
+    if (
+      !creativeChanged &&
+      production.title === command.title &&
+      JSON.stringify(production.template) === JSON.stringify(command.template)
+    )
+      return production.id;
     production.revision++;
     production.title = command.title;
     production.brief = structuredClone(command.brief);
@@ -431,13 +466,14 @@ export function applyScriptCommand(
       author: { ...access },
       createdAt: now,
     });
-    invalidate(
-      production,
-      production.items.map((i) => i.id),
-      access,
-      now,
-      "创作要求或制作配置已更新",
-    );
+    if (creativeChanged)
+      invalidate(
+        production,
+        production.items.map((i) => i.id),
+        access,
+        now,
+        "创作要求或制作配置已更新",
+      );
   } else if (command.action === "create-item") {
     if (production.items.length >= 5000)
       throw new DomainError("invalid", "本剧条目已达上限。");
@@ -649,7 +685,7 @@ export function applyScriptCommand(
       item.revision !== command.itemRevision ||
       !!(
         generation &&
-        (production.revision !== generation.contextRevision ||
+        (!scriptContextCurrent(production, generation.contextRevision) ||
           [
             { itemId: generation.targetId, revision: generation.baseRevision },
             ...generation.references,
@@ -726,7 +762,7 @@ export function applyScriptCommand(
       if (
         item.status !== "locked" ||
         !item.approval ||
-        item.approval.contextRevision !== production.revision
+        !scriptContextCurrent(production, item.approval.contextRevision)
       )
         throw new DomainError("conflict", "正式交付只能导出审阅有效的锁定稿。");
       assertApprovable(production, item);
@@ -790,7 +826,7 @@ export function applyScriptCommand(
       if (
         item.status !== "approved" ||
         item.approval?.revision !== item.revision ||
-        item.approval.contextRevision !== production.revision
+        !scriptContextCurrent(production, item.approval.contextRevision)
       )
         throw new DomainError("conflict", "只能锁定已批准的当前版本。");
       assertApprovable(production, item);
