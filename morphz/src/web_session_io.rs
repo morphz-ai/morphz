@@ -25,7 +25,16 @@ pub(super) async fn capabilities(
     if let Err(error) = principal(&state, &headers) {
         return *error;
     }
-    Json(state.runtime.session_io_registry().capabilities()).into_response()
+    let mut capabilities = state.runtime.session_io_registry().capabilities();
+    // Report the live registry, not persisted packages that this process has
+    // not loaded. Exact refs only: no contracts, credentials or installation.
+    capabilities["harnesses"] = json!(state
+        .sdk
+        .list_harnesses()
+        .into_iter()
+        .map(|h| json!({"id": h.id, "version": h.version}))
+        .collect::<Vec<_>>());
+    Json(capabilities).into_response()
 }
 
 pub(super) async fn resource(

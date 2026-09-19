@@ -10112,6 +10112,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_io_capabilities_reports_live_exact_harnesses() {
+        let (state, runtime) = test_state().await;
+        let response =
+            session_io_http::capabilities(State(Arc::clone(&state)), HeaderMap::new()).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let before: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(!before["harnesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["id"] == "readiness-test"));
+        let package = crate::harness_package::HarnessPackage::from_source(
+            "readiness.hns",
+            r#"
+            (manifest (id readiness-test) (version "1.2.3") (title "Readiness") (capabilities (tools read)))
+            (contract (identity "Synthetic test"))
+            (eval (requires (tools read)) (call read (path "README.md")))
+        "#,
+        )
+        .unwrap();
+        runtime.register_harness_package(package).await.unwrap();
+        let response = session_io_http::capabilities(State(state), HeaderMap::new()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let after: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(after["harnesses"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"id":"readiness-test","version":"1.2.3"})));
+        assert_eq!(before["formats"], after["formats"]);
+    }
+
+    #[tokio::test]
     async fn objective_http_creation_atomically_binds_exact_harness() {
         let (state, runtime) = test_state().await;
         let session_response = handle_create_session(
