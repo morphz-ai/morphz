@@ -1,10 +1,17 @@
 import { z } from "zod";
-import { checkProject, DomainError, id } from "../../core/src/model.js";
+import {
+  applyCommand,
+  checkProject,
+  DomainError,
+  id,
+  type Command,
+} from "../../core/src/model.js";
 import {
   scriptCommandSchema,
   scriptImpact,
   scriptIssues,
   scriptContextCurrent,
+  scriptDraftSchema,
   type ScriptProduction,
 } from "../../core/src/script-studio.js";
 import {
@@ -21,6 +28,21 @@ const page = {
   limit: z.number().int().min(1).max(50).default(20),
 };
 const productionScope = { productionId: id };
+const reviewPayloadSchema = z
+  .array(
+    scriptCommandSchema.options.find(
+      (option) => option.shape.action.value === "add-review",
+    )!,
+  )
+  .max(32);
+const workflowCheck = z
+  .object({
+    performed: z.boolean(),
+    revise: z.boolean(),
+    blocked: z.boolean(),
+    notes: z.string().max(5000),
+  })
+  .strict();
 export const scriptToolSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("list"), ...page }).strict(),
   z
@@ -31,6 +53,16 @@ export const scriptToolSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("read-generation") }).strict(),
+  // Deterministic data adapters for Yao, not a second workflow scheduler.
+  z.object({ action: z.literal("read-workflow") }).strict(),
+  z
+    .object({
+      action: z.literal("submit-workflow"),
+      payload: z.unknown(),
+      explanation: z.string().max(7000),
+      checks: z.array(workflowCheck).length(2),
+    })
+    .strict(),
   // Recovery is bound to the actual input, never a model-selected input ID.
   z.object({ action: z.literal("read-results"), ...page }).strict(),
   z
@@ -172,6 +204,14 @@ export function scriptTool(
     delivery.cancelRequested
   )
     throw new DomainError("forbidden", "此剧本执行未获准继续读取资料。");
+  if (request.action === "read-workflow" && !generation)
+    return {
+      ok: true,
+      generating: false,
+      body: input.body,
+      inputId: input.id,
+      note: "这是普通交流，不继承同会话此前的生成范围；讨论和试写不创建候选、意见或正式稿。",
+    };
   if (request.action === "list") {
     const all = state.scriptProductions.filter(
       (p) =>
@@ -195,6 +235,8 @@ export function scriptTool(
   }
   const productionId =
     request.action === "read-generation" ||
+    request.action === "read-workflow" ||
+    request.action === "submit-workflow" ||
     request.action === "read-results" ||
     request.action === "read-result"
       ? generation?.productionId
@@ -219,6 +261,179 @@ export function scriptTool(
       "not_found",
       "固定版本的制作要求缺失，不能替换为当前内容。",
     );
+  if (
+    request.action === "read-workflow" ||
+    request.action === "submit-workflow"
+  ) {
+    if (!generation || !pinned)
+      throw new DomainError("forbidden", "普通讨论不能进入候选提交流程。");
+    // Resolve all exact versions and live source grants on EVERY boundary,
+    // including review/rewrite and the final write. Never use current UI state.
+    const materials = pinned.map((ref) => {
+      const item = getScriptItem(production, ref.itemId);
+      const version = item.versions.find((v) => v.revision === ref.revision);
+      if (!version) throw new DomainError("not_found", "固定版本已不可用。");
+      return {
+        ...ref,
+        kind: item.kind,
+        draft: version.draft,
+        approvalForRequestedVersion:
+          item.approval?.revision === ref.revision &&
+          scriptContextCurrent(production, item.approval.contextRevision)
+            ? item.approval
+            : null,
+        sources: version.draft.sources.map((source) => ({
+          ...source,
+          ...scriptSourceText(state, production, source),
+          scope: source.quote ? "quote" : "version",
+        })),
+      };
+    });
+    const stale =
+      !scriptContextCurrent(production, generation.contextRevision) ||
+      pinned.some(
+        (ref) =>
+          getScriptItem(production, ref.itemId).revision !== ref.revision,
+      );
+    if (stale)
+      throw new DomainError(
+        "conflict",
+        "固定材料已变化，本次工序未继续；请核对后准备新的请求。",
+      );
+    const affected =
+      generation.purpose === "impact"
+        ? scriptImpact(production, [generation.targetId])
+        : null;
+    const visible = new Set(pinned.map((ref) => ref.itemId));
+    const coverage = {
+      materials: pinned,
+      impact: affected
+        ? {
+            basis: "current-dependency-graph",
+            scopedAffected: affected.filter((id) => visible.has(id)),
+            outOfScopeCount: affected.filter((id) => !visible.has(id)).length,
+            semanticQualityChecked: false,
+          }
+        : null,
+    };
+    if (request.action === "read-workflow") {
+      const packet = {
+        ok: true,
+        generating: true,
+        writing: ["draft", "rewrite"].includes(generation.purpose),
+        reviewPasses: generation.maxReviewPasses,
+        inputId: input.id,
+        body: input.body,
+        generation,
+        title: metadata.title,
+        brief: metadata.brief,
+        target: materials[0],
+        materials,
+        coverage,
+        outputSchema: z.toJSONSchema(
+          ["draft", "rewrite"].includes(generation.purpose)
+            ? scriptDraftSchema
+            : reviewPayloadSchema,
+        ),
+        outputRules:
+          "严格遵守 outputSchema。characters 是已有角色条目的 ID 数组，不是姓名；只有本次材料中的 character 条目可被新增关联，没有就保留原数组或空数组。sources、dependencies、parentId 都是准确引用，不猜 ID，不新增未授权关系。maxOutputCharacters 限完整 draft JSON 字符数。",
+      };
+      // Fail explicitly rather than silently truncating evidence. Large projects
+      // can select a smaller working set; the existing paged readers still work.
+      if (JSON.stringify(packet).length > 120_000)
+        throw new DomainError(
+          "invalid",
+          "本次固定材料超过 120000 字符，请缩小本次创作范围；没有截断或生成。",
+        );
+      return packet;
+    }
+    const count = request.checks.filter((check) => check.performed).length;
+    if (
+      count > generation.maxReviewPasses ||
+      request.checks.some(
+        (check, index) =>
+          check.performed && index >= generation.maxReviewPasses,
+      ) ||
+      request.checks.some((check) => check.blocked)
+    )
+      throw new DomainError("invalid", "审阅次数或阻碍状态不允许提交。");
+    const audit =
+      `\n\nYao 工序：执行 ${count} 轮语义自审（上限 ${generation.maxReviewPasses}）；不是人工批准或独立质量认证。` +
+      request.checks
+        .filter((check) => check.performed)
+        .map((check, index) => `\n${index + 1}. ${check.notes}`)
+        .join("");
+    const writing = ["draft", "rewrite"].includes(generation.purpose);
+    const parsed = writing
+      ? scriptDraftSchema.safeParse(request.payload)
+      : reviewPayloadSchema.safeParse(request.payload);
+    if (!parsed.success)
+      throw new DomainError(
+        "invalid",
+        "工序结果格式不符合要求：" +
+          parsed.error.issues
+            .slice(0, 6)
+            .map(
+              (issue) =>
+                `${issue.path.join(".") || "payload"}: ${issue.message}`,
+            )
+            .join("；"),
+      );
+    const commands = writing
+      ? [
+          scriptCommandSchema.parse({
+            action: "submit-candidate",
+            productionId,
+            draft: parsed.data,
+            explanation: (request.explanation + audit).slice(0, 10_000),
+          }),
+        ]
+      : reviewPayloadSchema.parse(parsed.data);
+    if (
+      commands.some(
+        (command) =>
+          !("productionId" in command) || command.productionId !== productionId,
+      )
+    )
+      throw new DomainError("forbidden", "结果不属于本次剧本。");
+    const batch: Command[] = commands.map((command, index) => ({
+      commandId: stableId(
+        "host-script-workflow",
+        invocation.context_id,
+        invocation.job_id,
+        invocation.tool_call_id,
+        String(index),
+      ),
+      operation: { type: "script-command", command },
+    }));
+    // Validate the COMPLETE batch first; a bad final quote must not leave an
+    // earlier review saved. Individual durable commands retain replay identity.
+    let preview = state;
+    for (const command of batch)
+      preview = applyCommand(
+        preview,
+        command,
+        scope.access,
+        undefined,
+        input.id,
+      ).state;
+    const receipts = batch.map((command) =>
+      store.execute(command, scope.access, input.id),
+    );
+    return {
+      ok: true,
+      inputId: input.id,
+      kind: writing ? "candidate" : "reviews",
+      receipts,
+      reviewPasses: count,
+      checks: request.checks.filter((check) => check.performed),
+      explanation: request.explanation,
+      coverage,
+      note: receipts.length
+        ? "已保存候选或意见，未采纳、批准或锁稿。"
+        : "检查完成，未提交意见；不代表不存在问题。",
+    };
+  }
   if (request.action === "read-generation") {
     const target = getScriptItem(production, generation!.targetId);
     const targetVersion = target.versions.find(

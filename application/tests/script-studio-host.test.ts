@@ -203,6 +203,250 @@ function fixture() {
   };
 }
 
+test("Yao 普通交流包不泄露剧本资料、不继承生成权限，不要求先授权或建稿", () => {
+  const f = fixture();
+  try {
+    f.metadata({ modelProcessingAllowed: false });
+    const inputId = f.input();
+    f.delivery(inputId, "running");
+    const before = f.store.snapshot();
+    const packet = f
+      .tools(inputId)
+      .call(script({ action: "read-workflow" })) as any;
+    assert.equal(packet.generating, false);
+    assert.equal(packet.inputId, inputId);
+    assert.equal(packet.materials, undefined);
+    assert.equal(packet.generation, undefined);
+    assert.equal(packet.brief, undefined);
+    assert.deepEqual(f.store.snapshot(), before);
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          script({
+            action: "submit-workflow",
+            payload: currentScriptDraft(f.item(f.targetId)),
+            explanation: "不应保存",
+            checks: [0, 1].map(() => ({
+              performed: false,
+              revise: false,
+              blocked: false,
+              notes: "未执行",
+            })),
+          }),
+        ),
+      /固定|生成请求/,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("Yao 材料包和每次阶段检查均使用真实根、固定版本与当前授权", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input(f.generation());
+    f.delivery(inputId, "running");
+    const read = () =>
+      f.tools(inputId).call(script({ action: "read-workflow" })) as any;
+    const packet = read();
+    assert.equal(packet.generating, true);
+    assert.equal(packet.writing, true);
+    assert.equal(packet.reviewPasses, 1);
+    assert.equal(packet.target.revision, 1);
+    assert.equal(
+      packet.outputSchema.properties.characters.items.pattern,
+      "^[a-zA-Z0-9_-]+$",
+    );
+    assert.ok(packet.outputRules.includes("不是姓名"));
+    assert.deepEqual(
+      packet.target.draft,
+      currentScriptDraft(f.item(f.targetId)),
+    );
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          script({
+            action: "submit-workflow",
+            payload: { ...packet.target.draft, characters: ["乔雨"] },
+            explanation: "合成错误类型",
+            checks: [0, 1].map(() => ({
+              performed: false,
+              revise: false,
+              blocked: false,
+              notes: "未执行",
+            })),
+          }),
+        ),
+      /characters\.0/,
+    );
+    assert.equal(f.production().candidates.length, 0);
+    f.delivery(inputId, "running", true);
+    assert.throws(read, /继续读取/);
+    f.delivery(inputId, "running");
+    f.metadata({ modelProcessingAllowed: false });
+    assert.throws(read, /许可/);
+    f.metadata({ modelProcessingAllowed: true });
+    f.revise(f.targetId, { text: "人工新稿" });
+    assert.throws(read, /固定材料已变化/);
+  } finally {
+    f.close();
+  }
+});
+
+test("Yao 提交校验整批意见、不接受越预算或阻塞，回执按真实 job 幂等", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input(
+      f.generation({ purpose: "continuity", maxReviewPasses: 1 }),
+    );
+    f.delivery(inputId, "running");
+    const checks = [
+      { performed: true, revise: false, blocked: false, notes: "检查原文证据" },
+      { performed: false, revise: false, blocked: false, notes: "未执行" },
+    ];
+    const packet = f
+      .tools(inputId)
+      .call(script({ action: "read-workflow" })) as any;
+    assert.equal(
+      packet.outputSchema.items.properties.action.const,
+      "add-review",
+    );
+    const review = {
+      action: "add-review",
+      productionId: f.productionId,
+      itemId: f.targetId,
+      itemRevision: 1,
+      quote: "人工原稿",
+      body: "合成意见",
+      severity: "note",
+    };
+    const submit = (payload: unknown, ownChecks = checks) =>
+      script({
+        action: "submit-workflow",
+        payload,
+        explanation: "检查说明",
+        checks: ownChecks,
+      });
+    assert.throws(() =>
+      f.tools(inputId).call(submit([review, { ...review, quote: "并不存在" }])),
+    );
+    assert.equal(f.production().reviews.length, 0);
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          submit(
+            [review],
+            checks.map((c) => ({ ...c, performed: true })),
+          ),
+        ),
+      /审阅次数/,
+    );
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          submit(
+            [review],
+            checks.map((c) => ({ ...c, blocked: true })),
+          ),
+        ),
+      /阻碍/,
+    );
+    const request = submit([review]);
+    const receipt = f.tools(inputId).call(request) as any;
+    assert.equal(receipt.ok, true);
+    assert.equal(receipt.receipts.length, 1);
+    assert.equal(receipt.reviewPasses, 1);
+    assert.equal(receipt.explanation, "检查说明");
+    assert.deepEqual(receipt.checks, [checks[0]]);
+    assert.deepEqual(receipt.coverage.materials, packet.coverage.materials);
+    f.reopen();
+    assert.deepEqual(f.tools(inputId).call(request), receipt);
+    assert.equal(f.production().reviews.length, 1);
+    assert.equal(f.production().candidates.length, 0);
+    assert.equal(f.item(f.targetId).revision, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test("Yao 候选提交丢回执后按同一 job 恢复，不重复写入或改绑 payload", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input(
+      f.generation({ maxCandidates: 1, maxReviewPasses: 2 }),
+    );
+    f.delivery(inputId, "running");
+    const request = script({
+      action: "submit-workflow",
+      payload: {
+        ...currentScriptDraft(f.item(f.targetId)),
+        text: "第一轮修改。第二轮修改。",
+      },
+      explanation: "两轮修改的最终候选",
+      checks: [
+        { performed: true, revise: true, blocked: false, notes: "确有修改" },
+        { performed: true, revise: true, blocked: false, notes: "第二轮修改" },
+      ],
+    });
+    const receipt = f.tools(inputId).call(request);
+    const snapshot = f.store.snapshot();
+    f.reopen();
+    assert.deepEqual(f.tools(inputId).call(request), receipt);
+    assert.deepEqual(f.store.snapshot(), snapshot);
+    const altered = structuredClone(request) as any;
+    altered.arguments.script.explanation = "不能用相同 job 改写请求";
+    assert.throws(() => f.tools(inputId).call(altered), /操作标识/);
+    assert.deepEqual(f.store.snapshot(), snapshot);
+    f.delivery(inputId, "running", true);
+    assert.throws(() => f.tools(inputId).call(request), /未获准/);
+    assert.equal(f.production().candidates.length, 1);
+    assert.equal(f.item(f.targetId).revision, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test("Yao 影响分析携带当前依赖覆盖缺口，不暴露未固定下游的正文或标识", () => {
+  const f = fixture();
+  try {
+    const linked = { dependencies: [{ itemId: f.targetId, revision: 1 }] };
+    const chosen = f.create("episode", { ...linked, text: "获准的下游" });
+    const hidden = f.create("episode", { ...linked, text: "未授权秘密正文" });
+    const inputId = f.input(
+      f.generation({
+        purpose: "impact",
+        references: [{ itemId: chosen, revision: 1 }],
+      }),
+    );
+    f.delivery(inputId, "running");
+    const packet = f
+      .tools(inputId)
+      .call(script({ action: "read-workflow" })) as any;
+    assert.equal(packet.coverage.impact.outOfScopeCount, 1);
+    assert.deepEqual(packet.coverage.impact.scopedAffected, [chosen]);
+    assert.equal(JSON.stringify(packet).includes(hidden), false);
+    assert.equal(JSON.stringify(packet).includes("未授权秘密正文"), false);
+    const receipt = f.tools(inputId).call(
+      script({
+        action: "submit-workflow",
+        payload: [],
+        explanation: "未发现已选文本的冲突，另有一项未检查。",
+        checks: [0, 1].map(() => ({
+          performed: false,
+          revise: false,
+          blocked: false,
+          notes: "未执行",
+        })),
+      }),
+    ) as any;
+    assert.equal(receipt.receipts.length, 0);
+    assert.deepEqual(receipt.coverage, packet.coverage);
+    assert.equal(JSON.stringify(receipt).includes(hidden), false);
+  } finally {
+    f.close();
+  }
+});
+
 test("普通 Agent Host 新建正文旁路被领域拒绝，空条目回执可重开重试", () => {
   const f = fixture();
   try {
@@ -682,15 +926,13 @@ test("影响检查可带入依赖目标的下游，不必把目标重复塞入�
       }),
     );
     f.delivery(inputId, "running");
-    const result = f
-      .tools(inputId)
-      .call(
-        script({
-          action: "impact",
-          productionId: f.productionId,
-          itemIds: [f.targetId],
-        }),
-      ) as {
+    const result = f.tools(inputId).call(
+      script({
+        action: "impact",
+        productionId: f.productionId,
+        itemIds: [f.targetId],
+      }),
+    ) as {
       affected: { id: string }[];
       outOfScopeCount: number;
       semanticQualityChecked: boolean;
@@ -703,16 +945,14 @@ test("影响检查可带入依赖目标的下游，不必把目标重复塞入�
     assert.equal(result.semanticQualityChecked, false);
     assert.throws(
       () =>
-        f
-          .tools(inputId)
-          .call(
-            script({
-              action: "read-item",
-              productionId: f.productionId,
-              itemId: hidden,
-              revision: 1,
-            }),
-          ),
+        f.tools(inputId).call(
+          script({
+            action: "read-item",
+            productionId: f.productionId,
+            itemId: hidden,
+            revision: 1,
+          }),
+        ),
       /只能读取/,
     );
   } finally {

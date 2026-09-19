@@ -91,6 +91,11 @@ const child = spawn(
       MORPHZ_DASHBOARD_TOKEN: config.token,
       MORPHZ_HOST_TOOLS_FILE: manifest,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
+      // This first-party deployment explicitly admits the application Host to
+      // Yao. Each concrete call still passes its normal permission/root checks.
+      MORPHZ_EVAL_CALLABLE_TOOLS:
+        process.env.MORPHZ_EVAL_CALLABLE_TOOLS ??
+        "read,write,edit,list_files,search,exec,transfer,host_morphz",
       // Persisted model routes may reference the old key name. Supply both
       // without rewriting the existing configuration or credential reference.
       MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,

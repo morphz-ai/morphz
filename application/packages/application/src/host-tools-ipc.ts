@@ -13,7 +13,11 @@ import {
 import { join, isAbsolute } from "node:path";
 import { z, ZodError } from "zod";
 import { DomainError } from "../../core/src/model.js";
-import { type AgentTools, workToolDefinitions } from "./agent-tools.js";
+import {
+  type AgentTools,
+  workToolDefinitions,
+  hostIdempotentRequests,
+} from "./agent-tools.js";
 import { workInputFormats } from "./session-io.js";
 import {
   objectToolName,
@@ -128,6 +132,7 @@ export function prepareLocalHostTools(
           ipc_path: endpoint,
           token,
           ...scope,
+          idempotent_requests: hostIdempotentRequests,
           definition,
         })),
       },

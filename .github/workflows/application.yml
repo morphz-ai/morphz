@@ -121,3 +121,13 @@ jobs:
       - run: npm --prefix application run test:runtime-ipc
       - run: npm --prefix application run test:continuation-runtime
       - run: npm --prefix application run test:runtime-identity
+      - name: Check and format the official Yao Harness offline
+        run: |
+          target/debug/morphz harness check application/harnesses/script-studio.hns --tool-schema=application/harnesses/script-studio.tools.json --format=json
+          target/debug/morphz harness format application/harnesses/script-studio.hns --check
+      - name: Script Studio typed workflow and crash recovery (synthetic provider)
+        env:
+          MORPHZ_APP_ENV_FILE: ""
+        run: |
+          npm --prefix application run test:script-runtime
+          npm --prefix application run test:script-recovery

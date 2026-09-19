@@ -82,6 +82,15 @@ service_token_env = "MORPHZ_APP_GATEWAY_TOKEN"
 
 已配置 Runtime 的 Desktop 内嵌宿主生成私有 `host-tools-desktop.json`，通过本地 Unix socket 回调；Web HTTP 宿主使用 `host-tools.json`。Runtime 开发构建启动时以 `MORPHZ_HOST_TOOLS_FILE` 指向相应清单的绝对路径，界面刷新不会重新加载它。单用户绑定精确 Context；团队绑定该中心独有、带分隔符的 Context 命名空间，应用还会校验真实 Session、项目成员及身份撤销状态。模型不能修改注册清单或扩展项目范围。
 
+工具注册可通过 `idempotent_requests` 声明可安全重放的具体操作：每条规则是 JSON Pointer
+到字符串的精确匹配，规则内部为 AND，多条规则为 OR。它只存在于私有注册清单，
+不是模型参数或通用重试开关；未声明操作默认仍为 `AtMostOnce`。当前应用只声明
+`script/read-workflow` 与 `script/submit-workflow`，后者由原 job/call 派生的稳定命令 ID、
+内容指纹和持久回执保证幂等；重放仍检查原输入及当前权限，不升级历史任务已固定的重试策略。
+新 Host 清单需要配套支持此字段的 Runtime，升级时须正常重启两端，保留 token、Context、
+数据目录与 Harness 原始字节。`serve` 先开放认证接口，再启动恢复工作器，避免 Host 回查
+执行身份时接口尚不可用；本机已退出进程和租约过期的恢复均保留版本 CAS 与副作用边界。
+
 `members.json`、`runtime.json` 和两类 Host 工具清单都是私有控制配置，不属于内容或附件；不要把包含它们的数据目录授权给 Agent 作普通资料。应用不会从项目文档接受这些配置。
 
 ## 可重复验证

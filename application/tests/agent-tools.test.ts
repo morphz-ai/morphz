@@ -401,6 +401,16 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.equal(first.token, second.token);
   assert.equal(lstatSync(first.path).mode & 0o077, 0);
   const data = JSON.parse(readFileSync(first.path, "utf8"));
+  for (const tool of data.tools) {
+    assert.deepEqual(tool.idempotent_requests, [
+      { "/action": "script", "/script/action": "read-workflow" },
+      { "/action": "script", "/script/action": "submit-workflow" },
+    ]);
+    assert.equal(
+      JSON.stringify(tool.definition).includes("idempotent_requests"),
+      false,
+    );
+  }
   assert.deepEqual(
     data.tools.map((t: any) => t.definition.name),
     ["host_morphz", "host_morphz_work"],

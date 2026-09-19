@@ -20,7 +20,7 @@ test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写
   const execute = (operation: Operation) =>
     store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
   try {
-    const harness = { id: "morphz.script-studio", version: "1.1.1" };
+    const harness = { id: "morphz.script-studio", version: "1.3.0" };
     assert.deepEqual(scriptStudioApplication.harness, harness);
     const applicationInstanceId = execute({
       type: "launch-application",

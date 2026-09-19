@@ -1457,8 +1457,7 @@ function GenerationDialog({
         </div>
         <p className="script-hint">
           材料上限 200 项 / 120000
-          字符。候选与提交字数由领域校验；最多一次自审是流程指导，不是模型费用硬上限。尚不支持单次
-          token / 金额硬限额。
+          字符；候选与提交字数受校验，最多执行一轮语义自审。不自动批准，暂不支持单次费用硬限额。
         </p>
         {!p.brief.modelProcessingAllowed && (
           <p className="script-warning">尚未确认模型处理许可。</p>

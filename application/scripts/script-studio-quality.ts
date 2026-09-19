@@ -15,6 +15,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+import { receivedWorkflowText } from "./script-studio-quality-evidence.js";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import {
   localAccess,
@@ -174,10 +175,14 @@ try {
     MORPHZ_DASHBOARD_TOKEN: runtimeToken,
     MORPHZ_HOST_TOOLS_FILE: host.manifestPath,
     MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
+    MORPHZ_EVAL_CALLABLE_TOOLS: "host_morphz",
     MORPHZ_SCRIPT_QUALITY_KEY: key,
   };
   const binary = runtimeBinaryPath();
   for (const file of [
+    "legacy/script-studio-1.2.1.hns",
+    "legacy/script-studio-1.2.0.hns",
+    "legacy/script-studio-1.1.1.hns",
     "legacy/script-studio-1.0.0.hns",
     "legacy/script-studio-1.1.0.hns",
     "script-studio.hns",
@@ -403,6 +408,20 @@ try {
         "SELECT id,model_alias,reasoning_effort,status FROM thread_activations WHERE created_at >= ? ORDER BY created_at",
       )
       .all(startedAt);
+    const plans = db
+      .prepare(
+        "SELECT id,harness_id,harness_version,status,error FROM plan_executions WHERE created_at >= ? ORDER BY created_at",
+      )
+      .all(startedAt);
+    const inferencePrograms = db
+      .prepare(
+        "SELECT payload FROM events WHERE type = 'infer_request' AND timestamp >= ? ORDER BY timestamp",
+      )
+      .all(startedAt)
+      .map((row) => JSON.parse(String(row.payload)).request?.program as string);
+    const stages = inferencePrograms.map(
+      (program) => /STAGE script-(\w+)/.exec(program)?.[1],
+    );
     // Physical job success can still contain a domain validation error. Keep
     // real tool outputs too, including rejected attempts followed by recovery.
     const toolOutputs = db
@@ -456,6 +475,20 @@ try {
           ?.versions.find((v) => v.revision === r.itemRevision)
           ?.draft.text.includes(r.quote),
       ),
+      durableYaoExecution:
+        plans.length === 1 &&
+        plans[0]?.status === "succeeded" &&
+        plans[0]?.harness_version === scriptStudioApplication.harness?.version,
+      actualReview:
+        stages.filter((stage) => stage === "review").length ===
+        generation.maxReviewPasses,
+      boundedRevision:
+        stages.filter((stage) => stage === "revise").length <=
+        generation.maxReviewPasses,
+      orderedStages:
+        stages[0] === "intent" &&
+        stages[1] === "create" &&
+        stages.at(-1) === "delivery",
     };
     const prose = candidates[0]?.draft.text ?? "";
     if (fixture.key === "rewrite") {
@@ -471,16 +504,20 @@ try {
           .length === 4;
     }
     if (fixture.key === "adaptation") {
-      mechanical.actualSourceRead = jobs.some((job) =>
-        String(job.request_json).includes('"action":"read-source"'),
+      mechanical.actualSourceRead = receivedWorkflowText(
+        toolOutputs,
+        fixture.source!,
+        "source",
       );
       // Literal inscription is mechanically checkable. Sound count belongs in
       // the editorial checklist: “一声…又一声” also preserves exactly two sounds.
       mechanical.specificInscriptionPreserved = prose.includes("澄字第七号");
     }
     if (fixture.key === "impact") {
-      mechanical.actualImpactRead = jobs.some((job) =>
-        String(job.request_json).includes('"action":"impact"'),
+      mechanical.actualImpactRead = receivedWorkflowText(
+        toolOutputs,
+        fixture.downstream!,
+        "draft",
       );
       mechanical.hiddenMaterialNotQuoted = !JSON.stringify({
         candidates,
@@ -509,6 +546,8 @@ try {
       reviews,
       jobs,
       activations,
+      plans,
+      stages,
       toolOutputs,
       mechanical,
       editorialChecklist: fixture.checks,

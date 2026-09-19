@@ -213,6 +213,8 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
     name: "准备生成候选请求",
     exact: true,
   });
+  await expect(dialog).toContainText("最多执行一轮语义自审");
+  await expect(dialog).toContainText("暂不支持单次费用硬限额");
   await dialog
     .getByLabel("本次要求", { exact: true })
     .fill("保留要求：只写雨中的动作");
@@ -1533,7 +1535,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     // Native mouse clicks disable the submit control during a command. A
     // rejected approval must restore focus inside the still-open dialog.
     await page.getByRole("tab", { name: /^审阅/ }).click();
-    await page.getByLabel("审阅意见", { exact: true }).fill("TEST 原生阻断意见");
+    await page
+      .getByLabel("审阅意见", { exact: true })
+      .fill("TEST 原生阻断意见");
     await page.getByLabel("意见级别", { exact: true }).selectOption("blocking");
     await button(page, "添加意见").click();
     await button(page, "提交审阅").click();

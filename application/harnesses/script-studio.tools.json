@@ -1,0 +1,11 @@
+{
+  "host_morphz": {
+    "type": "object",
+    "properties": {
+      "action": { "type": "string" },
+      "script": { "type": "object" }
+    },
+    "required": ["action", "script"],
+    "additionalProperties": false
+  }
+}
