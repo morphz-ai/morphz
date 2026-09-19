@@ -337,6 +337,21 @@ kbd {
   padding: 12px 0 0;
   font-size: 12px;
 }
+.product-bridge {
+  margin-bottom: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  line-height: 1.45;
+}
+.product-bridge > span { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 700; }
+.product-bridge .brand-mark { width: 18px; height: 18px; }
+.product-bridge > a { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; font-weight: 620; }
+.product-bridge > a:hover { text-decoration: underline; }
+.product-bridge > small { color: var(--muted); font-size: 10px; line-height: 1.55; }
 .sidebar-bottom .avatar {
   width: 30px;
   height: 30px;

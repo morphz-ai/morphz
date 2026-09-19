@@ -10,7 +10,7 @@ function absolute(path: string): string {
 }
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const bilingualPages = ["", "/blog", "/paper", "/standards", "/docs", "/download"];
+  const bilingualPages = ["", "/experience", "/blog", "/paper", "/standards", "/docs", "/download"];
   const staticPages: MetadataRoute.Sitemap = bilingualPages.flatMap((path) => [
     {
       url: absolute(path || "/"),

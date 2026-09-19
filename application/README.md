@@ -8,6 +8,8 @@
 
 桌面优先的开发版本。已接入对话、事项、项目、内容、认知应用宿主、内置浏览器及模型设置；实际验证情况见[实施记录](docs/13-implementation-status.md)。Web 与 Desktop 共用业务层，但尚不是公开云服务或正式签名的桌面发行版；Mobile 尚未实现。
 
+Web 界面在侧栏明确标出“我的 Agent”与官方共享人格的身份边界。官网 `/experience` 实际上线后，可在 Web 构建时设置 `VITE_MORPHZ_PRODUCT_HUB_URL=https://morphz.ai/experience`；官方人格站部署并验收后再设置 `VITE_MORPHZ_OFFICIAL_PERSONA_URL`。未配置的跨站入口不显示可点击链接。这些入口只负责产品导航，不传递身份、登录态或工作数据；当前本地 Web 中心不能因此被当作已上线的云端工作台。
+
 ## 本地运行
 
 需要 Node.js 24.13 或更新版本。依赖版本记录在 `package-lock.json`，推荐使用 `npm ci`。

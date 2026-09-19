@@ -15,6 +15,7 @@ const content = {
     idea: "观看演示",
     start: "运行 Morphz",
     source: "查看源码",
+    experience: "认识 Morphz · 我的 Agent",
     demoTitle: "自主维护上下文。\n多个目标并发推进。\n执行安全可控。",
     demoLead: "在 Morphz 中，智能体依据新的观察，显式决定如何保留、修订和退役长期认知；运行时保障结构、版本与事务边界。多个目标持续并发推进，真实执行始终受身份、权限和因果轨迹约束。",
     demoFallback: "你的浏览器暂不支持视频播放。",
@@ -107,6 +108,7 @@ const content = {
     idea: "Watch the demo",
     start: "Run Morphz",
     source: "Inspect the source",
+    experience: "Meet Morphz · My Agent",
     demoTitle: "Autonomous Context maintenance.\nObjectives advance concurrently.\nExecution stays governed.",
     demoLead: "In Morphz, the Agent uses new observations to explicitly preserve, revise, and retire long-term cognition while the Runtime enforces structure, versions, and transaction boundaries. Objectives keep advancing concurrently, and identity, authority, and causal trajectories govern every real-world action.",
     demoFallback: "Your browser does not support video playback.",
@@ -224,6 +226,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <p className="home-hero__lead">{t.lead}</p>
           <div className="home-actions">
             <a className="home-button home-button--primary" href="#demo">{t.idea}<span aria-hidden="true">↓</span></a>
+            <Link className="home-button" href={sitePath(locale, "/experience")}>{t.experience}<span aria-hidden="true">→</span></Link>
             <Link className="home-button" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
             <a className="home-link" href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>

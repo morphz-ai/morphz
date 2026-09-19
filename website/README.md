@@ -6,10 +6,12 @@
 
 - `morphz.ai` — this project: technical main site, paper, essay, documentation, and distribution.
 - `chat.morphz.ai` — separate persona site: the official Morphz agent's state, activity, and public interaction.
-- the future consumer Agent product — a separate product surface; it is not implemented inside this technical website.
+- the consumer Agent Web application — a separate authenticated product surface; the technical website explains its boundary but does not host its work data.
 - the future managed Cloud/SaaS — a separate operational product; it is not implied by the download page.
 
 The main site may link to these surfaces, but it must not present an official persona, a user's private Agent, and the open-source Runtime as the same product or workflow.
+
+`/experience` and `/en/experience` are the shared product entry. The official-persona and user-Web calls to action are deliberately inactive until their URLs are configured with `NEXT_PUBLIC_MORPHZ_OFFICIAL_PERSONA_URL` and `NEXT_PUBLIC_MORPHZ_USER_WEB_URL` at build time. Configure them only after the corresponding public service and its identity/data boundary have been verified. The owner-only private-Agent preview is not the user Web application and must not be configured as the latter.
 
 ## Content boundaries
 

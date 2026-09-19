@@ -81,6 +81,7 @@ import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
 import { BrandMark } from "./BrandMark.js";
+import { ProductBridge } from "./ProductBridge.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
 import { TaskList } from "./TaskList.js";
@@ -1947,6 +1948,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           </div>
         </div>
         <div className="sidebar-bottom">
+          {!window.morphzDesktop && (
+            <ProductBridge
+              productHomeUrl={import.meta.env.VITE_MORPHZ_PRODUCT_HUB_URL}
+              officialUrl={import.meta.env.VITE_MORPHZ_OFFICIAL_PERSONA_URL}
+            />
+          )}
           <ProfileMenu {...profileMenu} />
         </div>
       </aside>

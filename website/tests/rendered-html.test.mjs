@@ -548,6 +548,23 @@ test("does not advertise the unpublished online Morphz instance", async () => {
   assert.doesNotMatch(html, /创建我的 Agent|私有 Agent|个人 Agent/);
 });
 
+test("presents two Agent experiences without inventing public deployments", async () => {
+  const [zhResponse, enResponse] = await Promise.all([render("/experience"), render("/en/experience")]);
+  assert.equal(zhResponse.status, 200);
+  assert.equal(enResponse.status, 200);
+  const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
+  assert.match(zh, /与 Morphz 对话/);
+  assert.match(zh, /我的 Agent/);
+  assert.match(zh, /身份、认知和数据边界彼此独立/);
+  assert.match(zh, /官方人格网站尚未开放入口/);
+  assert.match(zh, /Web 工作台接入中/);
+  assert.doesNotMatch(zh, /href="https:\/\/chat\.morphz\.ai/);
+  assert.doesNotMatch(zh, /href="https:\/\/morphz-cloud-app\.shafreeck\.workers\.dev/);
+  assert.match(en, /Meet the official Morphz/);
+  assert.match(en, /My Agent/);
+  assert.match(en, /identities, cognition, and data boundaries stay separate/);
+});
+
 test("returns not found for an unknown documentation slug", async () => {
   const response = await render("/docs/not-a-real-page");
   assert.equal(response.status, 404);
