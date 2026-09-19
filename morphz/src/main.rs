@@ -117,6 +117,14 @@ async fn main() -> Result<(), AppError> {
         generate_completion(&invocation)?;
         return Ok(());
     }
+    if invocation.command_path() == ["harness", "check"]
+        || invocation.command_path() == ["harness", "format"]
+    {
+        if let Some(cwd) = option_value(&invocation, "cwd") {
+            std::env::set_current_dir(cwd)?;
+        }
+        return harness_authoring_command(&invocation);
+    }
     if invocation.command_path() == ["storage", "session-io-fence"] {
         if let Some(cwd) = option_value(&invocation, "cwd") {
             std::env::set_current_dir(cwd)?;
@@ -311,12 +319,17 @@ async fn main() -> Result<(), AppError> {
         runtime_builder = runtime_builder.extra_tool(tool);
     }
     let runtime = runtime_builder.build().await?;
-    if needs_workers {
+    let serves_runtime = matches!(
+        invocation.command_path().join(" ").as_str(),
+        "serve" | "dashboard" | "setup"
+    );
+    if needs_workers && !serves_runtime {
         runtime.start().await?;
     } else {
-        // Read-only and registry-management commands do not need Event Bus
-        // subscribers or model evaluation. Initializing only the identity records
-        // keeps the lack of an API key harmless and avoids background workers.
+        // Servers must bind their authenticated API before recovery dispatches
+        // Host tools: the Host verifies the original Thread/input through that
+        // API. Starting workers first races that authority check on every restart.
+        // Read-only commands only need the identity records, never workers.
         ensure_cli_identity_records(&runtime, &default_agent_id, &default_context_id).await?;
     }
     if !trusted_gateway_serve {
@@ -1298,7 +1311,7 @@ async fn dispatch_runtime_command(
         "serve" => {
             let server = Arc::new(
                 Server::new_with_capacity(
-                    runtime,
+                    runtime.clone(),
                     ServerDefaults {
                         agent_id: default_agent_id,
                         context_id: default_context_id,
@@ -1308,6 +1321,7 @@ async fn dispatch_runtime_command(
                 .with_identity(app_config.server.identity.clone()),
             );
             server.start(&app_config.server.bind).await?;
+            runtime.start().await?;
             tracing::info!(event_code = "app.server.started", bind = %app_config.server.bind, "Morphz Server started");
             exit_after_shutdown_signal(shutdown_signal().await)
         }
@@ -1321,7 +1335,7 @@ async fn dispatch_runtime_command(
                 dashboard_browser_url(&app_config.server.bind, &token)?
             };
             let server = Arc::new(Server::new_with_capacity(
-                runtime,
+                runtime.clone(),
                 ServerDefaults {
                     agent_id: default_agent_id,
                     context_id: default_context_id,
@@ -1331,6 +1345,7 @@ async fn dispatch_runtime_command(
             server
                 .start_with_dashboard_token(&app_config.server.bind, Some(token))
                 .await?;
+            runtime.start().await?;
             println!(
                 "{}: {browser_url}",
                 if setup_mode { "Setup" } else { "Dashboard" }
@@ -3737,6 +3752,55 @@ fn show_harness(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), 
                 harness.capabilities.join(",")
             }
         );
+    }
+    Ok(())
+}
+
+fn harness_authoring_command(invocation: &Invocation) -> Result<(), AppError> {
+    let path = Path::new(
+        invocation
+            .prompt_args()
+            .first()
+            .ok_or("Harness source path is required")?,
+    );
+    if invocation.command_path() == ["harness", "format"] {
+        let write = invocation.has_option("write");
+        let check = invocation.has_option("check");
+        let (source, changed) = morphz::harness_authoring::format(path, write, check)?;
+        if check && changed {
+            return Err(format!("{} needs formatting", path.display()).into());
+        }
+        if !write && !check {
+            print!("{source}");
+        }
+        return Ok(());
+    }
+    let report = match morphz::harness_authoring::check(
+        path,
+        option_value(invocation, "tool-schema").map(Path::new),
+    ) {
+        Ok(report) => report,
+        Err(error) => serde_json::json!({"valid":false,"source":path,"message":error.to_string()}),
+    };
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if report["valid"] == true {
+        println!(
+            "Harness {}@{}: offline syntax, types and static effects checked.",
+            report["id"].as_str().unwrap_or_default(),
+            report["version"].as_str().unwrap_or_default()
+        );
+        if report["tool_contracts_verified"] != true {
+            println!("Tool input schemas not checked: {}. Supply --tool-schema FILE; live authority is always checked at execution.", report["unresolved_tool_schemas"]);
+        }
+    } else {
+        eprintln!(
+            "{}",
+            report["message"].as_str().unwrap_or("Harness check failed")
+        );
+    }
+    if report["valid"] != true {
+        return Err("Harness check failed; no package was installed or executed".into());
     }
     Ok(())
 }

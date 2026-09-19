@@ -67,6 +67,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "update-version",
     "sqlite",
     "postgres-url-env",
+    "tool-schema",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -82,6 +83,8 @@ const SWITCH_OPTIONS: &[&str] = &[
     "allow-downgrade",
     "install",
     "acknowledge-write-block",
+    "write",
+    "check",
 ];
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
@@ -2190,6 +2193,52 @@ fn harness_command(locale: Locale) -> Command {
         .subcommands([
             output_examples(
                 locale,
+                Command::new("check")
+                    .about(locale.text(
+                        "Check a Harness offline without installing or executing it",
+                        "离线校验 Harness，不安装、不执行",
+                    ))
+                    .arg(prompt_arg("PACKAGE", 1, Some(1)).help(
+                        locale.text("Path to a .hns file or directory", ".hns 文件或目录路径"),
+                    ))
+                    .arg(local_value_arg(
+                        "tool-schema",
+                        "tool-schema",
+                        "FILE",
+                        locale.text(
+                            "JSON object mapping tool names to input schemas",
+                            "工具名到输入 JSON Schema 的映射文件",
+                        ),
+                    )),
+                "Example:\n  morphz harness check ./script-studio.hns --format=json",
+            ),
+            output_examples(
+                locale,
+                Command::new("format")
+                    .about(locale.text(
+                        "Format one Yao/Harness source; prints without writing by default",
+                        "格式化单个 Yao/Harness 文件；默认只输出、不写入",
+                    ))
+                    .arg(prompt_arg("FILE", 1, Some(1)).help(
+                        locale.text("One .hns or .yao source file", "一个 .hns 或 .yao 源文件"),
+                    ))
+                    .arg(local_switch_arg(
+                        "write",
+                        "write",
+                        locale.text("Atomically replace the selected file", "原子写回选中的文件"),
+                    ))
+                    .arg(local_switch_arg(
+                        "check",
+                        "check",
+                        locale.text(
+                            "Fail if the source needs formatting",
+                            "文件需要格式化时返回失败",
+                        ),
+                    )),
+                "Example:\n  morphz harness format ./script-studio.hns --check",
+            ),
+            output_examples(
+                locale,
                 Command::new("list").about(locale.text(
                     "List installed Harness versions",
                     "列出已安装的领域程序包版本",
@@ -3027,6 +3076,15 @@ mod tests {
         let list = parse(&["harness", "list", "--format=json"]);
         assert_eq!(list.command_path(), ["harness", "list"]);
         assert_eq!(list.option("format").unwrap().last_value(), Some("json"));
+        let check = parse(&["harness", "check", "./test.hns", "--tool-schema=tools.json"]);
+        assert_eq!(check.command_path(), ["harness", "check"]);
+        assert_eq!(
+            check.option("tool-schema").unwrap().last_value(),
+            Some("tools.json")
+        );
+        let format = parse(&["harness", "format", "./test.yao", "--check"]);
+        assert_eq!(format.command_path(), ["harness", "format"]);
+        assert!(format.has_option("check"));
     }
 
     #[test]

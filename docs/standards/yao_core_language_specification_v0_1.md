@@ -6,7 +6,7 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-09-04
+> Last updated: 2026-09-20
 >
 > Chinese translation: [zh-CN](zh-CN/yao_core_language_specification_v0_1.md)
 
@@ -212,6 +212,10 @@ Core pure operators are:
 (mul EXPR...)     (div LEFT RIGHT)
 ```
 
+`get` selects a named record field or a statically named `Map<T>` key. Map lookup has
+result type `T`; a missing key is a classified value failure, not an implicit null or
+permission to guess. Raw `Json` must first be decoded to a map or a declared record.
+
 `and` and `or` short-circuit left to right. Numeric overflow, division by zero, failed `decode`, a
 missing field, and an invalid comparison are classified failures with source spans; they MUST NOT
 silently coerce to another value.
@@ -221,6 +225,32 @@ conditions, `match` values, `map` collections, Tool/Host arguments, inference ar
 operand of `run` MUST be pure. An effectful result is first named with `bind` and then referenced.
 This keeps every durable suspension at an explicit control boundary and makes restart positions
 unambiguous.
+
+### 6.1 Explicit ordinary JSON adapters (authoring extension)
+
+`(from-json TYPE EXPR)` strictly constructs a data value from ordinary JSON;
+`(to-json EXPR)` serializes a statically typed data value to ordinary JSON. Unlike
+`decode`, these adapters convert named records to/from plain field objects. Missing
+or unknown fields, wrong primitive types and unknown union cases fail with a field
+path. They never coerce, repair or discard fields. Named identity is preserved inside
+Yao. Ref, Program, EvidenceCandidate, OutcomeCandidate and ContextTransaction, including
+nested occurrences, cannot cross this data boundary. Json-typed fields remain opaque.
+
+`(json-object (KEY EXPR)...)` explicitly constructs a heterogeneous `Map<Json>` using
+the same outward conversion for each field. Duplicate keys are rejected. All adapter
+operands are pure; `dict` remains homogeneous with no implicit widening.
+
+Records use `{field:value,...}`. Unions use `{"case":"Variant","fields":{...}}`.
+Option uses `{"case":"none"}` or `{"case":"some","value":...}`. Result uses
+`{"case":"ok|err","value":...}`. These are data encodings, not Runtime capability tags.
+
+### 6.2 Block string authoring extension
+
+Triple-quoted strings (`"""text"""`) preserve exact raw contents, including newlines,
+backslashes and indentation. They do not interpolate or dedent. The next triple quote
+closes the block; use an ordinary escaped string for text containing that delimiter.
+Canonical encoding emits the existing escaped string representation, so equivalent
+block and ordinary strings have identical value and program identity.
 
 ## 7. Binding and structured control
 
@@ -297,10 +327,25 @@ Argument fields and results MUST be checked against the Tool schema. A `call` ha
 
 ### 9.2 Model-owned evaluation
 
+An explicit `(produces TYPE)` may replace `(returns TYPE)`, never accompany it. It
+requests a semantic data result satisfying TYPE from the complete BODY. It is not an
+assertion that BODY's deterministic value has TYPE; ordinary `returns` retains that
+assignability rule. BODY still undergoes full name, capture, effect and capability
+analysis and is sent intact to the model. No alternate task-only API is introduced.
+
+The terminal transport for `produces` is ordinary JSON, strictly constructed using
+`from-json`. The type supplies the model-facing JSON schema; placeholders are not needed.
+Duplicate keys, fences, trailing values, extra fields and incorrect types fail before
+the parent continues. Authority-bearing types are forbidden. Program synthesis still
+uses `(returns (Program ...))` and its separate quarantine/admission path.
+
+The selected result contract and exact type definitions are persisted with the infer
+effect. Legacy effects without `produces` retain their old decoder and identity.
+
 ```lisp
 (infer
   [(captures NAME...)]
-  [(returns TYPE)]
+  [(returns TYPE) | (produces TYPE)]
   BODY)
 ```
 
@@ -316,7 +361,7 @@ Evaluation request and sent to the currently configured model provider. No unlis
 or whole Runtime environment may be included implicitly. `captures` authorizes disclosure of a
 value; it does not grant any Tool, Host, or object capability.
 
-Without `(returns TYPE)`, the result contract is the statically inferred type of `BODY`. For an
+Without either result declaration, the result contract is the statically inferred type of `BODY`. For an
 ordinary value, an explicit `TYPE` MUST accept the body type. `Program<T,E>` is the one synthesis
 contract: the body describes how the model derives a quarantined Program candidate, and the
 candidate is independently parsed, typed, effect-checked, canonicalized, and persisted before it

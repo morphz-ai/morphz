@@ -819,6 +819,29 @@ fn model_harness_tool_scope(
     })
 }
 
+fn harness_relay_tool_scope(
+    owner: Option<crate::sexpr_eval::EvaluationOwner>,
+    executor_kind: &str,
+    bound_objective: bool,
+    model_scope: Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    if owner == Some(crate::sexpr_eval::EvaluationOwner::Runtime) && executor_kind != "plan_infer" {
+        // The Runtime dispatches the admitted entry itself. Once it completes,
+        // a model may explain the result, not start an unplanned second loop.
+        // Child inference gets its own statically derived scope below.
+        // Objective lifecycle settlement remains necessary even after the
+        // entry returns. Existing Objective admission still checks identity,
+        // generation and evidence; it does not grant domain work tools.
+        Some(if bound_objective {
+            HashSet::from(["objective_update".to_string()])
+        } else {
+            HashSet::new()
+        })
+    } else {
+        model_scope
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RenderedHarnessContext {
     /// Immutable, content-addressed Harness program. It is inserted before
@@ -1171,6 +1194,12 @@ fn should_dispatch_runtime_harness_entry(executor_kind: &str, phase: &str) -> bo
             phase,
             "critical-maintenance" | "final-reply" | "objective-finalization" | "schedule-receipt"
         )
+}
+
+fn failed_harness_entry_result(trigger: &Event, call_id: &str) -> bool {
+    trigger.event_type == TYPE_TOOL_OUTPUT
+        && trigger.payload.get("tool_call_id").and_then(|v| v.as_str()) == Some(call_id)
+        && trigger.payload.get("tool_status").and_then(|v| v.as_str()) == Some("error")
 }
 
 const SCHEDULE_RECEIPT_PROMPT: &str = "The scheduling wait is already committed. This is a receipt-only response: explain the arrangement and pending results with ordinary text, or call no_reply(mode=silent). Do not perform more work, change the Objective, or install another wait. This response ends only the current Evaluation; the Objective and scheduled children remain pending.";
@@ -11957,10 +11986,19 @@ impl Orchestrator {
                 })
             })
             .transpose()?;
-        let model_harness_tool_scope = model_harness_tool_scope(
+        let model_harness_tool_scope = harness_relay_tool_scope(
             harness_entry_program
                 .as_ref()
-                .map(|(_, program)| (program.owner(), program.declared_tools())),
+                .map(|(_, program)| program.owner()),
+            &thread.executor_kind,
+            self.objective_evaluations
+                .get_for_activation(&activation.id)
+                .is_some(),
+            model_harness_tool_scope(
+                harness_entry_program
+                    .as_ref()
+                    .map(|(_, program)| (program.owner(), program.declared_tools())),
+            ),
         );
         let plan_infer_tools = if thread.executor_kind == "plan_infer" {
             let request = self
@@ -16581,7 +16619,7 @@ impl Orchestrator {
                 tool_call_id: effect_tool_call_id.to_string(),
                 tool_name: tool_name.clone(),
                 request,
-                retry_safety: tool.retry_safety(),
+                retry_safety: tool.retry_safety_for_arguments(&raw_arguments),
                 requires_approval: requirement.is_some(),
             }
             .into_new_job();
@@ -16689,7 +16727,7 @@ impl Orchestrator {
             tool_call_id: effect_tool_call_id.to_string(),
             tool_name: tool_name.clone(),
             request,
-            retry_safety: tool.retry_safety(),
+            retry_safety: tool.retry_safety_for_arguments(&invocation.tool_arguments),
             requires_approval: requirement.is_some(),
         }
         .into_new_job()
@@ -17701,7 +17739,7 @@ impl Orchestrator {
             tool_call_id: call.id.clone(),
             tool_name: call.func_name.clone(),
             request,
-            retry_safety: tool.retry_safety(),
+            retry_safety: tool.retry_safety_for_arguments(&invocation.tool_arguments),
             requires_approval: requirement.is_some(),
         };
         let lease_expires_at = Utc::now()
@@ -19080,6 +19118,19 @@ impl Orchestrator {
             let task_context_view_manifest = options.context_view_manifest.clone().map(Arc::new);
             let task_harness_functions = options.harness_functions.clone();
             let task_harness_types = options.harness_types.clone();
+            let task_harness_entry_source = if phase == "harness-entry" && call.func_name == "eval"
+            {
+                serde_json::from_str::<serde_json::Value>(&call.arguments)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("program")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+            } else {
+                None
+            };
             // Established before the spawn, because task-locals do not cross
             // into a new task: the chain below rebuilds every one of them.
             let inference_channel: Option<Arc<dyn crate::sexpr_eval::RuntimeInference>> =
@@ -19125,7 +19176,7 @@ impl Orchestrator {
                 } else {
                     None
                 };
-            let handle = tokio::spawn(async move {
+            let handle = tokio::spawn(crate::sexpr_eval::CURRENT_HARNESS_ENTRY_SOURCE.scope(task_harness_entry_source, async move {
                 crate::sexpr_eval::CURRENT_HARNESS_TYPES
                     .scope(task_harness_types, async move {
                         crate::sexpr_eval::CURRENT_HARNESS_FUNCTIONS
@@ -19547,7 +19598,7 @@ impl Orchestrator {
                     .await
                     })
                     .await
-            });
+            }));
             tasks.push(SpawnedToolTask { handle, metadata });
         }
 
@@ -20077,6 +20128,85 @@ impl Orchestrator {
         let mut binding =
             load_evaluation_harness_binding(self.store.as_ref(), evaluation_id).await?;
 
+        // A nested infer owns a distinct Evaluation, but not a new package
+        // selection. Inherit the exact immutable parent Plan binding, never
+        // today's default or model-supplied metadata. Resolve through the
+        // durable child Thread so this also works after tool continuations and
+        // recovery without changing already-persisted infer request Events.
+        if let Some(store) = self.plan_store.as_ref() {
+            if let Some(child) = store.get_thread_by_root(&activation.root_turn_id).await? {
+                if plan_children::recovery_uses_child_handoff(activation, &child)? {
+                    let plan = store
+                        .get_plan_execution(child.executor_id.as_deref().unwrap())
+                        .await?
+                        .ok_or("infer parent Plan does not exist for Harness inheritance")?;
+                    let request = self
+                        .context_engine
+                        .find_event(context_id, &child.root_turn_id)
+                        .await?
+                        .ok_or("infer root request is missing for Harness inheritance")?;
+                    if plan.agent_id != child.agent_id
+                        || plan.context_id != child.context_id
+                        || plan.session_id != child.session_id
+                        || plan.initiating_principal_id != child.initiating_principal_id
+                        || request.event_type != TYPE_INFER_REQUEST
+                        || request
+                            .payload
+                            .get("plan_execution_id")
+                            .and_then(|v| v.as_str())
+                            != Some(plan.id.as_str())
+                        || request
+                            .payload
+                            .get("parent_thread_id")
+                            .and_then(|v| v.as_str())
+                            != Some(plan.thread_id.as_str())
+                    {
+                        return Err("infer Harness parent and child routes differ".into());
+                    }
+                    match (plan.harness_id.as_deref(), plan.harness_version.as_deref()) {
+                        (Some(id), Some(version)) => {
+                            let harness = self
+                                .harness_registry
+                                .get(id, version)
+                                .ok_or("infer parent Harness is not loaded")?;
+                            if harness.artifact_hash().as_deref()
+                                != Some(plan.source_artifact_hash.as_str())
+                            {
+                                return Err(
+                                    "infer parent Harness hash differs from Registry".into()
+                                );
+                            }
+                            if let Some(existing) = &binding {
+                                if existing.harness_id != id
+                                    || existing.harness_version != version
+                                    || existing.artifact_hash != plan.source_artifact_hash
+                                {
+                                    return Err(
+                                        "infer Evaluation changed its parent Harness binding"
+                                            .into(),
+                                    );
+                                }
+                            } else {
+                                binding = Some(
+                                    persist_evaluation_harness_binding(
+                                        self.store.as_ref(),
+                                        context_id,
+                                        evaluation_id,
+                                        active.as_ref().map(|item| item.objective_id.as_str()),
+                                        None,
+                                        harness.as_ref(),
+                                    )
+                                    .await?,
+                                );
+                            }
+                        }
+                        (None, None) => {}
+                        _ => return Err("infer parent Harness identity is incomplete".into()),
+                    }
+                }
+            }
+        }
+
         // An explicit SDK/HTTP/CLI selection is carried by the immutable root
         // message. Materialize it as an Evaluation binding before the first
         // Provider request so transport metadata never becomes prompt policy.
@@ -20220,6 +20350,17 @@ impl Orchestrator {
             }
         }
         let tool_call_id = stable_harness_entry_call_id(binding, evaluation_id);
+        if let Some(trigger) = self
+            .context_engine
+            .find_event(&activation.context_id, &activation.trigger_event_id)
+            .await?
+        {
+            if failed_harness_entry_result(&trigger, &tool_call_id) {
+                // Admission can fail before a Plan exists. Let the root report
+                // that error instead of endlessly redispatching its own entry.
+                return Ok(false);
+            }
+        }
         let store = self
             .plan_store
             .as_ref()
@@ -21023,7 +21164,9 @@ fn recovery_owns_activation(
                 && (activation
                     .lease_expires_at
                     .is_none_or(|expires_at| expires_at <= now)
-                    || runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref()))
+                    || crate::execution::runtime_claimant_is_definitely_dead(
+                        activation.claimed_by.as_deref(),
+                    ))
         }
         crate::memory::WorkerCoordinationMode::SharedLeases => {
             activation.status == ThreadActivationStatus::Running
@@ -21237,9 +21380,6 @@ fn event_contains_physical_tool_plan(event: &Event) -> bool {
         })
 }
 
-/// A persisted lease is meaningful only while its owning Runtime is alive.
-/// Unknown/non-local claimant formats deliberately return false so recovery
-/// falls back to the normal lease timeout instead of stealing work.
 fn activation_lease_timer_id(activation_id: &str) -> String {
     format!("activation-lease:{activation_id}")
 }
@@ -21267,29 +21407,6 @@ fn next_thread_wait_generation() -> u64 {
             Err(actual) => current = actual,
         }
     }
-}
-
-fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
-    let Some(raw_claimant) = claimed_by.and_then(|value| value.strip_prefix("runtime:")) else {
-        return false;
-    };
-    let raw_pid = raw_claimant.split(':').next().unwrap_or(raw_claimant);
-    let Ok(raw_pid) = raw_pid.parse::<i32>() else {
-        return false;
-    };
-    if raw_pid <= 0 {
-        return false;
-    }
-    if raw_pid == i32::try_from(std::process::id()).unwrap_or(-1) {
-        // One host process may embed multiple live Runtime instances. A
-        // different nonce under our PID is therefore not proof of death; the
-        // durable expiry clock remains the safe takeover boundary.
-        return false;
-    }
-    matches!(
-        crate::execution::local_process_id_exists(raw_pid),
-        Ok(false)
-    )
 }
 
 /// Unique fencing identity for one Runtime instance. The sequence handles
@@ -23008,9 +23125,9 @@ mod tests {
         decide_provider_circuit_admission, derived_thread_kind,
         durable_activation_revocation_reason, durable_activation_revocation_reason_for_record,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
-        harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
-        model_binding_completion_error, model_harness_tool_scope,
-        model_visible_attachment_references, new_runtime_claimant_id,
+        failed_harness_entry_result, harness_entry_callable_tools, harness_relay_tool_scope,
+        infer_tool_status, legacy_plan_effect_sequence, model_binding_completion_error,
+        model_harness_tool_scope, model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persisted_context_view_manifest, persistent_provider_wait_contexts, plan_infer_tool_scope,
         production_system_prompt_inspection, prompt_cache_seed_requires_rebase,
@@ -24895,6 +25012,27 @@ mod tests {
     }
 
     #[test]
+    fn failed_harness_entry_admission_is_not_redispatched_as_fresh_work() {
+        let mut event = Event::new(
+            "output".into(),
+            "Executor".into(),
+            TYPE_TOOL_OUTPUT.into(),
+            "chat/tool_output".into(),
+            json!({"tool_call_id":"entry", "tool_status":"error"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(failed_harness_entry_result(&event, "entry"));
+        assert!(!failed_harness_entry_result(&event, "unrelated"));
+        event.payload.insert("tool_status".into(), json!("success"));
+        assert!(!failed_harness_entry_result(&event, "entry"));
+        event.payload.insert("tool_status".into(), json!("error"));
+        event.event_type = TYPE_USER_MESSAGE.into();
+        assert!(!failed_harness_entry_result(&event, "entry"));
+    }
+
+    #[test]
     fn runtime_harness_entry_only_dispatches_at_root_evaluation_boundary() {
         for phase in ["schedule-receipt", "objective-finalization"] {
             assert!(!should_dispatch_runtime_harness_entry("self", phase));
@@ -24913,6 +25051,34 @@ mod tests {
             "self",
             "final-reply"
         ));
+    }
+
+    #[test]
+    fn runtime_harness_relay_cannot_bypass_plan_but_children_keep_their_scope() {
+        use crate::sexpr_eval::EvaluationOwner;
+        let scope = Some(HashSet::from(["read".to_string()]));
+        assert_eq!(
+            harness_relay_tool_scope(Some(EvaluationOwner::Runtime), "self", false, scope.clone()),
+            Some(HashSet::new())
+        );
+        assert_eq!(
+            harness_relay_tool_scope(
+                Some(EvaluationOwner::Runtime),
+                "plan_infer",
+                true,
+                scope.clone()
+            ),
+            scope
+        );
+        assert_eq!(
+            harness_relay_tool_scope(Some(EvaluationOwner::Model), "self", false, scope.clone()),
+            scope
+        );
+        assert_eq!(harness_relay_tool_scope(None, "self", false, None), None);
+        assert_eq!(
+            harness_relay_tool_scope(Some(EvaluationOwner::Runtime), "self", true, scope),
+            Some(HashSet::from(["objective_update".to_string()]))
+        );
     }
 
     #[test]

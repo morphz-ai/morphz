@@ -2553,6 +2553,11 @@ fn host_event_class(operation: &str) -> (&'static str, &'static str) {
 
 fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonValue, String> {
     let transport = match &kind {
+        InferResultKind::Json { .. } => {
+            return Err(
+                "produces JSON contracts are inference-only, not Host authority projections".into(),
+            )
+        }
         InferResultKind::Yao {
             ty: crate::yao::Type::Named(name),
             definitions,
@@ -2996,12 +3001,16 @@ fn infer_request_event(
     )?;
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
+        crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } => format!(
+            "This node explicitly produces a semantic result of type {ty:?}. Evaluate the complete BODY to fulfill its requirements, not to echo literal instructions or example values. Return only ordinary JSON matching this strict schema (no $yao envelopes, Markdown fences, extra fields or commentary). Runtime constructs and validates the named data before continuing: {}",
+            serde_json::to_string(&crate::yao::json::json_schema(ty, definitions).map_err(|error| format!("invalid produces schema: {error}"))?)?
+        ),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
             ..
         } => "This node requires a Yao Program Value candidate. The final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
-            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation. A String result is a JSON string literal such as \"A\"; bare A is invalid."
+            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation. A String result is a JSON string literal such as \"A\"; bare A is invalid. A nominal record is encoded as {{\"$yao\":{{\"kind\":\"record\",\"type\":\"TYPE_NAME\",\"fields\":{{...exact declared fields...}}}}}}. A nominal union uses kind=\"variant\", type=\"TYPE_NAME\", variant=\"VARIANT_NAME\", fields={{...}} inside the same $yao envelope. Nested nominal values use their own envelopes. Json, primitive, List and Map fields retain ordinary JSON values. Use the provided type definitions; never return an untagged object for a nominal type."
         ),
     };
     let program = request
@@ -4823,6 +4832,8 @@ mod tests {
         assert!(!text.contains("must-not-cross"));
         assert!(text.contains("Named types declared by the containing Yao source"));
         assert!(text.contains("Answer"));
+        assert!(text.contains("nominal record is encoded as"));
+        assert!(text.contains("$yao"));
 
         let reconstructed = pending_infer_request_event(&waiting).unwrap();
         assert_eq!(reconstructed.id, request_event.id);

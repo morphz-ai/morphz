@@ -104,6 +104,25 @@ pub fn evaluate_pure(
         HirKind::Record { type_name, fields } => {
             tagged_fields("record", type_name, None, fields, environment, definitions)
         }
+        HirKind::JsonObject { entries } => {
+            let mut output = JsonMap::new();
+            for (name, value) in entries {
+                let result = evaluate_pure(value, environment, definitions)?;
+                output.insert(
+                    name.clone(),
+                    crate::json::to_json(&value.ty, result, definitions, value.span)?,
+                );
+            }
+            Ok(JsonValue::Object(output))
+        }
+        HirKind::FromJson { target, value } => {
+            let result = evaluate_pure(value, environment, definitions)?;
+            crate::json::from_json(target, result, definitions, expression.span)
+        }
+        HirKind::ToJson { value } => {
+            let result = evaluate_pure(value, environment, definitions)?;
+            crate::json::to_json(&value.ty, result, definitions, expression.span)
+        }
         HirKind::Variant {
             type_name,
             variant,
@@ -1351,5 +1370,25 @@ mod tests {
         )
         .is_err());
         assert!(decode_value(&ty, json!({"name": "ok"}), &BTreeMap::new(), span).is_ok());
+    }
+
+    #[test]
+    fn decoded_maps_support_typed_lookup_and_missing_keys_fail_closed() {
+        assert_eq!(evaluate("(seq (bind packet (decode (Map Json) (dict (ready true)))) (decode Bool (get packet ready)))").unwrap(), json!(true));
+        assert_eq!(
+            evaluate("(seq (bind packet (dict (name \"draft\"))) packet.name)").unwrap(),
+            json!("draft")
+        );
+        assert!(evaluate("(get (dict (present 1)) missing)").is_err());
+        assert!(
+            evaluate("(decode Bool (get (decode (Map Json) (dict (ready \"yes\"))) ready))")
+                .is_err()
+        );
+        assert!(analyze(
+            "(eval (get (decode Json (dict (ready true))) ready))",
+            &StaticProfile::default(),
+            AnalysisLimits::default()
+        )
+        .is_err());
     }
 }

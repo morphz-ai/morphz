@@ -2997,6 +2997,34 @@ impl MorphzRuntime {
             loop {
                 ticker.tick().await;
                 let now = chrono::Utc::now();
+                match edge_execution_jobs
+                    .reconcile_abandoned_runtime_jobs(
+                        edge_worker_coordination,
+                        edge_store.as_ref(),
+                        Some(edge_store.as_ref()),
+                        now,
+                    )
+                    .await
+                {
+                    Ok(report)
+                        if !report.recovered_receipts.is_empty()
+                            || !report.requeue_receipts.is_empty()
+                            || !report.lost_receipts.is_empty() =>
+                    {
+                        tracing::info!(
+                            recovered = report.recovered_receipts.len(),
+                            requeued = report.requeue_receipts.len(),
+                            lost = report.lost_receipts.len(),
+                            event_code = "runtime.execution_jobs.abandoned_owner_reconciled",
+                            "Reconciled abandoned Runtime-owned Jobs with their persisted retry policy"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        event_code = "runtime.execution_jobs.abandoned_owner_recovery_failed",
+                        %error, "Abandoned Runtime Job recovery will retry on the next cycle"
+                    ),
+                }
                 let stale_before = now
                     - chrono::Duration::seconds(
                         i64::try_from(node_stale_after).unwrap_or(i64::MAX),
@@ -23368,6 +23396,205 @@ mod tests {
         assert!(create_receipts.iter().any(
             |receipt| receipt.contains("\"activation_adoption\": \"independent-continuation\"")
         ));
+    }
+
+    #[tokio::test]
+    async fn abandoned_execution_jobs_reconcile_after_startup_without_replaying_unsafe_work() {
+        use crate::memory::{ExecutionJobMutation, ExecutionRetrySafety, NewExecutionJob};
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.edge_execution.reconcile_interval = crate::config::HumanDuration::from_secs(1);
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-periodic-job-recovery".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Periodic recovery".into(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let store = &runtime.inner.store;
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "thread-periodic-job-recovery".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-periodic-job-recovery".into(),
+                initiating_principal_id: None,
+                root_turn_id: "root-periodic-job-recovery".into(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "activation-periodic-job-recovery".into(),
+                agent_id: thread.agent_id.clone(),
+                context_id: thread.context_id.clone(),
+                session_id: thread.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: thread.root_turn_id.clone(),
+                trigger_sequence: 1,
+                trigger_kind: "chat/tool_output".into(),
+                parent_activation_id: None,
+                root_turn_id: thread.root_turn_id.clone(),
+            })
+            .await
+            .unwrap();
+        // Seed only AFTER start(): these Jobs cannot be repaired by startup recovery.
+        // A healthy owner is never touched, unsafe actions are closed as unknown,
+        // and an unresolvable owner's lease must eventually be reconsidered.
+        let cases = [
+            (
+                "dead-safe",
+                format!("runtime:{}:dead:0", i32::MAX),
+                ExecutionRetrySafety::Idempotent,
+                90,
+                ExecutionJobStatus::Queued,
+            ),
+            (
+                "dead-unsafe",
+                format!("runtime:{}:dead:0", i32::MAX),
+                ExecutionRetrySafety::AtMostOnce,
+                90,
+                ExecutionJobStatus::Lost,
+            ),
+            (
+                "live",
+                format!("runtime:{}:live:0", std::process::id()),
+                ExecutionRetrySafety::Idempotent,
+                90,
+                ExecutionJobStatus::Running,
+            ),
+            (
+                "unknown-expiring",
+                "runtime:unknown:0".into(),
+                ExecutionRetrySafety::Idempotent,
+                1,
+                ExecutionJobStatus::Queued,
+            ),
+            (
+                "background",
+                "background-worker:test".into(),
+                ExecutionRetrySafety::ReconcileRequired,
+                1,
+                ExecutionJobStatus::Running,
+            ),
+        ];
+        for (id, owner, safety, seconds, _) in &cases {
+            let job = store
+                .create_execution_job(NewExecutionJob {
+                    id: (*id).into(),
+                    activation_id: activation.id.clone(),
+                    thread_id: thread.id.clone(),
+                    agent_id: thread.agent_id.clone(),
+                    context_id: thread.context_id.clone(),
+                    session_id: thread.session_id.clone(),
+                    initiating_principal_id: None,
+                    target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.into(),
+                    tool_call_id: format!("call-{id}"),
+                    tool_name: "test/host".into(),
+                    request: json!({"_morphz_wake_thread": false}),
+                    retry_safety: *safety,
+                    requires_approval: false,
+                })
+                .await
+                .unwrap();
+            let lease = chrono::Utc::now() + chrono::Duration::seconds(*seconds);
+            let token = format!("claim-{id}");
+            let claimed = match store
+                .claim_execution_job(id, job.revision, owner, &token, lease, None)
+                .await
+                .unwrap()
+            {
+                ExecutionJobMutation::Updated(job) => job,
+                other => panic!("unexpected claim: {other:?}"),
+            };
+            assert!(matches!(
+                store
+                    .heartbeat_execution_job(
+                        id,
+                        claimed.revision,
+                        &token,
+                        lease,
+                        Some(chrono::Utc::now()),
+                        None
+                    )
+                    .await
+                    .unwrap(),
+                ExecutionJobMutation::Updated(_)
+            ));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            loop {
+                let mut complete = true;
+                for (id, _, _, _, expected) in &cases {
+                    complete &=
+                        store.get_execution_job(id).await.unwrap().unwrap().status == *expected;
+                }
+                if complete {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("periodic recovery must reconcile without another Runtime restart");
+        let lost = store
+            .get_execution_job("dead-unsafe")
+            .await
+            .unwrap()
+            .unwrap();
+        let event_id = lost
+            .result_event_id
+            .expect("unknown result must be durable");
+        assert_eq!(
+            runtime
+                .query_events(QueryFilter {
+                    event_id: Some(event_id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let safe = store.get_execution_job("dead-safe").await.unwrap().unwrap();
+        assert!(
+            !matches!(
+                store
+                    .heartbeat_execution_job(
+                        &safe.id,
+                        safe.revision,
+                        "claim-dead-safe",
+                        chrono::Utc::now() + chrono::Duration::seconds(90),
+                        None,
+                        None
+                    )
+                    .await
+                    .unwrap(),
+                ExecutionJobMutation::Updated(_)
+            ),
+            "old worker claim must remain fenced after requeue"
+        );
     }
 
     #[tokio::test]

@@ -70,7 +70,10 @@ fn normalize_typed_identity(value: &mut serde_json::Value) {
             for value in fields.values_mut() {
                 normalize_typed_identity(value);
             }
-            if fields.get("op").and_then(serde_json::Value::as_str) == Some("dict") {
+            if matches!(
+                fields.get("op").and_then(serde_json::Value::as_str),
+                Some("dict" | "json_object")
+            ) {
                 if let Some(entries) = fields
                     .get_mut("entries")
                     .and_then(serde_json::Value::as_array_mut)

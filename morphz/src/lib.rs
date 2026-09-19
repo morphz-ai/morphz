@@ -32,6 +32,7 @@ pub mod execution_target;
 pub mod experimental;
 pub mod extension;
 pub mod harness;
+pub mod harness_authoring;
 pub mod harness_package;
 pub mod harness_tool;
 pub mod host_tools;

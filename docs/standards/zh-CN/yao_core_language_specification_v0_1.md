@@ -6,7 +6,7 @@
 >
 > 规范原文：[English](../yao_core_language_specification_v0_1.md)
 >
-> 最后更新：2026-09-04
+> 最后更新：2026-09-20
 
 ## 1. 目的
 
@@ -177,6 +177,9 @@ Ref<K> Program<T, E>
 (mul EXPR...)           (div LEFT RIGHT)
 ```
 
+`get` 选择命名记录字段或静态命名的 `Map<T>` 键。Map 查找的结果类型是 `T`；缺键是
+分类失败，不能隐式返回空值或猜测。原始 `Json` 必须先显式转换为 Map 或声明的记录类型。
+
 `and`、`or` 从左到右短路。数值溢出、除零、解码失败、字段缺失、非法比较均是带 Span 的
 分类失败，不能静默强制转换。
 
@@ -184,6 +187,29 @@ Core v0.1 采用 Effect Normal Form：值构造器与纯算子的 Operand、`if`
 Value、`map` Collection、Tool/Host/Inference Argument 以及 `run` Operand 必须是纯表达式。
 Effectful Result 需要先通过 `bind` 命名，再以引用使用。这样每个持久 Suspension 都位于
 显式控制边界，重启位置不会含糊。
+
+### 6.1 显式普通 JSON 适配器（编写扩展）
+
+`(from-json TYPE EXPR)` 从普通 JSON 严格构造带类型数据；`(to-json EXPR)` 将静态已知
+类型的数据转换为普通 JSON。与 `decode` 不同，这两个适配器在普通字段对象与名义记录
+之间转换。缺少字段、多余字段、错误类型和未知 Union 分支均带字段路径失败，不强制转换、
+修补或丢弃字段；Yao 内部保留名义类型身份。
+
+Ref、Program、EvidenceCandidate、OutcomeCandidate 和 ContextTransaction 以及嵌套了这些
+类型的数据不能通过此边界构造。Json 字段保持不透明，内部的 `$yao` 不会自动变成权威值。
+
+`(json-object (KEY EXPR)...)` 显式构造异构的 `Map<Json>`，每个字段使用相同的向外转换。
+重复键被拒绝，所有操作数必须是纯表达式；`dict` 仍然同构，不隐式扩宽。
+
+Record 使用 `{field:value,...}`；Union 使用 `{"case":"Variant","fields":{...}}`；
+Option 使用 `{"case":"none"}` 或 `{"case":"some","value":...}`；Result 使用
+`{"case":"ok|err","value":...}`。这些是数据编码，不是 Runtime 能力标签。
+
+### 6.2 长文本字符串（编写扩展）
+
+三引号字符串（`"""text"""`）逐字保留换行、反斜线与缩进，不插值、不自动去缩进。
+下一组三引号结束文本；文本本身含此分隔符时应使用普通转义字符串。规范化仍输出既有的
+转义字符串编码，因此内容相同的两种写法具有相同的值与程序身份。
 
 ## 7. 绑定与结构化控制
 
@@ -242,10 +268,20 @@ Target 策略、Package 声明、Program 声明及单次操作收窄结果的交
 Tool 名必须静态可知。参数纯求值完成后才持久化 Tool 请求；参数与返回值必须符合 Tool
 Schema；Effect 为 `(tool TOOL)`。
 
+显式 `(produces TYPE)` 可以替代 `(returns TYPE)`，但不能同时出现。它要求模型依据
+完整 BODY 产出 TYPE 所描述的语义数据，并不声称 BODY 的确定性表达式类型就是 TYPE。
+普通 `returns` 的可赋值规则不变。BODY 仍完整检查名称、captures、Effect 和能力，
+并原样发送给模型，没有另建仅含 task 字符串的 API。
+
+`produces` 的终值传输使用普通 JSON，按 `from-json` 严格构造。类型自动提供模型可见
+JSON Schema，不需要占位记录。重复键、代码围栏、尾随值、多余字段和类型错误在父程序
+继续前失败；禁止权威类型。程序合成仍使用 `(returns (Program ...))` 及独立准入流程。
+结果契约和精确类型定义随 infer Effect 持久化；旧 Effect 保留旧解码器与身份。
+
 ```lisp
 (infer
   [(captures NAME...)]
-  [(returns TYPE)]
+  [(returns TYPE) | (produces TYPE)]
   BODY)
 ```
 
@@ -259,7 +295,7 @@ Schema；Effect 为 `(tool TOOL)`。
 未列出的父程序绑定和完整 Runtime 环境不得被隐式附带。`captures` 只授权披露该值，
 不会授予 Tool、Host 或对象操作权限。
 
-若省略 `(returns TYPE)`，结果契约就是 `BODY` 的静态推导类型。对于普通值，显式声明的
+若省略两种结果声明，结果契约就是 `BODY` 的静态推导类型。对于普通 `returns` 值，显式声明的
 `TYPE` 必须能够接收正文类型。`Program<T,E>` 是唯一的程序合成契约：正文说明模型如何
 派生一个隔离的候选程序；该候选程序必须独立经过解析、类型检查、Effect 检查、规范化和
 持久化，才能成为 Program Value。

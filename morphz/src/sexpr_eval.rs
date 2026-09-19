@@ -225,6 +225,12 @@ pub struct PlanArgument {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferResultKind {
+    /// Ordinary JSON is strictly constructed as data, not Runtime authority.
+    Json {
+        ty: crate::yao::Type,
+        definitions: BTreeMap<String, crate::yao::TypeDefinition>,
+        span: crate::yao::SourceSpan,
+    },
     /// A typed Yao value. The definitions travel with the durable effect so a
     /// different worker applies exactly the admission-time decoder on resume.
     Yao {
@@ -238,6 +244,7 @@ impl InferResultKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Yao { .. } => "yao",
+            Self::Json { .. } => "json",
         }
     }
 }
@@ -700,66 +707,70 @@ impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
     }
 
     fn host_signature(&self, name: &str) -> Option<crate::yao::ToolSignature> {
-        use crate::yao::Type;
-        let signature = match name {
-            "evidence.commit" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([("candidate".into(), Type::EvidenceCandidate)]),
-                required: BTreeSet::from(["candidate".into()]),
-                result: Type::Ref("Evidence".into()),
-            },
-            "outcome.commit" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([("candidate".into(), Type::OutcomeCandidate)]),
-                required: BTreeSet::from(["candidate".into()]),
-                result: Type::Ref("Outcome".into()),
-            },
-            "objective.report" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([
-                    ("objective".into(), Type::Ref("Objective".into())),
-                    ("progress".into(), Type::Json),
-                    (
-                        "evidence".into(),
-                        Type::List(Box::new(Type::Ref("Evidence".into()))),
-                    ),
-                ]),
-                required: BTreeSet::from(["objective".into(), "progress".into()]),
-                result: objective_transition_result_type(),
-            },
-            "objective.propose-wait" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([
-                    ("objective".into(), Type::Ref("Objective".into())),
-                    ("condition".into(), Type::Json),
-                    ("reason".into(), Type::String),
-                ]),
-                required: BTreeSet::from(["objective".into(), "condition".into(), "reason".into()]),
-                result: objective_transition_result_type(),
-            },
-            "objective.propose-completion" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([
-                    ("objective".into(), Type::Ref("Objective".into())),
-                    ("outcome".into(), Type::Ref("Outcome".into())),
-                ]),
-                required: BTreeSet::from(["objective".into(), "outcome".into()]),
-                result: objective_transition_result_type(),
-            },
-            "context.propose" => crate::yao::ToolSignature {
-                arguments: BTreeMap::from([("transaction".into(), Type::ContextTransaction)]),
-                required: BTreeSet::from(["transaction".into()]),
-                result: Type::StructuralRecord(BTreeMap::from([
-                    ("status".into(), Type::String),
-                    ("proposal_id".into(), Type::String),
-                    ("transaction_id".into(), Type::Json),
-                    ("before_revision".into(), Type::Json),
-                    ("after_revision".into(), Type::Json),
-                    ("detail".into(), Type::Json),
-                ])),
-            },
-            _ => return None,
-        };
-        Some(signature)
+        offline_host_signature(name)
     }
 }
 
-fn tool_signature_from_json_schema(schema: &JsonValue) -> crate::yao::ToolSignature {
+pub(crate) fn offline_host_signature(name: &str) -> Option<crate::yao::ToolSignature> {
+    use crate::yao::Type;
+    let signature = match name {
+        "evidence.commit" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([("candidate".into(), Type::EvidenceCandidate)]),
+            required: BTreeSet::from(["candidate".into()]),
+            result: Type::Ref("Evidence".into()),
+        },
+        "outcome.commit" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([("candidate".into(), Type::OutcomeCandidate)]),
+            required: BTreeSet::from(["candidate".into()]),
+            result: Type::Ref("Outcome".into()),
+        },
+        "objective.report" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([
+                ("objective".into(), Type::Ref("Objective".into())),
+                ("progress".into(), Type::Json),
+                (
+                    "evidence".into(),
+                    Type::List(Box::new(Type::Ref("Evidence".into()))),
+                ),
+            ]),
+            required: BTreeSet::from(["objective".into(), "progress".into()]),
+            result: objective_transition_result_type(),
+        },
+        "objective.propose-wait" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([
+                ("objective".into(), Type::Ref("Objective".into())),
+                ("condition".into(), Type::Json),
+                ("reason".into(), Type::String),
+            ]),
+            required: BTreeSet::from(["objective".into(), "condition".into(), "reason".into()]),
+            result: objective_transition_result_type(),
+        },
+        "objective.propose-completion" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([
+                ("objective".into(), Type::Ref("Objective".into())),
+                ("outcome".into(), Type::Ref("Outcome".into())),
+            ]),
+            required: BTreeSet::from(["objective".into(), "outcome".into()]),
+            result: objective_transition_result_type(),
+        },
+        "context.propose" => crate::yao::ToolSignature {
+            arguments: BTreeMap::from([("transaction".into(), Type::ContextTransaction)]),
+            required: BTreeSet::from(["transaction".into()]),
+            result: Type::StructuralRecord(BTreeMap::from([
+                ("status".into(), Type::String),
+                ("proposal_id".into(), Type::String),
+                ("transaction_id".into(), Type::Json),
+                ("before_revision".into(), Type::Json),
+                ("after_revision".into(), Type::Json),
+                ("detail".into(), Type::Json),
+            ])),
+        },
+        _ => return None,
+    };
+    Some(signature)
+}
+
+pub(crate) fn tool_signature_from_json_schema(schema: &JsonValue) -> crate::yao::ToolSignature {
     let arguments = schema
         .get("properties")
         .and_then(JsonValue::as_object)
@@ -822,7 +833,7 @@ fn objective_transition_result_type() -> crate::yao::Type {
     ]))
 }
 
-fn runtime_environment_type() -> crate::yao::Type {
+pub(crate) fn runtime_environment_type() -> crate::yao::Type {
     crate::yao::Type::StructuralRecord(BTreeMap::from([
         ("agent".to_string(), crate::yao::Type::Ref("Agent".into())),
         (
@@ -2303,6 +2314,7 @@ impl PlanMachine {
                 body,
                 captures,
                 result,
+                produces,
                 source,
             } => {
                 if self.budget.infers_left == 0 {
@@ -2347,15 +2359,24 @@ impl PlanMachine {
                     request.insert("type_definitions".to_string(), definitions);
                 }
                 self.budget.infers_left -= 1;
+                let result = if produces {
+                    InferResultKind::Json {
+                        ty: result,
+                        definitions: self.typed_definitions.clone(),
+                        span,
+                    }
+                } else {
+                    InferResultKind::Yao {
+                        ty: result,
+                        definitions: self.typed_definitions.clone(),
+                        span,
+                    }
+                };
                 let effect = PlanEffect::Infer {
                     sequence: self.take_effect_sequence(),
                     request,
                     tools: Some(tools),
-                    result: InferResultKind::Yao {
-                        ty: result,
-                        definitions: self.typed_definitions.clone(),
-                        span,
-                    },
+                    result,
                 };
                 self.pending = Some(effect.clone());
                 return Some(PlanAdvance::Suspended(effect));
@@ -2817,6 +2838,23 @@ fn as_json(output: String) -> JsonValue {
 /// wants a recovery path.
 pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<JsonValue, String> {
     match kind {
+        InferResultKind::Json {
+            ty,
+            definitions,
+            span,
+        } => {
+            let transport = match value {
+                JsonValue::String(text) => crate::yao::json::parse_strict_json(text.trim())
+                    .map_err(|error| {
+                        format!(
+                            "infer produces {ty:?}, but the final body is not valid JSON: {error}"
+                        )
+                    })?,
+                value => value,
+            };
+            crate::yao::json::from_json(&ty, transport, &definitions, span)
+                .map_err(|error| format!("infer produces {ty:?}: {error}"))
+        }
         InferResultKind::Yao {
             ty,
             definitions,
@@ -2931,6 +2969,12 @@ tokio::task_local! {
     /// Evaluation. They make nominal types in exported `fn` signatures
     /// available without copying declarations into each model-authored call.
     pub static CURRENT_HARNESS_TYPES: Option<Arc<Vec<String>>>;
+}
+
+tokio::task_local! {
+    /// Set only by the Runtime's bound-entry dispatcher, never by eval args.
+    /// Internal functions are callable only by this exact package entry.
+    pub static CURRENT_HARNESS_ENTRY_SOURCE: Option<String>;
 }
 
 /// Core physical tools an `eval` program may call when nothing is configured.
@@ -3070,7 +3114,9 @@ impl crate::tool::Tool for EvalTool {
             &args.program,
             type_sources.as_slice(),
             function_sources.as_slice(),
-            false,
+            CURRENT_HARNESS_ENTRY_SOURCE
+                .try_with(|entry| entry.as_deref() == Some(args.program.as_str()))
+                .unwrap_or(false),
             &self.registry,
             &gate,
         )?;
@@ -3621,6 +3667,91 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn produces_constructs_named_data_and_preserves_full_body_and_captures() {
+        let (registry, seen) = fixture(&[("search", serde_json::json!(["found"]))]);
+        let program = validate(r#"(eval (requires (tools search))
+          (types (record Decision (query String)))
+          (seq (bind brief "find notes") (bind private "do-not-disclose")
+            (bind decision (infer (captures brief) (produces Decision) (seq brief "Choose the query")))
+            (call search (query decision.query))))"#,
+          &registry, &AllowList::new(["search"])).unwrap();
+        let (inference, requests) = host(r#"{"query":"needle"}"#);
+        assert_eq!(
+            evaluate(&program, registry, inference).await.unwrap(),
+            serde_json::json!(["found"])
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests[0]["captures"],
+            serde_json::json!({"brief":"find notes"})
+        );
+        assert!(requests[0]["program"]
+            .as_str()
+            .unwrap()
+            .contains("(seq brief"));
+        assert!(!serde_json::to_string(&requests[0])
+            .unwrap()
+            .contains("do-not-disclose"));
+    }
+
+    #[test]
+    fn produces_decode_and_failure_survive_durable_machine_serialization() {
+        let (registry, seen) = fixture(&[("search", serde_json::json!([]))]);
+        let program = validate(
+            r#"(eval (requires (tools search))
+          (types (record Decision (query String)))
+          (seq (bind decision (infer (produces Decision) "Choose query"))
+               (call search (query decision.query))))"#,
+            &registry,
+            &AllowList::new(["search"]),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let PlanAdvance::Suspended(effect) = machine.advance(&registry) else {
+            panic!("infer did not suspend");
+        };
+        let serialized = serde_json::to_string(&machine).unwrap();
+        for body in [
+            r#"{"query":3}"#,
+            r#"{"query":"x","extra":true}"#,
+            r#"{"query":"x","query":"y"}"#,
+            "not-json",
+        ] {
+            let mut resumed: PlanMachine = serde_json::from_str(&serialized).unwrap();
+            let PlanEffect::Infer {
+                sequence, result, ..
+            } = effect.clone()
+            else {
+                panic!("wrong effect");
+            };
+            let outcome = decode_infer_result(result, JsonValue::String(body.into()));
+            assert!(outcome.is_err(), "{body}");
+            resumed.resume_effect(sequence, outcome).unwrap();
+            assert!(matches!(resumed.advance(&registry), PlanAdvance::Failed(_)));
+            assert!(seen.lock().unwrap().is_empty());
+        }
+        let mut resumed: PlanMachine = serde_json::from_str(&serialized).unwrap();
+        let PlanEffect::Infer {
+            sequence, result, ..
+        } = effect
+        else {
+            panic!("wrong effect");
+        };
+        resumed
+            .resume_effect(
+                sequence,
+                decode_infer_result(result, JsonValue::String(r#"{"query":"needle"}"#.into())),
+            )
+            .unwrap();
+        let PlanAdvance::Suspended(PlanEffect::Call { arguments, .. }) = resumed.advance(&registry)
+        else {
+            panic!("validated result did not reach call");
+        };
+        assert_eq!(arguments["query"], "needle");
+    }
+
     #[test]
     fn infer_result_contract_is_static_and_known_before_execution() {
         let registry = fixture(&[]).0;
@@ -3821,6 +3952,24 @@ mod tests {
             calls.lock().unwrap().is_empty(),
             "validation must precede every side effect"
         );
+    }
+
+    #[tokio::test]
+    async fn internal_hns_functions_are_reserved_for_the_exact_runtime_entry() {
+        use crate::tool::Tool;
+        let tool = EvalTool::with_default_tools(fixture(&[]).0);
+        let functions = Arc::new(vec![
+            "(fn private-answer (params) (returns Int) (body 42))".to_string()
+        ]);
+        let source = "(eval (private-answer))";
+        let args = serde_json::json!({"program": source}).to_string();
+        CURRENT_HARNESS_FUNCTIONS.scope(Some(functions), CURRENT_INFERENCE.scope(Some(host("unused").0), async {
+            assert!(tool.execute(&args).await.unwrap_err().to_string().contains("internal"));
+            let value = CURRENT_HARNESS_ENTRY_SOURCE.scope(Some(source.into()), tool.execute(&args)).await.unwrap();
+            assert_eq!(value, "42");
+            let forged = serde_json::json!({"program":"(eval (seq (private-answer) 0))", "harness_entry":true}).to_string();
+            assert!(CURRENT_HARNESS_ENTRY_SOURCE.scope(Some(source.into()), tool.execute(&forged)).await.is_err());
+        })).await;
     }
 
     #[tokio::test]

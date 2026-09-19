@@ -309,6 +309,32 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
 ### 3.5 `fn`：已实现的包内函数与认知应用接口
 
+编写结构化语义任务时，可以显式使用 `produces`，不需要在正文末尾填一个空记录：
+
+```lisp
+(infer (captures context) (produces ScriptProduct)
+  """根据 context 创作本次交付。
+保留未要求改变的字段，不以计划代替成稿。""")
+```
+
+完整 BODY 仍由同一套 Yao 前端检查并交给模型；`produces` 声明预期的语义数据类型，
+Runtime 从类型生成 JSON Schema，严格解码成具名值。普通 `returns` 仍要求 BODY 类型
+可赋给结果类型；Program 的隔离准入不变。`from-json`、`to-json` 和 `json-object`
+负责普通 JSON 边界，不能构造 Ref、Program 或其他权限值；不再用 `decode Json` 充当
+混合对象构造技巧。
+
+离线开发命令（不建立 Runtime、不安装、不执行工具）：
+
+```sh
+morphz harness check application/harnesses/script-studio.hns --tool-schema application/harnesses/script-studio.tools.json --format=json
+morphz harness format application/harnesses/script-studio.hns --check
+morphz harness format application/harnesses/script-studio.hns --write
+```
+
+`check` 不提供外部工具 Schema 时，会明确列出尚未验证的工具输入契约；这不是运行时
+可用性或权限验收。`format` 默认只输出，`--write` 才原子写回指定文件；保持注释、字符串
+值和规范化身份，目录包按单个 `.yao` 文件格式化。三引号文本保留实际换行和缩进，不插值。
+
 `call` 只能指向 Runtime 已注册 Tool。若所有组合逻辑都必须写成 Rust Tool，会让 Harness
 退化成工具配置，因此 `.hns` 还需要包内命名函数。Function 不只是实现内部复用；被 HNS
 显式导出的 Function 还可以构成最小认知应用提供给模型的 Yao 函数接口。

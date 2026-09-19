@@ -12278,6 +12278,16 @@ fn activation_focus(
         String::new()
     } else if root_kind == "chat/user_message" {
         dialogue_input_batch_preview(effective_root, signals, events)
+    } else if root_kind == "chat/infer_request"
+        && thread.is_some_and(|thread| thread.executor_kind == "plan_infer")
+        && effective_root.is_some_and(|event| event.event_type == TYPE_INFER_REQUEST)
+    {
+        // Executable BODY and explicit lexical captures are inputs, not an
+        // observation summary. A pure infer has no recall tool with which to
+        // recover a clipped middle. Preserve them in full; physical request
+        // budgeting must reject an oversized evaluation instead of changing
+        // its program or losing its evidence.
+        event_text(effective_root.unwrap())
     } else {
         bounded_event_preview(effective_root, 1_200)
     };
@@ -17406,6 +17416,52 @@ mod tests {
         assert_eq!(budget.context_transactions_used, 0);
         assert_eq!(budget.context_transactions_limit, 6);
         assert!(!budget.context_tx_available);
+    }
+
+    #[test]
+    fn pure_infer_keeps_complete_program_and_lexical_captures_in_root_input() {
+        let now = chrono::Utc::now();
+        let activation: ThreadActivationRecord = serde_json::from_value(json!({
+            "id": "activation", "revision": 1, "generation": 1,
+            "agent_id": "agent", "context_id": "context", "session_id": "session",
+            "root_turn_id": "infer", "trigger_event_id": "infer", "trigger_sequence": 1,
+            "trigger_kind": "chat/infer_request", "status": "queued",
+            "created_at": now, "updated_at": now,
+        }))
+        .unwrap();
+        let thread: ThreadRecord = serde_json::from_value(json!({
+            "id": "child", "revision": 1, "generation": 1,
+            "agent_id": "agent", "context_id": "context", "session_id": "session",
+            "root_turn_id": "infer", "kind": "execution", "lifecycle": "open", "control_state": "active",
+            "executor_kind": "plan_infer", "executor_id": "plan",
+            "supervision": ThreadSupervision::runtime("test"), "delivery_status": "none",
+            "created_at": now, "updated_at": now,
+        })).unwrap();
+        let text = format!(
+            "{} REQUIRED-MIDDLE-CAPTURE {}",
+            "a".repeat(2_000),
+            "z".repeat(2_000)
+        );
+        let event = Event::new(
+            "infer".into(),
+            "Runtime-Yao".into(),
+            TYPE_INFER_REQUEST.into(),
+            "chat/infer_request".into(),
+            json!({"text": text}).as_object().unwrap().clone(),
+        );
+        let focus = activation_focus(
+            &activation,
+            &[],
+            &[],
+            Some(&thread),
+            Some(&event),
+            Some(&event),
+        );
+        assert_eq!(focus.root_preview, text);
+        assert!(!focus.root_preview.contains("use recall"));
+        // An arbitrary event named infer is not enough to bypass previews.
+        let ordinary = activation_focus(&activation, &[], &[], None, Some(&event), Some(&event));
+        assert!(!ordinary.root_preview.contains("REQUIRED-MIDDLE-CAPTURE"));
     }
 
     #[test]

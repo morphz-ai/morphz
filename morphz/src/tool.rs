@@ -581,6 +581,13 @@ pub trait Tool: Send + Sync {
     fn retry_safety(&self) -> ExecutionRetrySafety {
         ExecutionRetrySafety::AtMostOnce
     }
+    /// Pure, host-owned classification of this exact request. Multiplexed
+    /// tools may have read/idempotent operations alongside irreversible ones.
+    /// Runtime freezes this result in the Job; model-supplied retry flags are
+    /// never authority to change it or to upgrade an existing Job.
+    fn retry_safety_for_arguments(&self, _arguments: &str) -> ExecutionRetrySafety {
+        self.retry_safety()
+    }
     /// Decoded single-artifact ceiling for tools that can return model-visible
     /// binary input. Execution backends use this to preserve the same policy
     /// on local, Managed SSH and Edge targets.

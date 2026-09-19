@@ -1,12 +1,19 @@
 //! Explicit, host-owned loopback/local-IPC tool adapters. Project configuration cannot
 //! install tools or supply their credentials. Calls remain physical jobs.
-use std::{collections::HashSet, fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
     llm::ToolDefinition,
+    memory::ExecutionRetrySafety,
     tool::{Tool, CURRENT_EXECUTION_JOB},
 };
 
@@ -39,10 +46,31 @@ struct Registration {
     context_ids: Vec<String>,
     #[serde(default)]
     context_id_prefixes: Vec<String>,
+    /// Trusted Host opt-in, not part of model-visible parameters. Every
+    /// selector in a rule must match a string at the exact JSON Pointer.
+    /// Empty/wildcard policies are forbidden. Undeclared requests remain
+    /// at-most-once; the Host must enforce idempotency by durable job/call ID.
+    #[serde(default)]
+    idempotent_requests: Vec<BTreeMap<String, String>>,
     definition: ToolDefinition,
 }
 
 impl Registration {
+    fn retry_safety_for_arguments(&self, arguments: &str) -> ExecutionRetrySafety {
+        let Ok(arguments) = serde_json::from_str::<Value>(arguments) else {
+            return ExecutionRetrySafety::AtMostOnce;
+        };
+        if self.idempotent_requests.iter().any(|rule| {
+            !rule.is_empty()
+                && rule.iter().all(|(pointer, expected)| {
+                    arguments.pointer(pointer).and_then(Value::as_str) == Some(expected.as_str())
+                })
+        }) {
+            ExecutionRetrySafety::Idempotent
+        } else {
+            ExecutionRetrySafety::AtMostOnce
+        }
+    }
     fn validate_transport(&self) -> Result<(), Error> {
         if let Some(path) = &self.ipc_path {
             if !self.endpoint.is_empty() {
@@ -193,6 +221,26 @@ fn validate(manifest: &Manifest) -> Result<(), Error> {
     let mut names = HashSet::new();
     for tool in &manifest.tools {
         tool.validate_transport()?;
+        if tool.idempotent_requests.len() > 16
+            || tool.idempotent_requests.iter().any(|rule| {
+                rule.is_empty()
+                    || rule.len() > 8
+                    || rule.iter().any(|(pointer, expected)| {
+                        !pointer.starts_with('/')
+                            || pointer.len() > 256
+                            || pointer.chars().any(char::is_control)
+                            || pointer
+                                .split('~')
+                                .skip(1)
+                                .any(|escape| !escape.starts_with(['0', '1']))
+                            || expected.is_empty()
+                            || expected.len() > 128
+                            || expected.chars().any(char::is_control)
+                    })
+            })
+        {
+            return Err("invalid host idempotent request selectors".into());
+        }
         let name = &tool.definition.name;
         if !name.starts_with("host_")
             || name.len() <= 5
@@ -301,8 +349,9 @@ impl Tool for HostTool {
     fn definition(&self) -> ToolDefinition {
         self.registration.definition.clone()
     }
-    // Conservative AtMostOnce default: each receiving host must additionally
-    // deduplicate by the durable job ID before opting into stronger replay.
+    fn retry_safety_for_arguments(&self, arguments: &str) -> ExecutionRetrySafety {
+        self.registration.retry_safety_for_arguments(arguments)
+    }
     async fn execute(&self, arguments: &str) -> Result<String, Error> {
         let route = CURRENT_EXECUTION_JOB
             .try_with(Clone::clone)
@@ -382,12 +431,71 @@ mod tests {
             token: "x".repeat(64),
             context_ids: vec!["work-context".into()],
             context_id_prefixes: vec![],
+            idempotent_requests: vec![],
             definition: ToolDefinition {
                 name: "host_work".into(),
                 description: "Work objects".into(),
                 parameters: json!({"type":"object"}),
             },
         }
+    }
+    #[test]
+    fn replay_policy_is_host_owned_and_matches_every_exact_discriminator() {
+        let mut tool = registration();
+        let read = r#"{"action":"script","script":{"action":"read-workflow"}}"#;
+        assert_eq!(
+            tool.retry_safety_for_arguments(read),
+            ExecutionRetrySafety::AtMostOnce
+        );
+        tool.idempotent_requests = vec![BTreeMap::from([
+            ("/action".into(), "script".into()),
+            ("/script/action".into(), "read-workflow".into()),
+        ])];
+        assert_eq!(
+            tool.retry_safety_for_arguments(read),
+            ExecutionRetrySafety::Idempotent
+        );
+        for unsafe_request in [
+            r#"{"action":"script","script":{"action":"command"}}"#,
+            r#"{"action":"browser","script":{"action":"read-workflow"}}"#,
+            r#"{"script":{"action":"read-workflow"}}"#,
+            r#"{"action":"script","script":{"action":["read-workflow"]}}"#,
+            r#"{"retry_safety":"idempotent","action":"browser"}"#,
+            r#"{"idempotent_requests":[{"/action":"browser"}],"action":"browser"}"#,
+            "not-json",
+        ] {
+            assert_eq!(
+                tool.retry_safety_for_arguments(unsafe_request),
+                ExecutionRetrySafety::AtMostOnce
+            );
+        }
+    }
+    #[test]
+    fn replay_policy_rejects_empty_unbounded_and_malformed_selectors() {
+        let mut manifest = Manifest {
+            protocol: 1,
+            tools: vec![registration()],
+            formats: vec![],
+        };
+        for selectors in [
+            vec![BTreeMap::new()],
+            vec![BTreeMap::from([("".into(), "anything".into())])],
+            vec![BTreeMap::from([("action".into(), "read".into())])],
+            vec![BTreeMap::from([("/a~".into(), "read".into())])],
+            vec![BTreeMap::from([("/a~2".into(), "read".into())])],
+            vec![BTreeMap::from([("/action".into(), "".into())])],
+            vec![BTreeMap::from([("/action".into(), "read".into())]); 17],
+        ] {
+            manifest.tools[0].idempotent_requests = selectors;
+            assert!(validate(&manifest).is_err());
+        }
+        manifest.tools[0].idempotent_requests =
+            vec![BTreeMap::from([("/a~0b~1c".into(), "read".into())])];
+        assert!(validate(&manifest).is_ok());
+        assert_eq!(
+            manifest.tools[0].retry_safety_for_arguments(r#"{"a~b/c":"read"}"#),
+            ExecutionRetrySafety::Idempotent
+        );
     }
     #[test]
     fn host_owned_context_namespace_is_delimited_and_not_a_wildcard() {

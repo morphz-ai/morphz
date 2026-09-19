@@ -63,6 +63,8 @@ pub struct Diagnostic {
     pub primary: SourceSpan,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<Box<str>>,
 }
 
 impl Diagnostic {
@@ -72,6 +74,7 @@ impl Diagnostic {
             message: message.into(),
             primary,
             related: Vec::new(),
+            function: None,
         }
     }
 

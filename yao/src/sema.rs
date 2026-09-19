@@ -281,6 +281,16 @@ pub enum HirKind {
     Dict {
         entries: Vec<(String, HirExpr)>,
     },
+    JsonObject {
+        entries: Vec<(String, HirExpr)>,
+    },
+    FromJson {
+        target: Type,
+        value: Box<HirExpr>,
+    },
+    ToJson {
+        value: Box<HirExpr>,
+    },
     Record {
         type_name: String,
         fields: Vec<(String, HirExpr)>,
@@ -393,11 +403,16 @@ pub enum HirKind {
         captures: Vec<String>,
         /// The typed terminal result accepted from the model.  Without an
         /// explicit `(returns TYPE)` declaration this is the statically
-        /// inferred BODY type. Ordinary declarations must accept the BODY
-        /// type. `Program<T,E>` is the one synthesis contract: the complete
+        /// inferred BODY type. Ordinary returns must accept the BODY type.
+        /// `produces` synthesizes data through the ordinary JSON boundary.
+        /// Program returns use the separate quarantine contract: the complete
         /// BODY specifies how the model derives a quarantined candidate whose
         /// own output/effects are then independently admitted by Runtime.
         result: Type,
+        /// Explicit semantic synthesis of ordinary JSON into `result`. False
+        /// is omitted so old typed artifacts retain their canonical identity.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        produces: bool,
         source: String,
     },
     Par {
@@ -533,6 +548,38 @@ pub fn analyze_with_module(
         .with_types(type_forms)
         .with_functions(function_forms, allow_internal)
         .analyze_program(&root)
+}
+
+/// Analyze parsed package-local forms without discarding their original spans.
+/// Callers parse each source with ParseLimits before using this entry point.
+pub fn analyze_module_forms(
+    root: &Expr,
+    functions: &[Expr],
+    profile: &dyn AnalysisProfile,
+    limits: AnalysisLimits,
+) -> Result<Program, Diagnostic> {
+    if functions.len() > limits.max_functions {
+        return Err(diag(
+            DiagnosticCode::ResourceLimit,
+            "too many package functions",
+            root.span(),
+        ));
+    }
+    let source_bytes = functions
+        .iter()
+        .fold(canonical_source(root).len(), |size, function| {
+            size.saturating_add(canonical_source(function).len())
+        });
+    if source_bytes > limits.parse.max_source_bytes {
+        return Err(diag(
+            DiagnosticCode::ResourceLimit,
+            "combined package program exceeds source byte limit",
+            root.span(),
+        ));
+    }
+    Analyzer::new(profile, limits)
+        .with_functions(functions.to_vec(), true)
+        .analyze_program(root)
 }
 
 struct Analyzer<'a> {
@@ -1093,7 +1140,13 @@ impl<'a> Analyzer<'a> {
             })
         })();
         self.function_stack.pop();
-        let function = result?;
+        let function = result.map_err(|mut error: Diagnostic| {
+            if error.function.is_none() {
+                error.function = Some(name.into());
+            }
+            error.message = format!("in fn '{name}': {}", error.message);
+            error
+        })?;
         self.compiled_functions
             .insert(name.to_string(), function.clone());
         Ok(function)
@@ -1137,6 +1190,16 @@ impl<'a> Analyzer<'a> {
                 match operator {
                     "list" => self.analyze_list(arguments, scope, expression.span(), depth),
                     "dict" => self.analyze_dict(arguments, scope, expression.span(), depth),
+                    "json-object" => {
+                        self.analyze_json_object(arguments, scope, expression.span(), depth)
+                    }
+                    "from-json" | "to-json" => self.analyze_json_conversion(
+                        operator,
+                        arguments,
+                        scope,
+                        expression.span(),
+                        depth,
+                    ),
                     "record" => self.analyze_record(arguments, scope, expression.span(), depth),
                     "variant" => self.analyze_variant(arguments, scope, expression.span(), depth),
                     "some" => self.analyze_some(arguments, scope, expression.span(), depth),
@@ -1372,6 +1435,110 @@ impl<'a> Analyzer<'a> {
             union_effects(entries.iter().map(|(_, value)| value)),
             span,
         ))
+    }
+
+    fn require_json_type(&self, ty: &Type, span: SourceSpan) -> Result<(), Diagnostic> {
+        self.validate_type_names(ty, span)?;
+        crate::json::validate_json_type(ty, &self.definitions)
+            .map_err(|message| diag(DiagnosticCode::InvalidType, message, span))
+    }
+
+    fn analyze_json_object(
+        &mut self,
+        arguments: &[Expr],
+        scope: &mut Scope,
+        span: SourceSpan,
+        depth: usize,
+    ) -> Result<HirExpr, Diagnostic> {
+        if arguments.len() > self.limits.max_fields {
+            return Err(resource_fields(
+                arguments.len(),
+                self.limits.max_fields,
+                span,
+            ));
+        }
+        let mut names = HashSet::new();
+        let mut entries = Vec::new();
+        for argument in arguments {
+            let [key, value] = expect_list(argument, "json-object entries must be (KEY EXPR)")?
+            else {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    "json-object entries require exactly a key and value",
+                    argument.span(),
+                ));
+            };
+            let name = atom_text(key, "json-object key must be a symbol or string")?.to_string();
+            if !names.insert(name.clone()) {
+                return Err(diag(
+                    DiagnosticCode::DuplicateName,
+                    format!("duplicate JSON key '{name}'"),
+                    key.span(),
+                ));
+            }
+            let value = self.analyze_expr(value, scope, depth + 1)?;
+            require_pure(&value, "json-object field")?;
+            self.require_json_type(&value.ty, value.span)?;
+            entries.push((name, value));
+        }
+        Ok(hir(
+            HirKind::JsonObject { entries },
+            Type::Map(Box::new(Type::Json)),
+            EffectSet::default(),
+            span,
+        ))
+    }
+
+    fn analyze_json_conversion(
+        &mut self,
+        operator: &str,
+        arguments: &[Expr],
+        scope: &mut Scope,
+        span: SourceSpan,
+        depth: usize,
+    ) -> Result<HirExpr, Diagnostic> {
+        if operator == "from-json" {
+            let [target, value] = arguments else {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    "from-json requires TYPE and JSON-EXPR",
+                    span,
+                ));
+            };
+            let target = self.parse_type(target)?;
+            self.require_json_type(&target, span)?;
+            let value = self.analyze_expr(value, scope, depth + 1)?;
+            require_pure(&value, "from-json operand")?;
+            require_assignable(&value.ty, &Type::Json, value.span)?;
+            Ok(hir(
+                HirKind::FromJson {
+                    target: target.clone(),
+                    value: Box::new(value),
+                },
+                target,
+                EffectSet::default(),
+                span,
+            ))
+        } else {
+            let [value] = arguments else {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    "to-json requires exactly one expression",
+                    span,
+                ));
+            };
+            let value = self.analyze_expr(value, scope, depth + 1)?;
+            require_pure(&value, "to-json operand")?;
+            self.require_json_type(&value.ty, value.span)?;
+            Ok(hir(
+                HirKind::ToJson {
+                    value: Box::new(value),
+                },
+                Type::Json,
+                EffectSet::default(),
+                span,
+            ))
+        }
     }
 
     fn analyze_record(
@@ -2429,17 +2596,21 @@ impl<'a> Analyzer<'a> {
         }
 
         let mut declared_result = None;
-        if is_form(arguments.get(cursor), "returns") {
-            let items = expect_list(&arguments[cursor], "returns must be a list")?;
+        let produces = is_form(arguments.get(cursor), "produces");
+        if produces || is_form(arguments.get(cursor), "returns") {
+            let items = expect_list(&arguments[cursor], "result contract must be a list")?;
             if items.len() != 2 {
                 return Err(diag(
                     DiagnosticCode::InvalidType,
-                    "infer result declaration must be exactly (returns TYPE)",
+                    "infer result declaration must be exactly (returns TYPE) or (produces TYPE)",
                     arguments[cursor].span(),
                 ));
             }
             let result = self.parse_type(&items[1])?;
             self.validate_type_names(&result, arguments[cursor].span())?;
+            if produces {
+                self.require_json_type(&result, arguments[cursor].span())?;
+            }
             declared_result = Some(result);
             cursor += 1;
         }
@@ -2447,7 +2618,7 @@ impl<'a> Analyzer<'a> {
         if arguments.len().saturating_sub(cursor) != 1 {
             return Err(diag(
                 DiagnosticCode::InvalidType,
-                "infer requires exactly one complete Yao body after optional captures/returns declarations; use seq for multiple steps",
+                "infer requires exactly one complete Yao body after optional captures and returns/produces declarations; use seq for multiple steps",
                 span,
             ));
         }
@@ -2467,7 +2638,10 @@ impl<'a> Analyzer<'a> {
         }
         let body = self.analyze_expr(body_source, &mut body_scope, depth + 1)?;
         let result = if let Some(declared) = declared_result {
-            if !body.ty.is_assignable_to(&declared) && !matches!(declared, Type::Program { .. }) {
+            if !produces
+                && !body.ty.is_assignable_to(&declared)
+                && !matches!(declared, Type::Program { .. })
+            {
                 return Err(diag(
                     DiagnosticCode::TypeMismatch,
                     format!(
@@ -2498,6 +2672,7 @@ impl<'a> Analyzer<'a> {
                 body: Box::new(body),
                 captures,
                 result: result.clone(),
+                produces,
                 source,
             },
             result,
@@ -3554,6 +3729,9 @@ impl<'a> Analyzer<'a> {
 
     fn field_type(&self, ty: &Type, field: &str, span: SourceSpan) -> Result<Type, Diagnostic> {
         match ty {
+            // A decoded Map has a known value type, while key presence remains
+            // a runtime check. Raw Json must still cross an explicit decode.
+            Type::Map(value) => Some((**value).clone()),
             Type::StructuralRecord(fields) => fields.get(field).cloned(),
             Type::Named(name) => match self.definitions.get(name) {
                 Some(TypeDefinition::Record { fields, .. }) => fields
@@ -3595,6 +3773,7 @@ fn hir_node_count(expression: &HirExpr) -> usize {
         HirKind::Literal { .. } | HirKind::Reference { .. } | HirKind::OptionNone { .. } => 0,
         HirKind::List { elements } => elements.iter().map(hir_node_count).sum(),
         HirKind::Dict { entries }
+        | HirKind::JsonObject { entries }
         | HirKind::Record {
             fields: entries, ..
         }
@@ -3607,6 +3786,8 @@ fn hir_node_count(expression: &HirExpr) -> usize {
         | HirKind::ContextTransaction { context: value, .. }
         | HirKind::Get { value, .. }
         | HirKind::Decode { value, .. }
+        | HirKind::FromJson { value, .. }
+        | HirKind::ToJson { value }
         | HirKind::Is { value, .. }
         | HirKind::Run { program: value } => hir_node_count(value),
         HirKind::EvidenceCandidate { kind, value, refs } => {

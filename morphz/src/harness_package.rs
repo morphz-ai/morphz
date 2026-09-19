@@ -128,12 +128,6 @@ impl HarnessPackage {
     ) -> Result<Self, HarnessPackageError> {
         let source_name = source_name.into();
         require_hns_suffix(&source_name)?;
-        let forms = crate::sexpr::parse_all(source).map_err(|error| {
-            HarnessPackageError::new(format!(
-                "{} is not valid Yao: {error}",
-                source_name.display()
-            ))
-        })?;
         let typed_forms = crate::yao::parse_all(source, crate::yao::ParseLimits::default())
             .map_err(|error| {
                 HarnessPackageError::new(format!(
@@ -141,11 +135,16 @@ impl HarnessPackage {
                     source_name.display()
                 ))
             })?;
-        if forms.len() != typed_forms.len() {
-            return Err(HarnessPackageError::new(
-                "Harness artifact parser disagreement".to_string(),
-            ));
-        }
+        // HNS source uses the Yao lexer (including line comments). The legacy
+        // metadata tree is only a projection of those already-parsed forms;
+        // parsing the raw source twice made valid commented packages disagree.
+        let forms = typed_forms
+            .iter()
+            .map(|form| {
+                crate::sexpr::parse(&crate::yao::canonical_source(form))
+                    .map_err(|error| HarnessPackageError::new(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut manifest = None;
         let mut contract = None;
@@ -295,10 +294,20 @@ impl HarnessPackage {
         package
     }
 
-    /// Canonical single-file representation used by persistence, hashing and
-    /// migration. Filesystem layout and source whitespace deliberately do not
-    /// participate in package identity.
+    /// Legacy logical encoding used for package identity. Keep this stable:
+    /// metadata predates the typed lexer and its historical Display spelling
+    /// must not invalidate immutable installed hashes. Use loadable_source for
+    /// persistence (literal control characters need Yao escaping).
     pub fn canonical_source(&self) -> String {
+        self.encode_source(false)
+    }
+
+    /// Valid typed Yao transport with the same logical package identity.
+    pub fn loadable_source(&self) -> String {
+        self.encode_source(true)
+    }
+
+    fn encode_source(&self, loadable: bool) -> String {
         let mut manifest = vec![
             SExpr::Atom("manifest".to_string()),
             scalar_form("id", &self.manifest.id),
@@ -320,9 +329,16 @@ impl HarnessPackage {
         if capabilities.len() > 1 {
             manifest.push(SExpr::List(capabilities));
         }
-        let mut artifacts = vec![SExpr::List(manifest).to_string(), self.contract.to_string()];
+        let encode = |value: &SExpr| {
+            if loadable {
+                metadata_yao_source(value)
+            } else {
+                value.to_string()
+            }
+        };
+        let mut artifacts = vec![encode(&SExpr::List(manifest)), encode(&self.contract)];
         if let Some(mind) = &self.mind {
-            artifacts.push(mind.to_string());
+            artifacts.push(encode(mind));
         }
         artifacts.extend(
             self.functions
@@ -349,6 +365,38 @@ impl HarnessPackage {
 
 struct LoadedDomainHarness {
     package: Arc<HarnessPackage>,
+}
+
+fn metadata_yao_source(value: &SExpr) -> String {
+    match value {
+        SExpr::Atom(value) => {
+            crate::yao::canonical_source(&crate::yao::Expr::Atom(crate::yao::syntax::Atom {
+                value: value.clone(),
+                kind: crate::yao::AtomKind::String,
+                span: crate::yao::SourceSpan::empty(crate::yao::SourceLocation::start()),
+            }))
+        }
+        SExpr::List(items) => format!(
+            "({})",
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    if let (0, SExpr::Atom(name)) = (i, item) {
+                        if !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || "_./-".contains(c))
+                        {
+                            return name.clone();
+                        }
+                    }
+                    metadata_yao_source(item)
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    }
 }
 
 impl DomainHarness for LoadedDomainHarness {
@@ -458,7 +506,7 @@ pub async fn persist_harness_package(
                 ("artifact_hash".to_string(), json!(package.artifact_hash)),
                 (
                     "canonical_source".to_string(),
-                    json!(package.canonical_source()),
+                    json!(package.loadable_source()),
                 ),
             ]
             .into_iter()
@@ -787,9 +835,15 @@ fn read_one_artifact(path: &Path, expected: &str) -> Result<SExpr, HarnessPackag
     let source = fs::read_to_string(path).map_err(|error| {
         HarnessPackageError::new(format!("failed to read {}: {error}", path.display()))
     })?;
-    let forms = crate::sexpr::parse_all(&source).map_err(|error| {
-        HarnessPackageError::new(format!("{} is not valid Yao: {error}", path.display()))
-    })?;
+    let typed_forms =
+        crate::yao::parse_all(&source, crate::yao::ParseLimits::default()).map_err(|error| {
+            HarnessPackageError::new(format!("{} is not valid Yao: {error}", path.display()))
+        })?;
+    let forms = typed_forms
+        .iter()
+        .map(|form| crate::sexpr::parse(&crate::yao::canonical_source(form)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| HarnessPackageError::new(error.to_string()))?;
     let [form] = forms.as_slice() else {
         return Err(HarnessPackageError::new(format!(
             "{} must contain exactly one ({expected} ...) artifact",
@@ -1205,6 +1259,18 @@ mod tests {
         assert_eq!(package.entry.declared_tools, Some(vec!["read".to_string()]));
         assert!(package.mind.is_some());
         assert!(matches!(package.origin, HarnessPackageOrigin::File(_)));
+    }
+
+    #[test]
+    fn yao_comments_do_not_change_harness_artifact_identity() {
+        let original = HarnessPackage::from_source("coding.hns", SINGLE_WITH_FUNCTIONS).unwrap();
+        let commented = SINGLE_WITH_FUNCTIONS
+            .replace("(manifest", "; public example\n(manifest")
+            .replace("(body path)", "(body ; internal explanation\n path)");
+        let parsed = HarnessPackage::from_source("coding.hns", &commented).unwrap();
+        assert_eq!(parsed.artifact_hash, original.artifact_hash);
+        assert_eq!(parsed.entry.source, original.entry.source);
+        assert_eq!(parsed.functions, original.functions);
     }
 
     #[test]

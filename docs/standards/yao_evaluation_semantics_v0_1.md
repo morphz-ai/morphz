@@ -6,7 +6,7 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-08-21
+> Last updated: 2026-09-20
 >
 > Chinese translation: [zh-CN](zh-CN/yao_evaluation_semantics_v0_1.md)
 
@@ -103,6 +103,14 @@ type. Invalid decoding is a classified inference failure and may be handled by `
 
 Provider reasoning text, partial output, or an unverified self-claim MUST NOT be used as the typed
 terminal value.
+
+With explicit `(produces T)`, the same full BODY specifies a semantic data result rather
+than requiring its deterministic expression type to be T. Runtime supplies the strict
+ordinary-JSON schema derived from T and constructs the nominal value only after terminal
+validation. Capture disclosure, Tool effect analysis, permission narrowing, causal identity
+and suspension are unchanged. This decoder choice is frozen in the pending effect; recovery
+must never substitute a new schema or the legacy nominal-wire decoder. `returns` keeps its
+existing rules, including the independently admitted Program Value contract.
 
 ## 7. Structured parallel execution
 

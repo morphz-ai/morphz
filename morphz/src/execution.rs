@@ -395,6 +395,8 @@ pub fn startup_recovery_plan(
         && job
             .lease_expires_at
             .is_some_and(|expires_at| expires_at > now)
+        && !(coordination == WorkerCoordinationMode::SharedHostLeases
+            && runtime_claimant_is_definitely_dead(job.claimed_by.as_deref()))
     {
         return RestartPlan {
             job_id: job.id.clone(),
@@ -408,6 +410,7 @@ pub fn startup_recovery_plan(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReconcileCause {
     RuntimeStartup,
+    AbandonedRuntimeOwner,
     ExpiredEdgeBackgroundLease,
 }
 
@@ -418,6 +421,18 @@ fn recovery_plan(
     cause: ReconcileCause,
 ) -> RestartPlan {
     let mut plan = startup_recovery_plan(job, coordination, now);
+    if cause == ReconcileCause::AbandonedRuntimeOwner {
+        plan.action = match plan.action {
+            RestartAction::Preserve => RestartAction::Preserve,
+            RestartAction::Requeue { .. } => RestartAction::Requeue {
+                reason: "Runtime worker is absent or its lease expired; the original Job is safe to requeue under its persisted retry policy".to_string(),
+            },
+            RestartAction::MarkLost { .. } => RestartAction::MarkLost {
+                reason: "Runtime worker is absent or its lease expired; the external outcome is unknown and automatic replay is forbidden under the persisted cancellation/retry policy".to_string(),
+            },
+        };
+        return plan;
+    }
     if cause != ReconcileCause::ExpiredEdgeBackgroundLease {
         return plan;
     }
@@ -729,6 +744,45 @@ where
         .await
     }
 
+    /// Startup may have preserved a future lease owned by a peer which later
+    /// exits. Do not leave its callers waiting forever. This only selects
+    /// ordinary Runtime-owned Jobs, never detached processes/Edge owners, and
+    /// uses the same durable receipt and revision fences as startup recovery.
+    pub async fn reconcile_abandoned_runtime_jobs<E: EventStore + ?Sized>(
+        &self,
+        coordination: WorkerCoordinationMode,
+        events: &E,
+        action_groups: Option<&dyn ActionGroupStore>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> ExecutionResult<RestartReconcileReport> {
+        let jobs = self
+            .store
+            .list_execution_jobs(ExecutionJobFilter {
+                status: Some(ExecutionJobStatus::Running),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| {
+                job.claimed_by
+                    .as_deref()
+                    .is_some_and(|owner| owner.starts_with("runtime:"))
+                    && (job.lease_expires_at.is_none_or(|expires| expires <= now)
+                        || (coordination == WorkerCoordinationMode::SharedHostLeases
+                            && runtime_claimant_is_definitely_dead(job.claimed_by.as_deref())))
+            })
+            .collect();
+        self.reconcile_jobs(
+            jobs,
+            coordination,
+            events,
+            action_groups,
+            now,
+            ReconcileCause::AbandonedRuntimeOwner,
+        )
+        .await
+    }
+
     async fn reconcile_jobs<E: EventStore + ?Sized>(
         &self,
         jobs: Vec<ExecutionJobRecord>,
@@ -968,6 +1022,21 @@ pub(crate) fn local_process_tree_exists(process_group_id: i32) -> Result<bool, S
 #[cfg(windows)]
 pub(crate) fn local_process_tree_exists(process_id: i32) -> Result<bool, String> {
     windows_process_exists(process_id)
+}
+
+/// Only a proven-absent PID permits early takeover in a same-host Store.
+/// Unknown identities, PID reuse, other Runtime instances in this process,
+/// access-denied and inspection failures must all retain the lease fence.
+pub(crate) fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
+    let Some(raw) = claimed_by.and_then(|owner| owner.strip_prefix("runtime:")) else {
+        return false;
+    };
+    let Ok(pid) = raw.split(':').next().unwrap_or(raw).parse::<i32>() else {
+        return false;
+    };
+    pid > 0
+        && pid != i32::try_from(std::process::id()).unwrap_or(-1)
+        && matches!(local_process_id_exists(pid), Ok(false))
 }
 
 /// Inspect an ordinary local process owner such as a Runtime claimant.
@@ -1434,6 +1503,106 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn same_host_dead_runtime_does_not_keep_a_future_job_lease_alive() {
+        let now = Utc::now();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::Idempotent,
+        );
+        job.claimed_by = Some(format!("runtime:{}:old-instance:0", i32::MAX));
+        job.lease_expires_at = Some(now + chrono::Duration::seconds(90));
+        job.side_effect_started_at = Some(now);
+        assert!(matches!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedHostLeases, now).action,
+            RestartAction::Requeue { .. }
+        ));
+        // The same numeric PID is not local ownership evidence in PostgreSQL.
+        assert_eq!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedLeases, now).action,
+            RestartAction::Preserve
+        );
+        job.retry_safety = ExecutionRetrySafety::AtMostOnce;
+        assert!(matches!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedHostLeases, now).action,
+            RestartAction::MarkLost { .. }
+        ));
+        job.retry_safety = ExecutionRetrySafety::Idempotent;
+        job.cancel_requested_at = Some(now);
+        assert!(matches!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedHostLeases, now).action,
+            RestartAction::MarkLost { .. }
+        ));
+    }
+    #[test]
+    fn local_recovery_never_steals_live_or_unidentified_runtime_owners() {
+        let now = Utc::now();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::Idempotent,
+        );
+        job.lease_expires_at = Some(now + chrono::Duration::seconds(90));
+        for owner in [
+            None,
+            Some("runtime:unknown".into()),
+            Some("runtime:-1".into()),
+            Some("runtime:0".into()),
+            Some(format!("runtime:{}:other-instance:0", std::process::id())),
+            Some(format!("edge:{}", i32::MAX)),
+        ] {
+            job.claimed_by = owner;
+            assert!(!runtime_claimant_is_definitely_dead(
+                job.claimed_by.as_deref()
+            ));
+            assert_eq!(
+                startup_recovery_plan(&job, WorkerCoordinationMode::SharedHostLeases, now).action,
+                RestartAction::Preserve
+            );
+        }
+    }
+    #[test]
+    fn abandoned_runtime_reconciliation_keeps_the_original_side_effect_policy() {
+        let now = Utc::now();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::AtMostOnce,
+        );
+        job.claimed_by = Some(format!("runtime:{}:old:0", i32::MAX));
+        job.lease_expires_at = Some(now - chrono::Duration::seconds(1));
+        job.side_effect_started_at = Some(now - chrono::Duration::seconds(10));
+        assert!(matches!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::AbandonedRuntimeOwner
+            )
+            .action,
+            RestartAction::MarkLost { .. }
+        ));
+        job.retry_safety = ExecutionRetrySafety::Idempotent;
+        assert!(matches!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::AbandonedRuntimeOwner
+            )
+            .action,
+            RestartAction::Requeue { .. }
+        ));
+        job.lease_expires_at = Some(now + chrono::Duration::seconds(90));
+        assert_eq!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::AbandonedRuntimeOwner
+            )
+            .action,
+            RestartAction::Preserve
+        );
+    }
     #[test]
     fn shared_worker_startup_preserves_another_workers_live_lease() {
         let now = Utc.with_ymd_and_hms(2026, 7, 17, 8, 0, 0).single().unwrap();

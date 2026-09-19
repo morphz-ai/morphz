@@ -8,6 +8,8 @@
 pub mod canonical;
 pub mod diagnostic;
 pub mod eval;
+pub mod format;
+pub mod json;
 pub mod language_card;
 pub mod sema;
 pub mod syntax;

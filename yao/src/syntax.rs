@@ -160,6 +160,39 @@ impl<'a> Lexer<'a> {
     }
 
     fn string_token(&mut self, start: SourceLocation) -> Result<Token, Diagnostic> {
+        if self.source[self.cursor..].starts_with("\"\"\"") {
+            for _ in 0..3 {
+                self.bump();
+            }
+            let mut value = String::new();
+            loop {
+                if self.source[self.cursor..].starts_with("\"\"\"") {
+                    for _ in 0..3 {
+                        self.bump();
+                    }
+                    return Ok(Token {
+                        kind: TokenKind::Atom(AtomKind::String, value),
+                        span: SourceSpan {
+                            start,
+                            end: self.location,
+                        },
+                    });
+                }
+                match self.bump() {
+                    Some(character) => value.push(character),
+                    None => {
+                        return Err(Diagnostic::new(
+                            DiagnosticCode::UnterminatedString,
+                            "unterminated triple-quoted block string",
+                            SourceSpan {
+                                start,
+                                end: self.location,
+                            },
+                        ))
+                    }
+                }
+            }
+        }
         self.bump();
         let mut value = String::new();
         loop {
