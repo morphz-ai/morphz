@@ -29,6 +29,197 @@ const production = async (page: Page, id: string) =>
 const button = (page: Page, name: string) =>
   page.getByRole("button", { name, exact: true });
 const editor = (page: Page) => page.getByLabel("剧本正文", { exact: true });
+const openScript = (page: Page, title: string) =>
+  button(page, `打开剧本：${title}`);
+
+async function assertLibraryControls(page: Page) {
+  const create = button(page, "构思新剧");
+  await expect(create).toBeEnabled();
+  const contrast = () =>
+    create.evaluate((element) => {
+      const css = getComputedStyle(element);
+      const luminance = (color: string) => {
+        const rgb = color
+          .match(/[\d.]+/g)!
+          .slice(0, 3)
+          .map(Number)
+          .map((value) => {
+            const channel = value / 255;
+            return channel <= 0.04045
+              ? channel / 12.92
+              : ((channel + 0.055) / 1.055) ** 2.4;
+          });
+        return rgb[0]! * 0.2126 + rgb[1]! * 0.7152 + rgb[2]! * 0.0722;
+      };
+      const light = luminance(css.color);
+      const dark = luminance(css.backgroundColor);
+      return (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05);
+    });
+  await expect.poll(contrast).toBeGreaterThanOrEqual(4.5);
+  await create.hover();
+  await expect.poll(contrast).toBeGreaterThanOrEqual(4.5);
+  const search = page.locator(".script-library-search");
+  const geometry = await search.evaluate((element) => {
+    const icon = element.querySelector("svg")!.getBoundingClientRect();
+    const input = element.querySelector("input")!.getBoundingClientRect();
+    return {
+      height: element.getBoundingClientRect().height,
+      inputHeight: input.height,
+      iconCenter: icon.y + icon.height / 2,
+      inputCenter: input.y + input.height / 2,
+      iconRight: icon.right,
+      inputTextLeft:
+        input.left +
+        parseFloat(
+          getComputedStyle(element.querySelector("input")!).paddingLeft,
+        ),
+    };
+  });
+  expect(geometry.height).toBe(geometry.inputHeight);
+  expect(geometry.height).toBeLessThanOrEqual(40);
+  expect(
+    Math.abs(geometry.iconCenter - geometry.inputCenter),
+  ).toBeLessThanOrEqual(1);
+  expect(geometry.iconRight).toBeLessThan(geometry.inputTextLeft);
+}
+
+test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空间隔离", async ({
+  page,
+}, testInfo) => {
+  const p = await setup(page);
+  await createItem(page, "入口回归第一集");
+  const unsaved = "TEST 未保存正文，切到剧本列表后必须保留";
+  await editor(page).fill(unsaved);
+  await button(page, "全部剧本").click();
+  await expect(page.getByRole("combobox", { name: "当前剧本" })).toHaveCount(0);
+  await expect(openScript(page, p.title)).toBeFocused();
+  const inputCount = (await snapshot(page)).workspace.inputs.length;
+  const otherProject = await seedCenter(page, {
+    type: "create-project",
+    title: "TEST 其他项目 " + randomUUID().slice(0, 6),
+  });
+  const hiddenTitle = "TEST 不属于当前项目 " + randomUUID().slice(0, 6);
+  await command(page, {
+    action: "create-production",
+    projectId: otherProject,
+    title: hiddenTitle,
+  });
+  await page.reload();
+  await expect(page.getByLabel("查找剧本", { exact: true })).toBeVisible();
+  await expect(openScript(page, hiddenTitle)).toHaveCount(0);
+  const search = page.getByLabel("查找剧本", { exact: true });
+  await search.fill("找不到的剧本 " + randomUUID());
+  await expect(page.locator(".script-library")).toContainText(
+    "没有找到符合条件的剧本",
+  );
+  await button(page, "清除搜索").click();
+  await search.fill(p.title);
+  await expect(page.locator(".script-library-card")).toHaveCount(1);
+  for (const width of [1440, 760, 320]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(openScript(page, p.title)).toBeInViewport();
+    await expect(button(page, "构思新剧")).toBeInViewport();
+    await expect(button(page, "手动新建剧本")).toBeInViewport();
+    await expect(button(page, "保存为项目")).toHaveCount(1);
+    const geometry = await page
+      .locator(".script-library")
+      .evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width + 1);
+    await assertLibraryControls(page);
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("script-library-narrow.png"),
+  });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await openScript(page, p.title).focus();
+  await page.keyboard.press("Enter");
+  await expect(editor(page)).toHaveValue(unsaved);
+  await expect(button(page, "保存文稿")).toBeEnabled();
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeFocused();
+  await button(page, "全部剧本").click();
+  await expect(search).toHaveValue(p.title);
+  await button(page, "构思新剧").click();
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toBeFocused();
+  expect((await snapshot(page)).workspace.inputs.length).toBe(inputCount);
+});
+
+test("剧本入口：多部剧本保存为同一项目，取消无副作用，保存和重开不复制", async ({
+  page,
+}) => {
+  const p = await setup(page);
+  await createItem(page, "归属回归第一集");
+  await saveText(page, "TEST 正式正文保持原版本");
+  await button(page, "手动新建剧本").click();
+  const create = page.getByRole("dialog", {
+    name: "手动新建剧本",
+    exact: true,
+  });
+  const secondTitle = "TEST 同项目第二部 " + randomUUID().slice(0, 6);
+  await create.getByLabel("剧本名称", { exact: true }).fill(secondTitle);
+  await create.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(create).toBeHidden();
+  await button(page, "全部剧本").click();
+  await expect(openScript(page, p.title)).toBeVisible();
+  await expect(openScript(page, secondTitle)).toBeVisible();
+  await button(page, "保存为项目").click();
+  const save = page.getByRole("dialog", {
+    name: "为当前工作命名",
+    exact: true,
+  });
+  const before = (await snapshot(page)).workspace;
+  const count = before.scriptProductions.filter(
+    (value) => value.projectId === p.projectId,
+  ).length;
+  await expect(save).toContainText(`全部 ${count} 部剧本、其他内容和交流`);
+  const scopeSpacing = await save.evaluate((element) => {
+    const input = element.querySelector("input")!.getBoundingClientRect();
+    const scope = element
+      .querySelector(".project-save-scope")!
+      .getBoundingClientRect();
+    return scope.top - input.bottom;
+  });
+  expect(scopeSpacing).toBeGreaterThanOrEqual(8);
+  await page.keyboard.press("Escape");
+  await expect(save).toBeHidden();
+  await expect(button(page, "保存为项目")).toBeFocused();
+  expect((await snapshot(page)).workspace.projects).toEqual(before.projects);
+  await button(page, "保存为项目").click();
+  const projectTitle = "TEST 多剧本项目 " + randomUUID().slice(0, 6);
+  await save.getByLabel("项目名称", { exact: true }).fill(projectTitle);
+  await save.getByRole("button", { name: "保存为项目", exact: true }).click();
+  await expect(save).toBeHidden();
+  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(button(page, "保存为项目")).toHaveCount(0);
+  const after = (await snapshot(page)).workspace;
+  expect(after.scriptProductions).toEqual(before.scriptProductions);
+  expect(after.inputs).toEqual(before.inputs);
+  expect(
+    after.projects.find((value) => value.id === p.projectId),
+  ).toMatchObject({ kind: "project", title: projectTitle });
+  await page.reload();
+  await expect(openScript(page, secondTitle)).toBeVisible();
+  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await openScript(page, p.title).click();
+  await page
+    .getByRole("navigation", { name: "剧本目录" })
+    .getByRole("button", { name: /归属回归第一集/ })
+    .click();
+  await expect(editor(page)).toHaveValue("TEST 正式正文保持原版本");
+  await button(page, "手动新建剧本").click();
+  const thirdTitle = "TEST 同项目第三部 " + randomUUID().slice(0, 6);
+  await create.getByLabel("剧本名称", { exact: true }).fill(thirdTitle);
+  await create.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(create).toBeHidden();
+  expect(
+    (await snapshot(page)).workspace.scriptProductions.find(
+      (value) => value.title === thirdTitle,
+    )?.projectId,
+  ).toBe(p.projectId);
+});
+
 async function setup(page: Page) {
   await page.goto("/");
   const boot = await snapshot(page);
@@ -105,16 +296,16 @@ async function saveText(page: Page, text: string) {
   ).toBeFocused();
 }
 async function permitModel(page: Page) {
-  await button(page, "项目规范与交付模板").click();
+  await button(page, "剧本设置").click();
   const dialog = page.getByRole("dialog", {
-    name: "项目规范与交付模板",
+    name: "剧本设置",
     exact: true,
   });
   await dialog
     .getByLabel("资料权利与使用范围", { exact: true })
     .fill("TEST 合成原创资料，仅用于隔离自动化验证，不是合作方授权。");
   await dialog
-    .getByLabel("我确认本项目所选资料允许交给当前模型服务处理", { exact: true })
+    .getByLabel("我确认本剧本所选资料允许交给当前模型服务处理", { exact: true })
     .check();
   await dialog.getByRole("button", { name: "保存规范", exact: true }).click();
   await expect(dialog).not.toBeVisible();
@@ -341,9 +532,9 @@ test("检查可定位准确依赖，长内容保存栏与设置操作持续可�
   await expect(
     page.getByRole("tabpanel", { name: "检查与影响", exact: true }),
   ).toContainText("当前未发现结构性问题");
-  await button(page, "项目规范与交付模板").click();
+  await button(page, "剧本设置").click();
   const settings = page.getByRole("dialog", {
-    name: "项目规范与交付模板",
+    name: "剧本设置",
     exact: true,
   });
   await settings
@@ -935,9 +1126,9 @@ test("分场目录及父集依赖持久化、窄窗模态键盘与焦点", async
   await page.reload();
   await expect(editor(page)).toHaveValue("外景。夜。林舟走出车站。");
   await page.setViewportSize({ width: 780, height: 640 });
-  await button(page, "项目规范与交付模板").click();
+  await button(page, "剧本设置").click();
   const dialog = page.getByRole("dialog", {
-    name: "项目规范与交付模板",
+    name: "剧本设置",
     exact: true,
   });
   await expect(dialog).toBeVisible();
@@ -952,7 +1143,7 @@ test("分场目录及父集依赖持久化、窄窗模态键盘与焦点", async
   ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await expect(button(page, "项目规范与交付模板")).toBeFocused();
+  await expect(button(page, "剧本设置")).toBeFocused();
   await expect(
     page.getByRole("region", { name: "剧本工作区", exact: true }),
   ).toBeVisible();
@@ -1186,8 +1377,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
       exact: true,
     });
     await expect(studio).toBeVisible();
-    // Both first-run and toolbar shortcuts use the host composer, never template text.
-    await button(page, "向 Morphz 描述想法").click();
+    // The first-run library uses the same visible action and host composer.
+    await expect(page.getByLabel("查找剧本", { exact: true })).toBeVisible();
+    await button(page, "构思新剧").click();
     const input = page.getByLabel("AI 输入内容", { exact: true });
     await expect(input).toHaveValue("");
     await expect(input).toBeFocused();
@@ -1278,7 +1470,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
           return { color: css.color, background: css.backgroundColor };
         });
         expect(colors.color).not.toBe(colors.background);
-        await expect(button(page, "项目规范与交付模板")).toBeInViewport();
+        await expect(button(page, "剧本设置")).toBeInViewport();
         await button(page, "手动新建剧本").click();
         const compact = page.getByRole("dialog", {
           name: "手动新建剧本",
@@ -1298,6 +1490,18 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
         await page.keyboard.press("Escape");
         await expect(compact).toBeHidden();
         await expect(button(page, "手动新建剧本")).toBeFocused();
+        await button(page, "全部剧本").click();
+        const scriptCard = button(page, "打开剧本：TEST Electron 编剧工作区");
+        await expect(scriptCard).toBeVisible();
+        await expect(scriptCard).toBeFocused();
+        await expect(scriptCard).toContainText("1 集 · 1 场");
+        await assertLibraryControls(page);
+        if (accent === "mono")
+          await page.screenshot({
+            path: testInfo.outputPath(`script-library-${mode}.png`),
+          });
+        await scriptCard.press("Enter");
+        await expect(editor(page)).toHaveValue(savedText);
       }
       await page.screenshot({
         path: testInfo.outputPath(`script-studio-${mode}.png`),
@@ -1348,10 +1552,10 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await expect(editor(page)).toHaveValue(savedText);
     await expect(button(page, "保存文稿")).toBeDisabled();
     await expect(page.locator(".workspace-notice")).toHaveCount(0);
-    await expect(button(page, "项目规范与交付模板")).toBeInViewport();
-    await button(page, "项目规范与交付模板").click();
+    await expect(button(page, "剧本设置")).toBeInViewport();
+    await button(page, "剧本设置").click();
     const settings = page.getByRole("dialog", {
-      name: "项目规范与交付模板",
+      name: "剧本设置",
       exact: true,
     });
     await expect(settings).toBeVisible();
@@ -1371,7 +1575,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(settings).toBeHidden();
-    await expect(button(page, "项目规范与交付模板")).toBeFocused();
+    await expect(button(page, "剧本设置")).toBeFocused();
     await button(page, "手动新建剧本").click();
     const zoomDialog = page.getByRole("dialog", {
       name: "手动新建剧本",
@@ -1394,6 +1598,37 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await page.keyboard.press("Escape");
     await expect(zoomDialog).toBeHidden();
     await expect(button(page, "手动新建剧本")).toBeFocused();
+    await button(page, "全部剧本").click();
+    const zoomCard = button(page, "打开剧本：TEST Electron 编剧工作区");
+    await expect(zoomCard).toBeInViewport();
+    const listGeometry = await page
+      .locator(".script-library")
+      .evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+    expect(listGeometry.scrollWidth).toBeLessThanOrEqual(
+      listGeometry.width + 1,
+    );
+    await assertLibraryControls(page);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+    const libraryCapture = await desktop.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      return (await window.webContents.capturePage())
+        .toPNG()
+        .toString("base64");
+    });
+    await writeFile(
+      testInfo.outputPath("script-library-200-percent-native.png"),
+      Buffer.from(libraryCapture, "base64"),
+    );
+    await zoomCard.click();
+    await expect(editor(page)).toHaveValue(savedText);
     const compactDirectory = button(page, "剧本目录开关");
     await expect(compactDirectory).toBeVisible();
     await expect(directory).toBeHidden();

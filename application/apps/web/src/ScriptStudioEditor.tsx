@@ -1329,7 +1329,7 @@ function GenerationDialog({
           try {
             if (!p.brief.modelProcessingAllowed)
               throw new Error(
-                "请先由人工在项目规范中确认资料可以交给当前模型服务处理。",
+                "请先由人工在剧本设置中确认资料可以交给当前模型服务处理。",
               );
             const refs = new Map<string, number>();
             const visited = new Set<string>();
@@ -1392,7 +1392,7 @@ function GenerationDialog({
       >
         <p>
           固定「{currentScriptDraft(target).title}」v{target.revision} ·
-          项目规范 v{p.revision}；全部上游依赖自动纳入并核对版本。
+          剧本规范 v{p.revision}；全部上游依赖自动纳入并核对版本。
         </p>
         <label>
           本次要求

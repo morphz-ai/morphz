@@ -17,6 +17,7 @@ import {
   objectsApplication,
 } from "../packages/core/src/applications.js";
 import { workspaceFor } from "../apps/service/src/identity.js";
+import { emptyScriptDraft } from "../packages/core/src/script-studio.js";
 
 const app = applicationManifestSchema.parse({
   format: "morphz-app/v1",
@@ -49,7 +50,7 @@ test("旧便笺的启动台说明使用日常语言，不改包、状态或第�
     "自定义说明",
   );
 });
-test("应用实例和原对话随工作台原子保存为项目，重启、关闭和重开都不复制内容", () => {
+test("多部剧本、应用实例和原对话随工作台原子保存为项目，重启、关闭和重开都不复制内容", () => {
   const directory = mkdtempSync(join(tmpdir(), "mw-apps-")),
     path = join(directory, "workspace.sqlite");
   let store = new WorkspaceStore(path);
@@ -96,6 +97,25 @@ test("应用实例和原对话随工作台原子保存为项目，重启、关�
       targetActantId: "morphz-agent",
       applicationInstanceId: first,
     });
+    for (const title of ["雨中的电台", "远方的来信"]) {
+      const productionId = run({
+        type: "script-command",
+        command: {
+          action: "create-production",
+          projectId: space.id,
+          title,
+        },
+      });
+      run({
+        type: "script-command",
+        command: {
+          action: "create-item",
+          productionId,
+          kind: "episode",
+          draft: { ...emptyScriptDraft("第一集"), text: `${title}的原文` },
+        },
+      });
+    }
     const before = store.snapshot();
     const save = {
       commandId: randomUUID(),
@@ -111,6 +131,8 @@ test("应用实例和原对话随工作台原子保存为项目，重启、关�
     assert.deepEqual(after.artifacts, before.artifacts);
     assert.deepEqual(after.inputs, before.inputs);
     assert.deepEqual(after.applicationInstances, before.applicationInstances);
+    assert.equal(after.scriptProductions.length, 2);
+    assert.deepEqual(after.scriptProductions, before.scriptProductions);
     assert.equal(after.projects.filter((p) => p.kind === "desk").length, 1);
     assert.notEqual(
       after.projects.find((p) => p.kind === "desk")!.id,
@@ -128,6 +150,10 @@ test("应用实例和原对话随工作台原子保存为项目，重启、关�
     run({ type: "close-application", instanceId: first, expectedRevision: 2 });
     store.close();
     store = new WorkspaceStore(path);
+    assert.deepEqual(
+      store.snapshot().scriptProductions,
+      before.scriptProductions,
+    );
     assert.equal(
       run({
         type: "launch-application",

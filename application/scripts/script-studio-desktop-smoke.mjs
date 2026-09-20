@@ -316,16 +316,16 @@ try {
     "empty launcher, Human creation, SQLite text save, dirty reload and closed-application restoration",
   );
 
-  await button("项目规范与交付模板").click();
+  await button("剧本设置").click();
   const settings = page.getByRole("dialog", {
-    name: "项目规范与交付模板",
+    name: "剧本设置",
     exact: true,
   });
   await settings
     .getByLabel("资料权利与使用范围", { exact: true })
     .fill("TEST 仅限本隔离合成资料，不是客户授权；本测试不调用模型。");
   await settings
-    .getByLabel("我确认本项目所选资料允许交给当前模型服务处理", { exact: true })
+    .getByLabel("我确认本剧本所选资料允许交给当前模型服务处理", { exact: true })
     .check();
   await settings.getByRole("button", { name: "保存规范", exact: true }).click();
   await expect(settings).toBeHidden();

@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Download, FilePlus2, Settings2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  FilePlus2,
+  Folder,
+  FolderPlus,
+  Settings2,
+  X,
+} from "lucide-react";
 import { flushSync } from "react-dom";
 import type { ApplicationInstance } from "../../../packages/core/src/applications.js";
 import {
@@ -21,6 +29,7 @@ import {
 } from "../../../packages/core/src/script-studio.js";
 import { buildScriptDocx } from "../../../packages/core/src/script-studio-docx.js";
 import type { Receipt } from "../../../packages/core/src/model.js";
+import { spaceKind } from "../../../packages/core/src/model.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { ScriptItemEditor } from "./ScriptStudioEditor.js";
@@ -34,6 +43,7 @@ import {
   scriptCreateLabels,
 } from "./ScriptStudioNavigation.js";
 import "./script-studio.css";
+import { ScriptStudioLibrary } from "./ScriptStudioLibrary.js";
 
 type Props = {
   client: WorkspaceClient;
@@ -44,6 +54,7 @@ type Props = {
     generation?: ScriptGeneration,
   ) => ScriptComposeResult;
   onConceive: () => void;
+  onSaveProject: () => void;
   onNotice: (text: string) => void;
   onNativeDialog?: (open: boolean) => void;
 };
@@ -100,18 +111,25 @@ export function ScriptStudio({
   activeView,
   onCompose,
   onConceive,
+  onSaveProject,
   onNotice,
   onNativeDialog,
 }: Props) {
   const boot = client.boot!;
   const storage = scopedStorage(`${boot.centerId}:${boot.principalId}`);
   const locationKey = `script-location:${instance.id}`;
-  const initial = storage.readLocal<{ productionId?: string; itemId?: string }>(
-    locationKey,
-    instance.state,
-  );
+  const initial = storage.readLocal<{
+    productionId?: string;
+    itemId?: string;
+    view?: "library" | "editor";
+  }>(locationKey, instance.state);
   const [productionId, setProductionId] = useState(initial.productionId ?? "");
   const [itemId, setItemId] = useState(initial.itemId ?? "");
+  const [view, setView] = useState(initial.view ?? "library");
+  const [query, setQuery] = useState("");
+  const space = boot.workspace.projects.find(
+    (p) => p.id === instance.workspaceId,
+  )!;
   const [dialog, setDialog] = useState<
     "production" | "item" | "settings" | null
   >(null);
@@ -162,6 +180,7 @@ export function ScriptStudio({
       a.id.localeCompare(b.id),
   );
   const canWrite = activeView && client.online && !busy && !saving;
+  const library = view === "library" || !production;
   const executionIssue =
     boot.runtime.configured && boot.runtime.connected
       ? harnessReadinessError(
@@ -169,7 +188,11 @@ export function ScriptStudio({
           boot.runtime.harnesses,
         )
       : null;
-  const choose = (nextProduction: string, nextItem = "") => {
+  const choose = (
+    nextProduction: string,
+    nextItem = "",
+    nextView: "library" | "editor" = "editor",
+  ) => {
     setError("");
     if (nextProduction !== production?.id) {
       setExportStatus(null);
@@ -177,10 +200,12 @@ export function ScriptStudio({
     }
     setProductionId(nextProduction);
     setItemId(nextItem);
+    setView(nextView);
     try {
       storage.writeLocal(locationKey, {
         productionId: nextProduction,
         itemId: nextItem,
+        view: nextView,
       });
     } catch {
       onNotice("定位暂时无法保存；文稿未受影响。");
@@ -191,9 +216,25 @@ export function ScriptStudio({
         type: "set-application-state",
         instanceId: instance.id,
         expectedRevision: instance.revision,
-        state: { productionId: nextProduction, itemId: nextItem },
+        state: {
+          productionId: nextProduction,
+          itemId: nextItem,
+          view: nextView,
+        },
       })
       .catch((e) => onNotice(`定位同步失败：${e.message}；本机定位已保留。`));
+  };
+  const showLibrary = () => {
+    flushSync(() => choose(production?.id ?? "", itemId, "library"));
+    // Complete navigation focus synchronously so it cannot steal a later action.
+    const card = Array.from(
+      studio.current?.querySelectorAll<HTMLElement>("[data-production-id]") ??
+        [],
+    ).find((element) => element.dataset.productionId === production?.id);
+    (
+      card ??
+      studio.current?.querySelector<HTMLElement>('[aria-label="查找剧本"]')
+    )?.focus({ preventScroll: true });
   };
   const run: ScriptRun = async (command) => {
     if (!activeView || !client.online || working.current)
@@ -223,20 +264,21 @@ export function ScriptStudio({
     }
   };
   function focusCreated() {
-    requestAnimationFrame(() => {
-      if (
-        !alive.current ||
-        !activeViewRef.current ||
-        document.querySelector("dialog[open]")
-      )
-        return;
-      (
-        studio.current?.querySelector<HTMLElement>(
-          '.script-editor [aria-label="文稿标题"]',
-        ) ??
-        studio.current?.querySelector<HTMLElement>("[data-script-focus-anchor]")
-      )?.focus({ preventScroll: true });
-    });
+    requestAnimationFrame(focusEditor);
+  }
+  function focusEditor() {
+    if (
+      !alive.current ||
+      !activeViewRef.current ||
+      document.querySelector("dialog[open]")
+    )
+      return;
+    (
+      studio.current?.querySelector<HTMLElement>(
+        '.script-editor [aria-label="文稿标题"]',
+      ) ??
+      studio.current?.querySelector<HTMLElement>("[data-script-focus-anchor]")
+    )?.focus({ preventScroll: true });
   }
   async function download(
     p: ScriptProduction,
@@ -371,41 +413,71 @@ export function ScriptStudio({
       aria-busy={busy}
     >
       <header className="script-toolbar">
-        <select
-          aria-label="当前剧本"
-          data-script-focus-anchor={!item || undefined}
-          value={production?.id ?? ""}
-          onChange={(e) => choose(e.target.value)}
-          disabled={!activeView || busy}
+        {!library && (
+          <button
+            type="button"
+            className="script-library-back"
+            onClick={showLibrary}
+            disabled={!activeView || busy || saving}
+          >
+            <ArrowLeft />
+            全部剧本
+          </button>
+        )}
+        <div className="script-location">
+          <h2
+            aria-label={library ? "剧本列表" : "当前剧本"}
+            title={library ? "剧本" : production?.title}
+            tabIndex={-1}
+            data-script-focus-anchor={!item || library || undefined}
+          >
+            {library ? "剧本" : production?.title}
+          </h2>
+          <span
+            className="script-project"
+            title={`所属${spaceKind(space) === "project" ? "项目" : "空间"}：${space.title}`}
+          >
+            <Folder />
+            <span>{space.title}</span>
+          </span>
+        </div>
+        {spaceKind(space) === "desk" && (
+          <button
+            type="button"
+            className="secondary-action script-save-project"
+            onClick={onSaveProject}
+            disabled={!canWrite}
+          >
+            <FolderPlus />
+            保存为项目
+          </button>
+        )}
+        <button
+          type="button"
+          className={library ? "primary" : undefined}
+          onClick={onConceive}
+          disabled={!canWrite}
         >
-          {!productions.length && <option value="">尚无剧本</option>}
-          {productions.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={onConceive} disabled={!canWrite}>
           构思新剧
         </button>
         <button
           type="button"
-          className="icon-button"
+          className={library ? "secondary-action" : "icon-button"}
           title="手动新建剧本"
           aria-label="手动新建剧本"
           onClick={() => setDialog("production")}
           disabled={!canWrite}
         >
           <FilePlus2 />
+          {library && <span>手动新建剧本</span>}
         </button>
-        <span className="script-toolbar-spacer" />
-        {production && (
+        {!library && production && (
           <>
             <button
               type="button"
               className="icon-button"
-              aria-label="项目规范与交付模板"
-              title="项目规范与交付模板"
+              aria-label="剧本设置"
+              title="剧本设置"
               onClick={() => setDialog("settings")}
               disabled={!canWrite}
             >
@@ -426,26 +498,29 @@ export function ScriptStudio({
             </button>
           </>
         )}
-        {exportStatus?.productionId === production?.id && exportStatus && (
-          <span className="script-export-status" role="status">
-            {exportStatus.message}{" "}
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => {
-                flushSync(() => {
-                  choose(production!.id);
-                  setHistoryOpen(true);
-                });
-                const summary = exportHistory.current?.querySelector("summary");
-                summary?.focus();
-                summary?.scrollIntoView({ block: "nearest" });
-              }}
-            >
-              查看导出历史
-            </button>
-          </span>
-        )}
+        {!library &&
+          exportStatus?.productionId === production?.id &&
+          exportStatus && (
+            <span className="script-export-status" role="status">
+              {exportStatus.message}{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  flushSync(() => {
+                    choose(production!.id);
+                    setHistoryOpen(true);
+                  });
+                  const summary =
+                    exportHistory.current?.querySelector("summary");
+                  summary?.focus();
+                  summary?.scrollIntoView({ block: "nearest" });
+                }}
+              >
+                查看导出历史
+              </button>
+            </span>
+          )}
       </header>
       {executionIssue && (
         <p className="script-warning" role="status">
@@ -457,16 +532,18 @@ export function ScriptStudio({
           {error}
         </p>
       )}
-      {!production ? (
-        <div className="script-empty">
-          <p>从一部剧开始</p>
-          <small>
-            先确定创作要求，再组织资料、角色和分集。这里没有预置样稿。
-          </small>
-          <button type="button" disabled={!canWrite} onClick={onConceive}>
-            向 Morphz 描述想法
-          </button>
-        </div>
+      {library ? (
+        <ScriptStudioLibrary
+          productions={productions}
+          lastOpenedId={productionId}
+          query={query}
+          onQuery={setQuery}
+          disabled={!activeView || busy || saving}
+          onOpen={(id) => {
+            flushSync(() => choose(id, id === productionId ? itemId : ""));
+            focusEditor();
+          }}
+        />
       ) : (
         <div className="script-layout">
           <ScriptStudioNavigation
@@ -676,7 +753,7 @@ export function ScriptStudio({
                       <details>
                         <summary>追溯信息</summary>
                         <small>
-                          导出记录：{record.id} · 项目规范 v
+                          导出记录：{record.id} · 剧本规范 v
                           {record.contextRevision}
                         </small>
                       </details>
@@ -1041,7 +1118,7 @@ function ProductionSettings({
         ?.members.includes(a.principalId),
   );
   return (
-    <StudioDialog title="项目规范与交付模板" onClose={onClose}>
+    <StudioDialog title="剧本设置" onClose={onClose}>
       <form
         className="script-settings"
         onSubmit={async (e) => {
@@ -1163,7 +1240,7 @@ function ProductionSettings({
               })
             }
           />
-          我确认本项目所选资料允许交给当前模型服务处理
+          我确认本剧本所选资料允许交给当前模型服务处理
         </label>
         <fieldset>
           <legend>指定审阅人（人工）</legend>

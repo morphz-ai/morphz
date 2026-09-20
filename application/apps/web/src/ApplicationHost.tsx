@@ -309,17 +309,18 @@ export function ApplicationHost({
             <span className="toolbar-action-label">所有内容</span>
           </button>
         )}
-      {spaceKind(space) === "desk" && (
-        <button
-          className="workspace-save"
-          aria-label="保存为项目"
-          title="保存为项目"
-          onClick={onSaveProject}
-        >
-          <FolderPlus />
-          <span>保存为项目</span>
-        </button>
-      )}
+      {spaceKind(space) === "desk" &&
+        active?.applicationId !== scriptStudioApplication.id && (
+          <button
+            className="workspace-save"
+            aria-label="保存为项目"
+            title="保存为项目"
+            onClick={onSaveProject}
+          >
+            <FolderPlus />
+            <span>保存为项目</span>
+          </button>
+        )}
     </div>
   );
   return (
@@ -443,6 +444,7 @@ export function ApplicationHost({
                   onCompose(text, undefined, generation)
                 }
                 onConceive={() => onComposeIntent("script")}
+                onSaveProject={onSaveProject}
                 onNotice={onNotice}
               />
             ) : app.ui.type === "builtin" ? (

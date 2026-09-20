@@ -2217,7 +2217,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       ) {
                         return {
                           ok: false,
-                          error: "剧本引用已有变化，请关闭后重新准备请求；原草稿保留。",
+                          error:
+                            "剧本引用已有变化，请关闭后重新准备请求；原草稿保留。",
                         };
                       }
                       if (
@@ -2233,7 +2234,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       ) {
                         return {
                           ok: false,
-                          error: "输入框中已有未发送的内容或请求。请先处理原输入，再准备本次请求；这里填写的要求已保留。",
+                          error:
+                            "输入框中已有未发送的内容或请求。请先处理原输入，再准备本次请求；这里填写的要求已保留。",
                         };
                       }
                       setDraft(contextKey, {
@@ -3423,6 +3425,15 @@ function CreateDialog({
           </button>
         )}
       </div>
+      {kind === "save-project" && (
+        <p className="project-save-scope">
+          {client.boot!.workspace.scriptProductions.some(
+            (p) => p.projectId === projectId,
+          )
+            ? `工作台内全部 ${client.boot!.workspace.scriptProductions.filter((p) => p.projectId === projectId).length} 部剧本、其他内容和交流将一起归入此项目。`
+            : "工作台内的全部内容和交流将一起归入此项目。"}
+        </p>
+      )}
       {kind === "document" && (
         <label className="field">
           正文 · Markdown
