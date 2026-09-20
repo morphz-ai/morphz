@@ -190,7 +190,7 @@ impact 先识别用户指出的变更及其证据，检查依赖图中本次获�
   (body
     (infer
       (captures context)
-      (produces ScriptProduct)
+      (returns ScriptProduct)
       """STAGE script-create。
 根据 context 和只读编剧方法创作本次交付，按 ScriptProduct 类型产出。
 draft/rewrite 的 payload 是完整 ScriptDraft，从 context.target.draft 保留未要求改变的字段；正文须是实际创作，不复制空稿、不以计划代替成稿。
@@ -207,7 +207,7 @@ continuity/impact 的 payload 是 add-review 命令数组，每项含 action,pro
       (bind check
         (infer
           (captures context product round)
-          (produces ScriptCheck)
+          (returns ScriptCheck)
           """STAGE script-review。
 只审阅 product，不重写或提交。
 按 ScriptCheck 类型产出。
@@ -229,7 +229,7 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
               (bind stillPermitted (script-context))
               (infer
                 (captures context product check)
-                (produces ScriptProduct)
+                (returns ScriptProduct)
                 """STAGE script-revise。
 只修 check.notes 中有证据的问题，保留不允许改变的结局、关系、结构和有效文字。
 按 ScriptProduct 类型产出；payload 是完整修订结果，explanation 说明实际修改及局限；不改来源版本，不扩范围，不声称人工批准。
@@ -306,7 +306,7 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
         (bind intent
           (infer
             (captures input)
-            (produces ScriptIntent)
+            (returns ScriptIntent)
             """STAGE script-intent。
 即使本次有固定生成范围，也先读用户实际意图：明确要生成、改写或检查才 execute=true。
 只是探讨、问建议、举例或明确说先不写则 execute=false，reply 直接回应，不启动后续工序。

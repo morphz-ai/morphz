@@ -110,6 +110,13 @@ pub struct Program {
     pub source_hash: String,
 }
 
+/// Offline module analysis includes every declared function, even when the
+/// entry does not call it. Only `program` is an executable artifact.
+pub struct ModuleAnalysis {
+    pub program: Program,
+    pub functions: BTreeMap<String, HirExpr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSignature {
     pub arguments: BTreeMap<String, Type>,
@@ -266,22 +273,18 @@ pub enum PureOperator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HirKind {
     Literal {
         value: Literal,
     },
     Reference {
         root: String,
-        path: Vec<String>,
     },
     List {
         elements: Vec<HirExpr>,
     },
     Dict {
-        entries: Vec<(String, HirExpr)>,
-    },
-    JsonObject {
         entries: Vec<(String, HirExpr)>,
     },
     FromJson {
@@ -386,8 +389,9 @@ pub enum HirKind {
     /// A complete Yao expression whose Evaluation Loop is owned by the model.
     ///
     /// This is the canonical `infer` form. The body is analyzed by the same
-    /// frontend as an `eval` body, so changing only the outer owner preserves
-    /// the program tree, type, and statically visible effects. `source` is the
+    /// frontend as an `eval` body to validate references and statically visible
+    /// effects. The result type is independent of the task BODY when explicitly
+    /// declared. `source` is the
     /// canonical `(infer BODY)` artifact shown to the model at the ownership
     /// boundary. There is no alternate fixed task/evidence request syntax.
     InferBody {
@@ -402,17 +406,11 @@ pub enum HirKind {
         #[serde(default)]
         captures: Vec<String>,
         /// The typed terminal result accepted from the model.  Without an
-        /// explicit `(returns TYPE)` declaration this is the statically
-        /// inferred BODY type. Ordinary returns must accept the BODY type.
-        /// `produces` synthesizes data through the ordinary JSON boundary.
-        /// Program returns use the separate quarantine contract: the complete
-        /// BODY specifies how the model derives a quarantined candidate whose
-        /// own output/effects are then independently admitted by Runtime.
+        /// explicit `(returns TYPE)` declaration this defaults to the static
+        /// BODY type. An explicit declaration constrains the model's evaluated
+        /// result, never the type of its task description. Program candidates
+        /// additionally require independent Runtime admission before `run`.
         result: Type,
-        /// Explicit semantic synthesis of ordinary JSON into `result`. False
-        /// is omitted so old typed artifacts retain their canonical identity.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        produces: bool,
         source: String,
     },
     Par {
@@ -557,7 +555,7 @@ pub fn analyze_module_forms(
     functions: &[Expr],
     profile: &dyn AnalysisProfile,
     limits: AnalysisLimits,
-) -> Result<Program, Diagnostic> {
+) -> Result<ModuleAnalysis, Diagnostic> {
     if functions.len() > limits.max_functions {
         return Err(diag(
             DiagnosticCode::ResourceLimit,
@@ -579,7 +577,7 @@ pub fn analyze_module_forms(
     }
     Analyzer::new(profile, limits)
         .with_functions(functions.to_vec(), true)
-        .analyze_program(root)
+        .analyze_module(root)
 }
 
 struct Analyzer<'a> {
@@ -624,7 +622,11 @@ impl<'a> Analyzer<'a> {
         self
     }
 
-    fn analyze_program(mut self, root: &Expr) -> Result<Program, Diagnostic> {
+    fn analyze_program(self, root: &Expr) -> Result<Program, Diagnostic> {
+        self.analyze_module(root).map(|module| module.program)
+    }
+
+    fn analyze_module(mut self, root: &Expr) -> Result<ModuleAnalysis, Diagnostic> {
         let items = expect_list(root, "program root must be (eval ...) or (infer ...)")?;
         let Some(owner_name) = items.first().and_then(Expr::as_symbol) else {
             return Err(diag(
@@ -714,7 +716,12 @@ impl<'a> Analyzer<'a> {
             };
             *source = canonical_source(root);
         }
-        self.finish_program(root, owner, body)
+        let functions = std::mem::take(&mut self.compiled_functions)
+            .into_iter()
+            .map(|(name, function)| (name, function.body))
+            .collect();
+        let program = self.finish_program(root, owner, body)?;
+        Ok(ModuleAnalysis { program, functions })
     }
 
     fn prepare_external_type_definitions(&mut self) -> Result<(), Diagnostic> {
@@ -1342,7 +1349,7 @@ impl<'a> Analyzer<'a> {
                 span,
             ));
         }
-        let Some(mut ty) = scope.bindings.get(root).cloned().or_else(|| {
+        let Some(ty) = scope.bindings.get(root).cloned().or_else(|| {
             scope
                 .allow_implicit_bindings
                 .then(|| self.profile.implicit_binding(root))
@@ -1354,19 +1361,29 @@ impl<'a> Analyzer<'a> {
                 span,
             ));
         };
-        let path = segments.map(str::to_string).collect::<Vec<_>>();
-        for field in &path {
-            ty = self.field_type(&ty, field, span)?;
-        }
-        Ok(hir(
+        let mut value = hir(
             HirKind::Reference {
                 root: root.to_string(),
-                path,
             },
             ty,
             EffectSet::default(),
             span,
-        ))
+        );
+        // Preserve the type of every receiver. An untyped path would have to
+        // guess Map versus nominal record from the presence of a "$yao" key.
+        for field in segments {
+            let ty = self.field_type(&value.ty, field, span)?;
+            value = hir(
+                HirKind::Get {
+                    value: Box::new(value),
+                    field: field.to_string(),
+                },
+                ty,
+                EffectSet::default(),
+                span,
+            );
+        }
+        Ok(value)
     }
 
     fn analyze_list(
@@ -1479,10 +1496,21 @@ impl<'a> Analyzer<'a> {
             let value = self.analyze_expr(value, scope, depth + 1)?;
             require_pure(&value, "json-object field")?;
             self.require_json_type(&value.ty, value.span)?;
-            entries.push((name, value));
+            let span = value.span;
+            entries.push((
+                name,
+                hir(
+                    HirKind::ToJson {
+                        value: Box::new(value),
+                    },
+                    Type::Json,
+                    EffectSet::default(),
+                    span,
+                ),
+            ));
         }
         Ok(hir(
-            HirKind::JsonObject { entries },
+            HirKind::Dict { entries },
             Type::Map(Box::new(Type::Json)),
             EffectSet::default(),
             span,
@@ -2596,21 +2624,17 @@ impl<'a> Analyzer<'a> {
         }
 
         let mut declared_result = None;
-        let produces = is_form(arguments.get(cursor), "produces");
-        if produces || is_form(arguments.get(cursor), "returns") {
+        if is_form(arguments.get(cursor), "returns") {
             let items = expect_list(&arguments[cursor], "result contract must be a list")?;
             if items.len() != 2 {
                 return Err(diag(
                     DiagnosticCode::InvalidType,
-                    "infer result declaration must be exactly (returns TYPE) or (produces TYPE)",
+                    "infer result declaration must be exactly (returns TYPE)",
                     arguments[cursor].span(),
                 ));
             }
             let result = self.parse_type(&items[1])?;
             self.validate_type_names(&result, arguments[cursor].span())?;
-            if produces {
-                self.require_json_type(&result, arguments[cursor].span())?;
-            }
             declared_result = Some(result);
             cursor += 1;
         }
@@ -2618,7 +2642,7 @@ impl<'a> Analyzer<'a> {
         if arguments.len().saturating_sub(cursor) != 1 {
             return Err(diag(
                 DiagnosticCode::InvalidType,
-                "infer requires exactly one complete Yao body after optional captures and returns/produces declarations; use seq for multiple steps",
+                "infer requires exactly one complete Yao body after optional captures/returns declarations; use seq for multiple steps",
                 span,
             ));
         }
@@ -2637,24 +2661,7 @@ impl<'a> Analyzer<'a> {
             body_scope.bindings.insert(name.clone(), ty);
         }
         let body = self.analyze_expr(body_source, &mut body_scope, depth + 1)?;
-        let result = if let Some(declared) = declared_result {
-            if !produces
-                && !body.ty.is_assignable_to(&declared)
-                && !matches!(declared, Type::Program { .. })
-            {
-                return Err(diag(
-                    DiagnosticCode::TypeMismatch,
-                    format!(
-                        "infer BODY type {:?} is not assignable to declared result {:?}",
-                        body.ty, declared
-                    ),
-                    body.span,
-                ));
-            }
-            declared
-        } else {
-            body.ty.clone()
-        };
+        let result = declared_result.unwrap_or_else(|| body.ty.clone());
         let mut effects = body.effects.clone();
         if !root_model_owned {
             effects.insert(Effect::Infer);
@@ -2672,7 +2679,6 @@ impl<'a> Analyzer<'a> {
                 body: Box::new(body),
                 captures,
                 result: result.clone(),
-                produces,
                 source,
             },
             result,
@@ -3762,72 +3768,100 @@ fn hir(kind: HirKind, ty: Type, effects: EffectSet, span: SourceSpan) -> HirExpr
 }
 
 fn hir_node_count(expression: &HirExpr) -> usize {
-    let named = |arguments: &[NamedArgument]| {
-        arguments
-            .iter()
-            .flat_map(|argument| argument.values.iter())
-            .map(hir_node_count)
-            .sum::<usize>()
-    };
-    let children = match &expression.kind {
-        HirKind::Literal { .. } | HirKind::Reference { .. } | HirKind::OptionNone { .. } => 0,
-        HirKind::List { elements } => elements.iter().map(hir_node_count).sum(),
-        HirKind::Dict { entries }
-        | HirKind::JsonObject { entries }
-        | HirKind::Record {
-            fields: entries, ..
+    let mut count = 0usize;
+    expression.visit(&mut |_| {
+        count = count.saturating_add(1);
+        true
+    });
+    count
+}
+
+impl HirExpr {
+    /// Visit this expression and its typed children in source order. Data and
+    /// serialized metadata are not expression nodes. Return false to skip a
+    /// node's children, for example when inspecting linked functions separately.
+    pub fn visit<'a>(&'a self, visitor: &mut impl FnMut(&'a HirExpr) -> bool) {
+        if !visitor(self) {
+            return;
         }
-        | HirKind::Variant {
-            fields: entries, ..
-        } => entries.iter().map(|(_, value)| hir_node_count(value)).sum(),
-        HirKind::OptionSome { value }
-        | HirKind::ResultOk { value, .. }
-        | HirKind::ResultErr { value, .. }
-        | HirKind::ContextTransaction { context: value, .. }
-        | HirKind::Get { value, .. }
-        | HirKind::Decode { value, .. }
-        | HirKind::FromJson { value, .. }
-        | HirKind::ToJson { value }
-        | HirKind::Is { value, .. }
-        | HirKind::Run { program: value } => hir_node_count(value),
-        HirKind::EvidenceCandidate { kind, value, refs } => {
-            hir_node_count(kind)
-                + hir_node_count(value)
-                + refs.iter().map(hir_node_count).sum::<usize>()
-        }
-        HirKind::OutcomeCandidate {
-            value, evidence, ..
-        } => hir_node_count(value) + evidence.iter().map(hir_node_count).sum::<usize>(),
-        HirKind::Pure { operands, .. } => operands.iter().map(hir_node_count).sum(),
-        HirKind::Seq { steps } => steps.iter().map(hir_node_count).sum(),
-        HirKind::Bind { value, .. } => hir_node_count(value),
-        HirKind::If {
-            condition,
-            when_true,
-            when_false,
-        } => hir_node_count(condition) + hir_node_count(when_true) + hir_node_count(when_false),
-        HirKind::Match { value, cases } => {
-            hir_node_count(value)
-                + cases
+        match &self.kind {
+            HirKind::Literal { .. } | HirKind::Reference { .. } | HirKind::OptionNone { .. } => {}
+            HirKind::List { elements } => elements.iter().for_each(|v| v.visit(visitor)),
+            HirKind::Dict { entries }
+            | HirKind::Record {
+                fields: entries, ..
+            }
+            | HirKind::Variant {
+                fields: entries, ..
+            } => entries.iter().for_each(|(_, v)| v.visit(visitor)),
+            HirKind::OptionSome { value }
+            | HirKind::ResultOk { value, .. }
+            | HirKind::ResultErr { value, .. }
+            | HirKind::ContextTransaction { context: value, .. }
+            | HirKind::Get { value, .. }
+            | HirKind::Decode { value, .. }
+            | HirKind::FromJson { value, .. }
+            | HirKind::ToJson { value }
+            | HirKind::Is { value, .. }
+            | HirKind::Bind { value, .. }
+            | HirKind::InferBody { body: value, .. }
+            | HirKind::Run { program: value } => value.visit(visitor),
+            HirKind::EvidenceCandidate { kind, value, refs } => {
+                kind.visit(visitor);
+                value.visit(visitor);
+                refs.iter().for_each(|v| v.visit(visitor));
+            }
+            HirKind::OutcomeCandidate {
+                value, evidence, ..
+            } => {
+                value.visit(visitor);
+                evidence.iter().for_each(|v| v.visit(visitor));
+            }
+            HirKind::Pure { operands, .. } => operands.iter().for_each(|v| v.visit(visitor)),
+            HirKind::Seq { steps } => steps.iter().for_each(|v| v.visit(visitor)),
+            HirKind::If {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                condition.visit(visitor);
+                when_true.visit(visitor);
+                when_false.visit(visitor);
+            }
+            HirKind::Match { value, cases } => {
+                value.visit(visitor);
+                cases.iter().for_each(|case| case.body.visit(visitor));
+            }
+            HirKind::Fallback { primary, backup } => {
+                primary.visit(visitor);
+                backup.visit(visitor);
+            }
+            HirKind::Map {
+                collection, body, ..
+            } => {
+                collection.visit(visitor);
+                body.visit(visitor);
+            }
+            HirKind::Call { arguments, .. } | HirKind::Host { arguments, .. } => {
+                arguments
                     .iter()
-                    .map(|case| hir_node_count(&case.body))
-                    .sum::<usize>()
+                    .flat_map(|a| &a.values)
+                    .for_each(|v| v.visit(visitor));
+            }
+            HirKind::FunctionApplication {
+                arguments, body, ..
+            } => {
+                arguments
+                    .iter()
+                    .flat_map(|a| &a.values)
+                    .for_each(|v| v.visit(visitor));
+                body.visit(visitor);
+            }
+            HirKind::Par { branches } => branches
+                .iter()
+                .for_each(|branch| branch.body.visit(visitor)),
         }
-        HirKind::Fallback { primary, backup } => hir_node_count(primary) + hir_node_count(backup),
-        HirKind::Map {
-            collection, body, ..
-        } => hir_node_count(collection) + hir_node_count(body),
-        HirKind::Call { arguments, .. } | HirKind::Host { arguments, .. } => named(arguments),
-        HirKind::FunctionApplication {
-            arguments, body, ..
-        } => named(arguments) + hir_node_count(body),
-        HirKind::InferBody { body, .. } => hir_node_count(body),
-        HirKind::Par { branches } => branches
-            .iter()
-            .map(|branch| hir_node_count(&branch.body))
-            .sum(),
-    };
-    1usize.saturating_add(children)
+    }
 }
 
 fn diag(code: DiagnosticCode, message: impl Into<String>, span: SourceSpan) -> Diagnostic {
@@ -4439,14 +4473,13 @@ mod tests {
         assert_eq!(body.ty, Type::Int);
         assert_eq!(result, &program.output);
 
-        let error = analyze(
+        let semantic_result = analyze(
             r#"(eval (infer (returns String) (add 20 22)))"#,
             &profile(),
             AnalysisLimits::default(),
         )
-        .unwrap_err();
-        assert_eq!(error.code, DiagnosticCode::TypeMismatch);
-        assert!(error.message.contains("not assignable"));
+        .unwrap();
+        assert_eq!(semantic_result.output, Type::String);
     }
 
     #[test]

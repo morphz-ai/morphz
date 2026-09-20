@@ -24,7 +24,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (artifact "exactly one (eval ...) or (infer ...) root")
     (versioning "source has no version declaration; (version ...) is invalid")
     (declarations "optional (requires ...) then optional (types ...), before the body")
-    (infer-boundary "infer may declare captures and either returns or produces before one complete BODY")
+    (infer-boundary "infer may declare captures and returns before one complete BODY")
     (strings "double-quoted with escapes; triple-quoted raw blocks preserve newlines and indentation, without interpolation")
     (references "use bare lexical names: name or name.field; '$name' is invalid; bindings are immutable"))
   (ownership
@@ -41,7 +41,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (meaning "requirements narrow, never grant, Runtime authority"))
   (values
     (constructors "(list E...) (dict (KEY E)...) (record TYPE (FIELD E)...) (variant TYPE.VARIANT (FIELD E)...) (some E) (none TYPE) (ok E ERROR-TYPE) (err E OK-TYPE)")
-    (collections "list is List<T>; dict is homogeneous Map<T>; json-object is explicit heterogeneous Map<Json>")
+    (collections "list is List<T>; dict is homogeneous Map<T>; json-object is sugar for dict with to-json fields")
     (json-adapters "(from-json TYPE E) (to-json E) (json-object (KEY E)...); strict declared fields, data only, never Ref/Program; Json fields remain opaque")
     (semantic "(evidence (kind E) (value E) (refs REF...)) (outcome (status succeeded|failed|blocked) (value E) (evidence REF...)) (context-transaction (context REF) (transaction (context-tx ...)))")
     (pure "(get E FIELD) (decode TYPE E) (is TYPE E) (eq|ne|lt|le|gt|ge LEFT RIGHT) (and E...) (or E...) (not E) (add E...) (sub LEFT RIGHT) (mul E...) (div LEFT RIGHT)"))
@@ -52,7 +52,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (rule "effectful results must first be bound; conditions, operands, arguments, and collections are pure"))
   (effects
     (call "(call TOOL (ARG EXPR...)...); arguments are checked against the Tool schema")
-    (infer "(infer [(captures NAME...)] [(returns TYPE)|(produces TYPE)] BODY); same full language; captures are the only parent lexical values disclosed; default result is BODY type; returns must accept BODY type (Program is quarantined synthesis); produces requests a semantic data result as ordinary JSON matching TYPE, not literal placeholders; tools derive from BODY effects")
+    (infer "(infer [(captures NAME...)] [(returns TYPE)] BODY); same full language, including natural-language strings; returns constrains the model-evaluated result, NOT the task BODY's static type; omitted returns defaults to BODY type; captures are the only parent lexical values disclosed; tools derive from BODY effects; Runtime supplies and persists the result transport contract")
     (par "(par (branch NAME EXPR)...); at least two isolated branches, deterministic all-join result")
     (run "(run PROGRAM); executes only an admitted Program Value through a durable child execution and dispatches by its eval/infer owner")
     (host "(host.view REF (returns TYPE)) (evidence.commit CANDIDATE) (outcome.commit CANDIDATE) plus profile-published objective.*, context.*, and namespaced operations"))

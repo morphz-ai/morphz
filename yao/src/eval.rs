@@ -73,19 +73,10 @@ pub fn evaluate_pure(
     }
     match &expression.kind {
         HirKind::Literal { value } => literal_value(value, expression),
-        HirKind::Reference { root, path } => {
-            let mut value = environment.get(root).cloned().ok_or_else(|| EvalFailure {
-                message: format!("binding '{root}' is unavailable at runtime"),
-                span: expression.span,
-            })?;
-            for field in path {
-                value = read_field(&value, field).ok_or_else(|| EvalFailure {
-                    message: format!("value at '${root}' has no field '{field}'"),
-                    span: expression.span,
-                })?;
-            }
-            Ok(value)
-        }
+        HirKind::Reference { root } => environment.get(root).cloned().ok_or_else(|| EvalFailure {
+            message: format!("binding '{root}' is unavailable at runtime"),
+            span: expression.span,
+        }),
         HirKind::List { elements } => elements
             .iter()
             .map(|value| evaluate_pure(value, environment, definitions))
@@ -103,17 +94,6 @@ pub fn evaluate_pure(
         }
         HirKind::Record { type_name, fields } => {
             tagged_fields("record", type_name, None, fields, environment, definitions)
-        }
-        HirKind::JsonObject { entries } => {
-            let mut output = JsonMap::new();
-            for (name, value) in entries {
-                let result = evaluate_pure(value, environment, definitions)?;
-                output.insert(
-                    name.clone(),
-                    crate::json::to_json(&value.ty, result, definitions, value.span)?,
-                );
-            }
-            Ok(JsonValue::Object(output))
         }
         HirKind::FromJson { target, value } => {
             let result = evaluate_pure(value, environment, definitions)?;
@@ -199,8 +179,18 @@ pub fn evaluate_pure(
             }
         })),
         HirKind::Get { value, field } => {
-            let value = evaluate_pure(value, environment, definitions)?;
-            read_field(&value, field).ok_or_else(|| EvalFailure {
+            let receiver = evaluate_pure(value, environment, definitions)?;
+            let selected = match &value.ty {
+                Type::Map(_) => receiver.get(field).cloned(),
+                Type::StructuralRecord(_) => structural_record_field(&receiver, field).cloned(),
+                Type::Named(_) => {
+                    decode_value(&value.ty, receiver.clone(), definitions, value.span)
+                        .ok()
+                        .and_then(|_| receiver.get(YAO_TAG)?.get("fields")?.get(field).cloned())
+                }
+                _ => None,
+            };
+            selected.ok_or_else(|| EvalFailure {
                 message: format!("value has no field '{field}'"),
                 span: expression.span,
             })
@@ -687,24 +677,6 @@ fn as_bool(value: JsonValue, expression: &HirExpr) -> Result<bool, EvalFailure> 
         message: "boolean operator received a non-Bool value".to_string(),
         span: expression.span,
     })
-}
-
-fn read_field(value: &JsonValue, field: &str) -> Option<JsonValue> {
-    if let Some(tag) = yao_object(value) {
-        match tag.get("kind").and_then(JsonValue::as_str) {
-            Some("record" | "variant") => tag.get("fields")?.get(field).cloned(),
-            Some("structural_record") => tag
-                .get("fields")?
-                .as_array()?
-                .iter()
-                .find(|entry| entry.get("name").and_then(JsonValue::as_str) == Some(field))?
-                .get("value")
-                .cloned(),
-            _ => None,
-        }
-    } else {
-        value.get(field).cloned()
-    }
 }
 
 fn yao_object(value: &JsonValue) -> Option<&JsonMap<String, JsonValue>> {

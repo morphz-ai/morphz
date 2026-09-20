@@ -6,7 +6,7 @@ pub(crate) mod file_lock;
 pub(crate) mod output;
 pub mod projection;
 pub mod resources;
-mod schema;
+pub(crate) mod schema;
 pub(crate) mod stream;
 #[cfg(test)]
 mod tests;

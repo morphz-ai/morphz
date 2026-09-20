@@ -3791,7 +3791,7 @@ fn harness_authoring_command(invocation: &Invocation) -> Result<(), AppError> {
             report["version"].as_str().unwrap_or_default()
         );
         if report["tool_contracts_verified"] != true {
-            println!("Tool input schemas not checked: {}. Supply --tool-schema FILE; live authority is always checked at execution.", report["unresolved_tool_schemas"]);
+            println!("Tool contract validation is incomplete. Missing schemas: {}. Coverage: {}. Dynamic arguments and live authority must be checked at execution.", report["unresolved_tool_schemas"], report["tool_schema_coverage"]);
         }
     } else {
         eprintln!(

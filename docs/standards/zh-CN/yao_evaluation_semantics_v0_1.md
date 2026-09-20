@@ -66,11 +66,11 @@ Runtime 不得序列化或发送任何其他父程序绑定。进程重启后，
 只有终态 Child Outcome 能恢复父级；Runtime 必须将其解码为声明类型。Provider 推理文本、
 部分输出或未经验证的自我声明不得成为终值。
 
-显式 `(produces T)` 仍使用完整 BODY 描述语义数据结果，但不要求正文的确定性表达式
-类型就是 T。Runtime 从 T 生成严格普通 JSON Schema，仅在终值验证通过后构造名义值。
-captures 披露、Tool Effect 检查、权限收窄、因果身份和悬挂规则均不变。解码器选择在
-Pending Effect 中冻结；恢复时不能换用新的 Schema 或旧名义编码解码器。`returns` 规则
-不变，包括独立准入的 Program Value 契约。
+`(returns T)` 约束模型求值后的终值，不约束任务 BODY 的静态类型。Runtime 为数据结果
+提供严格普通 JSON Schema，仅在终值验证通过后构造类型化值；Program 候选另外经过独立
+准入。captures 披露、Tool Effect 检查、权限收窄、因果身份和悬挂规则均不变。
+传输契约是 Pending Effect 中冻结的内部元数据，不是另一种源码模式；恢复时不得换用
+另一套解码器或 Schema。
 
 ## 7. 结构化并行
 

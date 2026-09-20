@@ -124,23 +124,19 @@ fn json_boundaries_cannot_forge_or_serialize_authority() {
         "ContextTransaction",
         "(List (Ref Evidence))",
     ] {
-        for source in [
-            format!("(eval (from-json {ty} (json-object)))"),
-            format!("(infer (produces {ty}) \"forge\")"),
-        ] {
-            assert!(
-                analyze(
-                    &source,
-                    &StaticProfile::default(),
-                    AnalysisLimits::default()
-                )
-                .is_err(),
-                "{source}"
-            );
-        }
+        let source = format!("(eval (from-json {ty} (json-object)))");
+        assert!(
+            analyze(
+                &source,
+                &StaticProfile::default(),
+                AnalysisLimits::default()
+            )
+            .is_err(),
+            "{source}"
+        );
     }
     assert!(analyze(
-        "(infer (types (record R (authority (Ref Thread)))) (produces R) \"forge\")",
+        "(eval (types (record R (authority (Ref Thread)))) (from-json R (json-object)))",
         &StaticProfile::default(),
         AnalysisLimits::default()
     )
@@ -154,13 +150,13 @@ fn json_boundaries_cannot_forge_or_serialize_authority() {
 }
 
 #[test]
-fn produces_is_explicit_preserves_full_body_effects_and_capture_boundaries() {
+fn returns_constrains_model_result_preserving_body_effects_and_capture_boundaries() {
     let mut profile = StaticProfile::default();
     profile
         .tools
         .insert("read".into(), ToolSignature::dynamic_json());
     let source = r#"(eval (requires (tools read)) (types (record Answer (text String)))
-      (seq (bind brief "a scene") (infer (captures brief) (produces Answer)
+      (seq (bind brief "a scene") (infer (captures brief) (returns Answer)
         (seq (bind source (call read (path "notes"))) (json-object (brief brief) (source source))))))"#;
     let p = analyze(source, &profile, AnalysisLimits::default()).unwrap();
     assert_eq!(p.output, Type::Named("Answer".into()));
@@ -182,7 +178,7 @@ fn produces_is_explicit_preserves_full_body_effects_and_capture_boundaries() {
         &profile,
         AnalysisLimits::default()
     )
-    .is_err());
+    .is_ok());
     assert!(analyze(
         "(infer (produces Int) (returns Int) 1)",
         &profile,
@@ -201,15 +197,102 @@ fn model_schema_is_exact_and_only_contains_reachable_definitions() {
 }
 
 #[test]
-fn old_infer_serialization_and_hashes_do_not_gain_a_default_flag() {
+fn infer_has_one_result_declaration_and_no_compatibility_mode() {
     let p = program("(eval (infer (returns Int) 2))");
     let encoded = serde_json::to_string(&p).unwrap();
     assert!(!encoded.contains("produces"));
+    assert!(!encoded.contains("result_encoding"));
+    for source in [
+        "(infer (produces Int) 2)",
+        "(infer (produces String) \"task\")",
+    ] {
+        assert!(analyze(source, &StaticProfile::default(), AnalysisLimits::default()).is_err());
+    }
     let restored: yao_lang::Program = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
         yao_lang::program_hash(&restored),
         yao_lang::program_hash(&p)
     );
+    for (field, value) in [
+        ("produces", json!(true)),
+        ("result_encoding", json!("json")),
+    ] {
+        let mut invalid = serde_json::to_value(&p).unwrap();
+        invalid["body"]["kind"][field] = value;
+        assert!(serde_json::from_value::<yao_lang::Program>(invalid).is_err());
+    }
+}
+
+#[test]
+fn map_keys_never_become_internal_type_tags_in_get_or_dotted_paths() {
+    for marker in [
+        r#"(json-object (kind "record") (fields (json-object (x 999))))"#,
+        r#"(json-object (kind "ordinary-data"))"#,
+    ] {
+        for selector in ["(get item x)", "item.x"] {
+            let source = format!(
+                r#"(eval (seq (bind item (json-object (x 1) ("$yao" {marker}))) {selector}))"#
+            );
+            assert_eq!(value(&source), json!(1), "{source}");
+        }
+    }
+    assert_eq!(
+        value(r#"(eval (seq (bind item (dict ("$yao" 9) (x 1))) (get item "$yao")))"#),
+        json!(9)
+    );
+    assert_eq!(
+        value(
+            r#"(eval (seq (bind nested (dict (child (dict ("$yao" 9) (x 1))))) nested.child.x))"#
+        ),
+        json!(1)
+    );
+    assert_eq!(
+        value(
+            r#"(eval (types (record Box (fields (Map Int)))) (seq (bind item (record Box (fields (dict ("$yao" 9) (x 1))))) item.fields.x))"#
+        ),
+        json!(1)
+    );
+}
+
+#[test]
+fn json_object_is_sugar_not_a_separate_runtime_node() {
+    let sugar = program(r#"(eval (json-object (name "draft") (count 2)))"#);
+    let expanded = program(r#"(eval (dict (name (to-json "draft")) (count (to-json 2))))"#);
+    assert_eq!(
+        yao_lang::program_hash(&sugar),
+        yao_lang::program_hash(&expanded)
+    );
+    assert!(!serde_json::to_string(&sugar)
+        .unwrap()
+        .contains("json_object"));
+}
+
+#[test]
+fn natural_language_task_is_not_the_type_of_its_evaluated_result() {
+    for (ty, definitions) in [
+        ("Bool", ""),
+        ("Int", ""),
+        ("(List String)", ""),
+        ("Review", "(types (record Review (ok Bool)))"),
+    ] {
+        let source = format!("(infer {definitions} (returns {ty}) \"Evaluate this task\")");
+        assert!(
+            analyze(
+                &source,
+                &StaticProfile::default(),
+                AnalysisLimits::default()
+            )
+            .is_ok(),
+            "{source}"
+        );
+    }
+    // This correction does not relax deterministic functions or invalid BODY expressions.
+    for source in [
+        "(eval (infer (returns Bool) (add 1 true)))",
+        "(eval (infer (returns Bool) missing))",
+    ] {
+        assert!(analyze(source, &StaticProfile::default(), AnalysisLimits::default()).is_err());
+    }
 }
 
 #[test]

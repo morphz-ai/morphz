@@ -2314,7 +2314,6 @@ impl PlanMachine {
                 body,
                 captures,
                 result,
-                produces,
                 source,
             } => {
                 if self.budget.infers_left == 0 {
@@ -2359,7 +2358,11 @@ impl PlanMachine {
                     request.insert("type_definitions".to_string(), definitions);
                 }
                 self.budget.infers_left -= 1;
-                let result = if produces {
+                // The result type determines transport. Source syntax never
+                // selects a different inference meaning or decoder.
+                let json_result =
+                    crate::yao::json::validate_json_type(&result, &self.typed_definitions).is_ok();
+                let result = if json_result {
                     InferResultKind::Json {
                         ty: result,
                         definitions: self.typed_definitions.clone(),
@@ -2846,14 +2849,12 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
             let transport = match value {
                 JsonValue::String(text) => crate::yao::json::parse_strict_json(text.trim())
                     .map_err(|error| {
-                        format!(
-                            "infer produces {ty:?}, but the final body is not valid JSON: {error}"
-                        )
+                        format!("infer result for {ty:?} is not valid JSON: {error}")
                     })?,
                 value => value,
             };
             crate::yao::json::from_json(&ty, transport, &definitions, span)
-                .map_err(|error| format!("infer produces {ty:?}: {error}"))
+                .map_err(|error| format!("infer result does not satisfy {ty:?}: {error}"))
         }
         InferResultKind::Yao {
             ty,
@@ -3522,9 +3523,7 @@ mod tests {
     #[tokio::test]
     async fn typed_infer_union_dispatches_through_match() {
         let (registry, _) = fixture(&[]);
-        let (inference, _) = host(
-            r#"{"$yao":{"kind":"variant","type":"Action","variant":"walk","fields":{"count":2}}}"#,
-        );
+        let (inference, _) = host(r#"{"case":"walk","fields":{"count":2}}"#);
         let program = validate(
             r#"(eval
                  (requires (tools))
@@ -3632,9 +3631,7 @@ mod tests {
             &AllowList::new(["search"]),
         )
         .unwrap();
-        let (inference, requests) = host(
-            r#"{"$yao":{"kind":"record","type":"SearchDecision","fields":{"query":"needle"}}}"#,
-        );
+        let (inference, requests) = host(r#"{"query":"needle"}"#);
         let value = evaluate(&program, registry, inference).await.unwrap();
 
         assert_eq!(value, serde_json::json!(["matched"]));
@@ -3668,12 +3665,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn produces_constructs_named_data_and_preserves_full_body_and_captures() {
+    async fn infer_returns_named_data_and_preserves_full_body_and_captures() {
         let (registry, seen) = fixture(&[("search", serde_json::json!(["found"]))]);
         let program = validate(r#"(eval (requires (tools search))
           (types (record Decision (query String)))
           (seq (bind brief "find notes") (bind private "do-not-disclose")
-            (bind decision (infer (captures brief) (produces Decision) (seq brief "Choose the query")))
+            (bind decision (infer (captures brief) (returns Decision) (seq brief "Choose the query")))
             (call search (query decision.query))))"#,
           &registry, &AllowList::new(["search"])).unwrap();
         let (inference, requests) = host(r#"{"query":"needle"}"#);
@@ -3697,12 +3694,12 @@ mod tests {
     }
 
     #[test]
-    fn produces_decode_and_failure_survive_durable_machine_serialization() {
+    fn infer_result_decode_and_failure_survive_durable_machine_serialization() {
         let (registry, seen) = fixture(&[("search", serde_json::json!([]))]);
         let program = validate(
             r#"(eval (requires (tools search))
           (types (record Decision (query String)))
-          (seq (bind decision (infer (produces Decision) "Choose query"))
+          (seq (bind decision (infer (returns Decision) "Choose query"))
                (call search (query decision.query))))"#,
             &registry,
             &AllowList::new(["search"]),
@@ -4567,7 +4564,7 @@ mod tests {
         };
         assert!(matches!(
             result,
-            InferResultKind::Yao {
+            InferResultKind::Json {
                 ty: crate::yao::Type::Int,
                 ..
             }
@@ -4754,7 +4751,7 @@ mod tests {
         };
         assert!(matches!(
             result,
-            InferResultKind::Yao {
+            InferResultKind::Json {
                 ty: crate::yao::Type::String,
                 ..
             }

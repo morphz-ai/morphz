@@ -268,20 +268,21 @@ Target 策略、Package 声明、Program 声明及单次操作收窄结果的交
 Tool 名必须静态可知。参数纯求值完成后才持久化 Tool 请求；参数与返回值必须符合 Tool
 Schema；Effect 为 `(tool TOOL)`。
 
-显式 `(produces TYPE)` 可以替代 `(returns TYPE)`，但不能同时出现。它要求模型依据
-完整 BODY 产出 TYPE 所描述的语义数据，并不声称 BODY 的确定性表达式类型就是 TYPE。
-普通 `returns` 的可赋值规则不变。BODY 仍完整检查名称、captures、Effect 和能力，
-并原样发送给模型，没有另建仅含 task 字符串的 API。
+`(returns TYPE)` 约束的是模型求值结果，不是任务 BODY 的静态类型。自然语言 String
+正文可以要求 Bool、记录、联合、列表或 Program 结果，不需要附加目标类型的占位值。
+BODY 仍检查名称、captures、内部表达式、Effect 和能力，并完整交给模型。
+普通确定性 `fn` 的返回类型检查不变。
 
-`produces` 的终值传输使用普通 JSON，按 `from-json` 严格构造。类型自动提供模型可见
-JSON Schema，不需要占位记录。重复键、代码围栏、尾随值、多余字段和类型错误在父程序
-继续前失败；禁止权威类型。程序合成仍使用 `(returns (Program ...))` 及独立准入流程。
-结果契约和精确类型定义随 infer Effect 持久化；旧 Effect 保留旧解码器与身份。
+数据结果使用由 TYPE 提供 Schema 的普通 JSON 传输，Runtime 严格构造类型化值后才继续。
+重复键、代码围栏、尾随值、多余字段和类型错误均失败。Program 结果另行经过候选准入，
+不是 BODY 与结果可赋值规则的特例。JSON 适配器不能构造权威值。
+传输编码属于内部结果契约，不是另一个源码关键字。契约与精确类型定义随 Pending Effect
+持久化，恢复时保持一致。
 
 ```lisp
 (infer
   [(captures NAME...)]
-  [(returns TYPE) | (produces TYPE)]
+  [(returns TYPE)]
   BODY)
 ```
 
@@ -295,10 +296,10 @@ JSON Schema，不需要占位记录。重复键、代码围栏、尾随值、多
 未列出的父程序绑定和完整 Runtime 环境不得被隐式附带。`captures` 只授权披露该值，
 不会授予 Tool、Host 或对象操作权限。
 
-若省略两种结果声明，结果契约就是 `BODY` 的静态推导类型。对于普通 `returns` 值，显式声明的
-`TYPE` 必须能够接收正文类型。`Program<T,E>` 是唯一的程序合成契约：正文说明模型如何
-派生一个隔离的候选程序；该候选程序必须独立经过解析、类型检查、Effect 检查、规范化和
-持久化，才能成为 Program Value。
+省略结果声明时，结果契约默认使用 BODY 的静态类型；这只是默认值。自然语言 String
+正文默认返回 String，需要其他结果时显式声明 `returns`。显式 TYPE 不得与 BODY 静态
+类型作可赋值比较，必须校验模型实际求值的终值。`Program<T,E>` 候选还须独立经过解析、
+类型检查、Effect 检查、规范化与持久化，才能成为可执行的 Program Value。
 
 可用证据工具从正文中静态命名的 `(call TOOL ...)` 推导，并与根部声明及部署策略取交集。
 Runtime 必须先解码、校验终值，再允许其进入 Runtime 持有的数据流。解码失败属于模型求值

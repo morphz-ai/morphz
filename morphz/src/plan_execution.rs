@@ -2554,9 +2554,7 @@ fn host_event_class(operation: &str) -> (&'static str, &'static str) {
 fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonValue, String> {
     let transport = match &kind {
         InferResultKind::Json { .. } => {
-            return Err(
-                "produces JSON contracts are inference-only, not Host authority projections".into(),
-            )
+            return Err("inference JSON contracts are not Host authority projections".into())
         }
         InferResultKind::Yao {
             ty: crate::yao::Type::Named(name),
@@ -3002,8 +3000,8 @@ fn infer_request_event(
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
         crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } => format!(
-            "This node explicitly produces a semantic result of type {ty:?}. Evaluate the complete BODY to fulfill its requirements, not to echo literal instructions or example values. Return only ordinary JSON matching this strict schema (no $yao envelopes, Markdown fences, extra fields or commentary). Runtime constructs and validates the named data before continuing: {}",
-            serde_json::to_string(&crate::yao::json::json_schema(ty, definitions).map_err(|error| format!("invalid produces schema: {error}"))?)?
+            "This infer returns a model-evaluated result of type {ty:?}. Evaluate the complete BODY to fulfill its requirements, not to echo literal instructions or example values. The declared type constrains your result, not the task description. Return only ordinary JSON matching this strict schema (no $yao envelopes, Markdown fences, extra fields or commentary). Runtime constructs and validates the named data before continuing: {}",
+            serde_json::to_string(&crate::yao::json::json_schema(ty, definitions).map_err(|error| format!("invalid infer result schema: {error}"))?)?
         ),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
@@ -4547,7 +4545,7 @@ mod tests {
             Some(PlanExecutionWaitKind::Evaluation)
         );
         assert_eq!(waiting.pending_id.as_deref(), Some(activation_id.as_str()));
-        assert_eq!(request_event.payload["result_kind"], "yao");
+        assert_eq!(request_event.payload["result_kind"], "json");
 
         // The durable infer hand-off intentionally precedes asynchronous
         // Scheduler materialization.  A reconciler observing this crash
@@ -4832,8 +4830,10 @@ mod tests {
         assert!(!text.contains("must-not-cross"));
         assert!(text.contains("Named types declared by the containing Yao source"));
         assert!(text.contains("Answer"));
-        assert!(text.contains("nominal record is encoded as"));
-        assert!(text.contains("$yao"));
+        assert_eq!(request_event.payload["result_kind"], "json");
+        assert!(text.contains("ordinary JSON"));
+        assert!(text.contains("\"required\":[\"value\"]"));
+        assert!(!text.contains("nominal record is encoded as"));
 
         let reconstructed = pending_infer_request_event(&waiting).unwrap();
         assert_eq!(reconstructed.id, request_event.id);
@@ -5708,7 +5708,7 @@ mod tests {
                 assert!(!existing);
                 assert_eq!(plan.pending_kind, Some(PlanExecutionWaitKind::Evaluation));
                 assert_eq!(plan.pending_id.as_deref(), Some(activation_id.as_str()));
-                assert_eq!(request_event.payload["result_kind"], "yao");
+                assert_eq!(request_event.payload["result_kind"], "json");
                 assert_eq!(request_event.payload["plan_execution_id"], child.id);
             }
             other => panic!("infer-root Program did not dispatch a child Evaluation: {other:?}"),

@@ -104,7 +104,8 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.match(source, /\(version "1\.3\.0"\)/);
   for (const type of ["ScriptIntent", "ScriptProduct", "ScriptCheck"])
-    assert.ok(source.includes(`(produces ${type})`));
+    assert.ok(source.includes(`(returns ${type})`));
+  assert.ok(!source.includes("(produces "));
   assert.ok(!source.includes("(decode Json"));
   assert.ok(!source.includes("(fn script-product"));
   assert.match(source, /\(capabilities \(tools host_morphz\)\)/);

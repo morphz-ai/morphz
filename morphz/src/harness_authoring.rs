@@ -3,7 +3,7 @@
 use crate::harness_package::HarnessPackage;
 use crate::yao::{AnalysisLimits, AnalysisProfile, Expr, ParseLimits, ToolSignature, Type};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -109,13 +109,28 @@ pub fn check(path: &Path, schema_path: Option<&Path>) -> Result<Value, Error> {
         &profile,
         AnalysisLimits::default(),
     ) {
-        Ok(program) => Ok(json!({
-            "valid": true, "id": package.manifest.id, "version":package.manifest.version,
-            "artifact_hash":package.artifact_hash, "program_hash":crate::yao::program_hash(&program),
-            "output_type":program.output, "effects":program.effects,
-            "tool_contracts_verified":unresolved.is_empty(), "unresolved_tool_schemas":unresolved,
-            "scope":"offline syntax, types and static effects only; live availability and authority are checked at execution"
-        })),
+        Ok(module) => {
+            let program = &module.program;
+            let coverage = check_tool_calls(&module, &catalog);
+            let verified = unresolved.is_empty()
+                && coverage["unsupported_schemas"]
+                    .as_object()
+                    .is_some_and(|v| v.is_empty())
+                && coverage["deferred_calls"]
+                    .as_array()
+                    .is_some_and(|v| v.is_empty())
+                && coverage["errors"].as_array().is_some_and(|v| v.is_empty());
+            let valid = coverage["errors"].as_array().is_some_and(|v| v.is_empty());
+            Ok(json!({
+                "valid": valid, "id": package.manifest.id, "version":package.manifest.version,
+                "artifact_hash":package.artifact_hash, "program_hash":crate::yao::program_hash(program),
+                "output_type":program.output, "effects":program.effects,
+                "tool_contracts_verified":verified, "unresolved_tool_schemas":unresolved,
+                "tool_schema_coverage":coverage,
+                "message": if valid { "Offline static checks passed; inspect tool_schema_coverage for deferred validation" } else { "Tool arguments violate the supplied schema; see tool_schema_coverage.errors" },
+                "scope":"offline syntax, types, effects and statically evaluable Tool arguments only; dynamic values, live availability and authority require execution-time validation"
+            }))
+        }
         Err(diagnostic) => {
             let source = diagnostic
                 .function
@@ -127,6 +142,103 @@ pub fn check(path: &Path, schema_path: Option<&Path>) -> Result<Value, Error> {
             )
         }
     }
+}
+
+/// Inspect already-admitted HIR, never execute a Tool or model. Reuse the
+/// Runtime's bounded schema validator; unsupported constraints are reported,
+/// not silently erased by the coarser Yao type projection.
+fn check_tool_calls(
+    module: &crate::yao::sema::ModuleAnalysis,
+    catalog: &BTreeMap<String, Value>,
+) -> Value {
+    use crate::session_io::{schema, Data};
+    let program = &module.program;
+    let unsupported = catalog
+        .iter()
+        .filter_map(|(name, schema_value)| {
+            schema::check(schema_value, 0)
+                .err()
+                .map(|error| (name.clone(), error.to_string()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut calls = Vec::new();
+    for (function, body) in std::iter::once((None, &program.body)).chain(
+        module
+            .functions
+            .iter()
+            .map(|(name, body)| (Some(name.as_str()), body)),
+    ) {
+        body.visit(&mut |expression| {
+            if matches!(expression.kind, crate::yao::HirKind::Call { .. }) {
+                calls.push((function, expression));
+            }
+            // Each declared function is checked once below, including unused
+            // exported functions. Function arguments are statically pure.
+            !matches!(
+                expression.kind,
+                crate::yao::HirKind::FunctionApplication { .. }
+            )
+        });
+    }
+    let mut checked = 0;
+    let mut deferred = Vec::new();
+    let mut errors = Vec::new();
+    for (function, call) in calls {
+        let crate::yao::HirKind::Call { tool, arguments } = &call.kind else {
+            unreachable!()
+        };
+        let Some(rule) = catalog
+            .get(tool)
+            .filter(|_| !unsupported.contains_key(tool))
+        else {
+            deferred.push(json!({"tool":tool,"function":function,"span":call.span,"reason":"schema unavailable or contains unsupported constraints"}));
+            continue;
+        };
+        let mut values = serde_json::Map::new();
+        let mut dynamic = false;
+        for argument in arguments {
+            let evaluated = argument
+                .values
+                .iter()
+                .map(|expr| crate::yao::evaluate_pure(expr, &mut HashMap::new(), &program.types))
+                .collect::<Result<Vec<_>, _>>();
+            match evaluated {
+                Ok(mut evaluated) => {
+                    let value = if evaluated.len() == 1 {
+                        evaluated.remove(0)
+                    } else {
+                        Value::Array(evaluated)
+                    };
+                    // Even when another argument is dynamic, reject known bad
+                    // literals (enum, required nested fields, etc.) now.
+                    if let Some(field_rule) =
+                        rule.get("properties").and_then(|v| v.get(&argument.name))
+                    {
+                        let pointer =
+                            format!("/{}", argument.name.replace('~', "~0").replace('/', "~1"));
+                        if let Err(error) =
+                            schema::validate(field_rule, &Data::from_value(&value), &pointer)
+                        {
+                            errors.push(json!({"tool":tool,"function":function,"span":argument.span,"message":error.to_string()}));
+                        }
+                    }
+                    values.insert(argument.name.clone(), value);
+                }
+                Err(_) => dynamic = true,
+            }
+        }
+        if dynamic {
+            deferred.push(json!({"tool":tool,"function":function,"span":call.span,"reason":"arguments depend on runtime bindings or cannot be evaluated statically"}));
+        } else {
+            match schema::validate(rule, &Data::from_value(&Value::Object(values)), "") {
+                Ok(()) => checked += 1,
+                Err(error) => {
+                    errors.push(json!({"tool":tool,"function":function,"span":call.span,"message":error.to_string()}))
+                }
+            }
+        }
+    }
+    json!({"checked_calls":checked,"checked_functions":module.functions.keys().collect::<Vec<_>>(),"deferred_calls":deferred,"unsupported_schemas":unsupported,"errors":errors})
 }
 
 fn read_form(base: &Path, path: &Path) -> Result<Expr, Error> {
@@ -265,5 +377,98 @@ mod tests {
         let schema_path = dir.path().join("tools.json");
         std::fs::write(&schema_path, r#"{"read":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}"#).unwrap();
         assert_eq!(check(&path, Some(&schema_path)).unwrap()["valid"], false);
+    }
+
+    #[test]
+    fn offline_schema_checks_all_declared_functions_once_including_unused_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("module.hns");
+        let schema_path = dir.path().join("tools.json");
+        std::fs::write(&schema_path, r#"{"read":{"type":"object","properties":{"mode":{"type":"string","enum":["read"]}},"required":["mode"],"additionalProperties":false}}"#).unwrap();
+        let write = |value: &str, entry: &str| {
+            std::fs::write(&path, format!(
+                "(manifest (id module) (version \"1\") (title \"module\") (capabilities (tools read)))\n(contract (identity \"test\"))\n(fn exported (visibility exported) (description \"Read with a fixed mode\") (params) (returns Json) (effects (tool read)) (body (call read (mode \"{value}\"))))\n(eval (requires (tools read)) {entry})"
+            )).unwrap();
+        };
+        write("invalid", "nil");
+        let invalid = check(&path, Some(&schema_path)).unwrap();
+        assert_eq!(invalid["valid"], false);
+        assert_eq!(invalid["tool_contracts_verified"], false);
+        assert_eq!(
+            invalid["tool_schema_coverage"]["errors"][0]["function"],
+            "exported"
+        );
+        for entry in ["nil", "(seq (exported) (exported))"] {
+            write("read", entry);
+            let valid = check(&path, Some(&schema_path)).unwrap();
+            assert_eq!(valid["valid"], true);
+            assert_eq!(valid["tool_contracts_verified"], true);
+            assert_eq!(valid["tool_schema_coverage"]["checked_calls"], 1);
+            assert_eq!(
+                valid["tool_schema_coverage"]["checked_functions"],
+                json!(["exported"])
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn offline_schema_checks_literals_and_reports_dynamic_or_unsupported_constraints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("check.hns");
+        let schema_path = dir.path().join("tools.json");
+        let schema = json!({"read":{"type":"object","properties":{
+            "mode":{"type":"string","enum":["read"]},
+            "payload":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}
+        },"required":["mode","payload"],"additionalProperties":false}});
+        std::fs::write(&schema_path, schema.to_string()).unwrap();
+        let write = |body: &str| {
+            std::fs::write(&path, format!(
+            "(manifest (id check) (version \"1\") (title \"check\") (capabilities (tools read)))\n(contract (identity \"check\"))\n(eval (requires (tools read)) {body})"
+        )).unwrap()
+        };
+        for body in [
+            "(call read (mode \"invalid\") (payload (dict (path \"notes\"))))",
+            "(call read (mode \"read\") (payload (dict)))",
+            "(call read (mode \"read\") (payload (dict (path \"notes\") (extra \"no\"))))",
+            "(seq (bind input (infer (returns (Map Json)) \"Choose path\")) (call read (mode \"invalid\") (payload input)))",
+        ] {
+            write(body);
+            assert_eq!(check(&path, Some(&schema_path)).unwrap()["valid"], false, "{body}");
+        }
+        write("(call read (mode \"read\") (payload (dict (path \"notes\"))))");
+        let good = check(&path, Some(&schema_path)).unwrap();
+        assert_eq!(good["valid"], true);
+        assert_eq!(good["tool_contracts_verified"], true);
+        assert_eq!(good["tool_schema_coverage"]["checked_calls"], 1);
+        write("(seq (bind input (infer (returns (Map Json)) \"Choose path\")) (call read (mode \"read\") (payload input)))");
+        let dynamic = check(&path, Some(&schema_path)).unwrap();
+        assert_eq!(dynamic["valid"], true);
+        assert_eq!(dynamic["tool_contracts_verified"], false);
+        assert_eq!(
+            dynamic["tool_schema_coverage"]["deferred_calls"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut unsupported = schema;
+        unsupported["read"]["properties"]["mode"]["pattern"] = json!("^read$");
+        std::fs::write(&schema_path, unsupported.to_string()).unwrap();
+        write("(call read (mode \"read\") (payload (dict (path \"notes\"))))");
+        let partial = check(&path, Some(&schema_path)).unwrap();
+        assert_eq!(partial["valid"], true);
+        assert_eq!(partial["tool_contracts_verified"], false);
+        assert!(
+            partial["tool_schema_coverage"]["unsupported_schemas"]["read"]
+                .as_str()
+                .unwrap()
+                .contains("pattern")
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "offline checks must not initialize storage or execute tools"
+        );
     }
 }

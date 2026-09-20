@@ -1,20 +1,19 @@
 # Yao authoring ergonomics: implementation and acceptance
 
-Status: implementation, real-model fixtures and original Desktop acceptance verified
-(2026-09-20). No release or commit is implied.
+Status: unreleased implementation corrected and verified (2026-09-20).
+The earlier acceptance evidence below predates the correction and is not proof of
+the corrected implementation. See [current correction evidence](yao_infer_correction_20260920.md).
 
 ## Scope and decisions
 
 The Script Studio case exposed repeated boundary adapters, not a need to replace Yao's
 dual evaluator or introduce an application-side workflow engine.
 
-- Preserve ordinary `infer (returns T) BODY`: BODY remains assignable to T.
-- Add explicit `infer (produces T) BODY` for a model-owned semantic result described by
-  the complete BODY. Unlike `returns`, this declaration gives the desired result type,
-  not an assertion about BODY's deterministic value. BODY is still fully analyzed for
+- Correct `infer (returns T) BODY`: T constrains the model-evaluated result, not the
+  static type of the task description. BODY is still fully analyzed for
   names, captures, effects, capabilities and budgets. The model returns ordinary JSON;
   Runtime strictly constructs T from that JSON before resuming the parent.
-- Add pure `from-json T EXPR`, `to-json EXPR`, and heterogeneous `json-object`.
+- Add pure `from-json T EXPR`, `to-json EXPR`, and `json-object` constructor sugar.
   These are explicit data adapters, not permission to cast arbitrary JSON into Ref,
   Program or Runtime authority-bearing values. Existing `decode` and nominal wire
   encodings stay unchanged. Extra/missing fields and wrong types are errors.
@@ -24,8 +23,9 @@ dual evaluator or introduce an application-side workflow engine.
   initialize storage, install a package, contact a provider or execute a tool.
 - Improve boundary diagnostics with field paths and module/function context. Existing
   source spans and machine-readable diagnostic categories remain available.
-- Publish the migrated Script Studio as a new immutable version. Preserve legacy
-  packages byte-for-byte and keep workflow decisions in Yao.
+- Correct the unreleased Script Studio 1.3.0 in place. Do not retain the erroneous
+  keyword, a compatibility mode, or another copy/version of the erroneous package.
+  Keep workflow decisions in Yao and preserve user-authored application data.
 
 No unbounded loops, recursion, implicit capture, weaker authorization, general retry
 engine, new UI or automatic adoption of generated drafts is included. Bounded iteration
@@ -40,7 +40,7 @@ object of their declared fields, without internal `$yao` tags. Named unions use
 These tagged data encodings avoid ambiguous null/optional or union cases. A Json field
 is opaque: converters must never interpret embedded `$yao` objects as authority.
 
-## Acceptance checklist
+## Earlier acceptance checklist (before correction)
 
 - [x] Core parsing, typing and canonical identity, including legacy compatibility.
 - [x] Strict nested JSON conversion, field-path diagnostics and authority rejection.
@@ -54,10 +54,10 @@ is opaque: converters must never interpret embedded `$yao` objects as authority.
 Evidence is recorded below as tests are actually run; a checked box is not a substitute
 for live model or application evidence.
 
-## Implementation and compatibility
+## Implementation
 
 The official example now binds `morphz.script-studio@1.3.0`. Intent, product and review
-results use `produces` and declared records; submission objects use `json-object`.
+results use `returns` and declared records; submission objects use `json-object` sugar.
 The manual model-JSON-to-record decoder and repeated schema prose are removed. Discussion,
 authorization, conditional review/revision, human adoption and two-pass limits stay the same.
 The former 1.2.1 file is retained at `application/harnesses/legacy/script-studio-1.2.1.hns`,
@@ -69,6 +69,8 @@ were persisted inside ordinary quoted strings, which the typed parser correctly 
 on reload. Package persistence now uses a loadable escaped representation, while the
 historical logical canonicalization used for artifact identity is unchanged. The initial
 failure remains in `morphz-script-runtime-HCK06b`; it was not relabeled as a passing run.
+
+Pre-correction development artifact identities (not current hashes):
 
 1.3.0 logical artifact hash:
 `sha256:a118d6bcd5fc57c4ce1e92f7afb03d8396af6b1f31f25c34f9874bc67543611c`.

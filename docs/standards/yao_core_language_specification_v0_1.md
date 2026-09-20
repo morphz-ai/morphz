@@ -327,25 +327,24 @@ Argument fields and results MUST be checked against the Tool schema. A `call` ha
 
 ### 9.2 Model-owned evaluation
 
-An explicit `(produces TYPE)` may replace `(returns TYPE)`, never accompany it. It
-requests a semantic data result satisfying TYPE from the complete BODY. It is not an
-assertion that BODY's deterministic value has TYPE; ordinary `returns` retains that
-assignability rule. BODY still undergoes full name, capture, effect and capability
-analysis and is sent intact to the model. No alternate task-only API is introduced.
+`(returns TYPE)` constrains the result of model evaluation, not the static type of
+the task BODY. A natural-language String BODY can therefore request a Bool, record,
+union, list, or Program result. No placeholder of the desired type is required.
+BODY still undergoes name, capture, internal expression, effect and capability checks
+and is sent intact to the model. Deterministic `fn` return checking is unchanged.
 
-The terminal transport for `produces` is ordinary JSON, strictly constructed using
-`from-json`. The type supplies the model-facing JSON schema; placeholders are not needed.
-Duplicate keys, fences, trailing values, extra fields and incorrect types fail before
-the parent continues. Authority-bearing types are forbidden. Program synthesis still
-uses `(returns (Program ...))` and its separate quarantine/admission path.
-
-The selected result contract and exact type definitions are persisted with the infer
-effect. Legacy effects without `produces` retain their old decoder and identity.
+Data results use an ordinary JSON transport and a schema derived from TYPE; Runtime
+strictly constructs typed values before continuing. Duplicate keys, fences, trailing
+values, extra fields and wrong types fail. Program results require separate candidate
+admission, not a special exemption from BODY/result assignability. JSON adapters
+cannot mint authority-bearing values. Transport is an internal result contract, not
+another source keyword. The contract and type definitions are persisted with the
+pending effect and remain fixed during resumption.
 
 ```lisp
 (infer
   [(captures NAME...)]
-  [(returns TYPE) | (produces TYPE)]
+  [(returns TYPE)]
   BODY)
 ```
 
@@ -361,11 +360,12 @@ Evaluation request and sent to the currently configured model provider. No unlis
 or whole Runtime environment may be included implicitly. `captures` authorizes disclosure of a
 value; it does not grant any Tool, Host, or object capability.
 
-Without either result declaration, the result contract is the statically inferred type of `BODY`. For an
-ordinary value, an explicit `TYPE` MUST accept the body type. `Program<T,E>` is the one synthesis
-contract: the body describes how the model derives a quarantined Program candidate, and the
-candidate is independently parsed, typed, effect-checked, canonicalized, and persisted before it
-can become a value.
+Without a result declaration, the result contract defaults to the static type of BODY.
+This is only a default: a natural-language String BODY defaults to a String result;
+declare `returns` when another result type is intended. An explicit TYPE MUST NOT be
+checked against the BODY's static type. It MUST be checked against the model-evaluated
+terminal value. A `Program<T,E>` candidate additionally undergoes parsing, typing,
+effect checking, canonicalization and persistence before it can become an executable value.
 
 Available evidence tools are derived from statically named `(call TOOL ...)` expressions in the
 body and intersected with root declarations and deployment policy. The Runtime MUST decode and

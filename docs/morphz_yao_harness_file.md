@@ -309,17 +309,17 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
 ### 3.5 `fn`：已实现的包内函数与认知应用接口
 
-编写结构化语义任务时，可以显式使用 `produces`，不需要在正文末尾填一个空记录：
+编写结构化语义任务时，使用 `returns` 声明模型求值结果，不需要在正文末尾填一个空记录：
 
 ```lisp
-(infer (captures context) (produces ScriptProduct)
+(infer (captures context) (returns ScriptProduct)
   """根据 context 创作本次交付。
 保留未要求改变的字段，不以计划代替成稿。""")
 ```
 
-完整 BODY 仍由同一套 Yao 前端检查并交给模型；`produces` 声明预期的语义数据类型，
-Runtime 从类型生成 JSON Schema，严格解码成具名值。普通 `returns` 仍要求 BODY 类型
-可赋给结果类型；Program 的隔离准入不变。`from-json`、`to-json` 和 `json-object`
+完整 BODY 仍由同一套 Yao 前端检查并交给模型；`returns` 声明预期的模型求值结果类型，
+不是自然语言任务本身的类型。Runtime 为数据结果生成 JSON Schema，严格解码成具名值。
+Program 的隔离准入不变。`from-json`、`to-json` 和作为构造语法糖的 `json-object`
 负责普通 JSON 边界，不能构造 Ref、Program 或其他权限值；不再用 `decode Json` 充当
 混合对象构造技巧。
 
@@ -331,8 +331,10 @@ morphz harness format application/harnesses/script-studio.hns --check
 morphz harness format application/harnesses/script-studio.hns --write
 ```
 
-`check` 不提供外部工具 Schema 时，会明确列出尚未验证的工具输入契约；这不是运行时
-可用性或权限验收。`format` 默认只输出，`--write` 才原子写回指定文件；保持注释、字符串
+`check` 分别报告静态类型检查、可静态求值参数的 Schema 验证、动态参数及不支持的 Schema
+约束；检查入口及所有包内函数（含未被入口调用的导出函数），每个函数只检查一次并报告名称。
+缺 Schema 或存在未验证部分时，不标为完整契约验证；已知非法枚举值、缺失嵌套字段
+会失败。这不是运行时可用性或权限验收。`format` 默认只输出，`--write` 才原子写回指定文件；保持注释、字符串
 值和规范化身份，目录包按单个 `.yao` 文件格式化。三引号文本保留实际换行和缩进，不插值。
 
 `call` 只能指向 Runtime 已注册 Tool。若所有组合逻辑都必须写成 Rust Tool，会让 Harness

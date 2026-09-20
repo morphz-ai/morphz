@@ -300,9 +300,10 @@ MORPHZ_APP_ENV_FILE='' node --import tsx scripts/script-studio-runtime-smoke.ts 
 工作流不迁回应用代码：讨论、意图、创作、条件自审与修订、提交仍由同一份 Yao 表达。
 本版使用通用语言能力，减少为模型返回值手写的适配代码：
 
-- `infer (produces ScriptIntent|ScriptProduct|ScriptCheck)` 显式声明语义结果类型；
+- `infer (returns ScriptIntent|ScriptProduct|ScriptCheck)` 声明模型求值结果类型；
   Runtime 自动提供对应普通 JSON Schema，并严格构造名义类型。完整 BODY、显式 captures、
-  静态 Effect 与实际权限检查保留；旧 `returns` 规则不放宽。
+  静态 Effect 与实际权限检查保留；结果类型不与任务 BODY 的静态类型比较。
+  尚未发布的错误声明已直接删除，不保留别名、模式分支或错误包副本。
 - 去掉 `script-product` 手写解包函数；提交对象改用异构 `json-object`，不再靠
   `(decode Json ...)` 把各个字段伪装成同构数据。`dict` 的原规则不变。
 - 长契约使用三引号文本，保持真实换行；不自动插值、去缩进或修改旧包。
@@ -315,7 +316,10 @@ MORPHZ_APP_ENV_FILE='' node --import tsx scripts/script-studio-runtime-smoke.ts 
 自动采纳或另一套 UI 工序。本次还修复了长文本安装后无法重新加载的元数据转义问题，
 旧逻辑 hash 保持不变；原失败证据 `morphz-script-runtime-HCK06b` 保留。
 
-### 本版验证
+### 修正前的验证记录
+
+以下记录保留当时证据，不代表修正后代码已经验收。本轮结果见
+[Yao 修正记录](../../docs/yao_infer_correction_20260920.md)。
 
 - Yao 56 单测＋10 编写测试通过，严格 Clippy 通过；Runtime 库最终 1389 通过、10 跳过，
   CLI binary 31 通过；最终离线编写专项 5/5，包括目录包的真实函数文件／行号。
