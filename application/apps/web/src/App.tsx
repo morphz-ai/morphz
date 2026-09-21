@@ -1068,6 +1068,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (generation === navigationGeneration.current) setOpeningObject(false);
     }
   }
+  async function openWorkspaceContents() {
+    if (!project) return;
+    const generation = ++navigationGeneration.current;
+    setOpeningObject(true);
+    try {
+      const receipt = await client.execute({
+        type: "launch-application",
+        workspaceId: project.id,
+        applicationId: objectsApplication.id,
+        applicationVersion: objectsApplication.version,
+        artifactId: null,
+      });
+      if (generation !== navigationGeneration.current) return;
+      activateApplication(receipt.entityId);
+    } catch (error) {
+      if (generation === navigationGeneration.current)
+        setNotice((error as Error).message);
+    } finally {
+      if (generation === navigationGeneration.current) setOpeningObject(false);
+    }
+  }
   function activateApplication(id: string | null) {
     if (!project) return;
     setWebsiteIntent(null);
@@ -2267,6 +2288,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   enabled={applicationWorkspaceOpen}
                   onActivate={activateApplication}
                   onOpen={open}
+                  onOpenContents={openWorkspaceContents}
                   onNotice={setNotice}
                   onSaveProject={() => {
                     // The server creates the next blank desk before the command

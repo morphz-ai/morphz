@@ -25,6 +25,13 @@ try {
     })
     .toBe(true);
   const page = app.windows().find((p) => p.url() === "morphz://app/");
+  const collapseExchange = async () => {
+    const collapse = page.getByRole("button", {
+      name: "收起 AI 输入框",
+      exact: true,
+    });
+    if (await collapse.isVisible()) await collapse.click();
+  };
   await expect(page.locator(".wordmark")).toHaveText("Morphz");
   const store = new WorkspaceStore(join(fixture, "data/workspace.sqlite"));
   const seed = (operation, agent = false) =>
@@ -178,6 +185,45 @@ try {
     await page.screenshot({
       path: `test-results/workspace-launcher-electron-${width}-${zoom}.png`,
     });
+    // Keep the same entry/order in the reader. The existing narrow toolbar
+    // scrolls to reveal the active app, so compare its unscrolled position.
+    const contents = page.getByRole("button", {
+      name: "查看本空间内容",
+      exact: true,
+    });
+    await contents.click();
+    await expect(page.locator(".library-collection:visible")).toBeVisible();
+    await expect(contents).toHaveText("项目内容");
+    await collapseExchange();
+    const entryGeometry = () =>
+      contents.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: bounds.x + element.closest(".application-strip").scrollLeft,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      });
+    const contentPosition = await entryGeometry();
+    await page.getByLabel("打开内容：TEST 内容页验收", { exact: true }).click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(
+      "TEST 内容页验收",
+    );
+    assert.deepEqual(await entryGeometry(), contentPosition);
+    await contents.click();
+    await expect(contents).toBeInViewport({ ratio: 1 });
+    await expect(page.locator(".library-collection:visible")).toBeVisible();
+    await page.reload();
+    await expect(page.locator(".library-collection:visible")).toBeVisible();
+    await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+    await collapseExchange();
+    await recent
+      .getByRole("button", { name: "继续打开：TEST 内容页验收" })
+      .click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(
+      "TEST 内容页验收",
+    );
     await nav.getByRole("button", { name: "内容", exact: true }).click();
   }
   await page

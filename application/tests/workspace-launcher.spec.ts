@@ -61,6 +61,166 @@ test("启动台明确区分继续工作和应用；没有访问记录不拿新�
   await expect(recent.getByRole("list", { name: "应用列表" })).toHaveCount(0);
 });
 
+test("本空间内容固定进入列表，继续工作和应用标签保留明确阅读与草稿", async ({
+  page,
+}) => {
+  const { desk, prefix } = await setup(page);
+  const projectTitle = prefix + "项目";
+  const projectId = await seedCenter(page, {
+    type: "create-project",
+    title: projectTitle,
+  });
+  const deskTitle = prefix + "工作台原文";
+  const projectDocument = prefix + "项目原文";
+  await seed(page, desk.id, deskTitle);
+  await seed(page, projectId, projectDocument);
+  await page.reload();
+  const before = (await snapshot(page)).workspace;
+  const contents = page.getByRole("button", {
+    name: "查看本空间内容",
+    exact: true,
+  });
+  const library = page.locator(".library-collection:visible");
+  for (const [owner, title, other] of [
+    ["工作台", deskTitle, projectDocument],
+    [projectTitle, projectDocument, deskTitle],
+  ]) {
+    await read(page, title!);
+    if (owner === "工作台") await home(page);
+    else {
+      await page.getByRole("button", { name: owner!, exact: true }).click();
+      await page
+        .getByRole("button", { name: "应用启动台", exact: true })
+        .click();
+    }
+    const recent = page.getByRole("button", {
+      name: "继续打开：" + title,
+      exact: true,
+    });
+    await recent.click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(title!);
+    await (await openInput(page)).fill(prefix + title + "未发送草稿");
+    await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+    // A normal application switch still restores the document.
+    await page.getByRole("tab", { name: "内容", exact: true }).click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(title!);
+    await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+    await expect(contents).toHaveText(
+      owner === "工作台" ? "工作台内容" : "项目内容",
+    );
+    await contents.click();
+    await expect(library).toBeVisible();
+    await expect(
+      library.getByLabel("打开内容：" + title, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      library.getByLabel("打开内容：" + other, { exact: true }),
+    ).toHaveCount(0);
+    await expect(contents).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "所有内容", exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(library).toBeVisible();
+    await library.getByLabel("搜索内容", { exact: true }).fill(title!);
+    await library.getByLabel("列表视图", { exact: true }).click();
+    await library.getByLabel("打开内容：" + title, { exact: true }).click();
+    await expect(await openInput(page)).toHaveValue(
+      prefix + title + "未发送草稿",
+    );
+    await contents.click();
+    await expect(library).toBeVisible();
+    await expect(library.getByLabel("搜索内容", { exact: true })).toHaveValue(
+      title!,
+    );
+    await expect(
+      library.getByLabel("列表视图", { exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await page
+      .getByRole("button", { name: "返回上一位置", exact: true })
+      .click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(title!);
+    await page
+      .getByRole("button", { name: "前往下一位置", exact: true })
+      .click();
+    await expect(library).toBeVisible();
+    await page
+      .getByRole("button", { name: "关闭应用 内容", exact: true })
+      .click();
+    await contents.click();
+    await expect(library).toBeVisible();
+    await expect(
+      page.getByRole("tab", { name: "内容", exact: true }),
+    ).toHaveCount(1);
+    await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+    await recent.click();
+    await expect(page.locator(".object-paper > h1")).toHaveText(title!);
+  }
+  const after = (await snapshot(page)).workspace;
+  expect(after.artifacts).toEqual(before.artifacts);
+  expect(after.inputs).toEqual(before.inputs);
+  expect(after.conversations).toEqual(before.conversations);
+});
+
+test("内容入口失败保留原位置，迟到回执不抢回后来选择的页面", async ({
+  page,
+}) => {
+  const { desk, prefix } = await setup(page);
+  const title = prefix + "保留原文";
+  await seed(page, desk.id, title);
+  await page.reload();
+  await read(page, title);
+  await home(page);
+  await page
+    .getByRole("button", { name: "继续打开：" + title, exact: true })
+    .click();
+  let calls = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/commands", async (route) => {
+    const op = route.request().postDataJSON()?.operation;
+    if (op?.type !== "launch-application" || op.artifactId !== null)
+      return route.continue();
+    calls++;
+    if (calls === 1)
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "测试内容列表打开失败" }),
+      });
+    if (calls === 2) await held;
+    return route.continue();
+  });
+  const contents = page.getByRole("button", {
+    name: "查看本空间内容",
+    exact: true,
+  });
+  await contents.click();
+  await expect(page.getByRole("alert")).toHaveText("测试内容列表打开失败");
+  await expect(page.locator(".object-paper > h1")).toHaveText(title);
+  await expect(contents).toBeEnabled();
+  await page.getByRole("button", { name: "关闭提示", exact: true }).click();
+  await contents.click();
+  await expect(contents).toBeDisabled();
+  await expect.poll(() => calls).toBe(2);
+  await nav(page, "项目");
+  const response = page.waitForResponse(
+    (value) =>
+      value.url().endsWith("/api/commands") &&
+      value.request().postDataJSON()?.operation?.artifactId === null,
+  );
+  release();
+  await response;
+  await expect(
+    page.getByRole("heading", { name: "项目", exact: true }),
+  ).toBeVisible();
+  await home(page);
+  await contents.click();
+  await expect(page.locator(".library-collection:visible")).toBeVisible();
+});
+
 test("真实打开顺序、重复访问、刷新与键盘继续；正文草稿和会话不改变", async ({
   page,
 }) => {

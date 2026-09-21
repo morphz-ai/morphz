@@ -268,7 +268,7 @@ test.describe("触控输入工具", () => {
       // annotation slot; explicitly return to its content list first.
       if (name === "工作台") {
         const contents = page.getByRole("button", {
-          name: "所有内容",
+          name: "查看本空间内容",
           exact: true,
         });
         if (await contents.isVisible()) await contents.click();

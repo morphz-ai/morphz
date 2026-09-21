@@ -73,6 +73,7 @@ export function ApplicationHost({
   children,
   onActivate,
   onOpen,
+  onOpenContents,
   onCompose,
   onComposeIntent,
   onSaveProject,
@@ -95,6 +96,7 @@ export function ApplicationHost({
   children: ReactNode;
   onActivate: (id: string | null) => void;
   onOpen: (id: string) => void;
+  onOpenContents: () => Promise<void>;
   onCompose: (
     text: string,
     artifactId?: string,
@@ -171,11 +173,15 @@ export function ApplicationHost({
     observer.observe(element);
     return () => observer.disconnect();
   }, [activeId, instanceIds, enabled, toolbarTarget]);
-  async function launch(app: ApplicationManifest) {
+  async function launch(app: ApplicationManifest, contents = false) {
     if (launching.current) return;
     launching.current = true;
     setBusy(true);
     try {
+      if (contents) {
+        await onOpenContents();
+        return;
+      }
       const receipt = await client.execute({
         type: "launch-application",
         workspaceId,
@@ -225,20 +231,18 @@ export function ApplicationHost({
       </button>
       {!active && <h1 className="toolbar-title">{space.title}</h1>}
       {projectControls}
-      {active?.applicationId !== objectsApplication.id && (
-        <button
-          className="workspace-content"
-          aria-label="查看本空间内容"
-          title={`查看${space.title}的内容`}
-          disabled={busy}
-          onClick={() => void launch(objectsApplication)}
-        >
-          <FolderOpen />
-          <span>
-            {spaceKind(space) === "project" ? "项目内容" : "工作台内容"}
-          </span>
-        </button>
-      )}
+      <button
+        className="workspace-content"
+        aria-label="查看本空间内容"
+        title={`查看${space.title}的内容列表`}
+        disabled={busy}
+        onClick={() => void launch(objectsApplication, true)}
+      >
+        <FolderOpen />
+        <span>
+          {spaceKind(space) === "project" ? "项目内容" : "工作台内容"}
+        </span>
+      </button>
       <div
         role="tablist"
         aria-label="已打开的应用"
@@ -286,29 +290,6 @@ export function ApplicationHost({
           <span>安装应用</span>
         </button>
       )}
-      {active?.applicationId === objectsApplication.id &&
-        active.state.artifactId && (
-          <button
-            aria-label="所有内容"
-            title="所有内容"
-            onClick={async () => {
-              try {
-                await client.execute({
-                  type: "set-application-state",
-                  instanceId: active.id,
-                  expectedRevision: active.revision,
-                  state: { ...active.state, artifactId: null },
-                });
-                onActivate(active.id);
-              } catch (e) {
-                onNotice((e as Error).message);
-              }
-            }}
-          >
-            <FolderOpen />
-            <span className="toolbar-action-label">所有内容</span>
-          </button>
-        )}
       {spaceKind(space) === "desk" &&
         active?.applicationId !== scriptStudioApplication.id && (
           <button

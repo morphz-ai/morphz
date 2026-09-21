@@ -50,6 +50,78 @@ test("旧便笺的启动台说明使用日常语言，不改包、状态或第�
     "自定义说明",
   );
 });
+test("显式内容列表与应用恢复分开；原实例、其他状态、权限和重试保持", () => {
+  const store = new WorkspaceStore(":memory:");
+  const run = (operation: Operation) =>
+    store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
+  try {
+    const space = store.snapshot().projects.find((p) => p.kind === "desk")!;
+    const artifactId = run({
+      type: "create-artifact",
+      projectId: space.id,
+      title: "TEST 列表入口",
+      content: { kind: "document", markdown: "原文不变" },
+    });
+    const launch = {
+      type: "launch-application" as const,
+      workspaceId: space.id,
+      applicationId: objectsApplication.id,
+      applicationVersion: objectsApplication.version,
+    };
+    const instanceId = run({ ...launch, artifactId });
+    const instance = () =>
+      store.snapshot().applicationInstances.find((i) => i.id === instanceId)!;
+    run({
+      type: "set-application-state",
+      instanceId,
+      expectedRevision: instance().revision,
+      state: { artifactId, readingPage: 3 },
+    });
+    assert.equal(run(launch), instanceId);
+    assert.equal(instance().state.artifactId, artifactId);
+    const before = store.snapshot();
+    const command = {
+      commandId: randomUUID(),
+      operation: { ...launch, artifactId: null },
+    };
+    assert.equal(store.execute(command, localAccess).entityId, instanceId);
+    const revision = instance().revision;
+    store.execute(command, localAccess);
+    run({ ...launch, artifactId: null });
+    assert.equal(instance().revision, revision);
+    assert.deepEqual(instance().state, { artifactId: null, readingPage: 3 });
+    run({ ...launch, artifactId });
+    run({
+      type: "close-application",
+      instanceId,
+      expectedRevision: instance().revision,
+    });
+    assert.equal(run({ ...launch, artifactId: null }), instanceId);
+    assert.equal(instance().status, "open");
+    assert.deepEqual(instance().state, { artifactId: null, readingPage: 3 });
+    const after = store.snapshot();
+    assert.equal(
+      after.applicationInstances.length,
+      before.applicationInstances.length,
+    );
+    assert.deepEqual(after.artifacts, before.artifacts);
+    assert.deepEqual(after.inputs, before.inputs);
+    assert.deepEqual(after.conversations, before.conversations);
+    assert.throws(
+      () =>
+        store.execute(
+          { ...command, commandId: randomUUID() },
+          {
+            principalId: "not-a-member",
+            actantId: "not-a-member",
+          },
+        ),
+      { code: "forbidden" },
+    );
+  } finally {
+    store.close();
+  }
+});
 test("多部剧本、应用实例和原对话随工作台原子保存为项目，重启、关闭和重开都不复制内容", () => {
   const directory = mkdtempSync(join(tmpdir(), "mw-apps-")),
     path = join(directory, "workspace.sqlite");

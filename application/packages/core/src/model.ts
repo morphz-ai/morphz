@@ -463,7 +463,8 @@ export const operationSchema = z.discriminatedUnion("type", [
       workspaceId: id,
       applicationId: z.string(),
       applicationVersion: z.string(),
-      artifactId: id.optional(),
+      // Omitted restores the current view; null explicitly opens the collection.
+      artifactId: id.nullable().optional(),
     })
     .strict(),
   z
@@ -1622,7 +1623,10 @@ export function applyCommand(
         existing.revision++;
         existing.updatedAt = now;
       }
-      if (op.artifactId) {
+      if (
+        op.artifactId !== undefined &&
+        existing.state.artifactId !== op.artifactId
+      ) {
         existing.state.artifactId = op.artifactId;
         existing.revision++;
         existing.updatedAt = now;
@@ -1635,7 +1639,7 @@ export function applyCommand(
         applicationId: op.applicationId,
         applicationVersion: op.applicationVersion,
         revision: 1,
-        state: op.artifactId ? { artifactId: op.artifactId } : {},
+        state: op.artifactId !== undefined ? { artifactId: op.artifactId } : {},
         status: "open",
         createdAt: now,
         updatedAt: now,
