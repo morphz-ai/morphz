@@ -1240,13 +1240,22 @@ async function assertStudioDialog(dialog: Locator) {
       width: bounds.width,
       height: bounds.height,
       headerHeight: header.height,
+      headerGap: parseFloat(
+        getComputedStyle(element.querySelector("header")!).marginBottom,
+      ),
+      background: getComputedStyle(element).backgroundColor,
+      footerBackground: getComputedStyle(
+        element.querySelector("form > footer")!,
+      ).backgroundColor,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
     };
   });
-  expect(geometry.headerHeight).toBeLessThanOrEqual(40);
+  expect(geometry.headerHeight).toBeLessThanOrEqual(32);
+  expect(geometry.headerGap).toBeLessThanOrEqual(4);
+  expect(geometry.footerBackground).toBe(geometry.background);
   expect(geometry.x).toBeGreaterThanOrEqual(0);
   expect(geometry.y).toBeGreaterThanOrEqual(0);
   expect(geometry.x + geometry.width).toBeLessThanOrEqual(
@@ -1257,6 +1266,60 @@ async function assertStudioDialog(dialog: Locator) {
   );
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
   return geometry;
+}
+
+async function assertDialogFocusRing(control: Locator) {
+  await expect(control).toBeFocused();
+  const ring = await control.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const width = parseFloat(style.outlineWidth);
+    const outset = Math.max(0, width + parseFloat(style.outlineOffset));
+    const bounds = element.getBoundingClientRect();
+    const clearance: { edge: string; space: number }[] = [
+      { edge: "viewport left", space: bounds.left },
+      { edge: "viewport right", space: innerWidth - bounds.right },
+      { edge: "viewport top", space: bounds.top },
+      { edge: "viewport bottom", space: innerHeight - bounds.bottom },
+    ];
+    // Element bounds alone miss an outline clipped by the form's scrollport.
+    // Stop at the top-layer dialog: the app's ancestors do not clip it.
+    for (
+      let parent = element.parentElement;
+      parent;
+      parent = parent.parentElement
+    ) {
+      const css = getComputedStyle(parent);
+      const rect = parent.getBoundingClientRect();
+      const left = rect.left + parent.clientLeft;
+      const top = rect.top + parent.clientTop;
+      if (css.overflowX !== "visible") {
+        clearance.push(
+          { edge: `${parent.tagName} left`, space: bounds.left - left },
+          {
+            edge: `${parent.tagName} right`,
+            space: left + parent.clientWidth - bounds.right,
+          },
+        );
+      }
+      if (css.overflowY !== "visible") {
+        clearance.push(
+          { edge: `${parent.tagName} top`, space: bounds.top - top },
+          {
+            edge: `${parent.tagName} bottom`,
+            space: top + parent.clientHeight - bounds.bottom,
+          },
+        );
+      }
+      if (parent instanceof HTMLDialogElement) break;
+    }
+    return { width, style: style.outlineStyle, outset, clearance };
+  });
+  expect(ring.width).toBeGreaterThan(0);
+  expect(ring.style).not.toBe("none");
+  for (const { edge, space } of ring.clearance)
+    expect(space, `focus ring clearance: ${edge}`).toBeGreaterThanOrEqual(
+      ring.outset - 0.5,
+    );
 }
 
 test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操作", async ({
@@ -1273,8 +1336,9 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   const name = dialog.getByLabel("剧本名称", { exact: true });
   await expect(name).toBeFocused();
   const geometry = await assertStudioDialog(dialog);
+  await assertDialogFocusRing(name);
   expect(geometry.width).toBe(420);
-  expect(geometry.height).toBeLessThanOrEqual(230);
+  expect(geometry.height).toBeLessThanOrEqual(180);
   const submit = dialog.getByRole("button", { name: "创建", exact: true });
   const cancel = dialog.getByRole("button", { name: "取消", exact: true });
   await expect(submit).toHaveClass(/primary/);
@@ -1302,6 +1366,8 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   for (const width of [760, 320]) {
     await page.setViewportSize({ width, height: 540 });
     await assertStudioDialog(dialog);
+    await name.focus();
+    await assertDialogFocusRing(name);
     await expect(submit).toBeInViewport();
     await expect(cancel).toBeInViewport();
   }
@@ -1309,6 +1375,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
     path: testInfo.outputPath("script-dialog-narrow-error.png"),
   });
   await cancel.focus();
+  await assertDialogFocusRing(cancel);
   await page.keyboard.press("Tab");
   await expect(
     dialog.getByRole("button", { name: "关闭", exact: true }),
@@ -1478,10 +1545,13 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
         });
         const dialogGeometry = await assertStudioDialog(compact);
         expect(dialogGeometry.width).toBe(420);
-        expect(dialogGeometry.height).toBeLessThanOrEqual(230);
+        expect(dialogGeometry.height).toBeLessThanOrEqual(180);
         await expect(
           compact.getByLabel("剧本名称", { exact: true }),
         ).toBeFocused();
+        await assertDialogFocusRing(
+          compact.getByLabel("剧本名称", { exact: true }),
+        );
         if (accent === "mono") {
           await page.screenshot({
             path: testInfo.outputPath(`script-studio-dialog-${mode}.png`),
@@ -1582,6 +1652,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
       exact: true,
     });
     await assertStudioDialog(zoomDialog);
+    await assertDialogFocusRing(
+      zoomDialog.getByLabel("剧本名称", { exact: true }),
+    );
     await expect(
       zoomDialog.getByRole("button", { name: "取消", exact: true }),
     ).toBeInViewport();

@@ -722,6 +722,10 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  /* Keep the shared 2px outline + 2px offset inside the scrollport without
+     moving the fields or enlarging the compact dialog. */
+  padding: var(--ui-space-1);
+  margin: calc(-1 * var(--ui-space-1));
   scroll-padding-block: 8px 64px;
 }
 .script-dialog > form > * {
@@ -736,9 +740,9 @@
   position: sticky;
   bottom: 0;
   z-index: 1;
-  padding-block: 8px;
-  background: var(--surface-raised);
-  border-top: 1px solid var(--hairline);
+  padding-block: 0;
+  background: var(--surface-dialog);
+  border-top: 0;
 }
 .script-dialog [role="alert"] {
   overflow-wrap: anywhere;

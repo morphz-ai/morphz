@@ -9,7 +9,7 @@
   --ui-radius-panel: 12px;
   --ui-reading-width: 760px;
   --ui-dialog-heading-size: 14px;
-  --ui-dialog-heading-height: 36px;
+  --ui-dialog-heading-height: 32px;
 }
 .visually-hidden {
   position: absolute;
@@ -1653,7 +1653,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   width: min(var(--ui-dialog-width, 460px), calc(100vw - 40px));
   max-height: calc(100dvh - 32px);
   border-radius: var(--ui-radius-panel);
-  padding: 8px 12px 12px;
+  padding: 4px 12px 12px;
   overflow: auto;
 }
 .model-settings {
@@ -1854,7 +1854,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   gap: 8px;
   min-height: var(--ui-dialog-heading-height);
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0 0 4px;
 }
 .create-dialog > header > div {
   display: flex;
