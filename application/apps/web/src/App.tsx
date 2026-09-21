@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useCallback,
   type FormEvent,
   type CSSProperties,
 } from "react";
@@ -113,6 +114,17 @@ import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
 import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
 import { contentVisits, visitContent } from "./recent-content.js";
+import { useConversationStream } from "./useConversationStream.js";
+import {
+  acknowledgeReplies,
+  conversationMessages,
+  focusedInputs,
+  hasUnreadReplies,
+  readReplyReceipts,
+  reconcileReplyReceipts,
+  replyReceipts,
+  type ReplyReceipt,
+} from "./conversation-read.js";
 
 type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
 type InspectorSelection =
@@ -599,26 +611,75 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [revealedInputs, setRevealedInputs] = useState<Record<string, string>>(
     {},
   );
-  const [seenReplies, setSeenReplies] = useState<Record<string, string>>({});
+  const [seenReplies, setSeenReplies] = useState(
+    () =>
+      readReplyReceipts(
+        readLocal<unknown>("conversation-read-receipts", null),
+      ) ??
+      acknowledgeReplies(
+        {},
+        replyReceipts(client.boot!.runtime.messages, client.boot!.outputs),
+      ),
+  );
   const inputs =
     state?.inputs.filter((i) =>
       inConversation(state!, conversationId, i, sharedDefault),
     ) ?? [];
-  const replies = client.boot!.runtime.messages.filter((m) =>
-    inConversation(state!, conversationId, m, sharedDefault),
+  const stream = useConversationStream(
+    conversationProjectId,
+    conversationId,
+    client.boot!.runtime.configured &&
+      !!state?.conversations.some((c) => c.id === conversationId),
   );
-  const replyVersion = [
-    ...replies.map((m) => m.id + ":" + m.text.length),
-    ...(client.boot?.outputs ?? [])
-      .filter((o) => inputs.some((i) => i.id === o.inputId))
-      .map((o) => o.commandId),
-  ].join("|");
-  const unseenReply =
-    !!replyVersion && replyVersion !== seenReplies[conversationId];
+  const replies = conversationMessages(
+    state!,
+    conversationId,
+    client.boot!.runtime,
+    stream.messages,
+    sharedDefault,
+  );
+  const conversationFocus = {
+    artifactId: !historyVisible ? artifact?.id : undefined,
+    applicationId:
+      !historyVisible && activeInstance?.applicationId === browserApplication.id
+        ? activeInstance.id
+        : undefined,
+  };
+  const badgeInputs = focusedInputs(
+    inputs,
+    client.boot!.outputs,
+    conversationFocus,
+  );
+  const badgeInputIds = new Set(badgeInputs.map((i) => i.id));
+  const badgeReplies =
+    conversationFocus.artifactId || conversationFocus.applicationId
+      ? replies.filter((m) => !!m.inputId && badgeInputIds.has(m.inputId))
+      : replies;
+  const receipts = replyReceipts(
+    replies,
+    client.boot!.outputs.filter((o) => inputs.some((i) => i.id === o.inputId)),
+  );
+  const receiptVersion = JSON.stringify(receipts);
+  const unseenReply = hasUnreadReplies(
+    seenReplies,
+    replyReceipts(
+      badgeReplies,
+      client.boot!.outputs.filter((o) => badgeInputIds.has(o.inputId)),
+    ),
+  );
+  const readReplies = useCallback((receipts: ReplyReceipt[]) => {
+    setSeenReplies((old) => acknowledgeReplies(old, receipts));
+  }, []);
   useEffect(() => {
-    if (conversationVisible && project)
-      setSeenReplies((old) => ({ ...old, [conversationId]: replyVersion }));
-  }, [conversationVisible, conversationId, replyVersion]);
+    setSeenReplies((old) => reconcileReplyReceipts(old, receipts));
+  }, [receiptVersion]);
+  useEffect(() => {
+    try {
+      writeLocal("conversation-read-receipts", seenReplies);
+    } catch {
+      setNotice("已读状态暂时无法保存，重开后可能再次提示。");
+    }
+  }, [seenReplies]);
   useLayoutEffect(() => {
     const element =
       main.current?.querySelector<HTMLElement>(
@@ -2408,17 +2469,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     onReturnToLatest={() =>
                       input.current?.focus({ preventScroll: true })
                     }
-                    focusedApplicationId={
-                      !historyVisible &&
-                      activeInstance?.applicationId === browserApplication.id
-                        ? activeInstance.id
-                        : undefined
-                    }
-                    focusedArtifactId={
-                      !historyVisible ? artifact?.id : undefined
-                    }
+                    focusedApplicationId={conversationFocus.applicationId}
+                    focusedArtifactId={conversationFocus.artifactId}
                     key={conversationId}
                     inputs={inputs}
+                    messages={replies}
+                    streamConnected={stream.connected}
+                    seenReplies={seenReplies}
+                    onRead={readReplies}
                     positions={exchangePositions.current}
                     revealInputId={revealedInputs[conversationId] ?? null}
                     onInspect={inspectExecution}
@@ -2429,7 +2487,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     }
                     state={state}
                     runtime={client.boot!.runtime}
-                    projectId={conversationProjectId}
                     conversationId={conversationId}
                     client={client}
                     onOpen={openUser}

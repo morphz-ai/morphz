@@ -8,6 +8,7 @@ import {
   conversationFrameSchema,
   conversationStreamSchema,
   type ConversationStream,
+  type LiveMessage,
 } from "../../../packages/core/src/live-conversation.js";
 import type {} from "./desktop.js";
 
@@ -116,14 +117,38 @@ export function subscribeConversation(
   const bridge = window.morphzDesktop?.application;
   let current: ConversationStream = { connected: false, messages: [] },
     closed = false;
+  const disconnectedPrefixes = new Map<string, LiveMessage>();
   const lost = () => {
     current = {
       connected: false,
-      messages: current.messages.filter(
-        (m) => !m.id.startsWith("stream:") && !m.streaming,
+      messages: current.messages.map((m) =>
+        m.streaming === undefined ? m : { ...m, streaming: false },
       ),
     };
+    for (const message of current.messages)
+      if (
+        message.kind !== "tool" &&
+        message.streaming !== undefined &&
+        message.text
+      )
+        disconnectedPrefixes.set(message.id, message);
     if (!closed) update(current);
+  };
+  const receive = (value: ConversationStream, removed: string[] = []) => {
+    for (const id of removed) disconnectedPrefixes.delete(id);
+    for (const message of value.messages)
+      for (const [id, prefix] of disconnectedPrefixes)
+        if (
+          id === message.id ||
+          (prefix.publicationKey &&
+            prefix.publicationKey === message.publicationKey)
+        )
+          disconnectedPrefixes.delete(id);
+    current = {
+      connected: value.connected,
+      messages: [...disconnectedPrefixes.values(), ...value.messages],
+    };
+    update(current);
   };
   if (bridge) {
     const id = crypto.randomUUID(),
@@ -145,9 +170,9 @@ export function subscribeConversation(
       if (event.closed) reconnect();
       else if (event.value) {
         try {
-          current = conversationStreamSchema.parse(event.value);
+          const value = conversationStreamSchema.parse(event.value);
           delay = 1000;
-          update(current);
+          receive(value);
         } catch {
           reconnect();
         }
@@ -173,11 +198,13 @@ export function subscribeConversation(
       );
       for (const id of value.removed) messages.delete(id);
       for (const message of value.messages) messages.set(message.id, message);
-      current = {
-        connected: value.connected,
-        messages: [...messages.values()],
-      };
-      update(current);
+      receive(
+        {
+          connected: value.connected,
+          messages: [...messages.values()],
+        },
+        value.removed,
+      );
     } catch {
       lost();
     }

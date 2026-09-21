@@ -1,5 +1,6 @@
 import {
   createContext,
+  memo,
   useContext,
   useLayoutEffect,
   useRef,
@@ -241,6 +242,26 @@ export function SafeMarkdown({
   documentTitle?: string;
   streaming?: boolean;
 }) {
+  return (
+    <MarkdownScope.Provider value={{ state, onOpen }}>
+      <MarkdownBody documentTitle={documentTitle} streaming={streaming}>
+        {children}
+      </MarkdownBody>
+    </MarkdownScope.Provider>
+  );
+}
+
+// Only changed prose needs parsing. Scope stays outside the memo boundary so
+// existing links/media still receive fresh permissions, versions and actions.
+const MarkdownBody = memo(function MarkdownBody({
+  children,
+  documentTitle,
+  streaming,
+}: {
+  children: string;
+  documentTitle?: string;
+  streaming: boolean;
+}) {
   const previous = useRef<StreamTextState>({
     source: children,
     active: streaming,
@@ -256,28 +277,26 @@ export function SafeMarkdown({
     previous.current = next;
   });
   return (
-    <MarkdownScope.Provider value={{ state, onOpen }}>
-      <Markdown
-        skipHtml
-        remarkPlugins={[
-          remarkGfm,
-          remarkCjkFriendly,
-          [omitRepeatedDocumentTitle, { title: documentTitle }],
-        ]}
-        rehypePlugins={[
-          [streamingTextPlugin, { source: children, ranges: next.ranges }],
-        ]}
-        urlTransform={(url) =>
-          webURL(url) ||
-          objectLink(url) ||
-          /^\/api\/assets\/[a-zA-Z0-9_-]+$/.test(url)
-            ? url
-            : ""
-        }
-        components={markdownComponents}
-      >
-        {children}
-      </Markdown>
-    </MarkdownScope.Provider>
+    <Markdown
+      skipHtml
+      remarkPlugins={[
+        remarkGfm,
+        remarkCjkFriendly,
+        [omitRepeatedDocumentTitle, { title: documentTitle }],
+      ]}
+      rehypePlugins={[
+        [streamingTextPlugin, { source: children, ranges: next.ranges }],
+      ]}
+      urlTransform={(url) =>
+        webURL(url) ||
+        objectLink(url) ||
+        /^\/api\/assets\/[a-zA-Z0-9_-]+$/.test(url)
+          ? url
+          : ""
+      }
+      components={markdownComponents}
+    >
+      {children}
+    </Markdown>
   );
-}
+});

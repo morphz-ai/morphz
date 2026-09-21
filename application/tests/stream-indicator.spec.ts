@@ -260,5 +260,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
   await page.evaluate(() => {
     for (const source of (window as any).__streamSources) source.onerror?.();
   });
-  await expect(message).toHaveCount(0);
+  await expect(message).toHaveCount(1);
+  await expect(message).toContainText("第一项");
+  await expect(message).not.toHaveAttribute("data-stream-active", "true");
 });

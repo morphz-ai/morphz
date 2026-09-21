@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   applicationCall,
   applicationIdentity,
+  subscribeConversation,
 } from "../apps/web/src/application-transport.js";
+import type { ConversationStream } from "../packages/core/src/live-conversation.js";
 import {
   HttpApplicationClient,
   ApplicationRequestError,
@@ -108,4 +110,80 @@ test("HTTP 适配器不缓存跨身份的迟到快照，错误状态保留给稳
     client.call("command", {}),
     (error) => error instanceof ApplicationRequestError && error.status === 409,
   );
+});
+
+test("Desktop 流短暂断开和空快照不擦掉已显示正文，正式回执去重，取消订阅不接收迟到帧", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let listener!: (value: any) => void;
+  let id = "",
+    updates = 0;
+  let current: ConversationStream = { connected: false, messages: [] };
+  Reflect.set(globalThis, "window", {
+    morphzDesktop: {
+      application: {
+        subscribe: async (value: string) => {
+          id = value;
+        },
+        unsubscribe: () => {},
+        onStream: (value: typeof listener) => {
+          listener = value;
+          return () => {};
+        },
+      },
+    },
+  });
+  const close = subscribeConversation(
+    { projectId: "desk", conversationId: "conversation" },
+    (value) => {
+      current = value;
+      updates++;
+    },
+  );
+  const message = {
+    id: "stream:attempt",
+    publicationKey: "attempt",
+    projectId: "desk",
+    conversationId: "conversation",
+    inputId: "input",
+    rootId: "root",
+    artifactId: null,
+    createdAt: "2026-09-20T00:00:00Z",
+    text: "已经读到的正文",
+    kind: "reply",
+    streaming: true,
+  };
+  try {
+    listener({ id, value: { connected: true, messages: [message] } });
+    listener({ id, closed: true });
+    assert.equal(current.messages[0]!.text, message.text);
+    assert.equal(current.messages[0]!.streaming, false);
+    listener({ id, value: { connected: true, messages: [] } });
+    assert.equal(current.messages[0]!.text, message.text);
+    listener({
+      id,
+      value: {
+        connected: true,
+        messages: [
+          {
+            ...message,
+            id: "durable",
+            sequence: 42,
+            streaming: undefined,
+            text: "完整正式正文",
+          },
+        ],
+      },
+    });
+    assert.equal(current.messages.length, 1);
+    assert.equal(current.messages[0]!.id, "durable");
+    assert.equal(current.messages[0]!.text, "完整正式正文");
+    close();
+    const before = updates;
+    listener({ id, value: { connected: true, messages: [message] } });
+    assert.equal(updates, before);
+  } finally {
+    close();
+    if (original) Object.defineProperty(globalThis, "window", original);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });

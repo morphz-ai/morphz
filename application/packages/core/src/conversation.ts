@@ -71,6 +71,8 @@ export const conversationRuntimeSchema = z.object({
       artifactId: z.string().nullable(),
       inputId: z.string().nullable().optional(),
       rootId: z.string().nullable().optional(),
+      publicationKey: z.string().optional(),
+      sequence: z.number().int().nonnegative().optional(),
       text: z.string(),
       createdAt: z.string(),
       kind: z.enum(["reply", "progress", "error"]),

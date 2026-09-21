@@ -93,7 +93,11 @@ test("实时订阅使用服务端凭据、隔离 Session、修复断线且撤销
     assert.ok(!JSON.stringify(snapshot).includes("secret"));
     assert.ok(!JSON.stringify(snapshot).includes("private-test-token"));
     for (const ws of sockets.clients) ws.terminate();
-    await wait(() => !snapshot.connected && snapshot.messages.length === 0);
+    await wait(() => !snapshot.connected);
+    assert.equal(
+      snapshot.messages.find((m) => m.text === "partial")?.streaming,
+      false,
+    );
     await wait(() => connections === 2 && snapshot.connected);
     assert.ok(
       !snapshot.messages.some((m) => m.text.includes("missing-prefix")),

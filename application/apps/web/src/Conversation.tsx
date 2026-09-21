@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
-import { inConversation } from "../../../packages/core/src/model.js";
 import {
   conversationGroups,
   conversationTimeline,
@@ -12,7 +11,13 @@ import {
 } from "../../../packages/core/src/conversation.js";
 import { shouldFollow } from "./interaction.js";
 import { actorName } from "./client.js";
-import { useConversationStream } from "./useConversationStream.js";
+import {
+  focusedInputs,
+  hasUnreadReplies,
+  replyReceipts,
+  type ReadReplies,
+  type ReplyReceipt,
+} from "./conversation-read.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
@@ -25,7 +30,6 @@ import type { InputContinuation } from "../../../packages/core/src/continuation.
 export type ExchangePosition = {
   top: number;
   following: boolean;
-  version: string;
   revealed: string | null;
 };
 
@@ -34,7 +38,10 @@ export function Conversation({
   inputs: allInputs,
   state,
   runtime,
-  projectId,
+  messages,
+  streamConnected,
+  seenReplies,
+  onRead,
   conversationId,
   onRetry,
   client,
@@ -55,7 +62,10 @@ export function Conversation({
   inputs: Workspace["inputs"];
   state: Workspace;
   runtime: ConversationRuntime;
-  projectId: string;
+  messages: LiveMessage[];
+  streamConnected: boolean;
+  seenReplies: ReadReplies;
+  onRead: (receipts: ReplyReceipt[]) => void;
   conversationId: string;
   onRetry: (id: string) => Promise<void>;
   client: WorkspaceClient;
@@ -71,16 +81,13 @@ export function Conversation({
     [focusedArtifactId, focusedApplicationId],
   );
   const focused = !!(focusedArtifactId || focusedApplicationId) && !allHistory;
-  const inputs = focused
-    ? allInputs.filter((i) =>
-        focusedArtifactId
-          ? i.artifactId === focusedArtifactId ||
-            client.boot?.outputs.some(
-              (o) => o.inputId === i.id && o.artifactId === focusedArtifactId,
-            )
-          : i.application?.instanceId === focusedApplicationId,
-      )
-    : allInputs;
+  const inputs = focusedInputs(
+    allInputs,
+    client.boot!.outputs,
+    focused
+      ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId }
+      : {},
+  );
   const [stopStates, setStopStates] = useState<
     Record<string, { pending: boolean; error: string }>
   >({});
@@ -118,8 +125,16 @@ export function Conversation({
   const following = useRef(saved?.following ?? true);
   const initialized = useRef(false);
   const revealed = useRef(saved?.revealed ?? revealInputId);
-  const [unread, setUnread] = useState(false);
   const [awayFromLatest, setAwayFromLatest] = useState(!following.current);
+  function acknowledgeVisibleReplies() {
+    if (
+      following.current &&
+      document.visibilityState === "visible" &&
+      document.hasFocus() &&
+      !document.querySelector("dialog[open]")
+    )
+      onRead(receipts);
+  }
   function updateLatestIndicator() {
     if (following.current) {
       // Move focus before removing its button. A detached focused control
@@ -130,45 +145,13 @@ export function Conversation({
         if (latestButton.current === document.activeElement)
           scroller.current?.focus({ preventScroll: true });
       }
-      setUnread(false);
+      acknowledgeVisibleReplies();
     }
     setAwayFromLatest(!following.current);
   }
-  const stream = useConversationStream(
-    projectId,
-    conversationId,
-    runtime.configured &&
-      state.conversations.some((c) => c.id === conversationId),
-  );
-  const messages = new Map<string, LiveMessage>();
-  for (const m of runtime.messages)
-    if (
-      inConversation(
-        state,
-        conversationId,
-        m,
-        !client.boot!.capabilities.teamAuthentication,
-      )
-    )
-      messages.set(m.id, {
-        ...m,
-        conversationId: m.conversationId ?? m.projectId,
-        inputId: m.inputId ?? null,
-        rootId: m.rootId ?? null,
-      });
-  for (const m of stream.messages)
-    if (
-      inConversation(
-        state,
-        conversationId,
-        m,
-        !client.boot!.capabilities.teamAuthentication,
-      )
-    )
-      messages.set(m.id, m);
   const groups = conversationGroups(
     inputs,
-    [...messages.values()].filter(
+    messages.filter(
       (m) =>
         !focused || (!!m.inputId && inputs.some((i) => i.id === m.inputId)),
     ),
@@ -233,6 +216,12 @@ export function Conversation({
     })),
     ...deliveryItems,
   ]);
+  const receipts = replyReceipts(
+    items.flatMap((item) => (item.reply ? [item.reply] : [])),
+    outputs,
+  );
+  const readVersion = JSON.stringify(receipts);
+  const unread = hasUnreadReplies(seenReplies, receipts);
   const contentVersion = timeline
     .map(
       (item) =>
@@ -263,19 +252,27 @@ export function Conversation({
       following.current = true;
     if (following.current) {
       el.scrollTop = el.scrollHeight;
-      setUnread(false);
-    } else if (initialized.current || saved?.version !== contentVersion)
-      setUnread(true);
+    }
     revealed.current = revealInputId;
     initialized.current = true;
     updateLatestIndicator();
     positions.set(positionKey, {
       top: el.scrollTop,
       following: following.current,
-      version: contentVersion,
       revealed: revealed.current,
     });
-  }, [contentVersion, revealInputId, positionKey]);
+  }, [contentVersion, readVersion, revealInputId, positionKey, onRead]);
+  useEffect(() => {
+    const read = () => acknowledgeVisibleReplies();
+    document.addEventListener("visibilitychange", read);
+    window.addEventListener("focus", read);
+    document.addEventListener("focusin", read);
+    return () => {
+      document.removeEventListener("visibilitychange", read);
+      window.removeEventListener("focus", read);
+      document.removeEventListener("focusin", read);
+    };
+  }, [readVersion, positionKey, onRead]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -301,7 +298,6 @@ export function Conversation({
         positions.set(positionKey, {
           top: el.scrollTop,
           following: following.current,
-          version: contentVersion,
           revealed: revealed.current,
         });
       }}
@@ -460,7 +456,7 @@ export function Conversation({
                     }
                     data-streaming={reply?.streaming || undefined}
                     data-stream-active={
-                      (stream.connected &&
+                      (streamConnected &&
                         reply?.streaming &&
                         (!reply.tool || reply.tool.status === "generating")) ||
                       undefined
@@ -570,7 +566,7 @@ export function Conversation({
                               state={state}
                               onOpen={onOpen}
                               streaming={
-                                !!(stream.connected && reply?.streaming)
+                                !!(streamConnected && reply?.streaming)
                               }
                             >
                               {reply!.text}

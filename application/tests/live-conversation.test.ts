@@ -63,6 +63,77 @@ test("真实增量在终结前可见，持久回复替换草稿，迟到增量�
   assert.equal(p.snapshot().length, 1);
   assert.equal(p.snapshot()[0]!.text, "完整回复");
 });
+
+test("Session IO 终态与快照一致：失败说明可见、清除流式草稿且迟到增量不复活", () => {
+  const p = projection();
+  delta(p, "a", { kind: "started" });
+  delta(p, "a", { kind: "text_delta", text: "未完成的正文" });
+  p.consume({
+    ...event("session/io_state", {
+      attempt_id: "a",
+      root_turn_id: "a",
+      terminal_kind: "failed",
+      text: "结构化输出未完成，请检查结果",
+    }),
+    sequence: 471,
+  });
+  delta(p, "a", { kind: "text_delta", text: "迟到文本" });
+  const messages = p.snapshot();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.kind, "error");
+  assert.equal(messages[0]!.text, "结构化输出未完成，请检查结果");
+  assert.equal((messages[0] as { sequence?: number }).sequence, 471);
+});
+
+test("工具调用及最终发布间正文始终可见，最终回执只替换同一次流式输出", () => {
+  const p = projection();
+  delta(p, "a", { kind: "started" });
+  delta(p, "a", { kind: "text_delta", text: "我先核对原文。" });
+  const visible = p.snapshot()[0]!;
+  for (const topic of [
+    "chat/assistant_call",
+    "runtime/tool_calls_selected",
+    "chat/progress",
+  ]) {
+    p.consume(
+      event(topic, { attempt_id: "a", activation_id: "a", text: "正在核对" }),
+    );
+    assert.ok(
+      p.snapshot().some((m) => m.id === visible.id && m.text === visible.text),
+    );
+  }
+  p.consume(
+    event("chat/reply", {
+      attempt_id: "a",
+      root_turn_id: "a",
+      text: "我先核对原文。已经核对完成。",
+    }),
+  );
+  assert.equal(p.snapshot().filter((m) => m.kind === "reply").length, 1);
+  assert.equal(
+    p.snapshot().find((m) => m.kind === "reply")!.text,
+    "我先核对原文。已经核对完成。",
+  );
+});
+
+test("断线保留读到的前缀，但不拼接缺失前缀的后缀；最终正文原位替换", () => {
+  const p = projection();
+  delta(p, "a", { kind: "started" });
+  delta(p, "a", { kind: "text_delta", text: "读到这里" });
+  p.reconnect();
+  assert.equal(p.snapshot()[0]!.text, "读到这里");
+  assert.equal(p.snapshot()[0]!.streaming, false);
+  delta(p, "a", { kind: "text_delta", text: "中间未知的后缀" });
+  assert.equal(p.snapshot()[0]!.text, "读到这里");
+  p.consume(
+    event("chat/reply", {
+      attempt_id: "a",
+      text: "读到这里，以及完整的最后一段。",
+    }),
+  );
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.text, "读到这里，以及完整的最后一段。");
+});
 test("并发同 activation 的 attempt 分别终结；重连不拼接丢失前缀", () => {
   const p = projection();
   for (const id of ["a", "b"]) {

@@ -226,7 +226,12 @@ export class RuntimeBridge {
       publicationKey?: string;
     },
   >(message: T): T {
-    if (!message.publicationKey || message.kind === "tool") return message;
+    if (
+      !message.publicationKey ||
+      message.kind === "tool" ||
+      message.kind === "progress"
+    )
+      return message;
     const key = message.publicationKey;
     let saved = this.state.publications[key];
     if (!saved) {
@@ -244,11 +249,12 @@ export class RuntimeBridge {
     failed: () => void,
   ) {
     const authorize = () => {
-      checkProject(this.store.snapshot(), scope.projectId, access);
+      const workspace = this.store.snapshot();
+      checkProject(workspace, scope.projectId, access);
       if (this.identity && !this.identity.allows(access))
         throw new Error("身份已失效");
       checkConversation(
-        this.store.snapshot(),
+        workspace,
         scope.projectId,
         scope.conversationId,
         access,
@@ -258,7 +264,37 @@ export class RuntimeBridge {
     const feed = new ConversationFeed({
       authorize,
       failed,
-      changed: (value) =>
+      changed: (value) => {
+        // A synchronous publication batch has one fresh authorization snapshot.
+        // Reading/parsing the whole workspace for every message stalls Desktop's
+        // main process as history grows. Never retain this across async batches.
+        const workspace = this.store.snapshot();
+        const inputs = new Map(
+          workspace.inputs.map((input) => [input.id, input]),
+        );
+        const projects = new Set(
+          workspace.projects
+            .filter((project) => project.members.includes(access.principalId))
+            .map((project) => project.id),
+        );
+        const deliveries = new Map<string, typeof this.state.deliveries>();
+        for (const delivery of this.state.deliveries) {
+          const session = this.state.sessions[delivery.sessionId];
+          if (
+            delivery.rootId &&
+            session &&
+            inConversation(
+              workspace,
+              scope.conversationId,
+              session,
+              !this.teamIdentity,
+            )
+          ) {
+            const matches = deliveries.get(delivery.rootId) ?? [];
+            matches.push(delivery);
+            deliveries.set(delivery.rootId, matches);
+          }
+        }
         changed({
           ...value,
           messages: value.messages
@@ -267,23 +303,11 @@ export class RuntimeBridge {
               // The WS may beat the POST receipt. Reconcile by the captured root,
               // never by the currently selected conversation or newest input.
               const matches = message.rootId
-                ? this.state.deliveries.filter(
-                    (d) =>
-                      d.rootId === message.rootId &&
-                      !!this.state.sessions[d.sessionId] &&
-                      inConversation(
-                        this.store.snapshot(),
-                        scope.conversationId,
-                        this.state.sessions[d.sessionId]!,
-                        !this.teamIdentity,
-                      ),
-                  )
+                ? (deliveries.get(message.rootId) ?? [])
                 : [];
               const input =
                 matches.length === 1
-                  ? this.store
-                      .snapshot()
-                      .inputs.find((i) => i.id === matches[0]!.inputId)
+                  ? inputs.get(matches[0]!.inputId)
                   : undefined;
               return input
                 ? {
@@ -295,36 +319,30 @@ export class RuntimeBridge {
                   }
                 : message;
             })
-            .filter((m) =>
-              this.store
-                .snapshot()
-                .projects.some(
-                  (p) =>
-                    p.id === m.projectId &&
-                    p.members.includes(access.principalId),
-                ),
-            ),
-        }),
+            .filter((m) => projects.has(m.projectId)),
+        });
+      },
       url: this.config.url,
-      sessions: () =>
-        Object.values(this.state.sessions)
+      sessions: () => {
+        const workspace = this.store.snapshot();
+        const projects = new Set(
+          workspace.projects
+            .filter((project) => project.members.includes(access.principalId))
+            .map((project) => project.id),
+        );
+        return Object.values(this.state.sessions)
           .filter(
             (s) =>
-              this.store
-                .snapshot()
-                .projects.some(
-                  (p) =>
-                    p.id === s.projectId &&
-                    p.members.includes(access.principalId),
-                ) &&
+              projects.has(s.projectId) &&
               inConversation(
-                this.store.snapshot(),
+                workspace,
                 scope.conversationId,
                 s,
                 !this.teamIdentity,
               ),
           )
-          .map((s) => s.id),
+          .map((s) => s.id);
+      },
       headers: () => ({
         Authorization: `Bearer ${this.config.token}`,
         ...(this.teamIdentity
@@ -988,12 +1006,12 @@ export class RuntimeBridge {
       );
   }
   snapshot(access?: AccessContext): ConversationRuntime {
-    const inputs = this.store.snapshot().inputs;
+    const workspace = this.store.snapshot();
+    const inputs = workspace.inputs;
     const projects = access
       ? new Set(
-          this.store
-            .snapshot()
-            .projects.filter((p) => p.members.includes(access.principalId))
+          workspace.projects
+            .filter((p) => p.members.includes(access.principalId))
             .map((p) => p.id),
         )
       : null;
@@ -1094,6 +1112,7 @@ export class RuntimeBridge {
               ? [
                   this.publish({
                     id: event.id,
+                    sequence: event.sequence,
                     projectId: input?.projectId ?? session.projectId,
                     conversationId: input
                       ? discussionId(input)

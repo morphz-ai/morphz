@@ -12,6 +12,7 @@ export const liveMessageSchema = z.object({
   kind: z.enum(["reply", "progress", "error", "tool"]),
   streaming: z.boolean().optional(),
   publicationKey: z.string().optional(),
+  sequence: z.number().int().nonnegative().optional(),
   threadId: z.string().optional(),
   tool: z
     .object({
@@ -68,7 +69,20 @@ export class LiveConversationProjection {
       e: StreamEvent,
     ) => Omit<LiveMessage, "id" | "text" | "kind" | "createdAt">,
   ) {}
+  private retainAttempt(attempt: Attempt) {
+    if (attempt.message.text)
+      this.messages.set(attempt.message.id, {
+        ...attempt.message,
+        streaming: false,
+      });
+    for (const tool of attempt.tools.values())
+      if (!this.messages.has(tool.id))
+        this.messages.set(tool.id, { ...tool, streaming: false });
+  }
   reconnect() {
+    // Stop animation, not reading. A disconnected suffix cannot extend this
+    // prefix; only a new complete stream or its durable outcome may replace it.
+    for (const attempt of this.attempts.values()) this.retainAttempt(attempt);
     this.attempts.clear();
   }
   private base(e: StreamEvent): LiveMessage {
@@ -76,6 +90,10 @@ export class LiveConversationProjection {
       ...this.route(e),
       id: e.id,
       createdAt: e.timestamp,
+      // Transient stream counters are not durable event sequence numbers.
+      ...(e.topic !== "runtime/model_stream" && e.sequence !== undefined
+        ? { sequence: e.sequence }
+        : {}),
       ...(typeof e.payload.attempt_id === "string"
         ? { publicationKey: e.payload.attempt_id }
         : {}),
@@ -97,6 +115,7 @@ export class LiveConversationProjection {
       "chat/no_reply",
       "chat/cancelled",
       "chat/runtime_error",
+      "session/io_state",
       "runtime/thread_result",
       "runtime/response_protocol_fused",
       "runtime/response_protocol_error",
@@ -105,12 +124,32 @@ export class LiveConversationProjection {
       "chat/assistant_call",
     ].includes(e.topic);
     if (semantic) {
+      const replacesText =
+        [
+          "chat/reply",
+          "chat/outbound_message",
+          "chat/runtime_error",
+          "session/io_state",
+          "runtime/response_protocol_fused",
+        ].includes(e.topic) && !!str(p.text ?? p.error ?? p.message);
       if (attemptId) this.resolved.add(attemptId);
       if (e.topic === "chat/cancelled" && activation)
         this.cancelled.add(activation);
       for (const [id, a] of this.attempts)
-        if (id === attemptId || (!attemptId && activation === a.activation))
+        if (id === attemptId || (!attemptId && activation === a.activation)) {
+          // Tool selection / assistant_call is a handoff, not permission to
+          // remove words already shown. Final text replaces them atomically.
+          if (!replacesText) this.retainAttempt(a);
           this.attempts.delete(id);
+        }
+      if (replacesText && attemptId)
+        for (const [id, message] of this.messages)
+          if (
+            message.kind !== "tool" &&
+            message.streaming !== undefined &&
+            message.publicationKey === attemptId
+          )
+            this.messages.delete(id);
     }
     if (e.topic === "runtime/model_stream") {
       if (
@@ -181,6 +220,7 @@ export class LiveConversationProjection {
         a.continuation = p.continuation_pending === true;
         if (["cancelled", "interrupted"].includes(str(p.state))) {
           this.cancelled.add(activation);
+          this.retainAttempt(a);
           this.attempts.delete(attemptId);
         }
         if (str(p.state) === "failed") {
@@ -225,7 +265,9 @@ export class LiveConversationProjection {
           ...old?.tool,
           name: str(call.name ?? fn.name) || "工具",
           arguments: richer ? old!.tool!.arguments : preview(args),
-          status: old?.tool?.status ?? "running",
+          status: ["generating", "pending"].includes(old?.tool?.status ?? "")
+            ? "running"
+            : (old?.tool?.status ?? "running"),
           truncated: richer
             ? false
             : call.truncated === true || args.length > 12000,
@@ -265,9 +307,11 @@ export class LiveConversationProjection {
       ? "reply"
       : e.topic === "chat/progress"
         ? "progress"
-        : ["chat/runtime_error", "runtime/response_protocol_fused"].includes(
-              e.topic,
-            )
+        : [
+              "chat/runtime_error",
+              "session/io_state",
+              "runtime/response_protocol_fused",
+            ].includes(e.topic)
           ? "error"
           : null;
     const text = str(p.text ?? p.error ?? p.message);

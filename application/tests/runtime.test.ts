@@ -210,6 +210,7 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
     });
     assert.equal(bridge.snapshot().deliveries[0]!.state, "completed");
     assert.equal(bridge.snapshot().messages[0]!.text, "真实接口返回的测试回复");
+    assert.equal(bridge.snapshot().messages[0]!.sequence, 1);
     assert.equal(bridge.snapshot().messages[0]!.inputId, input.entityId);
     assert.equal(
       bridge.snapshot().messages[0]!.rootId,
