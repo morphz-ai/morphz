@@ -1,5 +1,9 @@
 import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
+import {
+  assertDialogControlMetrics,
+  assertSingleFieldDialog,
+} from "./dialog-control-helpers.js";
 import { randomUUID } from "node:crypto";
 import {
   seedCenter,
@@ -215,6 +219,8 @@ test("重命名、移动、撤销保留同一内容与历史；并发冲突留�
   await page.getByLabel("内容操作：" + title, { exact: true }).click();
   await page.getByRole("button", { name: "重命名", exact: true }).click();
   await expect(page.getByLabel("内容名称", { exact: true })).toBeFocused();
+  await assertDialogControlMetrics(page.getByRole("dialog"));
+  await assertSingleFieldDialog(page.getByRole("dialog"));
   await page.getByLabel("内容名称", { exact: true }).fill(title + "已改名");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(
@@ -227,6 +233,7 @@ test("重命名、移动、撤销保留同一内容与历史；并发冲突留�
   await page.getByLabel("内容操作：" + title, { exact: true }).click();
   await page.getByRole("button", { name: "移动到项目", exact: true }).click();
   await page.getByLabel("目标项目", { exact: true }).selectOption(target);
+  await assertDialogControlMetrics(page.getByRole("dialog"));
   await page.getByRole("button", { name: "移动", exact: true }).click();
   await expect
     .poll(

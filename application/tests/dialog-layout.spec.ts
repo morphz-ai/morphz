@@ -253,7 +253,7 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
   await expect(create).toBeVisible();
   expect((await create.boundingBox())!.width).toBeLessThanOrEqual(480);
   await expect(create.locator("footer")).toHaveCount(0);
-  const nameRow = create.locator(".project-name-row");
+  const nameRow = create.locator(".dialog-input-row");
   await expect(nameRow.getByLabel("项目名称", { exact: true })).toBeVisible();
   await expect(
     nameRow.getByRole("button", { name: "创建", exact: true }),

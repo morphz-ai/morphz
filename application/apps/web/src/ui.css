@@ -10,6 +10,8 @@
   --ui-reading-width: 760px;
   --ui-dialog-heading-size: 14px;
   --ui-dialog-heading-height: 32px;
+  --ui-dialog-control-height: 32px;
+  --ui-dialog-control-font-size: 13px;
 }
 .visually-hidden {
   position: absolute;
@@ -1656,6 +1658,129 @@ body:has(dialog[open]) .cognitive-application-frame {
   padding: 4px 12px 12px;
   overflow: auto;
 }
+/* Dialogs share control metrics as well as the shell. Keep single-line fields
+   and their actions level; textareas and document/media surfaces size to content. */
+.app
+  .create-dialog
+  :where(
+    input:not(
+      [type="checkbox"],
+      [type="radio"],
+      [type="range"],
+      [type="file"],
+      [type="color"],
+      [type="hidden"],
+      [type="button"],
+      [type="submit"],
+      [type="reset"],
+      [type="image"]
+    ),
+    select:not([multiple], [size]),
+    textarea
+  ) {
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--ui-radius-control);
+  font-size: var(--ui-dialog-control-font-size);
+  line-height: 20px;
+}
+.app
+  .create-dialog
+  :where(
+    input:not(
+      [type="checkbox"],
+      [type="radio"],
+      [type="range"],
+      [type="file"],
+      [type="color"],
+      [type="hidden"],
+      [type="button"],
+      [type="submit"],
+      [type="reset"],
+      [type="image"]
+    ),
+    select:not([multiple], [size])
+  ) {
+  height: var(--ui-dialog-control-height);
+}
+.app
+  .create-dialog
+  :where(
+    input:not(
+      [type="checkbox"],
+      [type="radio"],
+      [type="range"],
+      [type="file"],
+      [type="color"],
+      [type="hidden"],
+      [type="button"],
+      [type="submit"],
+      [type="reset"],
+      [type="image"]
+    ),
+    select,
+    textarea
+  ):focus {
+  /* One continuous, visible edge instead of a detached ring around a gray border.
+     Inset focus also stays inside the scrollport of long forms. */
+  border-color: var(--accent-strong);
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+.app
+  .create-dialog
+  :is(
+    .primary,
+    .secondary-action:not(.model-service-button),
+    footer > button,
+    .dialog-actions > button:not(.icon-button),
+    .bookmark-edit-actions > button
+  ) {
+  /* Account connection entries are multi-part rows, not compact form actions. */
+  min-height: var(--ui-dialog-control-height);
+  padding: 5px 12px;
+  border-radius: var(--ui-radius-control);
+  font-size: var(--ui-dialog-control-font-size);
+  line-height: 20px;
+  justify-content: center;
+}
+.app .create-dialog .primary {
+  border: 1px solid transparent;
+}
+.app .create-dialog .field {
+  gap: 4px;
+}
+/* Short name dialogs need one input/action row, not separate label and footer
+   rows. Keep accessible names on the input; longer forms retain visible labels. */
+.create-dialog .dialog-input-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.create-dialog .dialog-input-row > input {
+  flex: 1 1 100px;
+  min-width: 0;
+}
+.create-dialog .dialog-input-row > :is(button, footer) {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.create-dialog .dialog-input-row > footer {
+  align-items: center;
+  margin-block: 0;
+  padding: 0;
+  border: 0;
+  background: var(--surface-dialog);
+}
+@media (pointer: coarse) {
+  .create-dialog {
+    --ui-dialog-control-height: 44px;
+    --ui-dialog-control-font-size: 16px;
+  }
+}
 .model-settings {
   display: grid;
   gap: var(--ui-space-3, 12px);
@@ -1719,12 +1844,6 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 .model-settings .model-add-account {
   min-height: 32px;
-}
-.model-settings :is(input:not([type="checkbox"]), select) {
-  min-height: 36px;
-}
-.model-default-form > .primary {
-  min-height: 36px;
 }
 .model-account-list {
   list-style: none;
@@ -1809,7 +1928,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   flex-shrink: 0;
   white-space: nowrap;
 }
-.create-dialog > header > .model-settings-heading {
+.create-dialog .model-settings-heading {
+  display: flex;
+  min-width: 0;
   align-items: center;
   gap: 4px;
 }
@@ -1973,9 +2094,6 @@ body:has(dialog[open]) .cognitive-application-frame {
 .app .capture-title input {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 4px 8px;
-  font-size: 13px;
 }
 .capture-confirm-actions {
   display: flex;

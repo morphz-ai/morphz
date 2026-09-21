@@ -1,11 +1,6 @@
 .browser-bookmarks-dialog {
   --ui-dialog-width: 480px;
 }
-.browser-bookmarks-dialog .dialog-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .browser-bookmarks-dialog .dialog-heading h2 {
   flex: 1;
 }

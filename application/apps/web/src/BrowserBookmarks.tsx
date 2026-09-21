@@ -190,7 +190,7 @@ function BookmarkDialog({
         if (!busy) onClose();
       }}
     >
-      <div className="dialog-heading">
+      <header className="dialog-heading">
         {editing && (
           <button
             aria-label="返回收藏列表"
@@ -207,7 +207,7 @@ function BookmarkDialog({
         <button aria-label="关闭收藏" disabled={busy} onClick={onClose}>
           <X />
         </button>
-      </div>
+      </header>
       {editing ? (
         <form
           onSubmit={(e) => {

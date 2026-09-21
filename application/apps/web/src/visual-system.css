@@ -160,6 +160,7 @@
    icon-only window chrome retain their own quieter interaction treatment. */
 .app .secondary-action,
 .app .create-dialog > footer > button:not(.primary),
+.app .create-dialog > form > footer > button:not(.primary),
 .app .search-dialog > footer > button,
 .app .editor-actions > button:not(.primary) {
   min-height: 28px;
@@ -177,6 +178,7 @@
 }
 .app .secondary-action:hover:not(:disabled),
 .app .create-dialog > footer > button:not(.primary):hover:not(:disabled),
+.app .create-dialog > form > footer > button:not(.primary):hover:not(:disabled),
 .app .search-dialog > footer > button:hover:not(:disabled),
 .app .editor-actions > button:not(.primary):hover:not(:disabled) {
   background: var(--hover);

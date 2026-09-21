@@ -243,10 +243,12 @@
 .app .content-metadata-dialog form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
 }
 .app .content-metadata-dialog .field {
   margin: 0;
+}
+.app .content-metadata-dialog .content-move-title + .field {
+  margin-top: 12px;
 }
 .app .content-move-title {
   margin: 0;

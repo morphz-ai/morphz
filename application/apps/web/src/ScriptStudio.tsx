@@ -954,29 +954,33 @@ function CreateDialog({
           }
         }}
       >
-        <label>
-          名称
+        <div className="dialog-input-row">
           <input
             aria-label="剧本名称"
+            placeholder="剧本名称"
             value={name}
             onChange={(e) => setName(e.target.value)}
             maxLength={180}
             required
           />
-        </label>
+          <footer>
+            <button
+              className="primary"
+              type="submit"
+              disabled={busy || !name.trim()}
+            >
+              创建
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={onClose}
+            >
+              取消
+            </button>
+          </footer>
+        </div>
         {error && <p role="alert">{error}</p>}
-        <footer>
-          <button
-            className="primary"
-            type="submit"
-            disabled={busy || !name.trim()}
-          >
-            创建
-          </button>
-          <button className="secondary-action" type="button" onClick={onClose}>
-            取消
-          </button>
-        </footer>
       </form>
     </StudioDialog>
   );

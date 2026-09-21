@@ -145,9 +145,10 @@ export function ProjectActionDialog({
           </button>
         </header>
         {action === "rename" ? (
-          <div className="project-name-row">
+          <div className="dialog-input-row">
             <input
               aria-label="项目名称"
+              placeholder="项目名称"
               value={name}
               maxLength={180}
               required

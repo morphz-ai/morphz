@@ -3502,24 +3502,35 @@ function CreateDialog({
       {kind === "document"
         ? toolbarTarget && createPortal(heading, toolbarTarget)
         : heading}
-      <div className={kind === "document" ? undefined : "project-name-row"}>
-        <label className="field">
-          {kind === "document" ? "标题" : "项目名称"}
+      {kind === "document" ? (
+        <div>
+          <label className="field">
+            标题
+            <input
+              autoFocus
+              aria-label="新对象标题"
+              maxLength={180}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+            />
+          </label>
+        </div>
+      ) : (
+        <div className="dialog-input-row">
           <input
-            autoFocus={kind === "document"}
-            aria-label={kind === "document" ? "新对象标题" : "项目名称"}
+            aria-label="项目名称"
+            placeholder="项目名称"
             maxLength={180}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             required
           />
-        </label>
-        {kind !== "document" && (
           <button className="primary" disabled={busy || !title.trim()}>
             {busy ? "保存中…" : kind === "save-project" ? "保存为项目" : "创建"}
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {kind === "save-project" && (
         <p className="project-save-scope">
           {client.boot!.workspace.scriptProductions.some(

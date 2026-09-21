@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { seedCenter } from "./center-fixtures.js";
+import { assertDialogControlMetrics } from "./dialog-control-helpers.js";
 
 // The center is shared across specs. Do not leave this fixture's immersive
 // browser selected for unrelated dialog/launcher tests in fresh windows.
@@ -69,6 +70,11 @@ test("收藏可添加、查找、编辑、打开、移除和撤销；刷新保�
   expect(await page.evaluate(() => (window as any).__visits)).toBe(0);
   await page.getByRole("button", { name: "编辑当前收藏" }).click();
   const dialog = page.getByRole("dialog", { name: "浏览器收藏" });
+  await assertDialogControlMetrics(dialog);
+  expect((await dialog.locator("header").boundingBox())!.height).toBeCloseTo(
+    32,
+    2,
+  );
   await page
     .getByRole("textbox", { name: "收藏名称" })
     .fill("TEST 浏览器个人收藏");

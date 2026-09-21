@@ -722,8 +722,8 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  /* Keep the shared 2px outline + 2px offset inside the scrollport without
-     moving the fields or enlarging the compact dialog. */
+  /* Reserve space for button keyboard outlines inside the scrollport.
+     Fields use an inset focus edge; neither needs to move or be clipped. */
   padding: var(--ui-space-1);
   margin: calc(-1 * var(--ui-space-1));
   scroll-padding-block: 8px 64px;

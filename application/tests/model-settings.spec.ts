@@ -1,6 +1,7 @@
 import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
+import { assertDialogControlMetrics } from "./dialog-control-helpers.js";
 import type { ModelSettingsSnapshot } from "../packages/core/src/model-settings.js";
 
 test.afterEach(async ({ page }) => {
@@ -253,6 +254,7 @@ test("模型设置在原窗口内；默认修改立即刷新目录，不跳 Dash
   });
   const dialog = await open(page);
   await dialog.getByLabel("默认模型", { exact: true }).selectOption("second");
+  await assertDialogControlMetrics(dialog);
   await dialog.getByRole("button", { name: "设为默认" }).click();
   await expect(dialog).toContainText("默认模型已保存");
   await expect(dialog.getByLabel("默认模型", { exact: true })).toHaveValue(
@@ -580,6 +582,9 @@ test("账号入口在四主题亮暗和窄窗下保持整行按钮与清晰选�
         }).toPass({ timeout: 3000 });
         const geometry = await dialog.evaluate((element) => {
           const box = element.getBoundingClientRect();
+          const heading = element.querySelector(".model-settings-heading")!;
+          const back = heading.querySelector("button")!.getBoundingClientRect();
+          const title = heading.querySelector("h2")!.getBoundingClientRect();
           const buttons = [
             ...element.querySelectorAll<HTMLButtonElement>(
               ".model-service-button",
@@ -589,6 +594,10 @@ test("账号入口在四主题亮暗和窄窗下保持整行按钮与清晰选�
             ...element.querySelectorAll(".model-connection-modes button"),
           ];
           return {
+            headingHeight: heading.getBoundingClientRect().height,
+            headingAlignment: Math.abs(
+              back.y + back.height / 2 - title.y - title.height / 2,
+            ),
             withinViewport:
               box.left >= 0 &&
               box.right <= innerWidth + 1 &&
@@ -617,6 +626,8 @@ test("账号入口在四主题亮暗和窄窗下保持整行按钮与清晰选�
           };
         });
         expect(geometry.withinViewport).toBe(true);
+        expect(geometry.headingHeight).toBeLessThanOrEqual(36);
+        expect(geometry.headingAlignment).toBeLessThanOrEqual(1);
         expect(geometry.overflow).toBe(false);
         expect(geometry.modesDistinct).toBe(true);
         for (const row of geometry.rows) {

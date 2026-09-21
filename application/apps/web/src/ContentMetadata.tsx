@@ -45,6 +45,29 @@ export function ContentMetadata({
       setBusy(false);
     }
   }
+  const actions = (
+    <footer>
+      <button
+        type="button"
+        className="secondary-action"
+        disabled={busy}
+        onClick={onClose}
+      >
+        取消
+      </button>
+      <button
+        className="primary"
+        disabled={
+          busy ||
+          (mode === "rename"
+            ? !title.trim() || title.trim() === original.title
+            : projectId === original.projectId)
+        }
+      >
+        {busy ? "正在保存…" : mode === "rename" ? "保存" : "移动"}
+      </button>
+    </footer>
+  );
   return (
     <dialog
       ref={dialog}
@@ -74,16 +97,17 @@ export function ContentMetadata({
           </button>
         </header>
         {mode === "rename" ? (
-          <label className="field">
-            名称
+          <div className="dialog-input-row">
             <input
               aria-label="内容名称"
+              placeholder="内容名称"
               value={title}
               maxLength={180}
               disabled={busy}
               onChange={(e) => setTitle(e.target.value)}
             />
-          </label>
+            {actions}
+          </div>
         ) : (
           <>
             <p className="content-move-title">{original.title}</p>
@@ -117,27 +141,7 @@ export function ContentMetadata({
             {error}
           </p>
         )}
-        <footer>
-          <button
-            type="button"
-            className="outline"
-            disabled={busy}
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            className="primary"
-            disabled={
-              busy ||
-              (mode === "rename"
-                ? !title.trim() || title.trim() === original.title
-                : projectId === original.projectId)
-            }
-          >
-            {busy ? "正在保存…" : mode === "rename" ? "保存" : "移动"}
-          </button>
-        </footer>
+        {mode === "move" && actions}
       </form>
     </dialog>
   );

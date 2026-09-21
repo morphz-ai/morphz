@@ -12,6 +12,10 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { seedCenter } from "../center-fixtures.js";
 import { openInput } from "../interaction-helpers.js";
+import {
+  assertDialogControlMetrics,
+  assertSingleFieldDialog,
+} from "../dialog-control-helpers.js";
 import { WorkspaceStore } from "../../packages/application/src/store.js";
 import {
   currentScriptDraft,
@@ -169,6 +173,7 @@ test("剧本入口：多部剧本保存为同一项目，取消无副作用，�
     name: "为当前工作命名",
     exact: true,
   });
+  await assertSingleFieldDialog(save);
   const before = (await snapshot(page)).workspace;
   const count = before.scriptProductions.filter(
     (value) => value.projectId === p.projectId,
@@ -1219,6 +1224,7 @@ test("迟到历史意见不计当前阻断，缺少新字段的旧意见仍待�
 });
 
 async function assertStudioDialog(dialog: Locator) {
+  await assertDialogControlMetrics(dialog);
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveClass(/create-dialog/);
   await expect(dialog).toHaveCSS("border-top-width", "1px");
@@ -1244,9 +1250,8 @@ async function assertStudioDialog(dialog: Locator) {
         getComputedStyle(element.querySelector("header")!).marginBottom,
       ),
       background: getComputedStyle(element).backgroundColor,
-      footerBackground: getComputedStyle(
-        element.querySelector("form > footer")!,
-      ).backgroundColor,
+      footerBackground: getComputedStyle(element.querySelector("form footer")!)
+        .backgroundColor,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       clientWidth: element.clientWidth,
@@ -1336,9 +1341,14 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   const name = dialog.getByLabel("剧本名称", { exact: true });
   await expect(name).toBeFocused();
   const geometry = await assertStudioDialog(dialog);
+  await assertSingleFieldDialog(dialog);
+  await expect(name).toHaveAttribute("placeholder", "剧本名称");
+  await dialog.screenshot({
+    path: testInfo.outputPath("script-create-compact.png"),
+  });
   await assertDialogFocusRing(name);
   expect(geometry.width).toBe(420);
-  expect(geometry.height).toBeLessThanOrEqual(180);
+  expect(geometry.height).toBeLessThanOrEqual(96);
   const submit = dialog.getByRole("button", { name: "创建", exact: true });
   const cancel = dialog.getByRole("button", { name: "取消", exact: true });
   await expect(submit).toHaveClass(/primary/);
@@ -1366,6 +1376,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   for (const width of [760, 320]) {
     await page.setViewportSize({ width, height: 540 });
     await assertStudioDialog(dialog);
+    await assertSingleFieldDialog(dialog);
     await name.focus();
     await assertDialogFocusRing(name);
     await expect(submit).toBeInViewport();
@@ -1544,8 +1555,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
           exact: true,
         });
         const dialogGeometry = await assertStudioDialog(compact);
+        await assertSingleFieldDialog(compact);
         expect(dialogGeometry.width).toBe(420);
-        expect(dialogGeometry.height).toBeLessThanOrEqual(180);
+        expect(dialogGeometry.height).toBeLessThanOrEqual(96);
         await expect(
           compact.getByLabel("剧本名称", { exact: true }),
         ).toBeFocused();
@@ -1652,6 +1664,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
       exact: true,
     });
     await assertStudioDialog(zoomDialog);
+    await assertSingleFieldDialog(zoomDialog);
     await assertDialogFocusRing(
       zoomDialog.getByLabel("剧本名称", { exact: true }),
     );
