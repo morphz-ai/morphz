@@ -799,6 +799,56 @@
 .primary-panel[data-interaction="history"] .exchange-panel > .conversation {
   flex: 1 1 0;
 }
+/* An edge affordance, not another toolbar or a row above the messages. It stays
+   inside the frame, clear of the floating Dock just outside the input edge. */
+.exchange-resizer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+  border-radius: 4px;
+}
+.exchange-resizer::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: calc(50% - 18px);
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+.exchange-resizer:hover::after,
+.exchange-resizer:focus-visible::after,
+.exchange-panel[data-resizing] > .exchange-resizer::after {
+  background: var(--text-secondary);
+}
+.exchange-resizer:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+.exchange-panel:has(> .exchange-resizer) > .exchange-panel-header {
+  padding-top: 14px;
+}
+.exchange-panel[data-resizing] {
+  transition: none;
+  animation: none;
+}
+.exchange-resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
 /* The dedicated dialogue page remains a flat reading canvas. */
 .primary-panel[data-dialogue-canvas] .exchange-panel,
 .primary-panel[data-dialogue-canvas]
@@ -851,6 +901,20 @@
     .conversation:has(.conversation-empty) {
     height: auto;
   }
+}
+.primary-panel .exchange-panel[data-resized] {
+  flex: 0 1 auto;
+  height: var(--exchange-height);
+  max-height: var(--exchange-max-height);
+}
+.primary-panel .exchange-panel[data-resized] > .conversation {
+  flex: 1 1 0;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}
+.exchange-panel[data-resized] > .composer-dock {
+  flex: 0 0 auto;
 }
 .conversation .human-message {
   background: var(--soft);

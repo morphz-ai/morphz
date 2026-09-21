@@ -2,15 +2,21 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ChevronDown, History, Maximize2, Minimize2, Pin } from "lucide-react";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import type { InteractionMode } from "./interaction.js";
+import {
+  ExchangeResizeHandle,
+  type ExchangeResizeOptions,
+} from "./ExchangeResizeHandle.js";
 
 /** One shared reading/writing surface, floating above cognitive applications. */
 export function ExchangePanel({
   open,
   scopeRef,
+  resize,
   children,
 }: {
   open: boolean;
   scopeRef: (element: HTMLDivElement | null) => void;
+  resize?: ExchangeResizeOptions;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -43,6 +49,9 @@ export function ExchangePanel({
   }, []);
   return (
     <div className="exchange-panel" data-open={open || undefined} ref={panel}>
+      {open && resize && (
+        <ExchangeResizeHandle key={resize.scope} options={resize} />
+      )}
       {open && (
         <div className="exchange-panel-header">
           <div className="exchange-scope" ref={scopeRef} />

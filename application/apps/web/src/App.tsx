@@ -147,6 +147,7 @@ type Preferences = InterfacePreferences & {
   projectOpen: boolean;
   applications?: Record<string, string | null>;
   interactions?: Record<string, InteractionMode>;
+  exchangeHeights?: Record<string, number>;
   pinnedInputs?: Record<string, boolean>;
   selectedConversations?: Record<string, string>;
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
@@ -565,7 +566,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const dialogueCanvas = prefs.view === "dialogue" && !artifact;
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
-  const interaction = prefs.interactions?.[exchangeKey] ?? "input";
+  const [exchangeResizePreview, setExchangeResizePreview] = useState<{
+    scope: string;
+    mode: "recent";
+  } | null>(null);
+  const interaction =
+    (exchangeResizePreview?.scope === exchangeKey
+      ? exchangeResizePreview.mode
+      : undefined) ??
+    prefs.interactions?.[exchangeKey] ??
+    "input";
   const inputVisible = dialogueCanvas || interaction !== "hidden";
   const conversationVisible =
     dialogueCanvas ||
@@ -898,6 +908,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setUnderstandingOpen(false);
       setRestoredPlace(null);
       setOpeningObject(false);
+      setExchangeResizePreview(null);
     }
     setPrefs((previous) => {
       const next = {
@@ -935,6 +946,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               },
             }
           : {}),
+        ...(change.exchangeHeights
+          ? {
+              exchangeHeights: {
+                ...previous.exchangeHeights,
+                ...change.exchangeHeights,
+              },
+            }
+          : {}),
       };
       try {
         writeLocal("preferences", next);
@@ -945,6 +964,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   }
   function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
+    setExchangeResizePreview(null);
     if (id)
       prefer({
         interactions: {
@@ -2500,6 +2520,37 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               <ExchangePanel
                 open={inputVisible || conversationVisible}
                 scopeRef={setConversationToolbarTarget}
+                resize={
+                  !dialogueCanvas &&
+                  inputVisible &&
+                  projectStatus(project) === "active" &&
+                  !selectedConversation?.archivedAt
+                    ? {
+                        scope: exchangeKey,
+                        mode: interaction,
+                        height: prefs.exchangeHeights?.[exchangeKey],
+                        onStart: keepExchangeOpen,
+                        onPreview: (mode) =>
+                          setExchangeResizePreview((previous) =>
+                            mode
+                              ? { scope: exchangeKey, mode }
+                              : previous?.scope === exchangeKey
+                                ? null
+                                : previous,
+                          ),
+                        onCommit: ({ mode, height }) => {
+                          keepExchangeOpen();
+                          setExchangeResizePreview(null);
+                          prefer({
+                            interactions: { [exchangeKey]: mode },
+                            ...(mode === "recent"
+                              ? { exchangeHeights: { [exchangeKey]: height } }
+                              : {}),
+                          });
+                        },
+                      }
+                    : undefined
+                }
               >
                 {conversationVisible && (
                   <Conversation

@@ -198,6 +198,47 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       .click();
     await expect.poll(siteState).toEqual(before);
     await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    // The composed guest must not intercept an edge drag or lose its viewport,
+    // instance or form when the host exchange changes size.
+    const resize = page.getByRole("separator", { name: "调整消息区高度" });
+    const dragTo = async (height: number) => {
+      const reading = Number(await resize.getAttribute("aria-valuenow"));
+      const r = (await resize.boundingBox())!;
+      await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(
+        r.x + r.width / 2,
+        r.y + r.height / 2 + reading - height,
+        { steps: 10 },
+      );
+      await page.mouse.up();
+      await expect(page.locator(".exchange-resize-shield")).toHaveCount(0);
+    };
+    const collapsed = (await page.locator(".exchange-panel").boundingBox())!;
+    await dragTo(200);
+    // Revealing the browser's scope header consumes some reading height. The
+    // frame edge, rather than the text-only height, must follow the pointer.
+    await expect
+      .poll(
+        async () =>
+          (await page.locator(".exchange-panel").boundingBox())!.height,
+      )
+      .toBeCloseTo(collapsed.height + 200, 0);
+    await dragTo(200);
+    await expect(resize).toHaveAttribute("aria-valuenow", "200");
+    await expect.poll(siteState).toEqual(before);
+    await dragTo(Number(await resize.getAttribute("aria-valuemax")) - 20);
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "history",
+    );
+    await dragTo(180);
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "recent",
+    );
+    await expect.poll(siteState).toEqual(before);
+    await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
     await info.attach("browser-overlay", {
       body: await page.screenshot({
         path: info.outputPath("browser-overlay.png"),
@@ -275,6 +316,20 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expect(reopen).toBeInViewport();
     const zoomed = await siteState();
     await reopen.click();
+    await expect(input).toBeInViewport();
+    await expect.poll(siteState).toEqual(zoomed);
+    await expect(resize).toBeInViewport();
+    await resize.focus();
+    await page.keyboard.press("End");
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "history",
+    );
+    await page.keyboard.press("ArrowDown");
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "recent",
+    );
     await expect(input).toBeInViewport();
     await expect.poll(siteState).toEqual(zoomed);
     const geometry = await page.evaluate(() => {
