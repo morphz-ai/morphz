@@ -104,6 +104,19 @@ test("首次许可明确服务，之后单击即听写；同一按钮停止、�
   await consent.getByRole("button", { name: "允许并开始听写" }).click();
   await expect(voice).toHaveAttribute("data-recording", "true");
   await expect(mic).toHaveAttribute("aria-pressed", "true");
+  // The shared selected surface must not replace recording's red stop signal.
+  await expect
+    .poll(() =>
+      mic.evaluate((button) => {
+        const color = getComputedStyle(button)
+          .color.match(/[\d.]+/g)!
+          .slice(0, 3)
+          .map(Number);
+        return color[0]! > color[1]! && color[0]! > color[2]!;
+      }),
+    )
+    .toBe(true);
+  await expect(mic).toHaveCSS("opacity", "1");
   await expect(input).toHaveValue("保留草稿\n合成听", { timeout: 3000 });
   await expect(voice).toHaveAttribute("data-recording", "true");
   await expect

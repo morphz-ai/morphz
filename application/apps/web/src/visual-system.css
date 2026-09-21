@@ -658,11 +658,25 @@
 }
 .app
   :is(.composer-media-tools, .exchange-view-tools)
-  > .icon-button[aria-pressed="true"],
+  > .icon-button:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--soft);
+}
+/* A persistent toggle is not a hover or a disabled control. Keep the same hit
+   area, but give it a pressed surface and stronger icon independent of focus. */
 .app
   :is(.composer-media-tools, .exchange-view-tools)
-  > .icon-button:hover:not(:disabled) {
-  background: var(--soft);
+  > .icon-button[aria-pressed="true"]:not(:disabled) {
+  background: var(--selection);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.app .exchange-view-tools > .icon-button[aria-pressed="true"]:not(:disabled) {
+  color: var(--ink);
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button[aria-pressed="true"]:not(:disabled)
+  > svg {
+  stroke-width: 2;
 }
 @container exchange (max-width: 540px) {
   .app .composer-actions {
