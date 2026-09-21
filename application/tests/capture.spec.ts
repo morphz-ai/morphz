@@ -273,9 +273,7 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   await expect(dialog).toBeHidden();
   await expect(paper).toBeVisible();
   expect(await paper.boundingBox()).toEqual(beforeBounds);
-  expect((await canvas.boundingBox())!.height).toBeGreaterThan(
-    canvasBefore.height,
-  );
+  expect(await canvas.boundingBox()).toEqual(canvasBefore);
   expect(uploads).toBe(0);
   await page.screenshot({ path: "test-results/capture-unobscured.png" });
   // Cancelling the initial selection returns directly to the invoking input.
@@ -369,6 +367,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
   await page.addInitScript(() => {
     const state = {
       pageId: "capture-page",
+      surface: { partition: "fixture", src: "https://example.com/" },
       projectId: "unused",
       artifactId: null,
       url: "https://example.com/",
@@ -386,9 +385,9 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
         open: async () => state,
         state: async () => state,
         close: async () => {},
-        layout: async (_id: string, bounds: object | null) => {
+        visibility: async (_id: string, visible: boolean) => {
           if (
-            bounds &&
+            visible &&
             document.querySelector('.capture-dialog[data-capturing="true"]') &&
             !Reflect.get(window, "layoutsReleased")
           ) {
@@ -398,7 +397,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
               Reflect.set(window, "pendingLayouts", pending);
             });
           }
-          Reflect.set(window, "layoutBounds", bounds);
+          Reflect.set(window, "layoutBounds", visible ? { visible } : null);
         },
         control: async () => {
           throw new Error("截图不应授予控制权限");
@@ -454,7 +453,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
     .toBe(1);
   expect(
     await page.evaluate(() => Reflect.get(window, "boundsAtCapture")),
-  ).toMatchObject({ width: expect.any(Number), height: expect.any(Number) });
+  ).toMatchObject({ visible: true });
   await page.evaluate(() =>
     Reflect.get(
       window,

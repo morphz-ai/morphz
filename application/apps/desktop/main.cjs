@@ -74,6 +74,9 @@ else {
   let connection;
   let preferences;
   let scriptExports;
+  app.on("web-contents-created", (_event, contents) =>
+    browser?.created(contents),
+  );
   function requireMain(event) {
     if (
       !window ||
@@ -112,6 +115,8 @@ else {
       show: false,
       webPreferences: {
         ...webPreferences,
+        // Only DesktopBrowser's pre-authorized isolated guest is attachable.
+        webviewTag: true,
         preload: join(__dirname, "preload.cjs"),
         partition: appPartition,
         additionalArguments: ["--morphz-application-bridge"],
@@ -169,8 +174,11 @@ else {
     window.webContents.on("will-redirect", (event, destination) => {
       if (!trustedMainURL(destination, uiURL)) event.preventDefault();
     });
-    window.webContents.on("will-attach-webview", (event) =>
-      event.preventDefault(),
+    window.webContents.on("will-attach-webview", (event, preferences, params) =>
+      browser.willAttach(event, preferences, params),
+    );
+    window.webContents.on("did-attach-webview", (_event, contents) =>
+      browser.didAttach(contents),
     );
     const appSession = session.fromPartition(appPartition);
     appSession.setPermissionRequestHandler(
@@ -341,7 +349,7 @@ else {
         "open",
         "navigate",
         "control",
-        "layout",
+        "visibility",
         "close",
         "state",
       ]) {

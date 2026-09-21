@@ -14,7 +14,7 @@ export async function openExecutionPanel(page: Page) {
 /** Returning to work does not force its unpinned composer open. */
 export async function openInput(page: Page) {
   const input = page.getByLabel("AI 输入内容");
-  const reopen = page.getByRole("button", { name: /向 Morphz 输入/ });
+  const reopen = page.locator(".composer-reopen");
   await expect(input.or(reopen)).toBeVisible();
   // A preceding outside click may still be completing the next-frame collapse.
   // Re-resolve both states instead of waiting forever on a textarea that unmounted.

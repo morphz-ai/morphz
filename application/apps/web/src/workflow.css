@@ -511,25 +511,6 @@
 .application-immersive[data-desktop="mac"] .immersive-return {
   left: 100px;
 }
-.application-immersive .composer-reopen {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-}
-.application-immersive:has(.browser-host) .composer-reopen,
-.application-browser-workspace .composer-reopen {
-  display: none;
-}
-.application-immersive .exchange-surface:not(:has(.composer, .conversation)),
-.application-browser-workspace
-  .exchange-surface:not(:has(.composer, .conversation)) {
-  flex: 0;
-  height: 0;
-  padding: 0;
-  min-height: 0;
-}
 .app .project-dialog {
   --ui-dialog-width: 420px;
 }
@@ -758,13 +739,20 @@
   text-align: center;
 }
 .browser-slot {
+  display: flex;
   flex: 1;
-  min-height: 100px;
-  /* The native page paints its own background. Clipped bounds must reveal
-     the workspace, not a white placeholder strip beneath floating tools. */
+  min-height: 0;
+  /* The guest shares composition, not origin or privileges, with the host. */
   background: transparent;
   border: 0;
   border-radius: 0;
+}
+.browser-guest {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 .workspace-section + .workspace-section {
   margin-top: 24px;

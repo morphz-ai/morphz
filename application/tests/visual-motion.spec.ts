@@ -3,7 +3,7 @@ import { openInput, composerAction } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
-test("半开历史透出真实画布，固定和短窗口回到占位，不缩小书写区", async ({
+test("半开历史透出真实画布，固定和短窗口仍然悬浮，不缩小书写区", async ({
   page,
 }) => {
   await page.goto("/");
@@ -25,9 +25,10 @@ test("半开历史透出真实画布，固定和短窗口回到占位，不缩�
   await input.fill("视觉验收草稿，不发送");
   const history = page.locator(".conversation");
   const panel = page.locator(".exchange-panel");
+  const surface = page.locator(".exchange-surface");
   const main = page.getByRole("main", { name: "主工作区" });
   const composer = page.getByRole("region", { name: "AI 输入", exact: true });
-  await expect(panel).toHaveCSS("position", "absolute");
+  await expect(surface).toHaveCSS("position", "absolute");
   await expect(history).toHaveCSS("opacity", "1");
   const backdrop = await panel.evaluate((el) => ({
     fill: getComputedStyle(el).backgroundColor,
@@ -41,22 +42,20 @@ test("半开历史透出真实画布，固定和短窗口回到占位，不缩�
   const c = (await composer.boundingBox())!;
   expect(h.y).toBeLessThan(m.y + m.height);
   expect(h.y + h.height).toBeLessThanOrEqual(c.y);
-  expect(c.y).toBeGreaterThanOrEqual(m.y + m.height);
+  expect(c.y).toBeLessThan(m.y + m.height);
   expect(Math.abs(h.x - c.x)).toBeLessThan(2);
   expect(Math.abs(h.width - c.width)).toBeLessThanOrEqual(2);
   const writingHeight = (await input.boundingBox())!.height;
   expect(writingHeight).toBeGreaterThanOrEqual(60);
   await page.screenshot({ path: "test-results/visual-history-floating.png" });
   await composerAction(page, "固定输入框");
-  await expect(panel).toHaveCSS("position", "relative");
-  const pinnedMain = (await main.boundingBox())!;
-  expect((await history.boundingBox())!.y).toBeGreaterThanOrEqual(
-    pinnedMain.y + pinnedMain.height,
-  );
+  await expect(surface).toHaveCSS("position", "absolute");
+  expect(await main.boundingBox()).toEqual(m);
+  expect(await composer.boundingBox()).toEqual(c);
   await page.getByLabel("取消固定输入框", { exact: true }).click();
-  await expect(panel).toHaveCSS("position", "absolute");
+  await expect(surface).toHaveCSS("position", "absolute");
   await page.setViewportSize({ width: 760, height: 540 });
-  await expect(panel).toHaveCSS("position", "relative");
+  await expect(surface).toHaveCSS("position", "absolute");
   await expect(
     composer.getByRole("button", { name: "保存输入", exact: true }),
   ).toBeInViewport();

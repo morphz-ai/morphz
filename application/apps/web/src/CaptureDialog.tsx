@@ -67,7 +67,7 @@ export function CaptureDialog({
   async function restore(request: number) {
     if (request !== epoch.current) return;
     flushSync(() => setBusy(false));
-    // Hide any native webpage again before presenting the confirmation.
+    // Revoke page control under the restored modal before returning focus.
     await syncNativeBrowserLayout().catch(() => {});
     if (request === epoch.current)
       selectButton.current?.focus({ preventScroll: true });

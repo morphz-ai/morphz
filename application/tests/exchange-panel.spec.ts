@@ -22,8 +22,13 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
     exact: true,
   });
   const media = page.getByRole("group", { name: "输入工具", exact: true });
+  const canvas = page.locator(".primary-panel > main");
+  const canvasBounds = await canvas.boundingBox();
   await expect(panel).toHaveCount(1);
-  await expect(panel).toHaveCSS("position", "absolute");
+  await expect(page.locator(".exchange-surface")).toHaveCSS(
+    "position",
+    "absolute",
+  );
   await expect(panel.locator(":scope > .conversation")).toHaveCount(1);
   await expect(
     panel.locator(":scope > .composer-dock > .composer"),
@@ -70,7 +75,11 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
   await page.screenshot({ path: "test-results/exchange-panel-empty.png" });
   await input.evaluate((el) => (el.dataset.mountCheck = "preserved"));
   await composerAction(page, "固定输入框");
-  await expect(panel).toHaveCSS("position", "relative");
+  await expect(page.locator(".exchange-surface")).toHaveCSS(
+    "position",
+    "absolute",
+  );
+  expect(await canvas.boundingBox()).toEqual(canvasBounds);
   await composerAction(page, "收起交流记录");
   await expect(history).toHaveCount(0);
   await expect(

@@ -66,9 +66,7 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   );
   await expect(page.getByRole("main", { name: "主工作区" })).toBeVisible();
   await composerAction(page, "固定输入框");
-  await page
-    .getByRole("main", { name: "主工作区" })
-    .click({ position: { x: 650, y: 200 } });
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
   await expect(input).toBeVisible();
   await expect(page.getByLabel("取消固定输入框")).toHaveAttribute(
     "aria-pressed",
@@ -91,9 +89,7 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await page.getByLabel("取消固定输入框").click();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("暂不发送的工作台草稿");
-  await page
-    .getByRole("main", { name: "主工作区" })
-    .click({ position: { x: 650, y: 200 } });
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
   await expect(input).toHaveCount(0);
   await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(input).toBeFocused();

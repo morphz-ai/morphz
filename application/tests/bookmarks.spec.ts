@@ -24,6 +24,7 @@ async function browser(page: Page) {
           return (current = {
             ...target,
             pageId: "bookmark-page",
+            surface: { partition: "fixture", src: target.url },
             artifactId: null,
             epoch: "1",
             title: "示例网页",
@@ -38,7 +39,7 @@ async function browser(page: Page) {
           return (current = { ...current, url });
         },
         state: async () => current,
-        layout: async () => {},
+        visibility: async () => {},
         close: async () => {
           current = null;
         },

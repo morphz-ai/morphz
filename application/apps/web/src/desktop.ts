@@ -16,6 +16,7 @@ export type SourceView = {
 };
 export type BrowserView = {
   pageId: string;
+  surface: { partition: string; src: string };
   artifactId: string | null;
   projectId?: string;
   canGoBack?: boolean;
@@ -130,15 +131,8 @@ declare global {
             | "approve"
             | "reject",
         ): Promise<BrowserView>;
-        layout(
-          pageId: string,
-          bounds: {
-            x: number;
-            y: number;
-            width: number;
-            height: number;
-          } | null,
-        ): Promise<void>;
+        visibility(pageId: string, visible: boolean): Promise<void>;
+        onInput?(callback: () => void): () => void;
         close(pageId: string): Promise<void>;
       };
       sources: {

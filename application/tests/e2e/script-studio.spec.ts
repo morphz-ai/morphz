@@ -1848,6 +1848,10 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
       .fill("TEST 原生阻断意见");
     await page.getByLabel("意见级别", { exact: true }).selectOption("blocking");
     await button(page, "添加意见").click();
+    // Collapse the input, if open, before using a bottom-edge page action.
+    // The entry's transparent margins must not intercept the native click.
+    const collapse = button(page, "收起 AI 输入框");
+    if (await collapse.isVisible()) await collapse.click();
     await button(page, "提交审阅").click();
     await button(page, "批准此版本").click();
     const approval = page.getByRole("dialog", {

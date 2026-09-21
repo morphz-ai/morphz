@@ -3,7 +3,7 @@ import { ChevronDown, History, Maximize2, Minimize2, Pin } from "lucide-react";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import type { InteractionMode } from "./interaction.js";
 
-/** One reading/writing surface; floating history still reserves the input below. */
+/** One shared reading/writing surface, floating above cognitive applications. */
 export function ExchangePanel({
   open,
   scopeRef,
@@ -29,14 +29,6 @@ export function ExchangePanel({
       const toolsHeight = floating?.getBoundingClientRect().height ?? 0;
       if (!floating || toolsHeight > 0)
         root.style.setProperty("--composer-tools-height", `${toolsHeight}px`);
-      const height = dock.getBoundingClientRect().height;
-      // Screenshot selection temporarily hides the surface. Keep its last
-      // occupied height so restoring the same input does not flash or jump.
-      if (height > 0)
-        root.parentElement?.style.setProperty(
-          "--composer-dock-height",
-          `${height}px`,
-        );
     };
     const observer = new ResizeObserver(measure);
     observer.observe(dock);

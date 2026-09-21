@@ -429,8 +429,8 @@
   }
 }
 
-/* Reading and writing share one frame. Transient history floats while the
-   measured input remains reserved; pinned/native/short layouts stay docked. */
+/* Work canvases keep their size. The shared input and its history float above
+   every cognitive application; pinning only prevents automatic collapse. */
 .primary-panel {
   position: relative;
 }
@@ -803,41 +803,38 @@
     width: calc(100% - 24px);
   }
 }
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  > .exchange-surface {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 100%;
+  pointer-events: none;
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  .exchange-panel {
+  max-height: calc(100dvh - 80px);
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  :is(
+    .exchange-panel[data-open],
+    .composer-reopen,
+    .archived-conversation-note
+  ) {
+  /* The collapsed Dock's transparent margins must not block canvas actions. */
+  pointer-events: auto;
+}
 @media (min-height: 650px) {
-  .app:not(.application-browser-workspace)
-    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
-    .exchange-surface {
-    flex: 0 0 auto;
-    height: calc(var(--composer-dock-height, 130px) + 12px);
-  }
-  .app:not(.application-browser-workspace)
-    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
-    .exchange-panel {
-    position: absolute;
-    bottom: 10px;
-    left: 50%;
-    translate: -50% 0;
-    max-height: calc(100dvh - 80px);
-    margin: 0;
-  }
   .primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
     height: auto;
     max-height: min(34dvh, 360px);
     flex-basis: auto;
   }
-  .app:not(.application-browser-workspace)
-    .primary-panel[data-interaction="recent"]:not([data-input-pinned])
+  .primary-panel[data-interaction="recent"]
     .conversation:has(.conversation-empty) {
     height: auto;
   }
-}
-.application-browser-workspace
-  .primary-panel[data-interaction="recent"]
-  .exchange-panel[data-open] {
-  /* The native web view is a separate compositor, not a CSS backdrop. */
-  background: var(--soft);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
 }
 .conversation .human-message {
   background: var(--soft);
@@ -932,7 +929,7 @@
 }
 .app.application-browser-workspace,
 :root:has(.application-browser-workspace) .selection-actions {
-  /* WebContentsView is a separate compositor, not a CSS backdrop. */
+  /* Keep popup text legible over arbitrary third-party page colors. */
   --surface-dialog: var(--popup-solid);
   --surface-popover: var(--popup-solid);
   --popup-blur: none;

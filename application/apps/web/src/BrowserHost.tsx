@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -51,6 +51,15 @@ export function BrowserHost({
   activeViewRef.current = activeView;
   const latestOnPage = useRef(onPage);
   latestOnPage.current = onPage;
+  const latestOnInput = useRef(onInput);
+  latestOnInput.current = onInput;
+  useEffect(
+    () =>
+      desktop?.onInput?.(() => {
+        if (activeViewRef.current) latestOnInput.current?.();
+      }),
+    [desktop],
+  );
   useEffect(() => {
     latestOnPage.current?.(activeView ? page : null);
   }, [activeView, page?.pageId, page?.epoch, page?.url, page?.granted]);
@@ -70,53 +79,36 @@ export function BrowserHost({
   useEffect(() => {
     if (!desktop || !page) return;
     const id = page.pageId;
-    const layout = async () => {
+    let lastVisible: boolean | undefined;
+    let visibilityUpdate = Promise.resolve();
+    const layout = (force = false) => {
       const r = slot.current?.getBoundingClientRect();
-      // Native WebContentsView sits above DOM. Clip its bounds rather than
-      // replacing/reloading the user's page when a non-modal inspector opens.
-      const inspector = document
-        .querySelector<HTMLElement>(
-          '.workspace > .workspace-inspector[data-inspector-mode="overlay"]',
-        )
-        ?.getBoundingClientRect();
-      const visibleWidth = r
-        ? Math.max(0, Math.min(r.right, inspector?.left ?? r.right) - r.left)
-        : 0;
-      // Floating input tools can extend above the in-flow composer. A native
-      // page is a separate surface: keep its bottom clear of those controls
-      // without adding a toolbar row or reopening/navigating the page.
-      const inputTools = document
-        .querySelector<HTMLElement>(".composer-floating-tools")
-        ?.getBoundingClientRect();
-      const visibleHeight = r
-        ? Math.max(
-            0,
-            Math.min(
-              r.bottom,
-              inputTools?.height ? inputTools.top - 4 : r.bottom,
-            ) - r.top,
-          )
-        : 0;
-      const hidden =
+      // The isolated guest is composed with the application canvas, so floating
+      // controls occlude pixels rather than resizing the webpage. Visibility is
+      // still reported to the host to revoke control when leaving the page.
+      const visible = !(
         !activeViewRef.current ||
         document.hidden ||
         !!document.querySelector(
           'dialog[open]:not([data-capturing="true"]),.theme-menu',
         ) ||
         !r ||
-        visibleWidth < 10 ||
-        visibleHeight < 10 ||
-        r.bottom < 120;
-      await desktop.layout(
-        id,
-        hidden
-          ? null
-          : { x: r.x, y: r.y, width: visibleWidth, height: visibleHeight },
+        r.width < 10 ||
+        r.height < 10 ||
+        r.bottom < 120
       );
+      if (!force && visible === lastVisible) return visibilityUpdate;
+      lastVisible = visible;
+      // Keep modal/capture transitions ordered, including cancellation while
+      // an earlier host update is pending. Capture explicitly awaits a barrier.
+      visibilityUpdate = visibilityUpdate
+        .catch(() => {})
+        .then(() => desktop.visibility(id, visible));
+      return visibilityUpdate;
     };
     const update = () => void layout().catch(() => {});
     const unregister = registerNativeBrowserLayout(async () => {
-      if (activeViewRef.current) await layout();
+      if (activeViewRef.current) await layout(true);
     });
     const observer = new ResizeObserver(update);
     if (slot.current) observer.observe(slot.current);
@@ -127,6 +119,7 @@ export function BrowserHost({
       attributes: true,
       attributeFilter: [
         "open",
+        "hidden",
         "data-capturing",
         "data-inspector-mode",
         "data-inspector-width",
@@ -161,7 +154,10 @@ export function BrowserHost({
       document.removeEventListener("scroll", update, true);
       window.removeEventListener("resize", update);
       document.removeEventListener("visibilitychange", update);
-      void desktop.layout(id, null).catch(() => {});
+      void visibilityUpdate
+        .catch(() => {})
+        .then(() => desktop.visibility(id, false))
+        .catch(() => {});
     };
   }, [desktop, page?.pageId]);
   const pending = useRef(false);
@@ -389,11 +385,16 @@ export function BrowserHost({
               </button>
             </div>
           )}
-          <div
-            ref={slot}
-            className="browser-slot"
-            aria-label="隔离的网页区域"
-          />
+          <div ref={slot} className="browser-slot" aria-label="隔离的网页区域">
+            {createElement("webview", {
+              key: page.pageId,
+              className: "browser-guest",
+              partition: page.surface.partition,
+              // Stable across in-page navigation and visibility changes.
+              src: page.surface.src,
+              "aria-label": "网页内容",
+            })}
+          </div>
         </>
       )}
       {(error || page?.error) && (

@@ -315,6 +315,11 @@ test("搜索翻页、切换查询与失败重试；卡片/列表窄窗可见且�
   await catalog(page);
   await page.getByLabel("搜索内容", { exact: true }).fill(token);
   await expect(page.locator(".artifact-card")).toHaveCount(50);
+  // The exchange now overlays the canvas; close it before reaching the last row.
+  if (await page.getByLabel("AI 输入内容", { exact: true }).isVisible())
+    await page
+      .getByRole("button", { name: "收起 AI 输入框", exact: true })
+      .click();
   await page.getByRole("button", { name: "继续查找", exact: true }).click();
   await expect(page.locator(".artifact-card")).toHaveCount(52);
   await page.getByLabel("搜索内容", { exact: true }).fill("不存在" + token);

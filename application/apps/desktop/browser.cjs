@@ -1,4 +1,4 @@
-const { WebContentsView, session, app } = require("electron");
+const { session, app } = require("electron");
 const { persistentPartition } = require("./configuration.cjs");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
 const { webPreferences, trustedAppURL } = require("./security.cjs");
@@ -22,6 +22,7 @@ class DesktopBrowser {
     this.request = request;
     this.application = application;
     this.current = null;
+    this.guestOwners = new WeakMap();
     this.generation = 0;
     this.timer = setInterval(() => void this.tick(), 700);
   }
@@ -120,15 +121,11 @@ class DesktopBrowser {
         }),
       );
     }
-    const view = new WebContentsView({
-      webPreferences: {
-        ...webPreferences,
-        partition,
-        navigateOnDragDrop: false,
-      },
-    });
     const c = {
-      view,
+      view: null,
+      partition,
+      initialURL: url,
+      attaching: false,
       key: randomBytes(32).toString("hex"),
       centerId: boot.centerId,
       principalId: boot.principalId,
@@ -149,8 +146,61 @@ class DesktopBrowser {
       error: "",
     };
     this.current = c;
-    view.setVisible(false);
-    this.window.contentView.addChildView(view);
+    try {
+      await this.post("/api/browser/desktop/register", c.state, c);
+      if (this.current !== c || generation !== this.generation)
+        throw new Error("页面打开已取消或被替换。");
+    } catch (e) {
+      if (this.current === c) this.close();
+      throw e;
+    }
+    return this.state();
+  }
+  created(contents) {
+    if (this.current && contents.getType() === "webview")
+      this.guestOwners.set(contents, this.current);
+  }
+  willAttach(event, preferences, params) {
+    const c = this.current;
+    // Only the single page already authorized by open() may be embedded. Guest
+    // preferences are owned by the host, never by a page or a supplied preload.
+    if (
+      !c ||
+      c.view ||
+      c.attaching ||
+      params.partition !== c.partition ||
+      params.src !== c.initialURL ||
+      preferences.preload ||
+      params.preload ||
+      params.allowpopups
+    ) {
+      event.preventDefault();
+      return;
+    }
+    Object.assign(preferences, webPreferences, {
+      partition: c.partition,
+      nodeIntegrationInSubFrames: false,
+      navigateOnDragDrop: false,
+      additionalArguments: [],
+    });
+    delete preferences.preload;
+    delete preferences.session;
+    c.attaching = true;
+  }
+  didAttach(contents) {
+    const c = this.current;
+    if (
+      !c ||
+      !c.attaching ||
+      c.view ||
+      this.guestOwners.get(contents) !== c ||
+      contents.hostWebContents !== this.window.webContents
+    ) {
+      contents.close();
+      return;
+    }
+    c.attaching = false;
+    const view = (c.view = { webContents: contents });
     view.webContents.setWindowOpenHandler(({ url }) => {
       c.error =
         "网站请求打开新窗口。请在地址栏打开目标地址；不会绕过网站的登录限制。";
@@ -181,7 +231,23 @@ class DesktopBrowser {
     view.webContents.on("page-title-updated", (_e, title) => {
       c.state.title = title.slice(0, 500);
     });
-    view.webContents.on("before-input-event", (_e, input) => {
+    view.webContents.on("before-input-event", (event, input) => {
+      if (
+        input.type === "keyDown" &&
+        !input.isAutoRepeat &&
+        !input.isComposing &&
+        (process.platform === "darwin" ? input.meta : input.control) &&
+        !input.alt &&
+        !input.shift &&
+        input.key.toLowerCase() === "j" &&
+        this.current === c &&
+        c.state.visible
+      ) {
+        event.preventDefault();
+        this.window.webContents.focus();
+        this.window.webContents.send("browser:input");
+        return;
+      }
       if (input.type === "keyDown") this.invalidate(c);
     });
     view.webContents.on("before-mouse-event", (_e, mouse) => {
@@ -192,18 +258,18 @@ class DesktopBrowser {
       this.invalidate(c);
       c.error = "网页进程已退出，请重新打开。";
     });
-    try {
-      await this.post("/api/browser/desktop/register", c.state, c);
-      if (this.current !== c || generation !== this.generation)
-        throw new Error("页面打开已取消或被替换。");
-    } catch (e) {
-      if (this.current === c) this.close();
-      throw e;
-    }
-    this.load(c, url);
-    return this.state();
+    view.webContents.on(
+      "did-fail-load",
+      (_event, code, _description, _url, main) => {
+        if (main && code !== -3 && this.current === c) {
+          this.invalidate(c);
+          c.error = "网页未能载入，请检查地址或重新载入。";
+        }
+      },
+    );
   }
   load(c, url) {
+    if (!c.view) throw new Error("网页尚未准备好，请稍后重试。");
     const generation = (c.navigation = (c.navigation ?? 0) + 1);
     c.error = "";
     c.state.url = url;
@@ -236,37 +302,21 @@ class DesktopBrowser {
       c.pending = null;
     }
   }
-  layout(pageId, bounds) {
+  visibility(pageId, visible) {
     const c = this.require(pageId);
-    if (!bounds) {
-      c.view.setVisible(false);
-      if (c.state.visible) this.invalidate(c);
-      c.state.visible = false;
-      return;
-    }
-    const [width, height] = this.window.getContentSize();
-    if (
-      ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
-    )
-      throw new Error("视图尺寸无效。");
-    const x = Math.max(0, Math.round(bounds.x)),
-      y = Math.max(44, Math.round(bounds.y));
-    c.view.setBounds({
-      x,
-      y,
-      width: Math.max(0, Math.min(width - x, Math.round(bounds.width))),
-      height: Math.max(0, Math.min(height - y, Math.round(bounds.height))),
-    });
-    c.state.visible = true;
-    c.view.setVisible(true);
+    if (typeof visible !== "boolean") throw new Error("页面可见状态无效。");
+    if (!visible && c.state.visible) this.invalidate(c);
+    c.state.visible = visible;
   }
   state() {
     const c = this.current;
     return c
       ? {
           ...c.state,
-          canGoBack: c.view.webContents.navigationHistory.canGoBack(),
-          canGoForward: c.view.webContents.navigationHistory.canGoForward(),
+          surface: { partition: c.partition, src: c.initialURL },
+          canGoBack: c.view?.webContents.navigationHistory.canGoBack() ?? false,
+          canGoForward:
+            c.view?.webContents.navigationHistory.canGoForward() ?? false,
           pending: c.pending
             ? {
                 id: c.pending.id,
@@ -289,18 +339,21 @@ class DesktopBrowser {
     const c = this.require(pageId);
     if (action === "takeover") this.invalidate(c);
     else if (action === "grant") {
-      if (!c.state.visible) throw new Error("页面尚不可用。");
+      if (!c.state.visible || !c.view) throw new Error("页面尚不可用。");
       this.invalidate(c);
       c.state.granted = true;
     } else if (action === "back") {
+      if (!c.view) throw new Error("页面尚不可用。");
       this.invalidate(c);
       if (c.view.webContents.navigationHistory.canGoBack())
         c.view.webContents.navigationHistory.goBack();
     } else if (action === "forward") {
+      if (!c.view) throw new Error("页面尚不可用。");
       this.invalidate(c);
       if (c.view.webContents.navigationHistory.canGoForward())
         c.view.webContents.navigationHistory.goForward();
     } else if (action === "reload") {
+      if (!c.view) throw new Error("页面尚不可用。");
       this.invalidate(c);
       c.view.webContents.reload();
     } else if (["approve", "reject"].includes(action)) {
@@ -428,9 +481,7 @@ class DesktopBrowser {
       c,
     ).catch(() => {});
     this.current = null;
-    if (!this.window.isDestroyed())
-      this.window.contentView.removeChildView(c.view);
-    if (!c.view.webContents.isDestroyed()) c.view.webContents.close();
+    if (c.view && !c.view.webContents.isDestroyed()) c.view.webContents.close();
   }
   stop() {
     clearInterval(this.timer);

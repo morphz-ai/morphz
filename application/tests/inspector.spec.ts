@@ -288,13 +288,14 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
   expect(after.workspace.conversations).toEqual(before.workspace.conversations);
 });
 
-test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页面或改变协助权限", async ({
+test("网页与窄窗检查器、悬浮 Dock 叠放，不改变网页尺寸或协助权限", async ({
   page,
 }) => {
   await enableExecution(page);
   await page.addInitScript(() => {
     const state = {
       pageId: "inspector-browser",
+      surface: { partition: "fixture", src: "https://example.com/" },
       projectId: "fixture",
       artifactId: null,
       url: "https://example.com/",
@@ -324,8 +325,8 @@ test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页�
             "browserCloseCount",
             Reflect.get(window, "browserCloseCount") + 1,
           ),
-        layout: async (_id: string, bounds: object | null) =>
-          Reflect.set(window, "inspectorBrowserBounds", bounds),
+        visibility: async (_id: string, visible: boolean) =>
+          Reflect.set(window, "inspectorBrowserVisible", visible),
         control: async () => {
           throw new Error("Inspector must not grant control");
         },
@@ -343,6 +344,8 @@ test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页�
   await page.getByRole("textbox", { name: "网站地址" }).press("Enter");
   await expect(page.locator(".browser-slot")).toBeVisible();
   await page.setViewportSize({ width: 1000, height: 700 });
+  const slot = page.locator(".browser-slot");
+  const before = (await slot.boundingBox())!;
   await openInput(page);
   await openExecutionPanel(page);
   const panel = page.locator(".workspace-inspector");
@@ -350,21 +353,14 @@ test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页�
   await expect(panel.locator(".inspector-header")).toHaveCSS("height", "52px");
   await expect
     .poll(async () => {
-      const bounds = await page.evaluate(() =>
-        Reflect.get(window, "inspectorBrowserBounds"),
-      );
-      const p = await panel.boundingBox();
-      return bounds && p ? Math.abs(bounds.x + bounds.width - p.x) : 999;
+      const bounds = (await slot.boundingBox())!;
+      return Math.abs(bounds.width - before.width);
     })
     .toBeLessThan(2);
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await expect
     .poll(async () => {
-      const bounds = await page.evaluate(() =>
-        Reflect.get(window, "inspectorBrowserBounds"),
-      );
-      const slot = (await page.locator(".browser-slot").boundingBox())!;
-      return bounds ? Math.abs(bounds.width - slot.width) : 999;
+      return Math.abs((await slot.boundingBox())!.width - before.width);
     })
     .toBeLessThan(2);
   await openInput(page);
@@ -378,13 +374,7 @@ test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页�
   await expect(page.locator(".browser-slot")).toHaveCSS("border-width", "0px");
   await expect
     .poll(async () => {
-      const bounds = await page.evaluate(() =>
-        Reflect.get(window, "inspectorBrowserBounds"),
-      );
-      const dock = await page.locator(".composer-floating-tools").boundingBox();
-      return bounds && dock
-        ? Math.abs(bounds.y + bounds.height - (dock.y - 4))
-        : 999;
+      return Math.abs((await slot.boundingBox())!.height - before.height);
     })
     .toBeLessThan(2);
   await page
@@ -392,11 +382,7 @@ test("原生网页为窄窗检查器和悬浮 Dock 让出边界，不重开页�
     .click();
   await expect
     .poll(async () => {
-      const bounds = await page.evaluate(() =>
-        Reflect.get(window, "inspectorBrowserBounds"),
-      );
-      const slot = (await page.locator(".browser-slot").boundingBox())!;
-      return bounds ? Math.abs(bounds.height - slot.height) : 999;
+      return Math.abs((await slot.boundingBox())!.height - before.height);
     })
     .toBeLessThan(2);
   expect(

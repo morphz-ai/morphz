@@ -238,7 +238,7 @@ try {
         window.morphzDesktop.files.revoke({ projectId, grantId }),
       { projectId, grantId: grant.reference.grantId },
     );
-    // A native third-party view receives a synthetic page in its own session;
+    // An isolated guest receives a synthetic page in its own session;
     // no application HTTP service or external network is involved.
     const partition =
       "persist:morphz-browser-" +
@@ -263,13 +263,14 @@ try {
         projectId,
         url: "https://embedded-fixture.invalid/",
       });
-      await browser.layout(opened.pageId, {
-        x: 350,
-        y: 150,
-        width: 600,
-        height: 350,
-        visible: true,
-      });
+      const guest = document.createElement("webview");
+      guest.id = "embedded-browser-fixture";
+      guest.setAttribute("partition", opened.surface.partition);
+      guest.setAttribute("src", opened.surface.src);
+      guest.style.cssText =
+        "position:fixed;left:350px;top:150px;width:600px;height:350px;z-index:100";
+      document.body.append(guest);
+      await browser.visibility(opened.pageId, true);
       return opened;
     }, projectId);
     assert.equal(browser.granted, false);
@@ -292,10 +293,10 @@ try {
       node: "undefined",
       bridge: "undefined",
     });
-    await page.evaluate(
-      (id) => window.morphzDesktop.browser.close(id),
-      browser.pageId,
-    );
+    await page.evaluate(async (id) => {
+      await window.morphzDesktop.browser.close(id);
+      document.getElementById("embedded-browser-fixture")?.remove();
+    }, browser.pageId);
   }
   const manifest = JSON.parse(
     readFileSync("examples/applications/scratchpad.json", "utf8"),

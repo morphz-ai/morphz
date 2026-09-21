@@ -1,5 +1,5 @@
-// Native pages live above the renderer. Screenshot preparation must wait for
-// their layout IPC as well as the renderer paint, not guess with a timeout.
+// Screenshot preparation waits for guest visibility/authorization updates as
+// well as the renderer paint, rather than guessing with a timeout.
 const layouts = new Set<() => Promise<void>>();
 
 export function registerNativeBrowserLayout(layout: () => Promise<void>) {

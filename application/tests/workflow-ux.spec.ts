@@ -185,7 +185,7 @@ test("browser has an address field before creating an object; attachment draft p
   await page.keyboard.press("Meta+j");
   const input = page.getByRole("textbox", { name: "AI 输入内容" });
   if (!(await input.isVisible()))
-    await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
+    await page.locator(".composer-reopen").click();
   await input.fill("保留这段草稿");
   await page.getByLabel("消息附件文件").setInputFiles({
     name: "sample.txt",
@@ -234,6 +234,7 @@ test("浏览器仍能导航和恢复地址，不再把收藏写进内容", async
           (current = {
             ...target,
             pageId: "bookmark-page",
+            surface: { partition: "fixture", src: target.url },
             artifactId: null,
             epoch: "1",
             title: "书签状态验收",
@@ -249,7 +250,7 @@ test("浏览器仍能导航和恢复地址，不再把收藏写进内容", async
             epoch: String(Number(current.epoch) + 1),
           }),
         state: async () => current,
-        layout: async () => {},
+        visibility: async () => {},
         close: async () => {
           current = null;
         },

@@ -40,6 +40,13 @@ export async function seedLibraryArtifact(
       .getByRole("navigation", { name: "主导航" })
       .getByRole("button", { name: /^事项/ })
       .click();
+    // A newly seeded row can be below the floating exchange. Reach it through
+    // the same explicit collapse action a user has, without forced DOM clicks.
+    const collapse = page.getByRole("button", {
+      name: "收起 AI 输入框",
+      exact: true,
+    });
+    if (await collapse.isVisible()) await collapse.click();
     await page
       .getByLabel("事项列表")
       .getByRole("button")

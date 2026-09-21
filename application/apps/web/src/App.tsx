@@ -776,6 +776,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return () => window.removeEventListener("keydown", key);
   }, [trailVersion, placeKey]);
   const navigationGeneration = useRef(0);
+  const requestedComposerFocus = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const generation = requestedComposerFocus.current;
+    if (generation === null) return;
+    requestedComposerFocus.current = null;
+    // Guest IPC can reach an animation frame before React mounts the revealed
+    // input. Honor the explicit request after commit, never on newer navigation.
+    if (
+      generation === navigationGeneration.current &&
+      inputVisible &&
+      input.current
+    ) {
+      keepExchangeOpen();
+      input.current.focus({ preventScroll: true });
+    }
+  });
   const requestedConversationFocus = useRef<{
     id: string;
     generation: number;
@@ -1217,8 +1233,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     keepExchangeOpen();
     setMobileCollaboration(false);
     previousFocus.current = document.activeElement as HTMLElement;
+    requestedComposerFocus.current = navigationGeneration.current;
     setInteraction(revealInput(interaction));
-    requestAnimationFrame(() => input.current?.focus());
   }
   function composeIntent(intent: InputIntent) {
     if (

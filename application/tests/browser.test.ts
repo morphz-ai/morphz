@@ -139,6 +139,104 @@ test("快速切换或关闭网站会取消尚未完成的打开请求", async ()
     browser.stop();
   }
 });
+test("网页只接受宿主已批准的单个嵌入，不能附加预加载或继承应用权限", () => {
+  const browser = new DesktopBrowser({}, "morphz://app");
+  const pending = () => ({
+    partition: "persist:fixture-browser",
+    initialURL: "https://example.com/",
+    view: null,
+    attaching: false,
+    state: { pageId: "fixture-page" },
+  });
+  try {
+    for (const patch of [
+      { src: "morphz://app/" },
+      { partition: "persist:morphz-app" },
+      { preload: "file:///untrusted-preload.cjs" },
+      { allowpopups: true },
+    ]) {
+      browser.current = pending();
+      let prevented = false;
+      browser.willAttach(
+        {
+          preventDefault: () => {
+            prevented = true;
+          },
+        },
+        {},
+        {
+          partition: "persist:fixture-browser",
+          src: "https://example.com/",
+          ...patch,
+        },
+      );
+      assert.equal(prevented, true);
+      assert.equal(browser.current.attaching, false);
+    }
+    browser.current = pending();
+    const preferences: Record<string, unknown> = {
+      nodeIntegration: true,
+      nodeIntegrationInWorker: true,
+      nodeIntegrationInSubFrames: true,
+      contextIsolation: false,
+      sandbox: false,
+      webSecurity: false,
+      webviewTag: true,
+      additionalArguments: ["--morphz-application-bridge"],
+    };
+    browser.willAttach(
+      { preventDefault: () => assert.fail("valid pending page") },
+      preferences,
+      {
+        partition: "persist:fixture-browser",
+        src: "https://example.com/",
+      },
+    );
+    assert.equal(browser.current.attaching, true);
+    for (const key of [
+      "nodeIntegration",
+      "nodeIntegrationInWorker",
+      "nodeIntegrationInSubFrames",
+      "webviewTag",
+      "allowRunningInsecureContent",
+    ])
+      assert.equal(preferences[key], false, key);
+    for (const key of ["contextIsolation", "sandbox", "webSecurity"])
+      assert.equal(preferences[key], true, key);
+    assert.deepEqual(preferences.additionalArguments, []);
+    assert.equal(preferences.preload, undefined);
+    let duplicatePrevented = false;
+    browser.willAttach(
+      {
+        preventDefault: () => {
+          duplicatePrevented = true;
+        },
+      },
+      {},
+      {
+        partition: "persist:fixture-browser",
+        src: "https://example.com/",
+      },
+    );
+    assert.equal(duplicatePrevented, true);
+    let staleClosed = false;
+    const stale = {
+      getType: () => "webview",
+      close: () => {
+        staleClosed = true;
+      },
+    };
+    browser.created(stale);
+    browser.current = { ...pending(), attaching: true };
+    browser.didAttach(stale);
+    assert.equal(staleClosed, true);
+    assert.equal(browser.current.view, null);
+    assert.equal(browser.current.attaching, true);
+  } finally {
+    browser.current = null;
+    browser.stop();
+  }
+});
 test("桌面回执接续在丢回执、对象改版和重启后仍然只创建一次输入", () => {
   const filename = join(
     mkdtempSync(join(tmpdir(), "morphz-browser-")),
