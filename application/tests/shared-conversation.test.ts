@@ -30,6 +30,8 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
     { sessionId: string; root: string; text: string }
   >();
   const threadRoots = new Map<string, string>();
+  const inferThreads = new Map<string, Record<string, unknown>>();
+  let inferEvents: Record<string, unknown>[] = [];
   let schedulerDown = false;
   let approvalsDown = false;
   let approvalReads = 0;
@@ -80,12 +82,15 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
       const item = [...received.values()].find((r) => r.root === root);
       return send(200, {
         snapshot: {
-          thread: {
+          thread: inferThreads.get(threadId) ?? {
             id: threadId,
             session_id: item?.sessionId,
             context_id: item && sessions.get(item.sessionId)?.context_id,
             root_turn_id: root,
             initiating_principal_id: "test-principal",
+            agent_id: "agent",
+            executor_kind: "self",
+            executor_id: null,
           },
         },
       });
@@ -108,7 +113,7 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
         event_id: "root-" + body.client_message_id,
       });
     }
-    if (path.endsWith("/events")) return send(200, { events: [] });
+    if (path.endsWith("/events")) return send(200, { events: inferEvents });
     if (path === "/api/approvals") {
       approvalReads++;
       return send(approvalsDown ? 503 : 200, { approvals: pendingApprovals });
@@ -185,6 +190,89 @@ test("持续默认会话：跨项目输入共用 Session，工具按真实执行
         async () => bridge.toolScope({ ...route, principal_id: "forged" }),
         /授权/,
       );
+      const child = {
+        id: "infer-child",
+        session_id: route.session_id,
+        context_id: route.context_id,
+        root_turn_id: "infer-event",
+        initiating_principal_id: route.principal_id,
+        agent_id: route.agent_id,
+        executor_kind: "plan_infer",
+        executor_id: "plan-1",
+      };
+      inferThreads.set(child.id, child);
+      const event = {
+        id: "infer-event",
+        sequence: 1,
+        timestamp: new Date().toISOString(),
+        actor: "Runtime-Yao",
+        type: "infer_request",
+        topic: "chat/infer_request",
+        payload: {
+          ...route,
+          root_turn_id: child.root_turn_id,
+          plan_execution_id: child.executor_id,
+          parent_thread_id: threadId,
+        },
+      };
+      inferEvents = [event];
+      const childRoute = { ...route, thread_id: child.id };
+      const childScope = await bridge.toolScope(childRoute);
+      assert.equal(
+        childScope.inputId,
+        inputId,
+        "Yao infer 工具继承真实原始输入而非捕获的 inputId",
+      );
+      assert.equal(childScope.projectId, projectId);
+      for (const mutation of [
+        { actor: "model" },
+        { type: "chat" },
+        { topic: "chat/message" },
+        ...[
+          "session_id",
+          "context_id",
+          "principal_id",
+          "agent_id",
+          "plan_execution_id",
+          "root_turn_id",
+        ].map((key) => ({
+          payload: { ...event.payload, [key]: "forged" },
+        })),
+        { payload: { ...event.payload, parent_thread_id: child.id } },
+      ]) {
+        inferEvents = [{ ...event, ...mutation }];
+        await assert.rejects(
+          async () => bridge.toolScope(childRoute),
+          /无法验证/,
+        );
+      }
+      inferEvents = [event];
+      inferThreads.set(child.id, { ...child, agent_id: "foreign-agent" });
+      await assert.rejects(async () => bridge.toolScope(childRoute));
+      inferThreads.set(child.id, child);
+      const nested = {
+        ...child,
+        id: "infer-nested",
+        root_turn_id: "nested-event",
+        executor_id: "plan-2",
+      };
+      inferThreads.set(nested.id, nested);
+      inferEvents.push({
+        ...event,
+        id: nested.root_turn_id,
+        sequence: 2,
+        payload: {
+          ...event.payload,
+          root_turn_id: nested.root_turn_id,
+          plan_execution_id: nested.executor_id,
+          parent_thread_id: child.id,
+        },
+      });
+      assert.equal(
+        (await bridge.toolScope({ ...route, thread_id: nested.id })).inputId,
+        inputId,
+      );
+      inferEvents = [];
     }
     const before = store.runtimeState();
     const pending = (inputId: string) => ({

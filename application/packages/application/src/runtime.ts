@@ -86,6 +86,8 @@ const eventSchema = z.object({
   sequence: z.number().int(),
   timestamp: z.string(),
   topic: z.string(),
+  actor: z.string().optional(),
+  type: z.string().optional(),
   payload: z.record(z.string(), z.unknown()),
 });
 type RuntimeEvent = z.infer<typeof eventSchema>;
@@ -666,62 +668,108 @@ export class RuntimeBridge {
     }));
   }
   private async sharedToolScope(route: HostInvocation): Promise<ToolScope> {
-    const detail = z
-      .object({
-        snapshot: z.object({
-          thread: z.object({
-            id: z.literal(route.thread_id),
-            session_id: z.literal(route.session_id),
-            context_id: z.literal(route.context_id),
-            root_turn_id: z.string(),
-            initiating_principal_id: z.literal(route.principal_id),
-          }),
+    const events = new Map<string, RuntimeEvent>();
+    let before: number | undefined;
+    let exhausted = false;
+    let pages = 0;
+    const findEvent = async (id: string) => {
+      while (!events.has(id) && !exhausted && pages++ < 10) {
+        const data = z
+          .object({ events: z.array(eventSchema) })
+          .parse(
+            await this.request(
+              `/api/sessions/${encodeURIComponent(route.session_id)}/events?limit=1000${before === undefined ? "" : `&before_sequence=${before}`}`,
+            ),
+          );
+        for (const event of data.events) events.set(event.id, event);
+        const next = Math.min(...data.events.map((e) => e.sequence));
+        exhausted =
+          data.events.length < 1000 || (before !== undefined && next >= before);
+        before = next;
+      }
+      return events.get(id);
+    };
+    const threadSchema = z.object({
+      snapshot: z.object({
+        thread: z.object({
+          id: z.string(),
+          session_id: z.literal(route.session_id),
+          context_id: z.literal(route.context_id),
+          root_turn_id: z.string(),
+          initiating_principal_id: z.literal(route.principal_id),
+          agent_id: z.literal(route.agent_id),
+          executor_kind: z.string(),
+          executor_id: z.string().nullable(),
         }),
-      })
-      .parse(
+      }),
+    });
+    const visited = new Set<string>();
+    let threadId = route.thread_id;
+    let root: string | undefined;
+    // A Yao infer is a child execution, not a new human input. Follow only
+    // Runtime-authored, same-identity Plan lineage; model captures and supplied
+    // input IDs cannot grant authority. Bound traversal fails closed on cycles.
+    for (let depth = 0; depth < 32 && !visited.has(threadId); depth++) {
+      visited.add(threadId);
+      const {
+        snapshot: { thread },
+      } = threadSchema.parse(
         await this.request(
-          `/api/contexts/${encodeURIComponent(route.context_id)}/threads/${encodeURIComponent(route.thread_id)}`,
+          `/api/contexts/${encodeURIComponent(route.context_id)}/threads/${encodeURIComponent(threadId)}`,
         ),
       );
-    const root = detail.snapshot.thread.root_turn_id;
+      if (thread.id !== threadId) break;
+      if (thread.executor_kind !== "plan_infer") {
+        root = thread.root_turn_id;
+        break;
+      }
+      const event = await findEvent(thread.root_turn_id);
+      if (
+        !event ||
+        event.actor !== "Runtime-Yao" ||
+        event.type !== "infer_request" ||
+        event.topic !== "chat/infer_request" ||
+        !thread.executor_id ||
+        payloadString(event, "plan_execution_id") !== thread.executor_id ||
+        payloadString(event, "root_turn_id") !== thread.root_turn_id ||
+        payloadString(event, "session_id") !== route.session_id ||
+        payloadString(event, "context_id") !== route.context_id ||
+        payloadString(event, "principal_id") !== route.principal_id ||
+        payloadString(event, "agent_id") !== route.agent_id
+      )
+        break;
+      const parent = payloadString(event, "parent_thread_id");
+      if (!parent) break;
+      threadId = parent;
+    }
+    if (!root)
+      throw new DomainError(
+        "forbidden",
+        "无法验证执行与原始输入的关联，未操作任何对象。",
+      );
     let delivery = this.state.deliveries.find(
       (d) => d.sessionId === route.session_id && d.rootId === root,
     );
     // A tool can arrive before the message POST receipt. Only the Runtime-owned
     // input event can join that root to our immutable client_message_id.
     if (!delivery) {
-      let cursor = 0;
-      for (let page = 0; page < 10 && !delivery; page++) {
-        const data = z
-          .object({ events: z.array(eventSchema) })
-          .parse(
-            await this.request(
-              `/api/sessions/${encodeURIComponent(route.session_id)}/events?after_sequence=${cursor}&limit=1000`,
-            ),
-          );
-        const event = data.events.find(
-          (e) =>
-            e.id === root &&
-            payloadString(e, "session_id") === route.session_id,
-        );
-        const clientId = event && payloadString(event, "client_message_id");
-        delivery = clientId
-          ? this.state.deliveries.find(
-              (d) =>
-                d.sessionId === route.session_id &&
-                d.inputId === clientId &&
-                d.request.client_message_id === clientId &&
-                (!d.rootId || d.rootId === root),
-            )
+      const event = await findEvent(root);
+      const clientId =
+        event && payloadString(event, "session_id") === route.session_id
+          ? payloadString(event, "client_message_id")
           : undefined;
-        if (delivery) {
-          delivery.rootId = root;
-          this.save();
-        }
-        if (data.events.length < 1000) break;
-        const next = Math.max(cursor, ...data.events.map((e) => e.sequence));
-        if (next === cursor) break;
-        cursor = next;
+      delivery = clientId
+        ? this.state.deliveries.find(
+            (d) =>
+              d.sessionId === route.session_id &&
+              d.inputId === clientId &&
+              d.request.client_message_id === clientId &&
+              (!d.rootId || d.rootId === root),
+          )
+        : undefined;
+      if (delivery) {
+        delivery.rootId = root;
+        this.save();
       }
     }
     const input = this.store
