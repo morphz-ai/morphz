@@ -6561,6 +6561,209 @@ async fn test_delegate_isolates_siblings_returns_to_parent_and_parent_integrates
 }
 
 #[tokio::test]
+async fn delegated_task_survives_progress_inquiry_while_its_tool_is_running() {
+    assert_delegated_task_survives_progress_inquiry(false).await;
+}
+
+#[tokio::test]
+async fn delegated_execution_result_completes_without_using_session_delivery_reply() {
+    assert_delegated_task_survives_progress_inquiry(true).await;
+}
+
+async fn assert_delegated_task_survives_progress_inquiry(deferred_delivery: bool) {
+    let tmp = TempDir::new().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(tmp.path().join("delegate-progress.db").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let bus = Arc::new(InMemoryEventBus::new());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "delegate-task".into(),
+                r#type: "function".into(),
+                func_name: "delegate".into(),
+                arguments: json!({
+                    "task": "Run route_probe and report TASK-FIXED only after it finishes",
+                    "context_scope": "mind_only", "mode": "attached"
+                })
+                .to_string(),
+            }],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "long-delegated-tool".into(),
+                r#type: "function".into(),
+                func_name: "route_probe".into(),
+                arguments: json!({"value": "repair"}).to_string(),
+            }],
+        },
+        text_reply_response("PROGRESS-ONLY: code not changed yet"),
+        text_reply_response("TASK-FIXED"),
+        text_reply_response("PARENT-VERIFIED-TASK-FIXED"),
+    ]));
+    let arguments = Arc::new(Mutex::new(Vec::new()));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(DelegateTool::new(bus.clone())));
+    registry.register(Arc::new(RoutingProbeTool {
+        arguments: arguments.clone(),
+        delay_ms: 0,
+        completion_gate: Some(gate.clone()),
+    }));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(store.clone(), config.clone())
+            .with_session_store(store.clone())
+            .with_session_projection_store(store.clone()),
+    );
+    let orchestrator = new_test_orchestrator(
+        bus.clone(),
+        store.clone(),
+        client.clone(),
+        registry,
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+    let parent = "delegate-progress-parent";
+    publish_user(&bus, parent, "Delegate the repair").await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while arguments.lock().unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("original delegated task must reach the blocked tool");
+    let delegation = store
+        .list_delegations(DelegationFilter {
+            parent_session_id: Some(parent.into()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0);
+    if deferred_delivery {
+        use morphz::memory::{NewSchedule, ScheduleStore};
+        let start = store
+            .query(QueryFilter {
+                session_id: Some(delegation.child_session_id.clone()),
+                actors: vec!["System-Delegation".into()],
+                topic: Some("chat/user_message".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .remove(0);
+        // A task with background/scheduled work reports runtime/thread_result
+        // and is delivered later. Keep a finished checkpoint so the fixture
+        // exercises that production branch without introducing another wake.
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: "delegated-task-checkpoint".into(),
+                thread_id: morphz::memory::stable_thread_id(&start.id),
+                source_turn_id: start.id,
+                intent: "Check task progress".into(),
+                model_alias: None,
+                not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        store
+            .cancel_schedule(&schedule.id, schedule.revision)
+            .await
+            .unwrap();
+    }
+    bus.publish(Event::new(
+        "delegate-progress-inquiry".into(),
+        "Parent-Agent".into(),
+        morphz::event::TYPE_SESSION_SIGNAL.into(),
+        "chat/session_signal".into(),
+        json!({"context_id": delegation.child_context_id,
+            "session_id": delegation.child_session_id, "text": "Report current progress only"})
+        .as_object()
+        .unwrap()
+        .clone(),
+    ))
+    .await
+    .unwrap();
+    let progress = wait_for_topic(&store, "chat/reply", &delegation.child_session_id).await;
+    assert_eq!(progress.len(), 1);
+    assert_eq!(
+        progress[0].payload.get("text"),
+        Some(&json!("PROGRESS-ONLY: code not changed yet"))
+    );
+    assert_eq!(
+        store
+            .get_delegation(&delegation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        DelegationStatus::Running
+    );
+    assert!(store
+        .query(QueryFilter {
+            session_id: Some(parent.into()),
+            topic: Some("chat/reply".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+
+    gate.notify_one();
+    let replies = wait_for_topic(&store, "chat/reply", parent).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("PARENT-VERIFIED-TASK-FIXED"))
+    );
+    let completed = store.get_delegation(&delegation.id).await.unwrap().unwrap();
+    assert_eq!(completed.status, DelegationStatus::Completed);
+    let receipt = store
+        .query(QueryFilter {
+            event_id: completed.result_event_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0);
+    let source_id = receipt.payload["source_event_id"].as_str().unwrap();
+    assert_ne!(source_id, progress[0].id);
+    let actual = store
+        .query(QueryFilter {
+            event_id: Some(source_id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(actual.payload.get("text"), Some(&json!("TASK-FIXED")));
+    assert_eq!(
+        actual.topic,
+        if deferred_delivery {
+            "runtime/thread_result"
+        } else {
+            "chat/reply"
+        }
+    );
+    let root_id = actual.payload["root_turn_id"].as_str().unwrap();
+    assert!(root_id.starts_with("delegation_start_"));
+    let thread = store.get_thread_by_root(root_id).await.unwrap().unwrap();
+    assert_eq!(thread.result_event_id.as_deref(), Some(actual.id.as_str()));
+    assert!(thread.lifecycle.is_terminal());
+    assert_eq!(client.messages_seen().len(), 5);
+}
+
+#[tokio::test]
 async fn attached_delegate_waits_for_result_without_model_polling() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("attached-delegate.db");

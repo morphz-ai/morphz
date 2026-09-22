@@ -229,7 +229,7 @@ Delegation
 
 ### 5.2 回传契约
 
-子 Session 的 final reply 不直接路由给用户。Runtime 把它转换为父 Session 的标准 Tool Result：
+原委托任务的终态结果不直接路由给用户。Runtime 把它转换为父 Session 的标准 Tool Result：
 
 ```json
 {
@@ -242,6 +242,14 @@ Delegation
 ```
 
 父 Session 被正常 Tool Output 唤醒。回传使用 `parent_context_id`，绝不能沿用 child Context，也不能把父 Session 的路由映射改写为 child Context。
+
+结果归属必须落实到原任务 Thread，而不是 child Session：Runtime 从持久化的
+`System-Delegation` 启动 Event 确定原任务的 `root_turn_id`，核对 Agent、Context、Session
+和 Thread 路由，并且只接受该 Thread 已提交终态所记录的 `result_event_id`。
+`chat/reply`、`chat/no_reply` 和 `runtime/thread_result` 都必须通过这个身份校验；
+同 Session 的进度询问回复、Delivery 聚合回复或尚未终结的回复不能完成委托。
+重启恢复同样按原 Thread 的结果 ID 精确读取，不从 Session 最近回复推测完成结果。
+原任务缺失或归属不明确时不得把其他回复当作成功结果，重复投递仍只能结算一次。
 
 ## 6. 外部 Context 分享预留
 

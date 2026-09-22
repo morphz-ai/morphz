@@ -92,6 +92,10 @@ use approval_wait::{DeferredPlanApproval, ReadyToSuspendApprovalBatch};
 mod plan_children;
 use plan_children::PlanChildRunners;
 
+#[cfg(test)]
+#[path = "delegation_tests.rs"]
+mod delegation_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DelegationReturnRoute {
     thread_id: String,
@@ -4854,14 +4858,19 @@ impl Orchestrator {
             }),
         );
 
-        let orchestrator = Arc::clone(&self);
-        self.bus.subscribe(
-            "chat/*".to_string(),
-            Arc::new(move |event| {
-                let orchestrator = Arc::clone(&orchestrator);
-                Box::pin(async move { orchestrator.handle_chat_event(event).await })
-            }),
-        );
+        // An Execution Thread's result is authoritative before any Session
+        // Delivery aggregation. Delegations must settle from this original
+        // result, not from the later (possibly mixed) delivery reply.
+        for topic in ["chat/*", "runtime/thread_result"] {
+            let orchestrator = Arc::clone(&self);
+            self.bus.subscribe(
+                topic.to_string(),
+                Arc::new(move |event| {
+                    let orchestrator = Arc::clone(&orchestrator);
+                    Box::pin(async move { orchestrator.handle_chat_event(event).await })
+                }),
+            );
+        }
         // Background work whose owning Thread is already terminal escalates
         // to the Session as a fresh Runtime Wake DialogueTurn. Its topic is
         // intentionally outside `chat/*`, but it uses the same durable Signal
@@ -7185,32 +7194,54 @@ impl Orchestrator {
         session_store: &dyn SessionStore,
         delegation: crate::memory::DelegationRecord,
     ) -> Result<(), DynError> {
-        if session_store
+        if let Some(thread) = self.delegation_task_thread(&delegation).await? {
+            if !thread.lifecycle.is_terminal()
+                && session_store
+                    .list_thread_activations_by_root(
+                        &delegation.child_context_id,
+                        &thread.root_turn_id,
+                    )
+                    .await?
+                    .iter()
+                    .any(|activation| !activation.status.is_terminal())
+            {
+                return Ok(());
+            }
+            // Recover the task's committed result by identity, not the latest
+            // reply in its Session. Progress inquiries and Delivery Threads
+            // may finish while the original delegated task is still running.
+            if thread.lifecycle.is_terminal() {
+                if let Some(result_event_id) = thread.result_event_id.as_ref() {
+                    if let Some(terminal) = self
+                        .store
+                        .query(QueryFilter {
+                            event_id: Some(result_event_id.clone()),
+                            context_id: Some(delegation.child_context_id.clone()),
+                            session_id: Some(delegation.child_session_id.clone()),
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_iter()
+                        .next()
+                    {
+                        if self
+                            .complete_delegation_if_needed(&terminal, &delegation.child_session_id)
+                            .await?
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        } else if session_store
             .has_active_thread_activation_for_session(
                 &delegation.child_context_id,
                 &delegation.child_session_id,
             )
             .await?
         {
-            return Ok(());
-        }
-
-        let terminal = self
-            .store
-            .query(QueryFilter {
-                session_id: Some(delegation.child_session_id.clone()),
-                types: vec![TYPE_AGENT_CALL.to_string()],
-                latest_k: Some(100),
-                excluded_topics: vec!["chat/context_inspect".to_string()],
-                ..Default::default()
-            })
-            .await?
-            .into_iter()
-            .rev()
-            .find(|event| matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply"));
-        if let Some(terminal) = terminal {
-            self.complete_delegation_if_needed(&terminal, &delegation.child_session_id)
-                .await?;
+            // Preserve active legacy/programmatic work without an identifiable
+            // start Event, but never guess its result from unrelated replies.
             return Ok(());
         }
 
@@ -7244,7 +7275,7 @@ impl Orchestrator {
                     json!(json!({
                         "delegation_id": delegation.id,
                         "status": "failed",
-                        "error": "No active Evaluation or committed terminal result was found after Runtime restart; the stale running state was reclaimed without repeating external actions."
+                        "error": "No active Evaluation or committed terminal result for the original delegated task was found after Runtime restart; the stale running state was reclaimed without repeating external actions."
                     })
                     .to_string()),
                 ),
@@ -7689,7 +7720,10 @@ impl Orchestrator {
             .insert(session_id.clone(), context_id.clone());
 
         if event.event_type == TYPE_AGENT_CALL
-            && matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply")
+            && matches!(
+                event.topic.as_str(),
+                "chat/reply" | "chat/no_reply" | "runtime/thread_result"
+            )
         {
             if self
                 .complete_delegation_if_needed(&event, &session_id)
@@ -7758,6 +7792,62 @@ impl Orchestrator {
         self.process_routed_event(event).await
     }
 
+    /// Resolve the original task from its immutable Runtime-authored start
+    /// Event. This also works for existing timestamp-suffixed start IDs; a
+    /// Session is a container for multiple Threads, never a result owner.
+    async fn delegation_task_thread(
+        &self,
+        delegation: &crate::memory::DelegationRecord,
+    ) -> Result<Option<ThreadRecord>, DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(None);
+        };
+        let starts = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(delegation.child_context_id.clone()),
+                session_id: Some(delegation.child_session_id.clone()),
+                actors: vec!["System-Delegation".to_string()],
+                types: vec![TYPE_USER_MESSAGE.to_string()],
+                topic: Some("chat/user_message".to_string()),
+                latest_k: Some(2),
+                ..Default::default()
+            })
+            .await?;
+        let [start] = starts.as_slice() else {
+            // Missing or ambiguous ownership must fail closed. Do not adopt
+            // the first reply or a caller-supplied delegation_id as authority.
+            return Ok(None);
+        };
+        if start
+            .payload
+            .get("delegation_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(delegation.id.as_str())
+            || start
+                .payload
+                .get("return_context_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(delegation.parent_context_id.as_str())
+            || start
+                .payload
+                .get("return_session_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(delegation.parent_session_id.as_str())
+        {
+            return Ok(None);
+        }
+        Ok(session_store
+            .get_thread_by_root(&start.id)
+            .await?
+            .filter(|thread| {
+                thread.agent_id == delegation.agent_id
+                    && thread.context_id == delegation.child_context_id
+                    && thread.session_id == delegation.child_session_id
+                    && thread.root_turn_id == start.id
+            }))
+    }
+
     async fn complete_delegation_if_needed(
         &self,
         event: &Event,
@@ -7777,6 +7867,39 @@ impl Orchestrator {
             DelegationStatus::Completed | DelegationStatus::Failed | DelegationStatus::Cancelled
         ) {
             return Ok(true);
+        }
+        let Some(thread) = self.delegation_task_thread(&delegation).await? else {
+            return Ok(false);
+        };
+        if event.event_type != TYPE_AGENT_CALL
+            || !matches!(
+                event.topic.as_str(),
+                "chat/reply" | "chat/no_reply" | "runtime/thread_result"
+            )
+            || event
+                .payload
+                .get("context_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(delegation.child_context_id.as_str())
+            || event
+                .payload
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(delegation.child_session_id.as_str())
+            || event
+                .payload
+                .get("thread_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(thread.id.as_str())
+            || event
+                .payload
+                .get("root_turn_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(thread.root_turn_id.as_str())
+            || !thread.lifecycle.is_terminal()
+            || thread.result_event_id.as_deref() != Some(event.id.as_str())
+        {
+            return Ok(false);
         }
         let result = event
             .payload
