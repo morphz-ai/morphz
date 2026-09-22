@@ -88,6 +88,134 @@ async function open(page: Page) {
   ).toBeEnabled();
   return dialog;
 }
+test("API 连接可修改地址和替换密钥；独立保存、不回显、冲突可恢复", async ({
+  page,
+}, testInfo) => {
+  await prepare(page);
+  const connection = {
+    accountId: "account",
+    baseUrl: "https://example.com/v1",
+    protocol: "openai-responses",
+    version: "v1",
+    keyEditable: true,
+    keyUnavailableReason: null,
+    endpointAccounts: ["已有账号"],
+    keyAccounts: ["已有账号"],
+  };
+  const writes: any[] = [];
+  let fail = false;
+  await page.route("**/api/model-settings/update", (route) => {
+    const body = route.request().postDataJSON();
+    if (body.action !== "api-connection-read") {
+      writes.push(body);
+      if (fail)
+        return route.fulfill({
+          status: 409,
+          json: { message: "连接配置已被修改，请重新载入连接后再保存。" },
+        });
+      if (body.action === "api-endpoint") connection.baseUrl = body.baseUrl;
+      connection.version += "x";
+    }
+    return route.fulfill({ json: { kind: "connection", connection } });
+  });
+  const dialog = await open(page);
+  await dialog.getByRole("button", { name: "编辑连接", exact: true }).click();
+  const address = dialog.getByLabel("API 地址（Base URL）", { exact: true });
+  const key = dialog.getByLabel("API Key", { exact: true });
+  await expect(address).toHaveValue(connection.baseUrl);
+  await expect(key).toHaveValue("");
+  await expect(dialog.getByRole("button", { name: "更新密钥" })).toBeDisabled();
+  await address.fill("https://example.com/next");
+  await key.fill("test-new-key");
+  await expect(dialog).toContainText("可信服务");
+  await dialog.getByRole("button", { name: "保存地址" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("API 地址已保存。");
+  expect(writes[0]).toEqual({
+    action: "api-endpoint",
+    accountId: "account",
+    expectedVersion: "v1",
+    baseUrl: "https://example.com/next",
+  });
+  await expect(key).toHaveValue("test-new-key");
+  await dialog.getByRole("button", { name: "更新密钥" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("密钥已更新。");
+  await expect(key).toHaveValue("");
+  expect(writes[1]).toEqual({
+    action: "api-key",
+    accountId: "account",
+    expectedVersion: "v1x",
+    apiKey: "test-new-key",
+  });
+  fail = true;
+  await address.fill("https://example.com/conflict");
+  await dialog.getByRole("button", { name: "保存地址" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("重新载入连接");
+  await expect(address).toHaveValue("https://example.com/conflict");
+  fail = false;
+  await dialog.getByRole("button", { name: "重新载入连接" }).click();
+  await expect(address).toHaveValue("https://example.com/next");
+  await assertDialogControlMetrics(dialog);
+  for (const width of [760, 320]) {
+    await page.setViewportSize({ width, height: 620 });
+    await expect(
+      dialog.getByRole("button", { name: "更新密钥" }),
+    ).toBeInViewport();
+    expect(
+      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    ).toBe(true);
+  }
+  await dialog.screenshot({
+    path: testInfo.outputPath("api-connection-editor.png"),
+  });
+  await dialog.getByRole("button", { name: "返回模型设置" }).click();
+  await dialog.getByRole("button", { name: "编辑连接", exact: true }).click();
+  await expect(key).toHaveValue("");
+  expect(writes).toHaveLength(3);
+});
+test("共用连接明确确认影响范围；外部凭据只读且返回不保存", async ({ page }) => {
+  await prepare(page);
+  const connection = {
+    accountId: "account",
+    baseUrl: "https://example.com/v1",
+    protocol: "openai-chat",
+    version: "v1",
+    keyEditable: true,
+    keyUnavailableReason: null as string | null,
+    endpointAccounts: ["已有账号", "共用账号"],
+    keyAccounts: ["已有账号", "共用账号"],
+  };
+  const writes: unknown[] = [];
+  await page.route("**/api/model-settings/update", (route) => {
+    const body = route.request().postDataJSON();
+    if (body.action !== "api-connection-read") writes.push(body);
+    return route.fulfill({ json: { kind: "connection", connection } });
+  });
+  const dialog = await open(page);
+  await dialog.getByRole("button", { name: "编辑连接" }).click();
+  await dialog
+    .getByLabel("API 地址（Base URL）")
+    .fill("https://example.com/next");
+  await dialog.getByLabel("API Key", { exact: true }).fill("fixture-key");
+  await expect(dialog.getByRole("button", { name: "保存地址" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "更新密钥" })).toBeDisabled();
+  await dialog.getByRole("checkbox", { name: /同时更新共用此地址/ }).check();
+  await expect(dialog.getByRole("button", { name: "保存地址" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "更新密钥" })).toBeDisabled();
+  await dialog.getByRole("checkbox", { name: /同时更新共用此密钥/ }).check();
+  await expect(dialog.getByRole("button", { name: "更新密钥" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "返回模型设置" }).click();
+  expect(writes).toEqual([]);
+  connection.keyEditable = false;
+  connection.keyUnavailableReason =
+    "密钥由外部凭据源管理，请在原凭据源中更新。";
+  await dialog.getByRole("button", { name: "编辑连接" }).click();
+  await expect(dialog.getByLabel("API Key", { exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await expect(dialog).toContainText("密钥由外部凭据源管理");
+  await expect(dialog.getByLabel("API 地址（Base URL）")).toHaveValue(
+    connection.baseUrl,
+  );
+});
 test("模型与账号可直接打开；没有多余返回层级，Esc 返回入口且保留草稿", async ({
   page,
 }) => {

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { DomainError } from "../../core/src/model.js";
 import { modelOptionSchema } from "../../core/src/inference.js";
 import {
+  apiConnectionSettingsSchema,
+  apiProtocolSchema,
   modelSettingsActionSchema,
   type ModelSettingsSnapshot,
   type ModelSettingsResult,
@@ -168,16 +170,20 @@ export class RuntimeModelSettings {
         return undefined;
       // Runtime/provider errors can echo keys, URLs or callback codes.
       throw new DomainError(
-        response.status === 401 || response.status === 403
-          ? "forbidden"
-          : "invalid",
-        response.status === 401 || response.status === 403
-          ? "连接凭据无效或没有模型管理权限，请检查连接设置。"
-          : response.status === 404
-            ? "操作已失效或当前运行服务不支持，请刷新后重试。"
-            : method === "GET"
-              ? "未能读取模型设置，请重试。"
-              : "运行服务未确认操作成功，请检查配置并刷新设置后重试。",
+        response.status === 409
+          ? "conflict"
+          : response.status === 401 || response.status === 403
+            ? "forbidden"
+            : "invalid",
+        response.status === 409
+          ? "连接配置已被修改，请重新载入连接后再保存。"
+          : response.status === 401 || response.status === 403
+            ? "连接凭据无效或没有模型管理权限，请检查连接设置。"
+            : response.status === 404
+              ? "操作已失效或当前运行服务不支持，请刷新后重试。"
+              : method === "GET"
+                ? "未能读取模型设置，请重试。"
+                : "运行服务未确认操作成功，请检查配置并刷新设置后重试。",
       );
     }
     const text = await response.text();
@@ -282,6 +288,55 @@ export class RuntimeModelSettings {
     try {
       assertActive();
       signal.throwIfAborted();
+      if (
+        action.action === "api-connection-read" ||
+        action.action === "api-endpoint" ||
+        action.action === "api-key"
+      ) {
+        const result = z
+          .object({
+            account_id: z.literal(action.accountId),
+            base_url: z.string(),
+            protocol: apiProtocolSchema,
+            version: z.string(),
+            key_editable: z.boolean(),
+            key_unavailable_reason: z.string().nullable(),
+            endpoint_accounts: z.array(z.string()),
+            key_accounts: z.array(z.string()),
+          })
+          .parse(
+            await call(
+              `/api/runtime/providers/accounts/${encodeURIComponent(action.accountId)}/connection`,
+              action.action === "api-connection-read" ? "GET" : "PUT",
+              action.action === "api-connection-read"
+                ? undefined
+                : action.action === "api-endpoint"
+                  ? {
+                      kind: "endpoint",
+                      expected_version: action.expectedVersion,
+                      base_url: safeEndpoint(action.baseUrl),
+                    }
+                  : {
+                      kind: "credential",
+                      expected_version: action.expectedVersion,
+                      api_key: action.apiKey,
+                    },
+            ),
+          );
+        return {
+          kind: "connection",
+          connection: apiConnectionSettingsSchema.parse({
+            accountId: result.account_id,
+            baseUrl: safeEndpoint(result.base_url),
+            protocol: result.protocol,
+            version: result.version,
+            keyEditable: result.key_editable,
+            keyUnavailableReason: result.key_unavailable_reason,
+            endpointAccounts: result.endpoint_accounts,
+            keyAccounts: result.key_accounts,
+          }),
+        };
+      }
       if (action.action === "default") {
         const current = inferenceSchema.parse(
           await call("/api/runtime/inference"),

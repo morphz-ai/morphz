@@ -655,6 +655,12 @@ impl SecretStore {
             .collect())
     }
 
+    /// Process-local credential generation. Consumers can discard materialized
+    /// credentials after a managed write without reading or retaining values.
+    pub(crate) fn credential_revision(&self) -> u64 {
+        self.catalog_revision.load(Ordering::Acquire)
+    }
+
     pub fn list_authorized(
         &self,
         usage: SecretUseContext<'_>,
@@ -747,7 +753,7 @@ impl SecretStore {
         next.insert(name.to_string(), entry.clone());
         self.persist_catalog(next.values())?;
         *guard = next;
-        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+        self.catalog_revision.fetch_add(1, Ordering::Release);
         drop(guard);
         if let Some(previous) =
             previous.filter(|entry| cleanup_previous && entry.value_backend != backend_id)
@@ -818,7 +824,7 @@ impl SecretStore {
         next.insert(name.to_string(), entry.clone());
         self.persist_catalog(next.values())?;
         *guard = next;
-        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+        self.catalog_revision.fetch_add(1, Ordering::Release);
         Ok(entry)
     }
 
@@ -828,7 +834,7 @@ impl SecretStore {
             .write()
             .map_err(|_| "Secret metadata catalog lock is poisoned".to_string())?;
         let Some(entry) = guard.get(name).cloned() else {
-            self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+            self.catalog_revision.fetch_add(1, Ordering::Release);
             return Ok(false);
         };
         let backend = self.backend(&entry.value_backend)?;
@@ -839,7 +845,7 @@ impl SecretStore {
         next.remove(name);
         self.persist_catalog(next.values())?;
         *guard = next;
-        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+        self.catalog_revision.fetch_add(1, Ordering::Release);
         Ok(true)
     }
 
@@ -1020,7 +1026,7 @@ impl SecretStore {
         next.insert(next_entry.name.clone(), next_entry);
         self.persist_catalog(next.values())?;
         *guard = next;
-        self.catalog_revision.fetch_add(1, Ordering::Relaxed);
+        self.catalog_revision.fetch_add(1, Ordering::Release);
         Ok(true)
     }
 

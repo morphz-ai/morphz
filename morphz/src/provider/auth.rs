@@ -1058,6 +1058,10 @@ impl ProviderAuthManager {
             .resolve(alias, SecretUseContext::default())
     }
 
+    pub(crate) fn credential_revision(&self) -> u64 {
+        self.secret_store.credential_revision()
+    }
+
     /// Make a newly persisted OAuth account available to the current process.
     /// The Runtime publishes the matching Provider and Model Route through the
     /// same control-plane mutation before the login flow is started.

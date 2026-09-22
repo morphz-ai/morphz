@@ -378,6 +378,11 @@ struct RoutingState {
     affinity: HashMap<String, String>,
 }
 
+struct CachedProtocolClient {
+    credential_revision: Option<u64>,
+    client: Arc<ProtocolClient>,
+}
+
 pub struct RoutedClient {
     catalog: RwLock<EffectiveProviderCatalog>,
     llm: RwLock<LlmConfig>,
@@ -386,7 +391,7 @@ pub struct RoutedClient {
     account_store: RwLock<Option<Arc<dyn ProviderAccountStateStore>>>,
     agent_binding_store: RwLock<Option<Arc<dyn AgentProviderBindingStore>>>,
     auth_manager: RwLock<Option<Arc<ProviderAuthManager>>>,
-    clients: Mutex<HashMap<String, Arc<ProtocolClient>>>,
+    clients: Mutex<HashMap<String, CachedProtocolClient>>,
     prompt_counters: Mutex<HashMap<String, Arc<ProtocolClient>>>,
 }
 
@@ -1473,6 +1478,17 @@ impl RoutedClient {
                 )
             })?;
         let oauth = account.auth_adapter.ends_with("-oauth");
+        let auth_manager = self.auth_manager();
+        // Capture before materialization. An in-flight build may overlap a
+        // rotation, but its old generation can never be reused by a subsequent
+        // request. Replacing one bounded cache entry also releases the old key.
+        let credential_revision = auth_manager.as_ref().and_then(|manager| {
+            catalog
+                .credentials
+                .get(&account.credential_ref)
+                .filter(|credential| credential.source == CredentialSource::Env)
+                .map(|_| manager.credential_revision())
+        });
         let cache_key = format!(
             "{}:{}:{}",
             binding.provider_instance_id, binding.auth_account_id, binding.physical_model
@@ -1483,7 +1499,8 @@ impl RoutedClient {
                 .lock()
                 .map_err(|_| "Provider Client cache lock is poisoned")?
                 .get(&cache_key)
-                .cloned()
+                .filter(|cached| cached.credential_revision == credential_revision)
+                .map(|cached| Arc::clone(&cached.client))
             {
                 return Ok(client);
             }
@@ -1518,7 +1535,7 @@ impl RoutedClient {
                             account.credential_ref
                         )
                     })?;
-                    Some(match self.auth_manager() {
+                    Some(match auth_manager.as_ref() {
                         Some(manager) => manager
                             .materialize_static_credential(alias)?
                             .ok_or_else(|| {
@@ -1591,7 +1608,13 @@ impl RoutedClient {
             self.clients
                 .lock()
                 .map_err(|_| "Provider Client cache lock is poisoned")?
-                .insert(cache_key, Arc::clone(&client));
+                .insert(
+                    cache_key,
+                    CachedProtocolClient {
+                        credential_revision,
+                        client: Arc::clone(&client),
+                    },
+                );
         }
         Ok(client)
     }
@@ -2321,6 +2344,100 @@ mod tests {
             },
         );
         app
+    }
+
+    #[tokio::test]
+    async fn cached_static_clients_follow_secret_rotation_and_revocation() {
+        use crate::secret_store::{HostEnvFileSecretBackend, SecretScopeKind, SecretStore};
+
+        let directory = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(
+            SecretStore::new(
+                directory.path().join("secrets.json"),
+                Arc::new(HostEnvFileSecretBackend::new(
+                    directory.path().join("credentials.env"),
+                )),
+            )
+            .unwrap(),
+        );
+        let alias = "MORPHZ_TEST_HOT_ROTATION";
+        secrets
+            .put(alias, "synthetic-one", SecretScopeKind::Runtime, None)
+            .unwrap();
+        let mut config = routed_config();
+        config.credentials.insert(
+            "shared".into(),
+            CredentialConfig {
+                source: CredentialSource::Env,
+                name: Some(alias.into()),
+                ..CredentialConfig::default()
+            },
+        );
+        for account in config.auth_accounts.values_mut() {
+            account.auth_adapter = "credential".into();
+            account.credential_ref = "shared".into();
+        }
+        let store = Arc::new(
+            SqliteStore::new(directory.path().join("accounts.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let client = RoutedClient::new(&config, "coding".into()).unwrap();
+        client.attach_provider_auth_manager(Arc::new(ProviderAuthManager::new(
+            config.auth_accounts.clone(),
+            Arc::clone(&secrets),
+            store,
+        )));
+        let first_binding = client.primary_binding().unwrap();
+        let mut other_binding = first_binding.clone();
+        other_binding.auth_account_id = if first_binding.auth_account_id == "account-a" {
+            "account-b"
+        } else {
+            "account-a"
+        }
+        .into();
+        let first = client.protocol_client(&first_binding).await.unwrap();
+        let other = client.protocol_client(&other_binding).await.unwrap();
+        assert!(Arc::ptr_eq(
+            &first,
+            &client.protocol_client(&first_binding).await.unwrap()
+        ));
+        // A completed key write must invalidate both accounts sharing the alias,
+        // without any catalog publication or caller-specific invalidation hook.
+        secrets
+            .put(alias, "synthetic-two", SecretScopeKind::Runtime, None)
+            .unwrap();
+        let rotated = client.protocol_client(&first_binding).await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &rotated));
+        assert!(!Arc::ptr_eq(
+            &other,
+            &client.protocol_client(&other_binding).await.unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &rotated,
+            &client.protocol_client(&first_binding).await.unwrap()
+        ));
+        assert_eq!(client.clients.lock().unwrap().len(), 2);
+        // Simulate an old in-flight construction inserting after the rotation.
+        let key = format!(
+            "{}:{}:{}",
+            first_binding.provider_instance_id,
+            first_binding.auth_account_id,
+            first_binding.physical_model
+        );
+        client.clients.lock().unwrap().insert(
+            key,
+            CachedProtocolClient {
+                credential_revision: Some(secrets.credential_revision() - 1),
+                client: Arc::clone(&first),
+            },
+        );
+        assert!(!Arc::ptr_eq(
+            &first,
+            &client.protocol_client(&first_binding).await.unwrap()
+        ));
+        secrets.delete(alias).unwrap();
+        assert!(client.protocol_client(&first_binding).await.is_err());
     }
 
     #[tokio::test]

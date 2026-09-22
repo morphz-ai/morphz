@@ -17,17 +17,24 @@ const runtimeDirectory = join(fixture, "runtime");
 mkdirSync(runtimeDirectory, { mode: 0o700 });
 mkdirSync(join(fixture, "data"), { mode: 0o700 });
 const token = randomUUID(),
-  key = "isolated-model-settings-key";
+  key = "isolated-model-settings-key",
+  replacementKey = "isolated-model-settings-rotated-key",
+  hotReplacementKey = "isolated-model-settings-hot-rotated-key";
+let editedProviderKey = replacementKey;
 const providerRequests = [];
 const provider = createServer((req, res) => {
   providerRequests.push({ method: req.method, path: req.url });
   res.setHeader("Content-Type", "application/json");
-  if (req.headers.authorization !== `Bearer ${key}`) {
+  const edited = req.url.startsWith("/edited/");
+  const path = edited ? req.url.replace("/edited/", "/") : req.url;
+  if (
+    req.headers.authorization !== `Bearer ${edited ? editedProviderKey : key}`
+  ) {
     res.writeHead(401);
     res.end("{}");
     return;
   }
-  if (req.url === "/v1/models") {
+  if (path === "/v1/models") {
     res.end(
       JSON.stringify({
         data: [{ id: "fixture-first" }, { id: "fixture-second" }],
@@ -35,7 +42,7 @@ const provider = createServer((req, res) => {
     );
     return;
   }
-  if (req.url === "/v1/chat/completions") {
+  if (path === "/v1/chat/completions") {
     res.end(
       JSON.stringify({
         id: "fixture-probe",
@@ -358,6 +365,99 @@ try {
   const row = dialog
     .locator(".model-account-list li")
     .filter({ hasText: "TEST 桌面 API" });
+  const createdCatalog = await runtimeRead("/api/runtime/providers");
+  const createdAccount = Object.entries(createdCatalog.auth_accounts).find(
+    ([, a]) => a.config.label === "TEST 桌面 API",
+  );
+  assert.ok(createdAccount);
+  const connectionPath = `/api/runtime/providers/accounts/${encodeURIComponent(createdAccount[0])}/connection`;
+  const originalConnection = await runtimeRead(connectionPath);
+  const providerCallsBeforeEdit = providerRequests.length;
+  const editedUrl = providerUrl.replace("/v1", "/edited/v1");
+  await row.getByRole("button", { name: "编辑连接", exact: true }).click();
+  await expect(
+    dialog.getByLabel("API 地址（Base URL）", { exact: true }),
+  ).toHaveValue(providerUrl);
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await dialog
+    .getByLabel("API 地址（Base URL）", { exact: true })
+    .fill(editedUrl);
+  await dialog.getByRole("button", { name: "保存地址", exact: true }).click();
+  await expect(dialog).toContainText("API 地址已保存");
+  const addressSaved = await runtimeRead(connectionPath);
+  assert.equal(addressSaved.base_url, editedUrl);
+  assert.notEqual(addressSaved.version, originalConnection.version);
+  await dialog.getByLabel("API Key", { exact: true }).fill(replacementKey);
+  await dialog.getByRole("button", { name: "更新密钥", exact: true }).click();
+  await expect(dialog).toContainText("密钥已更新");
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
+  const keySaved = await runtimeRead(connectionPath);
+  assert.notEqual(keySaved.version, addressSaved.version);
+  assert.equal(keySaved.base_url, editedUrl);
+  assert.ok(!JSON.stringify(keySaved).includes(replacementKey));
+  assert.equal(
+    providerRequests.length,
+    providerCallsBeforeEdit,
+    "Editing connection must not contact provider",
+  );
+  // Warm a real protocol client, then rotate only its key. Neither this read-only
+  // diagnostic nor key editing may reload the catalog to hide a stale-key cache.
+  const testConnection = async () => {
+    const response = await fetch(
+      runtimeUrl + connectionPath.replace(/\/connection$/, "/test"),
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: "fixture-first" }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const diagnostic = await response.json();
+    assert.equal(diagnostic.health_verified, true, JSON.stringify(diagnostic));
+  };
+  await testConnection();
+  const warmedCalls = providerRequests.length;
+  editedProviderKey = hotReplacementKey;
+  await dialog.getByLabel("API Key", { exact: true }).fill(hotReplacementKey);
+  await dialog.getByRole("button", { name: "更新密钥", exact: true }).click();
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
+  assert.equal(
+    providerRequests.length,
+    warmedCalls,
+    "Key rotation must not probe provider",
+  );
+  assert.equal((await runtimeRead(connectionPath)).base_url, editedUrl);
+  await testConnection();
+  for (const zoom of [1, 2]) {
+    await app.evaluate(({ BrowserWindow }, zoom) => {
+      const win = BrowserWindow.getAllWindows().find(
+        (w) => w.webContents.getURL() === "morphz://app/",
+      );
+      win.webContents.setZoomFactor(zoom);
+    }, zoom);
+    await dialog
+      .getByRole("button", { name: "更新密钥", exact: true })
+      .scrollIntoViewIfNeeded();
+    assert.ok(await dialog.evaluate((e) => e.scrollWidth <= e.clientWidth + 1));
+    await capture(`test-results/model-settings-edit-${zoom}.png`);
+  }
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1),
+  );
+  await dialog
+    .getByRole("button", { name: "返回模型设置", exact: true })
+    .click();
+  await row.getByRole("button", { name: "编辑连接", exact: true }).click();
+  await expect(
+    dialog.getByLabel("API 地址（Base URL）", { exact: true }),
+  ).toHaveValue(editedUrl);
+  await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
+  await dialog
+    .getByRole("button", { name: "返回模型设置", exact: true })
+    .click();
   await row.getByRole("button", { name: "选择模型" }).click();
   await dialog.getByRole("button", { name: "读取并测试", exact: true }).click();
   await expect(
@@ -478,6 +578,7 @@ try {
   );
   assert.ok(account);
   assert.equal((await runtimeRead("/api/runtime/inference")).model, next.value);
+  assert.equal(providerRequests.filter((r) => r.method === "POST").length, 3);
   await app.close();
   app = undefined;
   await stopRuntime();
@@ -485,13 +586,36 @@ try {
   assert.equal((await runtimeRead("/api/runtime/inference")).model, next.value);
   const persisted = await runtimeRead("/api/runtime/providers");
   assert.ok(persisted.auth_accounts[account[0]]);
+  assert.equal((await runtimeRead(connectionPath)).base_url, editedUrl);
+  const refreshedModels = await fetch(
+    runtimeUrl +
+      `/api/runtime/providers/accounts/${encodeURIComponent(account[0])}/refresh-models`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    },
+  );
+  assert.equal(refreshedModels.status, 200, await refreshedModels.text());
+  assert.ok(providerRequests.some((r) => r.path === "/edited/v1/models"));
   assert.ok(
-    providerRequests.every(
-      (r) => r.path === "/v1/models" || r.path === "/v1/chat/completions",
+    providerRequests.some((r) => r.path === "/edited/v1/chat/completions"),
+  );
+  assert.ok(
+    providerRequests.every((r) =>
+      [
+        "/v1/models",
+        "/edited/v1/models",
+        "/edited/v1/chat/completions",
+      ].includes(r.path),
     ),
     JSON.stringify(providerRequests),
   );
-  assert.equal(providerRequests.filter((r) => r.method === "POST").length, 1);
+  // Two explicit warm/rotation probes, one UI test, one post-restart test.
+  assert.equal(providerRequests.filter((r) => r.method === "POST").length, 4);
   assert.ok(
     !readFileSync(join(fixture, "data/runtime.json"), "utf8").includes(key),
   );
@@ -500,6 +624,9 @@ try {
       productionIPC: true,
       realRuntime: true,
       realApiSetup: true,
+      editedEndpointAndRotatedKeyUsedByProvider: true,
+      cachedClientUsesHotRotatedKey: true,
+      connectionPersistedAcrossRuntimeRestart: true,
       accountModels: true,
       defaultPersistedAcrossRuntimeRestart: true,
       preservedExistingAccounts: true,

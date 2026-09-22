@@ -33,6 +33,25 @@ export const modelSettingsActionSchema = z.discriminatedUnion("action", [
     .strict(),
   z.object({ action: z.literal("account-refresh"), accountId: id }).strict(),
   z
+    .object({ action: z.literal("api-connection-read"), accountId: id })
+    .strict(),
+  z
+    .object({
+      action: z.literal("api-endpoint"),
+      accountId: id,
+      expectedVersion: id,
+      baseUrl: apiConnection.baseUrl,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("api-key"),
+      accountId: id,
+      expectedVersion: id,
+      apiKey: apiConnection.apiKey,
+    })
+    .strict(),
+  z
     .object({
       action: z.literal("account-models"),
       accountId: id,
@@ -80,7 +99,22 @@ export const modelLoginSchema = z.object({
   manualResponse: z.boolean(),
 });
 export type ModelLogin = z.infer<typeof modelLoginSchema>;
+export const apiConnectionSettingsSchema = z.object({
+  accountId: id,
+  baseUrl: z.string(),
+  protocol: apiProtocolSchema,
+  version: id,
+  keyEditable: z.boolean(),
+  keyUnavailableReason: z.string().nullable(),
+  endpointAccounts: z.array(z.string()),
+  keyAccounts: z.array(z.string()),
+});
+export type ApiConnectionSettings = z.infer<typeof apiConnectionSettingsSchema>;
 export const modelSettingsResultSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("connection"),
+    connection: apiConnectionSettingsSchema,
+  }),
   z.object({
     kind: z.literal("saved"),
     accountId: z.string().optional(),

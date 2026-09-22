@@ -93,6 +93,19 @@ async function fixture() {
     }
     const json = (value: unknown) => res.end(JSON.stringify(value));
     if (req.url === "/api/runtime/providers") return json(providers);
+    if (req.url === "/api/runtime/providers/accounts/existing/connection")
+      return json({
+        account_id: "existing",
+        base_url: "https://example.com/v1",
+        protocol: "openai-responses",
+        version: "connection-v2",
+        key_editable: true,
+        key_unavailable_reason: null,
+        endpoint_accounts: ["Existing account"],
+        key_accounts: ["Existing account"],
+        api_key: secret,
+        credential_ref: secret,
+      });
     if (req.url === "/api/runtime/providers/oauth/services")
       return json({
         services: [
@@ -191,6 +204,68 @@ test("model settings return only sanitized real accounts, actual services and en
     assert.equal(result.services[1]!.experimental, true);
     assert.ok(!JSON.stringify(result).includes(f.secret));
     assert.ok(!JSON.stringify(result).includes("credential_ref"));
+  } finally {
+    await f.close();
+  }
+});
+test("API connection edits are bounded, redact secrets, preserve accounts and expose conflicts", async () => {
+  const f = await fixture();
+  try {
+    const read = await f.apply({
+      action: "api-connection-read",
+      accountId: "existing",
+    });
+    assert.equal(read.kind, "connection");
+    assert.ok(!JSON.stringify(read).includes(f.secret));
+    assert.ok(!JSON.stringify(read).includes("credential_ref"));
+    await f.apply({
+      action: "api-endpoint",
+      accountId: "existing",
+      expectedVersion: "v1",
+      baseUrl: "https://example.com/next/",
+    });
+    await f.apply({
+      action: "api-key",
+      accountId: "existing",
+      expectedVersion: "v2",
+      apiKey: "replacement-fixture",
+    });
+    assert.deepEqual(
+      f.calls.filter((c) => c.method !== "GET").map((c) => c.body),
+      [
+        {
+          kind: "endpoint",
+          expected_version: "v1",
+          base_url: "https://example.com/next",
+        },
+        {
+          kind: "credential",
+          expected_version: "v2",
+          api_key: "replacement-fixture",
+        },
+      ],
+    );
+    assert.ok(f.calls.every((c) => c.path.endsWith("/connection")));
+    await assert.rejects(
+      f.apply({
+        action: "api-endpoint",
+        accountId: "existing",
+        expectedVersion: "v1",
+        baseUrl: "https://example.com?token=secret",
+      }),
+      /API 地址/,
+    );
+    f.state.fail = true;
+    f.state.failureStatus = 409;
+    await assert.rejects(
+      f.apply({
+        action: "api-key",
+        accountId: "existing",
+        expectedVersion: "stale",
+        apiKey: f.secret,
+      }),
+      /重新载入/,
+    );
   } finally {
     await f.close();
   }

@@ -1064,6 +1064,10 @@ impl Server {
                 axum::routing::put(handle_put_auth_account_config),
             )
             .route(
+                "/api/runtime/providers/accounts/:account_id/connection",
+                get(handle_get_api_connection).put(handle_update_api_connection),
+            )
+            .route(
                 "/api/runtime/providers/accounts/:account_id/models",
                 axum::routing::put(handle_put_provider_account_models),
             )
@@ -2267,6 +2271,47 @@ async fn handle_put_provider_instance_config(
         .await
     {
         Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_get_api_connection(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state.sdk.api_connection_settings(&account_id) {
+        Ok(settings) => Json(settings).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_api_connection(
+    State(state): State<Arc<AppState>>,
+    Path(account_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(update): Json<crate::sdk::ApiConnectionUpdate>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let Some(path) = state.managed_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Model configuration path is unavailable",
+        );
+    };
+    match state
+        .sdk
+        .update_api_connection(path, &account_id, update)
+        .await
+    {
+        Ok(settings) => Json(settings).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -12012,6 +12057,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_connection_read_and_update_require_operator_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, _) =
+            test_state_at_with_workers(&dir.path().join("store.sqlite"), false).await;
+        let config = Arc::get_mut(&mut state).unwrap();
+        config.auth_token = Some("dashboard-secret".into());
+        config.gateway_token = Some("gateway-secret".into());
+        config.identity.mode = ServerIdentityMode::TrustedGateway;
+        for headers in [HeaderMap::new(), gateway_headers(Some("site-user"))] {
+            let read = handle_get_api_connection(
+                State(Arc::clone(&state)),
+                Path("missing-account".into()),
+                headers.clone(),
+                Query(AuthQuery::default()),
+            )
+            .await
+            .into_response();
+            assert_eq!(read.status(), StatusCode::UNAUTHORIZED);
+            let write = handle_update_api_connection(
+                State(Arc::clone(&state)),
+                Path("missing-account".into()),
+                headers,
+                Query(AuthQuery::default()),
+                Json(crate::sdk::ApiConnectionUpdate::Credential {
+                    expected_version: "unknown".into(),
+                    api_key: "must-not-save".into(),
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(write.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(state.sdk.list_managed_secrets().unwrap().is_empty());
+        let authorized = handle_get_api_connection(
+            State(state),
+            Path("missing-account".into()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(authorized.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn dashboard_provider_setup_atomically_persists_a_complete_catalog() {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
@@ -12109,6 +12199,157 @@ mod tests {
         let secrets = state.sdk.list_managed_secrets().unwrap();
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].name, "MORPHZ_PROVIDER_DASHBOARD_API_KEY");
+
+        // Editing reuses this account, route and secret; it is not onboarding.
+        let original = state
+            .sdk
+            .api_connection_settings("dashboard-account")
+            .unwrap();
+        assert!(original.key_editable);
+        let read = handle_get_api_connection(
+            State(Arc::clone(&state)),
+            Path("dashboard-account".into()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(read.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(read.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("dashboard-secret-value"));
+        assert!(!text.contains("credential_ref"));
+        assert!(!text.contains("MORPHZ_PROVIDER_DASHBOARD_API_KEY"));
+        for url in [
+            "http://example.com/v1",
+            "https://user:password@example.com",
+            "https://example.com?api_key=secret",
+            "https://example.com/#secret",
+        ] {
+            let error = state
+                .sdk
+                .update_api_connection(
+                    &managed_config_path,
+                    "dashboard-account",
+                    crate::sdk::ApiConnectionUpdate::Endpoint {
+                        expected_version: original.version.clone(),
+                        base_url: url.into(),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, SdkErrorCode::InvalidArgument);
+        }
+        let changed = state
+            .sdk
+            .update_api_connection(
+                &managed_config_path,
+                "dashboard-account",
+                crate::sdk::ApiConnectionUpdate::Endpoint {
+                    expected_version: original.version.clone(),
+                    base_url: "http://localhost:9913/v1/".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.base_url, "http://localhost:9913/v1");
+        assert_ne!(changed.version, original.version);
+        let mut expected = managed.clone();
+        expected
+            .provider_instances
+            .get_mut("dashboard-provider")
+            .unwrap()
+            .base_url = changed.base_url.clone();
+        let saved: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&managed_config_path).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(saved).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(state.sdk.list_managed_secrets().unwrap(), secrets);
+        let stale = state
+            .sdk
+            .update_api_connection(
+                &managed_config_path,
+                "dashboard-account",
+                crate::sdk::ApiConnectionUpdate::Credential {
+                    expected_version: original.version,
+                    api_key: "must-not-save".into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(stale.code, SdkErrorCode::Conflict);
+        assert_eq!(state.sdk.list_managed_secrets().unwrap(), secrets);
+        let rotated = state
+            .sdk
+            .update_api_connection(
+                &managed_config_path,
+                "dashboard-account",
+                crate::sdk::ApiConnectionUpdate::Credential {
+                    expected_version: changed.version.clone(),
+                    api_key: "rotated-test-secret".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(rotated.version, changed.version);
+        let updated_secrets = state.sdk.list_managed_secrets().unwrap();
+        assert_eq!(
+            updated_secrets.len(),
+            1,
+            "rotation must not leak orphan credentials"
+        );
+        assert_eq!(updated_secrets[0].name, secrets[0].name);
+        assert_eq!(updated_secrets[0].value_backend, secrets[0].value_backend);
+        assert_eq!(updated_secrets[0].created_at, secrets[0].created_at);
+        assert!(!serde_json::to_string(&rotated)
+            .unwrap()
+            .contains("rotated-test-secret"));
+        let (one, two) = tokio::join!(
+            state.sdk.update_api_connection(
+                &managed_config_path,
+                "dashboard-account",
+                crate::sdk::ApiConnectionUpdate::Endpoint {
+                    expected_version: rotated.version.clone(),
+                    base_url: "http://localhost:9914/v1".into()
+                }
+            ),
+            state.sdk.update_api_connection(
+                &managed_config_path,
+                "dashboard-account",
+                crate::sdk::ApiConnectionUpdate::Endpoint {
+                    expected_version: rotated.version,
+                    base_url: "http://localhost:9915/v1".into()
+                }
+            )
+        );
+        assert_eq!(
+            usize::from(one.is_ok()) + usize::from(two.is_ok()),
+            1,
+            "concurrent stale edits must not overwrite one another"
+        );
+        let mut shared = managed.auth_accounts["dashboard-account"].clone();
+        shared.label = Some("Shared API account".into());
+        state
+            .sdk
+            .put_auth_account_config(&managed_config_path, "shared-account", shared)
+            .await
+            .unwrap();
+        let shared = state
+            .sdk
+            .api_connection_settings("dashboard-account")
+            .unwrap();
+        assert_eq!(shared.endpoint_accounts.len(), 2);
+        assert_eq!(shared.key_accounts.len(), 2);
+        assert!(shared
+            .endpoint_accounts
+            .contains(&"Shared API account".to_string()));
+        assert!(shared
+            .key_accounts
+            .contains(&"Shared API account".to_string()));
     }
 
     #[tokio::test]
@@ -13474,7 +13715,10 @@ mod tests {
         assert_eq!(diagnostics.requests_started, 0); // Login is not a refresh.
         assert!(!diagnostics.incomplete);
         let mut older_snapshot = serde_json::to_value(&snapshot).unwrap();
-        older_snapshot.as_object_mut().unwrap().remove("oauth_refresh");
+        older_snapshot
+            .as_object_mut()
+            .unwrap()
+            .remove("oauth_refresh");
         let older: crate::provider::control::ProviderControlSnapshot =
             serde_json::from_value(older_snapshot).unwrap();
         assert!(older.oauth_refresh.is_none()); // Missing must not mean zero.

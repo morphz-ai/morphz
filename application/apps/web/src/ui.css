@@ -1910,6 +1910,43 @@ body:has(dialog[open]) .cognitive-application-frame {
 .model-account-list button {
   flex-shrink: 0;
 }
+.model-account-list li > .model-account-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.model-connection-editor,
+.model-connection-editor form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.model-connection-editor {
+  gap: 18px;
+}
+.model-connection-editor .model-settings-section-heading > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.model-connection-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.model-connection-field > input {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.model-connection-editor .model-shared-confirm {
+  display: flex;
+  align-items: start;
+  gap: 6px;
+  font-size: 12px;
+}
 .model-api-form,
 .model-login,
 .model-login form {

@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeft, ArrowUpRight, Plus, RefreshCw, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Plus,
+  RefreshCw,
+  Pencil,
+  X,
+} from "lucide-react";
+import { ApiConnectionEditor } from "./ApiConnectionEditor.js";
 import { applicationCall } from "./application-transport.js";
 import { modelLabel } from "../../../packages/core/src/inference.js";
 import {
@@ -8,6 +16,7 @@ import {
   type ModelSettingsAction,
   type ModelSettingsSnapshot,
   type ModelLogin,
+  type ApiConnectionSettings,
 } from "../../../packages/core/src/model-settings.js";
 
 export function ModelSettings({
@@ -28,7 +37,13 @@ export function ModelSettings({
   embedded?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<ModelSettingsSnapshot | null>(null);
-  const [view, setView] = useState<"main" | "add" | "models">("main");
+  const [view, setView] = useState<"main" | "add" | "models" | "connection">(
+    "main",
+  );
+  const [connection, setConnection] = useState<ApiConnectionSettings | null>(
+    null,
+  );
+  const [connectionRead, setConnectionRead] = useState(0);
   const [mode, setMode] = useState<"oauth" | "api">("oauth");
   const [busy, setBusy] = useState(false);
   const [connectingService, setConnectingService] = useState<string | null>(
@@ -214,6 +229,21 @@ export function ModelSettings({
     });
     setDiscovered([]);
   };
+  const readConnection = (id: string) =>
+    run(
+      async (signal) => {
+        const result = await update(
+          { action: "api-connection-read", accountId: id },
+          signal,
+        );
+        if (result.kind === "connection") {
+          setConnection(result.connection);
+          setConnectionRead((n) => n + 1);
+        }
+      },
+      true,
+      false,
+    );
   return (
     <>
       <header>
@@ -228,6 +258,7 @@ export function ModelSettings({
                 if (view === "main") onBack?.();
                 else {
                   setView("main");
+                  setConnection(null);
                   resetApi();
                   setError("");
                   setNotice("");
@@ -244,9 +275,11 @@ export function ModelSettings({
                 ? "添加账号"
                 : view === "models"
                   ? "选择模型"
-                  : embedded
-                    ? "模型与账号"
-                    : "模型设置"}
+                  : view === "connection"
+                    ? "编辑 API 连接"
+                    : embedded
+                      ? "模型与账号"
+                      : "模型设置"}
           </h2>
         </div>
         {!embedded && (
@@ -352,17 +385,34 @@ export function ModelSettings({
                         · {a.models.filter((m) => m.enabled).length} 个模型
                       </small>
                     </div>
-                    <button
-                      className="secondary-action"
-                      disabled={busy || a.state === "disabled"}
-                      onClick={() => {
-                        editAccount(snapshot, a.id);
-                        setError("");
-                        setNotice("");
-                      }}
-                    >
-                      选择模型
-                    </button>
+                    <div className="model-account-actions">
+                      {a.kind === "api" && (
+                        <button
+                          className="secondary-action"
+                          disabled={busy}
+                          onClick={() => {
+                            setAccountId(a.id);
+                            setConnection(null);
+                            setView("connection");
+                            void readConnection(a.id);
+                          }}
+                        >
+                          <Pencil size={14} />
+                          编辑连接
+                        </button>
+                      )}
+                      <button
+                        className="secondary-action"
+                        disabled={busy || a.state === "disabled"}
+                        onClick={() => {
+                          editAccount(snapshot, a.id);
+                          setError("");
+                          setNotice("");
+                        }}
+                      >
+                        选择模型
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -625,6 +675,44 @@ export function ModelSettings({
             )}
           </>
         )}
+        {view === "connection" &&
+          account &&
+          (connection ? (
+            <ApiConnectionEditor
+              key={`${account.id}:${connectionRead}`}
+              connection={connection}
+              label={account.label}
+              busy={busy}
+              onReload={() => void readConnection(account.id)}
+              onSave={async (action) =>
+                !!(await run(async (signal) => {
+                  const result = await update(action, signal);
+                  if (result.kind !== "connection") return false;
+                  setConnection(result.connection);
+                  setNotice(
+                    action.action === "api-key"
+                      ? "密钥已更新。"
+                      : "API 地址已保存。",
+                  );
+                  changed();
+                  return true;
+                }))
+              }
+            />
+          ) : (
+            <>
+              <p className="muted">
+                {busy ? "正在读取连接…" : "暂时无法读取连接设置。"}
+              </p>
+              <button
+                className="secondary-action"
+                disabled={busy}
+                onClick={() => void readConnection(account.id)}
+              >
+                重新载入连接
+              </button>
+            </>
+          ))}
         {login && (
           <section className="model-login" aria-label="账号授权">
             <h3>等待账号授权</h3>

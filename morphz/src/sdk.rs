@@ -75,6 +75,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+mod api_connections;
+pub use api_connections::{ApiConnectionSettings, ApiConnectionUpdate};
+
 /// Version of the supported embedded application contract.
 pub const SDK_CONTRACT_VERSION: &str = "1";
 
@@ -752,6 +755,7 @@ pub struct SessionScheduleRequest {
 pub struct MorphzSdk {
     runtime: MorphzRuntime,
     pending_oauth_setups: Arc<RwLock<HashMap<String, PendingOAuthProviderSetup>>>,
+    provider_settings_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -834,6 +838,7 @@ impl MorphzSdk {
         Self {
             runtime,
             pending_oauth_setups: Arc::new(RwLock::new(HashMap::new())),
+            provider_settings_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -1423,6 +1428,17 @@ impl MorphzSdk {
         provider_id: &str,
         provider: ProviderInstanceConfig,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
+        self.put_provider_instance_config_unlocked(managed_config_path, provider_id, provider)
+            .await
+    }
+
+    async fn put_provider_instance_config_unlocked(
+        &self,
+        managed_config_path: &Path,
+        provider_id: &str,
+        provider: ProviderInstanceConfig,
+    ) -> SdkResult<ProviderCatalogMutationReceipt> {
         let mut snapshot = self.provider_control_snapshot().await?;
         merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
         snapshot
@@ -1466,6 +1482,7 @@ impl MorphzSdk {
         route_id: &str,
         route: ModelRouteConfig,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
         let mut snapshot = self.provider_control_snapshot().await?;
         merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
         snapshot
@@ -1741,6 +1758,7 @@ impl MorphzSdk {
         account_id: &str,
         account: AuthAccountConfig,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
         let mut snapshot = self.provider_control_snapshot().await?;
         merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
         snapshot.auth_accounts.insert(
@@ -1789,6 +1807,7 @@ impl MorphzSdk {
         managed_config_path: &Path,
         account_id: &str,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
         let account_id = account_id.trim();
         if account_id.is_empty() {
             return Err(SdkError::new(
@@ -1888,6 +1907,7 @@ impl MorphzSdk {
         route_id: &str,
         route: ModelRouteConfig,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
         let mut snapshot = self.provider_control_snapshot().await?;
         merge_managed_provider_catalog(&mut snapshot, managed_config_path)?;
         snapshot
@@ -2055,6 +2075,7 @@ impl MorphzSdk {
         models: BTreeMap<String, ProviderModelConfig>,
         display_aliases: BTreeMap<String, Option<String>>,
     ) -> SdkResult<ProviderCatalogMutationReceipt> {
+        let _guard = self.provider_settings_lock.lock().await;
         if models.is_empty() {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
