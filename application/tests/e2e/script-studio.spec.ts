@@ -1002,7 +1002,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
 
 test("生成只准备输入、切换条目不改绑；人工保存固定版本，模拟候选审改锁稿导出真实 Word", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(90000);
   const p = await setup(page);
   await permitModel(page);
@@ -1011,6 +1011,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   const first = (await production(page, p.id)).items[0]!;
   const before = (await snapshot(page)).workspace;
   await button(page, "生成候选").click();
+  await page.getByLabel("最多候选数", { exact: true }).fill("2");
   await page
     .getByRole("dialog", { name: "准备生成候选请求", exact: true })
     .getByRole("button", { name: "准备到输入框", exact: true })
@@ -1062,21 +1063,91 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
     input.id,
     generatedText,
   );
+  await syntheticCandidate(
+    page,
+    await production(page, p.id),
+    input.id,
+    "TEST 第二个备选稿。车站灯灭，他仍握着信封。",
+  );
   await page.reload();
   await page
     .getByRole("navigation", { name: "剧本目录", exact: true })
     .getByRole("button", { name: /第一集 车站/ })
     .click();
-  await page.getByRole("tab", { name: /候选 1/ }).click();
+  await page.getByRole("tab", { name: /候选 2/ }).click();
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText(
+    "第二个备选稿",
+  );
+  await expect(page.locator(".script-candidate-detail")).toHaveCount(1);
+  await expect(button(page, "提交审阅")).toHaveCount(0);
+  await expect(button(page, "采纳为新版本")).toHaveClass(/primary/);
+  await expect(button(page, "拒绝候选")).toHaveClass(/secondary-action/);
+  await expect(button(page, "保存文稿")).toHaveCount(0);
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((mode) => {
+      document.documentElement.dataset.appearance = mode;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance = mode;
+    }, appearance);
+    for (const width of [1440, 760, 480]) {
+      await page.setViewportSize({ width, height: 900 });
+      const accept = button(page, "采纳为新版本");
+      await accept.scrollIntoViewIfNeeded();
+      await expect(accept).toBeVisible();
+      await expect
+        .poll(() =>
+          accept.evaluate((e) => {
+            const b = e.getBoundingClientRect(),
+              css = getComputedStyle(e);
+            return (
+              b.x >= 0 &&
+              b.right <= innerWidth &&
+              b.height >= 28 &&
+              css.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+              e.contains(
+                document.elementFromPoint(
+                  b.x + b.width / 2,
+                  b.y + b.height / 2,
+                ),
+              )
+            );
+          }),
+        )
+        .toBe(true);
+      expect(
+        await page
+          .locator(".script-candidate-detail")
+          .evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
+      ).toBe(true);
+      await page.screenshot({
+        path: testInfo.outputPath(`candidate-${appearance}-${width}.png`),
+      });
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await button(page, "候选 1 · 待决定").focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByLabel("候选稿", { exact: true })).toContainText(
+    generatedText,
+  );
+  await expect(page.locator(".script-candidate-explanation")).toBeHidden();
+  await page.locator("summary", { hasText: "与原版本对比" }).click();
   await expect(page.locator(".script-diff")).toContainText("他认出母亲的笔迹");
+  await page.locator("summary", { hasText: "创作说明与自审记录" }).click();
   await expect(page.getByRole("tabpanel", { name: /^候选/ })).toContainText(
     "非真实模型生成",
   );
   await button(page, "采纳为新版本").click();
-  await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
-  ).toBeFocused();
-  await page.getByRole("tab", { name: "正文", exact: true }).click();
+  await expect(page.locator(".script-candidate-heading h3")).toBeFocused();
+  await expect(page.locator(".script-candidate-heading")).toContainText(
+    "已采纳",
+  );
+  await button(page, "候选 2 · 待决定").click();
+  await expect(button(page, "采纳为新版本")).toBeDisabled();
+  await expect(page.locator(".script-candidate-warning")).toContainText(
+    "正文或引用已变化",
+  );
+  await button(page, "候选 1 · 已采纳").click();
+  await button(page, "查看正文").click();
   await expect(editor(page)).toHaveValue(generatedText);
   await page.getByRole("tab", { name: /审阅 0/ }).click();
   await page.getByLabel("审阅引用", { exact: true }).fill("他决定返回故乡");

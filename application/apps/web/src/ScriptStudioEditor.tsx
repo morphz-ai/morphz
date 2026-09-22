@@ -6,13 +6,10 @@ import {
   scriptDisplayTime,
   scriptEventLabels,
   scriptEventNote,
-  scriptFieldLabels,
-  scriptFieldValue,
 } from "../../../packages/core/src/script-studio-presentation.js";
 import {
   currentScriptDraft,
   prepareScriptGeneration,
-  scriptCandidateStale,
   scriptDraftSchema,
   scriptIssues,
   scriptImpact,
@@ -26,6 +23,7 @@ import {
 import { quotedText } from "../../../packages/core/src/model.js";
 import { draftKey, scopedStorage, type WorkspaceClient } from "./client.js";
 import { scriptFocusReturn } from "./script-studio-focus.js";
+import { ScriptCandidates } from "./ScriptCandidates.js";
 import {
   StudioDialog,
   scriptStatusLabels,
@@ -214,16 +212,19 @@ export function ScriptItemEditor({
           {scriptKindLabels[item.kind]} · {current.title}
         </strong>
         <small role="status" className="script-edit-status">
+          {pane === "candidates" ? "正文 · " : ""}
           {scriptStatusLabels[item.status]} · v{item.revision}
           {dirty ? " · 本机未保存" : notice ? ` · ${notice}` : ""}
         </small>
-        <button
-          type="button"
-          disabled={!editable || !dirty}
-          onClick={() => void action(save)}
-        >
-          保存文稿
-        </button>
+        {pane === "edit" && (
+          <button
+            type="button"
+            disabled={!editable || !dirty}
+            onClick={() => void action(save)}
+          >
+            保存文稿
+          </button>
+        )}
       </header>
       {error && (
         <div className="script-error script-editor-error" role="alert">
@@ -586,112 +587,15 @@ export function ScriptItemEditor({
           role="tabpanel"
           className="script-candidates"
         >
-          {!candidates.length && (
-            <p className="script-hint">
-              尚无候选。先准备生成请求，再由你发送；模型结果不会自动改写正式稿。
-            </p>
-          )}
-          {[...candidates].reverse().map((c) => {
-            const before = item.versions.find(
-              (v) => v.revision === c.baseRevision,
-            )?.draft;
-            const obsolete = scriptCandidateStale(production, c);
-            return (
-              <article
-                key={c.id}
-                data-script-result-id={c.id}
-                data-delivery-target={
-                  deliveryTarget?.candidateId === c.id || undefined
-                }
-              >
-                <header>
-                  <strong>{c.draft.title}</strong>
-                  <small>
-                    基于 v{c.baseRevision} ·{" "}
-                    {c.status === "pending"
-                      ? "待决定"
-                      : c.status === "accepted"
-                        ? "已采纳"
-                        : "已拒绝"}
-                    {obsolete ? " · 引用已变化" : ""}
-                  </small>
-                </header>
-                <p>{c.explanation}</p>
-                <ScriptDiff before={before?.text ?? ""} after={c.draft.text} />
-                {before && (
-                  <details>
-                    <summary>其他字段差异</summary>
-                    {(Object.keys(c.draft) as (keyof ScriptDraft)[])
-                      .filter(
-                        (k) =>
-                          k !== "text" &&
-                          JSON.stringify(before[k]) !==
-                            JSON.stringify(c.draft[k]),
-                      )
-                      .map((k) => (
-                        <div key={k}>
-                          <strong>{scriptFieldLabels[k]}</strong>
-                          <pre>{scriptFieldValue(production, before, k)}</pre>
-                          <pre>{scriptFieldValue(production, c.draft, k)}</pre>
-                          {(
-                            [
-                              "sources",
-                              "dependencies",
-                              "characters",
-                              "parentId",
-                            ] as string[]
-                          ).includes(k) && (
-                            <details>
-                              <summary>追溯信息</summary>
-                              <pre>{JSON.stringify(before[k], null, 2)}</pre>
-                              <pre>{JSON.stringify(c.draft[k], null, 2)}</pre>
-                            </details>
-                          )}
-                        </div>
-                      ))}
-                  </details>
-                )}
-                {c.status === "pending" && (
-                  <div className="script-edit-actions">
-                    <button
-                      type="button"
-                      disabled={!editable || dirty || obsolete}
-                      onClick={() =>
-                        void action(() =>
-                          run({
-                            action: "decide-candidate",
-                            productionId: production.id,
-                            candidateId: c.id,
-                            expectedRevision: c.revision,
-                            decision: "accept",
-                          }),
-                        )
-                      }
-                    >
-                      采纳为新版本
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!canWrite}
-                      onClick={() =>
-                        void action(() =>
-                          run({
-                            action: "decide-candidate",
-                            productionId: production.id,
-                            candidateId: c.id,
-                            expectedRevision: c.revision,
-                            decision: "reject",
-                          }),
-                        )
-                      }
-                    >
-                      拒绝候选
-                    </button>
-                  </div>
-                )}
-              </article>
-            );
-          })}
+          <ScriptCandidates
+            production={production}
+            item={item}
+            canWrite={canWrite}
+            dirty={dirty}
+            deliveryTarget={deliveryTarget}
+            run={run}
+            onShowBody={() => setPane("edit")}
+          />
         </div>
       )}
       {pane === "reviews" && (
@@ -893,71 +797,73 @@ export function ScriptItemEditor({
           </p>
         </div>
       )}
-      <footer className="script-workflow">
-        <button
-          type="button"
-          disabled={!editable || dirty || stale || item.status !== "draft"}
-          onClick={() =>
-            void action(() => run({ action: "submit-review", ...workflow }))
-          }
-        >
-          提交审阅
-        </button>
-        {reviewer && (
-          <>
-            <button
-              type="button"
-              disabled={!canWrite || dirty || item.status !== "in-review"}
-              onClick={() =>
-                setNoteAction({
-                  action: "approve",
-                  revision: item.revision,
-                  workflowRevision: item.workflowRevision,
-                })
-              }
-            >
-              批准此版本
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite || dirty || item.status !== "in-review"}
-              onClick={() =>
-                setNoteAction({
-                  action: "request-changes",
-                  revision: item.revision,
-                  workflowRevision: item.workflowRevision,
-                })
-              }
-            >
-              退回修改
-            </button>
-            <button
-              type="button"
-              disabled={!canWrite || dirty || item.status !== "approved"}
-              onClick={() =>
-                void action(() => run({ action: "lock-item", ...workflow }))
-              }
-            >
-              锁稿
-            </button>
-            {item.status === "locked" && (
+      {pane !== "candidates" && (
+        <footer className="script-workflow">
+          <button
+            type="button"
+            disabled={!editable || dirty || stale || item.status !== "draft"}
+            onClick={() =>
+              void action(() => run({ action: "submit-review", ...workflow }))
+            }
+          >
+            提交审阅
+          </button>
+          {reviewer && (
+            <>
               <button
                 type="button"
-                disabled={!canWrite}
+                disabled={!canWrite || dirty || item.status !== "in-review"}
                 onClick={() =>
                   setNoteAction({
-                    action: "unlock",
+                    action: "approve",
                     revision: item.revision,
                     workflowRevision: item.workflowRevision,
                   })
                 }
               >
-                说明原因并解锁
+                批准此版本
               </button>
-            )}
-          </>
-        )}
-      </footer>
+              <button
+                type="button"
+                disabled={!canWrite || dirty || item.status !== "in-review"}
+                onClick={() =>
+                  setNoteAction({
+                    action: "request-changes",
+                    revision: item.revision,
+                    workflowRevision: item.workflowRevision,
+                  })
+                }
+              >
+                退回修改
+              </button>
+              <button
+                type="button"
+                disabled={!canWrite || dirty || item.status !== "approved"}
+                onClick={() =>
+                  void action(() => run({ action: "lock-item", ...workflow }))
+                }
+              >
+                锁稿
+              </button>
+              {item.status === "locked" && (
+                <button
+                  type="button"
+                  disabled={!canWrite}
+                  onClick={() =>
+                    setNoteAction({
+                      action: "unlock",
+                      revision: item.revision,
+                      workflowRevision: item.workflowRevision,
+                    })
+                  }
+                >
+                  说明原因并解锁
+                </button>
+              )}
+            </>
+          )}
+        </footer>
+      )}
       {noteAction && (
         <NoteDialog
           title={
@@ -1044,53 +950,6 @@ export function ScriptItemEditor({
           }}
         />
       )}
-    </div>
-  );
-}
-function ScriptDiff({ before, after }: { before: string; after: string }) {
-  const left = before.split("\n"),
-    right = after.split("\n");
-  let prefix = 0,
-    suffix = 0;
-  while (
-    prefix < left.length &&
-    prefix < right.length &&
-    left[prefix] === right[prefix]
-  )
-    prefix++;
-  while (
-    suffix < left.length - prefix &&
-    suffix < right.length - prefix &&
-    left[left.length - 1 - suffix] === right[right.length - 1 - suffix]
-  )
-    suffix++;
-  const show = (lines: string[], side: "before" | "after") => (
-    <pre>
-      {lines.map((line, n) => (
-        <span
-          key={n}
-          className={
-            n >= prefix && n < lines.length - suffix
-              ? `script-diff-${side}`
-              : ""
-          }
-        >
-          {line || " "}
-          {"\n"}
-        </span>
-      ))}
-    </pre>
-  );
-  return (
-    <div className="script-diff">
-      <section aria-label="修改前">
-        <strong>修改前</strong>
-        {show(left, "before")}
-      </section>
-      <section aria-label="候选稿">
-        <strong>候选稿</strong>
-        {show(right, "after")}
-      </section>
     </div>
   );
 }

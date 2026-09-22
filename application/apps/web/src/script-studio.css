@@ -637,16 +637,155 @@
   font-weight: 600;
   margin: 0;
 }
-.script-candidates > article,
 .script-review {
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
 }
-.script-candidates > article > header {
+.script-candidate-heading {
   display: flex;
-  gap: 10px;
-  align-items: baseline;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
+}
+.script-candidate-browser {
+  display: grid;
+  grid-template-columns: minmax(145px, 190px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.script-candidate-list {
+  display: grid;
+  gap: 4px;
+  max-height: 350px;
+  overflow: auto;
+  padding: 2px;
+}
+.script-studio .script-candidate-list button {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.script-studio .script-candidate-list button:hover {
+  background: var(--hover);
+}
+.script-studio .script-candidate-list button[aria-current="true"] {
+  background: var(--selection);
+  border-color: var(--line-strong);
+}
+.script-candidate-list button > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.script-candidate-list small,
+.script-candidate-state {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+.script-candidate-detail {
+  min-width: 0;
+}
+.script-candidate-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+}
+.script-candidate-heading p {
+  margin: 4px 0 0;
+}
+.script-candidate-body {
+  margin: 14px 0;
+  padding: 18px 22px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.script-candidate-body h4 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.script-studio .script-candidate-body pre {
+  margin: 0;
+  font-size: var(--reading-font-size, 15px);
+  line-height: 1.8;
+}
+.script-candidate-inspection > details {
+  border-top: 1px solid var(--hairline);
+  padding: 10px 0;
+}
+.script-candidate-inspection summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.script-candidate-explanation {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.script-candidate-warning {
+  padding: 8px 10px;
+  border-left: 2px solid var(--line-strong);
+  background: var(--soft);
+  font-size: 12px;
+}
+/* Domain actions are controls, not prose. Navigation keeps its own styling. */
+.script-studio :is(.script-edit-actions, .script-workflow) > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+  background: var(--control-fill);
+  color: var(--ink);
+  font-size: 12px;
+}
+.script-studio :is(.script-edit-actions, .script-workflow) > button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.script-studio
+  :is(.script-edit-actions, .script-workflow)
+  > button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.script-studio
+  :is(.script-edit-actions, .script-workflow)
+  > button.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+@container (max-width: 850px) {
+  .script-candidate-browser {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .script-candidate-list {
+    display: flex;
+    max-height: none;
+    overflow-x: auto;
+  }
+  .script-studio .script-candidate-list button {
+    min-width: 155px;
+    flex-shrink: 0;
+  }
+  .script-candidate-body {
+    padding: 14px;
+  }
 }
 .script-studio :is(pre, blockquote, p),
 .script-dialog :is(pre, blockquote, p) {
