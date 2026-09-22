@@ -1,0 +1,68 @@
+/** Exact whole-section alignment, not indexOf(quote): repeated sentences stay distinct. */
+export function readerOffsets(domText: string, sourceText: string) {
+  const domToSource = new Uint32Array(domText.length + 1),
+    sourceToDom = new Uint32Array(sourceText.length + 1);
+  let a = 0,
+    b = 0;
+  while (a < domText.length || b < sourceText.length) {
+    domToSource[a] = b;
+    sourceToDom[b] = a;
+    if (
+      a < domText.length &&
+      b < sourceText.length &&
+      domText[a] === sourceText[b]
+    ) {
+      a++;
+      b++;
+    } else if (a < domText.length && /\s/.test(domText[a]!)) a++;
+    else if (b < sourceText.length && /\s/.test(sourceText[b]!)) b++;
+    else return null;
+  }
+  domToSource[a] = b;
+  sourceToDom[b] = a;
+  return { domToSource, sourceToDom };
+}
+export function readerRange(root: HTMLElement, start: number, end: number) {
+  const range = document.createRange(),
+    walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null,
+    offset = 0,
+    started = false;
+  while ((node = walker.nextNode())) {
+    const length = node.textContent?.length ?? 0;
+    if (!started && start <= offset + length) {
+      range.setStart(node, Math.max(0, start - offset));
+      started = true;
+    }
+    if (started && end <= offset + length) {
+      range.setEnd(node, Math.max(0, end - offset));
+      return range;
+    }
+    offset += length;
+  }
+  return null;
+}
+export function readerSelection(root: HTMLElement, source: string) {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (
+    range.collapsed ||
+    !root.contains(range.startContainer) ||
+    !root.contains(range.endContainer)
+  )
+    return null;
+  const prefix = range.cloneRange();
+  prefix.selectNodeContents(root);
+  prefix.setEnd(range.startContainer, range.startOffset);
+  const offsets = readerOffsets(root.textContent ?? "", source);
+  if (!offsets)
+    throw new Error(
+      "页面文字与存储原文不一致，选文尚未提交；请重新打开这份读物。",
+    );
+  const start = offsets.domToSource[prefix.toString().length]!,
+    end =
+      offsets.domToSource[prefix.toString().length + range.toString().length]!;
+  if (end - start > 8000) throw new Error("请一次选择不超过 8000 字。");
+  return { start, end, rect: range.getBoundingClientRect() };
+}

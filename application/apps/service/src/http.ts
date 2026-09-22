@@ -209,6 +209,26 @@ export function createAppServer(
           "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
         );
       if (req.method === "GET") {
+        if (
+          url.pathname === "/api/reader/section" ||
+          url.pathname === "/api/reader/contents"
+        ) {
+          json(
+            res,
+            200,
+            business.readReading(
+              {
+                artifactId: url.searchParams.get("artifactId"),
+                revision: Number(url.searchParams.get("revision")),
+                ...(url.pathname.endsWith("/section")
+                  ? { sectionId: url.searchParams.get("sectionId") }
+                  : {}),
+              },
+              url.pathname.endsWith("/contents"),
+            ),
+          );
+          return;
+        }
         if (url.pathname === "/api/health") {
           json(res, 200, {
             application: "morphz",
@@ -397,6 +417,14 @@ export function createAppServer(
           });
           return;
         }
+        if (url.pathname === "/api/reader/ocr") {
+          json(
+            res,
+            200,
+            await business.readingOcr(await jsonBody(req, 32 * 1024)),
+          );
+          return;
+        }
         if (url.pathname === "/api/identity/logout") {
           if (options.identity && authentication)
             options.identity.logout(authentication.sessionHash);
@@ -525,17 +553,29 @@ export function createAppServer(
           );
           return;
         }
-        if (url.pathname === "/api/import/pdf") {
+        if (
+          url.pathname === "/api/import/pdf" ||
+          url.pathname === "/api/import/reading"
+        ) {
           json(
             res,
             201,
-            await business.importPdf({
+            await (
+              url.pathname.endsWith("/reading")
+                ? business.importReading.bind(business)
+                : business.importPdf.bind(business)
+            )({
               commandId: req.headers["x-command-id"],
               projectId: req.headers["x-project-id"],
               relativePath: decodeURIComponent(
                 z.string().parse(req.headers["x-source-path"]),
               ),
-              data: await body(req, maxPdfBytes),
+              data: await body(
+                req,
+                url.pathname.endsWith("/reading")
+                  ? 32 * 1024 * 1024
+                  : maxPdfBytes,
+              ),
             }),
           );
           return;

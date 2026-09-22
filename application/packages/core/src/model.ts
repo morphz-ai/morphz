@@ -33,6 +33,14 @@ import {
   maxDocumentCharacters,
 } from "./sources.js";
 import { pdfContentSchema, pdfImportIssue } from "./pdf.js";
+import {
+  publicationSchema,
+  readingMarkSchema,
+  readingStateSchema,
+  readerCommandSchema,
+  readingReferenceSchema,
+} from "./reader.js";
+import { applyReaderCommand } from "./reader-commands.js";
 import { websiteURL } from "./browser.js";
 import { bookmarkSchema, bookmarkOperations } from "./bookmarks.js";
 import { interactiveSchema, interactiveText } from "./interactive.js";
@@ -43,6 +51,7 @@ import {
   objectsApplication,
   browserApplication,
   scriptStudioApplication,
+  readerApplication,
 } from "./applications.js";
 
 export const id = z
@@ -53,8 +62,40 @@ export const id = z
 const title = z.string().trim().min(1).max(180);
 const text = z.string().max(maxDocumentCharacters);
 const timestamp = z.iso.datetime();
+export const taskContentSchema = z
+  .object({
+    kind: z.literal("task"),
+    description: text,
+    assigneeId: id,
+    model: z.string().trim().min(1).max(100).nullable(),
+    priority: z.enum(["low", "normal", "high"]).default("normal"),
+    dueDate: z.iso.date().nullable(),
+    assignment: z.enum(["proposed", "accepted", "declined"]),
+    execution: z.enum([
+      "planned",
+      "active",
+      "waiting",
+      "completed",
+      "cancelled",
+    ]),
+    delivery: z.enum(["none", "ready", "accepted"]),
+    resultIds: z.array(id).max(100),
+    runRequested: z.number().int().nonnegative().default(0),
+    notBefore: timestamp.nullable().default(null),
+    everySeconds: z
+      .number()
+      .int()
+      .min(60)
+      .max(31536000)
+      .nullable()
+      .default(null),
+    dependsOnIds: z.array(id).max(100).default([]),
+    watchSourceIds: z.array(id).max(100).default([]),
+  })
+  .strict();
 export const contentSchema = z.discriminatedUnion("kind", [
   pdfContentSchema,
+  publicationSchema,
   z
     .object({
       kind: z.literal("document"),
@@ -86,37 +127,7 @@ export const contentSchema = z.discriminatedUnion("kind", [
       alt: z.string().max(2000),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal("task"),
-      description: text,
-      assigneeId: id,
-      model: z.string().trim().min(1).max(100).nullable(),
-      priority: z.enum(["low", "normal", "high"]).default("normal"),
-      dueDate: z.iso.date().nullable(),
-      assignment: z.enum(["proposed", "accepted", "declined"]),
-      execution: z.enum([
-        "planned",
-        "active",
-        "waiting",
-        "completed",
-        "cancelled",
-      ]),
-      delivery: z.enum(["none", "ready", "accepted"]),
-      resultIds: z.array(id).max(100),
-      runRequested: z.number().int().nonnegative().default(0),
-      notBefore: timestamp.nullable().default(null),
-      everySeconds: z
-        .number()
-        .int()
-        .min(60)
-        .max(31536000)
-        .nullable()
-        .default(null),
-      dependsOnIds: z.array(id).max(100).default([]),
-      watchSourceIds: z.array(id).max(100).default([]),
-    })
-    .strict(),
+  taskContentSchema,
   z
     .object({ kind: z.literal("website"), url: websiteURL, description: text })
     .strict(),
@@ -333,6 +344,8 @@ export const stateSchema = z
     scriptPreparations: z.array(scriptPreparationSchema).default([]),
     artifacts: z.array(artifactSchema),
     bookmarks: z.array(bookmarkSchema).default([]),
+    readingMarks: z.array(readingMarkSchema).default([]),
+    readingStates: z.array(readingStateSchema).default([]),
     taskOrder: z.array(id).default([]),
     taskOrderRevision: z.number().int().nonnegative().default(0),
     applications: z
@@ -371,6 +384,7 @@ export const stateSchema = z
           id,
           continuation: continuationSchema.optional(),
           scriptGeneration: scriptGenerationSchema.optional(),
+          reading: readingReferenceSchema.optional(),
           scriptTarget: scriptLocationSchema.optional(),
           projectId: id,
           conversationId: id.optional(),
@@ -422,6 +436,18 @@ export const stateSchema = z
 export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
+  z
+    .object({ type: z.literal("reader-command"), command: readerCommandSchema })
+    .strict(),
+  z
+    .object({
+      type: z.literal("import-publication"),
+      projectId: id,
+      relativePath: z.string().min(1).max(4000),
+      title,
+      content: publicationSchema,
+    })
+    .strict(),
   scriptOperationSchema,
   z
     .object({
@@ -648,6 +674,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      reading: readingReferenceSchema.optional(),
       continuation: continuationSchema.optional(),
       scriptGeneration: scriptGenerationSchema.optional(),
       model: z.string().trim().min(1).max(256).optional(),
@@ -763,6 +790,8 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     applicationInstances: [],
     artifacts: [],
     bookmarks: [],
+    readingMarks: [],
+    readingStates: [],
     taskOrder: [],
     taskOrderRevision: 0,
     relations: [],
@@ -1014,7 +1043,16 @@ export function applyCommand(
       );
   }
   let entityId = command.commandId;
-  if (op.type === "prepare-script") {
+  if (op.type === "reader-command") {
+    entityId = applyReaderCommand(
+      state,
+      op.command,
+      access,
+      command.commandId,
+      now,
+      originInputId,
+    );
+  } else if (op.type === "prepare-script") {
     entityId = applyScriptPreparation(
       state,
       op.generation,
@@ -1692,7 +1730,8 @@ export function applyCommand(
   } else if (
     op.type === "create-artifact" ||
     op.type === "import-document" ||
-    op.type === "import-pdf"
+    op.type === "import-pdf" ||
+    op.type === "import-publication"
   ) {
     if (
       op.type === "create-artifact" &&
@@ -1721,7 +1760,11 @@ export function applyCommand(
       name.replace(/\.(md|markdown|txt|pdf)$/i, "").slice(0, 180) ||
       "导入的文档";
     const artifactTitle =
-      op.type !== "create-artifact" ? importedTitle : op.title;
+      op.type === "import-publication"
+        ? op.title
+        : op.type !== "create-artifact"
+          ? importedTitle
+          : op.title;
     checkContent(state, op.projectId, content);
     state.artifacts.push({
       id: entityId,
@@ -1758,6 +1801,11 @@ export function applyCommand(
   } else if (op.type === "revise-artifact") {
     const artifact = getArtifact(state, op.artifactId);
     checkProject(state, artifact.projectId, access);
+    if (artifact.content.kind === "publication")
+      throw new DomainError(
+        "invalid",
+        "导入的读物不可改写原文；可添加标注，名称和项目使用内容管理修改。",
+      );
     if (artifact.source?.mode === "linked")
       throw new DomainError(
         "invalid",
@@ -1962,10 +2010,25 @@ export function applyCommand(
       );
       if (!version)
         throw new DomainError("invalid", "输入必须关联有效的对象版本。");
-      if (op.selection && !quotedText(version.content).includes(op.selection))
+      if (
+        op.selection &&
+        !op.reading &&
+        !quotedText(version.content).includes(op.selection)
+      )
         throw new DomainError("invalid", "选中内容与对象版本不匹配。");
     } else if (op.artifactRevision !== null || (op.selection && !op.localFile))
       throw new DomainError("invalid", "未选择对象时不能附带版本或原文。");
+    if (
+      op.reading &&
+      (!op.artifactId ||
+        op.continuation ||
+        op.scriptGeneration ||
+        op.selection !== op.reading.quote)
+    )
+      throw new DomainError(
+        "invalid",
+        "阅读引用必须绑定独立的原文版本与确切选文。",
+      );
     if (op.scriptGeneration) {
       if (op.continuation)
         throw new DomainError("invalid", "剧本生成请求不能改绑已有工作。");
@@ -2003,6 +2066,7 @@ export function applyCommand(
         ? { scriptGeneration: structuredClone(op.scriptGeneration) }
         : {}),
       ...(op.continuation ? { continuation: op.continuation } : {}),
+      ...(op.reading ? { reading: structuredClone(op.reading) } : {}),
       projectId: op.projectId,
       conversationId,
       artifactId: op.artifactId,
@@ -2063,6 +2127,11 @@ export function applicationFor(
   version: string,
   principalId?: string,
 ) {
+  if (
+    applicationId === readerApplication.id &&
+    version === readerApplication.version
+  )
+    return readerApplication;
   if (
     applicationId === browserApplication.id &&
     version === browserApplication.version

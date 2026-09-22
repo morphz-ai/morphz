@@ -51,7 +51,8 @@ const tokens = people.map(() => randomBytes(32).toString("hex")),
   };
 const identity = new IdentityCenter(store, configuration),
   requests: string[] = [],
-  toolProjects = new Set<string>();
+  toolProjects = new Set<string>(),
+  rememberedProjects = new Set<string>();
 const provider = createServer(async (req, res) => {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c);
@@ -61,7 +62,7 @@ const provider = createServer(async (req, res) => {
   const marker = ["ALPHA_PRIVATE_MARKER", "BETA_PRIVATE_MARKER"].find((v) =>
     input.includes(v),
   );
-  const call =
+  let call =
     marker && !toolProjects.has(marker)
       ? {
           id: `call-${marker}`,
@@ -77,6 +78,36 @@ const provider = createServer(async (req, res) => {
         }
       : null;
   if (call) toolProjects.add(marker!);
+  if (!call && marker && !rememberedProjects.has(marker)) {
+    const person = marker === "ALPHA_PRIVATE_MARKER" ? 0 : 1;
+    const saved = store.runtimeState() as {
+      sessions: Record<string, { id: string; projectId: string }>;
+    };
+    const session = Object.values(saved.sessions).find(
+      (session) => session.projectId === projects[person],
+    )!;
+    const context = await fetch(
+      `${runtimeURL}/api/sessions/${session.id}/context`,
+      {
+        headers: {
+          Authorization: `Bearer ${gateway}`,
+          "X-Morphz-Principal": bridge.principalId(people[person]!.principalId),
+        },
+      },
+    ).then((r) => r.json());
+    assert.equal(typeof context.state.version, "number");
+    call = {
+      id: `remember-${marker}`,
+      type: "function",
+      function: {
+        name: "context_tx",
+        arguments: JSON.stringify({
+          transaction: `(context-tx (base-version ${context.state.version}) (create test-reading-memory (kind "synthetic reading acceptance") (understanding "${marker}_UNDERSTANDING") (source "TEST book / chapter 1 / synthetic quote")))`,
+        }),
+      },
+    };
+    rememberedProjects.add(marker);
+  }
   const message = call
     ? { role: "assistant", content: "", tool_calls: [call] }
     : { role: "assistant", content: "隔离测试：已收到。" };
@@ -112,12 +143,13 @@ const runtimePort = await freePort(),
   runtimeURL = `http://127.0.0.1:${runtimePort}`,
   origin = `http://127.0.0.1:${workPort}`;
 const gateway = randomBytes(32).toString("hex"),
+  operator = randomBytes(32).toString("hex"),
   configFile = join(root, "morphz.toml");
 const namespace = randomUUID(),
   manifest = prepareHostTools(directory, workPort, namespace, true);
 writeFileSync(
   configFile,
-  `[llm]\nprovider="stub"\nmodel="test-model"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${portOf(provider)}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="TEST_MODEL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(root)}\n[server.identity]\nmode="trusted-gateway"\nprovider_id="morphz-test"\nservice_token_env="TEST_GATEWAY_TOKEN"\n`,
+  `[llm]\nmodel="test-model"\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${portOf(provider)}/v1"\naccounts=["stub"]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="TEST_MODEL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(root)}\n[server.identity]\nmode="trusted-gateway"\nprovider_id="morphz-test"\nservice_token_env="TEST_GATEWAY_TOKEN"\n`,
   { mode: 0o600 },
 );
 const runtime = spawn(
@@ -142,7 +174,7 @@ const runtime = spawn(
       MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime.sqlite"),
       MORPHZ_HOST_TOOLS_FILE: manifest.path,
       MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
-      MORPHZ_DASHBOARD_TOKEN: randomBytes(32).toString("hex"),
+      MORPHZ_DASHBOARD_TOKEN: operator,
       TEST_GATEWAY_TOKEN: gateway,
       TEST_MODEL_KEY: "synthetic",
     },
@@ -177,6 +209,14 @@ try {
     assert.ok(i < 100 && runtime.exitCode === null, "Runtime 未就绪：" + logs);
     await delay(100);
   }
+  const binding = await fetch(
+    `${runtimeURL}/api/agents/default-agent/provider-accounts/stub`,
+    { method: "PUT", headers: { Authorization: `Bearer ${operator}` } },
+  );
+  assert.ok(
+    binding.ok,
+    "Bind the isolated synthetic account, not a user's account",
+  );
   await new Promise<void>((r) => server.listen(workPort, "127.0.0.1", r));
   const cookies: string[] = [],
     csrf: string[] = [];
@@ -275,6 +315,32 @@ try {
     ).status,
     403,
   );
+  const privateContext = await fetch(
+    `${runtimeURL}/api/sessions/${privateSession.id}/context`,
+    { headers: header(0) },
+  ).then((r) => r.json());
+  assert.ok(
+    privateContext.state.frames.some(
+      (f: any) =>
+        f.id === "test-reading-memory" &&
+        f.body.includes("ALPHA_PRIVATE_MARKER_UNDERSTANDING"),
+    ),
+    "The actual context_tx call must persist a source-linked synthetic understanding",
+  );
+  for (const [path, status] of [
+    [`/api/sessions/${privateSession.id}/context`, 403],
+    [`/api/sessions/${privateSession.id}/context/projection`, 403],
+    // Frame recall is management-plane-only, not a user gateway endpoint.
+    [
+      `/api/contexts/${privateContext.context_id}/frames/test-reading-memory/recall`,
+      401,
+    ],
+  ])
+    assert.equal(
+      (await fetch(runtimeURL + path, { headers: header(1) })).status,
+      status,
+      "An unauthorized identity must not retrieve the private understanding",
+    );
   for (const i of [0, 1]) {
     const shared = sessions.find((s) => s.projectId === "first-project")!;
     const p = await (
@@ -338,6 +404,8 @@ try {
         sharedSession: true,
         revocation: true,
         agentObjectWrites: 2,
+        privateMindFrames: 2,
+        crossIdentityMemoryDenied: true,
       },
       null,
       2,

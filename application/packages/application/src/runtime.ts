@@ -920,11 +920,25 @@ export class RuntimeBridge {
           response.status === 404 ||
           code === "unsupported_io_version" ||
           code === "unsupported_format"
-        )
+        ) {
+          const format = z
+            .object({
+              message: z.object({
+                format: z.object({ id: z.string(), version: z.string() }),
+              }),
+            })
+            .safeParse(body);
+          const reading =
+            format.success &&
+            format.data.message.format.id === "morphz.application.input" &&
+            format.data.message.format.version === "6";
           throw new UpstreamError(
             response.status,
-            "当前 Morphz Runtime 尚未启用结构化工作消息，或未安装 Work 格式。请更新并启用 session-io；原输入已保留，不会转成提示词重发。",
+            reading
+              ? "Runtime 尚未加载阅读消息格式（v6）。请让 Runtime 加载当前 Desktop 的应用配置；只重开阅读页无效。问题和原文引用已保留，加载后点击「重试发送」，无需重新提问。"
+              : "当前 Morphz Runtime 尚未启用结构化工作消息，或未加载所需应用格式。请更新并启用 session-io；原输入已保留，不会转成提示词重发。",
           );
+        }
         if (
           code === "projection_budget_exceeded" ||
           code === "message_limit_exceeded"

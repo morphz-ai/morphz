@@ -226,6 +226,16 @@ export function workspaceFor(
     bookmarks: state.bookmarks.filter(
       (b) => b.ownerPrincipalId === access.principalId,
     ),
+    readingMarks: state.readingMarks.filter(
+      (m) =>
+        m.ownerPrincipalId === access.principalId &&
+        artifactIds.has(m.artifactId),
+    ),
+    readingStates: state.readingStates.filter(
+      (m) =>
+        m.ownerPrincipalId === access.principalId &&
+        artifactIds.has(m.artifactId),
+    ),
     taskOrder: state.taskOrder.filter((id) => artifactIds.has(id)),
     applicationInstances: state.applicationInstances.filter((i) =>
       projectIds.has(i.workspaceId),

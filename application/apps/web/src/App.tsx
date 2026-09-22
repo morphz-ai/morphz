@@ -93,7 +93,14 @@ import {
   objectsApplication,
   scriptStudioApplication,
   browserApplication,
+  readerApplication,
 } from "../../../packages/core/src/applications.js";
+import { Reader, type ReadingCompose } from "./Reader.js";
+import type {
+  ReadingReference,
+  ReaderTarget,
+  ReadingLocation,
+} from "../../../packages/core/src/reader.js";
 import { SearchDocuments } from "./LibraryDialogs.js";
 import type { LocalFileView } from "../../../packages/core/src/local-files.js";
 import { UnderstandingPanel } from "./UnderstandingPanel.js";
@@ -141,6 +148,8 @@ type Preferences = InterfacePreferences & {
   artifactId: string | null;
   artifactRevision: number | null;
   artifactPage?: number | null;
+  readerMode?: boolean;
+  readingTarget?: ReaderTarget | null;
   collaboration: boolean;
   composer: boolean;
   conversation: boolean | null;
@@ -165,6 +174,7 @@ import {
 } from "../../../packages/core/src/script-delivery.js";
 
 type InputDraft = {
+  reading?: ReadingReference;
   scriptGeneration?: ScriptGeneration;
   continuation?: InputContinuation;
   continuationLabel?: string;
@@ -195,6 +205,7 @@ type NavigationPlace = Pick<
   | "artifactId"
   | "artifactRevision"
   | "artifactPage"
+  | "readerMode"
   | "applications"
   | "scriptLocation"
 >;
@@ -516,13 +527,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       activeInstance?.applicationId !== "morphz.script-studio" &&
       a.projectId === project?.id &&
       a.id ===
-        (restoredPlace
-          ? restoredPlace.artifactId
-          : (prefs.artifactId ??
-            (prefs.view !== "inbox" &&
-            activeInstance?.applicationId === objectsApplication.id
-              ? activeInstance.state.artifactId
-              : null))),
+        (activeInstance?.applicationId === readerApplication.id
+          ? activeInstance.state.artifactId
+          : restoredPlace
+            ? restoredPlace.artifactId
+            : (prefs.artifactId ??
+              (prefs.view !== "inbox" &&
+              activeInstance?.applicationId === objectsApplication.id
+                ? activeInstance.state.artifactId
+                : null))),
   );
   const selectedConversation =
     state?.conversations.find(
@@ -739,6 +752,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     artifactId: artifact?.id ?? null,
     artifactRevision: prefs.artifactRevision,
     artifactPage: prefs.artifactPage,
+    readerMode: prefs.readerMode,
     applications: prefs.applications,
     scriptLocation: prefs.scriptLocation ?? null,
   };
@@ -1055,7 +1069,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }
   // Only first-party, explicit user navigation opens a network page. Application
   // bridge requests and restored views do not grant that browser intent.
-  async function openUser(id: string, revision?: number, page?: number) {
+  async function openUser(
+    id: string,
+    revision?: number,
+    page?: number,
+    reading?: ReadingLocation,
+  ) {
     if (state?.scriptProductions.some((p) => p.id === id))
       return openScriptLocation({ productionId: id });
     const generation = ++navigationGeneration.current;
@@ -1068,8 +1087,72 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return;
     }
     setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
-    void openObject(a.projectId, id, revision, page);
+    void openObject(a.projectId, id, revision, page, !!reading, reading);
   }
+  async function openReading(id: string) {
+    const generation = ++navigationGeneration.current;
+    const a =
+      state?.artifacts.find((a) => a.id === id) ??
+      (await client.resolveArtifact(id));
+    if (generation !== navigationGeneration.current) return;
+    if (a) await openObject(a.projectId, id, undefined, undefined, true);
+  }
+  async function readingLibrary() {
+    if (
+      !activeInstance ||
+      activeInstance.applicationId !== readerApplication.id
+    ) {
+      prefer({ artifactId: null, readerMode: false, readingTarget: null });
+      return;
+    }
+    try {
+      await client.execute({
+        type: "set-application-state",
+        instanceId: activeInstance.id,
+        expectedRevision: activeInstance.revision,
+        state: { ...activeInstance.state, artifactId: "" },
+      });
+      activateApplication(activeInstance.id);
+    } catch (e) {
+      setNotice((e as Error).message);
+    }
+  }
+  function readingTargetConsumed(requestId: string) {
+    if (prefs.readingTarget?.requestId === requestId)
+      prefer({ readingTarget: null });
+  }
+  const composeReading: ReadingCompose = (
+    id,
+    revision,
+    reference,
+    question,
+  ) => {
+    const key = conversationId + ":" + id,
+      old = drafts[key] ?? emptyDraft;
+    if (
+      old.body.trim() ||
+      old.selection ||
+      old.attachments?.length ||
+      old.continuation ||
+      old.taskResult ||
+      old.scriptGeneration
+    )
+      return {
+        ok: false,
+        error: "输入框中有未发送内容，请先处理原草稿；这次选文仍保留。",
+      };
+    setDraft(key, {
+      ...old,
+      reading: structuredClone(reference),
+      revision,
+      selection: reference.quote,
+      body: question,
+      annotation: false,
+      intent: undefined,
+    });
+    showInput();
+    return { ok: true };
+  };
   async function openScript(output: ScriptOutput) {
     return openScriptLocation(scriptOutputLocation(output));
   }
@@ -1139,6 +1222,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     id: string,
     revision?: number,
     page?: number,
+    readerMode = false,
+    reading?: ReadingLocation,
   ) {
     const generation = ++navigationGeneration.current;
     setOpeningObject(true);
@@ -1149,12 +1234,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         throw new Error("内容暂时无法读取，请检查连接或访问权限后重试。");
       // Catalog and task navigation are views, not application launches.
       // Keep the workspace's current application intact when reading from them.
+      const readingView =
+        readerMode ||
+        opened.content.kind === "publication" ||
+        opened.content.kind === "pdf";
+      const application = readingView ? readerApplication : objectsApplication;
       const result = applicationWorkspaceOpen
         ? await client.execute({
             type: "launch-application",
             workspaceId,
-            applicationId: objectsApplication.id,
-            applicationVersion: objectsApplication.version,
+            applicationId: application.id,
+            applicationVersion: application.version,
             artifactId: id,
           })
         : null;
@@ -1165,6 +1255,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         artifactId: id,
         artifactRevision: revision ?? null,
         artifactPage: page ?? null,
+        readerMode: readingView,
+        readingTarget: reading
+          ? {
+              artifactId: id,
+              revision: revision ?? opened.revision,
+              location: reading,
+              requestId: crypto.randomUUID(),
+            }
+          : null,
         ...(prefs.interactions?.[exchangeKey] === "history"
           ? {
               interactions: {
@@ -1223,7 +1322,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setCreating(null);
     prefer({
       applications: { ...prefs.applications, [project.id]: id },
+      readerMode:
+        state?.applicationInstances.find((i) => i.id === id)?.applicationId ===
+        readerApplication.id,
       artifactId: null,
+      artifactRevision: null,
+      readingTarget: null,
       ...(id === null ? { scriptLocation: null } : {}),
       ...(historyVisible
         ? { interactions: { [exchangeKey]: "recent" as const } }
@@ -1663,6 +1767,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               ? (captured.revision ?? artifact.revision)
               : null,
             selection: captured.selection,
+            ...(captured.reading ? { reading: captured.reading } : {}),
             body: captured.body,
             ...(captured.scriptGeneration
               ? { scriptGeneration: captured.scriptGeneration }
@@ -2439,6 +2544,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   enabled={applicationWorkspaceOpen}
                   onActivate={activateApplication}
                   onOpen={open}
+                  readingTarget={prefs.readingTarget}
+                  readingRevision={prefs.artifactRevision}
+                  onReadingOpen={openReading}
+                  onReadingCompose={composeReading}
+                  onReadingLibrary={() => void readingLibrary()}
+                  onReadingJump={(target) =>
+                    void openUser(
+                      target.artifactId,
+                      target.revision,
+                      undefined,
+                      target.location,
+                    )
+                  }
+                  onReadingTargetConsumed={readingTargetConsumed}
                   onOpenContents={openWorkspaceContents}
                   onNotice={setNotice}
                   onComposeIntent={composeIntent}
@@ -2514,7 +2633,32 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     return { ok: true };
                   }}
                 >
-                  {artifact ? (
+                  {artifact &&
+                  (prefs.readerMode ||
+                    artifact.content.kind === "publication") ? (
+                    <Reader
+                      client={client}
+                      projectId={project.id}
+                      artifactId={artifact.id}
+                      revision={prefs.artifactRevision}
+                      target={prefs.readingTarget}
+                      active={true}
+                      onOpen={openReading}
+                      onLibrary={() => void readingLibrary()}
+                      onJump={(target) =>
+                        void openUser(
+                          target.artifactId,
+                          target.revision,
+                          undefined,
+                          target.location,
+                        )
+                      }
+                      onTargetConsumed={readingTargetConsumed}
+                      onCompose={composeReading}
+                      onNotice={setNotice}
+                      onNativeDialog={setNativeExportDialog}
+                    />
+                  ) : artifact ? (
                     <ArtifactEditor
                       autoOpenWebsite={websiteIntent === artifact.id}
                       titleInToolbar={
@@ -2802,6 +2946,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       )}
                       {draft.selection && !draft.continuation && (
                         <div className="selection-quote">
+                          {draft.reading && (
+                            <small>
+                              {draft.reading.book.title} ·{" "}
+                              {draft.reading.chapter} ·{" "}
+                              {draft.reading.spoilers ? "可引用后文" : "不剧透"}
+                            </small>
+                          )}
                           <blockquote>{draft.selection}</blockquote>
                           <button
                             aria-label="移除引用"
@@ -2809,6 +2960,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               setDraft(contextKey, {
                                 ...draft,
                                 selection: "",
+                                reading: undefined,
                                 annotation: false,
                               })
                             }

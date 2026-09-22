@@ -3,6 +3,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { pdfContentSchema } from "../../../packages/core/src/pdf.js";
+import {
+  publicationSchema,
+  readingReference,
+  readingSourceId,
+  type ParsedPublication,
+  type ReaderSection,
+  type ReadingSection,
+} from "../../core/src/reader.js";
+import { assertReaderAccess } from "../../core/src/reader-commands.js";
+import { ocrResultSchema, type ReadingOcr } from "../../core/src/reader-ocr.js";
+import { readArtifact } from "../../core/src/retrieval.js";
+import { markdownSections, safeReadingSection } from "./reader-import.js";
 import { SearchIndex } from "./search-index.js";
 import { migrateContentOwnership } from "./content-migration.js";
 import { contentEntry } from "../../core/src/content.js";
@@ -50,7 +62,7 @@ export class WorkspaceStore {
     const version = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version > 14) {
+    if (version.user_version > 15) {
       this.db.close();
       throw new Error("数据库版本高于当前应用支持范围，请使用更新的 Morphz。");
     }
@@ -62,6 +74,9 @@ export class WorkspaceStore {
       CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS asset_owners (asset_id TEXT NOT NULL REFERENCES assets(id), principal_id TEXT NOT NULL, PRIMARY KEY(asset_id,principal_id));
       CREATE TABLE IF NOT EXISTS pdf_metadata (asset_id TEXT PRIMARY KEY REFERENCES assets(id), pages TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS publication_metadata (asset_id TEXT PRIMARY KEY REFERENCES assets(id), body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS publication_sections (asset_id TEXT NOT NULL REFERENCES assets(id), section_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(asset_id,section_id));
+      CREATE TABLE IF NOT EXISTS reading_ocr (asset_id TEXT NOT NULL REFERENCES assets(id), section_id TEXT NOT NULL, page INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(asset_id,section_id));
       CREATE TABLE IF NOT EXISTS center_metadata (id INTEGER PRIMARY KEY CHECK(id=1), identity TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS service_state (name TEXT PRIMARY KEY, body TEXT NOT NULL);`);
@@ -101,7 +116,7 @@ export class WorkspaceStore {
         .run(JSON.stringify(migrated));
       this.index = new SearchIndex(this.db);
       this.index.sync(this.snapshot());
-      this.db.exec("PRAGMA user_version=14");
+      this.db.exec("PRAGMA user_version=15");
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.close();
@@ -409,6 +424,7 @@ export class WorkspaceStore {
   ): Receipt {
     const command = commandSchema.parse(raw);
     const isBookmark = command.operation.type.startsWith("bookmark-");
+    const isReader = command.operation.type === "reader-command";
     const management = [
       "create-project",
       "update-project",
@@ -421,6 +437,7 @@ export class WorkspaceStore {
           command,
           access,
           ...(isBookmark ||
+          isReader ||
           command.operation.type === "script-command" ||
           command.operation.type === "prepare-script" ||
           (management && originInputId)
@@ -432,6 +449,13 @@ export class WorkspaceStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (isBookmark) bookmarkOwner(this.snapshot(), access, originInputId);
+      if (command.operation.type === "reader-command")
+        assertReaderAccess(
+          this.snapshot(),
+          command.operation.command,
+          access,
+          originInputId,
+        );
       if (management) {
         const state = this.snapshot(),
           op = command.operation;
@@ -630,8 +654,11 @@ export class WorkspaceStore {
       if (
         (op.type === "create-artifact" ||
           op.type === "revise-artifact" ||
-          op.type === "import-pdf") &&
-        (op.content.kind === "image" || op.content.kind === "pdf") &&
+          op.type === "import-pdf" ||
+          op.type === "import-publication") &&
+        (op.content.kind === "image" ||
+          op.content.kind === "pdf" ||
+          op.content.kind === "publication") &&
         !this.db
           .prepare(
             "SELECT 1 FROM asset_owners WHERE asset_id=? AND principal_id=?",
@@ -643,6 +670,59 @@ export class WorkspaceStore {
           "forbidden",
           "无权使用这份原始文件，请先通过当前身份上传。",
         );
+      if (
+        (op.type === "create-artifact" ||
+          op.type === "revise-artifact" ||
+          op.type === "import-publication") &&
+        op.content.kind === "publication"
+      ) {
+        const saved = this.db
+          .prepare("SELECT body FROM publication_metadata WHERE asset_id=?")
+          .get(op.content.assetId) as { body: string } | undefined;
+        if (!saved || saved.body !== JSON.stringify(op.content))
+          throw new DomainError("invalid", "读物目录与已解析的原文件不匹配。");
+      }
+      if (op.type === "record-input" && op.reading) {
+        if (!op.artifactId || !op.artifactRevision)
+          throw new DomainError("invalid", "阅读引用缺少原文版本。");
+        const section = this.readerSection(
+          op.artifactId,
+          op.artifactRevision,
+          op.reading.location.sectionId,
+          access,
+        );
+        const expected = readingReference(
+          section,
+          op.reading.location,
+          op.reading,
+        );
+        if (
+          section.sourceId !== op.reading.location.sourceId ||
+          JSON.stringify(expected) !== JSON.stringify(op.reading)
+        )
+          throw new DomainError(
+            "invalid",
+            "阅读引用与已保存的原文不匹配，请重新选择。",
+          );
+      }
+      if (op.type === "reader-command" && "location" in op.command) {
+        const c = op.command,
+          section = this.readerSection(
+            c.artifactId,
+            c.artifactRevision,
+            c.location.sectionId,
+            access,
+          );
+        const expected = readingReference(section, c.location, {
+          personalContext: false,
+          spoilers: false,
+        });
+        if (
+          section.sourceId !== c.location.sourceId ||
+          ("quote" in c && c.quote !== expected.quote)
+        )
+          throw new DomainError("invalid", "标注位置与原文不匹配。");
+      }
       if (
         (op.type === "create-artifact" ||
           op.type === "revise-artifact" ||
@@ -830,6 +910,186 @@ export class WorkspaceStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  addPublication(
+    bytes: Buffer,
+    parsed: ParsedPublication,
+    access: AccessContext,
+  ) {
+    const assetId = createHash("sha256").update(bytes).digest("hex"),
+      content = publicationSchema.parse(parsed.content);
+    if (
+      content.assetId !== assetId ||
+      content.sections.length !== parsed.sections.length ||
+      content.sections.some(
+        (s, index) =>
+          s.id !== parsed.sections[index]?.id ||
+          s.characters !== parsed.sections[index]?.text.length,
+      )
+    )
+      throw new DomainError("invalid", "读物解析结果与源文件不一致。");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("INSERT OR IGNORE INTO assets(id,mime,bytes) VALUES(?,?,?)")
+        .run(assetId, "application/octet-stream", bytes);
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO asset_owners(asset_id,principal_id) VALUES(?,?)",
+        )
+        .run(assetId, access.principalId);
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO publication_metadata(asset_id,body) VALUES(?,?)",
+        )
+        .run(assetId, JSON.stringify(content));
+      const save = this.db.prepare(
+        "INSERT OR IGNORE INTO publication_sections(asset_id,section_id,body) VALUES(?,?,?)",
+      );
+      for (const section of parsed.sections)
+        save.run(assetId, section.id, JSON.stringify(section));
+      this.db.exec("COMMIT");
+      return content;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+  readerSection(
+    artifactId: string,
+    revision: number,
+    sectionId: string,
+    access: AccessContext,
+  ): ReadingSection {
+    const version = readArtifact(this.snapshot(), artifactId, access, revision),
+      content = version.content;
+    let section: ReaderSection | undefined, ocr: ReadingOcr | undefined;
+    if (content.kind === "publication") {
+      if (!content.sections.some((s) => s.id === sectionId))
+        throw new DomainError("not_found", "章节不存在。");
+      const saved = this.db
+        .prepare(
+          "SELECT body FROM publication_sections WHERE asset_id=? AND section_id=?",
+        )
+        .get(content.assetId, sectionId) as { body: string } | undefined;
+      if (saved) section = JSON.parse(saved.body) as ReaderSection;
+    } else if (content.kind === "document" && !content.understanding)
+      section = markdownSections(content.markdown).find(
+        (s) => s.id === sectionId,
+      );
+    else if (content.kind === "pdf") {
+      const match = /^page-([1-9]\d*)(?:-ocr-[a-f0-9]{64})?$/.exec(sectionId),
+        page = match ? Number(match[1]) : 0;
+      let text = content.pages[page - 1];
+      if (text !== undefined && sectionId.includes("-ocr-")) {
+        const row = this.db
+          .prepare(
+            "SELECT body FROM reading_ocr WHERE asset_id=? AND section_id=?",
+          )
+          .get(content.assetId, sectionId) as { body: string } | undefined;
+        if (!row)
+          throw new DomainError(
+            "not_found",
+            "这份识别文本不存在；原 PDF 未被改动。",
+          );
+        ocr = JSON.parse(row.body) as ReadingOcr;
+        text = ocr.items.map((i) => i.correction ?? i.text).join("\n");
+      }
+      if (text !== undefined)
+        section = {
+          ...safeReadingSection(
+            sectionId,
+            `第 ${page} 页${ocr ? " · OCR 识别文本（需核对）" : ""}`,
+            `<pre>${text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!)}</pre>`,
+          ),
+          text,
+        };
+    }
+    if (!section)
+      throw new DomainError("not_found", "无法读取这份内容的指定章节。");
+    return {
+      ...section,
+      sourceId: readingSourceId(artifactId, revision, content),
+      ...(ocr ? { ocr } : {}),
+      book: {
+        title: version.title,
+        author: content.kind === "publication" ? content.author : "",
+        edition: content.kind === "publication" ? content.edition : "",
+        format:
+          content.kind === "publication"
+            ? content.format
+            : content.kind === "pdf"
+              ? ocr
+                ? "pdf-ocr"
+                : "pdf"
+              : "markdown",
+      },
+    };
+  }
+  saveReadingOcr(
+    artifactId: string,
+    revision: number,
+    page: number,
+    result: ReadingOcr,
+    access: AccessContext,
+  ) {
+    const content = readArtifact(
+      this.snapshot(),
+      artifactId,
+      access,
+      revision,
+    ).content;
+    if (content.kind !== "pdf" || content.pages[page - 1] === undefined)
+      throw new DomainError("invalid", "PDF 页面不存在。");
+    ocrResultSchema.parse({ image: result.image, items: result.items });
+    const body = JSON.stringify(result),
+      digest = createHash("sha256").update(body).digest("hex"),
+      sectionId = `page-${page}-ocr-${digest}`;
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO reading_ocr(asset_id,section_id,page,body) VALUES(?,?,?,?)",
+      )
+      .run(content.assetId, sectionId, page, body);
+    return sectionId;
+  }
+  latestReadingOcr(
+    artifactId: string,
+    revision: number,
+    page: number,
+    access: AccessContext,
+  ) {
+    const content = readArtifact(
+      this.snapshot(),
+      artifactId,
+      access,
+      revision,
+    ).content;
+    if (content.kind !== "pdf" || content.pages[page - 1] === undefined)
+      throw new DomainError("invalid", "PDF 页面不存在。");
+    const row = this.db
+      .prepare(
+        "SELECT section_id FROM reading_ocr WHERE asset_id=? AND page=? ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(content.assetId, page) as { section_id: string } | undefined;
+    return row?.section_id;
+  }
+  readerContents(artifactId: string, revision: number, access: AccessContext) {
+    const version = readArtifact(this.snapshot(), artifactId, access, revision),
+      content = version.content;
+    if (content.kind === "publication") return content.sections;
+    if (content.kind === "pdf")
+      return content.pages.map((text, index) => ({
+        id: `page-${index + 1}`,
+        title: `第 ${index + 1} 页`,
+        characters: text.length,
+      }));
+    if (content.kind === "document" && !content.understanding)
+      return markdownSections(content.markdown).map((s) => ({
+        id: s.id,
+        title: s.title,
+        characters: s.text.length,
+      }));
+    throw new DomainError("invalid", "此内容不支持阅读。");
   }
   close() {
     this.db.close();

@@ -4,6 +4,7 @@ import { scriptStudioApplication } from "../../core/src/applications.js";
 import { scriptCommandSchema } from "../../core/src/script-studio.js";
 import { scriptToolSchema } from "./script-studio-tools.js";
 import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
+import { readerToolSchema } from "../../core/src/reader.js";
 
 export const operationRequestSchema = z.discriminatedUnion("action", [
   z
@@ -81,6 +82,30 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       ...params,
     }));
   const withoutAction = (schema: z.ZodObject) => schema.omit({ action: true });
+  const readingLabels: Record<string, string> = {
+    catalog: "查找获准读物",
+    contents: "读取目录和确切版本",
+    read: "按章节和位置读取有界原文",
+    marks: "读取用户的私人书签、高亮和批注",
+    "mark-add": "保存书签、高亮或批注",
+    "mark-update": "修改已有标注",
+    "mark-remove": "移除标注（可恢复）",
+    "mark-restore": "恢复已移除标注",
+    "save-position": "按用户要求更新阅读位置与偏好",
+    ocr: "本机逐页 OCR、状态、取消与校对（模型安装须用户确认）",
+  };
+  for (const schema of readerToolSchema.options) {
+    const action = schema.shape.action.value;
+    add(
+      `reader.${action}`,
+      readingLabels[action]!,
+      ["catalog", "contents", "read", "marks"].includes(action)
+        ? "read"
+        : "write",
+      withoutAction(schema),
+      (params) => ({ action: "reader", reader: { action, ...params } }),
+    );
+  }
 
   simple(
     "input.read",

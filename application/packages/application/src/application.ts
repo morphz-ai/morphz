@@ -33,6 +33,12 @@ import { type SpeechProvider, ttsRequestSchema } from "./speech.js";
 import { IdentityCenter, workspaceFor, requiresIdentity } from "./identity.js";
 import { Notifications } from "./notifications.js";
 import { extractPdf } from "./pdf.js";
+import { parsePublication } from "./reader-import.js";
+import {
+  maxReadingFileBytes,
+  readerReadSchema,
+} from "../../core/src/reader.js";
+import { documentImportIssue } from "../../core/src/sources.js";
 import type { LocalFiles } from "./local-files.js";
 import {
   speechScopeSchema as speechScope,
@@ -42,6 +48,7 @@ import { SpeechStreams } from "./speech-stream.js";
 import { ContinuationConflict, SupplementUnconfirmed } from "./continuation.js";
 
 export type ApplicationOptions = {
+  readerOcr?: import("./reader-ocr.js").ReaderOcr;
   runtime?: RuntimeBridge;
   identity?: IdentityCenter;
   browser?: BrowserBroker;
@@ -518,6 +525,64 @@ export class ApplicationSession {
       this.access,
     );
   }
+  async importReading(raw: unknown) {
+    const { commandId, projectId, relativePath, data } = z
+      .object({
+        commandId: z.uuid(),
+        projectId: z.string().min(1).max(100),
+        relativePath: z.string().min(1).max(4000),
+        data: z.unknown(),
+      })
+      .strict()
+      .parse(raw);
+    this.project(projectId);
+    if (/\.pdf$/i.test(relativePath)) return this.importPdf(raw);
+    const issue = documentImportIssue(
+      relativePath.replace(/\.[^.\/]+$/, ".txt"),
+    );
+    if (issue) throw new DomainError("invalid", issue);
+    const source = bytes(data, maxReadingFileBytes),
+      parsed = await parsePublication(relativePath.split("/").at(-1)!, source);
+    this.project(projectId);
+    const content = this.store.addPublication(source, parsed, this.access);
+    return this.store.execute(
+      {
+        commandId,
+        operation: {
+          type: "import-publication",
+          projectId,
+          relativePath,
+          title: parsed.title,
+          content,
+        },
+      },
+      this.access,
+    );
+  }
+  readReading(raw: unknown, contents = false) {
+    if (contents) {
+      const p = readerReadSchema.omit({ sectionId: true }).parse(raw);
+      return this.store.readerContents(p.artifactId, p.revision, this.access);
+    }
+    const p = readerReadSchema.parse(raw);
+    return this.store.readerSection(
+      p.artifactId,
+      p.revision,
+      p.sectionId,
+      this.access,
+    );
+  }
+  async readingOcr(raw: unknown) {
+    this.active();
+    if (!this.options.readerOcr)
+      throw new DomainError(
+        "invalid",
+        "当前连接未提供本地 OCR，请在本机 Morphz Desktop 中使用。",
+      );
+    const result = await this.options.readerOcr.call(raw, this.access);
+    this.active();
+    return result;
+  }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
       scope = executionScopeSchema.parse(raw);
@@ -778,6 +843,14 @@ export function invokeApplication(
       return session.addAttachment(params);
     case "pdf.import":
       return session.importPdf(params);
+    case "reader.import":
+      return session.importReading(params);
+    case "reader.read":
+      return session.readReading(params);
+    case "reader.contents":
+      return session.readReading(params, true);
+    case "reader.ocr":
+      return session.readingOcr(params);
     case "execution.snapshot":
       return session.executionSnapshot(params);
     case "execution.result":

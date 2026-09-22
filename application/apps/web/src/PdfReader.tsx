@@ -88,7 +88,7 @@ export function PdfAttachment({
       ) : pdf ? (
         <>
           {toolbarTarget ? createPortal(controls, toolbarTarget) : controls}
-          <Page
+          <PdfPage
             key={`${page}:${width}`}
             pdf={pdf}
             number={page}
@@ -101,7 +101,7 @@ export function PdfAttachment({
     </div>
   );
 }
-function Page({
+export function PdfPage({
   pdf,
   number,
   width,
@@ -115,6 +115,9 @@ function Page({
   const [error, setError] = useState(""),
     [ready, setReady] = useState(false);
   useEffect(() => {
+    setReady(false);
+    setError("");
+    layer.current?.replaceChildren();
     let stopped = false,
       render: RenderTask | undefined,
       text: TextLayer | undefined;
@@ -141,14 +144,19 @@ function Page({
         viewport,
         transform: [ratio, 0, 0, ratio, 0, 0],
       });
-      const textContentSource = await page.getTextContent();
-      if (stopped) return;
-      text = new TextLayer({
-        textContentSource,
-        container: layer.current,
-        viewport,
-      });
-      await Promise.all([render.promise, text.render()]);
+      const textRendering = (async () => {
+        const textContentSource = await page.getTextContent();
+        if (stopped || !layer.current) return;
+        text = new TextLayer({
+          textContentSource,
+          container: layer.current,
+          viewport,
+        });
+        await text.render();
+      })();
+      // Attach both rejection handlers immediately: resizing may cancel the
+      // canvas while getTextContent is still pending.
+      await Promise.all([render.promise, textRendering]);
       if (!stopped) setReady(true);
     })().catch(() => {
       if (!stopped)
@@ -168,6 +176,7 @@ function Page({
         className="pdf-page"
         style={{ width }}
         aria-label={`PDF 第 ${number} 页`}
+        aria-busy={!ready}
       >
         <canvas ref={canvas} />
         <div ref={layer} className="pdf-text-layer" />
@@ -306,7 +315,7 @@ export default function PdfReader({
           {error}
         </p>
       ) : pdf ? (
-        <Page
+        <PdfPage
           key={`${number}:${width}`}
           pdf={pdf}
           number={number}

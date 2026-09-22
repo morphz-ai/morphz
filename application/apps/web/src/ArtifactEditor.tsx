@@ -11,6 +11,7 @@ import {
   History,
   MessageSquarePlus,
   FileText,
+  BookOpen,
   Image,
   CircleCheck,
   Globe,
@@ -45,6 +46,7 @@ export const kindLabel = {
   image: "图片",
   task: "事项",
   pdf: "PDF",
+  publication: "读物",
   website: "网页链接",
   interactive: "表格",
 };
@@ -54,6 +56,7 @@ export function ObjectIcon({ kind }: { kind: Content["kind"] }) {
     image: Image,
     task: CircleCheck,
     pdf: FileText,
+    publication: BookOpen,
     website: Globe,
     interactive: Table2,
   }[kind];

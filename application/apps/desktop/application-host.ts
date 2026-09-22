@@ -33,6 +33,10 @@ import {
 import { runtimeAgentTools } from "../../packages/application/src/agent-tools.js";
 import { LocalRuntimeConnection } from "../../packages/application/src/runtime-connection.js";
 import {
+  ReaderOcr,
+  type ReadingOcrEngine,
+} from "../../packages/application/src/reader-ocr.js";
+import {
   appContentSecurityPolicy,
   applicationViewPolicy,
   applicationViewPermissions,
@@ -81,6 +85,7 @@ export async function openEmbeddedApplication(
   directory: string,
   profile: string,
   legacyAuthentication?: (cookieName: string) => Promise<string | undefined>,
+  ocrEngine?: ReadingOcrEngine,
 ) {
   if (!isAbsolute(directory) || !isAbsolute(profile))
     throw new Error("应用目录必须是明确的绝对路径。");
@@ -93,6 +98,11 @@ export async function openEmbeddedApplication(
     const config = loadRuntimeConfig(directory);
     runtime = config ? new RuntimeBridge(store, config, identity) : undefined;
     const browser = new BrowserBroker(store);
+    const readerOcr = new ReaderOcr(
+      store,
+      join(directory, "reader-ocr-models"),
+      ocrEngine,
+    );
     const localFiles = new LocalFiles(
       join(profile, "local-file-references.json"),
       store,
@@ -104,6 +114,7 @@ export async function openEmbeddedApplication(
       browser,
       speech: new SpeechService(process.env.DOUBAO_API_KEY),
       localFiles,
+      readerOcr,
     });
     const authentication = authenticationFile(profile, store.identity());
     let cookie = authentication.read();
@@ -127,7 +138,14 @@ export async function openEmbeddedApplication(
     if (runtime && manifest)
       tools = await listenLocalHostTools(
         manifest.endpoint,
-        runtimeAgentTools(store, runtime, manifest.token, browser, localFiles),
+        runtimeAgentTools(
+          store,
+          runtime,
+          manifest.token,
+          browser,
+          localFiles,
+          readerOcr,
+        ),
       );
     if (!identity)
       application.options.connectionSetup = new LocalRuntimeConnection(
@@ -157,6 +175,7 @@ export async function openEmbeddedApplication(
               prepared.token,
               browser,
               localFiles,
+              readerOcr,
             ),
           );
           return {
@@ -188,6 +207,7 @@ export async function openEmbeddedApplication(
       close() {
         return (stopping ??= (async () => {
           connection.close();
+          readerOcr.close();
           application.speechStreams.close();
           await tools?.close();
           await runtime?.stop();

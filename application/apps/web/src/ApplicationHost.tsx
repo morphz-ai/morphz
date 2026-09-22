@@ -26,6 +26,7 @@ import {
   objectsApplication,
   browserApplication,
   scriptStudioApplication,
+  readerApplication,
   type ApplicationManifest,
   type ApplicationInstance,
 } from "../../../packages/core/src/applications.js";
@@ -49,6 +50,8 @@ import { ScriptStudio, type ScriptComposeResult } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
 import type { BrowserView } from "./desktop.js";
+import { Reader, type ReadingCompose } from "./Reader.js";
+import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 
 export function AppIcon({ app }: { app: ApplicationManifest }) {
   const Icon = {
@@ -91,7 +94,21 @@ export function ApplicationHost({
   onBrowserPage,
   onInput,
   onNativeDialog,
+  readingTarget,
+  readingRevision,
+  onReadingOpen,
+  onReadingCompose,
+  onReadingLibrary,
+  onReadingJump,
+  onReadingTargetConsumed,
 }: {
+  readingTarget?: ReaderTarget | null;
+  readingRevision?: number | null;
+  onReadingOpen: (id: string) => void;
+  onReadingCompose: ReadingCompose;
+  onReadingLibrary: () => void;
+  onReadingJump: (target: ReaderTarget) => void;
+  onReadingTargetConsumed: (requestId: string) => void;
   onBrowserPage?: (page: BrowserView | null) => void;
   onInput?: () => void;
   onNativeDialog?: (open: boolean) => void;
@@ -140,6 +157,7 @@ export function ApplicationHost({
     spaceKind(space) === "project" ? workspaceId : null,
   );
   const applications = [
+    readerApplication,
     browserApplication,
     scriptStudioApplication,
     ...state.applications.filter(
@@ -440,6 +458,27 @@ export function ApplicationHost({
                       })
                       .catch((e) => onNotice(e.message));
                 }}
+              />
+            ) : app.ui.type === "builtin" && app.ui.view === "reader" ? (
+              <Reader
+                client={client}
+                projectId={workspaceId}
+                artifactId={
+                  typeof instance.state.artifactId === "string"
+                    ? instance.state.artifactId
+                    : undefined
+                }
+                revision={readingRevision}
+                target={readingTarget}
+                active={foreground && active?.id === instance.id}
+                globalLibrary={globalLibrary}
+                onOpen={onReadingOpen}
+                onLibrary={onReadingLibrary}
+                onJump={onReadingJump}
+                onTargetConsumed={onReadingTargetConsumed}
+                onCompose={onReadingCompose}
+                onNotice={onNotice}
+                onNativeDialog={onNativeDialog}
               />
             ) : app.ui.type === "builtin" && app.ui.view === "script-studio" ? (
               <ScriptStudio

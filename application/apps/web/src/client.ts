@@ -25,6 +25,10 @@ import { applicationCall, RequestError } from "./application-transport.js";
 export { RequestError } from "./application-transport.js";
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
 import {
+  maxReadingFileBytes,
+  type ReadingSection,
+} from "../../../packages/core/src/reader.js";
+import {
   executionSnapshotSchema,
   type ExecutionScope,
   type ExecutionControl,
@@ -387,6 +391,74 @@ export function useWorkspace() {
     await refresh();
     await refresh();
   }
+  async function importReading(
+    file: File,
+    projectId: string,
+  ): Promise<Receipt> {
+    const identity = current.current;
+    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
+    if (!file.size || file.size > maxReadingFileBytes)
+      throw new Error("读物不能为空或超过 32 MB。");
+    const data = await file.arrayBuffer(),
+      digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+    const storage = scopedStorage(
+      `${identity.centerId}:${identity.principalId}`,
+    );
+    const key = draftKey(
+      `reader:${projectId}:${file.name}:${Array.from(digest, (x) => x.toString(16).padStart(2, "0")).join("")}`,
+    );
+    const commandId =
+      storage.readLocal<string | null>(key, null) ?? crypto.randomUUID();
+    if (current.current?.csrfToken !== identity.csrfToken)
+      throw new Error("身份已切换，文件未发送。");
+    storage.writeLocal(key, commandId);
+    const receipt = (await applicationCall(
+      "reader.import",
+      { commandId, projectId, relativePath: file.name, data },
+      {
+        identityGeneration: identity.csrfToken,
+        signal: AbortSignal.timeout(35000),
+      },
+    )) as Receipt;
+    storage.writeLocal(key, null);
+    await refresh();
+    return receipt;
+  }
+  async function readReading(
+    artifactId: string,
+    revision: number,
+    sectionId: string,
+    signal?: AbortSignal,
+  ) {
+    if (!current.current) throw new Error("应用尚未就绪。");
+    return (await applicationCall(
+      "reader.read",
+      { artifactId, revision, sectionId },
+      { identityGeneration: current.current.csrfToken, signal },
+    )) as ReadingSection;
+  }
+  async function readingOcr(
+    request: import("../../../packages/core/src/reader-ocr.js").ReaderOcrRequest,
+    signal?: AbortSignal,
+  ) {
+    if (!current.current) throw new Error("应用尚未就绪。");
+    return (await applicationCall("reader.ocr", request, {
+      identityGeneration: current.current.csrfToken,
+      signal,
+    })) as import("../../../packages/core/src/reader-ocr.js").ReaderOcrStatus;
+  }
+  async function readingContents(
+    artifactId: string,
+    revision: number,
+    signal?: AbortSignal,
+  ) {
+    if (!current.current) throw new Error("应用尚未就绪。");
+    return (await applicationCall(
+      "reader.contents",
+      { artifactId, revision },
+      { identityGeneration: current.current.csrfToken, signal },
+    )) as Array<{ id: string; title: string; characters: number }>;
+  }
   async function verifyArtifact(id: string) {
     const data = bootSchema.parse(
       await applicationCall("workspace", undefined, {
@@ -586,6 +658,10 @@ export function useWorkspace() {
     upload,
     uploadAttachment,
     importPdf,
+    importReading,
+    readReading,
+    readingContents,
+    readingOcr,
     dispatchInput,
     verifyArtifact,
     cancelInput,

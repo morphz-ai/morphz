@@ -76,7 +76,12 @@ export function Conversation({
   conversationId: string;
   onRetry: (id: string) => Promise<void>;
   client: WorkspaceClient;
-  onOpen: (id: string, revision?: number) => void;
+  onOpen: (
+    id: string,
+    revision?: number,
+    page?: number,
+    reading?: import("../../../packages/core/src/reader.js").ReadingLocation,
+  ) => void;
   onOpenScript?: (output: ScriptOutput) => void;
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
@@ -636,6 +641,8 @@ export function Conversation({
                           onOpen(
                             item.artifactId!,
                             item.artifactRevision ?? undefined,
+                            undefined,
+                            item.reading?.location,
                           )
                         }
                       >
@@ -644,7 +651,10 @@ export function Conversation({
                           ?.versions.find(
                             (v) => v.revision === item.artifactRevision,
                           )?.title ?? "关联对象"}
-                        {item.artifactRevision != null &&
+                        {item.reading &&
+                          ` · ${item.reading.chapter} · 回到原文`}
+                        {!item.reading &&
+                          item.artifactRevision != null &&
                           ` · v${item.artifactRevision}`}
                       </button>
                     )}

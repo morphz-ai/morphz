@@ -129,9 +129,13 @@ export class HttpApplicationClient {
         data = binary(p.data);
         break;
       }
-      case "pdf.import": {
+      case "pdf.import":
+      case "reader.import": {
         const p = fields(params);
-        path = "/api/import/pdf";
+        path =
+          method === "reader.import"
+            ? "/api/import/reading"
+            : "/api/import/pdf";
         post();
         headers["X-Command-Id"] = String(p.commandId);
         headers["X-Project-Id"] = String(p.projectId);
@@ -139,6 +143,17 @@ export class HttpApplicationClient {
         data = binary(p.data);
         break;
       }
+      case "reader.read":
+      case "reader.contents":
+        path =
+          (method === "reader.read"
+            ? "/api/reader/section?"
+            : "/api/reader/contents?") + query(fields(params));
+        break;
+      case "reader.ocr":
+        path = "/api/reader/ocr";
+        post(params);
+        break;
       case "execution.snapshot":
         path = "/api/executions?" + query(fields(params));
         break;

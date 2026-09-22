@@ -91,6 +91,9 @@ export function contentText(content: Content): string {
       return content.markdown;
     case "pdf":
       return content.pages.join("\n\n");
+    case "publication":
+      // Imported books are not a full-text-index feed. Read explicit chapters via reader tools.
+      return content.sections.map((s) => s.title).join("\n");
     case "image":
       return content.alt;
     case "task":

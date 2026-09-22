@@ -208,6 +208,22 @@ def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
             continue
         package_directory = package_root / lock_path
         paths = license_files(package_directory)
+        if directory == "application":
+            # Some OCR packages omit their notices from npm's files list.
+            # Version-specific records preserve actual upstream attribution.
+            notices = REPOSITORY_ROOT / "third_party" / "licenses"
+            key = (npm_package_name(lock_path), package["version"])
+            supplements = {
+                ("@paddleocr/paddleocr-js", "0.4.2"): [notices / "PaddleOCR-LICENSE"],
+                ("onnxruntime-web", "1.30.0"): [
+                    notices / "onnxruntime-1.30.0" / "LICENSE",
+                    notices / "onnxruntime-1.30.0" / "ThirdPartyNotices.txt",
+                ],
+                ("onnxruntime-common", "1.30.0"): [notices / "onnxruntime-1.30.0" / "LICENSE"],
+                ("clipper-lib", "6.4.2"): [notices / "clipper-lib-6.4.2.txt", notices / "BSL-1.0.txt"],
+                ("guid-typescript", "1.0.9"): [notices / "guid-typescript-1.0.9.txt"],
+            }
+            paths.extend(supplements.get(key, []))
         if directory == "application" and lock_path == "node_modules/pdfjs-dist":
             # PDF.js ships fonts, character maps and WASM with their own notices.
             for asset_directory in ("cmaps", "standard_fonts", "wasm", "iccs"):

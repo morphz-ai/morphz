@@ -81,7 +81,11 @@ export class SearchIndex {
     );
     for (const a of state.artifacts) {
       for (const v of a.versions)
-        if (v.content.kind === "image" || v.content.kind === "pdf")
+        if (
+          v.content.kind === "image" ||
+          v.content.kind === "pdf" ||
+          v.content.kind === "publication"
+        )
           asset.run(v.content.assetId, a.projectId);
       // Asset visibility is independent of search eligibility. Existing imports
       // and their historical versions must remain readable after reindexing.

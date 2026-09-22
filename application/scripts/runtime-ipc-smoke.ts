@@ -17,6 +17,9 @@ import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import { localAccess, type Receipt } from "../packages/core/src/model.js";
+import { readingReference } from "../packages/core/src/reader.js";
+import { parsePublication } from "../packages/application/src/reader-import.js";
+import { readingInputFormat } from "../packages/application/src/session-io.js";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
@@ -99,7 +102,7 @@ writeFileSync(
 const configFile = join(runtimeDirectory, "morphz.toml");
 writeFileSync(
   configFile,
-  `[llm]\nprovider="stub"\nmodel="test-model"\nreasoning_effort="low"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+  `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
   { mode: 0o600 },
 );
 const originalListen = Server.prototype.listen;
@@ -177,15 +180,67 @@ try {
     () => host!.connection.application.options.runtime!.snapshot().connected,
     "Runtime connection",
   );
+  const binding = await fetch(
+    `http://127.0.0.1:${runtimePort}/api/agents/default-agent/provider-accounts/stub`,
+    { method: "PUT", headers: { Authorization: `Bearer ${runtimeToken}` } },
+  );
+  assert.ok(binding.ok, "Bind only the isolated fixture's synthetic account");
+  const capabilities = await fetch(
+    `http://127.0.0.1:${runtimePort}/api/session-io/capabilities`,
+    { headers: { Authorization: `Bearer ${runtimeToken}` } },
+  ).then((response) => response.json());
+  assert.ok(
+    capabilities.formats.some(
+      (format: any) =>
+        format.definition.id === readingInputFormat.id &&
+        format.definition.version === readingInputFormat.version,
+    ),
+    "The running Runtime, not merely the manifest on disk, must load reading v6",
+  );
   const boot = (await host.connection.call("workspace")) as any;
+  const store = host.connection.application.store;
+  const bookBytes = Buffer.from("# TEST 原文\n\n兼听则明，偏信则暗。\n"),
+    parsedBook = await parsePublication("TEST 伴读.md", bookBytes),
+    bookContent = store.addPublication(bookBytes, parsedBook, localAccess);
+  const book = store.execute(
+    {
+      commandId: randomUUID(),
+      operation: {
+        type: "import-publication",
+        projectId: "first-project",
+        relativePath: "TEST 伴读.md",
+        title: parsedBook.title,
+        content: bookContent,
+      },
+    },
+    localAccess,
+  );
+  const section = store.readerSection(
+      book.entityId,
+      1,
+      bookContent.sections[0]!.id,
+      localAccess,
+    ),
+    quoteStart = section.text.indexOf("兼听");
+  const reading = readingReference(
+    section,
+    {
+      sourceId: bookContent.assetId,
+      sectionId: section.id,
+      start: quoteStart,
+      end: quoteStart + "兼听则明，偏信则暗。".length,
+    },
+    { personalContext: true, spoilers: false },
+  );
   const command = {
     commandId: randomUUID(),
     operation: {
       type: "record-input",
       projectId: "first-project",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
+      artifactId: book.entityId,
+      artifactRevision: 1,
+      selection: reading.quote,
+      reading,
       body: "请创建 IPC 联合验收交付文档，仅使用工作区对象工具。",
       targetActantId: "morphz-agent",
     },
@@ -201,7 +256,6 @@ try {
       throw new Error(delivery.error ?? "delivery failed");
     return delivery?.state === "completed";
   }, "IPC object delivery");
-  const store = host.connection.application.store;
   const artifact = store
     .snapshot()
     .artifacts.find((a) => a.title === "IPC 联合验收交付");
@@ -250,7 +304,7 @@ try {
   );
   passed = true;
   console.log(
-    "PASS: real Runtime physical tool → private Unix callback → Agent-authored SQLite object + exact input receipt; embedded-host reopen and command retry preserve data without model replay. No application TCP listener.",
+    "PASS: reading v6 registered in real Runtime → immutable quote admission → physical tool → private Unix callback → Agent-authored SQLite object + exact input receipt; embedded-host reopen and command retry preserve data without model replay. No application TCP listener.",
   );
 } catch (error) {
   console.error(

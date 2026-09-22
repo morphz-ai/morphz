@@ -241,6 +241,15 @@ else {
       microphone = new MicrophoneGate(uiURL);
       const appSession = session.fromPartition(appPartition);
       if (connection.mode === "local") {
+        const { createReadingOcrEngine } = require("./reader-ocr.cjs");
+        const ocrResources = embeddedResources(
+          join(__dirname, "../../dist/web"),
+          {
+            resource() {
+              throw new Error("OCR cannot read application resources");
+            },
+          },
+        );
         host = await openEmbeddedApplication(
           connection.directory,
           app.getPath("userData"),
@@ -253,6 +262,12 @@ else {
               if (cookies.length === 1) return `${name}=${cookies[0].value}`;
             }
           },
+          createReadingOcrEngine({
+            BrowserWindow,
+            session,
+            ipcMain,
+            resources: ocrResources,
+          }),
         );
         application = host.connection;
       } else {

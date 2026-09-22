@@ -30,7 +30,7 @@ export const applicationManifestSchema = z
       z
         .object({
           type: z.literal("builtin"),
-          view: z.enum(["objects", "browser", "script-studio"]),
+          view: z.enum(["objects", "browser", "script-studio", "reader"]),
           presentation: z.enum(["workspace", "immersive"]).optional(),
         })
         .strict(),
@@ -97,6 +97,18 @@ export const browserApplication: ApplicationManifest = {
   permissions: ["input.compose"],
   harness: null,
   ui: { type: "builtin", view: "browser", presentation: "workspace" },
+};
+
+export const readerApplication: ApplicationManifest = {
+  format: applicationManifestFormat,
+  id: "morphz.reader",
+  version: "1.0.0",
+  title: "阅读",
+  description: "打开书籍与文档，标注原文，与 Morphz 一起读。",
+  icon: "book",
+  permissions: ["artifacts.read", "input.compose"],
+  harness: null,
+  ui: { type: "builtin", view: "reader", presentation: "workspace" },
 };
 
 export const scriptStudioApplication: ApplicationManifest = {
