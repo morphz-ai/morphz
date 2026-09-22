@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { migrateContentLocalState } from "./content-local-migration.js";
 import { z } from "zod";
+import { scriptOutputSchema } from "../../../packages/core/src/script-delivery.js";
 import {
   speechStreamStateSchema,
   type SpeechStreamCommand,
@@ -46,6 +48,7 @@ const bootSchema = z.object({
   centerId: z.string().uuid(),
   workspace: stateSchema,
   outputs: z.array(artifactOutputSchema).default([]),
+  scriptOutputs: z.array(scriptOutputSchema).default([]),
   csrfToken: z.string(),
   principalId: z.string(),
   actantId: z.string(),
@@ -150,6 +153,11 @@ export function useWorkspace() {
               location.origin,
             );
             migrateApplicationLocalState(
+              localStorage,
+              value.centerId,
+              value.principalId,
+            );
+            migrateContentLocalState(
               localStorage,
               value.centerId,
               value.principalId,

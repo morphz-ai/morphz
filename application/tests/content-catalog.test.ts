@@ -27,13 +27,13 @@ const doc = (s: WorkspaceStore, projectId = "first-project", access = agent) =>
 test("内容整理同一对象：CAS、幂等、可撤销归属，正文/旧版本/输入不改写，索引沿用来源", () => {
   const s = new WorkspaceStore(":memory:");
   try {
-    const source = s.snapshot().projects.find((p) => p.kind === "dialogue")!;
+    const source = s.snapshot().projects.find((p) => p.kind === "desk")!;
     const id = doc(s, source.id),
       before = s.snapshot();
     const original = before.artifacts.find((a) => a.id === id)!;
     const operation = {
       type: "organize-content" as const,
-      artifactId: id,
+      target: { kind: "artifact" as const, id: id },
       expectedRevision: 1,
       changes: { title: "改名但不是新文件", projectId: "first-project" },
     };
@@ -70,7 +70,7 @@ test("内容整理同一对象：CAS、幂等、可撤销归属，正文/旧版�
     });
     run(s, {
       ...operation,
-      artifactId: imported,
+      target: { kind: "artifact", id: imported },
       changes: { title: "仍是外部副本" },
     });
     assert.equal(s.search({ query: "外部不索引" }, localAccess).total, 0);
@@ -87,7 +87,7 @@ test("整理不越过成员与对象关联边界，失败不改写；目录不�
       other = run(s, { type: "create-project", title: "相同成员" });
     const op = {
       type: "organize-content" as const,
-      artifactId: id,
+      target: { kind: "artifact" as const, id: id },
       expectedRevision: 1,
       changes: { projectId: other },
     };
@@ -136,11 +136,21 @@ test("整理不越过成员与对象关联边界，失败不改写；目录不�
 test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具不能扩大项目授权", () => {
   const s = new WorkspaceStore(":memory:");
   try {
-    const id = doc(s),
-      tools = new AgentTools(s, "token", () => ({
-        projectId: "first-project",
-        access: agent,
-      }));
+    const id = doc(s);
+    const inputId = run(s, {
+      type: "record-input",
+      projectId: "first-project",
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      body: "整理内容",
+      targetActantId: "morphz-agent",
+    });
+    const tools = new AgentTools(s, "token", () => ({
+      projectId: "first-project",
+      inputId,
+      access: agent,
+    }));
     const envelope = (args: unknown) => ({
       protocol: 1,
       tool: "host_morphz",
@@ -158,7 +168,7 @@ test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具�
     });
     const command = envelope({
       action: "organize-content",
-      artifactId: id,
+      content: { kind: "artifact", id },
       revision: 1,
       metadata: { title: "Agent 改名" },
     });
@@ -170,19 +180,19 @@ test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具�
         tools.call(
           envelope({
             action: "organize-content",
-            artifactId: id,
+            content: { kind: "artifact", id },
             revision: 2,
             metadata: { projectId: "local-desk" },
           }),
         ),
-      /跨项目/,
+      /不存在/,
     );
     assert.throws(
       () =>
         tools.call(
           envelope({
             action: "organize-content",
-            artifactId: id,
+            content: { kind: "artifact", id },
             revision: 1,
             metadata: { title: "冲突" },
           }),
@@ -192,17 +202,17 @@ test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具�
     const result = tools.call(
       envelope({ action: "list", contentOnly: true, sort: "title", limit: 50 }),
     ) as {
-      artifacts: {
-        artifactId: string;
+      contents: {
+        content: { kind: string; id: string };
         title: string;
         kind: string;
-        createdBy: string;
+        createdBy: { actantId: string };
       }[];
     };
-    assert.ok(result.artifacts.every((a) => a.kind !== "task"));
+    assert.ok(result.contents.every((a) => a.kind !== "task"));
     assert.equal(
-      result.artifacts.find((a) => a.artifactId === id)?.createdBy,
-      "Morphz",
+      result.contents.find((a) => a.content.id === id)?.createdBy.actantId,
+      "morphz-agent",
     );
     const actual = s
       .snapshot()
@@ -211,7 +221,7 @@ test("Agent 与 Human 共用内容整理命令、稳定回执和排序；工具�
       )
       .sort((a, b) => compareContent("title", a, b));
     assert.deepEqual(
-      result.artifacts.map((a) => a.artifactId),
+      result.contents.map((a) => a.content.id),
       actual.map((a) => a.id),
     );
   } finally {

@@ -488,12 +488,18 @@ export function SearchDocuments({
             setOffset(0);
           }}
         >
-          <option value="">全部工作空间</option>
-          {client.boot?.workspace.projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-            </option>
-          ))}
+          <option value="">全部内容</option>
+          {client.boot?.workspace.projects
+            .filter(
+              (p) =>
+                !p.deletedAt &&
+                ["project", "desk"].includes(p.kind ?? "project"),
+            )
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.kind === "desk" ? "未归项目" : p.title}
+              </option>
+            ))}
         </select>
         <p className="muted" role="status">
           {loading

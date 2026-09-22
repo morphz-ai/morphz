@@ -7,6 +7,7 @@ import {
   contentVisitTime,
 } from "../apps/web/src/recent-content.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
+import { contentEntries } from "../packages/core/src/content.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 test("最近打开按实际访问顺序去重、有界，不把时间回拨当作旧访问", () => {
@@ -69,21 +70,32 @@ test("最近打开只显示当前有权访问的本空间内容，移动与改�
       { artifactId: ids[0]!, openedAt: 2 },
     ];
     assert.equal(
-      recentContent([], before.artifacts, "first-project").length,
+      recentContent([], contentEntries(before), "first-project").length,
       0,
     );
     assert.deepEqual(
-      recentContent(visits, before.artifacts, "first-project").map(
-        (v) => v.artifact.id,
+      recentContent(visits, contentEntries(before), "first-project").map(
+        (v) => v.entry.value.id,
       ),
       [ids[0]],
     );
-    assert.equal(recentContent(visits, before.artifacts, "another").length, 0);
+    assert.equal(
+      recentContent(visits, contentEntries(before), "another").length,
+      0,
+    );
     const original = before.artifacts.find((a) => a.id === ids[0])!;
     const moved = { ...original, projectId: "another", title: "当前名称" };
-    assert.equal(recentContent(visits, [moved], "first-project").length, 0);
     assert.equal(
-      recentContent(visits, [moved], "another")[0]!.artifact.title,
+      recentContent(
+        visits,
+        [{ kind: "artifact", value: moved }],
+        "first-project",
+      ).length,
+      0,
+    );
+    assert.equal(
+      recentContent(visits, [{ kind: "artifact", value: moved }], "another")[0]!
+        .entry.value.title,
       "当前名称",
     );
     const understanding = {
@@ -100,7 +112,11 @@ test("最近打开只显示当前有权访问的本空间内容，移动与改�
       },
     };
     assert.equal(
-      recentContent(visits, [understanding], "first-project").length,
+      recentContent(
+        visits,
+        contentEntries({ ...before, artifacts: [understanding] }),
+        "first-project",
+      ).length,
       0,
     );
     assert.deepEqual(store.snapshot(), before);

@@ -6,7 +6,8 @@ import {
   type AccessContext,
   type Workspace,
 } from "./model.js";
-import { assertProjectWritable } from "./projects.js";
+import { assertProjectWritable, projectManager } from "./projects.js";
+import { checkContentOwner } from "./content.js";
 import {
   currentScriptDraft,
   defaultScriptExportTemplate,
@@ -38,6 +39,57 @@ export function getScriptItem(production: ScriptProduction, itemId: string) {
   const item = production.items.find((i) => i.id === itemId);
   if (!item) throw new DomainError("not_found", "剧本条目不存在。");
   return item;
+}
+
+/** Preparation is durable domain data. Never mutate or synthesize a Human input. */
+export function scriptGenerationForInput(state: Workspace, inputId: string) {
+  const input = state.inputs.find((i) => i.id === inputId);
+  return (
+    input?.scriptGeneration ??
+    state.scriptPreparations.find((p) => p.inputId === inputId)?.generation
+  );
+}
+
+export function applyScriptPreparation(
+  state: Workspace,
+  generation: ScriptGeneration,
+  access: AccessContext,
+  commandId: string,
+  now: string,
+  originInputId?: string,
+) {
+  const { actor, input, projectId } = assertScriptAccess(
+    state,
+    { action: "prepare", productionId: generation.productionId },
+    access,
+    originInputId,
+  );
+  if (actor.kind !== "agent" || !input || input.continuation)
+    throw new DomainError(
+      "forbidden",
+      "执行准备需要本次真实的新输入，不能改绑补充消息。",
+    );
+  const existing = scriptGenerationForInput(state, input.id);
+  if (existing && JSON.stringify(existing) !== JSON.stringify(generation))
+    throw new DomainError(
+      "conflict",
+      "本次执行已经固定目标或资料，不能在途中改绑；请核对后发起新的请求。",
+    );
+  validateScriptGeneration(state, generation, projectId, input.author);
+  if (existing)
+    return (
+      state.scriptPreparations.find((p) => p.inputId === input.id)?.id ??
+      input.id
+    );
+  state.scriptPreparations.push({
+    id: commandId,
+    inputId: input.id,
+    projectId,
+    generation: structuredClone(generation),
+    createdBy: { ...access },
+    createdAt: now,
+  });
+  return commandId;
 }
 function requireVersion(actual: number, expected: number) {
   if (actual !== expected)
@@ -75,6 +127,47 @@ function assertUnique(ids: string[], label: string) {
     throw new DomainError("invalid", `${label}不能重复。`);
 }
 
+/** Filing content does not break an already saved exact source reference.
+ * New cross-project references are not inferred, and every read rechecks the
+ * source, historical version and production's current membership boundary. */
+function sourceBelongsToProduction(
+  state: Workspace,
+  production: ScriptProduction,
+  ref: ScriptDraft["sources"][number],
+) {
+  const source = state.artifacts.find((a) => a.id === ref.artifactId);
+  const version = source?.versions.find((v) => v.revision === ref.revision);
+  if (!source || !version) return false;
+  if (
+    source.projectId === production.projectId &&
+    (!version.projectId || version.projectId === production.projectId)
+  )
+    return true;
+  const existing = production.items.some((item) =>
+    item.versions.some((v) =>
+      v.draft.sources.some(
+        (r) =>
+          r.artifactId === ref.artifactId &&
+          r.revision === ref.revision &&
+          r.quote === ref.quote,
+      ),
+    ),
+  );
+  if (!existing) return false;
+  const projects = [
+    production.projectId,
+    source.projectId,
+    version.projectId ?? source.projectId,
+  ].map((id) => state.projects.find((p) => p.id === id));
+  return projects.every(
+    (p) =>
+      p &&
+      !p.deletedAt &&
+      [...p.members].sort().join("\0") ===
+        [...projects[0]!.members].sort().join("\0"),
+  );
+}
+
 export function validateScriptDraft(
   state: Workspace,
   production: ScriptProduction,
@@ -99,8 +192,7 @@ export function validateScriptDraft(
     const source = getArtifact(state, ref.artifactId);
     const version = source.versions.find((v) => v.revision === ref.revision);
     if (
-      source.projectId !== production.projectId ||
-      (version?.projectId && version.projectId !== production.projectId) ||
+      !sourceBelongsToProduction(state, production, ref) ||
       !version ||
       (ref.quote && !quotedText(version.content).includes(ref.quote))
     )
@@ -234,9 +326,8 @@ export function scriptSourceText(
   const source = getArtifact(state, ref.artifactId);
   const version = source.versions.find((v) => v.revision === ref.revision);
   if (
-    source.projectId !== production.projectId ||
+    !sourceBelongsToProduction(state, production, ref) ||
     !version ||
-    (version.projectId && version.projectId !== production.projectId) ||
     (ref.quote && !quotedText(version.content).includes(ref.quote))
   )
     throw new DomainError(
@@ -252,7 +343,7 @@ export function scriptSourceText(
 /** Recheck live actor and initiating Human memberships, including durable receipt replay. */
 export function assertScriptAccess(
   state: Workspace,
-  command: ScriptCommand,
+  command: ScriptCommand | { action: "prepare"; productionId: string },
   access: AccessContext,
   originInputId?: string,
 ) {
@@ -271,10 +362,21 @@ export function assertScriptAccess(
       : getScriptProduction(state, command.productionId, access).projectId;
   checkProject(state, projectId, access);
   if (actor.kind === "agent") {
-    if (!input || input.projectId !== projectId)
+    if (!input)
       throw new DomainError("forbidden", "剧本操作必须绑定真实输入的项目。");
+    projectManager(state, access, input.id, projectId);
     checkProject(state, projectId, input.author);
     requireHuman(state, input.author);
+    const generation = scriptGenerationForInput(state, input.id);
+    if (
+      generation &&
+      generation.productionId !==
+        ("productionId" in command ? command.productionId : null)
+    )
+      throw new DomainError(
+        "forbidden",
+        "不能操作本次固定生成目标以外的剧本。",
+      );
   }
   return { actor, input, projectId };
 }
@@ -372,11 +474,11 @@ export function applyScriptCommand(
   const project = checkProject(state, projectId, access);
   assertProjectWritable(project);
   if (actor.kind === "agent") {
-    if (!input || input.projectId !== projectId)
+    if (!input)
       throw new DomainError("forbidden", "剧本操作必须绑定真实输入的项目。");
     checkProject(state, projectId, input.author);
     if (
-      input.scriptGeneration &&
+      scriptGenerationForInput(state, input.id) &&
       !["submit-candidate", "add-review"].includes(command.action)
     )
       throw new DomainError(
@@ -397,6 +499,7 @@ export function applyScriptCommand(
       );
   }
   if (command.action === "create-production") {
+    checkContentOwner(state, projectId, access);
     const owner = actor.kind === "human" ? access : input!.author;
     requireHuman(state, owner);
     const production: ScriptProduction = {
@@ -519,7 +622,7 @@ export function applyScriptCommand(
     });
     entityId = commandId;
   } else if (command.action === "submit-candidate") {
-    const generation = input?.scriptGeneration;
+    const generation = input && scriptGenerationForInput(state, input.id);
     if (
       actor.kind !== "agent" ||
       !input ||
@@ -646,7 +749,7 @@ export function applyScriptCommand(
     )
       throw new DomainError("invalid", "意见必须锚定有效正文版本及原文。");
     if (actor.kind === "agent") {
-      const generation = input?.scriptGeneration;
+      const generation = input && scriptGenerationForInput(state, input.id);
       if (
         !generation ||
         generation.productionId !== production.id ||
@@ -680,7 +783,9 @@ export function applyScriptCommand(
     );
     if (actor.kind === "agent" && duplicateReview) return duplicateReview.id;
     const generation =
-      actor.kind === "agent" ? input?.scriptGeneration : undefined;
+      actor.kind === "agent" && input
+        ? scriptGenerationForInput(state, input.id)
+        : undefined;
     const historicalOnly =
       item.revision !== command.itemRevision ||
       !!(

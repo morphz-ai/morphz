@@ -78,7 +78,7 @@ test("全部资料仅使用已授权快照，不展示其他 Principal 的空间
         catalog: true,
       }),
     );
-    assert.match(html, /全部工作空间/);
+    assert.match(html, /全部内容/);
     assert.match(html, /共享文档/);
     assert.match(html, /可以阅读的共享正文/);
     assert.doesNotMatch(

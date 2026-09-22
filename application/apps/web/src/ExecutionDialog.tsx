@@ -1,5 +1,8 @@
 import { useModal } from "./useModal.js";
-import { isObjectToolName } from "../../../packages/core/src/application-names.js";
+import {
+  executionPresentation,
+  executionResultSummary,
+} from "./execution-presentation.js";
 import { useEffect, useRef, useState } from "react";
 import { X, RefreshCw, Square, Check, FileText } from "lucide-react";
 import { ApprovalDetails } from "./ApprovalCard.js";
@@ -220,100 +223,109 @@ export function ExecutionDialog({
             {hideEmpty ? null : "暂无工具执行记录。"}
           </p>
         )}
-        {snapshot?.jobs.map((job) => (
-          <section key={job.id} className="execution-job">
-            <header>
-              <strong>
-                {isObjectToolName(job.tool_name)
-                  ? "操作工作对象"
-                  : job.tool_name}
-              </strong>
-              <span className={`job-status ${job.status}`}>
-                {job.cancel_requested_at &&
-                ["queued", "waiting_approval", "running"].includes(job.status)
-                  ? "正在停止"
-                  : jobStatusLabel[job.status]}
-              </span>
-            </header>
-            <small className="muted">
-              {new Set(snapshot.jobs.map((j) => j.thread_id)).size > 1 && (
-                <>
-                  分支{" "}
-                  {[...new Set(snapshot.jobs.map((j) => j.thread_id))].indexOf(
-                    job.thread_id,
-                  ) + 1}{" "}
-                  ·{" "}
-                </>
+        {snapshot?.jobs.map((job) => {
+          const presentation = executionPresentation(
+            job.tool_name,
+            job.request,
+            client.boot!.workspace,
+          );
+          return (
+            <section key={job.id} className="execution-job">
+              <header>
+                <strong>{presentation.title}</strong>
+                <span className={`job-status ${job.status}`}>
+                  {job.cancel_requested_at &&
+                  ["queued", "waiting_approval", "running"].includes(job.status)
+                    ? "正在停止"
+                    : jobStatusLabel[job.status]}
+                </span>
+              </header>
+              {presentation.detail && (
+                <p className="execution-object">{presentation.detail}</p>
               )}
-              {new Date(job.created_at).toLocaleString("zh-CN")}
-            </small>
-            {job.error && <p className="delivery-error">{job.error}</p>}
-            <details>
-              <summary>操作详情</summary>
-              <pre>{JSON.stringify(job.request, null, 2)}</pre>
-              <small>执行目标：{job.target_id} · </small>
-              <small>执行 ID：{job.id}</small>
-            </details>
-            <div className="execution-actions">
-              {job.result_event_id && (
-                <button
-                  disabled={!!busy}
-                  onClick={() => void readResult(job.id)}
-                >
-                  查看结果
-                </button>
-              )}
-              {["queued", "waiting_approval", "running"].includes(
-                job.status,
-              ) && (
-                <button
-                  disabled={!!busy || !!error || !!job.cancel_requested_at}
-                  onClick={() =>
-                    void control({
-                      type: "cancel-job",
-                      jobId: job.id,
-                      revision: job.revision,
-                    })
-                  }
-                >
-                  <Square />
-                  停止此项执行
-                </button>
-              )}
-              {job.exit_code !== null && (
-                <small className="muted">退出码 {job.exit_code}</small>
-              )}
-            </div>
-            {result?.id === job.id && (
-              <div className="execution-result">
-                {producedId && (
+              <small className="muted">
+                {new Set(snapshot.jobs.map((j) => j.thread_id)).size > 1 && (
+                  <>
+                    分支{" "}
+                    {[
+                      ...new Set(snapshot.jobs.map((j) => j.thread_id)),
+                    ].indexOf(job.thread_id) + 1}{" "}
+                    ·{" "}
+                  </>
+                )}
+                {new Date(job.created_at).toLocaleString("zh-CN")}
+              </small>
+              {job.error && <p className="delivery-error">{job.error}</p>}
+              <details>
+                <summary>技术详情</summary>
+                <pre>{JSON.stringify(job.request, null, 2)}</pre>
+                <small>执行目标：{job.target_id} · </small>
+                <small>执行 ID：{job.id}</small>
+              </details>
+              <div className="execution-actions">
+                {job.result_event_id && (
                   <button
-                    onClick={() => {
-                      onOpen(producedId!);
-                      onClose();
-                    }}
+                    disabled={!!busy}
+                    onClick={() => void readResult(job.id)}
                   >
-                    <FileText />
-                    {client.boot?.workspace.artifacts.find(
-                      (a) => a.id === producedId,
-                    )?.title ?? "打开成果"}
+                    查看结果
                   </button>
                 )}
-                <details>
-                  <summary>技术详情</summary>
-                  <pre>
-                    {result.available
-                      ? result.text || "执行返回了空内容。"
-                      : "尚无最终结果。"}
-                  </pre>
-                </details>
-                {result.truncated && (
-                  <small>结果较长，当前显示前 64,000 个字符。</small>
+                {["queued", "waiting_approval", "running"].includes(
+                  job.status,
+                ) && (
+                  <button
+                    disabled={!!busy || !!error || !!job.cancel_requested_at}
+                    onClick={() =>
+                      void control({
+                        type: "cancel-job",
+                        jobId: job.id,
+                        revision: job.revision,
+                      })
+                    }
+                  >
+                    <Square />
+                    停止此项执行
+                  </button>
+                )}
+                {job.exit_code !== null && (
+                  <small className="muted">退出码 {job.exit_code}</small>
                 )}
               </div>
-            )}
-          </section>
-        ))}
+              {result?.id === job.id && (
+                <div className="execution-result">
+                  {executionResultSummary(result.text) && (
+                    <p>{executionResultSummary(result.text)}</p>
+                  )}
+                  {producedId && (
+                    <button
+                      onClick={() => {
+                        onOpen(producedId!);
+                        onClose();
+                      }}
+                    >
+                      <FileText />
+                      {client.boot?.workspace.artifacts.find(
+                        (a) => a.id === producedId,
+                      )?.title ?? "打开成果"}
+                    </button>
+                  )}
+                  <details>
+                    <summary>完整返回内容</summary>
+                    <pre>
+                      {result.available
+                        ? result.text || "执行返回了空内容。"
+                        : "尚无最终结果。"}
+                    </pre>
+                  </details>
+                  {result.truncated && (
+                    <small>结果较长，当前显示前 64,000 个字符。</small>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })}
       </div>
     </>
   );

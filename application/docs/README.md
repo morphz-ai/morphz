@@ -32,8 +32,9 @@ MorphzWork 仅保留为旧仓库、兼容路径与历史文档中的称呼。实
 12. [桌面能力实施路线](./12-desktop-capability-roadmap.md)：本轮桌面优先、本地中心验证的范围，四个能力里程碑与验收边界。与早期多端排期有差异时，以本文件的本轮范围为准。
 13. [桌面能力实施记录](./13-implementation-status.md)：各里程碑实际已实现和已验证的内容，以及尚未完成的部分。
 14. [本机中心与身份接入](./14-local-center-and-identity.md)：单用户／团队模拟中心、私有配置与配套 Runtime 的开发接入方式。
-15. [认知应用与工作空间](./15-cognitive-application-host.md)：应用宿主、独立 UI、工作台保存为项目、空间级 Session、Harness 路由和权限协议。工作台与 Session 的现行约定以本文件为准。
+15. [认知应用与工作空间](./15-cognitive-application-host.md)：应用宿主、统一内容与项目归属、持续会话、Harness 路由和权限协议。工作台与 Session 的现行约定以本文件为准。
 16. [Morphz UI 设计规范与优化方案](./16-ui-design-standard.md)：以 Apple HIG 和 W3C 可访问性规则为依据，定义工作导向的导航、输入与交流联动、页面取舍、搜索与弹窗及视觉基线。公共 UI 首轮已落地，具体完成项和后续目标分别记录，不将目标规范等同于全部已实现。
+17. [认知应用的共享业务能力](./29-agent-operable-cognitive-applications.md)：GUI 与纯聊天使用同一领域操作，能力发现、Harness、目标与版本准备、真实人工决定及逐项验收；这是待实施设计，不代表能力已经补齐。
 
 ## 文档约定
 

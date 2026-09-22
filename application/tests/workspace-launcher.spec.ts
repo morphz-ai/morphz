@@ -77,12 +77,11 @@ test("本空间内容固定进入列表，继续工作和应用标签保留明�
   await page.reload();
   const before = (await snapshot(page)).workspace;
   const contents = page.getByRole("button", {
-    name: "查看本空间内容",
+    name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
   const library = page.locator(".library-collection:visible");
   for (const [owner, title, other] of [
-    ["工作台", deskTitle, projectDocument],
     [projectTitle, projectDocument, deskTitle],
   ]) {
     await read(page, title!);
@@ -105,9 +104,7 @@ test("本空间内容固定进入列表，继续工作和应用标签保留明�
     await page.getByRole("tab", { name: "内容", exact: true }).click();
     await expect(page.locator(".object-paper > h1")).toHaveText(title!);
     await page.getByRole("button", { name: "应用启动台", exact: true }).click();
-    await expect(contents).toHaveText(
-      owner === "工作台" ? "工作台内容" : "项目内容",
-    );
+    await expect(contents).toHaveText("项目内容");
     await contents.click();
     await expect(library).toBeVisible();
     await expect(
@@ -165,12 +162,13 @@ test("本空间内容固定进入列表，继续工作和应用标签保留明�
 test("内容入口失败保留原位置，迟到回执不抢回后来选择的页面", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
+  const { prefix } = await setup(page);
   const title = prefix + "保留原文";
-  await seed(page, desk.id, title);
+  await seed(page, "first-project", title);
   await page.reload();
   await read(page, title);
-  await home(page);
+  await page.getByRole("button", { name: "我的项目", exact: true }).click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("button", { name: "继续打开：" + title, exact: true })
     .click();
@@ -194,7 +192,7 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
     return route.continue();
   });
   const contents = page.getByRole("button", {
-    name: "查看本空间内容",
+    name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
   await contents.click();
@@ -216,7 +214,8 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
   await expect(
     page.getByRole("heading", { name: "项目", exact: true }),
   ).toBeVisible();
-  await home(page);
+  await page.getByRole("button", { name: "我的项目", exact: true }).click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await contents.click();
   await expect(page.locator(".library-collection:visible")).toBeVisible();
 });
@@ -272,7 +271,9 @@ test("真实打开顺序、重复访问、刷新与键盘继续；正文草稿�
   expect(after.conversations).toEqual(before.conversations);
 });
 
-test("工作台与项目的最近内容分开；后台更新不会伪装成打开", async ({ page }) => {
+test("工作台汇总最近内容、项目只看本项目；后台更新不会伪装成打开", async ({
+  page,
+}) => {
   const { desk, prefix } = await setup(page);
   const projectId = await seedCenter(page, {
     type: "create-project",
@@ -289,7 +290,7 @@ test("工作台与项目的最近内容分开；后台更新不会伪装成打�
   await read(page, b);
   await read(page, c);
   await home(page);
-  await expect(titles(page)).toHaveText([b, a]);
+  await expect(titles(page)).toHaveText([c, b, a]);
   await seedCenter(page, {
     type: "revise-artifact",
     artifactId: id,
@@ -298,14 +299,14 @@ test("工作台与项目的最近内容分开；后台更新不会伪装成打�
     content: { kind: "document", markdown: "后台更新正文" },
   });
   await page.reload();
-  await expect(titles(page)).toHaveText([b, a + "（更新）"]);
+  await expect(titles(page)).toHaveText([c, b, a + "（更新）"]);
   await page
     .getByRole("button", { name: prefix + "项目", exact: true })
     .click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(titles(page)).toHaveText([c]);
   await home(page);
-  await expect(titles(page)).toHaveText([b, a + "（更新）"]);
+  await expect(titles(page)).toHaveText([c, b, a + "（更新）"]);
 });
 
 test("打开失败不更改最近顺序，重试成功才前移；迟到打开不抢回导航", async ({

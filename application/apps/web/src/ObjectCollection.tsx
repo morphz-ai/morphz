@@ -10,9 +10,14 @@ import {
   PencilLine,
   MessageSquareText,
   ArrowRight,
+  Clapperboard,
 } from "lucide-react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
-import { isContentArtifact } from "../../../packages/core/src/model.js";
+import {
+  contentEntries,
+  contentOwnershipTitle,
+  type ContentEntry,
+} from "../../../packages/core/src/content.js";
 import { searchTerms } from "../../../packages/core/src/retrieval.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
@@ -70,7 +75,7 @@ export function ObjectCollection({
     }>(key, {}),
   );
   const [filter, setFilter] = useState(
-    ["all", "document", "pdf", "image", "interactive"].includes(
+    ["all", "document", "pdf", "image", "interactive", "script"].includes(
       saved.filter ?? "",
     )
       ? saved.filter!
@@ -89,29 +94,32 @@ export function ObjectCollection({
   );
   const scope = !catalog
     ? project.id
-    : projects.some((p) => p.id === catalogScope && !p.deletedAt)
+    : projects.some(
+          (p) =>
+            p.id === catalogScope &&
+            !p.deletedAt &&
+            (!p.kind || ["project", "desk"].includes(p.kind)),
+        )
       ? catalogScope
       : "all";
   const [editing, setEditing] = useState<{
-    artifact: Artifact;
+    entry: ContentEntry;
     mode: "rename" | "move";
   } | null>(null);
   const [undo, setUndo] = useState<{
-    old: Artifact;
+    old: ContentEntry;
     revision: number;
     mode: "rename" | "move";
   } | null>(null);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  const contentObjects = objects.filter(
-    (a) =>
-      isContentArtifact(a) &&
-      !projects.find((p) => p.id === a.projectId)?.deletedAt,
-  );
+  const contentObjects = contentEntries(state);
   const scopedObjects = contentObjects.filter(
-    (a) => scope === "all" || a.projectId === scope,
+    (a) => scope === "all" || a.value.projectId === scope,
   );
-  const ownerTitles = new Map(projects.map((p) => [p.id, p.title]));
+  const ownerTitles = new Map(
+    projects.map((p) => [p.id, contentOwnershipTitle(p)]),
+  );
   const search = useContentSearch(client, query, scope);
   const hits = new Map(
     search.hits
@@ -121,13 +129,17 @@ export function ObjectCollection({
   const terms = searchTerms(query);
   const visible = scopedObjects
     .filter(
-      (a) =>
-        (filter === "all" || a.content.kind === filter) &&
+      (entry) =>
+        (filter === "all" ||
+          (entry.kind === "script" ? "script" : entry.value.content.kind) ===
+            filter) &&
         (!terms.length ||
-          terms.every((term) => a.title.toLocaleLowerCase().includes(term)) ||
-          hits.has(a.id)),
+          terms.every((term) =>
+            entry.value.title.toLocaleLowerCase().includes(term),
+          ) ||
+          (entry.kind === "artifact" && hits.has(entry.value.id))),
     )
-    .sort((a, b) => compareContent(sort, a, b));
+    .sort((a, b) => compareContent(sort, a.value, b.value));
   useEffect(() => {
     try {
       storage.writeLocal(key, { filter, query, layout, scope, sort });
@@ -142,12 +154,12 @@ export function ObjectCollection({
     try {
       await client.execute({
         type: "organize-content",
-        artifactId: undo.old.id,
+        target: { kind: undo.old.kind, id: undo.old.value.id },
         expectedRevision: undo.revision,
         changes:
           undo.mode === "rename"
-            ? { title: undo.old.title }
-            : { projectId: undo.old.projectId },
+            ? { title: undo.old.value.title }
+            : { projectId: undo.old.value.projectId },
       });
       setUndo(null);
     } catch (e) {
@@ -193,17 +205,28 @@ export function ObjectCollection({
       <div className="library-chrome">
         <div className="library-toolbar">
           <div className="filter-tabs" role="group" aria-label="内容类型">
-            {(["all", "document", "pdf", "image", "interactive"] as const).map(
-              (kind) => (
-                <button
-                  key={kind}
-                  aria-pressed={kind === filter}
-                  onClick={() => setFilter(kind)}
-                >
-                  {kind === "all" ? "全部" : kindLabel[kind]}
-                </button>
-              ),
-            )}
+            {(
+              [
+                "all",
+                "document",
+                "pdf",
+                "image",
+                "interactive",
+                "script",
+              ] as const
+            ).map((kind) => (
+              <button
+                key={kind}
+                aria-pressed={kind === filter}
+                onClick={() => setFilter(kind)}
+              >
+                {kind === "all"
+                  ? "全部"
+                  : kind === "script"
+                    ? "剧本"
+                    : kindLabel[kind]}
+              </button>
+            ))}
           </div>
           <div className="library-controls">
             {catalog && (
@@ -214,12 +237,16 @@ export function ObjectCollection({
                 value={scope}
                 onChange={(e) => onScopeChange?.(e.target.value)}
               >
-                <option value="all">全部工作空间</option>
+                <option value="all">全部内容</option>
                 {projects
-                  .filter((p) => !p.deletedAt)
+                  .filter(
+                    (p) =>
+                      !p.deletedAt &&
+                      (!p.kind || ["project", "desk"].includes(p.kind)),
+                  )
                   .map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.title}
+                      {contentOwnershipTitle(p)}
                     </option>
                   ))}
               </select>
@@ -290,7 +317,8 @@ export function ObjectCollection({
         {undo && (
           <div className="content-feedback" role="status">
             <span>
-              {undo.mode === "rename" ? "已重命名" : "已移动"}：{undo.old.title}
+              {undo.mode === "rename" ? "已重命名" : "已设置项目"}：
+              {undo.old.value.title}
             </span>
             <button disabled={busy} onClick={() => void undoChange()}>
               撤销
@@ -315,7 +343,64 @@ export function ObjectCollection({
           </p>
         )}
         <div className={layout === "grid" ? "artifact-grid" : "artifact-list"}>
-          {visible.map((a) => {
+          {visible.map((entry) => {
+            if (entry.kind === "script") {
+              const p = entry.value;
+              return (
+                <article className="artifact-card" key={p.id}>
+                  <button
+                    className="artifact-card-open"
+                    aria-label={`打开内容：${p.title}`}
+                    onClick={() => onOpen(p.id)}
+                  >
+                    <div className="artifact-card-heading">
+                      <Clapperboard />
+                      <h2>{p.title}</h2>
+                    </div>
+                    {layout === "grid" && (
+                      <p className="content-match">
+                        {p.items.filter((i) => i.kind === "episode").length} 集
+                        · {p.items.filter((i) => i.kind === "scene").length} 场
+                      </p>
+                    )}
+                    <div className="artifact-caption">
+                      <span>{ownerTitles.get(p.projectId)} · 剧本</span>
+                      <span className="content-origin">
+                        {contentOrigin(p, state.actants)}
+                      </span>
+                      <time dateTime={p.updatedAt}>
+                        {new Date(p.updatedAt).toLocaleDateString("zh-CN", {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </time>
+                    </div>
+                  </button>
+                  <div className="content-item-actions">
+                    <ComposerOptions
+                      label={`内容操作：${p.title}`}
+                      menuLabel="内容操作"
+                      below
+                      options={[
+                        {
+                          label: "重命名",
+                          icon: <PencilLine />,
+                          disabled: !client.online,
+                          onSelect: () => setEditing({ entry, mode: "rename" }),
+                        },
+                        {
+                          label: "设置项目",
+                          icon: <FolderOpen />,
+                          disabled: !client.online,
+                          onSelect: () => setEditing({ entry, mode: "move" }),
+                        },
+                      ]}
+                    />
+                  </div>
+                </article>
+              );
+            }
+            const a = entry.value;
             const tasks = relatedContentTasks(a, objects, state.relations);
             const hit = hits.get(a.id);
             const snippet =
@@ -395,18 +480,16 @@ export function ObjectCollection({
                       {
                         label: "重命名",
                         icon: <PencilLine />,
-                        onSelect: () =>
-                          setEditing({ artifact: a, mode: "rename" }),
+                        onSelect: () => setEditing({ entry, mode: "rename" }),
                         disabled:
                           !client.online ||
                           (a.content.kind === "document" &&
                             !!a.content.understanding),
                       },
                       {
-                        label: "移动到项目",
+                        label: "设置项目",
                         icon: <FolderOpen />,
-                        onSelect: () =>
-                          setEditing({ artifact: a, mode: "move" }),
+                        onSelect: () => setEditing({ entry, mode: "move" }),
                         disabled:
                           !client.online ||
                           (a.content.kind === "document" &&
@@ -458,7 +541,7 @@ export function ObjectCollection({
       </div>
       {editing && (
         <ContentMetadata
-          artifact={editing.artifact}
+          entry={editing.entry}
           mode={editing.mode}
           projects={projects}
           client={client}

@@ -3,6 +3,7 @@ import type {
   ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import type { ScriptOutput } from "../../../packages/core/src/script-delivery.js";
 import {
   inConversation,
   type Workspace,
@@ -82,6 +83,7 @@ function textVersion(text: string) {
 export function replyReceipts(
   messages: Array<Pick<LiveMessage, "id" | "kind" | "text" | "publicationKey">>,
   outputs: ArtifactOutput[],
+  scriptOutputs: ScriptOutput[] = [],
 ): ReplyReceipt[] {
   return [
     ...messages
@@ -98,6 +100,10 @@ export function replyReceipts(
     ...outputs.map((o) => ({
       keys: [`output:${o.commandId}`],
       version: `${o.artifactId}:${o.revision}`,
+    })),
+    ...scriptOutputs.map((o) => ({
+      keys: [`output:${o.commandId}`],
+      version: `${o.productionId}:${o.itemId ?? ""}:${o.candidateId ?? o.reviewId ?? ""}:${o.revision ?? ""}`,
     })),
   ];
 }

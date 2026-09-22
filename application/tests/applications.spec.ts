@@ -1,13 +1,15 @@
 import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { seedCenter } from "./center-fixtures.js";
 
 test("正常关闭应用不产生常驻提示，关闭失败仍显示错误且不移除应用", async ({
   page,
 }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "我的项目", exact: true }).click();
   const card = page.getByRole("button", {
-    name: "查看本空间内容",
+    name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
   const tab = page.getByRole("tab", { name: "内容", exact: true });
@@ -53,6 +55,7 @@ test("正常关闭应用不产生常驻提示，关闭失败仍显示错误且�
 
 test("应用卡片单击打开，忙碌时不重复请求，失败后可重试", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "我的项目", exact: true }).click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(page.locator(".launcher-footer")).toHaveCount(0);
   await expect(page.getByText("双击或按回车打开", { exact: true })).toHaveCount(
@@ -81,7 +84,7 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
     });
   });
   const tile = page.getByRole("button", {
-    name: "查看本空间内容",
+    name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
   await tile.click();
@@ -116,7 +119,9 @@ test("应用卡片单击打开，忙碌时不重复请求，失败后可重试",
   await expect(tile).toBeVisible();
 });
 
-test("多应用启动、对象协作、状态恢复及原工作台保存为项目", async ({ page }) => {
+test("多应用启动、对象协作及状态恢复；创建项目不转换工作台或搬走其他内容", async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
@@ -128,7 +133,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     (p: { kind: string }) => p.kind === "desk",
   ).id;
   await page
-    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .getByRole("button", { name: /^查看(?:全部|项目)内容$/, exact: true })
     .click();
   await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
@@ -140,6 +145,14 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   const content = () => composerAction(page, "收起交流记录");
   await content();
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  await page
+    .getByRole("button", { name: "继续打开：空间原文", exact: true })
+    .click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByLabel("应用包文件")
@@ -185,7 +198,7 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   await page.getByRole("button", { name: "关闭应用 工作便笺" }).click();
   await expect(
     page.getByRole("tab", { name: "内容", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
+  ).toBeVisible();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("button", { name: "工作便笺 1.1.1", exact: true })
@@ -196,56 +209,31 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
   const originalFrame = await page
     .locator('iframe[title="工作便笺应用界面"]')
     .elementHandle();
-  let releaseSave!: () => void;
-  const saveReceipt = new Promise<void>((resolve) => {
-    releaseSave = resolve;
-  });
-  await page.route("**/api/commands", async (route) => {
-    if (
-      route.request().postDataJSON()?.operation?.type !==
-      "save-workspace-as-project"
-    )
-      return route.continue();
-    const response = await route.fetch();
-    await saveReceipt;
-    await route.fulfill({ response });
-  });
-  await page.getByRole("button", { name: "保存为项目", exact: true }).click();
-  await page.getByLabel("项目名称", { exact: true }).fill("认知应用验收");
-  // Present the native modal above the out-of-process frame before mouse input.
-  await page.evaluate(
-    () =>
-      new Promise<void>((done) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => done()));
-      }),
+  const beforeOrganization = (
+    await (await page.request.get("/api/workspace")).json()
+  ).workspace;
+  await expect(
+    page.getByRole("button", { name: "保存为项目", exact: true }),
+  ).toHaveCount(0);
+  await seedCenter(page, { type: "create-project", title: "认知应用验收" });
+  await expect(
+    page.getByRole("button", { name: "认知应用验收", exact: true }),
+  ).toBeVisible();
+  expect(await originalFrame!.evaluate((element) => element.isConnected)).toBe(
+    true,
   );
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "保存为项目", exact: true })
-    .click();
-  try {
-    // A periodic snapshot sees the committed rename before the delayed receipt.
-    // The old application must not unmount while the new blank desk is created.
-    await expect(
-      page.getByRole("button", { name: "认知应用验收", exact: true }),
-    ).toBeVisible();
-    expect(
-      await originalFrame!.evaluate((element) => element.isConnected),
-    ).toBe(true);
-  } finally {
-    releaseSave();
-  }
-  await expect(page).toHaveTitle("认知应用验收 — Morphz");
-  await expect(app.locator("#location")).toHaveText("认知应用验收");
+  await expect(app.locator("#location")).toHaveText("未归项目");
   await page.reload();
   await expect(app.locator("#note")).toHaveValue(
     "我的应用状态：保留这段文字。",
   );
   const after = await (await page.request.get("/api/workspace")).json();
+  expect(after.workspace.artifacts).toEqual(beforeOrganization.artifacts);
+  expect(after.workspace.inputs).toEqual(beforeOrganization.inputs);
   expect(
     after.workspace.projects.find((p: { id: string }) => p.id === originalId)
       .kind,
-  ).toBe("project");
+  ).toBe("desk");
   expect(
     after.workspace.inputs.filter(
       (i: { projectId: string }) => i.projectId === originalId,
@@ -263,11 +251,16 @@ test("多应用启动、对象协作、状态恢复及原工作台保存为项�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "工作台", exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("tab")).toHaveCount(0);
-  await composerAction(page, "查看交流记录");
+  await expect(
+    page.getByRole("region", { name: "应用", exact: true }),
+  ).toBeVisible();
+  await openInput(page);
+  if (await page.getByLabel("查看交流记录", { exact: true }).isVisible())
+    await composerAction(page, "查看交流记录");
   await expect(
     page
       .locator(".human-message")

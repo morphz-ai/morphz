@@ -89,6 +89,7 @@ test("状态不再混入内容；旧链接可打开，旧网站筛选恢复全�
     "PDF",
     "图片",
     "表格",
+    "剧本",
   ]);
   await expect(page.locator(".artifact-card")).toHaveCount(2);
   await page.getByLabel("内容范围", { exact: true }).selectOption(projectId);
@@ -231,10 +232,10 @@ test("重命名、移动、撤销保留同一内容与历史；并发冲突留�
     page.getByLabel("打开内容：" + title, { exact: true }),
   ).toBeVisible();
   await page.getByLabel("内容操作：" + title, { exact: true }).click();
-  await page.getByRole("button", { name: "移动到项目", exact: true }).click();
+  await page.getByRole("button", { name: "设置项目", exact: true }).click();
   await page.getByLabel("目标项目", { exact: true }).selectOption(target);
   await assertDialogControlMetrics(page.getByRole("dialog"));
-  await page.getByRole("button", { name: "移动", exact: true }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect
     .poll(
       async () =>
@@ -259,7 +260,7 @@ test("重命名、移动、撤销保留同一内容与历史；并发冲突留�
   await page.getByLabel("内容名称", { exact: true }).fill("尚未保存的名称");
   await seedCenter(page, {
     type: "organize-content",
-    artifactId: id,
+    target: { kind: "artifact" as const, id: id },
     expectedRevision: 5,
     changes: { title: title + "另一处修改" },
   });

@@ -293,6 +293,12 @@ test("长记录调整高度不替换消息节点，阅读旧回复不被拉到�
       headers: { ...route.request().headers(), "if-none-match": "" },
     });
     const boot: Boot = await response.json();
+    // This fixture owns a synthetic 30-reply timeline, not content left by
+    // earlier end-to-end scenarios in the shared isolated server.
+    boot.workspace.inputs = [];
+    boot.outputs = [];
+    boot.scriptOutputs = [];
+    boot.runtime.deliveries = [];
     const projectId = boot.workspace.projects.find(
       (p) => p.kind === "desk",
     )!.id;

@@ -1,10 +1,14 @@
 import { ArrowUpRight, Clapperboard, Search, X } from "lucide-react";
 import type { ScriptProduction } from "../../../packages/core/src/script-studio.js";
 import { scriptDisplayTime } from "../../../packages/core/src/script-studio-presentation.js";
+import type { Workspace } from "../../../packages/core/src/model.js";
+import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 
 /** A view of this workspace's existing scripts, never a second object store. */
 export function ScriptStudioLibrary({
   productions,
+  projects,
+  global = false,
   lastOpenedId,
   query,
   onQuery,
@@ -12,6 +16,8 @@ export function ScriptStudioLibrary({
   disabled,
 }: {
   productions: ScriptProduction[];
+  projects: Workspace["projects"];
+  global?: boolean;
   lastOpenedId: string;
   query: string;
   onQuery: (value: string) => void;
@@ -58,7 +64,10 @@ export function ScriptStudioLibrary({
         )}
       </div>
       {matches.length ? (
-        <ul className="script-library-list" aria-label="本空间剧本">
+        <ul
+          className="script-library-list"
+          aria-label={global ? "全部剧本" : "项目剧本"}
+        >
           {matches.map((p) => {
             const episodes = p.items.filter((i) => i.kind === "episode").length;
             const scenes = p.items.filter((i) => i.kind === "scene").length;
@@ -82,6 +91,14 @@ export function ScriptStudioLibrary({
                     <ArrowUpRight aria-hidden="true" />
                   </span>
                   <span className="script-card-meta">
+                    {global && (
+                      <span>
+                        {contentOwnershipTitle(
+                          projects.find((owner) => owner.id === p.projectId)!,
+                        )}{" "}
+                        ·{" "}
+                      </span>
+                    )}
                     {p.brief.mode === "adaptation" ? "改编" : "原创"}
                     {p.brief.genre.trim() && ` · ${p.brief.genre}`}
                   </span>

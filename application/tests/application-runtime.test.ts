@@ -20,7 +20,7 @@ test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写
   const execute = (operation: Operation) =>
     store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
   try {
-    const harness = { id: "morphz.script-studio", version: "1.3.0" };
+    const harness = { id: "morphz.script-studio", version: "1.4.0" };
     assert.deepEqual(scriptStudioApplication.harness, harness);
     const applicationInstanceId = execute({
       type: "launch-application",
@@ -200,9 +200,8 @@ test("同空间跨应用与对象共用 Session，各输入固定 Harness，并�
       ),
     );
     run({
-      type: "save-workspace-as-project",
-      workspaceId: "local-worktable",
-      title: "保存后的工作",
+      type: "create-project",
+      title: "独立项目不改变交流或在途执行",
     });
     const restarted = new RuntimeBridge(store, config);
     const third = run({

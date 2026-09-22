@@ -21,7 +21,7 @@ export async function assertSingleFieldDialog(dialog: Locator) {
   expect(layout.gap).toBeLessThanOrEqual(4);
   expect(layout.actionY).toBeCloseTo(layout.inputY, 2);
   // No reserved label/footer rows. Scope descriptions and errors may add height.
-  if (!(await dialog.locator('[role="alert"], .project-save-scope').count()))
+  if (!(await dialog.locator('[role="alert"]').count()))
     expect(layout.height).toBeLessThanOrEqual(96);
 }
 

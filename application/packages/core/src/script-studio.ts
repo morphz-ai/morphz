@@ -162,6 +162,64 @@ export const scriptGenerationSchema = z
   .strict();
 export type ScriptGeneration = z.infer<typeof scriptGenerationSchema>;
 
+// The same preparation request is used by direct controls and Agent tools.
+// References are optional additions; their transitive dependencies are mandatory.
+export const scriptPreparationRequestSchema = scriptGenerationSchema.extend({
+  references: scriptGenerationSchema.shape.references.default([]),
+  maxCandidates: scriptGenerationSchema.shape.maxCandidates.default(1),
+  maxOutputCharacters:
+    scriptGenerationSchema.shape.maxOutputCharacters.default(24000),
+  maxReviewPasses: scriptGenerationSchema.shape.maxReviewPasses.default(1),
+});
+export const scriptPreparationSchema = z
+  .object({
+    id,
+    inputId: id,
+    projectId: id,
+    generation: scriptGenerationSchema,
+    createdBy: author,
+    createdAt: timestamp,
+  })
+  .strict();
+
+/** Pure preparation, not a model call, permission grant or workflow scheduler. */
+export function prepareScriptGeneration(
+  production: ScriptProduction,
+  raw: z.input<typeof scriptPreparationRequestSchema>,
+): ScriptGeneration {
+  const request = scriptPreparationRequestSchema.parse(raw);
+  if (
+    request.productionId !== production.id ||
+    !scriptContextCurrent(production, request.contextRevision)
+  )
+    throw new Error("剧本要求已有变化，请重新读取并核对版本。");
+  const references = new Map<string, number>();
+  const visited = new Set<string>();
+  const visit = (itemId: string, revision: number) => {
+    const item = production.items.find((i) => i.id === itemId);
+    if (!item || item.revision !== revision)
+      throw new Error("目标或上游引用已过期，请先明确核对依赖版本。");
+    if (references.has(itemId) && references.get(itemId) !== revision)
+      throw new Error("依赖版本不一致。");
+    references.set(itemId, revision);
+    if (references.size > 201)
+      throw new Error("本次资料超过 200 项，请缩小生成范围。");
+    if (visited.has(itemId)) return;
+    visited.add(itemId);
+    for (const ref of currentScriptDraft(item).dependencies)
+      visit(ref.itemId, ref.revision);
+  };
+  visit(request.targetId, request.baseRevision);
+  for (const ref of request.references) visit(ref.itemId, ref.revision);
+  references.delete(request.targetId);
+  return scriptGenerationSchema.parse({
+    ...request,
+    references: [...references]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([itemId, revision]) => ({ itemId, revision })),
+  });
+}
+
 const scriptCandidateSchema = z
   .object({
     id,

@@ -177,12 +177,6 @@
   margin-top: auto;
   padding-top: 8px;
 }
-.project-save-scope {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-}
 .script-layout {
   display: grid;
   grid-template-columns: minmax(180px, 224px) minmax(0, 1fr);

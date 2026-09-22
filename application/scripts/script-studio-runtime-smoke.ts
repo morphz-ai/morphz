@@ -63,15 +63,14 @@ const fault = requestedFault
   : undefined;
 const hostErrors: string[] = [];
 const originalToolCall = AgentTools.prototype.call;
-if (fault)
-  AgentTools.prototype.call = async function (...args) {
-    try {
-      return await originalToolCall.apply(this, args);
-    } catch (error) {
-      hostErrors.push(String(error));
-      throw error;
-    }
-  };
+AgentTools.prototype.call = async function (...args) {
+  try {
+    return await originalToolCall.apply(this, args);
+  } catch (error) {
+    hostErrors.push(String(error));
+    throw error;
+  }
+};
 const directory = mkdtempSync(join(tmpdir(), "morphz-script-runtime-"));
 const runtimeDirectory = join(directory, "runtime");
 const workDirectory = join(directory, "application");
@@ -104,6 +103,8 @@ let scenario = fault
     : "both-revisions"
   : "zero-review";
 let reviewCount = 0;
+let selectionStep = 0,
+  preparationStep = 0;
 const logicalModelCalls = new Map<
   string,
   { stage: string; round: number; attempts: number }
@@ -130,17 +131,23 @@ const provider = createServer(async (req, res) => {
         (t: { function?: { name?: string } }) => t.function?.name ?? "",
       ) ?? [];
     const context = JSON.stringify(input.messages);
-    const current = context.slice(context.lastIndexOf("(evaluate "));
+    const evaluation = context.lastIndexOf("(evaluate ");
+    const current = evaluation < 0 ? context : context.slice(evaluation);
     const internal = current.includes("(root-kind chat/infer_request)");
     const stage = internal
       ? [
           ...current.matchAll(
-            /STAGE script-(discussion|intent|create|review|revise|delivery)/g,
+            /STAGE script-(discussion|intent|prepare|create|review|revise|delivery)/g,
           ),
         ].at(-1)?.[1]
-      : "relay";
+      : scenario === "chat" && tools.includes("harness_select")
+        ? "select"
+        : "relay";
     assert.ok(stage, "A provider request must identify its actual Yao stage");
-    const requestId = /\(origin-turn ([^)]+)\)/.exec(current)?.[1];
+    const requestId =
+      stage === "select"
+        ? `select-${selectionStep}`
+        : /\(origin-turn ([^)]+)\)/.exec(current)?.[1];
     assert.ok(
       requestId,
       "Model request must carry its persisted root identity",
@@ -167,15 +174,21 @@ const provider = createServer(async (req, res) => {
       providerCalls <= 100,
       "Bounded synthetic workflows, including a malformed model value",
     );
-    assert.ok(context.includes("morphz.script-studio"));
-    assert.ok(
-      context.includes("script-studio/scene-and-screen"),
-      "Child inherits the exact Harness craft Mind",
-    );
-    assert.ok(
-      tools.every((name: string) => name === "no_reply"),
-      "Models cannot bypass the Runtime-owned Plan",
-    );
+    if (stage !== "select") {
+      assert.ok(context.includes("morphz.script-studio"));
+      assert.ok(
+        context.includes("script-studio/scene-and-screen"),
+        "Child inherits the exact Harness craft Mind",
+      );
+      assert.ok(
+        tools.every(
+          (name: string) =>
+            name === "no_reply" ||
+            (stage === "prepare" && name === "host_morphz"),
+        ),
+        "Only preparation may use Host tools; creative steps cannot bypass the Plan",
+      );
+    }
     if (internal)
       assert.ok(
         !current.includes("original text has"),
@@ -200,9 +213,130 @@ const provider = createServer(async (req, res) => {
       { requestId, stage, round: logicalCall.round },
     );
     if (res.destroyed) return;
+    const respond = (message: unknown, finish = "stop") => {
+      if (input.stream) {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.end(
+          `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: message, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`,
+        );
+      } else {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            id: randomUUID(),
+            choices: [{ index: 0, message, finish_reason: finish }],
+          }),
+        );
+      }
+    };
+    const call = (name: string, args: unknown) =>
+      respond(
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              index: 0,
+              id: randomUUID(),
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        },
+        "tool_calls",
+      );
+    if (stage === "select") {
+      const step = selectionStep++;
+      if (step === 0)
+        return call("host_morphz", {
+          action: "operations",
+          operations: { action: "list", domain: "script" },
+        });
+      if (step === 1) {
+        assert.ok(
+          context.includes("script.prepare-workflow"),
+          "Real catalog reached the model",
+        );
+        return call("host_morphz", {
+          action: "operations",
+          operations: {
+            action: "describe",
+            operationId: "script.prepare-workflow",
+          },
+        });
+      }
+      if (step === 2) return call("harness_list", {});
+      assert.equal(step, 3, "Select once, without a second UI input");
+      assert.ok(context.includes(harnessRef.version));
+      return call("harness_select", {
+        ...harnessRef,
+        reason: "明确请求剧本候选，使用官方可执行工序",
+      });
+    }
+    if (stage === "prepare") {
+      const step = preparationStep++;
+      const last = input.messages
+        .filter((m: { role: string }) => m.role === "tool")
+        .at(-1);
+      const observation = last ? JSON.parse(last.content) : undefined;
+      const result = observation?.result
+        ? typeof observation.result === "string" &&
+          observation.result.startsWith("{")
+          ? JSON.parse(observation.result)
+          : observation.result
+        : observation;
+      if (step === 0)
+        return call("host_morphz", {
+          action: "script",
+          script: { action: "list", query: "TEST 合成剧本 Runtime 闭环" },
+        });
+      assert.equal(
+        result?.ok,
+        true,
+        "Use the actual previous Host result: " +
+          JSON.stringify({ observation, hostErrors }),
+      );
+      if (step === 1) {
+        assert.equal(result.productions.length, 1);
+        return call("host_morphz", {
+          action: "script",
+          script: {
+            action: "read-production",
+            productionId: result.productions[0].id,
+          },
+        });
+      }
+      if (step === 2) {
+        const target = result.items.find(
+          (i: { kind: string }) => i.kind === "episode",
+        );
+        assert.ok(target);
+        return call("host_morphz", {
+          action: "script",
+          script: {
+            action: "prepare-workflow",
+            productionId: result.productionId,
+            targetId: target.id,
+            baseRevision: target.revision,
+            contextRevision: result.contextRevision,
+            purpose: "rewrite",
+            maxReviewPasses: 1,
+          },
+        });
+      }
+      assert.equal(step, 3);
+      assert.equal(result.prepared, true);
+      return respond({
+        role: "assistant",
+        content: JSON.stringify("目标已准备，Yao继续。"),
+      });
+    }
     const value =
-      stage === "intent"
-        ? { execute: scenario !== "defer", reply: "先讨论，不保存候选。" }
+      stage === "intent" || stage === "discussion"
+        ? {
+            execute: !["defer", "discussion"].includes(scenario),
+            reply: "先讨论，不保存候选。",
+          }
         : stage === "create" || stage === "revise"
           ? {
               blocked:
@@ -250,20 +384,7 @@ const provider = createServer(async (req, res) => {
                 : "合成测试候选已提交，等待人工决定；未批准或锁稿。";
     const content = internal ? JSON.stringify(value) : String(value);
     const message = { role: "assistant", content };
-    if (input.stream) {
-      res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.end(
-        `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: message, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
-      );
-    } else {
-      res.setHeader("Content-Type", "application/json");
-      res.end(
-        JSON.stringify({
-          id: randomUUID(),
-          choices: [{ index: 0, message, finish_reason: "stop" }],
-        }),
-      );
-    }
+    respond(message);
   } catch (error) {
     providerError = error instanceof Error ? error : new Error(String(error));
     res.writeHead(500);
@@ -399,6 +520,13 @@ try {
     "harness",
     "install",
     fileURLToPath(
+      new URL("../harnesses/legacy/script-studio-1.3.0.hns", import.meta.url),
+    ),
+  ]);
+  cli([
+    "harness",
+    "install",
+    fileURLToPath(
       new URL("../harnesses/legacy/script-studio-1.2.1.hns", import.meta.url),
     ),
   ]);
@@ -430,7 +558,7 @@ try {
     "Package must be listed by a second process reading the persisted registry",
   );
   assert.ok(
-    ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1"].every((version) =>
+    ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1", "1.3.0"].every((version) =>
       registered.includes(version),
     ),
     "Every legacy package remains available for immutable retries",
@@ -822,6 +950,26 @@ try {
         expected: ["discussion", "relay"],
         writes: 0,
       },
+      {
+        name: "chat",
+        passes: null,
+        expected: [
+          "select",
+          "select",
+          "select",
+          "select",
+          "discussion",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "create",
+          "review",
+          "delivery",
+          "relay",
+        ],
+        writes: 1,
+      },
       { name: "defer", passes: 2, expected: ["intent", "relay"], writes: 0 },
       {
         name: "one-review",
@@ -905,6 +1053,8 @@ try {
     ]) {
       scenario = testCase.name;
       reviewCount = 0;
+      selectionStep = 0;
+      preparationStep = 0;
       const before = production().candidates.length;
       const start = stages.length;
       const branchReceipt = (await host.connection.call(
@@ -913,6 +1063,8 @@ try {
           commandId: randomUUID(),
           operation: {
             ...command.operation,
+            applicationInstanceId:
+              scenario === "chat" ? undefined : applicationInstanceId,
             body:
               scenario === "discussion" || scenario === "defer"
                 ? "只聊聊候车人的动机，先别生成。"
@@ -945,6 +1097,26 @@ try {
         scenario,
       );
       assert.equal(currentScriptDraft(item()).text, sourceDraft.text, scenario);
+      if (scenario === "chat") {
+        const snapshot = host.connection.application.store.snapshot();
+        const source = snapshot.inputs.find(
+          (i) => i.id === branchReceipt.entityId,
+        )!;
+        assert.equal(source.application, undefined);
+        assert.equal(source.scriptGeneration, undefined);
+        assert.equal(
+          snapshot.scriptPreparations.filter((p) => p.inputId === source.id)
+            .length,
+          1,
+        );
+        assert.equal(
+          host.connection.application.store
+            .scriptOutputs(localAccess)
+            .filter((o) => o.inputId === source.id && o.kind === "candidate")
+            .length,
+          1,
+        );
+      }
       if (scenario === "both-revisions")
         assert.equal(
           production().candidates.at(-1)!.draft.text,
@@ -972,7 +1144,7 @@ try {
     runtimeDb.close();
     assert.equal(
       plans.length,
-      12,
+      13,
       "One durable root Plan per request, never redispatched on failure",
     );
     assert.ok(
@@ -982,7 +1154,7 @@ try {
           p.harness_version === harnessRef.version,
       ),
     );
-    assert.equal(plans.filter((p) => p.status === "succeeded").length, 11);
+    assert.equal(plans.filter((p) => p.status === "succeeded").length, 12);
     assert.equal(
       plans.filter((p) => p.status === "failed").length,
       1,
@@ -1088,6 +1260,7 @@ try {
       docxBytes: docx.byteLength,
       docxSha256: createHash("sha256").update(docx).digest("hex"),
       assertions: [
+        "ordinary chat discovers operations, selects exact Harness and prepares its own versioned target",
         "persisted Harness install/list/reopen",
         "actual mounted contract and tool allowlist",
         "discussion and deferred intent never write",

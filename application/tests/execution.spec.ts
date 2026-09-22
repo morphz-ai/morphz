@@ -4,6 +4,103 @@ import {
   composerAction,
   openExecutionPanel,
 } from "./interaction-helpers.js";
+
+test("剧本操作记录直接显示查询、新建剧本和具体分集，返回结果保持可核对", async ({
+  page,
+}) => {
+  const requests = [
+    { action: "script", script: { action: "list", limit: 50 } },
+    {
+      action: "script",
+      script: {
+        action: "command",
+        command: { action: "create-production", title: "废火" },
+      },
+    },
+    {
+      action: "script",
+      script: {
+        action: "command",
+        command: {
+          action: "create-item",
+          kind: "episode",
+          draft: { title: "第一集：废火破金甲", text: "" },
+        },
+      },
+    },
+  ];
+  await page.route("**/api/executions?*", (route) =>
+    route.fulfill({
+      json: {
+        limit: 100,
+        approvals: [],
+        jobs: requests.map((request, i) => ({
+          id: `summary-job-${i}`,
+          revision: 1,
+          session_id: "session",
+          context_id: "context",
+          thread_id: "thread",
+          tool_name: "host_morphz",
+          target_id: "local",
+          status: "succeeded",
+          request,
+          result_event_id: `result-${i}`,
+          created_at: "2026-09-22T08:50:00Z",
+          updated_at: "2026-09-22T08:50:00Z",
+        })),
+      },
+    }),
+  );
+  await page.route("**/api/executions/result?*", (route) =>
+    route.fulfill({
+      json: {
+        available: true,
+        truncated: false,
+        text: JSON.stringify({
+          ok: true,
+          total: 2,
+          productions: [{ id: "test-1" }, { id: "test-2" }],
+        }),
+      },
+    }),
+  );
+  await page.goto("/");
+  await openInput(page);
+  await openExecutionPanel(page);
+  const panel = page.getByRole("complementary", {
+    name: "执行面板",
+    exact: true,
+  });
+  await panel.getByText("工具执行记录", { exact: true }).click();
+  const rows = panel.locator(".execution-job");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText("查看剧本列表");
+  await expect(rows.nth(1)).toContainText("新建剧本");
+  await expect(rows.nth(1).locator(".execution-object")).toHaveText("废火");
+  await expect(rows.nth(2)).toContainText("新建分集");
+  await expect(rows.nth(2).locator(".execution-object")).toHaveText(
+    "第一集：废火破金甲",
+  );
+  await expect(panel).not.toContainText("操作工作对象");
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 });
+    await expect(rows.nth(2).locator(".execution-object")).toBeInViewport();
+    expect(
+      await rows.evaluateAll((elements) =>
+        elements.every((e) => e.scrollWidth <= e.clientWidth + 1),
+      ),
+    ).toBeTruthy();
+    await page.screenshot({
+      path: `test-results/execution-script-summary-${width}.png`,
+    });
+  }
+  await rows.nth(0).getByRole("button", { name: "查看结果" }).click();
+  await expect(rows.nth(0)).toContainText("找到 2 部剧本。");
+  await rows.nth(0).getByText("完整返回内容", { exact: true }).click();
+  await expect(rows.nth(0).locator(".execution-result pre")).toContainText(
+    '"total":2',
+  );
+});
 test("执行面板显示真实协议状态，批准只限单次，停止不会显示成已撤销", async ({
   page,
 }) => {
@@ -94,11 +191,11 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await expect(
     dialog.getByText("执行目标：本机 ·", { exact: true }),
   ).toBeHidden();
-  await dialog.getByText("操作详情", { exact: true }).click();
+  await dialog.getByText("技术详情", { exact: true }).click();
   await expect(
     dialog.getByText("执行目标：本机 ·", { exact: true }),
   ).toBeVisible();
-  await dialog.getByText("操作详情", { exact: true }).click();
+  await dialog.getByText("技术详情", { exact: true }).click();
   expect(calls[0]!.action.type).toBe("allow-once");
   await dialog.getByRole("button", { name: "停止此项执行" }).click();
   await expect(dialog.getByText("正在停止", { exact: true })).toBeVisible();

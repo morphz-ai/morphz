@@ -788,6 +788,7 @@ export class RuntimeBridge {
     );
     return {
       projectId: input.projectId,
+      crossProject: !this.teamIdentity,
       conversationId: discussionId(input),
       inputId: input.id,
       access: { principalId: "morphz-service", actantId: "morphz-agent" },

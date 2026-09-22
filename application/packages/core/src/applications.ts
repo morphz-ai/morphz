@@ -109,7 +109,7 @@ export const scriptStudioApplication: ApplicationManifest = {
   permissions: ["input.compose"],
   // New inputs snapshot this execution package; existing inputs/retries keep
   // their immutable Harness reference. The builtin UI protocol stays v1.
-  harness: { id: "morphz.script-studio", version: "1.3.0" },
+  harness: { id: "morphz.script-studio", version: "1.4.0" },
   ui: { type: "builtin", view: "script-studio", presentation: "workspace" },
 };
 

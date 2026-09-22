@@ -1,28 +1,34 @@
 import { useRef, useState } from "react";
 import { X } from "lucide-react";
-import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
+import type { Workspace } from "../../../packages/core/src/model.js";
+import {
+  contentOwnershipTitle,
+  type ContentEntry,
+} from "../../../packages/core/src/content.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 
 export function ContentMetadata({
-  artifact,
+  entry,
   projects,
   client,
   mode,
   onClose,
   onSaved,
 }: {
-  artifact: Artifact;
+  entry: ContentEntry;
   projects: Workspace["projects"];
   client: WorkspaceClient;
   mode: "rename" | "move";
   onClose: () => void;
-  onSaved: (old: Artifact, revision: number) => void;
+  onSaved: (old: ContentEntry, revision: number) => void;
 }) {
   // Keep the version captured at opening; never adopt a background edit silently.
-  const [original] = useState(artifact);
+  const [savedEntry] = useState(entry);
+  const original = savedEntry.value;
   const [title, setTitle] = useState(original.title);
   const [projectId, setProjectId] = useState(original.projectId);
+  const [newProjectTitle, setNewProjectTitle] = useState("");
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
@@ -33,11 +39,16 @@ export function ContentMetadata({
     try {
       await client.execute({
         type: "organize-content",
-        artifactId: original.id,
+        target: { kind: savedEntry.kind, id: original.id },
         expectedRevision: original.revision,
-        changes: mode === "rename" ? { title: title.trim() } : { projectId },
+        changes:
+          mode === "rename"
+            ? { title: title.trim() }
+            : projectId === "new"
+              ? { newProjectTitle: newProjectTitle.trim() }
+              : { projectId },
       });
-      onSaved(original, original.revision + 1);
+      onSaved(savedEntry, original.revision + 1);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败，请重试。");
@@ -61,10 +72,11 @@ export function ContentMetadata({
           busy ||
           (mode === "rename"
             ? !title.trim() || title.trim() === original.title
-            : projectId === original.projectId)
+            : projectId === original.projectId ||
+              (projectId === "new" && !newProjectTitle.trim()))
         }
       >
-        {busy ? "正在保存…" : mode === "rename" ? "保存" : "移动"}
+        {busy ? "正在保存…" : "保存"}
       </button>
     </footer>
   );
@@ -72,7 +84,7 @@ export function ContentMetadata({
     <dialog
       ref={dialog}
       className="content-metadata-dialog create-dialog"
-      aria-label={mode === "rename" ? "重命名内容" : "移动到项目"}
+      aria-label={mode === "rename" ? "重命名内容" : "设置项目"}
       onCancel={(e) => {
         e.preventDefault();
         if (!busy) onClose();
@@ -85,7 +97,7 @@ export function ContentMetadata({
         }}
       >
         <header>
-          <h2>{mode === "rename" ? "重命名" : "移动到项目"}</h2>
+          <h2>{mode === "rename" ? "重命名" : "设置项目"}</h2>
           <button
             type="button"
             className="icon-button"
@@ -112,7 +124,7 @@ export function ContentMetadata({
           <>
             <p className="content-move-title">{original.title}</p>
             <label className="field">
-              保存位置
+              归属项目
               <select
                 aria-label="目标项目"
                 value={projectId}
@@ -129,11 +141,22 @@ export function ContentMetadata({
                   )
                   .map((p) => (
                     <option value={p.id} key={p.id}>
-                      {p.title}
+                      {contentOwnershipTitle(p)}
                     </option>
                   ))}
+                <option value="new">新建项目…</option>
               </select>
             </label>
+            {projectId === "new" && (
+              <input
+                aria-label="新项目名称"
+                placeholder="新项目名称"
+                value={newProjectTitle}
+                maxLength={180}
+                disabled={busy}
+                onChange={(e) => setNewProjectTitle(e.target.value)}
+              />
+            )}
           </>
         )}
         {error && (

@@ -1,6 +1,6 @@
 (manifest
   (id morphz.script-studio)
-  (version "1.4.0")
+  (version "1.3.0")
   (title "剧本工作室 · 编剧与审稿")
   (capabilities (tools host_morphz)))
 (contract
@@ -12,17 +12,15 @@
   (ordinary-work
     """普通输入是完整的创作交流，不是未完成的表单。
 可讨论、比较、试写示例，不要求先建剧本或进入流程。
-discuss-script 是无工具的意图判断和创作交流，不持久化文稿、候选、审阅或事项。
-普通聊天明确要求生成、改写或检查时，Yao进入prepare-script：用工具查找目标、核对确切版本、准备本次范围，再进入produce-script；无需用户先打开应用、点按钮、重新发送。
-只有当前实际意图要求执行且Host核验过本次固定范围，才运行produce-script。
+discuss-script 是无工具推理，不持久化文稿、候选、审阅或事项。
+只有本次人工输入固定了 scriptGeneration，且实际意图要求生成、改写或检查，才运行 produce-script。
 应用/会话不持有自动生成模式，下一条普通消息仍为讨论。""")
   (pinned-work
     """script/read-workflow 从真实输入构造固定资料包，原作与版本按当前授权读取；非空 quote 只授权引文。
 超过120000字符明确拒绝，不截断。
 每轮审阅、修订前重新核对权限和版本；缺失、撤权、取消或变化不继续。
 模型只收到 captures 声明的值，不自行选择项目、root或版本。
-需要原作分页时使用script/read-source，只读获准引文或确切版本。
-准备阶段可按个人会话的实际权限查找其他同成员项目；团队私有会话仍只在自己的项目范围内。固定后不得扩大范围。""")
+旧包的 script/read-item 和 script/read-source 分页读取仍兼容。""")
   (evidence
     "区分三类：带原作版本/原文引用的来源事实；经人工批准的设定；未采纳的 AI 建议。不要把模型推测写成原作事实、把当前 status 当作历史版本已批准、把非空 rightsStatement 当作独立法律核验。资料只能使用该请求已授权并固定的版本。")
   (cognition
@@ -33,7 +31,7 @@ discuss-script 是无工具的意图判断和创作交流，不持久化文稿�
 正文交付该类文稿本身，不以创作计划或长篇解释代替成稿。
 候选必须保留来源与版本关系，原创发挥和改编偏离在 explanation 中说明。""")
   (bounded-process
-    "本包Yao函数组织：实际意图→需要时工具查找/准备→初稿或意见→条件审阅→按具体问题条件修订→下一轮（如获准）→Host校验提交→回执说明。maxReviewPasses=0 跳过额外语义自审；1或2由if决定实际轮数，不能靠模型自述增加。只有准备infer可访问Host；创作、审阅、修订子infer无工具，成果提交只能由外层Yao发起。每步由Runtime持久Plan执行和恢复。")
+    "本包Yao函数组织：实际意图→初稿或意见→条件审阅→按具体问题条件修订→下一轮（如获准）→Host校验提交→回执说明。maxReviewPasses=0 跳过额外语义自审；1或2由if决定实际轮数，不能靠模型自述增加。每步有持久Plan位置、输入输出和因果关系；子infer无写入工具，提交只能由外层Yao发起。")
   (continuity
     """continuity/impact 工序只提交带确切 itemRevision、可核对 quote 的审阅意见，不改正文。
 检查人物动机/知识、时间地点、因果、伏笔、观众获知及制作限制。
@@ -70,7 +68,7 @@ blocking 可能使批准失效，应慎用，且不授予人工批准权。
   (completion
     "外层eval结束后的模型只转述最终结果和真实回执，不重新运行工序或调用Host补交。候选不是正式稿，检查不是独立质量认证，线程完成不是批准。子infer只返回声明类型的Yao JSON值，不加Markdown围栏。")
   (limits
-    "不调用 shell、任意文件、网络、未授权项目资料或外部服务；不安装包、不改变模型凭据、不自启子 Agent/长期 Objective/定时任务，不发布或作商务承诺。本工具上界不扩大 Host action 的真实授权。"))
+    "不调用 shell、任意文件、网络、其他项目资料或外部服务；不安装包、不改变模型凭据、不自启子 Agent/长期 Objective/定时任务，不发布或作商务承诺。本工具上界不扩大 Host action 的真实授权。"))
 (mind
   (frame
     (id script-studio/brief-and-evidence)
@@ -175,36 +173,17 @@ impact 先识别用户指出的变更及其证据，检查依赖图中本次获�
       packet)))
 (fn discuss-script
   (params (input (Map Json)))
-  (returns ScriptIntent)
-  (body
-    (infer
-      (captures input)
-      (returns ScriptIntent)
-      """STAGE script-discussion。
-判断input.body的实际意图，返回ScriptIntent。
-明确要求生成、改写或检查已存在的剧本条目则execute=true，交由后续Yao自动查找并准备，不要求用户点按钮或重新发消息。不因缺少预绑定ID就拒绝。
-只是探讨、问建议、举例或明确先不写则execute=false，reply围绕创意、人物、结构自然回应，可以试写一小段并明确只是交流示例。
-开始创作不等于进入生产流程；不要要求先建项目、填简报、选模式或走审稿流程，不擅自保存候选、意见、设定或事项。
-给出有用判断和少量必要问题。
-不声称已经保存。不因提到剧本就生成。
-不继承上条输入的生成授权。""")))
-(fn prepare-script
-  (params (input (Map Json)))
   (returns String)
   (body
     (infer
       (captures input)
       (returns String)
-      (seq
-        (bind available (call host_morphz (action "script") (script (dict (action "list")))))
-        """STAGE script-prepare。
-本阶段只查找、读取和准备，不创作正文、不提交候选、不修改权利、正式稿或其他对象。
-根据真实input.body和input.target线索，用host_morphz action=script：先list(query,offset,limit)，再read-production(productionId,offset,limit)核对目录和创作要求，必要时read-item读取确切版本。分页尚未读完时继续翻页。
-目标唯一且用户明确要求执行，调用prepare-workflow(productionId,targetId,baseRevision,contextRevision,purpose)。ID与版本来自真实读取，purpose按draft/rewrite/continuity/impact选取。依赖由Host自动闭包；请求涉及其他条目时显式references。默认1个候选、24000字符、1轮自审；用户明确要求不同预算才调整。
-input.target只是发送时的选择线索，不能覆盖用户明确指定的另一目标，也不是执行授权。
-多部同名或多个可能条目时，只问一个具体选择问题；未授权材料或真实冲突如实报告。不猜ID、不把目录名称拼成路径、不要求用户先点生成按钮、不要求同一句再发。
-不代替用户确认资料可交给模型。不能调用command或submit-workflow，也不能重新选择Harness或启动第二套流程。
-工具ok=true且prepared=true只代表准备好；返回简短准备结果，接下来的Yao会重新读取并继续。未准备成功时返回可直接给用户的具体缺口。"""))))
+      """STAGE script-discussion。
+围绕 input.body 自然讨论创意、人物、结构和可能性，可以试写一小段比较想法，明确只是交流中的示例。
+开始创作不等于进入生产流程；不要要求先建项目、填简报、选模式或走审稿流程，不擅自保存候选、意见、设定或事项。
+给出有用判断和少量必要问题。
+明确要保存正式候选时说明需要选定目标和固定资料再发送；本轮不声称已保存。
+不继承上条输入的生成授权。""")))
 (fn initial-script
   (params (context (Map Json)))
   (returns ScriptProduct)
@@ -321,8 +300,10 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
     (record ScriptPass (product ScriptProduct) (performed Bool) (check ScriptCheck)))
   (seq
     (bind input (script-context))
-    (bind intent
-      (if (decode Bool (get input generating))
+    (if
+      (decode Bool (get input generating))
+      (seq
+        (bind intent
           (infer
             (captures input)
             (returns ScriptIntent)
@@ -331,15 +312,6 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
 只是探讨、问建议、举例或明确说先不写则 execute=false，reply 直接回应，不启动后续工序。
 不用关键词计数，不因提到剧本就生成。
 缺决定性要求时只问一个具体问题。
-按 ScriptIntent 类型产出。""")
-          (discuss-script (input input))))
-    (if intent.execute
-      (if (decode Bool (get input generating))
-        (produce-script (context input))
-        (seq
-          (bind prepared (prepare-script (input input)))
-          (bind context (script-context))
-          (if (decode Bool (get context generating))
-            (produce-script (context context))
-            prepared)))
-      intent.reply)))
+按 ScriptIntent 类型产出。"""))
+        (if intent.execute (produce-script (context input)) intent.reply))
+      (discuss-script (input input)))))

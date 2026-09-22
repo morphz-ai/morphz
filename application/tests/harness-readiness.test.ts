@@ -58,7 +58,7 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
     if (path.endsWith("/io/messages")) {
       assert.deepEqual(body.activation.harness, {
         id: "morphz.script-studio",
-        version: "1.3.0",
+        version: "1.4.0",
       });
       sent.push(body.client_message_id);
       return send(200, { accepted: true, event_id: "synthetic-root" });
@@ -91,7 +91,7 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       );
       assert.equal(sent.length, 0);
     }
-    harnesses = [{ id: "morphz.script-studio", version: "1.3.0" }];
+    harnesses = [{ id: "morphz.script-studio", version: "1.4.0" }];
     await bridge.tick(); // Readiness recovery alone must not resend failed inputs.
     assert.equal(sent.length, 0);
     bridge.enqueue(inputId);

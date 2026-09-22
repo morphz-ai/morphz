@@ -397,7 +397,7 @@ test("角色、分场父集与依赖闭包必须有效，拒绝自身和循环�
   );
 });
 
-test("原作引用核对同项目、确切历史和原文；伪造引文及已迁出资料被拒绝", () => {
+test("原作引用核对确切历史和原文；整理保留引用，伪造引文与跨权限边界被拒绝", () => {
   const f = fixture();
   const artifactId = f.execute({
     type: "create-artifact",
@@ -419,11 +419,15 @@ test("原作引用核对同项目、确切历史和原文；伪造引文及已�
   const other = f.execute({ type: "create-project", title: "合成另一项目" });
   f.execute({
     type: "organize-content",
-    artifactId,
+    target: { kind: "artifact", id: artifactId },
     expectedRevision: 1,
     changes: { projectId: other },
   });
   f.metadata({ modelProcessingAllowed: true });
+  assert.doesNotThrow(() => f.input(f.generation(id)));
+  f.state.projects.find((p) => p.id === other)!.members = [
+    localAccess.principalId,
+  ];
   assert.throws(() => f.input(f.generation(id)), /原作版本已不可用/);
 });
 

@@ -12,13 +12,18 @@ import {
   scriptIssues,
   scriptContextCurrent,
   scriptDraftSchema,
+  scriptPreparationRequestSchema,
+  prepareScriptGeneration,
   type ScriptProduction,
 } from "../../core/src/script-studio.js";
 import {
   getScriptItem,
   getScriptProduction,
   scriptSourceText,
+  scriptGenerationForInput,
+  validateScriptGeneration,
 } from "../../core/src/script-studio-commands.js";
+import { projectManager } from "../../core/src/projects.js";
 import { stableId } from "./collaboration.js";
 import type { WorkspaceStore } from "./store.js";
 import type { HostInvocation, ToolScope } from "./agent-tools.js";
@@ -44,7 +49,13 @@ const workflowCheck = z
   })
   .strict();
 export const scriptToolSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("list"), ...page }).strict(),
+  z
+    .object({
+      action: z.literal("list"),
+      query: z.string().max(200).default(""),
+      ...page,
+    })
+    .strict(),
   z
     .object({
       action: z.literal("read-production"),
@@ -55,6 +66,9 @@ export const scriptToolSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("read-generation") }).strict(),
   // Deterministic data adapters for Yao, not a second workflow scheduler.
   z.object({ action: z.literal("read-workflow") }).strict(),
+  scriptPreparationRequestSchema.extend({
+    action: z.literal("prepare-workflow"),
+  }),
   z
     .object({
       action: z.literal("submit-workflow"),
@@ -146,7 +160,7 @@ export function scriptTool(
       "剧本工具必须绑定当前 Agent 的真实人工输入，不能使用项目级回退身份。",
     );
   checkProject(state, scope.projectId, input.author);
-  const generation = input.scriptGeneration;
+  const generation = scriptGenerationForInput(state, input.id);
   const pinned = generation
     ? [
         { itemId: generation.targetId, revision: generation.baseRevision },
@@ -155,13 +169,14 @@ export function scriptTool(
     : null;
   const assertProduction = (production: ScriptProduction) => {
     if (
-      production.projectId !== scope.projectId ||
+      (production.projectId !== scope.projectId && !scope.crossProject) ||
       (generation && production.id !== generation.productionId)
     )
       throw new DomainError(
         "forbidden",
         "剧本不属于本次输入的项目或生成范围。",
       );
+    projectManager(state, scope.access, input.id, production.projectId);
   };
   if (request.action === "command") {
     if (request.command.action === "create-production") {
@@ -187,7 +202,11 @@ export function scriptTool(
     return {
       ok: true,
       receipt,
-      note: "这是持久领域操作回执；候选提交不等于人工采纳、批准或锁稿。",
+      delivery:
+        store
+          .scriptOutputs(scope.access)
+          .find((o) => o.commandId === receipt.commandId) ?? null,
+      note: "已保存的结果入口附在原输入的消息流，可直接打开，无需让用户手动查找。候选提交不等于人工采纳、批准或锁稿；空条目不等于完成正文。",
     };
   }
   const runtime = store.runtimeState() as {
@@ -210,14 +229,21 @@ export function scriptTool(
       generating: false,
       body: input.body,
       inputId: input.id,
-      note: "这是普通交流，不继承同会话此前的生成范围；讨论和试写不创建候选、意见或正式稿。",
+      target: input.scriptTarget ?? null,
+      note: "本次尚未固定生成目标。先理解实际请求：讨论直接交流；明确生成、改写或检查时，用 script/list 查找、read-production/read-item 核对目标与版本，再用 prepare-workflow 固定本次范围。之后由当前 Yao 流程继续，不能要求用户先点按钮或再发送同一句。target 只是输入发送时的选择线索，不是生成授权；有歧义才询问。",
     };
   if (request.action === "list") {
-    const all = state.scriptProductions.filter(
-      (p) =>
-        p.projectId === scope.projectId &&
-        (!generation || generation.productionId === p.id),
-    );
+    const all = state.scriptProductions.filter((p) => {
+      try {
+        assertProduction(p);
+      } catch {
+        return false;
+      }
+      return (
+        !request.query ||
+        p.title.toLocaleLowerCase().includes(request.query.toLocaleLowerCase())
+      );
+    });
     return {
       ok: true,
       total: all.length,
@@ -226,11 +252,58 @@ export function scriptTool(
         .slice(request.offset, request.offset + request.limit)
         .map((p) => ({
           id: p.id,
+          projectId: p.projectId,
+          projectTitle: state.projects.find(
+            (project) => project.id === p.projectId,
+          )?.title,
           title: p.title,
           revision: p.revision,
           modelProcessingAllowed: p.brief.modelProcessingAllowed,
           itemCount: p.items.length,
         })),
+    };
+  }
+  if (request.action === "prepare-workflow") {
+    const production = getScriptProduction(
+      state,
+      request.productionId,
+      scope.access,
+    );
+    assertProduction(production);
+    const { action: _action, ...parameters } = request;
+    let prepared;
+    try {
+      prepared = prepareScriptGeneration(production, parameters);
+    } catch (error) {
+      throw new DomainError("conflict", (error as Error).message);
+    }
+    validateScriptGeneration(
+      state,
+      prepared,
+      production.projectId,
+      input.author,
+    );
+    const receipt = store.execute(
+      {
+        commandId: stableId(
+          "host-script-prepare",
+          invocation.context_id,
+          invocation.job_id,
+          invocation.tool_call_id,
+        ),
+        operation: { type: "prepare-script", generation: prepared },
+      },
+      scope.access,
+      input.id,
+    );
+    return {
+      ok: true,
+      prepared: true,
+      preparationId: receipt.entityId,
+      inputId: input.id,
+      generation: prepared,
+      receipt,
+      note: "本次目标与资料版本已固定，尚未生成或保存候选。继续当前编剧 Yao 工序；无需再次发消息或操作按钮。",
     };
   }
   const productionId =
@@ -244,7 +317,7 @@ export function scriptTool(
   if (!productionId)
     throw new DomainError(
       "invalid",
-      "此输入没有版本固定的剧本生成请求；请人工准备并发送生成请求。",
+      "本次尚未固定生成目标；先读取真实目标与版本，再调用 prepare-workflow。",
     );
   const production = getScriptProduction(state, productionId, scope.access);
   assertProduction(production);
@@ -420,11 +493,26 @@ export function scriptTool(
     const receipts = batch.map((command) =>
       store.execute(command, scope.access, input.id),
     );
+    const commandIds = new Set(receipts.map((receipt) => receipt.commandId));
+    const deliveries = store
+      .scriptOutputs(scope.access)
+      .filter(
+        (output) =>
+          output.inputId === input.id && commandIds.has(output.commandId),
+      );
     return {
       ok: true,
       inputId: input.id,
       kind: writing ? "candidate" : "reviews",
       receipts,
+      deliveries,
+      presentation: {
+        kind: "message-result-cards",
+        inputId: input.id,
+        note: deliveries.length
+          ? "Host 已为 deliveries 登记消息流中的可点击结果卡片，点击可直达确切候选或审阅。请指向这条消息的结果卡片；这是应用内入口，不需要 URL，不要声称缺少链接或让用户逐级寻找。"
+          : "本次没有生成结果卡片；不要声称已有可点击入口。",
+      },
       reviewPasses: count,
       checks: request.checks.filter((check) => check.performed),
       explanation: request.explanation,

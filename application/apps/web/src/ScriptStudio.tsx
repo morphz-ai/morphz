@@ -1,4 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  scriptLocationSchema,
+  resolveScriptLocation,
+  type ScriptLocation,
+} from "../../../packages/core/src/script-delivery.js";
 import {
   ArrowLeft,
   Download,
@@ -30,6 +41,11 @@ import {
 import { buildScriptDocx } from "../../../packages/core/src/script-studio-docx.js";
 import type { Receipt } from "../../../packages/core/src/model.js";
 import { spaceKind } from "../../../packages/core/src/model.js";
+import {
+  contentOwnershipTitle,
+  type ContentEntry,
+} from "../../../packages/core/src/content.js";
+import { ContentMetadata } from "./ContentMetadata.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { ScriptItemEditor } from "./ScriptStudioEditor.js";
@@ -49,12 +65,24 @@ type Props = {
   client: WorkspaceClient;
   instance: ApplicationInstance;
   activeView: boolean;
+  locationRequest?: ScriptLocation & {
+    requestId: string;
+    view?: "library" | "editor";
+  };
+  onNavigate?: (
+    productionId: string,
+    itemId: string,
+    view: "library" | "editor",
+  ) => void;
   onCompose: (
     text: string,
     generation?: ScriptGeneration,
   ) => ScriptComposeResult;
   onConceive: () => void;
-  onSaveProject: () => void;
+  globalLibrary?: boolean;
+  onOpenScript: (id: string) => void;
+  onContentVisit: (id: string) => void;
+  onLibrary: () => void;
   onNotice: (text: string) => void;
   onNativeDialog?: (open: boolean) => void;
 };
@@ -109,9 +137,14 @@ export function ScriptStudio({
   client,
   instance,
   activeView,
+  locationRequest,
+  onNavigate,
   onCompose,
   onConceive,
-  onSaveProject,
+  globalLibrary = false,
+  onOpenScript,
+  onContentVisit,
+  onLibrary,
   onNotice,
   onNativeDialog,
 }: Props) {
@@ -126,6 +159,55 @@ export function ScriptStudio({
   const [productionId, setProductionId] = useState(initial.productionId ?? "");
   const [itemId, setItemId] = useState(initial.itemId ?? "");
   const [view, setView] = useState(initial.view ?? "library");
+  const [organizing, setOrganizing] = useState<ContentEntry | null>(null);
+  useLayoutEffect(() => {
+    if (
+      instance.state.navigationId &&
+      instance.state.scriptTarget === null &&
+      instance.state.view === "library"
+    ) {
+      setView("library");
+      storage.writeLocal(locationKey, {
+        productionId: initial.productionId ?? "",
+        itemId: initial.itemId ?? "",
+        view: "library",
+      });
+    }
+  }, [instance.state.navigationId]);
+  const [deliveryTarget, setDeliveryTarget] = useState<
+    (ScriptLocation & { requestId: string }) | null
+  >(null);
+  const savedTarget = scriptLocationSchema.safeParse(
+    instance.state.scriptTarget,
+  );
+  const externalTarget =
+    locationRequest ??
+    (savedTarget.success && typeof instance.state.navigationId === "string"
+      ? { ...savedTarget.data, requestId: instance.state.navigationId }
+      : null);
+  const externalKey = JSON.stringify(externalTarget);
+  useLayoutEffect(() => {
+    if (
+      !externalTarget ||
+      resolveScriptLocation(boot.workspace, externalTarget)?.production
+        .projectId !== instance.workspaceId
+    )
+      return;
+    setProductionId(externalTarget.productionId);
+    setItemId(externalTarget.itemId ?? "");
+    const nextView = locationRequest?.view ?? "editor";
+    setView(nextView);
+    setDeliveryTarget(externalTarget);
+    try {
+      storage.writeLocal(locationKey, {
+        productionId: externalTarget.productionId,
+        itemId: externalTarget.itemId ?? "",
+        view: nextView,
+      });
+    } catch {
+      onNotice("定位暂时无法保存；文稿未受影响。");
+    }
+  }, [externalKey]);
   const [query, setQuery] = useState("");
   const space = boot.workspace.projects.find(
     (p) => p.id === instance.workspaceId,
@@ -194,6 +276,7 @@ export function ScriptStudio({
     nextView: "library" | "editor" = "editor",
   ) => {
     setError("");
+    setDeliveryTarget(null);
     if (nextProduction !== production?.id) {
       setExportStatus(null);
       setHistoryOpen(false);
@@ -201,6 +284,7 @@ export function ScriptStudio({
     setProductionId(nextProduction);
     setItemId(nextItem);
     setView(nextView);
+    onNavigate?.(nextProduction, nextItem, nextView);
     try {
       storage.writeLocal(locationKey, {
         productionId: nextProduction,
@@ -225,6 +309,10 @@ export function ScriptStudio({
       .catch((e) => onNotice(`定位同步失败：${e.message}；本机定位已保留。`));
   };
   const showLibrary = () => {
+    if (globalLibrary && spaceKind(space) === "project") {
+      onLibrary();
+      return;
+    }
     flushSync(() => choose(production?.id ?? "", itemId, "library"));
     // Complete navigation focus synchronously so it cannot steal a later action.
     const card = Array.from(
@@ -435,21 +523,29 @@ export function ScriptStudio({
           </h2>
           <span
             className="script-project"
-            title={`所属${spaceKind(space) === "project" ? "项目" : "空间"}：${space.title}`}
+            title={
+              library && globalLibrary
+                ? "全部剧本"
+                : `归属项目：${contentOwnershipTitle(space)}`
+            }
           >
             <Folder />
-            <span>{space.title}</span>
+            <span>
+              {library && globalLibrary
+                ? "全部剧本"
+                : contentOwnershipTitle(space)}
+            </span>
           </span>
         </div>
-        {spaceKind(space) === "desk" && (
+        {!library && production && (
           <button
             type="button"
-            className="secondary-action script-save-project"
-            onClick={onSaveProject}
+            className="secondary-action"
+            onClick={() => setOrganizing({ kind: "script", value: production })}
             disabled={!canWrite}
           >
             <FolderPlus />
-            保存为项目
+            设置项目
           </button>
         )}
         <button
@@ -534,13 +630,29 @@ export function ScriptStudio({
       )}
       {library ? (
         <ScriptStudioLibrary
-          productions={productions}
+          productions={
+            globalLibrary
+              ? boot.workspace.scriptProductions.filter(
+                  (p) =>
+                    !boot.workspace.projects.find(
+                      (owner) => owner.id === p.projectId,
+                    )?.deletedAt,
+                )
+              : productions
+          }
+          projects={boot.workspace.projects}
+          global={globalLibrary}
           lastOpenedId={productionId}
           query={query}
           onQuery={setQuery}
           disabled={!activeView || busy || saving}
           onOpen={(id) => {
+            if (!productions.some((p) => p.id === id)) {
+              onOpenScript(id);
+              return;
+            }
             flushSync(() => choose(id, id === productionId ? itemId : ""));
+            onContentVisit(id);
             focusEditor();
           }}
         />
@@ -564,6 +676,11 @@ export function ScriptStudio({
                 client={client}
                 production={production}
                 item={item}
+                deliveryTarget={
+                  deliveryTarget?.itemId === item.id
+                    ? deliveryTarget
+                    : undefined
+                }
                 run={run}
                 canWrite={canWrite}
                 onCompose={onCompose}
@@ -764,6 +881,19 @@ export function ScriptStudio({
             )}
           </div>
         </div>
+      )}
+      {organizing && (
+        <ContentMetadata
+          entry={organizing}
+          projects={boot.workspace.projects}
+          client={client}
+          mode="move"
+          onClose={() => setOrganizing(null)}
+          onSaved={(old) => {
+            setOrganizing(null);
+            onOpenScript(old.value.id);
+          }}
+        />
       )}
       {dialog === "production" && (
         <CreateDialog

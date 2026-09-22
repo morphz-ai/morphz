@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   AgentTools,
+  hostOperations,
+  hostIdempotentRequests,
   type HostInvocation,
   type ToolScope,
 } from "../packages/application/src/agent-tools.js";
@@ -27,6 +29,7 @@ import {
   currentScriptDraft,
   emptyScriptDraft,
   scriptGenerationSchema,
+  prepareScriptGeneration,
   type ScriptCommand,
   type ScriptDraft,
   type ScriptGeneration,
@@ -172,6 +175,27 @@ function fixture() {
       db.close();
     }
   };
+  const revokeSourceBoundary = (artifactId: string, revision: number) => {
+    const other = execute({ type: "create-project", title: "撤权原作" });
+    assert.throws(
+      () =>
+        execute({
+          type: "organize-content",
+          target: { kind: "artifact", id: artifactId },
+          expectedRevision: revision,
+          changes: { projectId: other },
+        }),
+      /工作仍在执行/,
+    );
+    // Fault injection: another authority moves/revokes the source while the
+    // reader runs. Normal organization is already blocked above.
+    mutateSyntheticState((state) => {
+      state.artifacts.find((a) => a.id === artifactId)!.projectId = other;
+      state.projects.find((p) => p.id === other)!.members = [
+        localAccess.principalId,
+      ];
+    });
+  };
   return {
     get store() {
       return store;
@@ -192,6 +216,7 @@ function fixture() {
     tools,
     candidate,
     mutateSyntheticState,
+    revokeSourceBoundary,
     reopen() {
       store.close();
       store = new WorkspaceStore(filename);
@@ -202,6 +227,272 @@ function fixture() {
     },
   };
 }
+
+test("能力目录以真实参数 schema 调用同一领域操作，不增加身份、权限或重复回执", () => {
+  const f = fixture();
+  try {
+    const inputId = f.input();
+    const tools = f.tools(inputId);
+    const invoke = (
+      operationId: string,
+      parameters: unknown,
+      job = randomUUID(),
+    ) =>
+      tools.call(
+        envelope(
+          {
+            action: "operations",
+            operations: { action: "invoke", operationId, parameters },
+          },
+          job,
+        ),
+      ) as any;
+    const all = hostOperations.list();
+    assert.equal(new Set(all.map((op) => op.id)).size, all.length);
+    for (const domain of [
+      "content",
+      "tasks",
+      "projects",
+      "bookmarks",
+      "script",
+      "table",
+      "applications",
+    ])
+      assert.ok(all.some((op) => op.domain === domain));
+    assert.ok(!all.some((op) => /website|adopt|approve|lock/.test(op.id)));
+    for (const op of all)
+      assert.equal(
+        (hostOperations.describe(op.id).parameters as any).additionalProperties,
+        false,
+      );
+    const description = tools.call(
+      envelope({
+        action: "operations",
+        operations: {
+          action: "describe",
+          operationId: "content.create-document",
+        },
+      }),
+    ) as any;
+    assert.deepEqual(description.operation.parameters.required, [
+      "title",
+      "markdown",
+    ]);
+    assert.throws(() => invoke("content.create-document", { title: "缺正文" }));
+    assert.throws(() =>
+      invoke("content.create-document", {
+        title: "越权",
+        markdown: "",
+        actantId: "local-human",
+      }),
+    );
+    const params = { title: "工具保存的报告", markdown: "真实内容" };
+    const job = randomUUID();
+    const first = invoke("content.create-document", params, job);
+    const direct = tools.call(
+      envelope({ action: "create-document", ...params }, job),
+    ) as any;
+    assert.deepEqual(first, direct);
+    assert.equal(
+      f.store.snapshot().artifacts.filter((a) => a.title === params.title)
+        .length,
+      1,
+    );
+    assert.throws(() => invoke("script.adopt-candidate", {}), /操作不存在/);
+    assert.throws(
+      () =>
+        f
+          .tools()
+          .call(
+            envelope({ action: "operations", operations: { action: "list" } }),
+          ),
+      /实际输入/,
+    );
+    assert.ok(
+      hostIdempotentRequests.some(
+        (r) =>
+          "/script/action" in r && r["/script/action"] === "prepare-workflow",
+      ),
+    );
+    assert.ok(
+      !hostIdempotentRequests.some((r) => r["/action"] === "create-document"),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("普通聊天查找、固定依赖、Yao 提交与直接入口闭环，输入不改写，重开不重复准备", () => {
+  const f = fixture();
+  try {
+    const dependency = f.create("setting", {
+      title: "世界规则",
+      text: "没有魔法",
+    });
+    f.revise(f.targetId, {
+      dependencies: [{ itemId: dependency, revision: 1 }],
+    });
+    const inputId = f.input();
+    f.delivery(inputId, "running");
+    const inputBefore = JSON.stringify(f.store.snapshot().inputs);
+    const generation = f.generation();
+    const expected = prepareScriptGeneration(f.production(), generation);
+    const request = script({ action: "prepare-workflow", ...generation });
+    const result = f.tools(inputId).call(request) as any;
+    assert.equal(result.prepared, true);
+    assert.deepEqual(result.generation.references, [
+      { itemId: dependency, revision: 1 },
+    ]);
+    assert.deepEqual(result.generation, expected);
+    assert.equal(f.production().candidates.length, 0);
+    f.reopen();
+    assert.deepEqual(f.tools(inputId).call(request), result);
+    const again = f
+      .tools(inputId)
+      .call(script({ action: "prepare-workflow", ...generation })) as any;
+    assert.equal(again.preparationId, result.preparationId);
+    assert.equal(f.store.snapshot().scriptPreparations.length, 1);
+    const packet = f
+      .tools(inputId)
+      .call(script({ action: "read-workflow" })) as any;
+    assert.equal(packet.generating, true);
+    assert.ok(packet.materials.some((m: any) => m.itemId === dependency));
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          envelope({
+            action: "operations",
+            operations: {
+              action: "invoke",
+              operationId: "content.create-document",
+              parameters: { title: "越界", markdown: "不应创建" },
+            },
+          }),
+        ),
+      /不能调用通用对象/,
+    );
+    assert.throws(
+      () =>
+        f.tools(inputId).call(
+          script({
+            action: "prepare-workflow",
+            ...generation,
+            purpose: "draft",
+          }),
+        ),
+      /不能在途中改绑/,
+    );
+    const submit = script({
+      action: "submit-workflow",
+      payload: {
+        ...currentScriptDraft(f.item(f.targetId)),
+        text: "工具准备后的真实候选",
+      },
+      explanation: "合成流程测试",
+      checks: [0, 1].map(() => ({
+        performed: false,
+        revise: false,
+        blocked: false,
+        notes: "未执行",
+      })),
+    });
+    const submitted = f.tools(inputId).call(submit) as any;
+    assert.deepEqual(f.tools(inputId).call(submit), submitted);
+    assert.equal(f.production().candidates.length, 1);
+    assert.equal(
+      currentScriptDraft(f.item(f.targetId)).text,
+      "人工原稿，禁止自动覆盖。",
+    );
+    assert.equal(JSON.stringify(f.store.snapshot().inputs), inputBefore);
+    const outputs = f.store
+      .scriptOutputs(localAccess)
+      .filter((o) => o.inputId === inputId);
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0]!.productionId, f.productionId);
+    assert.deepEqual(submitted.deliveries, outputs);
+    assert.equal(submitted.presentation.kind, "message-result-cards");
+    assert.equal(submitted.presentation.inputId, inputId);
+    assert.match(submitted.presentation.note, /可点击结果卡片/);
+    const next = f.input();
+    f.delivery(next, "running");
+    assert.equal(
+      (f.tools(next).call(script({ action: "read-workflow" })) as any)
+        .generating,
+      false,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("普通聊天准备拒绝过期、撤权、取消与越过私有项目范围；同成员个人会话可直接交付", () => {
+  const f = fixture();
+  try {
+    const inputId = f.execute({
+      type: "record-input",
+      projectId: "local-dialogue",
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      body: "把已存在的剧本第一集改为候选稿",
+      targetActantId: agent.actantId,
+    });
+    f.delivery(inputId, "running");
+    const scoped = (crossProject: boolean) =>
+      f.tools(inputId, { projectId: "local-dialogue", crossProject });
+    const request = script({ action: "prepare-workflow", ...f.generation() });
+    assert.throws(() => scoped(false).call(request), /项目或生成范围/);
+    const listing = scoped(true).call(
+      script({ action: "list", query: "合成 Host" }),
+    ) as any;
+    assert.equal(listing.productions[0].id, f.productionId);
+    assert.throws(
+      () =>
+        scoped(true).call(
+          script({
+            action: "prepare-workflow",
+            ...f.generation({ baseRevision: 100 }),
+          }),
+        ),
+      /已过期/,
+    );
+    f.metadata({ modelProcessingAllowed: false });
+    assert.throws(
+      () =>
+        scoped(true).call(
+          script({ action: "prepare-workflow", ...f.generation() }),
+        ),
+      /尚未确认/,
+    );
+    assert.equal(f.store.snapshot().scriptPreparations.length, 0);
+    f.metadata({ modelProcessingAllowed: true });
+    const admitted = script({ action: "prepare-workflow", ...f.generation() });
+    scoped(true).call(admitted);
+    assert.ok(f.store.projectBlockers("first-project").length > 0);
+    scoped(true).call(f.candidate("个人对话跨同成员范围的候选"));
+    const outputs = f.store
+      .scriptOutputs(localAccess)
+      .filter((o) => o.inputId === inputId);
+    assert.equal(outputs.length, 1);
+    assert.equal(outputs[0]!.projectId, "first-project");
+    f.delivery(inputId, "running", true);
+    assert.throws(() => scoped(true).call(admitted), /未获准继续/);
+    f.delivery(inputId, "running");
+    f.mutateSyntheticState((state) => {
+      state.projects.find((p) => p.id === "first-project")!.members = [
+        agent.principalId,
+      ];
+    });
+    assert.throws(() => scoped(true).call(admitted), /没有管理/);
+    assert.equal(
+      f.store.scriptOutputs(localAccess).filter((o) => o.inputId === inputId)
+        .length,
+      0,
+    );
+  } finally {
+    f.close();
+  }
+});
 
 test("Yao 普通交流包不泄露剧本资料、不继承生成权限，不要求先授权或建稿", () => {
   const f = fixture();
@@ -362,6 +653,12 @@ test("Yao 提交校验整批意见、不接受越预算或阻塞，回执按真�
     f.reopen();
     assert.deepEqual(f.tools(inputId).call(request), receipt);
     assert.equal(f.production().reviews.length, 1);
+    assert.equal(
+      f.store
+        .scriptOutputs(localAccess)
+        .find((o) => o.reviewId === f.production().reviews[0]!.id)?.inputId,
+      inputId,
+    );
     assert.equal(f.production().candidates.length, 0);
     assert.equal(f.item(f.targetId).revision, 1);
   } finally {
@@ -390,9 +687,16 @@ test("Yao 候选提交丢回执后按同一 job 恢复，不重复写入或改�
     });
     const receipt = f.tools(inputId).call(request);
     const snapshot = f.store.snapshot();
+    const outputs = f.store.scriptOutputs(localAccess);
+    assert.equal(
+      outputs.find((o) => o.candidateId === f.production().candidates[0]!.id)
+        ?.inputId,
+      inputId,
+    );
     f.reopen();
     assert.deepEqual(f.tools(inputId).call(request), receipt);
     assert.deepEqual(f.store.snapshot(), snapshot);
+    assert.deepEqual(f.store.scriptOutputs(localAccess), outputs);
     const altered = structuredClone(request) as any;
     altered.arguments.script.explanation = "不能用相同 job 改写请求";
     assert.throws(() => f.tools(inputId).call(altered), /操作标识/);
@@ -514,7 +818,7 @@ test("剧本 Host 必须有真实人工根输入，拒绝旧项目回退、跨�
     }
     const ordinaryInput = f.input();
     f.delivery(ordinaryInput, "running");
-    assert.throws(() => f.tools(ordinaryInput).call(read), /没有版本固定/);
+    assert.throws(() => f.tools(ordinaryInput).call(read), /尚未固定生成目标/);
   } finally {
     f.close();
   }
@@ -711,7 +1015,7 @@ test("结果恢复只读本次持久候选/意见：目录和正文分页、重�
     f.delivery(ordinary, "running");
     assert.throws(
       () => f.tools(ordinary).call(script({ action: "read-results" })),
-      /没有版本固定/,
+      /尚未固定生成目标/,
     );
   } finally {
     f.close();
@@ -749,13 +1053,7 @@ test("结果恢复不绕过停止、成员撤权、模型许可或原作迁出",
       else if (revoke === "model")
         f.metadata({ modelProcessingAllowed: false });
       else if (revoke === "source") {
-        const other = f.execute({ type: "create-project", title: "原文迁出" });
-        f.execute({
-          type: "organize-content",
-          artifactId,
-          expectedRevision: 1,
-          changes: { projectId: other },
-        });
+        f.revokeSourceBoundary(artifactId, 1);
       } else
         f.mutateSyntheticState((state) => {
           const principal =
@@ -1214,13 +1512,7 @@ test("read-source 分页读取确切原作；引文不扩大范围，后台改�
     assert.throws(() => read(0), /许可/);
     f.metadata({ modelProcessingAllowed: true });
     assert.equal(read(0).text, text.slice(0, 41));
-    const other = f.execute({ type: "create-project", title: "合成其他项目" });
-    f.execute({
-      type: "organize-content",
-      artifactId,
-      expectedRevision: 2,
-      changes: { projectId: other },
-    });
+    f.revokeSourceBoundary(artifactId, 2);
     assert.throws(() => read(0), /原作版本已不可用/);
   } finally {
     f.close();
@@ -1243,13 +1535,7 @@ test("原作移出授权项目后不能通过已固定的剧本副本继续读�
     const request = f.generation(),
       inputId = f.input(request);
     f.delivery(inputId, "running");
-    const other = f.execute({ type: "create-project", title: "原作迁出项目" });
-    f.execute({
-      type: "organize-content",
-      artifactId,
-      expectedRevision: 1,
-      changes: { projectId: other },
-    });
+    f.revokeSourceBoundary(artifactId, 1);
     assert.throws(
       () =>
         f.tools(inputId).call(

@@ -136,8 +136,6 @@ export function prepareLocalHostTools(
           definition,
         })),
       },
-      null,
-      2,
     ),
     { flag: "wx", mode: 0o600 },
   );

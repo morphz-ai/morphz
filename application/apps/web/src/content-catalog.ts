@@ -7,7 +7,11 @@ export const contentSorts = {
   title: "名称",
 } as const;
 export type ContentSort = keyof typeof contentSorts;
-export function compareContent(sort: ContentSort, a: Artifact, b: Artifact) {
+export function compareContent(
+  sort: ContentSort,
+  a: Pick<Artifact, "id" | "title" | "createdAt" | "updatedAt">,
+  b: Pick<Artifact, "id" | "title" | "createdAt" | "updatedAt">,
+) {
   return (
     (sort === "title"
       ? a.title.localeCompare(b.title, "zh-CN")
@@ -16,7 +20,10 @@ export function compareContent(sort: ContentSort, a: Artifact, b: Artifact) {
         : b.updatedAt.localeCompare(a.updatedAt)) || a.id.localeCompare(b.id)
   );
 }
-export function contentOrigin(a: Artifact, actors: Workspace["actants"]) {
+export function contentOrigin(
+  a: Pick<Artifact, "createdBy"> & Partial<Pick<Artifact, "source">>,
+  actors: Workspace["actants"],
+) {
   if (a.source) return "导入副本";
   const author = actors.find(
     (actor) =>

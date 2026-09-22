@@ -74,7 +74,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "1.3.0",
+    version: "1.4.0",
   });
   assert.equal(
     createHash("sha256")
@@ -102,7 +102,20 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "1\.3\.0"\)/);
+  assert.match(source, /\(version "1\.4\.0"\)/);
+  assert.equal(
+    createHash("sha256")
+      .update(
+        readFileSync(
+          new URL(
+            "../harnesses/legacy/script-studio-1.3.0.hns",
+            import.meta.url,
+          ),
+        ),
+      )
+      .digest("hex"),
+    "f7d45bbd4d59dde42e3b0ffa686cde4d5f728d0a11311fd1810a54b76b4dae89",
+  );
   for (const type of ["ScriptIntent", "ScriptProduct", "ScriptCheck"])
     assert.ok(source.includes(`(returns ${type})`));
   assert.ok(!source.includes("(produces "));
@@ -131,7 +144,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   assert.ok(source.includes("不把结构通过、模型自评或来源方法论称为专业认证"));
 });
 
-test("新输入绑定 1.3.0；历史输入及未知回执重试使用原 Harness，不替换版本", () => {
+test("新输入绑定 1.4.0；历史输入及未知回执重试使用原 Harness，不替换版本", () => {
   const store = new WorkspaceStore(":memory:");
   try {
     const instanceId = store.execute(
@@ -168,7 +181,14 @@ test("新输入绑定 1.3.0；历史输入及未知回执重试使用原 Harness
       scriptStudioApplication.harness,
     );
     // Explicit historical fixture, not a rewrite of a live input.
-    for (const version of ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1"]) {
+    for (const version of [
+      "1.0.0",
+      "1.1.0",
+      "1.1.1",
+      "1.2.0",
+      "1.2.1",
+      "1.3.0",
+    ]) {
       const historical = structuredClone(input);
       historical.application!.harness = { id: "morphz.script-studio", version };
       const frozen = JSON.stringify(historical);

@@ -19,12 +19,18 @@ import {
   type ReplyReceipt,
 } from "./conversation-read.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
-import { Wrench, ChevronRight, Copy, Check, Square } from "lucide-react";
+import { Wrench, ChevronRight, Copy, Check, Square, Film } from "lucide-react";
+import {
+  resolveScriptLocation,
+  type ScriptOutput,
+} from "../../../packages/core/src/script-delivery.js";
+import { scriptKindLabels } from "../../../packages/core/src/script-studio.js";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import { conversationDate } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
+import { executionPresentation } from "./execution-presentation.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
 export type ExchangePosition = {
@@ -46,6 +52,7 @@ export function Conversation({
   onRetry,
   client,
   onOpen,
+  onOpenScript,
   positions,
   revealInputId,
   onInspect,
@@ -70,6 +77,7 @@ export function Conversation({
   onRetry: (id: string) => Promise<void>;
   client: WorkspaceClient;
   onOpen: (id: string, revision?: number) => void;
+  onOpenScript?: (output: ScriptOutput) => void;
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
   onInspect?: (inputId: string) => void;
@@ -172,7 +180,10 @@ export function Conversation({
       return [
         [
           group.messages
-            .filter((m) => m.kind === "reply" || m.kind === "error")
+            .filter(
+              (m) =>
+                (m.kind === "reply" || m.kind === "error") && m.text.trim(),
+            )
             .at(-1)?.id ?? group.id,
           delivery,
         ] as const,
@@ -191,6 +202,9 @@ export function Conversation({
         })),
       ...group.messages
         .filter((m) => !onInspect || m.kind === "reply" || m.kind === "error")
+        .filter(
+          (m) => (m.kind !== "reply" && m.kind !== "error") || m.text.trim(),
+        )
         .map((reply) => ({
           id: reply.id,
           createdAt: reply.createdAt,
@@ -202,42 +216,93 @@ export function Conversation({
   const outputs = (client.boot?.outputs ?? []).filter((o) =>
     inputs.some((i) => i.id === o.inputId),
   );
+  const scriptOutputs = (client.boot?.scriptOutputs ?? []).filter((o) =>
+    inputs.some((i) => i.id === o.inputId),
+  );
+  // Presentation only, owned by the actual input. Waiting is not a reply,
+  // publication or unread receipt, and does not depend on cancellation support.
+  const waitingResponses = new Map(
+    groups.flatMap((group) => {
+      const delivery = runtime.deliveries.find(
+        (d) => d.inputId === group.inputId,
+      );
+      if (
+        !runtime.configured ||
+        !delivery ||
+        delivery.supplement ||
+        delivery.error ||
+        !["queued", "sending", "running"].includes(delivery.state) ||
+        group.messages.some(
+          (m) => (m.kind === "reply" || m.kind === "error") && m.text.trim(),
+        ) ||
+        outputs.some((o) => o.inputId === group.inputId) ||
+        scriptOutputs.some((o) => o.inputId === group.inputId) ||
+        runtime.attention?.approvals.some(
+          (a) => a.scope.inputId === group.inputId,
+        )
+      )
+        return [];
+      const connected = client.online && runtime.connected;
+      const label = !connected
+        ? "连接中断，等待恢复"
+        : delivery.cancelRequested || stopStates[delivery.inputId]?.pending
+          ? "已请求停止，等待确认"
+          : delivery.state === "sending"
+            ? "正在发送…"
+            : delivery.state === "queued"
+              ? "等待处理…"
+              : "正在处理…";
+      return [[group.id, { label, connected }] as const];
+    }),
+  );
   const deliveryItems = outputs.map((o) => ({
     id: "output:" + o.commandId,
     createdAt: o.createdAt,
     input: null,
     reply: null,
     output: o,
+    scriptOutput: null as ScriptOutput | null,
   }));
   const timeline = conversationTimeline([
     ...items.map((item) => ({
       ...item,
       output: null as (typeof outputs)[number] | null,
+      scriptOutput: null as ScriptOutput | null,
     })),
     ...deliveryItems,
+    ...scriptOutputs.map((o) => ({
+      id: "output:" + o.commandId,
+      createdAt: o.createdAt,
+      input: null,
+      reply: null,
+      output: null,
+      scriptOutput: o,
+    })),
   ]);
   const receipts = replyReceipts(
     items.flatMap((item) => (item.reply ? [item.reply] : [])),
     outputs,
+    scriptOutputs,
   );
   const readVersion = JSON.stringify(receipts);
   const unread = hasUnreadReplies(seenReplies, receipts);
-  const contentVersion = timeline
-    .map(
-      (item) =>
-        item.id +
-        ":" +
-        (item.reply?.text.length ?? 0) +
-        ":" +
-        (item.reply?.tool?.arguments.length ?? 0) +
-        ":" +
-        (item.reply?.tool?.result?.length ?? 0) +
-        ":" +
-        (item.reply?.tool?.status ?? "") +
-        ":" +
-        item.reply?.streaming,
-    )
-    .join("|");
+  const contentVersion =
+    timeline
+      .map(
+        (item) =>
+          item.id +
+          ":" +
+          (item.reply?.text.length ?? 0) +
+          ":" +
+          (item.reply?.tool?.arguments.length ?? 0) +
+          ":" +
+          (item.reply?.tool?.result?.length ?? 0) +
+          ":" +
+          (item.reply?.tool?.status ?? "") +
+          ":" +
+          item.reply?.streaming,
+      )
+      .join("|") + JSON.stringify([...waitingResponses]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -326,7 +391,10 @@ export function Conversation({
           aria-relevant="additions"
         >
           {timeline.map(
-            ({ input: item, reply, output, id, createdAt }, index) => {
+            (
+              { input: item, reply, output, scriptOutput, id, createdAt },
+              index,
+            ) => {
               const date = conversationDate(createdAt);
               const previous = timeline[index - 1];
               const dateDivider = date &&
@@ -336,15 +404,69 @@ export function Conversation({
                     <time dateTime={date.key}>{date.label}</time>
                   </div>
                 );
-              const inputId = item?.id ?? reply?.inputId ?? output?.inputId;
+              const inputId =
+                item?.id ??
+                reply?.inputId ??
+                output?.inputId ??
+                scriptOutput?.inputId;
               const previousInputId =
                 previous?.input?.id ??
                 previous?.reply?.inputId ??
-                previous?.output?.inputId;
+                previous?.output?.inputId ??
+                previous?.scriptOutput?.inputId;
               const startsTurn =
                 !!previous &&
                 !dateDivider &&
                 (!inputId || inputId !== previousInputId);
+              if (scriptOutput) {
+                const resolved = resolveScriptLocation(state, scriptOutput);
+                const version = resolved?.item?.versions.find(
+                  (v) => v.revision === scriptOutput.revision,
+                );
+                const candidate = resolved?.production.candidates.find(
+                  (c) => c.id === scriptOutput.candidateId,
+                );
+                const label =
+                  scriptOutput.kind === "production"
+                    ? "剧本"
+                    : scriptOutput.kind === "candidate"
+                      ? `候选稿 · ${candidate?.status === "accepted" ? "已采纳" : candidate?.status === "rejected" ? "已拒绝" : "待决定"}`
+                      : scriptOutput.kind === "review"
+                        ? "审查意见"
+                        : `${resolved?.item ? scriptKindLabels[resolved.item.kind] : "条目"}${version && !version.draft.text.trim() ? " · 空白条目" : ""}`;
+                return (
+                  <Fragment key={id}>
+                    {dateDivider}
+                    <article
+                      className="conversation-message agent-message delivery-message"
+                      data-starts-turn={startsTurn || undefined}
+                      data-message-id={id}
+                    >
+                      <button
+                        className="delivery-object"
+                        disabled={!resolved || !onOpenScript}
+                        aria-label={`打开${scriptOutput.kind === "production" ? "剧本" : "剧本结果"}：${scriptOutput.title}`}
+                        onClick={() => onOpenScript?.(scriptOutput)}
+                      >
+                        <Film aria-hidden />
+                        <span className="delivery-object-info">
+                          <small>{label}</small>
+                          <span>{scriptOutput.title}</span>
+                          {scriptOutput.itemId && (
+                            <small>
+                              {resolved?.production.title ?? "对象不可用"}
+                            </small>
+                          )}
+                        </span>
+                        {scriptOutput.itemId && (
+                          <small>v{scriptOutput.revision}</small>
+                        )}
+                        <ChevronRight size={14} aria-hidden />
+                      </button>
+                    </article>
+                  </Fragment>
+                );
+              }
               if (output) {
                 const artifact = state.artifacts.find(
                   (a) => a.id === output.artifactId,
@@ -407,7 +529,11 @@ export function Conversation({
                 runtime.connected &&
                 client.online
                   ? runtime.activity.threads.filter(
-                      (t) => t.inputId === item.id && t.continuation,
+                      (t) =>
+                        t.inputId === item.id &&
+                        t.kind === "execution" &&
+                        t.lifecycle === "open" &&
+                        t.continuation,
                     )
                   : [];
               const status = delivery?.supplement
@@ -428,6 +554,7 @@ export function Conversation({
                       cancelled: "已取消",
                     }[delivery.state];
               const control = responseControls.get(id);
+              const waiting = waitingResponses.get(id);
               const stopControl = control && (
                 <StopResponse
                   key={control.inputId}
@@ -435,6 +562,7 @@ export function Conversation({
                   stopping={stopStates[control.inputId]?.pending ?? false}
                   error={stopStates[control.inputId]?.error ?? ""}
                   onStop={stopResponse}
+                  available={client.online && runtime.connected}
                 />
               );
               return (
@@ -554,7 +682,7 @@ export function Conversation({
                     ) : (
                       <div className="reply-content">
                         {reply?.tool ? (
-                          <ToolMessage message={reply} />
+                          <ToolMessage message={reply} state={state} />
                         ) : reply?.kind === "progress" ? (
                           <details className="message-progress">
                             <summary>执行进度</summary>
@@ -580,6 +708,7 @@ export function Conversation({
                         {item && onSupplement && targets.length > 0 && (
                           <button
                             className="message-execution-link"
+                            title="给这项后台工作追加要求"
                             onClick={() =>
                               targets.length === 1
                                 ? onSupplement(targets[0]!.continuation!)
@@ -649,8 +778,22 @@ export function Conversation({
                       }
                     />
                   ))}
-                  {item && stopControl && !onInspect && (
-                    <div className="response-placeholder">{stopControl}</div>
+                  {item && waiting && (
+                    <div
+                      className="response-placeholder"
+                      data-waiting-input-id={item.id}
+                      data-connected={waiting.connected}
+                    >
+                      <span className="response-waiting" role="status">
+                        <span className="response-dots" aria-hidden="true">
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                        {waiting.label}
+                      </span>
+                      {stopControl}
+                    </div>
                   )}
                 </Fragment>
               );
@@ -687,11 +830,13 @@ export function StopResponse({
   stopping,
   error,
   onStop,
+  available = true,
 }: {
   delivery: ConversationRuntime["deliveries"][number];
   stopping: boolean;
   error: string;
   onStop: (inputId: string) => Promise<void>;
+  available?: boolean;
 }) {
   const pending = stopping || delivery.cancelRequested;
   const label = pending ? "已请求停止，等待确认" : "停止这次处理";
@@ -704,7 +849,7 @@ export function StopResponse({
         className="stop-response"
         aria-label={label}
         title={pending ? label : "停止这次处理；已发生的操作不会撤销。"}
-        disabled={pending}
+        disabled={pending || !available}
         onClick={() => {
           if (!pending) void onStop(delivery.inputId);
         }}
@@ -814,8 +959,24 @@ async function copyMessage(text: string) {
   }
 }
 
-export function ToolMessage({ message }: { message: LiveMessage }) {
+export function ToolMessage({
+  message,
+  state,
+}: {
+  message: LiveMessage;
+  state: Workspace;
+}) {
   const tool = message.tool!;
+  let presentation;
+  try {
+    presentation = executionPresentation(
+      tool.name,
+      JSON.parse(tool.arguments),
+      state,
+    );
+  } catch {
+    /* Streaming arguments may be incomplete. */
+  }
   const status =
     (
       {
@@ -838,7 +999,10 @@ export function ToolMessage({ message }: { message: LiveMessage }) {
       <summary>
         <ChevronRight className="tool-chevron" size={14} />
         <Wrench size={14} aria-hidden="true" />
-        <span className="tool-name">{tool.name || "工具调用"}</span>
+        <span className="tool-name" title={presentation?.detail}>
+          {presentation?.title ?? tool.name ?? "工具调用"}
+          {presentation?.detail ? ` · ${presentation.detail}` : ""}
+        </span>
         <span className="tool-state">{status}</span>
       </summary>
       <div className="tool-details">

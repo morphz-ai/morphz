@@ -14,6 +14,8 @@ import type { InspectorLayout } from "./inspector-layout.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import type { ComposerOption } from "./ComposerOptions.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
+import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
+import type { ScriptOutput } from "../../../packages/core/src/script-delivery.js";
 
 export function ExecutionSidebar({
   client,
@@ -26,6 +28,7 @@ export function ExecutionSidebar({
   onSelect,
   onSupplement,
   onOpen,
+  onOpenScript,
   viewOptions,
 }: {
   client: WorkspaceClient;
@@ -38,6 +41,7 @@ export function ExecutionSidebar({
   onSelect: (scope: ExecutionScope) => void;
   onSupplement?: (target: InputContinuation) => void;
   onOpen: (id: string, revision?: number) => void;
+  onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
 }) {
   const state = client.boot!.workspace,
@@ -56,10 +60,13 @@ export function ExecutionSidebar({
   const thread = currentThread ?? initialThread;
   const detail = !!(scope.inputId || scope.threadId);
   const branches = threads.filter((t) => t.inputId === scope.inputId);
+  const supplementThreads = activeExecutionThreads(runtime).filter(
+    (t) => t.inputId === scope.inputId && t.continuation,
+  );
   const supplementTarget = scope.threadId
-    ? currentThread?.continuation
-    : branches.filter((t) => t.continuation).length === 1
-      ? branches.find((t) => t.continuation)?.continuation
+    ? supplementThreads.find((t) => t.id === scope.threadId)?.continuation
+    : supplementThreads.length === 1
+      ? supplementThreads[0]?.continuation
       : undefined;
   const streamConversation = scope.conversationId ?? scope.projectId;
   const streamProject =
@@ -121,6 +128,7 @@ export function ExecutionSidebar({
           source.intent ||
           source.artifactId ||
           client.boot!.outputs.some((o) => o.inputId === source.id) ||
+          client.boot!.scriptOutputs.some((o) => o.inputId === source.id) ||
           allWork),
     )
     .sort((a, b) =>
@@ -357,6 +365,7 @@ export function ExecutionSidebar({
             {supplementTarget && onSupplement && (
               <button
                 className="button execution-supplement"
+                title="给这项后台工作追加要求"
                 disabled={
                   !client.online ||
                   !runtime.connected ||
@@ -447,6 +456,18 @@ export function ExecutionSidebar({
                       · v{o.revision}
                     </button>
                   ))}
+                {client
+                  .boot!.scriptOutputs.filter((o) => o.inputId === input.id)
+                  .map((o) => (
+                    <button
+                      key={o.commandId}
+                      disabled={!onOpenScript}
+                      onClick={() => onOpenScript?.(o)}
+                    >
+                      {o.title}
+                      {o.itemId ? ` · v${o.revision}` : ""}
+                    </button>
+                  ))}
               </div>
             )}
             {!scope.threadId && branches.length > 0 && (
@@ -482,7 +503,7 @@ export function ExecutionSidebar({
                       undefined
                     }
                   >
-                    <ToolMessage message={m} />
+                    <ToolMessage message={m} state={state} />
                   </div>
                 ))}
               </section>

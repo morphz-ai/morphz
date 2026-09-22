@@ -13,7 +13,6 @@ import {
   Film,
   Globe,
   Grid2X2,
-  FolderPlus,
   FolderOpen,
   Layers2,
   Upload,
@@ -36,6 +35,7 @@ import {
   spaceKind,
 } from "../../../packages/core/src/model.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import { contentEntries } from "../../../packages/core/src/content.js";
 import {
   recentContent,
   contentVisitTime,
@@ -43,6 +43,7 @@ import {
 } from "./recent-content.js";
 import type { WorkspaceClient } from "./client.js";
 import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
+import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import type { InputIntent } from "../../../packages/core/src/input-intent.js";
 import { ScriptStudio, type ScriptComposeResult } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
@@ -69,6 +70,12 @@ export function ApplicationHost({
   client,
   workspaceId,
   activeId,
+  scriptLocation,
+  onScriptNavigate,
+  onOpenScript,
+  onContentVisit,
+  onScriptLibrary,
+  globalLibrary = false,
   recentContentVisits = [],
   children,
   onActivate,
@@ -76,7 +83,6 @@ export function ApplicationHost({
   onOpenContents,
   onCompose,
   onComposeIntent,
-  onSaveProject,
   onNotice,
   enabled = true,
   foreground = true,
@@ -92,6 +98,19 @@ export function ApplicationHost({
   client: WorkspaceClient;
   workspaceId: string;
   activeId: string | null;
+  scriptLocation?: ScriptLocation & {
+    requestId: string;
+    view?: "library" | "editor";
+  };
+  onScriptNavigate?: (
+    productionId: string,
+    itemId: string,
+    view: "library" | "editor",
+  ) => void;
+  globalLibrary?: boolean;
+  onOpenScript: (id: string) => void;
+  onContentVisit: (id: string) => void;
+  onScriptLibrary: () => void;
   recentContentVisits?: ContentVisit[];
   children: ReactNode;
   onActivate: (id: string | null) => void;
@@ -103,7 +122,6 @@ export function ApplicationHost({
     scriptGeneration?: ScriptGeneration,
   ) => ScriptComposeResult;
   onComposeIntent: (intent: InputIntent) => void;
-  onSaveProject: () => void;
   onNotice: (message: string) => void;
   enabled?: boolean;
   foreground?: boolean;
@@ -118,8 +136,8 @@ export function ApplicationHost({
   const active = instances.find((i) => i.id === activeId);
   const recent = recentContent(
     recentContentVisits,
-    state.artifacts,
-    workspaceId,
+    contentEntries(state),
+    spaceKind(space) === "project" ? workspaceId : null,
   );
   const applications = [
     browserApplication,
@@ -229,19 +247,27 @@ export function ApplicationHost({
       >
         <Grid2X2 />
       </button>
-      {!active && <h1 className="toolbar-title">{space.title}</h1>}
+      {!active && (
+        <h1 className="toolbar-title">
+          {spaceKind(space) === "project" ? space.title : "工作台"}
+        </h1>
+      )}
       {projectControls}
       <button
         className="workspace-content"
-        aria-label="查看本空间内容"
-        title={`查看${space.title}的内容列表`}
+        aria-label={
+          spaceKind(space) === "project" ? "查看项目内容" : "查看全部内容"
+        }
+        title={
+          spaceKind(space) === "project"
+            ? `查看${space.title}的内容列表`
+            : "查看全部内容"
+        }
         disabled={busy}
         onClick={() => void launch(objectsApplication, true)}
       >
         <FolderOpen />
-        <span>
-          {spaceKind(space) === "project" ? "项目内容" : "工作台内容"}
-        </span>
+        <span>{spaceKind(space) === "project" ? "项目内容" : "内容"}</span>
       </button>
       <div
         role="tablist"
@@ -290,18 +316,6 @@ export function ApplicationHost({
           <span>安装应用</span>
         </button>
       )}
-      {spaceKind(space) === "desk" &&
-        active?.applicationId !== scriptStudioApplication.id && (
-          <button
-            className="workspace-save"
-            aria-label="保存为项目"
-            title="保存为项目"
-            onClick={onSaveProject}
-          >
-            <FolderPlus />
-            <span>保存为项目</span>
-          </button>
-        )}
     </div>
   );
   return (
@@ -316,21 +330,33 @@ export function ApplicationHost({
             </div>
             {recent.length ? (
               <ul className="workspace-recent" aria-label="最近打开的内容">
-                {recent.map(({ artifact: a, openedAt }) => (
-                  <li key={a.id}>
+                {recent.map(({ entry, openedAt }) => (
+                  <li key={entry.value.id}>
                     <button
                       type="button"
-                      onClick={() => onOpen(a.id)}
-                      aria-label={`继续打开：${a.title}`}
-                      title={`${a.title} · ${kindLabel[a.content.kind]} · ${contentVisitTime(openedAt)} 打开`}
+                      onClick={() =>
+                        entry.kind === "script"
+                          ? onOpenScript(entry.value.id)
+                          : onOpen(entry.value.id)
+                      }
+                      aria-label={`继续打开：${entry.value.title}`}
+                      title={`${entry.value.title} · ${entry.kind === "script" ? "剧本" : kindLabel[entry.value.content.kind]} · ${contentVisitTime(openedAt)} 打开`}
                     >
-                      <ObjectIcon kind={a.content.kind} />
+                      {entry.kind === "script" ? (
+                        <Film />
+                      ) : (
+                        <ObjectIcon kind={entry.value.content.kind} />
+                      )}
                       <span className="workspace-recent-text">
                         <span className="workspace-recent-title">
-                          {a.title}
+                          {entry.value.title}
                         </span>
                         <span className="workspace-recent-meta">
-                          <span>{kindLabel[a.content.kind]}</span>
+                          <span>
+                            {entry.kind === "script"
+                              ? "剧本"
+                              : kindLabel[entry.value.content.kind]}
+                          </span>
                           <time dateTime={new Date(openedAt).toISOString()}>
                             {contentVisitTime(openedAt)}
                           </time>
@@ -420,12 +446,17 @@ export function ApplicationHost({
                 onNativeDialog={onNativeDialog}
                 client={client}
                 instance={instance}
+                locationRequest={scriptLocation}
+                onNavigate={onScriptNavigate}
                 activeView={foreground && active?.id === instance.id}
                 onCompose={(text, generation) =>
                   onCompose(text, undefined, generation)
                 }
                 onConceive={() => onComposeIntent("script")}
-                onSaveProject={onSaveProject}
+                globalLibrary={globalLibrary}
+                onOpenScript={onOpenScript}
+                onContentVisit={onContentVisit}
+                onLibrary={onScriptLibrary}
                 onNotice={onNotice}
               />
             ) : app.ui.type === "builtin" ? (

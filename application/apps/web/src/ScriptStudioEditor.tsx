@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import {
   scriptAuthorName,
   scriptDisplayTime,
@@ -10,6 +11,7 @@ import {
 } from "../../../packages/core/src/script-studio-presentation.js";
 import {
   currentScriptDraft,
+  prepareScriptGeneration,
   scriptCandidateStale,
   scriptDraftSchema,
   scriptIssues,
@@ -42,6 +44,7 @@ type Props = {
   client: WorkspaceClient;
   production: ScriptProduction;
   item: ScriptItem;
+  deliveryTarget?: ScriptLocation & { requestId: string };
   canWrite: boolean;
   run: ScriptRun;
   onCompose: (
@@ -53,15 +56,14 @@ export function ScriptItemEditor({
   client,
   production,
   item,
+  deliveryTarget,
   canWrite,
   run,
   onCompose,
 }: Props) {
   const boot = client.boot!;
   const storage = scopedStorage(`${boot.centerId}:${boot.principalId}`);
-  const localKey = draftKey(
-    `script:${production.projectId}:${production.id}:${item.id}`,
-  );
+  const localKey = draftKey(`script:${production.id}:${item.id}`);
   const current = currentScriptDraft(item);
   const [local, setLocal] = useState<DraftState>(() => {
     const base = storage.readLocal<number>(localKey + ":base", item.revision);
@@ -112,6 +114,26 @@ export function ScriptItemEditor({
     (c) => c.targetId === item.id,
   );
   const reviews = production.reviews.filter((r) => r.itemId === item.id);
+  useEffect(() => {
+    if (!deliveryTarget) return;
+    if (deliveryTarget.candidateId) setPane("candidates");
+    else if (deliveryTarget.reviewId) setPane("reviews");
+    else if (
+      deliveryTarget.revision &&
+      (deliveryTarget.revision !== item.revision || dirty)
+    ) {
+      setHistoryRevision(deliveryTarget.revision);
+      setPane("history");
+    } else setPane("edit");
+  }, [deliveryTarget?.requestId]);
+  useEffect(() => {
+    const id = deliveryTarget?.candidateId ?? deliveryTarget?.reviewId;
+    if (!id) return;
+    const element = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-script-result-id]"),
+    ).find((el) => el.dataset.scriptResultId === id);
+    element?.scrollIntoView({ block: "nearest" });
+  }, [deliveryTarget?.requestId, pane]);
   // Background refresh only advances a clean reader. It never rebases a dirty draft.
   useEffect(() => {
     if (stale && !dirty && !saving.current) {
@@ -575,7 +597,13 @@ export function ScriptItemEditor({
             )?.draft;
             const obsolete = scriptCandidateStale(production, c);
             return (
-              <article key={c.id}>
+              <article
+                key={c.id}
+                data-script-result-id={c.id}
+                data-delivery-target={
+                  deliveryTarget?.candidateId === c.id || undefined
+                }
+              >
                 <header>
                   <strong>{c.draft.title}</strong>
                   <small>
@@ -680,14 +708,22 @@ export function ScriptItemEditor({
             quote={quote}
           />
           {reviews.map((r) => (
-            <ReviewRow
+            <div
               key={r.id}
-              review={r}
-              productionId={production.id}
-              run={run}
-              disabled={!canWrite}
-              authorName={scriptAuthorName(r.author, boot.workspace.actants)}
-            />
+              data-script-result-id={r.id}
+              data-delivery-target={
+                deliveryTarget?.reviewId === r.id || undefined
+              }
+            >
+              <ReviewRow
+                key={r.id}
+                review={r}
+                productionId={production.id}
+                run={run}
+                disabled={!canWrite}
+                authorName={scriptAuthorName(r.author, boot.workspace.actants)}
+              />
+            </div>
           ))}
         </div>
       )}
@@ -1331,40 +1367,23 @@ function GenerationDialog({
               throw new Error(
                 "请先由人工在剧本设置中确认资料可以交给当前模型服务处理。",
               );
-            const refs = new Map<string, number>();
-            const visited = new Set<string>();
-            const visit = (current: ScriptItem) => {
-              if (visited.has(current.id)) return;
-              visited.add(current.id);
-              for (const ref of currentScriptDraft(current).dependencies) {
-                const dependency = p.items.find((i) => i.id === ref.itemId);
-                if (!dependency || dependency.revision !== ref.revision)
-                  throw new Error("有上游引用已过期，请先明确更新依赖版本。");
-                if (
-                  refs.has(ref.itemId) &&
-                  refs.get(ref.itemId) !== ref.revision
-                )
-                  throw new Error("依赖版本不一致。");
-                refs.set(ref.itemId, ref.revision);
-                visit(dependency);
-              }
-            };
-            visit(target);
-            for (const id of selected) {
-              const ref = p.items.find((i) => i.id === id)!;
-              refs.set(id, ref.revision);
-              visit(ref);
-            }
-            refs.delete(target.id);
-            if (refs.size > 200)
-              throw new Error("本次资料超过 200 项，请缩小生成范围。");
-            const references = [...refs].map(([itemId, revision]) => ({
-              itemId,
-              revision,
-            }));
+            const generation = prepareScriptGeneration(p, {
+              productionId: p.id,
+              targetId: target.id,
+              baseRevision: target.revision,
+              contextRevision: p.revision,
+              purpose,
+              references: selected.map((itemId) => ({
+                itemId,
+                revision: p.items.find((i) => i.id === itemId)!.revision,
+              })),
+              maxCandidates: count,
+              maxOutputCharacters: characters,
+              maxReviewPasses: 1,
+            });
             const materials = [
               currentScriptDraft(target),
-              ...references.map((r) =>
+              ...generation.references.map((r) =>
                 currentScriptDraft(p.items.find((i) => i.id === r.itemId)!),
               ),
             ];
@@ -1372,17 +1391,7 @@ function GenerationDialog({
               throw new Error("材料超过 120000 字符，请缩小范围。");
             const result = onCompose(
               `请对《${p.title}》的「${currentScriptDraft(target).title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，结果提交为候选或带引用的审阅意见，不覆盖正式稿，不代替人工批准。`,
-              {
-                productionId: p.id,
-                targetId: target.id,
-                baseRevision: target.revision,
-                contextRevision: p.revision,
-                purpose,
-                references,
-                maxCandidates: count,
-                maxOutputCharacters: characters,
-                maxReviewPasses: 1,
-              },
+              generation,
             );
             if (!result.ok) setError(result.error);
           } catch (e) {

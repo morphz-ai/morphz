@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import {
   AgentTools,
+  hostIdempotentRequests,
   prepareHostTools,
   type HostInvocation,
 } from "../apps/service/src/agent-tools.js";
@@ -402,10 +403,8 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.equal(lstatSync(first.path).mode & 0o077, 0);
   const data = JSON.parse(readFileSync(first.path, "utf8"));
   for (const tool of data.tools) {
-    assert.deepEqual(tool.idempotent_requests, [
-      { "/action": "script", "/script/action": "read-workflow" },
-      { "/action": "script", "/script/action": "submit-workflow" },
-    ]);
+    assert.deepEqual(tool.idempotent_requests, hostIdempotentRequests);
+    assert.ok(lstatSync(first.path).size < 262144);
     assert.equal(
       JSON.stringify(tool.definition).includes("idempotent_requests"),
       false,

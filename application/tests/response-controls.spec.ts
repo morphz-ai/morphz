@@ -122,7 +122,8 @@ test("中间投递状态不占气泡空间，停止仅在对应的回复区域",
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "停止这次处理", exact: true }),
-  ).toHaveCount(1);
+  ).toHaveCount(2);
+  await expect(page.locator(".response-placeholder")).toHaveCount(2);
   for (const theme of ["dark", "light"]) {
     await page
       .locator(".app")

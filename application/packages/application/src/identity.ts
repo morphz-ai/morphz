@@ -216,6 +216,13 @@ export function workspaceFor(
     scriptProductions: state.scriptProductions.filter((p) =>
       projectIds.has(p.projectId),
     ),
+    scriptPreparations: state.scriptPreparations.filter(
+      (p) =>
+        projectIds.has(p.projectId) &&
+        state.inputs.some(
+          (i) => i.id === p.inputId && projectIds.has(i.projectId),
+        ),
+    ),
     bookmarks: state.bookmarks.filter(
       (b) => b.ownerPrincipalId === access.principalId,
     ),

@@ -90,6 +90,9 @@ export function projectActivity(
   state.artifacts
     .filter((a) => a.projectId === project.id)
     .forEach((a) => touch(a.updatedAt));
+  state.scriptProductions
+    .filter((p) => p.projectId === project.id)
+    .forEach((p) => touch(p.updatedAt));
   state.conversations
     .filter((c) => c.projectId === project.id)
     .forEach((c) => touch(c.updatedAt));

@@ -150,6 +150,18 @@
   font-size: 13px;
   margin: 0;
 }
+.execution-job > .execution-object {
+  margin: 3px 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.execution-details .execution-job > details {
+  margin: 6px 0;
+}
+.execution-details .execution-job > small {
+  font-size: 11px;
+}
 .execution-details pre {
   font-size: 11px;
   white-space: pre-wrap;

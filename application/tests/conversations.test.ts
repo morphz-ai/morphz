@@ -282,9 +282,8 @@ test("v11 升级不重写历史命令或 Runtime 账本；全局对话不随工�
       global = store.snapshot().projects.find((p) => p.kind === "dialogue")!.id;
     run(input(global));
     run({
-      type: "save-workspace-as-project",
-      workspaceId: "local-worktable",
-      title: "保存的项目",
+      type: "create-project",
+      title: "独立项目",
     });
     assert.equal(
       store.snapshot().projects.find((p) => p.kind === "dialogue")!.id,

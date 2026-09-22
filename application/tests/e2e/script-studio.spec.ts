@@ -110,7 +110,7 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
   });
   await page.reload();
   await expect(page.getByLabel("查找剧本", { exact: true })).toBeVisible();
-  await expect(openScript(page, hiddenTitle)).toHaveCount(0);
+  await expect(openScript(page, hiddenTitle)).toBeVisible();
   const search = page.getByLabel("查找剧本", { exact: true });
   await search.fill("找不到的剧本 " + randomUUID());
   await expect(page.locator(".script-library")).toContainText(
@@ -124,7 +124,7 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
     await expect(openScript(page, p.title)).toBeInViewport();
     await expect(button(page, "构思新剧")).toBeInViewport();
     await expect(button(page, "手动新建剧本")).toBeInViewport();
-    await expect(button(page, "保存为项目")).toHaveCount(1);
+    await expect(button(page, "保存为项目")).toHaveCount(0);
     const geometry = await page
       .locator(".script-library")
       .evaluate((element) => ({
@@ -150,81 +150,107 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
   expect((await snapshot(page)).workspace.inputs.length).toBe(inputCount);
 });
 
-test("剧本入口：多部剧本保存为同一项目，取消无副作用，保存和重开不复制", async ({
+test("剧本归属：只整理选中内容，多部剧本可加入一个项目，目录和应用共用原对象", async ({
   page,
 }) => {
   const p = await setup(page);
   await createItem(page, "归属回归第一集");
   await saveText(page, "TEST 正式正文保持原版本");
-  await button(page, "手动新建剧本").click();
-  const create = page.getByRole("dialog", {
-    name: "手动新建剧本",
-    exact: true,
-  });
+  await editor(page).fill("TEST 整理归属不能丢失未保存正文");
   const secondTitle = "TEST 同项目第二部 " + randomUUID().slice(0, 6);
-  await create.getByLabel("剧本名称", { exact: true }).fill(secondTitle);
-  await create.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(create).toBeHidden();
-  await button(page, "全部剧本").click();
-  await expect(openScript(page, p.title)).toBeVisible();
-  await expect(openScript(page, secondTitle)).toBeVisible();
-  await button(page, "保存为项目").click();
-  const save = page.getByRole("dialog", {
-    name: "为当前工作命名",
-    exact: true,
+  const second = await command(page, {
+    action: "create-production",
+    projectId: p.projectId,
+    title: secondTitle,
   });
-  await assertSingleFieldDialog(save);
+  const doc = await seedCenter(page, {
+    type: "create-artifact",
+    projectId: p.projectId,
+    title: "TEST 不应被一起移动的文档",
+    content: { kind: "document", markdown: "保持原文" },
+  });
   const before = (await snapshot(page)).workspace;
-  const count = before.scriptProductions.filter(
-    (value) => value.projectId === p.projectId,
-  ).length;
-  await expect(save).toContainText(`全部 ${count} 部剧本、其他内容和交流`);
-  const scopeSpacing = await save.evaluate((element) => {
-    const input = element.querySelector("input")!.getBoundingClientRect();
-    const scope = element
-      .querySelector(".project-save-scope")!
-      .getBoundingClientRect();
-    return scope.top - input.bottom;
-  });
-  expect(scopeSpacing).toBeGreaterThanOrEqual(8);
+  await button(page, "设置项目").click();
+  const dialog = page.getByRole("dialog", { name: "设置项目", exact: true });
+  await expect(dialog).toContainText(p.title);
+  await dialog.getByLabel("目标项目").selectOption("new");
+  await dialog.getByLabel("新项目名称").fill("TEST 取消不应创建");
   await page.keyboard.press("Escape");
-  await expect(save).toBeHidden();
-  await expect(button(page, "保存为项目")).toBeFocused();
+  await expect(dialog).toBeHidden();
   expect((await snapshot(page)).workspace.projects).toEqual(before.projects);
-  await button(page, "保存为项目").click();
+  await button(page, "设置项目").click();
+  await dialog.getByLabel("目标项目").selectOption("new");
   const projectTitle = "TEST 多剧本项目 " + randomUUID().slice(0, 6);
-  await save.getByLabel("项目名称", { exact: true }).fill(projectTitle);
-  await save.getByRole("button", { name: "保存为项目", exact: true }).click();
-  await expect(save).toBeHidden();
+  await dialog.getByLabel("新项目名称").fill(projectTitle);
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
   await expect(page.locator(".script-project")).toHaveText(projectTitle);
-  await expect(button(page, "保存为项目")).toHaveCount(0);
   const after = (await snapshot(page)).workspace;
-  expect(after.scriptProductions).toEqual(before.scriptProductions);
-  expect(after.inputs).toEqual(before.inputs);
+  const projectId = after.projects.find(
+    (value) => value.title === projectTitle,
+  )!.id;
   expect(
-    after.projects.find((value) => value.id === p.projectId),
-  ).toMatchObject({ kind: "project", title: projectTitle });
+    after.scriptProductions.find((value) => value.id === p.id)!.items,
+  ).toEqual(before.scriptProductions.find((value) => value.id === p.id)!.items);
+  expect(
+    after.scriptProductions.find((value) => value.id === second)!.projectId,
+  ).toBe(p.projectId);
+  expect(after.artifacts.find((value) => value.id === doc)!.projectId).toBe(
+    p.projectId,
+  );
+  expect(after.inputs).toEqual(before.inputs);
+  expect(after.projects.find((value) => value.id === p.projectId)!.kind).toBe(
+    "desk",
+  );
   await page.reload();
-  await expect(openScript(page, secondTitle)).toBeVisible();
   await expect(page.locator(".script-project")).toHaveText(projectTitle);
-  await openScript(page, p.title).click();
   await page
     .getByRole("navigation", { name: "剧本目录" })
     .getByRole("button", { name: /归属回归第一集/ })
     .click();
-  await expect(editor(page)).toHaveValue("TEST 正式正文保持原版本");
-  await button(page, "手动新建剧本").click();
-  const thirdTitle = "TEST 同项目第三部 " + randomUUID().slice(0, 6);
-  await create.getByLabel("剧本名称", { exact: true }).fill(thirdTitle);
-  await create.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(create).toBeHidden();
+  await expect(editor(page)).toHaveValue("TEST 整理归属不能丢失未保存正文");
+  await button(page, "全部剧本").click();
+  await expect(openScript(page, p.title)).toBeVisible();
+  await expect(openScript(page, secondTitle)).toBeVisible();
+  await openScript(page, secondTitle).click();
+  await button(page, "设置项目").click();
+  await dialog.getByLabel("目标项目").selectOption(projectId);
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await page.getByLabel("内容范围", { exact: true }).selectOption("all");
+  await page
+    .getByRole("group", { name: "内容类型" })
+    .getByRole("button", { name: "剧本", exact: true })
+    .click();
+  await expect(button(page, "打开内容：" + p.title)).toBeVisible();
+  await expect(button(page, "打开内容：" + secondTitle)).toBeVisible();
+  await page.getByLabel("内容范围", { exact: true }).selectOption(projectId);
+  await expect(page.locator(".artifact-card")).toHaveCount(2);
+  await button(page, "打开内容：" + p.title).click();
+  await expect(page.getByLabel("当前剧本", { exact: true })).toContainText(
+    p.title,
+  );
+  const final = (await snapshot(page)).workspace;
   expect(
-    (await snapshot(page)).workspace.scriptProductions.find(
-      (value) => value.title === thirdTitle,
-    )?.projectId,
-  ).toBe(p.projectId);
+    final.scriptProductions
+      .filter((value) => value.projectId === projectId)
+      .map((value) => value.id)
+      .sort(),
+  ).toEqual([p.id, second].sort());
+  expect(final.scriptProductions.length).toBe(before.scriptProductions.length);
+  expect(final.inputs).toEqual(before.inputs);
+  expect(final.conversations.filter((c) => c.projectId !== projectId)).toEqual(
+    before.conversations,
+  );
+  expect(
+    final.conversations
+      .filter((c) => c.projectId === projectId)
+      .every((c) => c.id === projectId),
+  ).toBe(true);
 });
-
 async function setup(page: Page) {
   await page.goto("/");
   const boot = await snapshot(page);

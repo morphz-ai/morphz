@@ -20,10 +20,10 @@ import {
 } from "lucide-react";
 import {
   spaceKind,
-  isContentArtifact,
   type Workspace,
   type Artifact,
 } from "../../../packages/core/src/model.js";
+import { contentEntries } from "../../../packages/core/src/content.js";
 const dateLabel = (value: string) =>
   new Date(value).toLocaleDateString("zh-CN", {
     month: "short",
@@ -202,7 +202,12 @@ export function ProjectDirectory({
                 </span>
                 <h2>{p.title}</h2>
                 <p>
-                  {objects.filter(isContentArtifact).length} 项内容
+                  {
+                    contentEntries(state).filter(
+                      (e) => e.value.projectId === p.id,
+                    ).length
+                  }{" "}
+                  项内容
                   {todo ? " · " + todo + " 项待推进" : ""}
                 </p>
                 <span className="project-card-bottom">

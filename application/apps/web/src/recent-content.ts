@@ -1,7 +1,4 @@
-import {
-  isContentArtifact,
-  type Artifact,
-} from "../../../packages/core/src/model.js";
+import type { ContentEntry } from "../../../packages/core/src/content.js";
 
 export type ContentVisit = { artifactId: string; openedAt: number };
 const historyLimit = 100;
@@ -40,19 +37,19 @@ export function visitContent(
 
 export function recentContent(
   history: ContentVisit[],
-  artifacts: Artifact[],
-  workspaceId: string,
+  entries: ContentEntry[],
+  workspaceId: string | null,
   limit = 4,
 ) {
   const available = new Map(
-    artifacts
-      .filter((a) => a.projectId === workspaceId && isContentArtifact(a))
-      .map((a) => [a.id, a]),
+    entries
+      .filter((entry) => !workspaceId || entry.value.projectId === workspaceId)
+      .map((entry) => [entry.value.id, entry]),
   );
   return contentVisits(history)
     .flatMap((visit) => {
-      const artifact = available.get(visit.artifactId);
-      return artifact ? [{ artifact, openedAt: visit.openedAt }] : [];
+      const entry = available.get(visit.artifactId);
+      return entry ? [{ entry, openedAt: visit.openedAt }] : [];
     })
     .slice(0, limit);
 }

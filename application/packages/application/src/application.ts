@@ -155,9 +155,12 @@ export class ApplicationSession {
   }
   workspace(identityGeneration: string) {
     this.active();
+    const snapshot = this.store.snapshot();
+    const workspace = workspaceFor(snapshot, this.access);
     return {
-      workspace: workspaceFor(this.store.snapshot(), this.access),
-      outputs: this.store.artifactOutputs(this.access),
+      workspace,
+      outputs: this.store.artifactOutputs(this.access, snapshot),
+      scriptOutputs: this.store.scriptOutputs(this.access, snapshot),
       centerId: this.store.identity(),
       csrfToken: identityGeneration,
       principalId: this.access.principalId,
@@ -180,8 +183,8 @@ export class ApplicationSession {
       runtime:
         this.options.runtime?.snapshot(this.access) ?? disconnectedRuntime,
       taskRuns: Object.fromEntries(
-        workspaceFor(this.store.snapshot(), this.access)
-          .artifacts.filter((a) => a.content.kind === "task")
+        workspace.artifacts
+          .filter((a) => a.content.kind === "task")
           .map((a) => [
             a.id,
             this.options.runtime?.collaboration.snapshot(a.id, this.access) ?? {

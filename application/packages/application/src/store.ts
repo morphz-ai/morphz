@@ -4,6 +4,8 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { pdfContentSchema } from "../../../packages/core/src/pdf.js";
 import { SearchIndex } from "./search-index.js";
+import { migrateContentOwnership } from "./content-migration.js";
+import { contentEntry } from "../../core/src/content.js";
 import {
   taskRunBusy,
   taskRuntimeSchema,
@@ -13,6 +15,12 @@ import { projectManager } from "../../core/src/projects.js";
 import { assertScriptAccess } from "../../core/src/script-studio-commands.js";
 import type { SearchRequest } from "../../../packages/core/src/retrieval.js";
 import type { ArtifactOutput } from "../../../packages/core/src/conversation.js";
+import {
+  scriptDelivery,
+  scriptOutputSchema,
+  resolveScriptLocation,
+  type ScriptOutput,
+} from "../../core/src/script-delivery.js";
 import {
   applyCommand,
   commandSchema,
@@ -42,7 +50,7 @@ export class WorkspaceStore {
     const version = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version > 12) {
+    if (version.user_version > 14) {
       this.db.close();
       throw new Error("数据库版本高于当前应用支持范围，请使用更新的 Morphz。");
     }
@@ -50,6 +58,7 @@ export class WorkspaceStore {
       CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS artifact_outputs (command_id TEXT PRIMARY KEY REFERENCES commands(id), input_id TEXT NOT NULL, project_id TEXT NOT NULL, artifact_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS script_outputs (command_id TEXT PRIMARY KEY REFERENCES commands(id), body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS asset_owners (asset_id TEXT NOT NULL REFERENCES assets(id), principal_id TEXT NOT NULL, PRIMARY KEY(asset_id,principal_id));
       CREATE TABLE IF NOT EXISTS pdf_metadata (asset_id TEXT PRIMARY KEY REFERENCES assets(id), pages TEXT NOT NULL);
@@ -71,12 +80,28 @@ export class WorkspaceStore {
       this.db.exec("BEGIN IMMEDIATE");
       const migrated = this.snapshot();
       this.ensurePersonalSpaces(migrated);
+      if (version.user_version < 14) {
+        for (const p of migrated.projects.filter(
+          (p) => p.kind === "dialogue" || p.kind === "inbox",
+        )) {
+          if (
+            (migrated.artifacts.some((a) => a.projectId === p.id) ||
+              migrated.scriptProductions.some((s) => s.projectId === p.id)) &&
+            this.projectBlockers(p.id).length
+          )
+            throw new DomainError(
+              "conflict",
+              "个人内容仍有执行中的工作，请在执行结束后升级；原数据未改动。",
+            );
+        }
+        migrateContentOwnership(migrated);
+      }
       this.db
         .prepare("UPDATE workspace SET body=? WHERE id=1")
         .run(JSON.stringify(migrated));
       this.index = new SearchIndex(this.db);
       this.index.sync(this.snapshot());
-      this.db.exec("PRAGMA user_version=12");
+      this.db.exec("PRAGMA user_version=14");
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.close();
@@ -108,7 +133,7 @@ export class WorkspaceStore {
           id: randomUUID(),
           kind,
           ownerPrincipalId: principal.id,
-          title: { desk: "工作台", inbox: "事项", dialogue: "对话" }[kind],
+          title: { desk: "未归项目", inbox: "事项", dialogue: "对话" }[kind],
           members: [principal.id, "morphz-service"],
           createdAt: new Date().toISOString(),
         });
@@ -245,8 +270,10 @@ export class WorkspaceStore {
       throw error;
     }
   }
-  artifactOutputs(access: AccessContext): ArtifactOutput[] {
-    const state = this.snapshot();
+  artifactOutputs(
+    access: AccessContext,
+    state = this.snapshot(),
+  ): ArtifactOutput[] {
     const projects = new Set(
       state.projects
         .filter((p) => p.members.includes(access.principalId))
@@ -269,6 +296,45 @@ export class WorkspaceStore {
         ),
     );
   }
+  scriptOutputs(
+    access: AccessContext,
+    state = this.snapshot(),
+  ): ScriptOutput[] {
+    const projects = new Set(
+      state.projects
+        .filter((p) => p.members.includes(access.principalId))
+        .map((p) => p.id),
+    );
+    return this.db
+      .prepare("SELECT body FROM script_outputs ORDER BY command_id")
+      .all()
+      .map((row) => scriptOutputSchema.parse(JSON.parse(row.body as string)))
+      .filter((output) => {
+        const resolved = resolveScriptLocation(state, output);
+        return (
+          resolved &&
+          projects.has(resolved.production.projectId) &&
+          projects.has(output.projectId) &&
+          state.inputs.some(
+            (i) => i.id === output.inputId && projects.has(i.projectId),
+          )
+        );
+      })
+      .sort(
+        (a, b) =>
+          a.createdAt.localeCompare(b.createdAt) ||
+          a.commandId.localeCompare(b.commandId),
+      );
+  }
+  private saveScriptOutput(output: ScriptOutput | null) {
+    return output
+      ? this.db
+          .prepare(
+            "INSERT OR IGNORE INTO script_outputs(command_id,body) VALUES(?,?)",
+          )
+          .run(output.commandId, JSON.stringify(output)).changes !== 0
+      : false;
+  }
   projectBlockers(projectId: string, ownInputId?: string): string[] {
     const state = this.snapshot();
     const runtime = z
@@ -284,7 +350,12 @@ export class WorkspaceStore {
           d.inputId !== ownInputId &&
           ["queued", "sending", "running"].includes(d.state) &&
           state.inputs.some(
-            (i) => i.id === d.inputId && i.projectId === projectId,
+            (i) =>
+              i.id === d.inputId &&
+              (i.projectId === projectId ||
+                state.scriptPreparations.some(
+                  (p) => p.inputId === i.id && p.projectId === projectId,
+                )),
           ),
       )
       .map(() => "有对话正在执行或等待投递");
@@ -342,6 +413,7 @@ export class WorkspaceStore {
       "create-project",
       "update-project",
       "update-conversation",
+      "organize-content",
     ].includes(command.operation.type);
     const fingerprint = createHash("sha256")
       .update(
@@ -350,6 +422,7 @@ export class WorkspaceStore {
           access,
           ...(isBookmark ||
           command.operation.type === "script-command" ||
+          command.operation.type === "prepare-script" ||
           (management && originInputId)
             ? { originInputId: originInputId ?? null }
             : {}),
@@ -368,16 +441,26 @@ export class WorkspaceStore {
           originInputId,
           op.type === "update-project"
             ? op.projectId
-            : op.type === "update-conversation"
-              ? state.conversations.find((c) => c.id === op.conversationId)
-                  ?.projectId
-              : undefined,
+            : op.type === "organize-content"
+              ? contentEntry(state, op.target).value.projectId
+              : op.type === "update-conversation"
+                ? state.conversations.find((c) => c.id === op.conversationId)
+                    ?.projectId
+                : undefined,
         );
       }
-      if (command.operation.type === "script-command")
+      if (
+        command.operation.type === "script-command" ||
+        command.operation.type === "prepare-script"
+      )
         assertScriptAccess(
           this.snapshot(),
-          command.operation.command,
+          command.operation.type === "script-command"
+            ? command.operation.command
+            : {
+                action: "prepare",
+                productionId: command.operation.generation.productionId,
+              },
           access,
           originInputId,
         );
@@ -398,7 +481,7 @@ export class WorkspaceStore {
       }
       const op = command.operation;
       if (
-        op.type === "script-command" &&
+        (op.type === "script-command" || op.type === "prepare-script") &&
         this.snapshot().actants.some(
           (a) => a.id === access.actantId && a.kind === "agent",
         )
@@ -435,6 +518,18 @@ export class WorkspaceStore {
             ? op.artifactId
             : null;
       const currentState = this.snapshot();
+      if (
+        op.type === "organize-content" &&
+        (op.changes.projectId || op.changes.newProjectTitle)
+      ) {
+        const object = contentEntry(currentState, op.target).value;
+        const blockers = this.projectBlockers(object.projectId, originInputId);
+        if (blockers.length)
+          throw new DomainError(
+            "conflict",
+            "相关工作仍在执行，请结束后再调整内容归属。原内容与草稿未改动。",
+          );
+      }
       if (op.type === "update-project" && op.state && op.state !== "active") {
         const blockers = this.projectBlockers(op.projectId, originInputId);
         if (blockers.length)
@@ -603,6 +698,10 @@ export class WorkspaceStore {
             output.revision,
             output.updatedAt,
           );
+      if (originInputId && op.type === "script-command")
+        this.saveScriptOutput(
+          scriptDelivery(state, op.command, command.commandId, originInputId),
+        );
       this.db.exec("COMMIT");
       return receipt;
     } catch (error) {

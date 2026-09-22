@@ -91,6 +91,7 @@ import { ApplicationHost } from "./ApplicationHost.js";
 import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
 import {
   objectsApplication,
+  scriptStudioApplication,
   browserApplication,
 } from "../../../packages/core/src/applications.js";
 import { SearchDocuments } from "./LibraryDialogs.js";
@@ -146,6 +147,9 @@ type Preferences = InterfacePreferences & {
   sidebar: boolean;
   projectOpen: boolean;
   applications?: Record<string, string | null>;
+  scriptLocation?:
+    | (ScriptLocation & { requestId: string; view?: "library" | "editor" })
+    | null;
   interactions?: Record<string, InteractionMode>;
   exchangeHeights?: Record<string, number>;
   pinnedInputs?: Record<string, boolean>;
@@ -153,6 +157,12 @@ type Preferences = InterfacePreferences & {
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };
 import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
+import {
+  resolveScriptLocation,
+  scriptOutputLocation,
+  type ScriptLocation,
+  type ScriptOutput,
+} from "../../../packages/core/src/script-delivery.js";
 
 type InputDraft = {
   scriptGeneration?: ScriptGeneration;
@@ -186,6 +196,7 @@ type NavigationPlace = Pick<
   | "artifactRevision"
   | "artifactPage"
   | "applications"
+  | "scriptLocation"
 >;
 const defaultPrefs: Preferences = {
   ...interfacePreferences({}),
@@ -350,9 +361,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     [pageToolbarTarget, setPageToolbarTarget] = useState<HTMLDivElement | null>(
       null,
     ),
-    [creating, setCreating] = useState<
-      "document" | "project" | "save-project" | null
-    >(null),
+    [creating, setCreating] = useState<"document" | "project" | null>(null),
     [sending, setSending] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, InputDraft>>(() =>
     readLocal(draftKey("inputs"), {}),
@@ -409,7 +418,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [dictationSlot, setDictationSlot] = useState<HTMLDivElement | null>(
     null,
   );
-  const savingWorkspace = useRef<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null),
     exchange = useRef<HTMLDivElement>(null),
     main = useRef<HTMLElement>(null),
@@ -436,37 +444,47 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       (p) => p.kind === kind && p.ownerPrincipalId === client.boot!.principalId,
     );
   const navigationProject =
-    creating === "save-project" && savingWorkspace.current
-      ? state?.projects.find((p) => p.id === savingWorkspace.current)
-      : prefs.view === "dialogue"
-        ? personalSpace("dialogue")
-        : prefs.view === "content"
-          ? (state?.projects.find((p) => p.id === contentScope) ??
-            personalSpace("desk"))
-          : prefs.view === "desk" ||
-              (prefs.view === "projects" && !prefs.projectOpen)
-            ? personalSpace("desk")
-            : prefs.view === "inbox"
-              ? personalSpace("inbox")
-              : (state?.projects.find(
-                  (p) => p.id === prefs.projectId && spaceKind(p) === "project",
-                ) ??
-                state?.projects.find((p) => spaceKind(p) === "project") ??
-                personalSpace("desk"));
+    prefs.view === "dialogue"
+      ? personalSpace("dialogue")
+      : prefs.view === "content"
+        ? (state?.projects.find((p) => p.id === contentScope) ??
+          personalSpace("desk"))
+        : prefs.view === "desk" ||
+            (prefs.view === "projects" && !prefs.projectOpen)
+          ? personalSpace("desk")
+          : prefs.view === "inbox"
+            ? personalSpace("inbox")
+            : (state?.projects.find(
+                (p) => p.id === prefs.projectId && spaceKind(p) === "project",
+              ) ??
+              state?.projects.find((p) => spaceKind(p) === "project") ??
+              personalSpace("desk"));
   // Association scopes the next input, not the shared conversation or its
   // in-flight activations. An open object wins; otherwise use the visible space.
+  const deliveredScript =
+    state && prefs.scriptLocation
+      ? resolveScriptLocation(state, prefs.scriptLocation)
+      : null;
   const project =
+    state?.projects.find(
+      (p) => p.id === deliveredScript?.production.projectId,
+    ) ??
     state?.projects.find(
       (p) =>
         p.id ===
         state.artifacts.find((a) => a.id === prefs.artifactId)?.projectId,
-    ) ?? navigationProject;
+    ) ??
+    (navigationProject &&
+    ["dialogue", "inbox"].includes(navigationProject.kind ?? "")
+      ? personalSpace("desk")
+      : navigationProject);
   const sharedDefault = !client.boot!.capabilities.teamAuthentication;
   const defaultConversation = sharedDefault
     ? personalSpace("dialogue")?.id
     : navigationProject?.id;
   const applicationWorkspaceOpen =
-    (prefs.view === "desk" ||
+    (!!deliveredScript ||
+      prefs.view === "desk" ||
       (prefs.view === "projects" && prefs.projectOpen)) &&
     !!project &&
     projectStatus(project) === "active";
@@ -563,7 +581,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ? `${navigationProject?.id ?? conversationId}:content`
         : (navigationProject?.id ?? conversationId)
       : conversationId;
-  const dialogueCanvas = prefs.view === "dialogue" && !artifact;
+  const dialogueCanvas =
+    prefs.view === "dialogue" && !artifact && !applicationWorkspaceOpen;
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
   const [exchangeResizePreview, setExchangeResizePreview] = useState<{
@@ -628,7 +647,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ) ??
       acknowledgeReplies(
         {},
-        replyReceipts(client.boot!.runtime.messages, client.boot!.outputs),
+        replyReceipts(
+          client.boot!.runtime.messages,
+          client.boot!.outputs,
+          client.boot!.scriptOutputs,
+        ),
       ),
   );
   const inputs =
@@ -668,6 +691,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const receipts = replyReceipts(
     replies,
     client.boot!.outputs.filter((o) => inputs.some((i) => i.id === o.inputId)),
+    client.boot!.scriptOutputs.filter((o) =>
+      inputs.some((i) => i.id === o.inputId),
+    ),
   );
   const receiptVersion = JSON.stringify(receipts);
   const unseenReply = hasUnreadReplies(
@@ -675,6 +701,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     replyReceipts(
       badgeReplies,
       client.boot!.outputs.filter((o) => badgeInputIds.has(o.inputId)),
+      client.boot!.scriptOutputs.filter((o) => badgeInputIds.has(o.inputId)),
     ),
   );
   const readReplies = useCallback((receipts: ReplyReceipt[]) => {
@@ -713,6 +740,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     artifactRevision: prefs.artifactRevision,
     artifactPage: prefs.artifactPage,
     applications: prefs.applications,
+    scriptLocation: prefs.scriptLocation ?? null,
   };
   const placeKey = JSON.stringify(place);
   useLayoutEffect(() => {
@@ -738,7 +766,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     if (
       !state?.projects.some((p) => p.id === next.projectId) ||
       (next.artifactId &&
-        !state.artifacts.some((a) => a.id === next.artifactId))
+        !state.artifacts.some((a) => a.id === next.artifactId)) ||
+      (next.scriptLocation &&
+        !resolveScriptLocation(state!, next.scriptLocation))
     ) {
       setNotice("原位置已不可用或无访问权限。");
       return;
@@ -902,6 +932,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       "projectId" in change ||
       "artifactId" in change ||
       "applications" in change ||
+      "scriptLocation" in change ||
       "selectedConversations" in change
     ) {
       navigationGeneration.current++;
@@ -913,6 +944,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setPrefs((previous) => {
       const next = {
         ...previous,
+        ...("view" in change ||
+        "projectId" in change ||
+        "selectedConversations" in change ||
+        typeof change.artifactId === "string"
+          ? { scriptLocation: null }
+          : {}),
         ...("view" in change ||
         "projectId" in change ||
         "artifactId" in change ||
@@ -1019,6 +1056,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   // Only first-party, explicit user navigation opens a network page. Application
   // bridge requests and restored views do not grant that browser intent.
   async function openUser(id: string, revision?: number, page?: number) {
+    if (state?.scriptProductions.some((p) => p.id === id))
+      return openScriptLocation({ productionId: id });
     const generation = ++navigationGeneration.current;
     const a =
       state?.artifacts.find((x) => x.id === id) ??
@@ -1030,6 +1069,70 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
     setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
     void openObject(a.projectId, id, revision, page);
+  }
+  async function openScript(output: ScriptOutput) {
+    return openScriptLocation(scriptOutputLocation(output));
+  }
+  async function openScriptLibrary() {
+    const owner = personalSpace("desk");
+    if (!owner) return;
+    const generation = ++navigationGeneration.current;
+    try {
+      const receipt = await client.execute({
+        type: "launch-application",
+        workspaceId: owner.id,
+        applicationId: scriptStudioApplication.id,
+        applicationVersion: scriptStudioApplication.version,
+        scriptTarget: null,
+      });
+      if (generation !== navigationGeneration.current) return;
+      prefer({
+        view: "desk",
+        scriptLocation: null,
+        artifactId: null,
+        applications: { ...prefs.applications, [owner.id]: receipt.entityId },
+      });
+    } catch (e) {
+      if (generation === navigationGeneration.current)
+        setNotice((e as Error).message);
+    }
+  }
+  async function openScriptLocation(target: ScriptLocation) {
+    const generation = ++navigationGeneration.current;
+    const snapshot = client.getSnapshot();
+    const resolved =
+      snapshot && resolveScriptLocation(snapshot.workspace, target);
+    if (!resolved) {
+      setNotice("剧本结果已不可用或无访问权限。");
+      return;
+    }
+    setOpeningObject(true);
+    try {
+      const receipt = await client.execute({
+        type: "launch-application",
+        workspaceId: resolved.production.projectId,
+        applicationId: scriptStudioApplication.id,
+        applicationVersion: scriptStudioApplication.version,
+        scriptTarget: target,
+      });
+      if (generation !== navigationGeneration.current) return;
+      setCreating(null);
+      recordContentVisit(resolved.production.id);
+      prefer({
+        artifactId: null,
+        scriptLocation: { ...target, requestId: receipt.commandId },
+        applications: {
+          ...prefs.applications,
+          [resolved.production.projectId]: receipt.entityId,
+        },
+        interactions: { [exchangeKey]: "hidden" },
+      });
+    } catch (error) {
+      if (generation === navigationGeneration.current)
+        setNotice((error as Error).message);
+    } finally {
+      if (generation === navigationGeneration.current) setOpeningObject(false);
+    }
   }
   async function openObject(
     workspaceId: string,
@@ -1089,6 +1192,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   async function openWorkspaceContents() {
+    if (project && spaceKind(project) !== "project") {
+      setContentScope("all");
+      navigate("content");
+      return;
+    }
     if (!project) return;
     const generation = ++navigationGeneration.current;
     setOpeningObject(true);
@@ -1116,6 +1224,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     prefer({
       applications: { ...prefs.applications, [project.id]: id },
       artifactId: null,
+      ...(id === null ? { scriptLocation: null } : {}),
       ...(historyVisible
         ? { interactions: { [exchangeKey]: "recent" as const } }
         : {}),
@@ -1132,7 +1241,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     // Treat a destination change as navigation: stale open/picker callbacks
     // must not restore the previous scope or focus. Drafts and grants remain
     // keyed by their original workspace, not copied into the new destination.
-    prefer({ artifactId: null });
+    prefer({ artifactId: null, scriptLocation: null });
   }
   function selectConversation(workspaceId: string, id: string, focus = false) {
     setWebsiteIntent(null);
@@ -2304,19 +2413,34 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
                   activeId={activeId}
+                  scriptLocation={
+                    deliveredScript
+                      ? (prefs.scriptLocation ?? undefined)
+                      : undefined
+                  }
+                  globalLibrary={prefs.view !== "projects"}
+                  onOpenScript={(id) =>
+                    void openScriptLocation({ productionId: id })
+                  }
+                  onContentVisit={recordContentVisit}
+                  onScriptLibrary={() => void openScriptLibrary()}
+                  onScriptNavigate={(productionId, itemId, view) => {
+                    if (prefs.scriptLocation)
+                      prefer({
+                        scriptLocation: {
+                          productionId,
+                          ...(itemId ? { itemId } : {}),
+                          view,
+                          requestId: crypto.randomUUID(),
+                        },
+                      });
+                  }}
                   recentContentVisits={recentContentVisits}
                   enabled={applicationWorkspaceOpen}
                   onActivate={activateApplication}
                   onOpen={open}
                   onOpenContents={openWorkspaceContents}
                   onNotice={setNotice}
-                  onSaveProject={() => {
-                    // The server creates the next blank desk before the command
-                    // receipt arrives. Keep this application mounted until the
-                    // completed save navigates to the same workspace as a project.
-                    savingWorkspace.current = project.id;
-                    setCreating("save-project");
-                  }}
                   onComposeIntent={composeIntent}
                   onCompose={(text, artifactId, scriptGeneration) => {
                     if (scriptGeneration) {
@@ -2579,6 +2703,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     conversationId={conversationId}
                     client={client}
                     onOpen={openUser}
+                    onOpenScript={openScript}
                     onRetry={async (id) => {
                       // Retrying removes this focused button once the outbox
                       // advances. Hand focus to a stable control before that
@@ -3227,6 +3352,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               client.boot!.capabilities.directedInput ? supplement : undefined
             }
             onOpen={openUser}
+            onOpenScript={openScript}
           />
         )}
         {understandingOpen && (
@@ -3322,7 +3448,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           onClose={() => setCreating(null)}
           onCreated={(id, kind) => {
             setCreating(null);
-            if (kind === "project" || kind === "save-project") openProject(id);
+            if (kind === "project") openProject(id);
             else void openObject(project.id, id);
           }}
         />
@@ -3456,7 +3582,7 @@ function CreateDialog({
   onCreated,
   toolbarTarget,
 }: {
-  kind: "document" | "project" | "save-project";
+  kind: "document" | "project";
   projectId: string;
   client: ReturnType<typeof useWorkspace>;
   onClose: () => void;
@@ -3501,16 +3627,14 @@ function CreateDialog({
     setError("");
     try {
       const result = await client.execute(
-        kind === "save-project"
-          ? { type: "save-workspace-as-project", workspaceId: projectId, title }
-          : kind === "project"
-            ? { type: "create-project", title }
-            : {
-                type: "create-artifact",
-                projectId,
-                title,
-                content: { kind: "document", markdown },
-              },
+        kind === "project"
+          ? { type: "create-project", title }
+          : {
+              type: "create-artifact",
+              projectId,
+              title,
+              content: { kind: "document", markdown },
+            },
       );
       if (kind === "document") {
         try {
@@ -3528,16 +3652,7 @@ function CreateDialog({
   }
   const heading = (
     <header className={kind === "document" ? "draft-toolbar" : undefined}>
-      <h2 id="create-title">
-        {kind === "save-project"
-          ? "为当前工作命名"
-          : "新建" +
-            {
-              document: "文档",
-              project: "项目",
-              "save-project": "",
-            }[kind]}
-      </h2>
+      <h2 id="create-title">{kind === "project" ? "新建项目" : "新建文档"}</h2>
       <button
         type="button"
         aria-label="关闭新建窗口"
@@ -3578,18 +3693,9 @@ function CreateDialog({
             required
           />
           <button className="primary" disabled={busy || !title.trim()}>
-            {busy ? "保存中…" : kind === "save-project" ? "保存为项目" : "创建"}
+            {busy ? "保存中…" : "创建"}
           </button>
         </div>
-      )}
-      {kind === "save-project" && (
-        <p className="project-save-scope">
-          {client.boot!.workspace.scriptProductions.some(
-            (p) => p.projectId === projectId,
-          )
-            ? `工作台内全部 ${client.boot!.workspace.scriptProductions.filter((p) => p.projectId === projectId).length} 部剧本、其他内容和交流将一起归入此项目。`
-            : "工作台内的全部内容和交流将一起归入此项目。"}
-        </p>
       )}
       {kind === "document" && (
         <label className="field">

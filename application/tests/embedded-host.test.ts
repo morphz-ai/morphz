@@ -19,7 +19,10 @@ import {
   embeddedResources,
 } from "../apps/desktop/application-host.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
-import { AgentTools } from "../packages/application/src/agent-tools.js";
+import {
+  AgentTools,
+  hostIdempotentRequests,
+} from "../packages/application/src/agent-tools.js";
 import {
   prepareLocalHostTools,
   listenLocalHostTools,
@@ -381,10 +384,7 @@ test("Runtime 本地回调不使用 HTTP，认证和真实 job 幂等写入保�
   try {
     assert.ok(!readFileSync(manifest.path, "utf8").includes("endpoint"));
     for (const tool of JSON.parse(readFileSync(manifest.path, "utf8")).tools)
-      assert.deepEqual(tool.idempotent_requests, [
-        { "/action": "script", "/script/action": "read-workflow" },
-        { "/action": "script", "/script/action": "submit-workflow" },
-      ]);
+      assert.deepEqual(tool.idempotent_requests, hostIdempotentRequests);
     listener = await listenLocalHostTools(manifest.endpoint, tools);
     await assert.rejects(
       listenLocalHostTools(manifest.endpoint, tools),

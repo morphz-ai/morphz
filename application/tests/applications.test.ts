@@ -192,39 +192,45 @@ test("多部剧本、应用实例和原对话随工作台原子保存为项目�
     const save = {
       commandId: randomUUID(),
       operation: {
-        type: "save-workspace-as-project" as const,
-        workspaceId: space.id,
-        title: "长篇小说",
+        type: "organize-content" as const,
+        target: {
+          kind: "script" as const,
+          id: before.scriptProductions[0]!.id,
+        },
+        expectedRevision: 1,
+        changes: { newProjectTitle: "长篇小说" },
       },
     };
-    assert.equal(store.execute(save, localAccess).entityId, space.id);
+    assert.equal(
+      store.execute(save, localAccess).entityId,
+      before.scriptProductions[0]!.id,
+    );
     store.execute(save, localAccess);
     const after = store.snapshot();
     assert.deepEqual(after.artifacts, before.artifacts);
     assert.deepEqual(after.inputs, before.inputs);
     assert.deepEqual(after.applicationInstances, before.applicationInstances);
     assert.equal(after.scriptProductions.length, 2);
-    assert.deepEqual(after.scriptProductions, before.scriptProductions);
-    assert.equal(after.projects.filter((p) => p.kind === "desk").length, 1);
-    assert.notEqual(
-      after.projects.find((p) => p.kind === "desk")!.id,
-      space.id,
+    assert.deepEqual(
+      after.scriptProductions[0]!.items,
+      before.scriptProductions[0]!.items,
     );
+    assert.deepEqual(after.scriptProductions[1], before.scriptProductions[1]);
+    assert.equal(after.scriptProductions[0]!.projectId, save.commandId);
+    assert.equal(after.projects.filter((p) => p.kind === "desk").length, 1);
+    assert.equal(after.projects.find((p) => p.kind === "desk")!.id, space.id);
     assert.equal(
-      after.projects.find((p) => p.id === space.id)!.title,
+      after.projects.find((p) => p.id === save.commandId)!.title,
       "长篇小说",
     );
     assert.deepEqual(after.inputs[0]!.application?.harness, app.harness);
-    assert.throws(
-      () => run({ ...save.operation, title: "不能再保存一次" }),
-      /当前工作台/,
-    );
+    assert.throws(() => run(save.operation), /已变化/);
     run({ type: "close-application", instanceId: first, expectedRevision: 2 });
     store.close();
     store = new WorkspaceStore(path);
     assert.deepEqual(
       store.snapshot().scriptProductions,
-      before.scriptProductions,
+      after.scriptProductions,
     );
     assert.equal(
       run({

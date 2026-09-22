@@ -1,12 +1,23 @@
 import { z } from "zod";
 import {
+  checkContentOwner,
+  contentRefSchema,
+  organizeContent,
+} from "./content.js";
+import {
+  scriptLocationSchema,
+  resolveScriptLocation,
+} from "./script-delivery.js";
+import {
   scriptGenerationSchema,
+  scriptPreparationSchema,
   scriptOperationSchema,
   scriptProductionSchema,
 } from "./script-studio.js";
 import {
   applyScriptCommand,
   validateScriptGeneration,
+  applyScriptPreparation,
 } from "./script-studio-commands.js";
 import { assertProjectWritable, projectManager } from "./projects.js";
 import { reasoningEffortSchema } from "./inference.js";
@@ -319,6 +330,7 @@ export const stateSchema = z
     ),
     conversations: z.array(discussionSchema).default([]),
     scriptProductions: z.array(scriptProductionSchema).default([]),
+    scriptPreparations: z.array(scriptPreparationSchema).default([]),
     artifacts: z.array(artifactSchema),
     bookmarks: z.array(bookmarkSchema).default([]),
     taskOrder: z.array(id).default([]),
@@ -359,6 +371,7 @@ export const stateSchema = z
           id,
           continuation: continuationSchema.optional(),
           scriptGeneration: scriptGenerationSchema.optional(),
+          scriptTarget: scriptLocationSchema.optional(),
           projectId: id,
           conversationId: id.optional(),
           artifactId: id.nullable(),
@@ -410,6 +423,12 @@ export type Workspace = z.infer<typeof stateSchema>;
 export type Actant = Workspace["actants"][number];
 export const operationSchema = z.discriminatedUnion("type", [
   scriptOperationSchema,
+  z
+    .object({
+      type: z.literal("prepare-script"),
+      generation: scriptGenerationSchema,
+    })
+    .strict(),
   ...bookmarkOperations,
   z
     .object({
@@ -446,13 +465,6 @@ export const operationSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
-      type: z.literal("save-workspace-as-project"),
-      workspaceId: id,
-      title,
-    })
-    .strict(),
-  z
-    .object({
       type: z.literal("install-application"),
       manifest: applicationManifestSchema,
     })
@@ -465,6 +477,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       applicationVersion: z.string(),
       // Omitted restores the current view; null explicitly opens the collection.
       artifactId: id.nullable().optional(),
+      scriptTarget: scriptLocationSchema.nullable().optional(),
     })
     .strict(),
   z
@@ -590,10 +603,14 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("organize-content"),
-      artifactId: id,
+      target: contentRefSchema,
       expectedRevision: z.number().int().positive(),
       changes: z
-        .object({ title: title.optional(), projectId: id.optional() })
+        .object({
+          title: title.optional(),
+          projectId: id.optional(),
+          newProjectTitle: title.optional(),
+        })
         .strict()
         .refine(
           (value) => Object.keys(value).length > 0,
@@ -718,7 +735,7 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
         id: "local-worktable",
         kind: "desk",
         ownerPrincipalId: "local-owner",
-        title: "工作台",
+        title: "未归项目",
         members: ["local-owner", "morphz-service"],
         createdAt: now,
       },
@@ -742,6 +759,7 @@ export function initialWorkspace(now = new Date().toISOString()): Workspace {
     applications: [],
     conversations: [],
     scriptProductions: [],
+    scriptPreparations: [],
     applicationInstances: [],
     artifacts: [],
     bookmarks: [],
@@ -996,7 +1014,16 @@ export function applyCommand(
       );
   }
   let entityId = command.commandId;
-  if (op.type === "script-command") {
+  if (op.type === "prepare-script") {
+    entityId = applyScriptPreparation(
+      state,
+      op.generation,
+      access,
+      command.commandId,
+      now,
+      originInputId,
+    );
+  } else if (op.type === "script-command") {
     entityId = applyScriptCommand(
       state,
       op.command,
@@ -1124,69 +1151,16 @@ export function applyCommand(
       throw new DomainError("forbidden", "请向 Agent 提交纠正。");
   }
   if (op.type === "organize-content") {
-    const artifact = getArtifact(state, op.artifactId);
-    const source = checkProject(state, artifact.projectId, access);
-    if (artifact.content.kind === "task")
-      throw new DomainError("invalid", "事项请使用事项安排操作。");
-    if (artifact.content.kind === "document" && artifact.content.understanding)
-      throw new DomainError("forbidden", "工作空间理解不能作为普通内容整理。");
-    if (artifact.revision !== op.expectedRevision)
-      throw new DomainError("conflict", "内容已变化，请查看当前版本后操作。");
-    const target = checkProject(
+    entityId = organizeContent(
       state,
-      op.changes.projectId ?? source.id,
+      op.target,
+      op.expectedRevision,
+      op.changes,
       access,
+      command.commandId,
+      now,
+      originInputId,
     );
-    if (target.id !== source.id) {
-      if (
-        !["project", "desk"].includes(target.kind ?? "project") &&
-        target.id !== artifact.originProjectId
-      )
-        throw new DomainError("invalid", "请选择项目或工作台。");
-      if (
-        target.members.some((p) => !source.members.includes(p)) ||
-        source.members.some((p) => !target.members.includes(p))
-      )
-        throw new DomainError(
-          "forbidden",
-          "两个空间的访问成员不同，不能直接移动内容及其历史。",
-        );
-      if (
-        state.relations.some(
-          (r) => r.fromId === artifact.id || r.toId === artifact.id,
-        ) ||
-        state.artifacts.some((a) =>
-          a.content.kind === "task"
-            ? [
-                ...a.content.dependsOnIds,
-                ...a.content.watchSourceIds,
-                ...a.content.resultIds,
-              ].includes(artifact.id)
-            : a.content.kind === "document" &&
-              a.content.understanding?.sources.some(
-                (r) => r.artifactId === artifact.id,
-              ),
-        )
-      )
-        throw new DomainError(
-          "invalid",
-          "此内容有关联事项或对象，暂不能单独移动；原有关联会保留。",
-        );
-      artifact.originProjectId ??= source.id;
-      artifact.projectId = target.id;
-    }
-    artifact.title = op.changes.title ?? artifact.title;
-    artifact.revision++;
-    artifact.updatedAt = now;
-    artifact.versions.push({
-      revision: artifact.revision,
-      projectId: artifact.projectId,
-      title: artifact.title,
-      content: structuredClone(artifact.content),
-      author: { ...access },
-      createdAt: now,
-    });
-    entityId = artifact.id;
   } else if (op.type === "reorder-tasks") {
     if (op.expectedOrderRevision !== state.taskOrderRevision)
       throw new DomainError(
@@ -1513,21 +1487,6 @@ export function applyCommand(
       }
     }
     entityId = op.sourceId;
-  } else if (op.type === "save-workspace-as-project") {
-    const space = checkProject(state, op.workspaceId, access);
-    if (space.kind !== "desk" || space.ownerPrincipalId !== access.principalId)
-      throw new DomainError("conflict", "只能将自己的当前工作台保存为项目。");
-    space.kind = "project";
-    space.title = op.title;
-    state.projects.push({
-      id: command.commandId,
-      kind: "desk",
-      ownerPrincipalId: access.principalId,
-      title: "工作台",
-      members: [...space.members],
-      createdAt: now,
-    });
-    entityId = space.id;
   } else if (
     op.type === "create-conversation" ||
     op.type === "update-conversation"
@@ -1600,6 +1559,34 @@ export function applyCommand(
   } else if (op.type === "launch-application") {
     const space = checkProject(state, op.workspaceId, access);
     if (
+      op.scriptTarget !== undefined &&
+      (op.applicationId !== scriptStudioApplication.id ||
+        op.artifactId !== undefined ||
+        (op.scriptTarget &&
+          resolveScriptLocation(state, op.scriptTarget)?.production
+            .projectId !== space.id))
+    )
+      throw new DomainError(
+        "forbidden",
+        "剧本入口不属于这个工作空间，或指定的结果已不可用。",
+      );
+    const scriptState: z.infer<typeof applicationStateSchema> | null =
+      op.scriptTarget
+        ? {
+            productionId: op.scriptTarget.productionId,
+            itemId: op.scriptTarget.itemId ?? "",
+            view: "editor",
+            scriptTarget: op.scriptTarget,
+            navigationId: command.commandId,
+          }
+        : op.scriptTarget === null
+          ? {
+              view: "library",
+              scriptTarget: null,
+              navigationId: command.commandId,
+            }
+          : null;
+    if (
       op.artifactId &&
       getArtifact(state, op.artifactId).projectId !== op.workspaceId
     )
@@ -1631,6 +1618,11 @@ export function applyCommand(
         existing.revision++;
         existing.updatedAt = now;
       }
+      if (scriptState) {
+        existing.state = { ...existing.state, ...scriptState };
+        existing.revision++;
+        existing.updatedAt = now;
+      }
       entityId = existing.id;
     } else
       state.applicationInstances.push({
@@ -1639,7 +1631,9 @@ export function applyCommand(
         applicationId: op.applicationId,
         applicationVersion: op.applicationVersion,
         revision: 1,
-        state: op.artifactId !== undefined ? { artifactId: op.artifactId } : {},
+        state:
+          scriptState ??
+          (op.artifactId !== undefined ? { artifactId: op.artifactId } : {}),
         status: "open",
         createdAt: now,
         updatedAt: now,
@@ -1700,7 +1694,12 @@ export function applyCommand(
     op.type === "import-document" ||
     op.type === "import-pdf"
   ) {
-    checkProject(state, op.projectId, access);
+    if (
+      op.type === "create-artifact" &&
+      isPublicUnderstanding({ content: op.content })
+    )
+      checkProject(state, op.projectId, access);
+    else checkContentOwner(state, op.projectId, access);
     if (op.type === "create-artifact" && op.conversationId)
       checkConversation(state, op.projectId, op.conversationId, access);
     if (op.type === "import-document") {
@@ -1977,8 +1976,29 @@ export function applyCommand(
         access,
       );
     }
+    const selectedProduction =
+      instance?.applicationId === "morphz.script-studio"
+        ? state.scriptProductions.find(
+            (p) =>
+              p.id === instance.state.productionId &&
+              p.projectId === project.id,
+          )
+        : undefined;
+    const selectedItem = selectedProduction?.items.find(
+      (item) => item.id === instance?.state.itemId,
+    );
     state.inputs.push({
       id: entityId,
+      ...(selectedProduction
+        ? {
+            scriptTarget: {
+              productionId: selectedProduction.id,
+              ...(selectedItem
+                ? { itemId: selectedItem.id, revision: selectedItem.revision }
+                : {}),
+            },
+          }
+        : {}),
       ...(op.scriptGeneration
         ? { scriptGeneration: structuredClone(op.scriptGeneration) }
         : {}),

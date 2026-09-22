@@ -272,7 +272,10 @@ test("公开理解退出内容列表和成果搜索；原记录、历史阅读�
     ) as any;
     assert.equal(list.total, 1);
     assert.equal(list.hasMore, false);
-    assert.equal(list.artifacts[0].artifactId, ordinaryId);
+    assert.deepEqual(list.contents[0].content, {
+      kind: "artifact",
+      id: ordinaryId,
+    });
     assert.equal((tools.call(envelope({ action: "list" })) as any).total, 2);
     assert.equal(
       store.search({ query: "状态专用检索词" }, localAccess).total,

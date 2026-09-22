@@ -865,11 +865,54 @@ body:has(dialog[open]) .cognitive-application-frame {
   gap: 8px;
 }
 .response-placeholder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 28px;
   margin: 4px 0 16px;
-  line-height: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
-.conversation .conversation-message:has(+ .response-placeholder) {
-  margin-bottom: 0;
+.response-waiting,
+.response-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.response-dots {
+  gap: 4px;
+}
+.response-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.response-placeholder[data-connected="true"] .response-dots i {
+  animation: response-waiting-pulse 1.4s ease-in-out infinite;
+}
+.response-placeholder[data-connected="true"] .response-dots i:nth-child(2) {
+  animation-delay: 160ms;
+}
+.response-placeholder[data-connected="true"] .response-dots i:nth-child(3) {
+  animation-delay: 320ms;
+}
+@keyframes response-waiting-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .response-placeholder[data-connected="true"] .response-dots i {
+    animation: none;
+  }
 }
 .app .stop-response {
   display: inline-flex;
