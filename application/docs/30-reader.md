@@ -117,6 +117,7 @@
 - 原普通聊天 06:16 确认了明确标记 TEST 的回答顺序/暗号约定；07:07 在原阅读请求中沿用，显示实际回答。等待生成时从引用跳到第一章，再翻到第二章，提交的引用仍固定在第一章。原问题首次因旧 Runtime 未加载 v6 失败；原输入 ID、问题和引用保持不变，重载后点击原「重试发送」完成，没有重复新发。
 - 实际 `context_tx` 将合成理解写入原 Context 的 `synthetic-reading-0923-evidence`，revision 1、Mind version 15，含原书名、章节、引文、artifact/revision/sourceId/sectionId/start/end 和来源事件；明确不是书中事实或真实个人标签。普通对话、伴读、07:09 返回普通对话三次请求使用同一个 Runtime Session。最后一次输入不含阅读引用且不复述理解，实际回复正确取回理解和来源，Mind frame revision 未改变。最后回复的后台结果已核实，但 Mac 再次锁屏，尚未目视核对这一条在普通对话窗口的最终渲染。
 - `runtime-ipc-smoke.ts` 使用相同 Runtime 二进制、独立临时数据库/合成模型服务：真实装载 reading v6、接收固定引文、执行 Host 工具、产生准确输入回执，并验证重开宿主和重试已接收请求不重复调用模型。它发现阅读工具介绍超过 Runtime 的 16,000 字节限制，已精简为按需发现入口而非放宽底层限额，复测通过。
+- `reader-session-desktop-smoke.mjs` 使用生产 Desktop 入口、真实 Runtime 和可控合成流：结束前实际渲染增量文字，交流区展开不挤压阅读画布；生成中翻到第二章、重新打开交流区，引用仍为第一章。点击实际停止按钮后，Runtime 确认 cancelled、模型连接关闭、已显示文字及引用保留；从引用回跳并继续提问，完成第二次回复。SQLite 中两条输入均为 v6、具有不同 root 和相同非空 Session ID；只发生两次模型调用，无重放。原窗口仍待人工复验，这条自动化不冒充原窗口证据。
 - `runtime-identity-smoke.ts` 双身份真 Runtime 验证：真实 `context_tx` 写入两份合成来源理解；本人可读，另一身份读取 Session/Context projection 返回 403，管理面 frame recall 对用户网关返回 401；同时验证模型上下文隔离、共享项目的明确共享边界、身份撤销和重开。只使用合成凭据与模型，未切换/冒充原 Desktop 用户。
 - 实际窗口发现并已在代码修复：后台刷新替换正文 DOM 打断选文、Portal 工具条默认黑边、批注弹窗未继承共享样式、夜间链接对比度。200% 自动化又发现 PDF 缩放取消与文字层提取之间的未处理拒绝，已修复并复测；文字层重绘清理、防重复及连续调整窗口也有回归。原窗口已正常重启至修复构建，章节恢复为第二章；全部视觉修复、PDF/OCR 与停止按钮的最终手动复验仍待解锁。
 
@@ -140,6 +141,7 @@ npm run build
 npx playwright test tests/e2e/reader.spec.ts --workers=1
 npm run test:runtime-ipc
 npm run test:runtime-identity
+npm run test:reader-session
 node scripts/reader-fixtures.mjs /absolute/synthetic-fixture-directory
 node scripts/reader-ocr-desktop-smoke.mjs /absolute/model-fixture-directory /absolute/synthetic-scan-directory
 ```
