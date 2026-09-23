@@ -232,6 +232,9 @@ export function ReaderOcrControls({
         本地处理，不上传书籍。模型由 PaddlePaddle
         官方提供；复杂表格、竖排和模糊字可能出错。识别分数不是正确率，引用前请核对。
       </p>
+      {status?.state === "cancelled" && (
+        <p role="status">已取消识别，原页和已保存的识别结果未改变。</p>
+      )}
       {error && <p role="alert">{error}</p>}
       {status && !status.available && (
         <p>当前连接没有本地 OCR 引擎，请使用本机 Desktop。</p>

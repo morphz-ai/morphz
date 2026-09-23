@@ -1,6 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 
 const snapshot = async (page: Page) =>
   (await page.request.get("/api/workspace")).json();
@@ -65,6 +67,91 @@ async function selectSecond(page: Page) {
     page.getByRole("toolbar", { name: "阅读选文操作" }),
   ).toBeVisible();
 }
+
+test("常见阅读格式走同一导入、选文标注和恢复流程，不隐式发送给模型", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await setup(page);
+  const before = await snapshot(page);
+  const directory = execFileSync(
+    process.execPath,
+    ["scripts/reader-fixtures.mjs"],
+    {
+      encoding: "utf8",
+    },
+  ).trim();
+  const formats = [
+    {
+      name: "TEST-阅读验收.epub",
+      text: "这是一份合成验收材料",
+      next: "同一个 Morphz",
+    },
+    {
+      name: "TEST-阅读验收.md",
+      text: "这是 Markdown 合成资料",
+      next: "支持目录定位",
+    },
+    { name: "TEST-阅读验收.txt", text: "这是纯文本合成资料" },
+    { name: "TEST-阅读验收.docx", text: "这是合成 DOCX" },
+    {
+      name: "TEST-网页阅读验收.html",
+      text: "这是合成网页资料",
+      next: "内部链接应定位",
+    },
+    ...(process.platform === "darwin"
+      ? [
+          { name: "TEST-RTF阅读验收.rtf", text: "TEST RTF reading acceptance" },
+          { name: "TEST-DOC阅读验收.doc", text: "TEST RTF reading acceptance" },
+        ]
+      : []),
+  ];
+  for (const format of formats) {
+    const picker = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "导入读物", exact: true }).click();
+    await (await picker).setFiles(join(directory, format.name));
+    const body = page.locator(".reading-app:visible .reader-text");
+    await expect(body).toContainText(format.text);
+    await body.evaluate((root, expected) => {
+      const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = nodes.nextNode())) {
+        const start = node.textContent?.indexOf(expected) ?? -1;
+        if (start < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + expected.length);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        root.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        return;
+      }
+      throw new Error("Imported text is not selectable");
+    }, format.text);
+    await page.getByRole("button", { name: "高亮选文", exact: true }).click();
+    if (format.next) {
+      await page.getByRole("button", { name: "下一章", exact: true }).click();
+      await expect(body).toContainText(format.next);
+    }
+    await page.getByRole("button", { name: "书签与批注", exact: true }).click();
+    await page
+      .locator(".reader-mark > button")
+      .filter({ hasText: format.text })
+      .click();
+    await expect(body).toContainText(format.text);
+    await page.reload();
+    await expect(body).toContainText(format.text);
+    await page.getByRole("button", { name: "书签与批注", exact: true }).click();
+    await expect(
+      page.locator(".reader-mark").filter({ hasText: format.text }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "全部读物", exact: true }).click();
+  }
+  expect((await snapshot(page)).workspace.inputs.length).toBe(
+    before.workspace.inputs.length,
+  );
+});
 
 test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定原文、统一 Session 和引用回跳", async ({
   page,

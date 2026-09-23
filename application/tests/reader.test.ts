@@ -241,6 +241,24 @@ test("PDF 文本层空白对齐不通过重复句子搜索猜位置，无法对�
   assert.equal(readerOffsets("另一页文字", text), null);
 });
 
+test("完整 HTML 只显示正文，不把 head 标题、空白或脚本拆成空章节", async () => {
+  const book = await parsePublicationRaw(
+    "full.html",
+    Buffer.from(
+      '<!doctype html><html><head><title>这是元数据，不是正文</title><style>body{color:red}</style></head><body>\n<!--前导空白--><script>notBody()</script>\n<h1>第一节</h1><p>实际原文。</p><a href="#two">下一节</a><h2 id="two">第二节</h2><p>后文。</p></body></html>',
+    ),
+  );
+  assert.equal(book.sections.length, 2);
+  assert.equal(book.sections[0]!.id, "section-1");
+  assert.equal(book.sections[0]!.title, "第一节");
+  assert.match(book.sections[0]!.text, /实际原文/);
+  assert.match(book.sections[0]!.html, /#reader:section-2:two/);
+  assert.doesNotMatch(
+    book.sections.map((s) => s.text).join(""),
+    /元数据|notBody|color/,
+  );
+});
+
 test("HTML 内嵌图片与跨章锚点、Markdown 脚注保留；外部资源仍隔离", async () => {
   const book = await parsePublicationRaw(
     "sample.html",

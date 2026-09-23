@@ -6,7 +6,12 @@ import { DOMParser } from "@xmldom/xmldom";
 import { fromBuffer, type Entry, type ZipFile } from "yauzl";
 import mammoth from "mammoth";
 import sanitizeHtml from "sanitize-html";
-import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
+import {
+  parse,
+  parseFragment,
+  serialize,
+  type DefaultTreeAdapterMap,
+} from "parse5";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -303,16 +308,19 @@ function splitHtml(html: string): ReaderSection[] {
     size += htmlText(node).length;
   }
   if (nodes.length) groups.push(nodes);
-  const sections = (groups.length ? groups : [[]]).map((group, index) => {
-    const fragment = parseFragment("");
-    fragment.childNodes = group as typeof fragment.childNodes;
-    const heading = group.find((n) => /^h[1-6]$/.test(n.nodeName));
-    return safeReadingSection(
-      `section-${index + 1}`,
-      heading ? htmlText(heading) : index ? `正文 ${index + 1}` : "正文",
-      serialize(fragment),
-    );
-  });
+  const sections = (groups.length ? groups : [[]])
+    .map((group, index) => {
+      const fragment = parseFragment("");
+      fragment.childNodes = group as typeof fragment.childNodes;
+      const heading = group.find((n) => /^h[1-6]$/.test(n.nodeName));
+      return safeReadingSection(
+        `section-${index + 1}`,
+        heading ? htmlText(heading) : index ? `正文 ${index + 1}` : "正文",
+        serialize(fragment),
+      );
+    })
+    .filter((section) => section.text.trim() || /<img\s/i.test(section.html))
+    .map((section, index) => ({ ...section, id: `section-${index + 1}` }));
   const fragments = sections.map((section) => parseFragment(section.html));
   const targets = new Map<string, string>();
   const visit = (
@@ -566,9 +574,18 @@ export async function parsePublicationRaw(
     );
   } else if (["html", "htm"].includes(extension)) {
     format = "html";
+    // Parse a document, not a fragment: head/title metadata must not become
+    // a spurious first chapter before the actual body. Fragments get an
+    // implicit body through the same HTML parser.
+    const document = parse(decode(bytes));
+    const root = document.childNodes.find((node) => node.nodeName === "html");
+    const body =
+      root && "childNodes" in root
+        ? root.childNodes.find((node) => node.nodeName === "body")
+        : undefined;
     // Each section is sanitized below. A default first sanitization would strip
     // safe IDs and embedded images before the reader can preserve them.
-    sections = splitHtml(decode(bytes));
+    sections = splitHtml(body && "childNodes" in body ? serialize(body) : "");
   } else if (extension === "doc" || extension === "rtf") {
     if (process.platform !== "darwin")
       throw new DomainError(

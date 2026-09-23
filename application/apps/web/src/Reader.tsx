@@ -814,10 +814,14 @@ function ReadingBook({
                             ? "高亮"
                             : "批注"}{" "}
                         ·{" "}
-                        {
-                          sections.find((s) => s.id === m.location.sectionId)
-                            ?.title
-                        }
+                        {sections.find(
+                          (s) =>
+                            s.id === readingBaseSection(m.location.sectionId),
+                        )?.title ?? "原文位置"}
+                        {m.location.sectionId !==
+                        readingBaseSection(m.location.sectionId)
+                          ? " · OCR"
+                          : ""}
                         {m.artifactRevision !== version.revision
                           ? ` · v${m.artifactRevision}`
                           : ""}

@@ -179,6 +179,15 @@ try {
   await expect(
     page.locator(".reader-ocr-original .pdf-text-layer"),
   ).toContainText("DESIGN NOTES");
+  await page.getByRole("button", { name: "书签与批注", exact: true }).click();
+  await page.getByRole("button", { name: "保存当前位置", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "书签 · 第 1 页 · OCR",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "关闭阅读侧栏", exact: true }).click();
   await page.screenshot({ path: join(fixture, "reader-ocr-desktop.png") });
   await page.reload();
   await expect(page.locator(".reader-ocr-compare .reader-text")).toContainText(
@@ -280,6 +289,9 @@ try {
     await expect(
       page.getByRole("button", { name: "重新识别这一页", exact: true }),
     ).toBeEnabled();
+    await expect(
+      page.getByRole("status").filter({ hasText: "已取消识别" }),
+    ).toBeVisible();
     await expect(
       page.locator(".reader-ocr-compare .reader-text"),
     ).toBeVisible();

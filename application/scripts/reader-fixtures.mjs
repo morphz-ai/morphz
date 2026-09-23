@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
+import { execFileSync } from "node:child_process";
 function zip(files) {
   const local = [],
     central = [];
@@ -82,4 +83,21 @@ writeFileSync(
       '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Word 伴读验收</w:t></w:r></w:p><w:p><w:r><w:t>这是合成 DOCX，不含个人资料。请验证选文和批注。</w:t></w:r></w:p></w:body></w:document>',
   }),
 );
+writeFileSync(
+  join(directory, "TEST-网页阅读验收.html"),
+  '<!doctype html><html lang="zh"><meta charset="utf-8"><title>TEST HTML 阅读验收</title><body><h1>HTML 阅读验收</h1><p>这是合成网页资料。</p><p><a href="#second">前往第二节</a></p><h2 id="second">第二节</h2><p>内部链接应定位到这段原文。</p></body></html>',
+);
+writeFileSync(
+  join(directory, "TEST-RTF阅读验收.rtf"),
+  "{\\rtf1\\ansi TEST RTF reading acceptance.\\par Select text, highlight and return to the original source.}",
+);
+if (process.platform === "darwin") {
+  execFileSync("/usr/bin/textutil", [
+    "-convert",
+    "doc",
+    "-output",
+    join(directory, "TEST-DOC阅读验收.doc"),
+    join(directory, "TEST-RTF阅读验收.rtf"),
+  ]);
+}
 console.log(directory);
