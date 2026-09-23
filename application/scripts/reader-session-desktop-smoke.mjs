@@ -95,7 +95,7 @@ try {
       timeout: 20000,
     })
     .toBe(true);
-  const page = app.windows().find((p) => p.url() === "morphz://app/");
+  let page = app.windows().find((p) => p.url() === "morphz://app/");
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const bridge = async (method, params) =>
@@ -118,38 +118,42 @@ try {
       },
       { method, params },
     );
-  runtime = spawn(
-    binary,
-    [
-      "serve",
-      "--bind",
-      `127.0.0.1:${port}`,
-      "--cwd",
-      root,
-      "--config-file",
-      configuration,
-      "--log-level",
-      "warn",
-    ],
-    {
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        TMPDIR: process.env.TMPDIR,
-        MORPHZ_HOME: root,
-        MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime.sqlite"),
-        MORPHZ_DASHBOARD_TOKEN: token,
-        MORPHZ_HOST_TOOLS_FILE: join(data, "host-tools-desktop.json"),
-        MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
-        MORPHZ_APP_TEST_KEY: "synthetic-only",
+  const startRuntime = () => {
+    const child = spawn(
+      binary,
+      [
+        "serve",
+        "--bind",
+        `127.0.0.1:${port}`,
+        "--cwd",
+        root,
+        "--config-file",
+        configuration,
+        "--log-level",
+        "warn",
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          MORPHZ_HOME: root,
+          MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime.sqlite"),
+          MORPHZ_DASHBOARD_TOKEN: token,
+          MORPHZ_HOST_TOOLS_FILE: join(data, "host-tools-desktop.json"),
+          MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
+          MORPHZ_APP_TEST_KEY: "synthetic-only",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
       },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  for (const s of [runtime.stdout, runtime.stderr])
-    s.on("data", (v) => {
-      logs = (logs + v.toString()).slice(-8000);
-    });
+    );
+    for (const s of [child.stdout, child.stderr])
+      s.on("data", (v) => {
+        logs = (logs + v.toString()).slice(-8000);
+      });
+    return child;
+  };
+  runtime = startRuntime();
   await expect
     .poll(
       async () => {
@@ -193,8 +197,8 @@ try {
       "# 第一章\n\n兼听则明，偏信则暗。\n\n# 第二章\n\n下一章的测试内容。",
     ),
   });
-  const reader = page.locator(".reading-app:visible");
-  const text = reader.locator(".reader-text");
+  let reader = page.locator(".reading-app:visible");
+  let text = reader.locator(".reader-text");
   await expect(text).toContainText("兼听则明");
   const initial = await bridge("workspace");
   const book = initial.workspace.artifacts.find(
@@ -241,7 +245,7 @@ try {
     .getByRole("button", { name: "第二章", exact: true })
     .click();
   await expect(text).toContainText("下一章的测试内容");
-  const reopen = page.locator(".composer-reopen");
+  let reopen = page.locator(".composer-reopen");
   if (await reopen.isVisible()) await reopen.click();
   await expect(
     page.getByRole("button", { name: /第一章 · 回到原文/ }),
@@ -274,6 +278,78 @@ try {
     stopped.workspace.inputs.find((i) => i.id === input.id).reading,
     input.reading,
   );
+  await page.reload();
+  if (await reopen.isVisible()) await reopen.click();
+  await expect(
+    page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  const restored = await bridge("workspace");
+  assert.equal(
+    restored.runtime.deliveries.find((d) => d.inputId === input.id).state,
+    "cancelled",
+  );
+  assert.deepEqual(
+    restored.workspace.inputs.find((i) => i.id === input.id).reading,
+    input.reading,
+  );
+  assert.equal(calls, 1, "Reload must not replay a stopped request");
+  await expect(page.getByText("未完成的回复", { exact: true })).toBeVisible();
+
+  // A renderer reload can reuse the host's in-memory feed. Restart both
+  // processes against the same synthetic databases to prove durable recovery.
+  await app.close();
+  const runtimeExited = new Promise((resolve) => runtime.once("exit", resolve));
+  runtime.kill("SIGTERM");
+  await Promise.race([
+    runtimeExited,
+    delay(10000).then(() => {
+      if (runtime.exitCode === null && runtime.signalCode === null)
+        throw Error("Isolated Runtime did not stop for restart verification");
+    }),
+  ]);
+  runtime = startRuntime();
+  await expect
+    .poll(
+      async () => {
+        try {
+          return (await fetch(url + "/health")).ok;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 20000 },
+    )
+    .toBe(true);
+  app = await _electron.launch({
+    args: ["tests/fixtures/production-desktop-entry.cjs"],
+    env,
+  });
+  await expect
+    .poll(() => app.windows().some((p) => p.url() === "morphz://app/"), {
+      timeout: 20000,
+    })
+    .toBe(true);
+  page = app.windows().find((p) => p.url() === "morphz://app/");
+  page.on("pageerror", (error) => errors.push(error.message));
+  reader = page.locator(".reading-app:visible");
+  text = reader.locator(".reader-text");
+  reopen = page.locator(".composer-reopen");
+  await expect(reader).toBeVisible({ timeout: 15000 });
+  if (await reopen.isVisible()) await reopen.click();
+  await expect(
+    page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
+  ).toBeVisible({ timeout: 20000 });
+  await expect(page.getByText("未完成的回复", { exact: true })).toBeVisible();
+  const restarted = await bridge("workspace");
+  assert.equal(
+    restarted.runtime.deliveries.find((d) => d.inputId === input.id).state,
+    "cancelled",
+  );
+  assert.deepEqual(
+    restarted.workspace.inputs.find((i) => i.id === input.id).reading,
+    input.reading,
+  );
+  assert.equal(calls, 1);
   await expect(
     page.getByRole("button", { name: /第一章 · 回到原文/ }),
   ).toBeVisible();
@@ -325,6 +401,32 @@ try {
   );
   assert.equal(new Set(deliveries.map((d) => d.sessionId)).size, 1);
   assert.equal(new Set(deliveries.map((d) => d.rootId)).size, 2);
+  const eventResponse = await fetch(
+    `${url}/api/sessions/${encodeURIComponent(deliveries[0].sessionId)}/events?after_sequence=0&limit=1000`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  assert.ok(eventResponse.ok);
+  const snapshots = (await eventResponse.json()).events.filter(
+    (e) => e.topic === "runtime/model_public_output",
+  );
+  assert.equal(snapshots.length, 2);
+  const partial = snapshots.find(
+    (e) =>
+      e.payload.root_turn_id ===
+      deliveries.find((d) => d.inputId === input.id).rootId,
+  );
+  assert.equal(partial.payload.text, "TEST 阅读流式前缀：先比较不同说法。");
+  assert.equal(partial.payload.complete, false);
+  assert.equal(partial.payload.truncated, false);
+  assert.equal(partial.payload.session_id, deliveries[0].sessionId);
+  assert.ok(partial.payload.first_visible_at);
+  assert.equal(snapshots.filter((e) => e.payload.complete).length, 1);
+  await expect(
+    page.getByText("TEST 已按第一章继续回答。", { exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
+  ).toHaveCount(1);
   for (const delivery of deliveries) {
     assert.equal(delivery.request.message.format.version, "6");
     assert.equal(
@@ -350,6 +452,8 @@ try {
         canvasUnchanged: true,
         pageChangePinnedQuote: true,
         stopConfirmed: true,
+        stoppedOutputRestoredAfterReload: true,
+        stoppedOutputRestoredAfterDesktopAndRuntimeRestart: true,
         continuedSameSession: true,
         modelCalls: calls,
       },
@@ -358,7 +462,7 @@ try {
     ),
   );
   console.log(
-    "PASS: production Desktop + real Runtime streaming, immutable page reference, unchanged canvas, Stop and same-Session continuation.",
+    "PASS: production Desktop + real Runtime streaming, immutable page reference, unchanged canvas, Stop, durable partial output after reload/restart and same-Session continuation.",
     fixture,
   );
 } catch (error) {

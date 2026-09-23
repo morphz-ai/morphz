@@ -743,6 +743,8 @@ export function Conversation({
                           </button>
                         )}
                         {reply && stopControl}
+                        {reply?.incomplete && <span>未完成的回复</span>}
+                        {reply?.truncated && <span>仅保留部分内容</span>}
                         {item &&
                           item.author.actantId !== client.boot?.actantId && (
                             <span>

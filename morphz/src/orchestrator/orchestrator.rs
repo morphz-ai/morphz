@@ -1880,6 +1880,8 @@ struct EffectiveModelRequestPolicy {
 struct ModelReasoningSummaryAccumulator {
     text: String,
     public_text: String,
+    public_text_started_at: Option<DateTime<Utc>>,
+    public_text_persist_started: bool,
     provider_continuation: Option<ProviderContinuation>,
     complete: bool,
     persist_started: bool,
@@ -3277,6 +3279,64 @@ async fn persist_model_reasoning_summary(
     );
     if let Err(error) = bus.publish(event).await {
         accumulator.lock().await.persist_started = false;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Durable presentation evidence of one physical stream, not an admitted
+/// assistant reply, a Context observation or a successful execution outcome.
+/// The receiver drains independently when cancellation drops the Provider
+/// future, so stopping an attempt must not erase words already shown to users.
+async fn persist_model_public_output(
+    bus: &Arc<InMemoryEventBus>,
+    context_id: &str,
+    session_id: &str,
+    attempt_id: &str,
+    route: &[(String, serde_json::Value)],
+    accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+    force_incomplete: bool,
+) -> Result<(), DynError> {
+    const MAX_BYTES: usize = 256 * 1024;
+    let (text, first_visible_at, complete, truncated) = {
+        let mut accumulator = accumulator.lock().await;
+        if accumulator.public_text_persist_started || accumulator.public_text.is_empty() {
+            return Ok(());
+        }
+        let Some(first_visible_at) = accumulator.public_text_started_at else {
+            return Ok(());
+        };
+        accumulator.public_text_persist_started = true;
+        let mut end = accumulator.public_text.len().min(MAX_BYTES);
+        while !accumulator.public_text.is_char_boundary(end) {
+            end -= 1;
+        }
+        (
+            accumulator.public_text[..end].to_string(),
+            first_visible_at,
+            accumulator.complete && !force_incomplete,
+            end < accumulator.public_text.len(),
+        )
+    };
+    let mut payload = vec![
+        ("context_id".to_string(), json!(context_id)),
+        ("session_id".to_string(), json!(session_id)),
+        ("attempt_id".to_string(), json!(attempt_id)),
+        ("text".to_string(), json!(text)),
+        ("first_visible_at".to_string(), json!(first_visible_at)),
+        ("complete".to_string(), json!(complete)),
+        ("truncated".to_string(), json!(truncated)),
+    ];
+    payload.extend_from_slice(route);
+    let event = Event::new(
+        format!("model_public_output_{attempt_id}"),
+        "Model-Provider".to_string(),
+        "runtime_control".to_string(),
+        "runtime/model_public_output".to_string(),
+        payload.into_iter().collect(),
+    );
+    if let Err(error) = bus.publish(event).await {
+        accumulator.lock().await.public_text_persist_started = false;
         return Err(error);
     }
     Ok(())
@@ -10129,6 +10189,7 @@ impl Orchestrator {
             let mut provider_started_recorded = false;
             let mut first_output_recorded = false;
             while let Some(stream_event) = stream_rx.recv().await {
+                let stream_event_at = Utc::now();
                 if matches!(&stream_event, crate::llm::ModelStreamEvent::Started)
                     && !provider_started_recorded
                 {
@@ -10180,11 +10241,15 @@ impl Orchestrator {
                     crate::llm::ModelStreamEvent::TextDelta { text } => {
                         text_delta_count = text_delta_count.saturating_add(1);
                         text_chars = text_chars.saturating_add(text.chars().count());
-                        forward_reasoning_summary
-                            .lock()
-                            .await
-                            .public_text
-                            .push_str(text);
+                        {
+                            let mut summary = forward_reasoning_summary.lock().await;
+                            if !text.is_empty() {
+                                summary
+                                    .public_text_started_at
+                                    .get_or_insert(stream_event_at);
+                                summary.public_text.push_str(text);
+                            }
+                        }
                         first_text_delta_ms.get_or_insert_with(|| {
                             u64::try_from(stream_started_at.elapsed().as_millis())
                                 .unwrap_or(u64::MAX)
@@ -10331,7 +10396,7 @@ impl Orchestrator {
                     ("stream".to_string(), json!(stream_event)),
                 ];
                 payload.extend(forward_route.clone());
-                let event = Event::new(
+                let mut event = Event::new(
                     format!(
                         "model_stream_{}",
                         Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -10341,10 +10406,21 @@ impl Orchestrator {
                     "runtime/model_stream".to_string(),
                     payload.into_iter().collect(),
                 );
+                event.timestamp = stream_event_at;
                 if let Err(error) = forward_bus.publish_ephemeral(event).await {
                     tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
                 }
             }
+            persist_model_public_output(
+                &forward_bus,
+                &forward_context_id,
+                &forward_session_id,
+                &forward_attempt_id,
+                &forward_route,
+                &forward_reasoning_summary,
+                false,
+            )
+            .await?;
             persist_model_usage(
                 &forward_bus,
                 &forward_context_id,
@@ -10391,6 +10467,17 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        persist_model_public_output(
+                            &stream_bus,
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            &stream_route,
+                            &reasoning_summary,
+                            true,
+                        )
+                        .await
+                        .map_err(ModelCompletionError::persistence)?;
                         persist_model_usage(
                             &stream_bus,
                             &stream_context_id,
@@ -10484,6 +10571,17 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        persist_model_public_output(
+                            &stream_bus,
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            &stream_route,
+                            &reasoning_summary,
+                            true,
+                        )
+                        .await
+                        .map_err(ModelCompletionError::persistence)?;
                         persist_model_usage(
                             &stream_bus,
                             &stream_context_id,
@@ -23194,6 +23292,8 @@ fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
+    use super::persist_model_public_output;
+    use chrono::Utc;
     use serde_json::json;
 
     #[test]
@@ -24646,6 +24746,113 @@ mod tests {
         );
         assert!(error.is_runtime_failure());
         assert_eq!(error.origin, ModelCompletionErrorOrigin::RuntimePersistence);
+    }
+
+    #[tokio::test]
+    async fn public_output_snapshot_preserves_only_public_text_and_exact_route() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&captured);
+        bus.subscribe_durable(
+            "runtime/model_public_output".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event);
+                    Ok(())
+                })
+            }),
+        );
+        let first_visible = Utc::now();
+        let accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator {
+            text: "reasoning summary is not public output".to_string(),
+            public_text: "半段公开回复".to_string(),
+            public_text_started_at: Some(first_visible),
+            complete: true,
+            ..Default::default()
+        }));
+        let route = vec![
+            ("activation_id".to_string(), json!("activation-1")),
+            ("root_turn_id".to_string(), json!("root-1")),
+            ("thread_id".to_string(), json!("thread-1")),
+        ];
+        for _ in 0..2 {
+            persist_model_public_output(
+                &bus,
+                "context-1",
+                "session-1",
+                "attempt-1",
+                &route,
+                &accumulator,
+                true,
+            )
+            .await
+            .unwrap();
+        }
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.id, "model_public_output_attempt-1");
+        assert_eq!(event.payload["text"], "半段公开回复");
+        assert_eq!(event.payload["first_visible_at"], json!(first_visible));
+        assert_eq!(event.payload["context_id"], "context-1");
+        assert_eq!(event.payload["session_id"], "session-1");
+        assert_eq!(event.payload["attempt_id"], "attempt-1");
+        assert_eq!(event.payload["complete"], false);
+        assert_eq!(event.payload["truncated"], false);
+        for (key, value) in route {
+            assert_eq!(event.payload[&key], value);
+        }
+        assert_eq!(event.payload.len(), 10);
+        assert!(!crate::event::is_context_observation(event));
+    }
+
+    #[tokio::test]
+    async fn public_output_snapshot_is_bounded_utf8_and_retryable_after_store_error() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = Arc::clone(&captured);
+        bus.subscribe_durable(
+            "runtime/model_public_output".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&capture);
+                Box::pin(async move {
+                    let mut events = capture.lock().unwrap();
+                    events.push(event);
+                    if events.len() == 1 {
+                        Err("synthetic store failure".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+            }),
+        );
+        let accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
+        persist_model_public_output(&bus, "c", "s", "a", &[], &accumulator, false)
+            .await
+            .unwrap();
+        assert!(captured.lock().unwrap().is_empty());
+        {
+            let mut value = accumulator.lock().await;
+            value.public_text = "字".repeat(100_000);
+            value.public_text_started_at = Some(Utc::now());
+        }
+        assert!(
+            persist_model_public_output(&bus, "c", "s", "a", &[], &accumulator, false)
+                .await
+                .is_err()
+        );
+        assert!(!accumulator.lock().await.public_text_persist_started);
+        persist_model_public_output(&bus, "c", "s", "a", &[], &accumulator, false)
+            .await
+            .unwrap();
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, events[1].id);
+        assert_eq!(events[1].payload["text"].as_str().unwrap().len(), 262_143);
+        assert_eq!(events[1].payload["truncated"], true);
+        assert_eq!(events[1].payload["complete"], false);
+        assert_eq!(events[0].payload, events[1].payload);
     }
 
     #[tokio::test]

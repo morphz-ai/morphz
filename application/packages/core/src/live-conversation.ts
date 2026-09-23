@@ -11,6 +11,8 @@ export const liveMessageSchema = z.object({
   text: z.string(),
   kind: z.enum(["reply", "progress", "error", "tool"]),
   streaming: z.boolean().optional(),
+  incomplete: z.boolean().optional(),
+  truncated: z.boolean().optional(),
   publicationKey: z.string().optional(),
   sequence: z.number().int().nonnegative().optional(),
   threadId: z.string().optional(),
@@ -63,6 +65,8 @@ export class LiveConversationProjection {
   private seen = new Set<string>();
   private cancelled = new Set<string>();
   private resolved = new Set<string>();
+  private replaced = new Set<string>();
+  private cancelledRoots = new Set<string>();
   private background = new Map<string, string>();
   constructor(
     private route: (
@@ -108,6 +112,46 @@ export class LiveConversationProjection {
     const p = e.payload,
       attemptId = str(p.attempt_id),
       activation = str(p.activation_id) || attemptId;
+    if (e.topic === "runtime/thread_cancelled") {
+      const root = str(p.root_turn_id);
+      if (root) this.cancelledRoots.add(root);
+      for (const [id, a] of this.attempts)
+        if (root && a.message.rootId === root) {
+          this.cancelled.add(a.activation);
+          this.retainAttempt(a);
+          this.attempts.delete(id);
+        }
+      return;
+    }
+    if (e.topic === "runtime/model_public_output") {
+      // A physical stream snapshot restores already-public words, not an
+      // execution outcome. Durable replies win regardless of replay order.
+      if (!attemptId || !str(p.text) || this.replaced.has(attemptId)) return;
+      if (this.seen.has(e.id)) return;
+      this.seen.add(e.id);
+      const a = this.attempts.get(attemptId);
+      if (a) this.retainAttempt(a);
+      this.attempts.delete(attemptId);
+      this.resolved.add(attemptId);
+      const id = `stream:${attemptId}`;
+      const old = this.messages.get(id);
+      const firstVisible = str(p.first_visible_at);
+      this.messages.set(id, {
+        ...this.base(e),
+        id,
+        createdAt: Number.isFinite(Date.parse(firstVisible))
+          ? firstVisible
+          : (old?.createdAt ?? e.timestamp),
+        text:
+          p.truncated === true && old?.text.startsWith(str(p.text))
+            ? old.text
+            : str(p.text),
+        streaming: false,
+        incomplete: p.complete !== true || this.cancelled.has(activation),
+        truncated: p.truncated === true,
+      });
+      return;
+    }
     const semantic = [
       "chat/reply",
       "chat/outbound_message",
@@ -133,6 +177,7 @@ export class LiveConversationProjection {
           "runtime/response_protocol_fused",
         ].includes(e.topic) && !!str(p.text ?? p.error ?? p.message);
       if (attemptId) this.resolved.add(attemptId);
+      if (replacesText && attemptId) this.replaced.add(attemptId);
       if (e.topic === "chat/cancelled" && activation)
         this.cancelled.add(activation);
       for (const [id, a] of this.attempts)
@@ -155,6 +200,7 @@ export class LiveConversationProjection {
       if (
         !attemptId ||
         this.resolved.has(attemptId) ||
+        this.cancelledRoots.has(str(p.root_turn_id)) ||
         this.cancelled.has(activation)
       )
         return;
@@ -219,6 +265,7 @@ export class LiveConversationProjection {
         a.message.streaming = false;
         a.continuation = p.continuation_pending === true;
         if (["cancelled", "interrupted"].includes(str(p.state))) {
+          a.message.incomplete = true;
           this.cancelled.add(activation);
           this.retainAttempt(a);
           this.attempts.delete(attemptId);
@@ -324,8 +371,14 @@ export class LiveConversationProjection {
       for (const tool of a.tools.values())
         if (!result.has(tool.id)) result.set(tool.id, tool);
     }
-    return [...result.values()].sort((a, b) =>
-      a.createdAt.localeCompare(b.createdAt),
-    );
+    return [...result.values()]
+      .map((message) =>
+        message.streaming !== undefined &&
+        message.rootId &&
+        this.cancelledRoots.has(message.rootId)
+          ? { ...message, streaming: false, incomplete: true }
+          : message,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 }

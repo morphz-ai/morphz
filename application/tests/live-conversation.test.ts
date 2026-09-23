@@ -238,3 +238,119 @@ test("取消 tombstone 拒绝迟到 started；不展示推理和模型请求", (
   delta(p, "new", { kind: "text_delta", text: "late" }, "a");
   assert.deepEqual(p.snapshot(), []);
 });
+
+test("公开流快照跨刷新恢复半段回复，取消与快照乱序不改变原来源", () => {
+  const snapshot = event("runtime/model_public_output", {
+    attempt_id: "a",
+    activation_id: "act",
+    root_turn_id: "root",
+    text: "已显示的半段原文",
+    first_visible_at: "2026-09-09T00:00:01.000Z",
+    complete: false,
+    truncated: false,
+  });
+  const cancelled = event("runtime/thread_cancelled", {
+    root_turn_id: "root",
+    terminal_kind: "cancelled",
+  });
+  for (const events of [
+    [snapshot, cancelled],
+    [cancelled, snapshot],
+  ]) {
+    const p = projection();
+    for (const e of events) p.consume(e);
+    p.consume(snapshot);
+    delta(p, "a", { kind: "started" }, "act");
+    delta(p, "a", { kind: "text_delta", text: "迟到" }, "act");
+    assert.equal(p.snapshot().length, 1);
+    assert.deepEqual(p.snapshot()[0], {
+      id: "stream:a",
+      projectId: "p",
+      conversationId: "c",
+      artifactId: null,
+      inputId: "input:root",
+      rootId: "root",
+      publicationKey: "a",
+      createdAt: snapshot.payload.first_visible_at,
+      text: "已显示的半段原文",
+      kind: "reply",
+      streaming: false,
+      incomplete: true,
+      truncated: false,
+    });
+  }
+});
+
+test("公开流快照原位接替直播；完整发布优先于快照，无重复或时间跳动", () => {
+  const p = projection();
+  delta(p, "a", { kind: "started" });
+  delta(p, "a", { kind: "text_delta", text: "公开前缀" });
+  const visible = p.snapshot()[0]!;
+  const snapshot = event("runtime/model_public_output", {
+    attempt_id: "a",
+    root_turn_id: "a",
+    text: "公开前缀",
+    first_visible_at: visible.createdAt,
+    complete: true,
+  });
+  p.consume(snapshot);
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.id, visible.id);
+  assert.equal(p.snapshot()[0]!.createdAt, visible.createdAt);
+  assert.equal(p.snapshot()[0]!.incomplete, false);
+  const reply = event("chat/reply", {
+    attempt_id: "a",
+    root_turn_id: "a",
+    text: "公开前缀和正式结果",
+  });
+  p.consume(reply);
+  const replay = projection();
+  replay.consume(reply);
+  replay.consume(snapshot);
+  assert.deepEqual(p.snapshot(), replay.snapshot());
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.incomplete, undefined);
+});
+
+test("同一根多个尝试不互相覆盖；截断标记明确，取消不影响另一根", () => {
+  const p = projection();
+  for (const [id, root] of [
+    ["a", "root"],
+    ["b", "root"],
+    ["c", "other"],
+  ])
+    p.consume(
+      event("runtime/model_public_output", {
+        attempt_id: id,
+        root_turn_id: root,
+        text: id,
+        first_visible_at: "2026-09-09T00:00:01.000Z",
+        complete: true,
+        truncated: id === "b",
+      }),
+    );
+  p.consume(event("runtime/thread_cancelled", { root_turn_id: "root" }));
+  assert.equal(p.snapshot().length, 3);
+  assert.ok(
+    p
+      .snapshot()
+      .filter((m) => m.rootId === "root")
+      .every((m) => m.incomplete),
+  );
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "b")!.truncated,
+    true,
+  );
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "c")!.incomplete,
+    false,
+  );
+});
+
+test("先收到根取消时，未知尝试的迟到流不能复活", () => {
+  const p = projection();
+  p.consume(event("runtime/thread_cancelled", { root_turn_id: "a" }));
+  delta(p, "a", { kind: "started" }, "unseen-activation");
+  delta(p, "a", { kind: "text_delta", text: "不可复活" }, "unseen-activation");
+  assert.deepEqual(p.snapshot(), []);
+});
