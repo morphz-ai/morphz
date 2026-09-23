@@ -18,6 +18,7 @@ import { readArtifact } from "../../core/src/retrieval.js";
 import { markdownSections, safeReadingSection } from "./reader-import.js";
 import { SearchIndex } from "./search-index.js";
 import { migrateContentOwnership } from "./content-migration.js";
+import { removeReadingPolicyFields } from "../../core/src/reading-policy-migration.js";
 import { contentEntry } from "../../core/src/content.js";
 import {
   taskRunBusy,
@@ -63,7 +64,7 @@ export class WorkspaceStore {
     const version = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version > 15) {
+    if (version.user_version > 16) {
       this.db.close();
       throw new Error("数据库版本高于当前应用支持范围，请使用更新的 Morphz。");
     }
@@ -94,6 +95,21 @@ export class WorkspaceStore {
       .run(JSON.stringify(initialWorkspace()));
     try {
       this.db.exec("BEGIN IMMEDIATE");
+      if (version.user_version < 16) {
+        const row = this.db
+          .prepare("SELECT body FROM workspace WHERE id=1")
+          .get() as { body: string };
+        const raw = JSON.parse(row.body);
+        for (const reading of raw.readingStates ?? [])
+          removeReadingPolicyFields(reading.preferences);
+        for (const input of raw.inputs ?? [])
+          removeReadingPolicyFields(input.reading);
+        // Delivery envelopes, receipts, identities, source text and locations
+        // remain untouched. Only the removed application policy fields go away.
+        this.db
+          .prepare("UPDATE workspace SET body=? WHERE id=1")
+          .run(JSON.stringify(raw));
+      }
       const migrated = this.snapshot();
       this.ensurePersonalSpaces(migrated);
       if (version.user_version < 14) {
@@ -117,7 +133,7 @@ export class WorkspaceStore {
         .run(JSON.stringify(migrated));
       this.index = new SearchIndex(this.db);
       this.index.sync(this.snapshot());
-      this.db.exec("PRAGMA user_version=15");
+      this.db.exec("PRAGMA user_version=16");
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.close();
@@ -694,7 +710,21 @@ export class WorkspaceStore {
         );
         const expected = (
           "quote" in op.reading ? readingReference : readingPosition
-        )(section, op.reading.location, op.reading);
+        )(section, op.reading.location);
+        if ("quote" in expected && "quote" in op.reading) {
+          // Context may be shorter than the maximum, but must be exact adjacent
+          // source text. A saved selection need not grow when defaults change.
+          Object.assign(expected, {
+            before: section.text.slice(
+              Math.max(0, op.reading.location.start - op.reading.before.length),
+              op.reading.location.start,
+            ),
+            after: section.text.slice(
+              op.reading.location.end,
+              op.reading.location.end + op.reading.after.length,
+            ),
+          });
+        }
         if (
           section.sourceId !== op.reading.location.sourceId ||
           JSON.stringify(expected) !== JSON.stringify(op.reading)
@@ -712,10 +742,7 @@ export class WorkspaceStore {
             c.location.sectionId,
             access,
           );
-        const expected = readingReference(section, c.location, {
-          personalContext: false,
-          spoilers: false,
-        });
+        const expected = readingReference(section, c.location);
         if (
           section.sourceId !== c.location.sourceId ||
           ("quote" in c && c.quote !== expected.quote)

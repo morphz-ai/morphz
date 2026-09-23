@@ -32,53 +32,40 @@ export function ReadingContext({
     <div
       className="composer-reading-context"
       role="group"
-      aria-label="阅读上下文"
+      aria-label="阅读引用"
     >
       <details>
         <summary
           title={
-            r
-              ? `${r.book.title} · ${r.chapter}；${focus!.selected ? "附带选文及必要上下文" : "仅附带位置，不发送正文"}。`
-              : "阅读内容尚未就绪；可以稍后发送，或取消本条阅读引用。"
+            r ? `${r.book.title} · ${r.chapter}` : "请稍后重试，或移除引用。"
           }
         >
           <BookOpen size={14} />
           <span role={r ? undefined : "status"}>
             {r
               ? `${focus!.selected ? "选文" : "当前阅读"} · ${r.chapter}`
-              : "阅读内容尚未就绪"}
+              : "阅读位置暂不可用"}
           </span>
           <ChevronDown size={12} className="reading-context-chevron" />
         </summary>
         <div className="reading-context-preview">
           {r ? (
             <>
-              <small>
-                {r.book.title} · {r.spoilers ? "可引用后文" : "不剧透"}
-              </small>
-              {focus?.selected ? (
-                <>
-                  <blockquote>{focus.reference.quote}</blockquote>
-                  <small>附带选文及必要前后文，不发送整本书。</small>
-                </>
-              ) : (
-                <p>
-                  仅附带书籍和位置，不发送正文。讨论原文时，Morphz
-                  可按需读取；普通闲聊不读取。
-                </p>
+              <small>{r.book.title}</small>
+              {focus?.selected && (
+                <blockquote>{focus.reference.quote}</blockquote>
               )}
             </>
           ) : (
-            <p>
-              尚未取得可核实的原文位置，不会凭书名猜测内容。可以稍后发送，或取消本条阅读引用。
-            </p>
+            <p>暂时无法获取阅读位置。请稍后重试，或移除引用。</p>
           )}
         </div>
       </details>
       <button
         type="button"
         className="icon-button"
-        aria-label="不附带阅读上下文"
+        aria-label="移除阅读引用"
+        title="移除引用"
         onClick={onRemove}
       >
         <X size={14} />

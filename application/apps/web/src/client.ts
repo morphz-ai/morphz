@@ -14,6 +14,7 @@ import { taskRuntimeSchema } from "../../../packages/core/src/task-runtime.js";
 import {
   migrateLegacyLocalState,
   migrateApplicationLocalState,
+  migrateReadingLocalState,
 } from "./legacy-storage.js";
 import {
   applicationStoragePrefix,
@@ -162,6 +163,11 @@ export function useWorkspace() {
               value.principalId,
             );
             migrateContentLocalState(
+              localStorage,
+              value.centerId,
+              value.principalId,
+            );
+            migrateReadingLocalState(
               localStorage,
               value.centerId,
               value.principalId,

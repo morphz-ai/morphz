@@ -227,12 +227,25 @@
   bottom: 16px;
   right: 20px;
   z-index: 4;
-  pointer-events: none;
-  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--soft);
   color: var(--muted);
   font-size: 12px;
+  box-shadow: 0 3px 14px #0002;
+}
+.reader-status button {
+  padding: 4px 8px;
+  color: var(--accent-strong);
+}
+.reader-status .icon-button {
+  width: 26px;
+  height: 26px;
+  padding: 4px;
 }
 .reading-app[data-theme="paper"] {
   --paper: #f7f0e1;
@@ -420,7 +433,7 @@
   flex-direction: column;
   gap: 16px;
 }
-.reader-settings label:not(.reader-check) {
+.reader-settings label {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
@@ -429,11 +442,6 @@
 .reader-settings label > input[type="range"],
 .reader-settings select {
   width: 100%;
-}
-.reader-settings .reader-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .reader-settings p,
 .reader-mark-list > p {
@@ -483,8 +491,8 @@
 }
 .reader-mark .icon-button {
   padding: 4px;
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
 }
 .reader-mark-tools {
   display: flex;
@@ -492,32 +500,74 @@
   gap: 6px;
   padding-left: 5px;
 }
-.reader-undo {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 8px 0;
-  color: var(--muted);
-}
-.reader-undo button {
-  border: 1px solid var(--line);
-  padding: 3px 8px;
-  color: var(--accent-strong);
-}
 .reader-selection {
   position: fixed;
   z-index: 160;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 2px;
-  max-width: calc(100vw - 24px);
+  width: max-content;
+  max-width: min(440px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   padding: 5px;
   background: light-dark(#fff, #2c3036);
   color: light-dark(#262626, #eee);
   border: 1px solid light-dark(#d9dce0, #484c53);
   border-radius: 10px;
   box-shadow: 0 5px 24px #0003;
+}
+.reader-selection-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.reader-selected-mark {
+  border-bottom: 1px solid light-dark(#e4e5e8, #484c53);
+  padding-bottom: 5px;
+  margin-bottom: 3px;
+}
+.reader-selected-mark > p {
+  margin: 6px 9px 8px;
+  max-height: 100px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.reader-mark-colors {
+  display: flex;
+  gap: 2px;
+  padding-right: 7px;
+}
+.reader-selection .reader-mark-colors button {
+  width: 29px;
+  height: 29px;
+  padding: 6px;
+}
+.reader-mark-colors button > span {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--mark-color);
+  border: 1px solid #0002;
+}
+.reader-mark-colors button[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+.reader-mark-colors [data-color="yellow"] {
+  --mark-color: #e3b72c;
+}
+.reader-mark-colors [data-color="green"] {
+  --mark-color: #66b38c;
+}
+.reader-mark-colors [data-color="blue"] {
+  --mark-color: #5d9dc7;
+}
+.reader-mark-colors [data-color="pink"] {
+  --mark-color: #cd77a7;
 }
 .reader-selection button {
   appearance: none;

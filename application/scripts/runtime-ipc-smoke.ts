@@ -222,16 +222,12 @@ try {
       localAccess,
     ),
     quoteStart = section.text.indexOf("兼听");
-  const reading = readingReference(
-    section,
-    {
-      sourceId: bookContent.assetId,
-      sectionId: section.id,
-      start: quoteStart,
-      end: quoteStart + "兼听则明，偏信则暗。".length,
-    },
-    { personalContext: true, spoilers: false },
-  );
+  const reading = readingReference(section, {
+    sourceId: bookContent.assetId,
+    sectionId: section.id,
+    start: quoteStart,
+    end: quoteStart + "兼听则明，偏信则暗。".length,
+  });
   const command = {
     commandId: randomUUID(),
     operation: {

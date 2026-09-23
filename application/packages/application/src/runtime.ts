@@ -931,7 +931,7 @@ export class RuntimeBridge {
           const reading =
             format.success &&
             format.data.message.format.id === "morphz.application.input" &&
-            ["6", "7"].includes(format.data.message.format.version);
+            ["8", "9"].includes(format.data.message.format.version);
           throw new UpstreamError(
             response.status,
             reading

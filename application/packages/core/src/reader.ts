@@ -59,8 +59,6 @@ export const readingPreferencesSchema = z
     fontSize: z.number().int().min(14).max(32).default(20),
     font: z.enum(["serif", "sans"]).default("serif"),
     theme: z.enum(["system", "paper", "night"]).default("system"),
-    personalContext: z.boolean().default(true),
-    spoilers: z.boolean().default(false),
   })
   .strict();
 export type ReadingPreferences = z.infer<typeof readingPreferencesSchema>;
@@ -96,8 +94,6 @@ export const readingPositionSchema = z
     book: readingBookSchema,
     location: readingLocationSchema,
     chapter: z.string().max(180),
-    personalContext: z.boolean(),
-    spoilers: z.boolean(),
   })
   .strict();
 export type ReadingPosition = z.infer<typeof readingPositionSchema>;
@@ -122,7 +118,6 @@ export type ReaderTarget = {
 export function readingPosition(
   section: ReadingSection,
   location: ReadingLocation,
-  preferences: Pick<ReadingPreferences, "personalContext" | "spoilers">,
 ): ReadingPosition {
   const checked = readingLocationSchema.parse(location);
   if (section.id !== checked.sectionId || checked.end > section.text.length)
@@ -131,26 +126,20 @@ export function readingPosition(
     book: structuredClone(section.book),
     location: checked,
     chapter: section.title,
-    personalContext: preferences.personalContext,
-    spoilers: preferences.spoilers,
   };
 }
 
 export function readingReference(
   section: ReadingSection,
   location: ReadingLocation,
-  preferences: Pick<ReadingPreferences, "personalContext" | "spoilers">,
 ): ReadingReference {
-  const position = readingPosition(section, location, preferences);
+  const position = readingPosition(section, location);
   const checked = position.location;
   return {
     ...position,
     quote: section.text.slice(checked.start, checked.end),
     before: section.text.slice(Math.max(0, checked.start - 600), checked.start),
-    // No future text is silently attached while the no-spoiler preference is on.
-    after: preferences.spoilers
-      ? section.text.slice(checked.end, checked.end + 300)
-      : "",
+    after: section.text.slice(checked.end, checked.end + 300),
   };
 }
 

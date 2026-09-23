@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -48,6 +49,7 @@ import {
   readerRange,
   readerSelection,
   readerViewport,
+  readerMarksAtPoint,
 } from "./reader-dom.js";
 import type { ReadingContextChange, ReadingFocus } from "./ReadingContext.js";
 import { useModal } from "./useModal.js";
@@ -292,20 +294,24 @@ function ReadingBook({
     null,
   );
   const [selected, setSelected] = useState<
-      (ReadingLocation & { x: number; y: number }) | null
+      (ReadingLocation & { x: number; y: number; markIds?: string[] }) | null
     >(null),
     [note, setNote] = useState<ReadingLocation | null>(null),
     [busy, setBusy] = useState(false);
+  const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
   const [editing, setEditing] = useState<ReadingMark | null>(null),
     [removed, setRemoved] = useState<ReadingMark | null>(null);
+  const currentSelection = useRef(selected);
+  currentSelection.current = selected;
   const [retry, setRetry] = useState(0);
   const [ocrLine, setOcrLine] = useState(0);
   const [feedback, setFeedback] = useState("");
   useEffect(() => {
     if (!feedback) return;
+    if (removed) return; // Keep the undo action available until dismissed.
     const timer = setTimeout(() => setFeedback(""), 2500);
     return () => clearTimeout(timer);
-  }, [feedback]);
+  }, [feedback, removed]);
   const article = useRef<HTMLDivElement>(null),
     viewport = useRef<HTMLDivElement>(null);
   const restoredSection = useRef<ReadingSection | null>(null);
@@ -333,6 +339,14 @@ function ReadingBook({
       m.location.sectionId === section.id,
   );
   const signature = JSON.stringify(sourceMarks.map((m) => [m.id, m.revision]));
+  const selectedMarks = selected
+    ? sourceMarks.filter((m) =>
+        selected.markIds
+          ? selected.markIds.includes(m.id)
+          : m.location.start === selected.start &&
+            m.location.end === selected.end,
+      )
+    : [];
   const highlightId = useId().replace(/[^a-z\d]/gi, "");
   const markClass = `reader-mark-${highlightId}`;
   const contextKey = `reading-${highlightId}`;
@@ -385,11 +399,11 @@ function ReadingBook({
     };
     return selection
       ? {
-          reference: readingReference(section, location, preferences),
+          reference: readingReference(section, location),
           selected: true,
         }
       : {
-          reference: readingPosition(section, location, preferences),
+          reference: readingPosition(section, location),
           selected: false,
         };
   };
@@ -533,6 +547,7 @@ function ReadingBook({
       view = viewport.current;
     // Updating a highlight must not scroll the reader back to the start.
     let restored = restoredSection.current === section;
+    let citationTimer: ReturnType<typeof setTimeout> | undefined;
     const paint = () => {
       const offsets = readerOffsets(root.textContent ?? "", section.text);
       if (!offsets) return;
@@ -543,19 +558,27 @@ function ReadingBook({
       ).Highlight;
       if (registry && Highlight)
         for (const color of ["yellow", "green", "blue", "pink"]) {
-          const ranges = sourceMarks
-            .filter(
-              (m) => m.color === color && m.location.end > m.location.start,
-            )
-            .map((m) =>
-              readerRange(
-                root,
-                offsets.sourceToDom[m.location.start]!,
-                offsets.sourceToDom[m.location.end]!,
-              ),
-            )
-            .filter((r): r is Range => !!r);
-          registry.set(`${markClass}-${color}`, new Highlight(...ranges));
+          for (const kind of ["highlight", "note"]) {
+            const ranges = sourceMarks
+              .filter(
+                (m) =>
+                  m.color === color &&
+                  m.kind === kind &&
+                  m.location.end > m.location.start,
+              )
+              .map((m) =>
+                readerRange(
+                  root,
+                  offsets.sourceToDom[m.location.start]!,
+                  offsets.sourceToDom[m.location.end]!,
+                ),
+              )
+              .filter((r): r is Range => !!r);
+            registry.set(
+              `${markClass}-${kind === "note" ? "note-" : ""}${color}`,
+              new Highlight(...ranges),
+            );
+          }
         }
       if (!restored) {
         restored = true;
@@ -593,8 +616,13 @@ function ReadingBook({
               offsets.sourceToDom[location.start]!,
               offsets.sourceToDom[location.end]!,
             );
-            if (cited)
+            if (cited) {
               registry.set(`${markClass}-citation`, new Highlight(cited));
+              citationTimer = setTimeout(
+                () => registry.delete(`${markClass}-citation`),
+                1800,
+              );
+            }
           }
         } else view.scrollTop = 0;
         const current =
@@ -617,9 +645,20 @@ function ReadingBook({
     observer.observe(root, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
+      clearTimeout(citationTimer);
       const h = (CSS as unknown as { highlights?: Map<string, unknown> })
         .highlights;
-      for (const c of ["yellow", "green", "blue", "pink", "citation"])
+      for (const c of [
+        "yellow",
+        "green",
+        "blue",
+        "pink",
+        "note-yellow",
+        "note-green",
+        "note-blue",
+        "note-pink",
+        "citation",
+      ])
         h?.delete(`${markClass}-${c}`);
     };
   }, [section, signature, active]);
@@ -632,17 +671,38 @@ function ReadingBook({
         return;
       }
       selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
+      setSelectionMenuOpen(true);
       setSelected({
         sourceId: section.sourceId,
         sectionId: section.id,
         start: selection.start,
         end: selection.end,
-        x: Math.max(12, Math.min(innerWidth - 400, selection.rect.left)),
-        y: Math.max(8, Math.min(innerHeight - 110, selection.rect.bottom + 8)),
+        x: selection.rect.left,
+        y: selection.rect.bottom + 8,
       });
     } catch (e) {
       onNotice((e as Error).message);
     }
+  }
+  function openMarks(x: number, y: number) {
+    if (!section || !article.current) return false;
+    const hits = readerMarksAtPoint(
+      article.current,
+      section.text,
+      sourceMarks,
+      x,
+      y,
+    );
+    if (!hits.length) return false;
+    selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
+    setSelectionMenuOpen(true);
+    setSelected({
+      ...hits[0]!.location,
+      x,
+      y: y + 16,
+      markIds: hits.map((m) => m.id),
+    });
+    return true;
   }
   function changeSection(id: string, location?: ReadingLocation) {
     clearTimeout(timer.current);
@@ -665,7 +725,6 @@ function ReadingBook({
   ) {
     if (!section) return;
     setBusy(true);
-    setSelected(null);
     try {
       await client.execute({
         type: "reader-command",
@@ -680,7 +739,12 @@ function ReadingBook({
           color: "yellow",
         },
       });
+      if (currentSelection.current === selected) {
+        setSelected(null);
+        window.getSelection()?.removeAllRanges();
+      }
       setNote(null);
+      setRemoved(null);
       setFeedback(
         kind === "bookmark"
           ? "书签已保存"
@@ -700,11 +764,7 @@ function ReadingBook({
     const result = onCompose(
       artifact.id,
       version.revision,
-      readingReference(
-        section,
-        { sourceId, sectionId, start, end },
-        preferences,
-      ),
+      readingReference(section, { sourceId, sectionId, start, end }),
       question,
     );
     if (!result.ok) onNotice(result.error ?? "输入尚未准备。");
@@ -713,7 +773,8 @@ function ReadingBook({
   async function changeMark(
     mark: ReadingMark,
     action: "mark-remove" | "mark-restore" | "mark-update",
-    body = "",
+    body = mark.note,
+    color = mark.color,
   ) {
     setBusy(true);
     try {
@@ -726,7 +787,7 @@ function ReadingBook({
                 markId: mark.id,
                 expectedRevision: mark.revision,
                 note: body,
-                color: mark.color,
+                color,
               }
             : { action, markId: mark.id, expectedRevision: mark.revision },
       });
@@ -734,12 +795,25 @@ function ReadingBook({
         setRemoved({ ...mark, revision: mark.revision + 1 });
       else setRemoved(null);
       setEditing(null);
+      if (
+        (action !== "mark-update" || color === mark.color) &&
+        currentSelection.current === selected
+      ) {
+        setSelected(null);
+        window.getSelection()?.removeAllRanges();
+      }
       setFeedback(
         action === "mark-remove"
-          ? "已移除，可在标注栏撤销"
+          ? mark.kind === "bookmark"
+            ? "书签已删除"
+            : mark.kind === "note"
+              ? "批注已删除"
+              : "高亮已取消"
           : action === "mark-restore"
             ? "标注已恢复"
-            : "批注已更新",
+            : color !== mark.color
+              ? "颜色已更新"
+              : "批注已更新",
       );
     } catch (e) {
       onNotice((e as Error).message);
@@ -769,15 +843,41 @@ function ReadingBook({
       aria-label={`阅读 ${version.title}`}
     >
       {feedback && (
-        <span className="reader-status" role="status">
-          {feedback}
-        </span>
+        <div className="reader-status" role="status">
+          <span>{feedback}</span>
+          {removed && (
+            <>
+              <button
+                disabled={busy}
+                onClick={() => void changeMark(removed, "mark-restore")}
+              >
+                撤销
+              </button>
+              <button
+                className="icon-button"
+                aria-label="关闭标注提示"
+                onClick={() => {
+                  setRemoved(null);
+                  setFeedback("");
+                }}
+              >
+                <X />
+              </button>
+            </>
+          )}
+        </div>
       )}
       <style>
         {["yellow", "green", "blue", "pink", "citation"]
           .map(
             (c, i) =>
               `::highlight(${markClass}-${c}){background:${["#e3b72c55", "#66b38c55", "#5d9dc755", "#cd77a755", "#56d0de66"][i]};color:inherit;}`,
+          )
+          .join("")}
+        {["yellow", "green", "blue", "pink"]
+          .map(
+            (c, i) =>
+              `::highlight(${markClass}-note-${c}){text-decoration:underline 2px ${["#b99421", "#66b38c", "#5d9dc7", "#cd77a7"][i]};color:inherit;}`,
           )
           .join("")}
       </style>
@@ -881,37 +981,32 @@ function ReadingBook({
                   className="reader-secondary"
                   disabled={!section || busy}
                   onClick={() => {
-                    if (section) {
-                      const p =
-                        progress.current?.sectionId === section.id
-                          ? progress.current
-                          : {
-                              sourceId: section.sourceId,
-                              sectionId: section.id,
-                              start: 0,
-                              end: 0,
-                            };
-                      void addMark({ ...p, end: p.start }, "bookmark");
+                    if (section && article.current && viewport.current) {
+                      const p = readerViewport(
+                        article.current,
+                        section.text,
+                        viewport.current,
+                      );
+                      if (!p) {
+                        onNotice("暂时无法定位，请稍后重试。");
+                        return;
+                      }
+                      void addMark(
+                        {
+                          sourceId: section.sourceId,
+                          sectionId: section.id,
+                          start: p.start,
+                          end: p.start,
+                        },
+                        "bookmark",
+                      );
                     }
                   }}
                 >
                   <Bookmark />
                   保存当前位置
                 </button>
-                {!marks.length && (
-                  <p>选中原文可高亮或批注。标注仅当前身份可见。</p>
-                )}
-                {removed && (
-                  <div className="reader-undo">
-                    <span>标注已移除</span>
-                    <button
-                      disabled={busy}
-                      onClick={() => void changeMark(removed, "mark-restore")}
-                    >
-                      撤销
-                    </button>
-                  </div>
-                )}
+                {!marks.length && <p>暂无书签或标注</p>}
                 {marks.map((m) => (
                   <div key={m.id} className="reader-mark">
                     <button
@@ -1025,32 +1120,6 @@ function ReadingBook({
                     <option value="night">夜读</option>
                   </select>
                 </label>
-                <label className="reader-check">
-                  <input
-                    type="checkbox"
-                    checked={preferences.personalContext}
-                    onChange={(e) =>
-                      setPrefs({
-                        ...preferences,
-                        personalContext: e.target.checked,
-                      })
-                    }
-                  />
-                  相关时联系已有记忆
-                </label>
-                <label className="reader-check">
-                  <input
-                    type="checkbox"
-                    checked={preferences.spoilers}
-                    onChange={(e) =>
-                      setPrefs({ ...preferences, spoilers: e.target.checked })
-                    }
-                  />
-                  允许引用后文
-                </label>
-                <p>
-                  这些偏好随下一次提问发送，不会更改已发出的请求。默认不剧透；关闭联系记忆时，只解释原文。
-                </p>
               </div>
             )}
           </aside>
@@ -1177,7 +1246,11 @@ function ReadingBook({
                   }}
                   onClick={(e) => {
                     const a = (e.target as HTMLElement).closest("a[href]");
-                    if (!a) return;
+                    if (!a) {
+                      if (!window.getSelection()?.toString())
+                        openMarks(e.clientX, e.clientY);
+                      return;
+                    }
                     e.preventDefault();
                     const href = a.getAttribute("href")!;
                     const match = /^#reader:(section-\d+):(.*)$/.exec(href);
@@ -1197,6 +1270,9 @@ function ReadingBook({
                       );
                       anchor?.scrollIntoView({ block: "center" });
                     }
+                  }}
+                  onContextMenu={(e) => {
+                    if (openMarks(e.clientX, e.clientY)) e.preventDefault();
                   }}
                 >
                   {version.content.kind === "pdf" && !section.ocr ? (
@@ -1238,60 +1314,133 @@ function ReadingBook({
         </div>
       </div>
       {selected &&
+        selectionMenuOpen &&
         active &&
         !note &&
+        !editing &&
         createPortal(
-          <div
-            className="reader-selection"
-            role="toolbar"
-            aria-label="阅读选文操作"
-            style={{ left: selected.x, top: selected.y }}
-            onMouseDown={(e) => e.preventDefault()}
+          <ReadingSelection
+            x={selected.x}
+            y={selected.y}
+            onClose={() => setSelectionMenuOpen(false)}
           >
-            <button
-              title="在原输入框中准备提问"
-              onClick={() =>
-                ask("简短解释这段原文，优先解答字词、主语和指代。")
-              }
-            >
-              解释这段
-            </button>
-            <button
-              onClick={() => ask("解释选文中的关键字词和句法，简短说明。")}
-            >
-              字词
-            </button>
-            <button
-              onClick={() => ask("这段涉及哪些人物和背景？区分原文与推测。")}
-            >
-              背景
-            </button>
-            <button onClick={() => ask("")}>
-              <MessageCircle />
-              提问
-            </button>
-            <button
-              disabled={busy}
-              title="高亮"
-              aria-label="高亮选文"
-              onClick={() => {
-                const { sourceId, sectionId, start, end } = selected;
-                void addMark({ sourceId, sectionId, start, end }, "highlight");
-              }}
-            >
-              <Highlighter />
-            </button>
-            <button
-              title="批注"
-              aria-label="批注选文"
-              onClick={() => {
-                const { sourceId, sectionId, start, end } = selected;
-                setNote({ sourceId, sectionId, start, end });
-              }}
-            >
-              <StickyNote />
-            </button>
-          </div>,
+            {selectedMarks.map((mark) => (
+              <div className="reader-selected-mark" key={mark.id}>
+                {mark.note && <p>{mark.note}</p>}
+                <div className="reader-selection-row">
+                  <span
+                    className="reader-mark-colors"
+                    role="group"
+                    aria-label="标注颜色"
+                  >
+                    {(
+                      [
+                        ["yellow", "黄色"],
+                        ["green", "绿色"],
+                        ["blue", "蓝色"],
+                        ["pink", "粉色"],
+                      ] as const
+                    ).map(([color, label]) => (
+                      <button
+                        key={color}
+                        aria-label={label}
+                        title={label}
+                        aria-pressed={mark.color === color}
+                        data-color={color}
+                        disabled={busy}
+                        onClick={() =>
+                          void changeMark(mark, "mark-update", mark.note, color)
+                        }
+                      >
+                        <span />
+                      </button>
+                    ))}
+                  </span>
+                  {(mark.kind === "note" || mark.note) && (
+                    <button disabled={busy} onClick={() => setEditing(mark)}>
+                      <Pencil />
+                      编辑批注
+                    </button>
+                  )}
+                  {mark.kind === "highlight" && mark.note && (
+                    <button
+                      disabled={busy}
+                      onClick={() => void changeMark(mark, "mark-update", "")}
+                    >
+                      <X />
+                      删除批注
+                    </button>
+                  )}
+                  <button
+                    disabled={busy}
+                    onClick={() => void changeMark(mark, "mark-remove")}
+                  >
+                    <Trash2 />
+                    {mark.kind === "note"
+                      ? "删除批注"
+                      : mark.note
+                        ? "删除高亮及批注"
+                        : "取消高亮"}
+                  </button>
+                </div>
+              </div>
+            ))}
+            <div className="reader-selection-row">
+              {!selectedMarks.some((m) => m.kind === "highlight") && (
+                <button
+                  disabled={busy}
+                  title="高亮"
+                  aria-label="高亮选文"
+                  onClick={() => {
+                    const { sourceId, sectionId, start, end } = selected;
+                    void addMark(
+                      { sourceId, sectionId, start, end },
+                      "highlight",
+                    );
+                  }}
+                >
+                  <Highlighter />
+                  高亮
+                </button>
+              )}
+              {!selectedMarks.some((m) => m.kind === "note" || m.note) && (
+                <button
+                  disabled={busy}
+                  title="添加批注"
+                  aria-label="批注选文"
+                  onClick={() => {
+                    const { sourceId, sectionId, start, end } = selected;
+                    setNote({ sourceId, sectionId, start, end });
+                  }}
+                >
+                  <StickyNote />
+                  批注
+                </button>
+              )}
+              <button
+                title="在原输入框中准备提问"
+                onClick={() =>
+                  ask("简短解释这段原文，优先解答字词、主语和指代。")
+                }
+              >
+                解释这段
+              </button>
+              <button
+                onClick={() => ask("解释选文中的关键字词和句法，简短说明。")}
+              >
+                字词
+              </button>
+              <button
+                onClick={() => ask("这段涉及哪些人物和背景？区分原文与推测。")}
+              >
+                背景
+              </button>
+              <button onClick={() => ask("")}>
+                <MessageCircle />
+                提问
+              </button>
+            </div>
+          </ReadingSelection>,
           document.body,
         )}
       {note && section && (
@@ -1313,6 +1462,66 @@ function ReadingBook({
         />
       )}
     </section>
+  );
+}
+
+function ReadingSelection({
+  x,
+  y,
+  children,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useLayoutEffect(() => {
+    const element = ref.current!;
+    const position = () => {
+      const bounds = element.getBoundingClientRect();
+      element.style.left = `${Math.max(12, Math.min(x, innerWidth - bounds.width - 12))}px`;
+      element.style.top = `${Math.max(12, Math.min(y, innerHeight - bounds.height - 12))}px`;
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(element);
+    window.addEventListener("resize", position);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+    };
+  }, [x, y]);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) close.current();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close.current();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, []);
+  return (
+    <div
+      ref={ref}
+      className="reader-selection"
+      role="toolbar"
+      aria-label="阅读选文操作"
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      {children}
+    </div>
   );
 }
 

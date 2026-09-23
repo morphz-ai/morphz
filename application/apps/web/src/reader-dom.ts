@@ -67,6 +67,43 @@ export function readerSelection(root: HTMLElement, source: string) {
   return { start, end, rect: range.getBoundingClientRect() };
 }
 
+/** CSS highlights do not create DOM hit targets. Hit-test their actual line
+ * rectangles so a click on a mark (including a PDF text layer) can edit it.
+ * Keep source offsets, rather than looking up the quote: it may repeat.
+ */
+export function readerMarksAtPoint<
+  T extends { location: { start: number; end: number } },
+>(root: HTMLElement, source: string, marks: T[], x: number, y: number): T[] {
+  const offsets = readerOffsets(root.textContent ?? "", source);
+  if (!offsets) return [];
+  return marks
+    .filter((mark) => {
+      const { start, end } = mark.location;
+      if (start === end || end > source.length) return false;
+      const range = readerRange(
+        root,
+        offsets.sourceToDom[start]!,
+        offsets.sourceToDom[end]!,
+      );
+      return (
+        range &&
+        [...range.getClientRects()].some(
+          (r) =>
+            r.width > 0 &&
+            r.height > 0 &&
+            x >= r.left &&
+            x <= r.right &&
+            y >= r.top &&
+            y <= r.bottom,
+        )
+      );
+    })
+    .sort(
+      (a, b) =>
+        a.location.end - a.location.start - (b.location.end - b.location.start),
+    );
+}
+
 /** Source offsets for the reading viewport, not the overlaid conversation.
  * Inspect text geometry: scroll percentages and saved progress can be stale,
  * and identical sentences must remain distinguishable. Never copy the chapter.

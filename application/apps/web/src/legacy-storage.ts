@@ -1,4 +1,43 @@
 type LocalStore = Pick<Storage, "length" | "key" | "getItem" | "setItem">;
+import { removeReadingPolicyFields } from "../../../packages/core/src/reading-policy-migration.js";
+
+/** Remove retired reading options from this identity's unsent drafts once. */
+export function migrateReadingLocalState(
+  storage: LocalStore,
+  centerId: string,
+  principalId: string,
+) {
+  const scope = `${applicationStoragePrefix}${centerId}:${principalId}:`;
+  const marker = scope + "reading-policy-cleanup-v1";
+  try {
+    if (storage.getItem(marker)) return;
+    const keys = Array.from({ length: storage.length }, (_, i) =>
+      storage.key(i),
+    );
+    for (const key of keys) {
+      if (
+        !key?.startsWith(scope + "draft:") ||
+        !/:(inputs|discarded-conversations)$/.test(key)
+      )
+        continue;
+      const raw = storage.getItem(key);
+      if (!raw) continue;
+      const value = JSON.parse(raw);
+      let changed = false;
+      const drafts = key.endsWith(":inputs")
+        ? Object.values(value)
+        : Object.values(value).flatMap((entry: any) =>
+            Object.values(entry.drafts ?? {}),
+          );
+      for (const draft of drafts as { reading?: unknown }[])
+        changed = removeReadingPolicyFields(draft.reading) || changed;
+      if (changed) storage.setItem(key, JSON.stringify(value));
+    }
+    storage.setItem(marker, "1");
+  } catch {
+    // Never erase an unreadable draft or mark an interrupted cleanup complete.
+  }
+}
 
 /** Adopt unscoped preferences/drafts from the original single-user center only.
  * Never import these into a team identity, another origin, or a replacement center.

@@ -1438,7 +1438,7 @@ export class AgentTools {
             value.revision,
             scope.access,
           ),
-          note: "这是读物目录，不是正文。使用 reader.read，指定确切 revision、sectionId、offset 与 limit（最多 8000 字）；阅读问题的防剧透边界仍生效。",
+          note: "这是读物目录，不是正文。使用 reader.read，指定确切 revision、sectionId、offset 与 limit（每次最多 8000 字）；可按需分段读取前后章节。",
         };
       if (
         args.page !== undefined &&

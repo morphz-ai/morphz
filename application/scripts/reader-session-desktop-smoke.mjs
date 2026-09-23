@@ -32,6 +32,10 @@ const provider = createServer(async (req, res) => {
   }
   const request = JSON.parse(Buffer.concat(chunks).toString());
   assert.ok(request.stream, "Exercise the actual streaming transport");
+  assert.doesNotMatch(
+    JSON.stringify(request),
+    /spoilers=false|personalContext=false|forbids later text|Ask before expanding to later text/,
+  );
   assert.equal(
     JSON.stringify(request).includes("兼听则明"),
     phase !== "stream",
@@ -259,7 +263,7 @@ try {
   const initialReopen = page.locator(".composer-reopen");
   if (await initialReopen.isVisible()) await initialReopen.click();
   await expect(
-    page.getByRole("group", { name: "阅读上下文", exact: true }),
+    page.getByRole("group", { name: "阅读引用", exact: true }),
   ).toContainText("当前阅读 · 第一章");
   await page
     .getByLabel("AI 输入内容", { exact: true })
@@ -283,7 +287,7 @@ try {
   assert.equal(input.selection, "");
   assert.deepEqual(
     Object.keys(input.reading).sort(),
-    ["book", "location", "chapter", "personalContext", "spoilers"].sort(),
+    ["book", "location", "chapter"].sort(),
   );
   assert.deepEqual(
     await reader.boundingBox(),
@@ -489,7 +493,7 @@ try {
   for (const delivery of deliveries) {
     assert.equal(
       delivery.request.message.format.version,
-      delivery.inputId === input.id ? "7" : "6",
+      delivery.inputId === input.id ? "9" : "8",
     );
     assert.equal(
       delivery.request.message.content.value.reading.chapter,
@@ -518,21 +522,21 @@ try {
     await directory.click();
   await reader
     .getByRole("navigation")
-    .getByRole("button", { name: "第二章", exact: true })
+    .getByRole("button", { name: "第一章", exact: true })
     .click();
-  await expect(text).toContainText("ON-DEMAND-ONLY-文字");
+  await expect(text).toContainText("兼听则明");
   if (await reopen.isVisible()) await reopen.click();
   await page
     .getByLabel("AI 输入内容", { exact: true })
-    .fill("TEST 现在请读取这一页原文。");
+    .fill("TEST 请联系后文，读取第二章原文。");
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(
     page.getByText("TEST 已通过工具读到第二章原文。", { exact: true }),
   ).toBeVisible({ timeout: 30000 });
   const readInput = (await bridge("workspace")).workspace.inputs.find(
-    (i) => i.body === "TEST 现在请读取这一页原文。",
+    (i) => i.body === "TEST 请联系后文，读取第二章原文。",
   );
-  assert.equal(readInput.reading.location.sectionId, "section-2");
+  assert.equal(readInput.reading.location.sectionId, "section-1");
   assert.equal(readInput.reading.quote, undefined);
   assert.equal(readInput.conversationId, input.conversationId);
   assert.equal(onDemandReads, 2);

@@ -7,10 +7,7 @@ import { join } from "node:path";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { ReaderOcr } from "../packages/application/src/reader-ocr.js";
 import { localAccess, type Operation } from "../packages/core/src/model.js";
-import {
-  readingReference,
-  readingPreferencesSchema,
-} from "../packages/core/src/reader.js";
+import { readingReference } from "../packages/core/src/reader.js";
 import { readerTool } from "../packages/application/src/reader-tools.js";
 import {
   orderOcr,
@@ -77,11 +74,7 @@ test("OCR 校对新增不可变来源；旧标注、选文引用和原 PDF 保�
       );
     const original = store.readerSection(artifactId, 1, sectionId, localAccess),
       location = { sourceId: original.sourceId, sectionId, start: 0, end: 5 };
-    const reading = readingReference(
-      original,
-      location,
-      readingPreferencesSchema.parse({}),
-    );
+    const reading = readingReference(original, location);
     assert.equal(reading.book.format, "pdf-ocr");
     exec(store, {
       type: "reader-command",
@@ -143,7 +136,7 @@ test("OCR 校对新增不可变来源；旧标注、选文引用和原 PDF 保�
       artifactId,
       revision: 1,
       sectionId,
-      limit: 8000,
+      limit: 5,
     }) as {
       text: string;
       ocr: {
@@ -192,31 +185,35 @@ test("OCR 校对新增不可变来源；旧标注、选文引用和原 PDF 保�
         }),
       /绑定的识别文本版本/,
     );
-    assert.throws(
-      () =>
-        readerTool(store, scope, "reader-later", {
-          action: "read",
-          artifactId,
-          revision: 1,
-          sectionId: "page-2",
-          limit: 8000,
-        }),
-      /后文/,
-    );
-    assert.throws(
-      () =>
-        readerTool(
-          store,
-          scope,
-          "ocr-bypass",
-          {
-            action: "ocr",
-            request: { operation: "status", artifactId, revision: 1, page: 1 },
-          },
-          ocr,
-        ),
-      /选文之后/,
-    );
+    const later = readerTool(store, scope, "reader-later", {
+      action: "read",
+      artifactId,
+      revision: 1,
+      sectionId: "page-2",
+      limit: 8000,
+    }) as { text: string; location: { sectionId: string } };
+    assert.equal(later.location.sectionId, "page-2");
+    const full = readerTool(store, scope, "reader-full", {
+      action: "read",
+      artifactId,
+      revision: 1,
+      sectionId,
+      limit: 8000,
+    }) as { text: string };
+    assert.equal(full.text, original.text);
+    for (const page of [1, 2]) {
+      const status = await readerTool(
+        store,
+        scope,
+        `ocr-status-${page}`,
+        {
+          action: "ocr",
+          request: { operation: "status", artifactId, revision: 1, page },
+        },
+        ocr,
+      );
+      assert.ok(status);
+    }
     await assert.rejects(
       ocr.call(
         { operation: "status", artifactId, revision: 1, page: 1 },

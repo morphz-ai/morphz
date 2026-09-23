@@ -2998,8 +2998,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           {draft.reading && (
                             <small>
                               {draft.reading.book.title} ·{" "}
-                              {draft.reading.chapter} ·{" "}
-                              {draft.reading.spoilers ? "可引用后文" : "不剧透"}
+                              {draft.reading.chapter}
                             </small>
                           )}
                           <blockquote>{draft.selection}</blockquote>

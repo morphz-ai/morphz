@@ -68,6 +68,163 @@ async function selectSecond(page: Page) {
   ).toBeVisible();
 }
 
+async function clickSecond(page: Page, button: "left" | "right" = "left") {
+  const point = await page
+    .locator(".reading-app:visible .reader-text p")
+    .filter({ hasText: "第二处原文" })
+    .evaluate((p) => {
+      const range = document.createRange();
+      range.setStart(p.firstChild!, 1);
+      range.setEnd(p.firstChild!, 2);
+      const r = range.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+  await page.mouse.click(point.x, point.y, { button });
+}
+
+test("标注可在原文直接管理：取消高亮、改色、编辑删除批注、撤销和重新打开", async ({
+  page,
+}, testInfo) => {
+  await setup(page);
+  const title = await importBook(page);
+  const before = await snapshot(page);
+  const book = before.workspace.artifacts.find((a: any) => a.title === title);
+  const marks = async () =>
+    (await snapshot(page)).workspace.readingMarks.filter(
+      (m: any) => m.artifactId === book.id && !m.deletedAt,
+    );
+  const toolbar = page.getByRole("toolbar", { name: "阅读选文操作" });
+  await selectSecond(page);
+  await page.getByRole("button", { name: "高亮选文", exact: true }).click();
+  await expect.poll(async () => (await marks()).length).toBe(1);
+  await clickSecond(page);
+  await expect(
+    toolbar.getByRole("button", { name: "取消高亮", exact: true }),
+  ).toBeVisible();
+  await toolbar.getByRole("button", { name: "绿色", exact: true }).click();
+  await expect.poll(async () => (await marks())[0]?.color).toBe("green");
+  for (const width of [640, 1440]) {
+    await page.setViewportSize({ width, height: 760 });
+    const box = await toolbar.boundingBox();
+    expect(box!.x).toBeGreaterThanOrEqual(12);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width - 12);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(748);
+    const swatch = await toolbar
+      .getByRole("button", { name: "绿色", exact: true })
+      .locator("span")
+      .boundingBox();
+    expect(swatch!.width).toBe(swatch!.height);
+    await page.screenshot({
+      path: testInfo.outputPath(`highlight-menu-${width}.png`),
+    });
+  }
+  // A failed deletion stays actionable; retry uses the same durable command ID.
+  const deletionIds: string[] = [];
+  await page.route("**/api/commands", async (route) => {
+    const request = route.request().postDataJSON();
+    if (
+      request?.operation?.type === "reader-command" &&
+      request.operation.command.action === "mark-remove"
+    ) {
+      deletionIds.push(request.commandId);
+      if (deletionIds.length === 1) {
+        await route.fulfill({
+          status: 503,
+          json: { message: "TEST 标注暂未删除，请重试" },
+        });
+        return;
+      }
+    }
+    await route.continue();
+  });
+  await toolbar.getByRole("button", { name: "取消高亮", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("TEST 标注暂未删除");
+  expect((await marks()).length).toBe(1);
+  await expect(
+    toolbar.getByRole("button", { name: "取消高亮", exact: true }),
+  ).toBeEnabled();
+  await toolbar.getByRole("button", { name: "取消高亮", exact: true }).click();
+  await expect.poll(async () => (await marks()).length).toBe(0);
+  expect(deletionIds).toEqual([deletionIds[0], deletionIds[0]]);
+  await page.unroute("**/api/commands");
+  await page
+    .getByRole("status")
+    .getByRole("button", { name: "撤销", exact: true })
+    .click();
+  await expect.poll(async () => (await marks()).length).toBe(1);
+  await selectSecond(page);
+  await expect(
+    toolbar.getByRole("button", { name: "高亮选文", exact: true }),
+  ).toHaveCount(0);
+  await toolbar.getByRole("button", { name: "批注选文", exact: true }).click();
+  await page.getByLabel("批注内容", { exact: true }).fill("可修改的读书笔记");
+  await page.getByRole("button", { name: "保存批注", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(async () => (await marks()).length).toBe(2);
+  await clickSecond(page, "right");
+  await toolbar.getByRole("button", { name: "编辑批注", exact: true }).click();
+  await page.getByLabel("批注内容", { exact: true }).fill("修正后的理解");
+  await page.getByRole("button", { name: "保存批注", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect
+    .poll(async () => (await marks()).find((m: any) => m.kind === "note")?.note)
+    .toBe("修正后的理解");
+  await clickSecond(page);
+  await toolbar.getByRole("button", { name: "取消高亮", exact: true }).click();
+  await expect
+    .poll(async () => (await marks()).map((m: any) => m.kind))
+    .toEqual(["note"]);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        [...(CSS as any).highlights.entries()]
+          .filter(
+            ([key]: [string]) =>
+              /^reader-mark-/.test(key) &&
+              !key.includes("-note-") &&
+              !key.endsWith("-citation"),
+          )
+          .reduce(
+            (count: number, [, mark]: [string, any]) => count + mark.size,
+            0,
+          ),
+      ),
+    )
+    .toBe(0);
+  // Removing a highlight must not also discard a separate note on that text.
+  await page.reload();
+  await expect(page.locator(".reading-app:visible .reader-text")).toContainText(
+    "第二处原文",
+  );
+  await clickSecond(page);
+  await expect(toolbar).toContainText("修正后的理解");
+  await toolbar.getByRole("button", { name: "删除批注", exact: true }).click();
+  await expect.poll(async () => (await marks()).length).toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const registry = (CSS as any).highlights;
+        return [...registry.keys()]
+          .filter((key: string) => key.startsWith("reader-mark-"))
+          .reduce(
+            (total: number, key: string) => total + registry.get(key).size,
+            0,
+          );
+      }),
+    )
+    .toBe(0);
+  await clickSecond(page);
+  await expect(toolbar).toHaveCount(0);
+  await selectSecond(page);
+  await page.keyboard.press("Escape");
+  await expect(toolbar).toHaveCount(0);
+  await page.reload();
+  await expect.poll(async () => (await marks()).length).toBe(0);
+  expect((await snapshot(page)).workspace.inputs.length).toBe(
+    before.workspace.inputs.length,
+  );
+});
+
 test("常见阅读格式走同一导入、选文标注和恢复流程，不隐式发送给模型", async ({
   page,
 }) => {
@@ -224,14 +381,19 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await page.getByRole("button", { name: "保存批注", exact: true }).click();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
   await page.getByRole("button", { name: "阅读设置", exact: true }).click();
-  await page.getByLabel("相关时联系已有记忆", { exact: true }).uncheck();
+  await expect(
+    page.getByLabel("相关时联系已有记忆", { exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("允许引用后文", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("阅读字体", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "关闭阅读侧栏", exact: true }).click();
   await selectSecond(page);
   await page.getByRole("button", { name: "解释这段", exact: true }).click();
   await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveValue(
     /简短解释这段原文/,
   );
-  await expect(page.locator(".selection-quote")).toContainText("不剧透");
+  await expect(page.locator(".selection-quote")).toContainText(title);
+  await expect(page.locator(".selection-quote")).not.toContainText("不剧透");
   // Turning pages must never rewrite the prepared request.
   await page.getByRole("button", { name: "目录", exact: true }).click();
   await page
@@ -256,8 +418,10 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
     (i: any) => i.reading?.book.title === title,
   );
   expect(input.reading.location).toEqual(mark.location);
-  expect(input.reading.personalContext).toBe(false);
-  expect(input.reading.after).toBe("");
+  expect(Object.keys(input.reading).sort()).toEqual(
+    ["book", "location", "chapter", "quote", "before", "after"].sort(),
+  );
+  expect(input.reading.after.length).toBeGreaterThan(0);
   expect(input.conversationId).toBe(
     before.workspace.projects.find((p: any) => p.kind === "dialogue").id,
   );
@@ -323,10 +487,14 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   if (await reopen.isVisible()) await reopen.click();
   const input = page.getByLabel("AI 输入内容", { exact: true });
   await input.fill("TEST 普通闲聊，今天心情不错");
-  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  const context = page.getByRole("group", { name: "阅读引用", exact: true });
   await expect(context).toContainText("当前阅读 · 周纪一");
   await context.locator("summary").click();
-  await expect(context).toContainText("仅附带书籍和位置，不发送正文");
+  await expect(context.locator("summary")).toHaveAttribute(
+    "title",
+    `${title} · 周纪一`,
+  );
+  await expect(context.locator(".reading-context-preview")).toHaveText(title);
   await expect(context.locator("blockquote")).toHaveCount(0);
   await expect(context).not.toContainText("先王慎德");
   expect((await snapshot(page)).workspace.inputs.length).toBe(
@@ -343,7 +511,7 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
     .toBeTruthy();
   const sent = await findInput("TEST 普通闲聊，今天心情不错");
   expect(Object.keys(sent.reading).sort()).toEqual(
-    ["book", "location", "chapter", "personalContext", "spoilers"].sort(),
+    ["book", "location", "chapter"].sort(),
   );
   expect(sent.reading.location.start).toBeGreaterThan(100);
   expect(sent.selection).toBe("");
@@ -369,6 +537,10 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   if (await reopen.isVisible()) await reopen.click();
   await input.fill("TEST 直接讨论所选原文");
   await expect(context).toContainText("选文 · 周纪一");
+  await expect(context.locator("blockquote")).toHaveText("先王慎德。");
+  await expect(context.locator(".reading-context-preview")).toHaveText(
+    `${title}先王慎德。`,
+  );
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect.poll(() => findInput("TEST 直接讨论所选原文")).toBeTruthy();
   const selected = await findInput("TEST 直接讨论所选原文");
@@ -390,9 +562,7 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
     selected.reading,
   );
   await input.fill("TEST 本条不附带阅读内容");
-  await page
-    .getByRole("button", { name: "不附带阅读上下文", exact: true })
-    .click();
+  await page.getByRole("button", { name: "移除阅读引用", exact: true }).click();
   await expect(context).toHaveCount(0);
   await expect(input).toHaveValue("TEST 本条不附带阅读内容");
   await expect(input).toBeFocused();
@@ -437,11 +607,11 @@ test("长段落精确定位但不发送正文；未就绪保留草稿且允许�
   if (await reopen.isVisible()) await reopen.click();
   const input = page.getByLabel("AI 输入内容", { exact: true });
   await input.fill("TEST 长段落当前位置");
-  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  const context = page.getByRole("group", { name: "阅读引用", exact: true });
   await expect(context).toBeVisible();
   await context.locator("summary").click();
   await expect(context.locator("blockquote")).toHaveCount(0);
-  await expect(context).toContainText("不发送正文");
+  await expect(context.locator(".reading-context-preview p")).toHaveCount(0);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   const find = async () =>
     (await snapshot(page)).workspace.inputs.find(
@@ -465,7 +635,10 @@ test("长段落精确定位但不发送正文；未就绪保留草稿且允许�
   await page.locator(".reading-app:visible .reader-text").evaluate((e) => {
     e.textContent = "DOM 与规范原文不匹配";
   });
-  await expect(context).toContainText("阅读内容尚未就绪");
+  await expect(context).toContainText("阅读位置暂不可用");
+  await expect(context.locator(".reading-context-preview")).toHaveText(
+    "暂时无法获取阅读位置。请稍后重试，或移除引用。",
+  );
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(
     page.getByText("当前阅读内容仍在加载或无法读取，请稍后发送；草稿已保留。", {
@@ -473,9 +646,7 @@ test("长段落精确定位但不发送正文；未就绪保留草稿且允许�
     }),
   ).toBeVisible();
   await expect(input).toHaveValue("TEST 无法定位时的草稿");
-  await page
-    .getByRole("button", { name: "不附带阅读上下文", exact: true })
-    .click();
+  await page.getByRole("button", { name: "移除阅读引用", exact: true }).click();
   await expect(input).toBeFocused();
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect
@@ -535,6 +706,19 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   );
   expect(mark.location.sectionId).toBe("page-1");
   expect(mark.quote).toContain("DESIGN NOTES");
+  await expect(page.getByRole("status")).toContainText("已高亮");
+  await layer.getByText("DESIGN NOTES", { exact: true }).click();
+  await page.getByRole("button", { name: "取消高亮", exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await snapshot(page)).workspace.readingMarks.filter(
+          (m: any) => m.artifactId === book.id && !m.deletedAt,
+        ).length,
+    )
+    .toBe(0);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("标注已恢复");
   await page.getByRole("button", { name: "下一页", exact: true }).click();
   await expect(layer).toContainText("durable butterfly");
   await page.getByRole("button", { name: "书签与批注", exact: true }).click();
@@ -582,7 +766,7 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   // must never silently reuse the previous page's quote or selection.
   const reopen = page.locator(".composer-reopen");
   if (await reopen.isVisible()) await reopen.click();
-  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  const context = page.getByRole("group", { name: "阅读引用", exact: true });
   await expect(context).toContainText("当前阅读 · 第 2 页");
   await page
     .getByLabel("AI 输入内容", { exact: true })

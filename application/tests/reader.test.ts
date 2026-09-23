@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { crc32 } from "node:zlib";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,7 +35,10 @@ import {
 import {
   workInputData,
   workInputRequest,
+  readingInputFormat,
+  readingPositionInputFormat,
 } from "../packages/application/src/session-io.js";
+import { migrateReadingLocalState } from "../apps/web/src/legacy-storage.js";
 import { readerOffsets } from "../apps/web/src/reader-dom.js";
 
 /** Synthetic fixtures only. Stored entries make size/path attacks deterministic. */
@@ -91,6 +95,207 @@ const epubFiles = {
     '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="note">后章</h1><p>这是后文。</p></body></html>',
 };
 
+test("一次性删除废弃阅读选项，原书、位置、标注、消息和在途请求保留", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-reader-policy-"));
+  const filename = join(directory, "workspace.sqlite");
+  let store = new WorkspaceStore(filename);
+  try {
+    const bytes = zip(epubFiles);
+    const parsed = await parsePublication("test.epub", bytes);
+    const content = store.addPublication(bytes, parsed, localAccess);
+    const execute = (operation: Operation) =>
+      store.execute({ commandId: randomUUID(), operation }, localAccess);
+    const artifactId = execute({
+      type: "import-publication",
+      projectId: "first-project",
+      relativePath: "test.epub",
+      title: parsed.title,
+      content,
+    }).entityId;
+    const section = store.readerSection(
+      artifactId,
+      1,
+      "section-1",
+      localAccess,
+    );
+    const location = {
+      sourceId: section.sourceId,
+      sectionId: section.id,
+      start: 0,
+      end: 5,
+    };
+    execute({
+      type: "reader-command",
+      command: {
+        action: "save-position",
+        artifactId,
+        artifactRevision: 1,
+        location,
+        preferences: { font: "serif", fontSize: 24, theme: "paper" },
+        expectedRevision: 0,
+      },
+    });
+    execute({
+      type: "reader-command",
+      command: {
+        action: "mark-add",
+        artifactId,
+        artifactRevision: 1,
+        location,
+        kind: "highlight",
+        color: "green",
+        note: "保留我的批注",
+        quote: section.text.slice(0, 5),
+      },
+    });
+    execute({
+      type: "record-input",
+      projectId: "first-project",
+      artifactId,
+      artifactRevision: 1,
+      selection: "",
+      body: "原消息不改",
+      targetActantId: "morphz-agent",
+      reading: readingPosition(section, location),
+    });
+    const expected = store.snapshot();
+    store.close();
+    const db = new DatabaseSync(filename);
+    const old = structuredClone(expected) as any;
+    Object.assign(old.readingStates[0].preferences, {
+      spoilers: false,
+      personalContext: false,
+    });
+    Object.assign(old.inputs[0].reading, {
+      spoilers: false,
+      personalContext: false,
+    });
+    const outbox = JSON.stringify({
+      deliveries: [
+        {
+          inputId: old.inputs[0].id,
+          state: "running",
+          request: {
+            message: {
+              format: { version: "7" },
+              content: { value: old.inputs[0].reading },
+            },
+          },
+        },
+      ],
+    });
+    db.prepare("UPDATE workspace SET body=? WHERE id=1").run(
+      JSON.stringify(old),
+    );
+    db.prepare("INSERT INTO runtime_state(id,body) VALUES(1,?)").run(outbox);
+    db.exec("PRAGMA user_version=15");
+    const commands = db.prepare("SELECT * FROM commands ORDER BY id").all();
+    db.close();
+    store = new WorkspaceStore(filename);
+    assert.deepEqual(store.snapshot(), expected);
+    assert.deepEqual(store.runtimeState(), JSON.parse(outbox));
+    store.close();
+    const check = new DatabaseSync(filename);
+    assert.deepEqual(
+      check.prepare("SELECT * FROM commands ORDER BY id").all(),
+      commands,
+    );
+    assert.equal(
+      (check.prepare("PRAGMA user_version").get() as any).user_version,
+      16,
+    );
+    check.close();
+    store = new WorkspaceStore(filename);
+    assert.deepEqual(store.snapshot(), expected);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("草稿升级只移除废弃选项，保留选文、正文、附件、待确认命令和其他身份", () => {
+  const prefix = "morphz:center:person:",
+    key = prefix + "draft:window:inputs";
+  const draft = {
+    body: "未发送的原文",
+    selection: "先王慎德。",
+    revision: 1,
+    attachments: [{ assetId: "saved" }],
+    reading: {
+      book: { title: "原书" },
+      chapter: "一",
+      location: { start: 0, end: 5 },
+      quote: "先王慎德。",
+      before: "",
+      after: "",
+      spoilers: false,
+      personalContext: false,
+    },
+    pendingSupplement: {
+      commandId: "do-not-replay",
+      reading: { spoilers: false },
+    },
+  };
+  const entries = new Map<string, string>([
+    [key, JSON.stringify({ draft })],
+    [
+      prefix + "draft:window:discarded-conversations",
+      JSON.stringify({
+        id: { conversation: { id: "saved" }, drafts: { draft } },
+      }),
+    ],
+    ["morphz:center:other:draft:window:inputs", JSON.stringify({ draft })],
+  ]);
+  const storage = {
+    get length() {
+      return entries.size;
+    },
+    key: (i: number) => [...entries.keys()][i] ?? null,
+    getItem: (k: string) => entries.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      entries.set(k, v);
+    },
+  };
+  migrateReadingLocalState(storage, "center", "person");
+  const expected = structuredClone(draft) as any;
+  delete expected.reading.spoilers;
+  delete expected.reading.personalContext;
+  assert.deepEqual(JSON.parse(entries.get(key)!), { draft: expected });
+  assert.deepEqual(
+    JSON.parse(entries.get(prefix + "draft:window:discarded-conversations")!).id
+      .drafts,
+    { draft: expected },
+  );
+  assert.equal(
+    entries.get("morphz:center:other:draft:window:inputs"),
+    JSON.stringify({ draft }),
+  );
+  const cleaned = [...entries];
+  migrateReadingLocalState(storage, "center", "person");
+  assert.deepEqual([...entries], cleaned);
+});
+
+test("阅读消息没有额外阅读策略，既有 Context 和前后文读取遵循用户问题", () => {
+  for (const format of [readingInputFormat, readingPositionInputFormat]) {
+    assert.doesNotMatch(
+      JSON.stringify(format),
+      /spoilers|personalContext|forbids later|ask before expanding|up to end-start/i,
+    );
+    assert.match(format.contract, /earlier or later passages/);
+    assert.match(format.contract, /existing authorized context and memory/);
+    assert.match(format.contract, /untrusted external data/);
+  }
+  assert.match(
+    readingPositionInputFormat.contract,
+    /ordinary conversation unrelated to the book.*without reading it/,
+  );
+  assert.deepEqual(Object.keys(readingPreferencesSchema.parse({})).sort(), [
+    "font",
+    "fontSize",
+    "theme",
+  ]);
+});
+
 test("阅读能力的 Host 描述不超过 Runtime 的 UTF-8 字节预算", () => {
   for (const tool of workToolDefinitions)
     assert.ok(
@@ -100,7 +305,7 @@ test("阅读能力的 Host 描述不超过 Runtime 的 UTF-8 字节预算", () =
 });
 
 for (const selected of [true, false])
-  test(`Runtime 未加载阅读格式 v${selected ? 6 : 7} 时保留问题和引用；重试不降级或复制输入`, async () => {
+  test(`Runtime 未加载阅读格式 v${selected ? 8 : 9} 时保留问题和引用；重试不降级或复制输入`, async () => {
     const requests: unknown[] = [];
     const sessions = new Map<string, unknown>();
     const server = createServer(async (request, response) => {
@@ -169,16 +374,12 @@ for (const selected of [true, false])
         "section-1",
         localAccess,
       );
-      const reading = (selected ? readingReference : readingPosition)(
-        section,
-        {
-          sourceId: content.assetId,
-          sectionId: section.id,
-          start: 0,
-          end: 5,
-        },
-        { personalContext: true, spoilers: false },
-      );
+      const reading = (selected ? readingReference : readingPosition)(section, {
+        sourceId: content.assetId,
+        sectionId: section.id,
+        start: 0,
+        end: 5,
+      });
       const input = store.execute(
         {
           commandId: randomUUID(),
@@ -201,7 +402,7 @@ for (const selected of [true, false])
       assert.equal(failed.state, "failed");
       assert.match(
         failed.error!,
-        new RegExp(`阅读消息格式（v${selected ? 6 : 7}）`),
+        new RegExp(`阅读消息格式（v${selected ? 8 : 9}）`),
       );
       assert.match(failed.error!, /重试发送/);
       bridge.enqueue(input.entityId);
@@ -294,7 +495,7 @@ test("HTML 内嵌图片与跨章锚点、Markdown 脚注保留；外部资源仍
   assert.match(markdown.sections.map((s) => s.text).join(""), /注释正文/);
 });
 
-test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私人标注与聊天可发现操作", async () => {
+test("阅读沿用 Session 输入及同一 Host：前后文按需读取、私人标注与聊天可发现操作", async () => {
   const store = new WorkspaceStore(":memory:");
   try {
     const bytes = zip(epubFiles),
@@ -315,16 +516,12 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
     ).entityId;
     const section = store.readerSection(id, 1, "section-1", localAccess),
       start = section.text.indexOf("先王慎德。");
-    const reading = readingReference(
-      section,
-      {
-        sourceId: content.assetId,
-        sectionId: section.id,
-        start,
-        end: start + 5,
-      },
-      { personalContext: false, spoilers: false },
-    );
+    const reading = readingReference(section, {
+      sourceId: content.assetId,
+      sectionId: section.id,
+      start,
+      end: start + 5,
+    });
     const inputId = store.execute(
       {
         commandId: randomUUID(),
@@ -343,11 +540,11 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
     ).entityId;
     const input = store.snapshot().inputs.find((i) => i.id === inputId)!;
     assert.deepEqual(workInputData(input).reading, reading);
-    assert.equal(workInputRequest(input).message.format.version, "6");
+    assert.equal(workInputRequest(input).message.format.version, "8");
     assert.equal(workInputData(input).reading?.book.title, "合成通鉴");
     // Ambient awareness is metadata only. Even before/after must be absent;
     // no source text should reach the model until it explicitly calls a tool.
-    const position = readingPosition(section, reading.location, reading);
+    const position = readingPosition(section, reading.location);
     const viewportInput = store.execute(
       {
         commandId: randomUUID(),
@@ -369,7 +566,7 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
       .inputs.find((i) => i.id === viewportInput)!;
     assert.equal(viewportRecord.selection, "");
     assert.deepEqual(workInputData(viewportRecord).reading, position);
-    assert.equal(workInputRequest(viewportRecord).message.format.version, "7");
+    assert.equal(workInputRequest(viewportRecord).message.format.version, "9");
     const wire = JSON.stringify(workInputRequest(viewportRecord));
     for (const text of ["quote", "before", "after", "先王慎德"])
       assert.ok(
@@ -484,22 +681,38 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
         limit: 8000,
       },
     });
-    assert.equal(read.text, section.text.slice(0, reading.location.end));
-    assert.equal(read.spoilerBoundary, true);
-    // The admitted position, not a later UI change or stored progress, bounds reads.
-    assert.equal(read.text, section.text.slice(0, position.location.end));
-    assert.throws(
-      () =>
-        call({
-          action: "reader",
-          reader: {
-            action: "read",
-            artifactId: id,
-            revision: 1,
-            sectionId: "section-2",
-          },
-        }),
-      /不允许读取后文/,
+    assert.equal(read.text, section.text);
+    assert.equal(read.totalCharacters, section.text.length);
+    // The page is a stable reference, not a barrier to following context.
+    const later = call({
+      action: "reader",
+      reader: {
+        action: "read",
+        artifactId: id,
+        revision: 1,
+        sectionId: "section-2",
+      },
+    });
+    assert.match(later.text, /这是后文/);
+    assert.equal(later.location.sectionId, "section-2");
+    const continuation = call({
+      action: "reader",
+      reader: {
+        action: "read",
+        artifactId: id,
+        revision: 1,
+        sectionId: "section-1",
+        offset: reading.location.end,
+        limit: 3,
+      },
+    });
+    assert.equal(
+      continuation.text,
+      section.text.slice(reading.location.end, reading.location.end + 3),
+    );
+    assert.deepEqual(
+      store.snapshot().inputs.find((i) => i.id === viewportInput)!.reading,
+      position,
     );
     const generic = call({ action: "read", artifactId: id, revision: 1 });
     assert.equal(generic.text, undefined);
@@ -680,8 +893,11 @@ test("读物、进度和私人标注持久化；重复选文精确定位，不�
       end: start + 5,
     };
     const preferences = readingPreferencesSchema.parse({});
-    const reading = readingReference(section, location, preferences);
-    assert.equal(reading.after, "");
+    const reading = readingReference(section, location);
+    assert.equal(
+      reading.after,
+      section.text.slice(location.end, location.end + 300),
+    );
     assert.equal(reading.quote, "先王慎德。");
     const mark: ReaderCommand = {
       action: "mark-add",
