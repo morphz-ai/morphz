@@ -15,12 +15,12 @@ const root = argument("root"),
 for (const path of [root, binary, keyFile])
   if (!path || !isAbsolute(path))
     throw new Error("Specify explicit absolute paths");
-const privateText = (path) => {
+const privateText = (path, maxBytes = 128 * 1024) => {
   const info = lstatSync(path);
   if (
     !info.isFile() ||
     info.isSymbolicLink() ||
-    info.size > 128 * 1024 ||
+    info.size > maxBytes ||
     info.mode & 0o077
   )
     throw new Error("Configuration must be a bounded private regular file");
@@ -45,7 +45,8 @@ if (!key)
     "The existing credential is absent; configuration was not changed",
   );
 const manifest = join(root, "center/host-tools-desktop.json");
-const tools = JSON.parse(privateText(manifest)).tools;
+// Match the Host's manifest budget; credentials retain their smaller limit.
+const tools = JSON.parse(privateText(manifest, 256 * 1024)).tools;
 if (!tools?.length || tools.some((tool) => !tool.ipc_path || tool.endpoint))
   throw new Error("Expected the verified non-HTTP host-tool manifest");
 for (const path of [
