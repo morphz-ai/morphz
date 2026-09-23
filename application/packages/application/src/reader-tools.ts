@@ -153,7 +153,9 @@ export function readerTool(
     if (request.offset > available)
       throw new DomainError(
         "invalid",
-        limited ? "不能读取本次问题选文之后的文字。" : "文字位置超出章节范围。",
+        limited
+          ? "不能读取本次问题引用范围之后的文字。"
+          : "文字位置超出章节范围。",
       );
     const end = Math.min(available, request.offset + request.limit);
     let ocrOffset = 0;

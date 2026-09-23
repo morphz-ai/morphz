@@ -51,6 +51,7 @@ import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
 import type { BrowserView } from "./desktop.js";
 import { Reader, type ReadingCompose } from "./Reader.js";
+import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 
 export function AppIcon({ app }: { app: ApplicationManifest }) {
@@ -98,6 +99,7 @@ export function ApplicationHost({
   readingRevision,
   onReadingOpen,
   onReadingCompose,
+  onReadingContext,
   onReadingLibrary,
   onReadingJump,
   onReadingTargetConsumed,
@@ -106,6 +108,7 @@ export function ApplicationHost({
   readingRevision?: number | null;
   onReadingOpen: (id: string) => void;
   onReadingCompose: ReadingCompose;
+  onReadingContext: ReadingContextChange;
   onReadingLibrary: () => void;
   onReadingJump: (target: ReaderTarget) => void;
   onReadingTargetConsumed: (requestId: string) => void;
@@ -477,6 +480,9 @@ export function ApplicationHost({
                 onJump={onReadingJump}
                 onTargetConsumed={onReadingTargetConsumed}
                 onCompose={onReadingCompose}
+                onContext={
+                  active?.id === instance.id ? onReadingContext : undefined
+                }
                 onNotice={onNotice}
                 onNativeDialog={onNativeDialog}
               />

@@ -22,6 +22,8 @@ import {
 import { workspaceFor } from "../packages/application/src/identity.js";
 import {
   readingReference,
+  readingPosition,
+  readingInputSchema,
   readingPreferencesSchema,
   type ReaderCommand,
 } from "../packages/core/src/reader.js";
@@ -97,119 +99,125 @@ test("阅读能力的 Host 描述不超过 Runtime 的 UTF-8 字节预算", () =
     );
 });
 
-test("Runtime 未加载阅读格式时保留问题和引用；加载后重试同一请求，不降级或复制输入", async () => {
-  const requests: unknown[] = [];
-  const sessions = new Map<string, unknown>();
-  const server = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(chunk);
-    const bytes = Buffer.concat(chunks);
-    const body = bytes.length ? JSON.parse(bytes.toString()) : null;
-    const path = new URL(request.url!, "http://localhost").pathname;
-    const send = (status: number, data: unknown) => {
-      response.writeHead(status, { "Content-Type": "application/json" });
-      response.end(JSON.stringify(data));
-    };
-    if (path === "/api/status") return send(200, { model: "fixture" });
-    if (path === "/api/session-io/capabilities")
-      return send(200, { enabled: true, formats: [] });
-    if (path === "/api/sessions" && request.method === "POST") {
-      const session = { id: body.id, context_id: body.mount.context_id };
-      sessions.set(session.id, session);
-      return send(201, session);
-    }
-    if (path.endsWith("/io/messages")) {
-      requests.push(body);
-      return requests.length === 1
-        ? send(422, { error: { code: "unsupported_format" } })
-        : send(200, { accepted: true, event_id: "reading-root" });
-    }
-    if (path.endsWith("/events")) return send(200, { events: [] });
-    const session = sessions.get(path.split("/")[3]!);
-    if (path.endsWith("/principal"))
-      return send(200, {
-        principal_id: "fixture-user",
-        session_id: (session as { id: string }).id,
-        context_id: (session as { context_id: string }).context_id,
-      });
-    return send(session ? 200 : 404, session ?? {});
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const store = new WorkspaceStore(":memory:");
-  const bridge = new RuntimeBridge(store, {
-    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-    token: "test-only",
-    namespace: randomUUID(),
-  });
-  try {
-    const bytes = zip(epubFiles),
-      parsed = await parsePublication("test.epub", bytes),
-      content = store.addPublication(bytes, parsed, localAccess);
-    const book = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "import-publication",
-          projectId: "first-project",
-          relativePath: "test.epub",
-          title: parsed.title,
-          content,
+for (const selected of [true, false])
+  test(`Runtime 未加载阅读格式 v${selected ? 6 : 7} 时保留问题和引用；重试不降级或复制输入`, async () => {
+    const requests: unknown[] = [];
+    const sessions = new Map<string, unknown>();
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const bytes = Buffer.concat(chunks);
+      const body = bytes.length ? JSON.parse(bytes.toString()) : null;
+      const path = new URL(request.url!, "http://localhost").pathname;
+      const send = (status: number, data: unknown) => {
+        response.writeHead(status, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(data));
+      };
+      if (path === "/api/status") return send(200, { model: "fixture" });
+      if (path === "/api/session-io/capabilities")
+        return send(200, { enabled: true, formats: [] });
+      if (path === "/api/sessions" && request.method === "POST") {
+        const session = { id: body.id, context_id: body.mount.context_id };
+        sessions.set(session.id, session);
+        return send(201, session);
+      }
+      if (path.endsWith("/io/messages")) {
+        requests.push(body);
+        return requests.length === 1
+          ? send(422, { error: { code: "unsupported_format" } })
+          : send(200, { accepted: true, event_id: "reading-root" });
+      }
+      if (path.endsWith("/events")) return send(200, { events: [] });
+      const session = sessions.get(path.split("/")[3]!);
+      if (path.endsWith("/principal"))
+        return send(200, {
+          principal_id: "fixture-user",
+          session_id: (session as { id: string }).id,
+          context_id: (session as { context_id: string }).context_id,
+        });
+      return send(session ? 200 : 404, session ?? {});
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const store = new WorkspaceStore(":memory:");
+    const bridge = new RuntimeBridge(store, {
+      url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      token: "test-only",
+      namespace: randomUUID(),
+    });
+    try {
+      const bytes = zip(epubFiles),
+        parsed = await parsePublication("test.epub", bytes),
+        content = store.addPublication(bytes, parsed, localAccess);
+      const book = store.execute(
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "import-publication",
+            projectId: "first-project",
+            relativePath: "test.epub",
+            title: parsed.title,
+            content,
+          },
         },
-      },
-      localAccess,
-    );
-    const section = store.readerSection(
-      book.entityId,
-      1,
-      "section-1",
-      localAccess,
-    );
-    const reading = readingReference(
-      section,
-      {
-        sourceId: content.assetId,
-        sectionId: section.id,
-        start: 0,
-        end: 5,
-      },
-      { personalContext: true, spoilers: false },
-    );
-    const input = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: book.entityId,
-          artifactRevision: 1,
-          selection: reading.quote,
-          reading,
-          body: "只解释这句",
-          targetActantId: "morphz-agent",
+        localAccess,
+      );
+      const section = store.readerSection(
+        book.entityId,
+        1,
+        "section-1",
+        localAccess,
+      );
+      const reading = (selected ? readingReference : readingPosition)(
+        section,
+        {
+          sourceId: content.assetId,
+          sectionId: section.id,
+          start: 0,
+          end: 5,
         },
-      },
-      localAccess,
-    );
-    bridge.enqueue(input.entityId);
-    await bridge.tick();
-    const failed = bridge.snapshot().deliveries[0]!;
-    assert.equal(failed.state, "failed");
-    assert.match(failed.error!, /阅读消息格式（v6）/);
-    assert.match(failed.error!, /重试发送/);
-    bridge.enqueue(input.entityId);
-    await bridge.tick();
-    assert.equal(bridge.snapshot().deliveries[0]!.state, "running");
-    assert.equal(requests.length, 2);
-    assert.deepEqual(requests[0], requests[1]);
-    assert.equal(store.snapshot().inputs.length, 1);
-    assert.deepEqual(store.snapshot().inputs[0]!.reading, reading);
-  } finally {
-    await bridge.stop();
-    store.close();
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-});
+        { personalContext: true, spoilers: false },
+      );
+      const input = store.execute(
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "record-input",
+            projectId: "first-project",
+            artifactId: book.entityId,
+            artifactRevision: 1,
+            selection: "quote" in reading ? reading.quote : "",
+            reading,
+            body: "只解释这句",
+            targetActantId: "morphz-agent",
+          },
+        },
+        localAccess,
+      );
+      bridge.enqueue(input.entityId);
+      await bridge.tick();
+      const failed = bridge.snapshot().deliveries[0]!;
+      assert.equal(failed.state, "failed");
+      assert.match(
+        failed.error!,
+        new RegExp(`阅读消息格式（v${selected ? 6 : 7}）`),
+      );
+      assert.match(failed.error!, /重试发送/);
+      bridge.enqueue(input.entityId);
+      await bridge.tick();
+      assert.equal(bridge.snapshot().deliveries[0]!.state, "running");
+      assert.equal(requests.length, 2);
+      assert.deepEqual(requests[0], requests[1]);
+      assert.equal(store.snapshot().inputs.length, 1);
+      assert.deepEqual(store.snapshot().inputs[0]!.reading, reading);
+    } finally {
+      await bridge.stop();
+      store.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
 test("EPUB Worker 实际导入：目录、原文段落、内部链接、外部内容隔离", async () => {
   const book = await parsePublication("古书.epub", zip(epubFiles));
@@ -337,6 +345,101 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
     assert.deepEqual(workInputData(input).reading, reading);
     assert.equal(workInputRequest(input).message.format.version, "6");
     assert.equal(workInputData(input).reading?.book.title, "合成通鉴");
+    // Ambient awareness is metadata only. Even before/after must be absent;
+    // no source text should reach the model until it explicitly calls a tool.
+    const position = readingPosition(section, reading.location, reading);
+    const viewportInput = store.execute(
+      {
+        commandId: randomUUID(),
+        operation: {
+          type: "record-input",
+          projectId: "first-project",
+          artifactId: id,
+          artifactRevision: 1,
+          selection: "",
+          reading: position,
+          body: "你好，今天心情不错。",
+          targetActantId: "morphz-agent",
+        },
+      },
+      localAccess,
+    ).entityId;
+    const viewportRecord = store
+      .snapshot()
+      .inputs.find((i) => i.id === viewportInput)!;
+    assert.equal(viewportRecord.selection, "");
+    assert.deepEqual(workInputData(viewportRecord).reading, position);
+    assert.equal(workInputRequest(viewportRecord).message.format.version, "7");
+    const wire = JSON.stringify(workInputRequest(viewportRecord));
+    for (const text of ["quote", "before", "after", "先王慎德"])
+      assert.ok(
+        !wire.includes(text),
+        `position-only wire must not contain ${text}`,
+      );
+    assert.equal(
+      readingInputSchema.safeParse({ ...position, before: "偷带正文" }).success,
+      false,
+    );
+    assert.throws(
+      () =>
+        store.execute(
+          {
+            commandId: randomUUID(),
+            operation: {
+              type: "record-input",
+              projectId: "first-project",
+              artifactId: id,
+              artifactRevision: 1,
+              selection: "",
+              reading: { ...position, chapter: "伪造当前页" },
+              body: "不能伪造位置",
+              targetActantId: "morphz-agent",
+            },
+          },
+          localAccess,
+        ),
+      /阅读引用与已保存的原文不匹配/,
+    );
+    assert.throws(
+      () =>
+        store.execute(
+          {
+            commandId: randomUUID(),
+            operation: {
+              type: "record-input",
+              projectId: "first-project",
+              artifactId: id,
+              artifactRevision: 1,
+              selection: "",
+              reading,
+              body: "不能隐式携带正文",
+              targetActantId: "morphz-agent",
+            },
+          },
+          localAccess,
+        ),
+      /选文必须与引用原文一致/,
+    );
+    assert.throws(
+      () =>
+        store.execute(
+          {
+            commandId: randomUUID(),
+            operation: {
+              type: "record-input",
+              projectId: "first-project",
+              artifactId: id,
+              artifactRevision: 1,
+              selection: "伪造选文",
+              reading,
+              body: "不能错配",
+              targetActantId: "morphz-agent",
+            },
+          },
+          localAccess,
+        ),
+      /选文必须与引用原文一致/,
+    );
     const scope = {
       projectId: "first-project",
       inputId,
@@ -369,6 +472,7 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
         .artifactId,
       id,
     );
+    scope.inputId = viewportInput;
     const read = call({
       action: "reader",
       reader: {
@@ -382,6 +486,8 @@ test("阅读沿用 Session 输入及同一 Host：有界读取、防剧透、私
     });
     assert.equal(read.text, section.text.slice(0, reading.location.end));
     assert.equal(read.spoilerBoundary, true);
+    // The admitted position, not a later UI change or stored progress, bounds reads.
+    assert.equal(read.text, section.text.slice(0, position.location.end));
     assert.throws(
       () =>
         call({

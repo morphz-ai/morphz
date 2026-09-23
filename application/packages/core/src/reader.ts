@@ -90,19 +90,28 @@ export type ReadingSection = ReaderSection & {
   book: z.infer<typeof readingBookSchema>;
   ocr?: ReadingOcr;
 };
-export const readingReferenceSchema = z
+/** Awareness of the reading surface, without sending any source text. */
+export const readingPositionSchema = z
   .object({
     book: readingBookSchema,
     location: readingLocationSchema,
     chapter: z.string().max(180),
-    quote: z.string().max(8000),
-    before: z.string().max(600),
-    after: z.string().max(300),
     personalContext: z.boolean(),
     spoilers: z.boolean(),
   })
   .strict();
+export type ReadingPosition = z.infer<typeof readingPositionSchema>;
+export const readingReferenceSchema = readingPositionSchema.extend({
+  quote: z.string().max(8000),
+  before: z.string().max(600),
+  after: z.string().max(300),
+});
 export type ReadingReference = z.infer<typeof readingReferenceSchema>;
+export const readingInputSchema = z.union([
+  readingReferenceSchema,
+  readingPositionSchema,
+]);
+export type ReadingInput = z.infer<typeof readingInputSchema>;
 export type ReaderTarget = {
   artifactId: string;
   revision: number;
@@ -110,26 +119,38 @@ export type ReaderTarget = {
   requestId?: string;
 };
 
+export function readingPosition(
+  section: ReadingSection,
+  location: ReadingLocation,
+  preferences: Pick<ReadingPreferences, "personalContext" | "spoilers">,
+): ReadingPosition {
+  const checked = readingLocationSchema.parse(location);
+  if (section.id !== checked.sectionId || checked.end > section.text.length)
+    throw new Error("阅读位置与原文不匹配，请重新选择。");
+  return {
+    book: structuredClone(section.book),
+    location: checked,
+    chapter: section.title,
+    personalContext: preferences.personalContext,
+    spoilers: preferences.spoilers,
+  };
+}
+
 export function readingReference(
   section: ReadingSection,
   location: ReadingLocation,
   preferences: Pick<ReadingPreferences, "personalContext" | "spoilers">,
 ): ReadingReference {
-  const checked = readingLocationSchema.parse(location);
-  if (section.id !== checked.sectionId || checked.end > section.text.length)
-    throw new Error("选文位置与原文不匹配，请重新选择。");
+  const position = readingPosition(section, location, preferences);
+  const checked = position.location;
   return {
-    book: structuredClone(section.book),
-    location: checked,
-    chapter: section.title,
+    ...position,
     quote: section.text.slice(checked.start, checked.end),
     before: section.text.slice(Math.max(0, checked.start - 600), checked.start),
     // No future text is silently attached while the no-spoiler preference is on.
     after: preferences.spoilers
       ? section.text.slice(checked.end, checked.end + 300)
       : "",
-    personalContext: preferences.personalContext,
-    spoilers: preferences.spoilers,
   };
 }
 

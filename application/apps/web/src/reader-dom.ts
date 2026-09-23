@@ -66,3 +66,62 @@ export function readerSelection(root: HTMLElement, source: string) {
   if (end - start > 8000) throw new Error("请一次选择不超过 8000 字。");
   return { start, end, rect: range.getBoundingClientRect() };
 }
+
+/** Source offsets for the reading viewport, not the overlaid conversation.
+ * Inspect text geometry: scroll percentages and saved progress can be stale,
+ * and identical sentences must remain distinguishable. Never copy the chapter.
+ */
+export function readerViewport(
+  root: HTMLElement,
+  source: string,
+  view: HTMLElement,
+) {
+  if (!source.length) return { start: 0, end: 0 };
+  const offsets = readerOffsets(root.textContent ?? "", source);
+  if (!offsets) return null;
+  const bounds = view.getBoundingClientRect();
+  const visible = (r: DOMRect) =>
+    r.width > 0 &&
+    r.height > 0 &&
+    r.bottom > bounds.top &&
+    r.top < bounds.bottom &&
+    r.right > bounds.left &&
+    r.left < bounds.right;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let node: Node | null,
+    offset = 0,
+    start = -1,
+    end = 0;
+  while ((node = walker.nextNode())) {
+    const length = node.textContent?.length ?? 0;
+    range.selectNodeContents(node);
+    if (length && [...range.getClientRects()].some(visible)) {
+      // A paragraph can be one long text node spanning many screens. Locate
+      // its visible lines instead of attaching that entire node.
+      const boundary = (bottom: boolean) => {
+        let low = 0,
+          high = length;
+        while (low < high) {
+          const mid = (low + high) >>> 1;
+          range.setStart(node!, mid);
+          range.setEnd(node!, mid + 1);
+          const r = range.getBoundingClientRect();
+          if (bottom ? r.top < bounds.bottom : r.bottom <= bounds.top)
+            low = mid + 1;
+          else high = mid;
+        }
+        return low;
+      };
+      if (start < 0) start = offset + boundary(false);
+      end = offset + boundary(true);
+    }
+    offset += length;
+  }
+  if (start < 0) return null;
+  const from = offsets.domToSource[start] ?? 0;
+  return {
+    start: from,
+    end: Math.min(offsets.domToSource[end] ?? from, from + 3200),
+  };
+}

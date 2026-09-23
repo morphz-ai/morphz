@@ -593,3 +593,51 @@
     padding: 22px;
   }
 }
+.composer-reading-context {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.composer-reading-context details {
+  flex: 1;
+  min-width: 0;
+}
+.composer-reading-context summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  min-height: 28px;
+}
+.composer-reading-context summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-reading-context summary svg {
+  flex: 0 0 auto;
+}
+.composer-reading-context summary:hover {
+  color: var(--ink);
+}
+.composer-reading-context details[open] .reading-context-chevron {
+  transform: rotate(180deg);
+}
+.reading-context-preview {
+  padding: 4px 8px;
+  max-height: 160px;
+  overflow: auto;
+}
+.reading-context-preview blockquote {
+  white-space: pre-wrap;
+  margin: 6px 0;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+.reading-context-restore {
+  color: var(--text-secondary);
+  font-size: 12px;
+}

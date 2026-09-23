@@ -6,6 +6,7 @@ import { pdfContentSchema } from "../../../packages/core/src/pdf.js";
 import {
   publicationSchema,
   readingReference,
+  readingPosition,
   readingSourceId,
   type ParsedPublication,
   type ReaderSection,
@@ -691,11 +692,9 @@ export class WorkspaceStore {
           op.reading.location.sectionId,
           access,
         );
-        const expected = readingReference(
-          section,
-          op.reading.location,
-          op.reading,
-        );
+        const expected = (
+          "quote" in op.reading ? readingReference : readingPosition
+        )(section, op.reading.location, op.reading);
         if (
           section.sourceId !== op.reading.location.sourceId ||
           JSON.stringify(expected) !== JSON.stringify(op.reading)

@@ -931,11 +931,11 @@ export class RuntimeBridge {
           const reading =
             format.success &&
             format.data.message.format.id === "morphz.application.input" &&
-            format.data.message.format.version === "6";
+            ["6", "7"].includes(format.data.message.format.version);
           throw new UpstreamError(
             response.status,
             reading
-              ? "Runtime 尚未加载阅读消息格式（v6）。请让 Runtime 加载当前 Desktop 的应用配置；只重开阅读页无效。问题和原文引用已保留，加载后点击「重试发送」，无需重新提问。"
+              ? `Runtime 尚未加载阅读消息格式（v${format.success ? format.data.message.format.version : ""}）。请让 Runtime 加载当前 Desktop 的应用配置；只重开阅读页无效。问题和阅读位置已保留，加载后点击「重试发送」，无需重新提问。`
               : "当前 Morphz Runtime 尚未启用结构化工作消息，或未加载所需应用格式。请更新并启用 session-io；原输入已保留，不会转成提示词重发。",
           );
         }

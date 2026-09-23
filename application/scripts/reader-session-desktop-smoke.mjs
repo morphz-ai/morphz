@@ -19,7 +19,9 @@ mkdirSync(data, { mode: 0o700 });
 mkdirSync(root, { mode: 0o700 });
 const token = randomBytes(32).toString("hex");
 let phase = "stream",
-  calls = 0;
+  calls = 0,
+  readTarget,
+  onDemandReads = 0;
 const responses = new Set();
 const provider = createServer(async (req, res) => {
   const chunks = [];
@@ -30,11 +32,39 @@ const provider = createServer(async (req, res) => {
   }
   const request = JSON.parse(Buffer.concat(chunks).toString());
   assert.ok(request.stream, "Exercise the actual streaming transport");
-  assert.ok(
+  assert.equal(
     JSON.stringify(request).includes("兼听则明"),
-    "The pinned source reaches the model",
+    phase !== "stream",
+    "Ordinary chat receives only location; selected-source input includes the quote",
   );
   calls++;
+  if (phase === "read") {
+    const fromTool = request.messages?.filter((m) => m.role === "tool");
+    if (onDemandReads++ === 0) {
+      assert.ok(
+        !JSON.stringify(request).includes("ON-DEMAND-ONLY-文字"),
+        "No implicit page content before the read tool",
+      );
+      const call = {
+        index: 0,
+        id: "read-current-page",
+        type: "function",
+        function: {
+          name: "host_morphz",
+          arguments: JSON.stringify({ action: "reader", reader: readTarget }),
+        },
+      };
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(
+        `data: ${JSON.stringify({ id: "read-fixture", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
+    assert.ok(
+      JSON.stringify(fromTool).includes("ON-DEMAND-ONLY-文字"),
+      "Actual host read returns the fixed page source through Runtime",
+    );
+  }
   responses.add(res);
   res.on("close", () => responses.delete(res));
   res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -54,7 +84,14 @@ const provider = createServer(async (req, res) => {
     // Hold the synthetic stream until the Human-visible Stop control is used.
     // The test's bounded assertions and finally block own termination.
   } else {
-    res.end(chunk("TEST 已按第一章继续回答。", "stop") + "data: [DONE]\n\n");
+    res.end(
+      chunk(
+        phase === "read"
+          ? "TEST 已通过工具读到第二章原文。"
+          : "TEST 已按第一章继续回答。",
+        "stop",
+      ) + "data: [DONE]\n\n",
+    );
   }
 });
 await new Promise((r) => provider.listen(0, "127.0.0.1", r));
@@ -194,7 +231,7 @@ try {
     name: "TEST 流式伴读.md",
     mimeType: "text/markdown",
     buffer: Buffer.from(
-      "# 第一章\n\n兼听则明，偏信则暗。\n\n# 第二章\n\n下一章的测试内容。",
+      "# 第一章\n\n兼听则明，偏信则暗。\n\n# 第二章\n\n下一章的测试内容。ON-DEMAND-ONLY-文字",
     ),
   });
   let reader = page.locator(".reading-app:visible");
@@ -218,7 +255,16 @@ try {
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
   };
   const geometry = await reader.boundingBox();
-  await ask("TEST 流式与停止：解释引用，不写入记忆或内容。");
+  // Normal conversation, no selection and no reading-toolbar shortcut.
+  const initialReopen = page.locator(".composer-reopen");
+  if (await initialReopen.isVisible()) await initialReopen.click();
+  await expect(
+    page.getByRole("group", { name: "阅读上下文", exact: true }),
+  ).toContainText("当前阅读 · 第一章");
+  await page
+    .getByLabel("AI 输入内容", { exact: true })
+    .fill("TEST 流式与停止：今天心情不错，不讨论书籍，不写入记忆或内容。");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "停止这次处理", exact: true }),
   ).toBeVisible();
@@ -234,6 +280,11 @@ try {
     "running",
   );
   assert.equal(input.reading.chapter, "第一章");
+  assert.equal(input.selection, "");
+  assert.deepEqual(
+    Object.keys(input.reading).sort(),
+    ["book", "location", "chapter", "personalContext", "spoilers"].sort(),
+  );
   assert.deepEqual(
     await reader.boundingBox(),
     geometry,
@@ -380,7 +431,15 @@ try {
   );
   assert.equal(inputs.length, 2);
   assert.equal(inputs[0].conversationId, inputs[1].conversationId);
-  assert.deepEqual(inputs[0].reading.location, inputs[1].reading.location);
+  assert.equal(inputs[1].selection, "兼听则明，偏信则暗。");
+  assert.equal(
+    inputs[0].reading.location.sectionId,
+    inputs[1].reading.location.sectionId,
+  );
+  assert.equal(
+    inputs[0].reading.location.sourceId,
+    inputs[1].reading.location.sourceId,
+  );
   // Public delivery snapshots deliberately omit transport Session IDs.
   // Verify the actual persisted binding, not equality of undefined properties.
   const database = new DatabaseSync(join(data, "workspace.sqlite"), {
@@ -428,7 +487,10 @@ try {
     page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
   ).toHaveCount(1);
   for (const delivery of deliveries) {
-    assert.equal(delivery.request.message.format.version, "6");
+    assert.equal(
+      delivery.request.message.format.version,
+      delivery.inputId === input.id ? "7" : "6",
+    );
     assert.equal(
       delivery.request.message.content.value.reading.chapter,
       "第一章",
@@ -439,6 +501,42 @@ try {
     2,
     "Stop and continuation must not duplicate model calls",
   );
+  // The same Agent can fetch source text when a later question actually needs it.
+  // It must not rely on source implicitly riding the ordinary message transport.
+  phase = "read";
+  readTarget = {
+    action: "read",
+    artifactId: book.id,
+    revision: 1,
+    sectionId: "section-2",
+    offset: 0,
+    limit: 8000,
+  };
+  if (await collapse.isVisible()) await collapse.click();
+  const directory = page.getByRole("button", { name: "目录", exact: true });
+  if ((await directory.getAttribute("aria-expanded")) !== "true")
+    await directory.click();
+  await reader
+    .getByRole("navigation")
+    .getByRole("button", { name: "第二章", exact: true })
+    .click();
+  await expect(text).toContainText("ON-DEMAND-ONLY-文字");
+  if (await reopen.isVisible()) await reopen.click();
+  await page
+    .getByLabel("AI 输入内容", { exact: true })
+    .fill("TEST 现在请读取这一页原文。");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(
+    page.getByText("TEST 已通过工具读到第二章原文。", { exact: true }),
+  ).toBeVisible({ timeout: 30000 });
+  const readInput = (await bridge("workspace")).workspace.inputs.find(
+    (i) => i.body === "TEST 现在请读取这一页原文。",
+  );
+  assert.equal(readInput.reading.location.sectionId, "section-2");
+  assert.equal(readInput.reading.quote, undefined);
+  assert.equal(readInput.conversationId, input.conversationId);
+  assert.equal(onDemandReads, 2);
+  assert.equal(calls, 4);
   assert.deepEqual(errors, []);
   await page.screenshot({ path: join(fixture, "continued-reading.png") });
   writeFileSync(
@@ -455,6 +553,8 @@ try {
         stoppedOutputRestoredAfterReload: true,
         stoppedOutputRestoredAfterDesktopAndRuntimeRestart: true,
         continuedSameSession: true,
+        ordinaryChatContainsNoSource: true,
+        onDemandHostReadVerified: true,
         modelCalls: calls,
       },
       null,

@@ -96,8 +96,13 @@ import {
   readerApplication,
 } from "../../../packages/core/src/applications.js";
 import { Reader, type ReadingCompose } from "./Reader.js";
+import {
+  ReadingContext,
+  type ReadingSurface,
+  type ReadingContextChange,
+} from "./ReadingContext.js";
 import type {
-  ReadingReference,
+  ReadingInput,
   ReaderTarget,
   ReadingLocation,
 } from "../../../packages/core/src/reader.js";
@@ -174,7 +179,8 @@ import {
 } from "../../../packages/core/src/script-delivery.js";
 
 type InputDraft = {
-  reading?: ReadingReference;
+  reading?: ReadingInput;
+  skipReading?: boolean;
   scriptGeneration?: ScriptGeneration;
   continuation?: InputContinuation;
   continuationLabel?: string;
@@ -537,6 +543,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 ? activeInstance.state.artifactId
                 : null))),
   );
+  const [readingSurface, setReadingSurface] = useState<ReadingSurface | null>(
+    null,
+  );
+  const readingContextChanged = useCallback<ReadingContextChange>(
+    (key, next) => {
+      setReadingSurface((old) => next ?? (old?.key === key ? null : old));
+    },
+    [],
+  );
+  const readingExpected =
+    !!artifact &&
+    (activeInstance?.applicationId === readerApplication.id ||
+      (!applicationWorkspaceOpen &&
+        (prefs.readerMode || artifact.content.kind === "publication")));
+  const currentReading =
+    readingExpected &&
+    artifact &&
+    readingSurface?.artifactId === artifact.id &&
+    readingSurface.revision === (prefs.artifactRevision ?? artifact.revision)
+      ? readingSurface
+      : null;
   const selectedConversation =
     state?.conversations.find(
       (c) =>
@@ -1144,6 +1171,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setDraft(key, {
       ...old,
       reading: structuredClone(reference),
+      skipReading: false,
       revision,
       selection: reference.quote,
       body: question,
@@ -1654,6 +1682,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setSending(true);
     setInputErrors((old) => ({ ...old, [key]: "" }));
     try {
+      if (
+        !asAnnotation &&
+        !captured.continuation &&
+        !captured.taskResult &&
+        !captured.scriptGeneration &&
+        !captured.reading &&
+        !captured.selection &&
+        !captured.skipReading &&
+        readingExpected
+      ) {
+        const focus = currentReading?.capture();
+        if (!focus)
+          throw new Error(
+            "当前阅读内容仍在加载或无法读取，请稍后发送；草稿已保留。",
+          );
+        captured.reading = structuredClone(focus.reference);
+        captured.revision = currentReading!.revision;
+        captured.selection = focus.selected ? focus.reference.quote : "";
+      }
       if (
         !captured.continuation &&
         canAuthorizeDirectories &&
@@ -2548,6 +2595,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   readingRevision={prefs.artifactRevision}
                   onReadingOpen={openReading}
                   onReadingCompose={composeReading}
+                  onReadingContext={readingContextChanged}
                   onReadingLibrary={() => void readingLibrary()}
                   onReadingJump={(target) =>
                     void openUser(
@@ -2655,6 +2703,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       }
                       onTargetConsumed={readingTargetConsumed}
                       onCompose={composeReading}
+                      onContext={readingContextChanged}
                       onNotice={setNotice}
                       onNativeDialog={setNativeExportDialog}
                     />
@@ -2961,6 +3010,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 ...draft,
                                 selection: "",
                                 reading: undefined,
+                                skipReading: true,
                                 annotation: false,
                               })
                             }
@@ -2969,6 +3019,38 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           </button>
                         </div>
                       )}
+                      {!draft.selection &&
+                        !draft.reading &&
+                        !draft.continuation &&
+                        !draft.taskResult &&
+                        !draft.scriptGeneration &&
+                        readingExpected &&
+                        (draft.skipReading ? (
+                          <button
+                            type="button"
+                            className="reading-context-restore"
+                            onClick={() => {
+                              input.current?.focus({ preventScroll: true });
+                              setDraft(contextKey, {
+                                ...draft,
+                                skipReading: false,
+                              });
+                            }}
+                          >
+                            附带当前阅读位置
+                          </button>
+                        ) : (
+                          <ReadingContext
+                            focus={currentReading?.focus ?? null}
+                            onRemove={() => {
+                              input.current?.focus({ preventScroll: true });
+                              setDraft(contextKey, {
+                                ...draft,
+                                skipReading: true,
+                              });
+                            }}
+                          />
+                        ))}
                       {draft.annotation && !draft.continuation && (
                         <div className="annotation-mode">
                           <span>保存为批注</span>

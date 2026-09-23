@@ -4,6 +4,7 @@ import {
   Suspense,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -32,6 +33,7 @@ import {
   readerFileAccept,
   readingPreferencesSchema,
   readingReference,
+  readingPosition,
   type ReadingLocation,
   type ReadingPreferences,
   type ReadingReference,
@@ -41,7 +43,13 @@ import {
 } from "../../../packages/core/src/reader.js";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
-import { readerOffsets, readerRange, readerSelection } from "./reader-dom.js";
+import {
+  readerOffsets,
+  readerRange,
+  readerSelection,
+  readerViewport,
+} from "./reader-dom.js";
+import type { ReadingContextChange, ReadingFocus } from "./ReadingContext.js";
 import { useModal } from "./useModal.js";
 import "./reader.css";
 import {
@@ -76,6 +84,7 @@ type ReaderProps = {
   onJump: (target: ReaderTarget) => void;
   onTargetConsumed: (requestId: string) => void;
   onCompose: ReadingCompose;
+  onContext?: ReadingContextChange;
   onNotice: (message: string) => void;
   onNativeDialog?: (open: boolean) => void;
 };
@@ -222,7 +231,7 @@ export function Reader(props: ReaderProps) {
       </ul>
       <p className="reader-privacy">
         读物导入当前工作中心；本地 Desktop 在本机解析。向 Morphz
-        提问时会发送选文和必要上下文，不自动上传整本书给模型。
+        交流时默认只附带书籍和位置，选文后才附带原文及必要上下文；讨论原文时按需读取，不自动上传整本书。
       </p>
       <input
         ref={file}
@@ -256,6 +265,7 @@ function ReadingBook({
   onJump,
   onTargetConsumed,
   onCompose,
+  onContext,
   onNotice,
 }: ReaderProps & { artifact: Artifact }) {
   const version = artifact.versions.find(
@@ -325,6 +335,106 @@ function ReadingBook({
   const signature = JSON.stringify(sourceMarks.map((m) => [m.id, m.revision]));
   const highlightId = useId().replace(/[^a-z\d]/gi, "");
   const markClass = `reader-mark-${highlightId}`;
+  const contextKey = `reading-${highlightId}`;
+  const lastViewport = useRef<ReadingLocation | null>(null);
+  const selectionScrollTop = useRef(0);
+  const captureContext = useRef<() => ReadingFocus | null>(() => null);
+  captureContext.current = () => {
+    if (
+      !section ||
+      section.id !== sectionId ||
+      !article.current ||
+      !viewport.current ||
+      error
+    )
+      return null;
+    const selection =
+      selected?.sourceId === section.sourceId &&
+      selected.sectionId === section.id
+        ? selected
+        : null;
+    // Full message history temporarily hides, but does not navigate away from,
+    // this book. Keep its last visible position, never measure hidden geometry
+    // or fall back to a different chapter's saved progress.
+    const visible = viewport.current.getClientRects().length > 0;
+    const measured = visible
+      ? readerViewport(article.current, section.text, viewport.current)
+      : null;
+    if (measured)
+      lastViewport.current = {
+        sourceId: section.sourceId,
+        sectionId: section.id,
+        ...measured,
+      };
+    const remembered = lastViewport.current;
+    const position =
+      selection ??
+      (visible
+        ? measured
+        : remembered?.sourceId === section.sourceId &&
+            remembered.sectionId === section.id
+          ? remembered
+          : null);
+    if (!position) return null;
+    const { start, end } = position;
+    const location = {
+      sourceId: section.sourceId,
+      sectionId: section.id,
+      start,
+      end,
+    };
+    return selection
+      ? {
+          reference: readingReference(section, location, preferences),
+          selected: true,
+        }
+      : {
+          reference: readingPosition(section, location, preferences),
+          selected: false,
+        };
+  };
+  const publishContext = useRef(() => {});
+  publishContext.current = () => {
+    onContext?.(contextKey, {
+      key: contextKey,
+      artifactId: artifact.id,
+      revision: version.revision,
+      focus: captureContext.current(),
+      capture: () => captureContext.current(),
+    });
+  };
+  useLayoutEffect(() => {
+    if (!onContext) return;
+    publishContext.current();
+    return () => onContext?.(contextKey, null);
+  }, [active, section, sectionId, selected, preferences, error, onContext]);
+  useEffect(() => {
+    if (!active) return;
+    let frame = 0;
+    const changed = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => publishContext.current());
+    };
+    const view = viewport.current,
+      root = article.current;
+    const size = new ResizeObserver(changed),
+      content = new MutationObserver(changed);
+    if (view) {
+      size.observe(view);
+      view.addEventListener("scroll", changed, { passive: true });
+    }
+    if (root) {
+      size.observe(root);
+      content.observe(root, { childList: true, subtree: true });
+    }
+    changed();
+    return () => {
+      cancelAnimationFrame(frame);
+      size.disconnect();
+      content.disconnect();
+      view?.removeEventListener("scroll", changed);
+    };
+  }, [active, section]);
   const index = sections.findIndex(
     (s) => s.id === readingBaseSection(sectionId),
   );
@@ -521,6 +631,7 @@ function ReadingBook({
         setSelected(null);
         return;
       }
+      selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
       setSelected({
         sourceId: section.sourceId,
         sectionId: section.id,
@@ -967,7 +1078,13 @@ function ReadingBook({
             }
           }}
           onScroll={() => {
-            setSelected(null);
+            // Scroll events can arrive after mouseup from the previous frame.
+            // Only navigation after this selection invalidates its context.
+            setSelected((current) =>
+              selectionScrollTop.current === viewport.current?.scrollTop
+                ? current
+                : null,
+            );
             if (!section || !article.current) return;
             clearTimeout(timer.current);
             const root = article.current,

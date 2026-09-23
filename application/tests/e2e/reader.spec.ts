@@ -306,6 +306,187 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await page.screenshot({ path: testInfo.outputPath("reader-narrow.png") });
 });
 
+test("直接聊天只附带阅读位置，选文才附原文；可检查、移除，翻页不改已发引用", async ({
+  page,
+}, testInfo) => {
+  await setup(page);
+  const title = await importBook(page);
+  const reader = page.locator(".reading-app:visible"),
+    view = reader.locator(".reader-viewport");
+  const before = await snapshot(page);
+  const book = before.workspace.artifacts.find((a: any) => a.title === title);
+  // Scroll then send without waiting for the 700 ms progress persistence timer.
+  await view.evaluate((e) => {
+    e.scrollTop = e.scrollHeight / 2;
+  });
+  const reopen = page.locator(".composer-reopen");
+  if (await reopen.isVisible()) await reopen.click();
+  const input = page.getByLabel("AI 输入内容", { exact: true });
+  await input.fill("TEST 普通闲聊，今天心情不错");
+  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  await expect(context).toContainText("当前阅读 · 周纪一");
+  await context.locator("summary").click();
+  await expect(context).toContainText("仅附带书籍和位置，不发送正文");
+  await expect(context.locator("blockquote")).toHaveCount(0);
+  await expect(context).not.toContainText("先王慎德");
+  expect((await snapshot(page)).workspace.inputs.length).toBe(
+    before.workspace.inputs.length,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("reading-current-context.png"),
+  });
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  const findInput = async (body: string) =>
+    (await snapshot(page)).workspace.inputs.find((i: any) => i.body === body);
+  await expect
+    .poll(() => findInput("TEST 普通闲聊，今天心情不错"))
+    .toBeTruthy();
+  const sent = await findInput("TEST 普通闲聊，今天心情不错");
+  expect(Object.keys(sent.reading).sort()).toEqual(
+    ["book", "location", "chapter", "personalContext", "spoilers"].sort(),
+  );
+  expect(sent.reading.location.start).toBeGreaterThan(100);
+  expect(sent.selection).toBe("");
+  expect(sent.artifactId).toBe(book.id);
+  await page.getByRole("button", { name: "目录", exact: true }).click();
+  await reader
+    .getByRole("navigation")
+    .getByRole("button", { name: "周纪二", exact: true })
+    .click();
+  if (await reopen.isVisible()) await reopen.click();
+  await expect(context).toContainText("当前阅读 · 周纪二");
+  expect((await findInput(sent.body)).reading).toEqual(sent.reading);
+  await page
+    .getByRole("button", { name: /周纪一 · 回到原文/ })
+    .last()
+    .click();
+  await expect(reader.locator(".reader-text")).toContainText("第二处原文");
+  await view.evaluate((e) => {
+    e.scrollTop = 0;
+  });
+  await selectSecond(page);
+  // No "解释这段"/"提问" toolbar action: simply return to the shared input.
+  if (await reopen.isVisible()) await reopen.click();
+  await input.fill("TEST 直接讨论所选原文");
+  await expect(context).toContainText("选文 · 周纪一");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect.poll(() => findInput("TEST 直接讨论所选原文")).toBeTruthy();
+  const selected = await findInput("TEST 直接讨论所选原文");
+  expect(selected.selection).toBe("先王慎德。");
+  expect(selected.reading.location.start).toBe(10);
+  expect(selected.reading.quote).toBe(selected.selection);
+  expect(selected.conversationId).toBe(sent.conversationId);
+  await expect(input).toBeVisible();
+  // Full history hides the canvas without navigating away from the book.
+  await page.getByRole("button", { name: "展开完整记录", exact: true }).click();
+  await expect(reader).toHaveCount(0);
+  await input.fill("TEST 全部交流中保留原阅读位置");
+  await expect(context).toContainText("选文 · 周纪一");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect
+    .poll(() => findInput("TEST 全部交流中保留原阅读位置"))
+    .toBeTruthy();
+  expect((await findInput("TEST 全部交流中保留原阅读位置")).reading).toEqual(
+    selected.reading,
+  );
+  await input.fill("TEST 本条不附带阅读内容");
+  await page
+    .getByRole("button", { name: "不附带阅读上下文", exact: true })
+    .click();
+  await expect(context).toHaveCount(0);
+  await expect(input).toHaveValue("TEST 本条不附带阅读内容");
+  await expect(input).toBeFocused();
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect.poll(() => findInput("TEST 本条不附带阅读内容")).toBeTruthy();
+  const omitted = await findInput("TEST 本条不附带阅读内容");
+  expect(omitted.reading).toBeUndefined();
+  expect(omitted.selection).toBe("");
+  await page.reload();
+  expect((await findInput(sent.body)).reading).toEqual(sent.reading);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await expect(context).toHaveCount(0);
+});
+
+test("长段落精确定位但不发送正文；未就绪保留草稿且允许本条不附带", async ({
+  page,
+}) => {
+  await setup(page);
+  const picker = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "导入读物", exact: true }).click();
+  await (
+    await picker
+  ).setFiles({
+    name: `TEST 长段落 ${randomUUID()}.md`,
+    mimeType: "text/markdown",
+    buffer: Buffer.from(
+      "# 长段落\n\n" +
+        Array.from({ length: 1200 }, (_, i) => `第${i + 1}句：合成文段。`).join(
+          "",
+        ),
+    ),
+  });
+  const view = page.locator(".reading-app:visible .reader-viewport");
+  await expect(view).toContainText("第1200句");
+  await view.evaluate((e) => {
+    e.scrollTop = e.scrollHeight / 2;
+  });
+  const reopen = page.locator(".composer-reopen");
+  if (await reopen.isVisible()) await reopen.click();
+  const input = page.getByLabel("AI 输入内容", { exact: true });
+  await input.fill("TEST 长段落当前位置");
+  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  await expect(context).toBeVisible();
+  await context.locator("summary").click();
+  await expect(context.locator("blockquote")).toHaveCount(0);
+  await expect(context).toContainText("不发送正文");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  const find = async () =>
+    (await snapshot(page)).workspace.inputs.find(
+      (i: any) => i.body === "TEST 长段落当前位置",
+    );
+  await expect.poll(find).toBeTruthy();
+  const sent = await find();
+  expect(sent.reading.location.start).toBeGreaterThan(1000);
+  expect(
+    sent.reading.location.end - sent.reading.location.start,
+  ).toBeGreaterThan(100);
+  expect(
+    sent.reading.location.end - sent.reading.location.start,
+  ).toBeLessThanOrEqual(3200);
+  expect(sent.reading.quote).toBeUndefined();
+  expect(sent.reading.before).toBeUndefined();
+  expect(sent.reading.after).toBeUndefined();
+  await input.fill("TEST 无法定位时的草稿");
+  // Corrupt only this isolated test's rendered source to exercise the actual
+  // fail-closed path, not a guessed saved position or silent blank reference.
+  await page.locator(".reading-app:visible .reader-text").evaluate((e) => {
+    e.textContent = "DOM 与规范原文不匹配";
+  });
+  await expect(context).toContainText("阅读内容尚未就绪");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect(
+    page.getByText("当前阅读内容仍在加载或无法读取，请稍后发送；草稿已保留。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(input).toHaveValue("TEST 无法定位时的草稿");
+  await page
+    .getByRole("button", { name: "不附带阅读上下文", exact: true })
+    .click();
+  await expect(input).toBeFocused();
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await expect
+    .poll(async () =>
+      (await snapshot(page)).workspace.inputs.some(
+        (i: any) => i.body === "TEST 无法定位时的草稿" && !i.reading,
+      ),
+    )
+    .toBe(true);
+});
+
 test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不调用模型", async ({
   page,
 }, testInfo) => {
@@ -397,4 +578,24 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
     page.locator(".reading-app:visible .pdf-text-layer"),
   ).toHaveCount(1);
   expect(errors).toEqual([]);
+  // No selection, same input and page identity as the renderer. A page turn
+  // must never silently reuse the previous page's quote or selection.
+  const reopen = page.locator(".composer-reopen");
+  if (await reopen.isVisible()) await reopen.click();
+  const context = page.getByRole("group", { name: "阅读上下文", exact: true });
+  await expect(context).toContainText("当前阅读 · 第 2 页");
+  await page
+    .getByLabel("AI 输入内容", { exact: true })
+    .fill("TEST PDF 当前页自动引用");
+  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  const find = async () =>
+    (await snapshot(page)).workspace.inputs.find(
+      (i: any) => i.body === "TEST PDF 当前页自动引用",
+    );
+  await expect.poll(find).toBeTruthy();
+  expect((await find()).reading.location.sectionId).toBe("page-2");
+  expect((await find()).reading.quote).toBeUndefined();
+  expect((await find()).reading.before).toBeUndefined();
+  expect((await find()).reading.after).toBeUndefined();
+  expect((await find()).selection).toBe("");
 });

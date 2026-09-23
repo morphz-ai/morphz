@@ -38,7 +38,7 @@ import {
   readingMarkSchema,
   readingStateSchema,
   readerCommandSchema,
-  readingReferenceSchema,
+  readingInputSchema,
 } from "./reader.js";
 import { applyReaderCommand } from "./reader-commands.js";
 import { websiteURL } from "./browser.js";
@@ -384,7 +384,7 @@ export const stateSchema = z
           id,
           continuation: continuationSchema.optional(),
           scriptGeneration: scriptGenerationSchema.optional(),
-          reading: readingReferenceSchema.optional(),
+          reading: readingInputSchema.optional(),
           scriptTarget: scriptLocationSchema.optional(),
           projectId: id,
           conversationId: id.optional(),
@@ -674,7 +674,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
-      reading: readingReferenceSchema.optional(),
+      reading: readingInputSchema.optional(),
       continuation: continuationSchema.optional(),
       scriptGeneration: scriptGenerationSchema.optional(),
       model: z.string().trim().min(1).max(256).optional(),
@@ -2023,11 +2023,13 @@ export function applyCommand(
       (!op.artifactId ||
         op.continuation ||
         op.scriptGeneration ||
-        op.selection !== op.reading.quote)
+        ("quote" in op.reading
+          ? !op.selection || op.selection !== op.reading.quote
+          : !!op.selection))
     )
       throw new DomainError(
         "invalid",
-        "阅读引用必须绑定独立的原文版本与确切选文。",
+        "阅读引用必须绑定独立的原文版本，选文必须与引用原文一致。",
       );
     if (op.scriptGeneration) {
       if (op.continuation)
