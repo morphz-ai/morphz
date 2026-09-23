@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { textQuoteAnchorSchema } from "./text-quotes.js";
 import {
   applicationManifestFormat,
   legacyApplicationManifestFormat,
@@ -140,6 +141,20 @@ export function harnessReadinessError(
 }
 
 export const applicationMessageSchema = z.discriminatedUnion("method", [
+  z
+    .object({
+      method: z.literal("commentText"),
+      text: z.string().trim().min(1).max(30000),
+      comment: z.string().max(10000).optional(),
+      artifactId: z.string().min(1).optional(),
+      revision: z.number().int().positive().optional(),
+      anchor: textQuoteAnchorSchema.optional(),
+      point: z
+        .object({ x: z.number().finite(), y: z.number().finite() })
+        .strict()
+        .optional(),
+    })
+    .strict(),
   z.object({ method: z.literal("ready") }).strict(),
   z
     .object({

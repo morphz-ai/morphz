@@ -28,6 +28,7 @@ export function useExchangeFocus(options: {
             ? target.parentElement
             : null;
       const region = element?.closest(".exchange-panel[data-open]");
+      if (element?.closest("[data-quote-ui]")) return true;
       return !!region && !!latest.current.root.current?.contains(region);
     };
     function leave(snapshot: typeof options, windowBlur = false) {

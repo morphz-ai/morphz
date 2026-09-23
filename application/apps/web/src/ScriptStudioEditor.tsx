@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
+import { quoteSource } from "./text-quote-dom.js";
 import {
   scriptAuthorName,
   scriptDisplayTime,
@@ -206,7 +207,7 @@ export function ScriptItemEditor({
   };
   const draft = local.draft;
   return (
-    <div className="script-editor">
+    <div className="script-editor" {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${draft.title}`, productionId: production.id, entryId: item.id, revision: local.baseRevision })}>
       <header className="script-editor-header">
         <strong tabIndex={-1} data-script-focus-anchor>
           {scriptKindLabels[item.kind]} · {current.title}

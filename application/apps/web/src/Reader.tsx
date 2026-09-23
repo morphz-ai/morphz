@@ -59,6 +59,8 @@ import {
   readingPage,
 } from "../../../packages/core/src/reader-ocr.js";
 import { ReaderOcrControls } from "./ReaderOcrControls.js";
+import { useTextQuotes } from "./TextQuotes.js";
+import { captureTextQuote, quoteSource } from "./text-quote-dom.js";
 const ReaderPdf = lazy(() => import("./ReaderPdf.js"));
 
 // Workspace updates must not replace the book's DOM and destroy a live
@@ -266,10 +268,10 @@ function ReadingBook({
   onLibrary,
   onJump,
   onTargetConsumed,
-  onCompose,
   onContext,
   onNotice,
 }: ReaderProps & { artifact: Artifact }) {
+  const textQuotes = useTextQuotes();
   const version = artifact.versions.find(
     (v) => v.revision === (revision ?? artifact.revision),
   )!;
@@ -761,14 +763,27 @@ function ReadingBook({
   function ask(question: string) {
     if (!selected || !section) return;
     const { sourceId, sectionId, start, end } = selected;
-    const result = onCompose(
-      artifact.id,
-      version.revision,
-      readingReference(section, { sourceId, sectionId, start, end }),
-      question,
-    );
-    if (!result.ok) onNotice(result.error ?? "输入尚未准备。");
-    else setSelected(null);
+    const captured = captureTextQuote();
+    textQuotes?.comment({
+      point: { x: selected.x + 300, y: selected.y },
+      quote: {
+        id: crypto.randomUUID(),
+        text: section.text.slice(start, end),
+        comment: question,
+        ...(captured?.quote.anchor ? { anchor: captured.quote.anchor } : {}),
+        source: {
+          kind: "reading",
+          artifactId: artifact.id,
+          revision: version.revision,
+          projectId: artifact.projectId,
+          title: version.title,
+          chapter: section.title,
+          location: { sourceId, sectionId, start, end },
+        },
+      },
+    });
+    setSelected(null);
+    setSelectionMenuOpen(false);
   }
   async function changeMark(
     mark: ReadingMark,
@@ -1230,6 +1245,21 @@ function ReadingBook({
                 )}
                 <div
                   ref={article}
+                  data-quote-menu="local"
+                  {...quoteSource({
+                    kind: "reading",
+                    projectId: artifact.projectId,
+                    artifactId: artifact.id,
+                    revision: version.revision,
+                    title: version.title,
+                    chapter: section.title,
+                    location: {
+                      sourceId: section.sourceId,
+                      sectionId: section.id,
+                      start: 0,
+                      end: 0,
+                    },
+                  })}
                   className={`reader-text ${version.content.kind === "pdf" ? "reader-pdf" : ""}`}
                   style={
                     {
@@ -1418,7 +1448,7 @@ function ReadingBook({
                 </button>
               )}
               <button
-                title="在原输入框中准备提问"
+                title="解释选文"
                 onClick={() =>
                   ask("简短解释这段原文，优先解答字词、主语和指代。")
                 }
@@ -1437,7 +1467,7 @@ function ReadingBook({
               </button>
               <button onClick={() => ask("")}>
                 <MessageCircle />
-                提问
+                评论
               </button>
             </div>
           </ReadingSelection>,

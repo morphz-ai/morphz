@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useState, useRef } from "react";
 import { SelectionActions } from "./SelectionActions.js";
+import { quoteSource } from "./text-quote-dom.js";
+import { useTextQuotes } from "./TextQuotes.js";
 import { ObjectRelations } from "./ObjectRelations.js";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
@@ -231,15 +233,9 @@ export function ArtifactEditor({
       </button>
     </div>
   );
+  const textQuotes = useTextQuotes();
   function select() {
-    const quote = window.getSelection()?.toString().trim() ?? "";
-    if (
-      shown.content.kind === "document" &&
-      quote &&
-      shown.content.markdown.includes(quote)
-    )
-      onSelect(quote, shown.revision);
-    else onNotice("请先选中正文中的一段文字。");
+    textQuotes?.comment();
   }
   const toolbar = (
     <div className="object-toolbar">
@@ -429,6 +425,13 @@ export function ArtifactEditor({
       )}
       <article
         ref={paper}
+        {...quoteSource({
+          kind: "artifact",
+          artifactId: artifact.id,
+          projectId: artifact.projectId,
+          revision: shown.revision,
+          title: shown.title,
+        })}
         className={
           "object-paper " +
           (artifact.content.kind === "image"
@@ -500,7 +503,11 @@ export function ArtifactEditor({
           </label>
         ) : shown.content.kind === "document" ? (
           <>
-            <div className="document-body" ref={selectionRoot}>
+            <div
+              className="document-body"
+              ref={selectionRoot}
+              data-quote-menu="local"
+            >
               <SafeMarkdown
                 state={state}
                 onOpen={onOpen}
@@ -530,11 +537,11 @@ export function ArtifactEditor({
             <button
               className="annotation-action secondary-action"
               aria-label="围绕选中文本输入"
-              title="引用选区"
+              title="评论选区"
               onClick={select}
             >
               <MessageSquarePlus />
-              选区提问
+              评论选文
             </button>
           </>
         ) : null}
@@ -628,6 +635,13 @@ export function ArtifactEditor({
               onSelect={(quote, page, annotation) =>
                 onSelect(quote, shown.revision, page, annotation)
               }
+              quoteSource={{
+                kind: "artifact",
+                artifactId: artifact.id,
+                projectId: artifact.projectId,
+                revision: shown.revision,
+                title: shown.title,
+              }}
               onRead={(text) =>
                 setReading({
                   text,

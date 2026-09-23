@@ -1,4 +1,5 @@
 import {
+  createElement,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -64,6 +65,12 @@ import {
   type InputIntent,
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
+import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
+import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
+import {
+  quotedInputText,
+  type TextQuote,
+} from "../../../packages/core/src/text-quotes.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
@@ -179,6 +186,7 @@ import {
 } from "../../../packages/core/src/script-delivery.js";
 
 type InputDraft = {
+  textQuotes?: TextQuote[];
   reading?: ReadingInput;
   skipReading?: boolean;
   scriptGeneration?: ScriptGeneration;
@@ -402,6 +410,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const manageProject = (project: Project, action: ProjectAction) =>
     setProjectAction({ project, action });
   const sendPending = useRef(false);
+  const [quoteReveal, setQuoteReveal] = useState<{
+    quote: TextQuote;
+    token: string;
+  } | null>(null);
   const startedConversations = new Set([
     ...(state?.inputs.map(discussionId) ?? []),
     ...(client.boot?.runtime.messages.map(discussionId) ?? []),
@@ -413,6 +425,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         !!(
           value.body.trim() ||
           value.attachments?.length ||
+          value.textQuotes?.length ||
           value.selection ||
           value.intent
         ),
@@ -615,6 +628,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     (artifact?.id ??
       activeInstance?.id ??
       (navigationProject?.id ?? "") + ":" + prefs.view);
+  useEffect(() => setQuoteReveal(null), [conversationId]);
   const exchangeKey =
     conversationId === defaultConversation
       ? prefs.view === "content"
@@ -959,12 +973,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     (navigationProject?.id ?? "") +
     ":" +
     (artifact?.id ?? activeInstance?.id ?? prefs.view);
-  const draft =
+  const surfaceDraft =
     drafts[contextKey] ??
     (conversationId === defaultConversation
       ? drafts[legacyContextKey]
       : undefined) ??
     emptyDraft;
+  // Selections follow this conversation across work surfaces. Body, execution
+  // bindings and attachments remain in their existing surface-scoped drafts.
+  const draft = {
+    ...surfaceDraft,
+    textQuotes: drafts[conversationId + ":quotes"]?.textQuotes ?? [],
+  };
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
@@ -1057,7 +1077,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }
   function updateDraft(key: string, update: (value: InputDraft) => InputDraft) {
     setDrafts((previous) => {
-      const next = { ...previous, [key]: update(previous[key] ?? emptyDraft) };
+      const quotesKey = key.split(":")[0] + ":quotes";
+      const { textQuotes = previous[quotesKey]?.textQuotes ?? [], ...value } =
+        update({
+          ...(previous[key] ?? emptyDraft),
+          textQuotes: previous[quotesKey]?.textQuotes ?? [],
+        });
+      const next = {
+        ...previous,
+        [key]: value,
+        [quotesKey]: { ...emptyDraft, textQuotes },
+      };
       try {
         writeLocal(draftKey("inputs"), next);
       } catch {
@@ -1070,6 +1100,44 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     const a = state?.artifacts.find((x) => x.id === id);
     setWebsiteIntent(null);
     if (a) void openObject(a.projectId, id, revision, page);
+  }
+  async function openTextQuote(quote: TextQuote) {
+    window.getSelection()?.removeAllRanges();
+    const source = quote.source;
+    if (source.kind !== "message" && revealTextQuote(quote)) {
+      return;
+    }
+    if (source.kind === "message") {
+      if (source.conversationId !== conversationId) {
+        selectConversation(source.projectId, source.conversationId);
+      }
+      keepExchangeOpen();
+      setInteraction("recent");
+      setQuoteReveal({ quote, token: crypto.randomUUID() });
+    } else if (source.kind === "artifact" || source.kind === "reading") {
+      await openObject(
+        source.projectId,
+        source.artifactId,
+        source.revision,
+        source.kind === "artifact" ? source.page : undefined,
+        source.kind === "reading",
+        source.kind === "reading" ? source.location : undefined,
+      );
+      setQuoteReveal({ quote, token: crypto.randomUUID() });
+    } else if (source.kind === "script") {
+      await openScriptLocation({
+        productionId: source.productionId,
+        itemId: source.entryId,
+        revision: source.revision,
+        candidateId: source.candidateId,
+      });
+      setQuoteReveal({ quote, token: crypto.randomUUID() });
+    } else if (source.kind === "web") {
+      await openBrowser(source.url);
+      setQuoteReveal({ quote, token: crypto.randomUUID() });
+    } else if (source.applicationInstanceId) {
+      activateApplication(source.applicationInstanceId);
+    } else setNotice("已保留所选原文；这个界面没有固定的内容位置。");
   }
   async function composeContent(id: string) {
     const target = state?.artifacts.find((a) => a.id === id);
@@ -1548,7 +1616,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
     showInput();
   }
-  async function openBrowser() {
+  async function openBrowser(url?: string) {
     if (!project) return;
     const generation = ++navigationGeneration.current;
     try {
@@ -1559,6 +1627,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         applicationVersion: browserApplication.version,
       });
       if (generation !== navigationGeneration.current) return;
+      if (url) {
+        const instance = client.boot?.workspace.applicationInstances.find(
+          (i) => i.id === result.entityId,
+        );
+        if (instance)
+          await client.execute({
+            type: "set-application-state",
+            instanceId: instance.id,
+            expectedRevision: instance.revision,
+            state: { ...instance.state, url },
+          });
+      }
       prefer({
         view: spaceKind(project) === "project" ? "projects" : "desk",
         projectId: project.id,
@@ -1577,8 +1657,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
     setInteraction("hidden");
     if (document.activeElement?.closest("#global-composer")) {
+      const origin = document.activeElement;
+      const restore = previousFocus.current;
+      const generation = navigationGeneration.current;
       requestAnimationFrame(() => {
-        if (previousFocus.current?.isConnected) previousFocus.current.focus();
+        // A newer keyboard focus or reopen must win over this delayed hide.
+        // Otherwise Enter can land in the guest instead of the reopen button.
+        if (generation !== navigationGeneration.current || input.current)
+          return;
+        const active = document.activeElement;
+        if (
+          active &&
+          active !== document.body &&
+          active !== origin &&
+          active.isConnected
+        )
+          return;
+        if (restore?.isConnected) restore.focus();
         else toggle.current?.focus();
       });
     }
@@ -1667,7 +1762,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     if (
       !project ||
       selectedConversation?.archivedAt ||
-      (!draft.body.trim() && !draft.attachments?.length) ||
+      (!draft.body.trim() &&
+        !draft.attachments?.length &&
+        !draft.textQuotes?.length) ||
       sending ||
       sendPending.current ||
       uploadingDrafts[contextKey]
@@ -1689,6 +1786,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         !captured.scriptGeneration &&
         !captured.reading &&
         !captured.selection &&
+        !captured.textQuotes?.length &&
         !captured.skipReading &&
         readingExpected
       ) {
@@ -1741,6 +1839,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             artifactRevision: original.artifactRevision,
             selection: "",
             body: captured.body,
+            ...(captured.textQuotes?.length
+              ? { textQuotes: captured.textQuotes }
+              : {}),
             targetActantId: original.targetActantId,
             ...(captured.attachments?.length
               ? { attachments: captured.attachments }
@@ -1770,7 +1871,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           type: "respond-task",
           taskId: captured.taskResult.taskId,
           expectedRevision: captured.taskResult.revision,
-          body: captured.body,
+          body: quotedInputText(captured.body, captured.textQuotes),
         });
       } else if (
         asAnnotation &&
@@ -1784,7 +1885,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           artifactRevision: captured.revision,
           quote: captured.selection,
           ...(captured.page ? { page: captured.page } : {}),
-          body: captured.body,
+          body: quotedInputText(captured.body, captured.textQuotes),
         });
       else {
         if (
@@ -1816,6 +1917,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             selection: captured.selection,
             ...(captured.reading ? { reading: captured.reading } : {}),
             body: captured.body,
+            ...(captured.textQuotes?.length
+              ? { textQuotes: captured.textQuotes }
+              : {}),
             ...(captured.scriptGeneration
               ? { scriptGeneration: captured.scriptGeneration }
               : {}),
@@ -1858,7 +1962,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           [conversationId]: receipt.entityId,
         }));
       }
-      setDraft(key, { ...emptyDraft });
+      setDraft(key, { ...emptyDraft, textQuotes: [] });
       if (currentContext.current === key) {
         if (asAnnotation) {
           if (compact) setMobileCollaboration(true);
@@ -2156,7 +2260,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ? () => void client.logout().catch((e) => setNotice(e.message))
       : undefined,
   };
-  return (
+  return createElement(
+    TextQuoteProvider,
+    {
+      quotes: draft.textQuotes,
+      scope: conversationId,
+      reveal: quoteReveal,
+      disabled:
+        sending ||
+        !!draft.pendingSupplement ||
+        !!selectedConversation?.archivedAt,
+      onChange: (textQuotes) =>
+        updateDraft(contextKey, (old) => ({ ...old, textQuotes })),
+      onEngage: keepExchangeOpen,
+      onFocusComposer: () => {
+        showInput();
+        requestAnimationFrame(() =>
+          input.current?.focus({ preventScroll: true }),
+        );
+      },
+      onOpen: (quote) => void openTextQuote(quote),
+      onNotice: setNotice,
+    },
     <div
       className={
         "app " +
@@ -2342,7 +2467,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         data-inspector-mode={inspectorOpen ? rightInspector.mode : undefined}
         data-inspector-width={inspectorOpen ? rightInspector.width : undefined}
         style={
-          { "--inspector-width": `${rightInspector.width}px` } as CSSProperties
+          {
+            "--inspector-width": `${rightInspector.width}px`,
+          } as CSSProperties
         }
       >
         {applicationWorkspaceOpen &&
@@ -2534,6 +2661,20 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   : undefined
               }
               aria-label="主工作区"
+              {...quoteSource({
+                kind: "surface",
+                projectId: project.id,
+                title: activeInstance
+                  ? applicationFor(
+                      state,
+                      activeInstance.applicationId,
+                      activeInstance.applicationVersion,
+                    ).title
+                  : labels[prefs.view],
+                ...(activeInstance
+                  ? { applicationInstanceId: activeInstance.id }
+                  : {}),
+              })}
               hidden={historyVisible}
             >
               {creating === "document" && (
@@ -2639,6 +2780,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         draft.taskResult ||
                         draft.body.trim() ||
                         draft.attachments?.length ||
+                        draft.textQuotes?.length ||
                         (draft.intent && draft.intent !== "script") ||
                         draft.scriptGeneration
                       ) {
@@ -2871,6 +3013,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               >
                 {conversationVisible && (
                   <Conversation
+                    onOpenQuote={(quote) => void openTextQuote(quote)}
+                    quoteReveal={
+                      quoteReveal?.quote.source.kind === "message" &&
+                      quoteReveal.quote.source.conversationId === conversationId
+                        ? quoteReveal
+                        : null
+                    }
+                    onQuoteUnavailable={() =>
+                      setNotice(
+                        "原消息暂时不在已加载的记录中，引用内容仍保留。",
+                      )
+                    }
                     toolbarTarget={conversationToolbarTarget}
                     onFocusComposer={() =>
                       input.current?.focus({ preventScroll: true })
@@ -2949,6 +3103,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     >
                       <div ref={setAttachmentSlot} />
                       <div ref={setDictationSlot} />
+                      {!!draft.textQuotes?.length && (
+                        <TextQuoteDrafts
+                          quotes={draft.textQuotes}
+                          disabled={sending || !!draft.pendingSupplement}
+                        />
+                      )}
                       {draft.continuation && (
                         <div
                           className="composer-continuation"
@@ -3530,7 +3690,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             }
                             disabled={
                               (!draft.body.trim() &&
-                                !draft.attachments?.length) ||
+                                !draft.attachments?.length &&
+                                !draft.textQuotes?.length) ||
                               sending ||
                               !!uploadingDrafts[contextKey] ||
                               (!draft.continuation &&
@@ -3804,7 +3965,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           }}
         />
       )}
-    </div>
+    </div>,
   );
 }
 function CreateDialog({

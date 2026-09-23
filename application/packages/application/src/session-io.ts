@@ -2,6 +2,7 @@ import type { Workspace } from "../../../packages/core/src/model.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { readingInputSchema } from "../../core/src/reader.js";
 import { inputDestination } from "../../core/src/continuation.js";
+import { quotedInputText } from "../../core/src/text-quotes.js";
 import {
   objectToolName,
   legacyObjectToolName,
@@ -270,7 +271,7 @@ export function workInputData(
   original?: Workspace["inputs"][number],
 ) {
   return {
-    text: input.body,
+    text: quotedInputText(input.body, input.textQuotes),
     input_id: input.id,
     ...(input.reading
       ? { reading: readingInputSchema.parse(input.reading) }
@@ -292,7 +293,12 @@ export function workInputData(
             thread_id: input.continuation.threadId,
             generation: input.continuation.generation,
             ...(input.continuation.mode === "follow-up" && original
-              ? { original_request: original.body }
+              ? {
+                  original_request: quotedInputText(
+                    original.body,
+                    original.textQuotes,
+                  ),
+                }
               : {}),
           },
         }

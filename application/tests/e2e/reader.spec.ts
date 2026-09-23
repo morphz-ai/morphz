@@ -105,6 +105,12 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   await expect.poll(async () => (await marks())[0]?.color).toBe("green");
   for (const width of [640, 1440]) {
     await page.setViewportSize({ width, height: 760 });
+    await expect
+      .poll(async () => {
+        const box = await toolbar.boundingBox();
+        return box!.x + box!.width;
+      })
+      .toBeLessThanOrEqual(width - 12);
     const box = await toolbar.boundingBox();
     expect(box!.x).toBeGreaterThanOrEqual(12);
     expect(box!.x + box!.width).toBeLessThanOrEqual(width - 12);
@@ -389,11 +395,16 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await page.getByRole("button", { name: "关闭阅读侧栏", exact: true }).click();
   await selectSecond(page);
   await page.getByRole("button", { name: "解释这段", exact: true }).click();
-  await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveValue(
-    /简短解释这段原文/,
-  );
-  await expect(page.locator(".selection-quote")).toContainText(title);
-  await expect(page.locator(".selection-quote")).not.toContainText("不剧透");
+  await expect(
+    page.getByLabel("引用 1 的评论（可选）", { exact: true }),
+  ).toHaveValue(/简短解释这段原文/);
+  await expect(
+    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
+  ).toContainText(title);
+  await expect(
+    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
+  ).not.toContainText("不剧透");
+  await page.getByRole("button", { name: "完成", exact: true }).click();
   // Turning pages must never rewrite the prepared request.
   await page.getByRole("button", { name: "目录", exact: true }).click();
   await page
@@ -409,23 +420,29 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await expect
     .poll(
       async () =>
-        (await snapshot(page)).workspace.inputs.filter(
-          (i: any) => i.reading?.book.title === title,
+        (await snapshot(page)).workspace.inputs.filter((i: any) =>
+          i.textQuotes?.some(
+            (q: any) => q.source.kind === "reading" && q.source.title === title,
+          ),
         ).length,
     )
     .toBe(1);
-  const input = (await snapshot(page)).workspace.inputs.find(
-    (i: any) => i.reading?.book.title === title,
+  const input = (await snapshot(page)).workspace.inputs.find((i: any) =>
+    i.textQuotes?.some(
+      (q: any) => q.source.kind === "reading" && q.source.title === title,
+    ),
   );
-  expect(input.reading.location).toEqual(mark.location);
-  expect(Object.keys(input.reading).sort()).toEqual(
-    ["book", "location", "chapter", "quote", "before", "after"].sort(),
-  );
-  expect(input.reading.after.length).toBeGreaterThan(0);
+  expect(input.textQuotes[0].source.location).toEqual(mark.location);
+  expect(input.textQuotes[0].text).toEqual(mark.quote);
+  expect(input.textQuotes[0].comment).toContain("简短解释这段原文");
+  expect(input.reading).toBeUndefined();
   expect(input.conversationId).toBe(
     before.workspace.projects.find((p: any) => p.kind === "dialogue").id,
   );
-  const links = page.getByRole("button", { name: /周纪一 · 回到原文/ });
+  const links = page.getByRole("button", {
+    name: "查看引用 1 的原文",
+    exact: true,
+  });
   await expect(links.last()).toBeVisible();
   await links.last().click();
   await expect(page.locator(".reading-app:visible .reader-text")).toContainText(

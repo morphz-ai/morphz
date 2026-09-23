@@ -1,6 +1,8 @@
 import { useEffect, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MessageCircle, Highlighter, Volume2 } from "lucide-react";
+import { useTextQuotes } from "./TextQuotes.js";
+import { captureTextQuote, type QuoteSelection } from "./text-quote-dom.js";
 
 export function SelectionActions({
   root,
@@ -9,10 +11,12 @@ export function SelectionActions({
   root: RefObject<HTMLElement | null>;
   onAction(action: "ask" | "annotate" | "read", text: string): void;
 }) {
+  const quotes = useTextQuotes();
   const [selection, setSelection] = useState<{
     text: string;
     x: number;
     y: number;
+    quote: QuoteSelection | null;
   } | null>(null);
   useEffect(() => {
     const refresh = () => {
@@ -28,6 +32,7 @@ export function SelectionActions({
       }
       const rect = selected.getRangeAt(0).getBoundingClientRect();
       setSelection({
+        quote: captureTextQuote(),
         text: selected.toString().trim(),
         x: Math.max(12, Math.min(innerWidth - 300, rect.left)),
         y: Math.max(8, Math.min(innerHeight - 50, rect.bottom + 8)),
@@ -52,7 +57,7 @@ export function SelectionActions({
       >
         {(
           [
-            ["ask", "提问", "询问 Morphz", MessageCircle],
+            ["ask", "评论", "评论选中文字", MessageCircle],
             ["annotate", "批注", "批注", Highlighter],
             ["read", "朗读", "朗读", Volume2],
           ] as const
@@ -62,7 +67,8 @@ export function SelectionActions({
             aria-label={name}
             title={name}
             onClick={() => {
-              onAction(action, selection.text);
+              if (action === "ask") quotes?.comment(selection.quote);
+              else onAction(action, selection.text);
               setSelection(null);
             }}
           >

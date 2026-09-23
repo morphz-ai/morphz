@@ -14,6 +14,7 @@ import type { BrowserView } from "./desktop.js";
 import { registerNativeBrowserLayout } from "./native-browser-layout.js";
 import type { WorkspaceClient } from "./client.js";
 import { BrowserBookmarks } from "./BrowserBookmarks.js";
+import { useTextQuotes } from "./TextQuotes.js";
 
 export function BrowserHost({
   client,
@@ -39,6 +40,10 @@ export function BrowserHost({
   autoOpen?: boolean;
 }) {
   const desktop = window.morphzDesktop?.browser;
+  const quotes = useTextQuotes();
+  const latestQuotes = useRef(quotes);
+  latestQuotes.current = quotes;
+  const revealed = useRef<string | null>(null);
   const slot = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<BrowserView | null>(null),
     [url, setURL] = useState(
@@ -53,6 +58,68 @@ export function BrowserHost({
   latestOnPage.current = onPage;
   const latestOnInput = useRef(onInput);
   latestOnInput.current = onInput;
+  useEffect(
+    () =>
+      desktop?.onSelection?.((selected) => {
+        if (!activeViewRef.current) return;
+        if (!selected) {
+          latestQuotes.current?.offer(null);
+          return;
+        }
+        if (selected.pageId !== active.current) return;
+        const bounds = slot.current?.getBoundingClientRect();
+        if (!bounds) return;
+        latestQuotes.current?.offer({
+          point: {
+            x:
+              bounds.left +
+              (selected.point.x * bounds.width) / selected.viewport.width,
+            y:
+              bounds.top +
+              (selected.point.y * bounds.height) / selected.viewport.height,
+          },
+          quote: {
+            id: crypto.randomUUID(),
+            text: selected.text,
+            comment: "",
+            anchor: selected.anchor,
+            source: {
+              kind: "web",
+              title: selected.title || "网页",
+              url: selected.url,
+              pageId: selected.pageId,
+              epoch: selected.epoch,
+              projectId: selected.projectId,
+            },
+          },
+        });
+      }),
+    [desktop],
+  );
+  useEffect(() => {
+    const target = quotes?.reveal;
+    if (
+      !activeView ||
+      !page ||
+      !target ||
+      target.quote.source.kind !== "web" ||
+      revealed.current === target.token ||
+      !desktop?.reveal
+    )
+      return;
+    revealed.current = target.token;
+    void desktop
+      .reveal(page.pageId, {
+        url: target.quote.source.url,
+        text: target.quote.text,
+        anchor: target.quote.anchor,
+      })
+      .then((result) => {
+        if (!result.found)
+          setError("已打开原网页；内容可能已变化，引用原文仍保留。");
+      })
+      .catch((e) => setError(e.message));
+  }, [activeView, page?.pageId, quotes?.reveal?.token, desktop]);
   useEffect(
     () =>
       desktop?.onInput?.(() => {

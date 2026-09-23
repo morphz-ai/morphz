@@ -3,6 +3,13 @@ import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import { discussionId } from "../../../packages/core/src/model.js";
+import { SentTextQuotes } from "./TextQuotes.js";
+import { quoteSource, locateTextQuote } from "./text-quote-dom.js";
+import {
+  quotedInputText,
+  type TextQuote,
+} from "../../../packages/core/src/text-quotes.js";
 import {
   conversationGroups,
   conversationTimeline,
@@ -61,7 +68,13 @@ export function Conversation({
   focusedApplicationId,
   toolbarTarget,
   onFocusComposer,
+  onOpenQuote,
+  quoteReveal,
+  onQuoteUnavailable,
 }: {
+  onOpenQuote?: (quote: TextQuote) => void;
+  quoteReveal?: { quote: TextQuote; token: string } | null;
+  onQuoteUnavailable?: () => void;
   onFocusComposer?: () => void;
   toolbarTarget?: HTMLElement | null;
   focusedArtifactId?: string;
@@ -133,6 +146,7 @@ export function Conversation({
     }
   }
   const scroller = useRef<HTMLElement>(null);
+  const revealedQuote = useRef<string | null>(null);
   const latestButton = useRef<HTMLButtonElement>(null);
   const positionKey =
     conversationId +
@@ -358,6 +372,55 @@ export function Conversation({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+  useLayoutEffect(() => {
+    if (!quoteReveal || revealedQuote.current === quoteReveal.token) return;
+    const quote = quoteReveal.quote.source;
+    if (quote.kind !== "message") return;
+    const el = scroller.current;
+    const message = el?.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(quote.messageId)}"]`,
+    );
+    if (!message) {
+      if (
+        focused &&
+        (allInputs.some((item) => item.id === quote.messageId) ||
+          messages.some((item) => item.id === quote.messageId))
+      ) {
+        setAllHistory(true);
+      } else {
+        revealedQuote.current = quoteReveal.token;
+        onQuoteUnavailable?.();
+      }
+      return;
+    }
+    revealedQuote.current = quoteReveal.token;
+    // A source jump is explicit navigation, not a request to follow new output.
+    following.current = false;
+    el!.scrollTop +=
+      message.getBoundingClientRect().top -
+      el!.getBoundingClientRect().top -
+      24;
+    setAwayFromLatest(true);
+    positions.set(positionKey, {
+      top: el!.scrollTop,
+      following: false,
+      revealed: revealed.current,
+    });
+    const range = locateTextQuote(quoteReveal.quote);
+    if (range) {
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+    }
+    message.setAttribute("data-quote-revealed", "true");
+    const timeout = window.setTimeout(
+      () => message.removeAttribute("data-quote-revealed"),
+      2200,
+    );
+    return () => {
+      clearTimeout(timeout);
+      message.removeAttribute("data-quote-revealed");
+    };
+  }, [quoteReveal, focused]);
   return (
     <section
       className="conversation"
@@ -522,6 +585,19 @@ export function Conversation({
               const delivery = item
                 ? runtime.deliveries.find((d) => d.inputId === item.id)
                 : undefined;
+              const textSource = quoteSource({
+                kind: "message",
+                messageId: id,
+                inputId: item?.id ?? reply?.inputId ?? null,
+                projectId: (item ?? reply)!.projectId,
+                conversationId: discussionId((item ?? reply)!),
+                title: item
+                  ? item.author.actantId === client.boot?.actantId
+                    ? "我"
+                    : actorName(state, item.author.actantId)
+                  : "Morphz",
+                createdAt: (item ?? reply)!.createdAt,
+              });
               const activeBranch =
                 item &&
                 client.online &&
@@ -640,6 +716,12 @@ export function Conversation({
                     {item?.selection && (
                       <blockquote>{item.selection}</blockquote>
                     )}
+                    {!!item?.textQuotes?.length && onOpenQuote && (
+                      <SentTextQuotes
+                        quotes={item.textQuotes}
+                        onOpen={onOpenQuote}
+                      />
+                    )}
                     {item?.artifactId && (
                       <button
                         className="message-object-link"
@@ -693,10 +775,22 @@ export function Conversation({
                             ))}
                           </div>
                         )}
-                        {item.body && <p>{item.body}</p>}
+                        {item.body && (
+                          <p data-quotable {...textSource}>
+                            {item.body}
+                          </p>
+                        )}
                       </>
                     ) : (
-                      <div className="reply-content">
+                      <div
+                        className="reply-content"
+                        {...textSource}
+                        data-quotable={
+                          reply?.kind === "reply" || reply?.kind === "error"
+                            ? true
+                            : undefined
+                        }
+                      >
                         {reply?.tool ? (
                           <ToolMessage message={reply} state={state} />
                         ) : reply?.kind === "progress" ? (
@@ -755,7 +849,11 @@ export function Conversation({
                         {reply?.kind !== "tool" && (
                           <MessageActions
                             createdAt={createdAt}
-                            text={item?.body ?? reply!.text}
+                            text={
+                              item
+                                ? quotedInputText(item.body, item.textQuotes)
+                                : reply!.text
+                            }
                           />
                         )}
                       </div>

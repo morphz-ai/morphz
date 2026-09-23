@@ -174,6 +174,28 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   const app = page.frameLocator('iframe[title="工作便笺应用界面"]');
   await expect(app.locator("#status")).toContainText("已连接");
   await expect(app.locator("#objects")).toContainText("空间原文");
+  const quoted = await app.locator("body").evaluate(async () => {
+    // Exercise the real sandbox request/response channel, not a parent DOM injection.
+    return (
+      window as unknown as { request: (v: unknown) => Promise<unknown> }
+    ).request({
+      method: "commentText",
+      text: "TEST 沙箱应用选文",
+      comment: "TEST 同一个输入框",
+      point: { x: 160, y: 180 },
+    });
+  });
+  expect(quoted).toMatchObject({ prepared: true });
+  await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
+  await expect(page.getByLabel("引用 1 的评论（可选）")).toHaveValue(
+    "TEST 同一个输入框",
+  );
+  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
+    "TEST 同一个输入框",
+  );
+  await page.getByRole("button", { name: "移除引用 1", exact: true }).click();
+  await content();
   await app.locator("#note").fill("我的应用状态：保留这段文字。");
   await app.getByRole("button", { name: "保存便笺状态" }).click();
   await expect(app.locator("#status")).toContainText("已保存");
@@ -311,6 +333,18 @@ test("独立应用界面拒绝宿主访问、外连和越权命令", async ({ pa
   await page.getByRole("tab", { name: "隔离验收" }).click();
   const frame = page.frameLocator('iframe[title="隔离验收应用界面"]');
   await expect(frame.locator("#status")).toContainText("已连接");
+  const deniedQuote = await frame.locator("body").evaluate(async () => {
+    try {
+      await (
+        window as unknown as { request: (v: unknown) => Promise<unknown> }
+      ).request({ method: "commentText", text: "未获输入权限的应用文本" });
+      return "unexpected success";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  });
+  expect(deniedQuote).toContain("没有输入权限");
+  await expect(page.getByRole("group", { name: "选文与评论" })).toHaveCount(0);
   expect(
     await frame.locator("body").evaluate(async () => {
       let parentBlocked = false,

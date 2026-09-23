@@ -9,6 +9,7 @@ import "./inspector.css";
 import "./task-list.css";
 import "./content-catalog.css";
 import "./browser-bookmarks.css";
+import "./text-quotes.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

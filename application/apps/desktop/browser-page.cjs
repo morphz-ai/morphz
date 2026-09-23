@@ -127,4 +127,107 @@ function pageAction(action, snapshotId) {
   }
   throw new Error("不支持这个浏览器动作。");
 }
-module.exports = { pageAction };
+// Read only the user's current selection. Running in an isolated world gives the
+// page no IPC or Node access. Nothing is sent to a model until the Human submits.
+function pageSelection(reveal) {
+  const normalized = (text) => text.replace(/\s+/g, " ").trim();
+  function selectMatchingRange(range) {
+    if (!range) return false;
+    const selection = getSelection();
+    const previous = Array.from({ length: selection.rangeCount }, (_, i) =>
+      selection.getRangeAt(i).cloneRange(),
+    );
+    selection.removeAllRanges();
+    selection.addRange(range);
+    // Use the same rendered-text semantics as capture: DOM textContent both
+    // includes hidden nodes and omits line breaks between block elements.
+    if (normalized(selection.toString()) === normalized(reveal.text))
+      return true;
+    selection.removeAllRanges();
+    previous.forEach((saved) => selection.addRange(saved));
+    return false;
+  }
+  function rangeAt(start, end) {
+    if (start < 0 || end <= start) return null;
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      ),
+      range = document.createRange();
+    let count = 0,
+      began = false,
+      node;
+    while ((node = walker.nextNode())) {
+      const length = node.textContent.length;
+      if (!began && start < count + length) {
+        range.setStart(node, start - count);
+        began = true;
+      }
+      if (began && end <= count + length) {
+        range.setEnd(node, end - count);
+        return range;
+      }
+      count += length;
+    }
+    return null;
+  }
+  if (reveal) {
+    const all = document.body?.textContent || "";
+    let range =
+      reveal.anchor && rangeAt(reveal.anchor.start, reveal.anchor.end);
+    if (!selectMatchingRange(range)) {
+      const start = all.indexOf(reveal.text);
+      if (start < 0 || all.indexOf(reveal.text, start + 1) >= 0)
+        return { found: false };
+      range = rangeAt(start, start + reveal.text.length);
+      if (!selectMatchingRange(range)) return { found: false };
+    }
+    const node = range.startContainer;
+    (node.nodeType === Node.ELEMENT_NODE
+      ? node
+      : node.parentElement
+    )?.scrollIntoView({ block: "center" });
+    return { found: true };
+  }
+  if (
+    document.activeElement?.matches('input,textarea,[contenteditable="true"]')
+  )
+    return null;
+  const selection = getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1)
+    return null;
+  const range = selection.getRangeAt(0),
+    // Selection reflects rendered text. Range.toString() also includes hidden
+    // style/script nodes when a native paragraph selection crosses them.
+    text = selection.toString().trim();
+  if (
+    !text ||
+    text.length > 30000 ||
+    !document.body?.contains(range.commonAncestorContainer)
+  )
+    return null;
+  const before = range.cloneRange();
+  before.selectNodeContents(document.body);
+  before.setEnd(range.startContainer, range.startOffset);
+  const start = before.toString().length;
+  before.setEnd(range.endContainer, range.endOffset);
+  const end = before.toString().length;
+  const rect = Array.from(range.getClientRects())
+    .filter((r) => r.height && r.bottom > 0 && r.top < innerHeight)
+    .at(-1);
+  if (!rect) return null;
+  return {
+    text,
+    title: document.title.slice(0, 500) || location.host,
+    url: location.href,
+    anchor: {
+      start,
+      end,
+      prefix: "",
+      suffix: "",
+    },
+    point: { x: rect.right, y: rect.bottom },
+    viewport: { width: innerWidth, height: innerHeight },
+  };
+}
+module.exports = { pageAction, pageSelection };

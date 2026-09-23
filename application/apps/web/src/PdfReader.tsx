@@ -12,6 +12,8 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { Content } from "../../../packages/core/src/model.js";
 import { scopedStorage } from "./client.js";
 import { SelectionActions } from "./SelectionActions.js";
+import { quoteSource as quoteAttributes } from "./text-quote-dom.js";
+import type { TextQuoteSource } from "../../../packages/core/src/text-quotes.js";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type Pdf = Extract<Content, { kind: "pdf" }>;
@@ -190,12 +192,14 @@ export default function PdfReader({
   initialPage,
   onRead,
   toolbarTarget,
+  quoteSource,
 }: {
   content: Pdf;
   onSelect: (quote: string, page: number, annotation?: boolean) => void;
   onRead?: (quote: string) => void;
   initialPage?: number | null;
   toolbarTarget?: HTMLElement | null;
+  quoteSource?: Extract<TextQuoteSource, { kind: "artifact" }>;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
@@ -299,7 +303,14 @@ export default function PdfReader({
     </div>
   );
   return (
-    <div className="pdf-reader" ref={root}>
+    <div
+      className="pdf-reader"
+      ref={root}
+      data-quote-menu="local"
+      {...(quoteSource
+        ? quoteAttributes({ ...quoteSource, page: number })
+        : {})}
+    >
       <SelectionActions
         root={root}
         onAction={(action, raw) => {

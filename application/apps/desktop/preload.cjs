@@ -57,6 +57,13 @@ contextBridge.exposeInMainWorld(
         ipcRenderer.on("browser:input", receive);
         return () => ipcRenderer.removeListener("browser:input", receive);
       },
+      onSelection: (callback) => {
+        const receive = (_event, selection) => callback(selection);
+        ipcRenderer.on("browser:selection", receive);
+        return () => ipcRenderer.removeListener("browser:selection", receive);
+      },
+      reveal: (pageId, request) =>
+        ipcRenderer.invoke("browser:reveal", pageId, request),
       close: (pageId) => ipcRenderer.invoke("browser:close", pageId),
     }),
     directories: Object.freeze({

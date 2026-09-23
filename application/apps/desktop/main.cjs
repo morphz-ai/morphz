@@ -367,6 +367,7 @@ else {
         "visibility",
         "close",
         "state",
+        "reveal",
       ]) {
         ipcMain.handle("browser:" + name, (event, ...args) => {
           requireMain(event);

@@ -2,7 +2,7 @@ const { session, app } = require("electron");
 const { persistentPartition } = require("./configuration.cjs");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
 const { webPreferences, trustedAppURL } = require("./security.cjs");
-const { pageAction } = require("./browser-page.cjs");
+const { pageAction, pageSelection } = require("./browser-page.cjs");
 function browserURL(value, center) {
   const u = new URL(value);
   if (
@@ -249,11 +249,58 @@ class DesktopBrowser {
         return;
       }
       if (input.type === "keyDown") this.invalidate(c);
+      if (input.type === "keyUp") captureSelection();
     });
     view.webContents.on("before-mouse-event", (_e, mouse) => {
       if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
         this.invalidate(c);
+      if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
+        this.window.webContents.send("browser:selection", null);
     });
+    let selectionTimer;
+    const captureSelection = () => {
+      clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(async () => {
+        if (
+          this.current !== c ||
+          !c.state.visible ||
+          view.webContents.isDestroyed()
+        )
+          return;
+        const epoch = c.state.epoch,
+          url = c.state.url;
+        try {
+          const selected =
+            await view.webContents.executeJavaScriptInIsolatedWorld(1002, [
+              { code: `(${pageSelection.toString()})()` },
+            ]);
+          if (
+            this.current !== c ||
+            !c.state.visible ||
+            c.state.epoch !== epoch ||
+            c.state.url !== url
+          )
+            return;
+          this.window.webContents.send(
+            "browser:selection",
+            selected && selected.url === url
+              ? {
+                  ...selected,
+                  pageId: c.state.pageId,
+                  epoch,
+                  projectId: c.state.projectId,
+                }
+              : null,
+          );
+        } catch {
+          /* A navigation can destroy the isolated world during selection. */
+        }
+      }, 40);
+    };
+    view.webContents.on("input-event", (_event, input) => {
+      if (input.type === "mouseUp") captureSelection();
+    });
+    view.webContents.on("destroyed", () => clearTimeout(selectionTimer));
     view.webContents.on("render-process-gone", () => {
       this.invalidate(c);
       c.error = "网页进程已退出，请重新打开。";
@@ -307,6 +354,34 @@ class DesktopBrowser {
     if (typeof visible !== "boolean") throw new Error("页面可见状态无效。");
     if (!visible && c.state.visible) this.invalidate(c);
     c.state.visible = visible;
+    if (!visible) this.window.webContents.send("browser:selection", null);
+  }
+  async reveal(pageId, request) {
+    const c = this.require(pageId);
+    if (
+      !c.state.visible ||
+      !c.view ||
+      !request ||
+      typeof request.text !== "string" ||
+      !request.text.trim() ||
+      request.text.length > 30000
+    )
+      throw new Error("引用的网页暂时不可用。");
+    const url = browserURL(request.url, this.centerURL);
+    const payload = { text: request.text };
+    if (
+      request.anchor &&
+      Number.isSafeInteger(request.anchor.start) &&
+      request.anchor.start >= 0 &&
+      Number.isSafeInteger(request.anchor.end) &&
+      request.anchor.end > request.anchor.start
+    )
+      payload.anchor = { start: request.anchor.start, end: request.anchor.end };
+    if (c.state.url !== url) await c.view.webContents.loadURL(url);
+    if (this.current !== c || !c.state.visible) throw new Error("页面已切换。");
+    return c.view.webContents.executeJavaScriptInIsolatedWorld(1002, [
+      { code: `(${pageSelection.toString()})(${JSON.stringify(payload)})` },
+    ]);
   }
   state() {
     const c = this.current;

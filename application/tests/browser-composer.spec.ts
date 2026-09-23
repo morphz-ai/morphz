@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { openInput } from "./interaction-helpers.js";
 
 test("认知应用的交流面板悬浮，不改变画布尺寸；固定和收起均保留草稿", async ({
@@ -152,6 +153,62 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expect
       .poll(async () => (await siteState())?.form)
       .toBe("TEST 网页未提交表单");
+    // Real guest mouse selection, host-owned comment UI, no page preload/IPC.
+    const selectionRect = await desktop.evaluate(async ({ webContents }) => {
+      const site = webContents
+        .getAllWebContents()
+        .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+      return site.executeJavaScript(
+        "(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector('header p'));const b=r.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()",
+      );
+    });
+    const selectionSlot = (await page.locator(".browser-slot").boundingBox())!;
+    await page.mouse.move(
+      selectionSlot.x + selectionRect.x,
+      selectionSlot.y + selectionRect.y + selectionRect.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      selectionSlot.x + selectionRect.x + selectionRect.width,
+      selectionSlot.y + selectionRect.y + selectionRect.height / 2,
+      { steps: 10 },
+    );
+    await page.mouse.up();
+    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
+    await page.getByLabel("引用 1 的评论（可选）").fill("TEST 网页选文评论");
+    await expect(
+      page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
+    ).toContainText("TEST 网页画布");
+    await info.attach("browser-inline-comment", {
+      body: await page.screenshot({
+        path: info.outputPath("browser-inline-comment.png"),
+      }),
+      contentType: "image/png",
+    });
+    await page.getByRole("button", { name: "完成", exact: true }).click();
+    await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
+      "TEST 网页选文评论",
+    );
+    expect((await siteState())?.bridge).toBe("undefined");
+    expect((await siteState())?.node).toBe("undefined");
+    await page
+      .getByRole("group", { name: "选文与评论" })
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+      .click();
+    await page.getByRole("button", { name: "查看原文", exact: true }).click();
+    await expect
+      .poll(() =>
+        desktop.evaluate(async ({ webContents }) => {
+          const site = webContents
+            .getAllWebContents()
+            .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+          return site.executeJavaScript("getSelection().toString()");
+        }),
+      )
+      .toBe("TEST 网页画布");
+    await openInput(page);
+    await page.getByRole("button", { name: "移除引用 1", exact: true }).click();
     await openInput(page);
     await page
       .getByRole("button", { name: "收起 AI 输入框", exact: true })
@@ -284,11 +341,40 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     });
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    // Hold the hide action's next-frame focus restoration until the Human has
+    // focused the reopen button. A stale callback must not steal that focus.
+    await page.evaluate(() => {
+      document.querySelector('[aria-label="收起 AI 输入框"]')!.addEventListener(
+        "click",
+        () => {
+          const original = window.requestAnimationFrame.bind(window);
+          const frames: (() => void)[] = [];
+          window.requestAnimationFrame = (callback) =>
+            original((time) => frames.push(() => callback(time)));
+          (
+            window as unknown as { releaseHideFrames: () => Promise<void> }
+          ).releaseHideFrames = async () => {
+            await new Promise<void>((resolve) => original(() => resolve()));
+            window.requestAnimationFrame = original;
+            frames.forEach((run) => run());
+          };
+        },
+        { once: true, capture: true },
+      );
+    });
     await page
       .getByRole("button", { name: "收起 AI 输入框", exact: true })
       .click();
     await expect(reopen).toBeVisible();
+    await reopen.focus();
+    await page.evaluate(() =>
+      (
+        window as unknown as { releaseHideFrames: () => Promise<void> }
+      ).releaseHideFrames(),
+    );
+    await expect(reopen).toBeFocused();
     await reopen.press("Enter");
+    await expect(input).toBeFocused();
     await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
     await expect(
       page.getByRole("button", { name: "允许 Agent 协助", exact: true }),
@@ -356,6 +442,101 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       info.outputPath("browser-overlay-200.png"),
       Buffer.from(png, "base64"),
     );
+    await page
+      .getByRole("button", { name: "收起 AI 输入框", exact: true })
+      .click();
+    await page.evaluate(() => {
+      (
+        window as unknown as { quoteSelectionEvents: unknown[] }
+      ).quoteSelectionEvents = [];
+      window.morphzDesktop!.browser!.onSelection!((event) =>
+        (
+          window as unknown as { quoteSelectionEvents: unknown[] }
+        ).quoteSelectionEvents.push(event),
+      );
+    });
+    await desktop.evaluate(async ({ webContents }) => {
+      const site = webContents
+        .getAllWebContents()
+        .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+      await site.executeJavaScript(`(() => {
+        const p = document.querySelector('header p');
+        const style = document.createElement('style'); style.textContent = '.PRIVATE_STYLE_TOKEN { color: red; }';
+        const hidden = document.createElement('span'); hidden.hidden = true; hidden.textContent = 'PRIVATE_HIDDEN_TOKEN';
+        const tail = document.createTextNode('，TEST 可见尾句');
+        const second = document.createElement('span'); second.style.display = 'block'; second.textContent = 'TEST 第二行';
+        p.append(style, hidden, tail, second); p.scrollIntoView({block:'center'}); document.activeElement?.blur();
+        const range = document.createRange(); range.selectNodeContents(p);
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+      })()`);
+      site.focus();
+      site.sendInputEvent({ type: "keyDown", keyCode: "Shift" });
+      site.sendInputEvent({ type: "keyUp", keyCode: "Shift" });
+    });
+    try {
+      await page
+        .getByRole("button", { name: "评论选中文字" })
+        .click({ timeout: 5000 });
+    } catch (error) {
+      const selectionCode = createRequire(import.meta.url)(
+        "../apps/desktop/browser-page.cjs",
+      ).pageSelection.toString();
+      const diagnostic = await desktop.evaluate(
+        async ({ webContents }, selectionCode) => {
+          const site = webContents
+            .getAllWebContents()
+            .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+          return {
+            selection: await site.executeJavaScriptInIsolatedWorld(1002, [
+              { code: `(${selectionCode})()` },
+            ]),
+            state: await site.executeJavaScript(
+              "({active:document.activeElement.tagName,text:getSelection().toString(),focus:document.hasFocus(),scroll:scrollY})",
+            ),
+          };
+        },
+        selectionCode,
+      );
+      const delivered = await page.evaluate(
+        () =>
+          (window as unknown as { quoteSelectionEvents: unknown[] })
+            .quoteSelectionEvents,
+      );
+      throw new Error(
+        `${String(error)} ${JSON.stringify({ diagnostic, delivered })}`,
+      );
+    }
+    const cleanQuote = page.getByRole("dialog", {
+      name: "引用 1 的评论",
+      exact: true,
+    });
+    await expect(cleanQuote).toContainText("TEST 网页画布，TEST 可见尾句");
+    await expect(cleanQuote).toContainText("TEST 第二行");
+    await expect(cleanQuote).not.toContainText("PRIVATE_");
+    await expect(cleanQuote).toBeInViewport();
+    await desktop.evaluate(async ({ webContents }) => {
+      const site = webContents
+        .getAllWebContents()
+        .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+      await site.executeJavaScript("getSelection().removeAllRanges()");
+    });
+    await cleanQuote
+      .getByRole("button", { name: "查看原文", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        desktop.evaluate(async ({ webContents }) => {
+          const site = webContents
+            .getAllWebContents()
+            .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+          return site.executeJavaScript("getSelection().toString().trim()");
+        }),
+      )
+      .toBe("TEST 网页画布，TEST 可见尾句\nTEST 第二行");
+    await openInput(page);
+    await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    await page.getByRole("button", { name: "移除引用 1", exact: true }).click();
+    await expect(input).toBeFocused();
   } finally {
     await desktop.close();
     await rm(fixture, { recursive: true, force: true });

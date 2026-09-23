@@ -133,6 +133,29 @@ declare global {
         ): Promise<BrowserView>;
         visibility(pageId: string, visible: boolean): Promise<void>;
         onInput?(callback: () => void): () => void;
+        onSelection?(
+          callback: (
+            selection: null | {
+              text: string;
+              title: string;
+              url: string;
+              projectId: string;
+              pageId: string;
+              epoch: string;
+              point: { x: number; y: number };
+              viewport: { width: number; height: number };
+              anchor: import("../../../packages/core/src/text-quotes.js").TextQuote["anchor"];
+            },
+          ) => void,
+        ): () => void;
+        reveal?(
+          pageId: string,
+          request: {
+            url: string;
+            text: string;
+            anchor?: import("../../../packages/core/src/text-quotes.js").TextQuote["anchor"];
+          },
+        ): Promise<{ found: boolean }>;
         close(pageId: string): Promise<void>;
       };
       sources: {

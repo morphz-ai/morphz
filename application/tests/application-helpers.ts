@@ -6,7 +6,7 @@ export async function openLibrary(page: Page) {
     page.getByRole("region", { name: "认知应用工作空间" }),
   ).toBeVisible();
   const contents = page.getByRole("button", {
-    name: "查看本空间内容",
+    name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
   // Let a newly revealed toolbar reach the native compositor before clicking.

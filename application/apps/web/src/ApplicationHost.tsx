@@ -49,6 +49,7 @@ import type { InputIntent } from "../../../packages/core/src/input-intent.js";
 import { ScriptStudio, type ScriptComposeResult } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
 import { BrowserHost } from "./BrowserHost.js";
+import { useTextQuotes } from "./TextQuotes.js";
 import type { BrowserView } from "./desktop.js";
 import { Reader, type ReadingCompose } from "./Reader.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
@@ -672,6 +673,9 @@ function SandboxApplication({
   ) => void;
   onNotice: (text: string) => void;
 }) {
+  const textQuotes = useTextQuotes();
+  const latestTextQuotes = useRef(textQuotes);
+  latestTextQuotes.current = textQuotes;
   const frame = useRef<HTMLIFrameElement>(null),
     channel = useRef(crypto.randomUUID()),
     surfaceReady = useRef(false),
@@ -801,6 +805,63 @@ function SandboxApplication({
         };
         let result: unknown = null;
         switch (request.method) {
+          case "commentText": {
+            if (!manifest.permissions.includes("input.compose"))
+              throw new Error("应用没有输入权限。");
+            const a = request.artifactId
+              ? artifact(request.artifactId)
+              : undefined;
+            const revision = request.revision ?? a?.revision;
+            const version = a?.versions.find((v) => v.revision === revision);
+            if (a && !version) throw new Error("引用的版本不存在。");
+            const bounds = frame.current!.getBoundingClientRect();
+            const quoteId = latestTextQuotes.current?.comment({
+              point: {
+                x:
+                  bounds.left +
+                  Math.max(
+                    0,
+                    Math.min(
+                      bounds.width,
+                      request.point?.x ?? bounds.width / 2,
+                    ),
+                  ),
+                y:
+                  bounds.top +
+                  Math.max(
+                    0,
+                    Math.min(
+                      bounds.height,
+                      request.point?.y ?? bounds.height / 2,
+                    ),
+                  ),
+              },
+              quote: {
+                id: requestId,
+                text: request.text,
+                comment: request.comment ?? "",
+                anchor: request.anchor,
+                source:
+                  a && version
+                    ? {
+                        kind: "artifact",
+                        projectId: a.projectId,
+                        artifactId: a.id,
+                        revision: version.revision,
+                        title: version.title,
+                      }
+                    : {
+                        kind: "surface",
+                        projectId: instance.workspaceId,
+                        applicationInstanceId: instance.id,
+                        title: manifest.title,
+                      },
+              },
+            });
+            if (!quoteId) throw new Error("暂时无法添加评论，请稍后重试。");
+            result = { prepared: true, quoteId };
+            break;
+          }
           case "ready":
             result = context();
             break;

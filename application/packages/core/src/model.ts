@@ -23,6 +23,7 @@ import { assertProjectWritable, projectManager } from "./projects.js";
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
 import { continuationSchema } from "./continuation.js";
+import { textQuotesSchema } from "./text-quotes.js";
 import {
   localFileReferenceSchema,
   directoryGrantSchema,
@@ -392,6 +393,7 @@ export const stateSchema = z
           artifactRevision: z.number().int().positive().nullable(),
           selection: z.string().max(10000),
           body: z.string().trim().max(30000),
+          textQuotes: textQuotesSchema.optional(),
           attachments: z.array(inputAttachmentSchema).max(8).optional(),
           browser: browserReferenceSchema.optional(),
           localFile: localFileReferenceSchema.optional(),
@@ -688,6 +690,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       artifactRevision: z.number().int().positive().nullable(),
       selection: z.string().max(10000),
       body: z.string().trim().max(30000),
+      textQuotes: textQuotesSchema.optional(),
       attachments: z.array(inputAttachmentSchema).max(8).optional(),
       browser: browserReferenceSchema.optional(),
       localFile: localFileReferenceSchema.optional(),
@@ -696,7 +699,10 @@ export const operationSchema = z.discriminatedUnion("type", [
     })
     .strict()
     .refine(
-      (value) => !!value.body.trim() || !!value.attachments?.length,
+      (value) =>
+        !!value.body.trim() ||
+        !!value.attachments?.length ||
+        !!value.textQuotes?.length,
       "请输入文字或添加附件。",
     ),
 ]);
@@ -1938,9 +1944,70 @@ export function applyCommand(
         "invalid",
         "本机文件引用不能与另一对象或应用混用。",
       );
-    if (!op.body.trim() && !op.attachments?.length)
+    if (!op.body.trim() && !op.attachments?.length && !op.textQuotes?.length)
       throw new DomainError("invalid", "请输入文字或添加附件。");
     const project = checkProject(state, op.projectId, access);
+    for (const { source: quote } of op.textQuotes ?? []) {
+      checkProject(state, quote.projectId, access);
+      if (quote.kind === "message") {
+        checkConversation(state, quote.projectId, quote.conversationId, access);
+        const source =
+          quote.inputId &&
+          state.inputs.find((input) => input.id === quote.inputId);
+        if (
+          quote.inputId &&
+          (!source ||
+            source.projectId !== quote.projectId ||
+            discussionId(source) !== quote.conversationId)
+        )
+          throw new DomainError(
+            "invalid",
+            "引用的原消息已不可用，请检查引用后重试。",
+          );
+      } else if (quote.kind === "artifact" || quote.kind === "reading") {
+        const source = state.artifacts.find((a) => a.id === quote.artifactId);
+        if (
+          !source ||
+          source.projectId !== quote.projectId ||
+          !source.versions.some((v) => v.revision === quote.revision)
+        )
+          throw new DomainError(
+            "invalid",
+            "引用的内容版本已不可用，请检查引用后重试。",
+          );
+      } else if (quote.kind === "script") {
+        const source = state.scriptProductions.find(
+          (p) => p.id === quote.productionId,
+        );
+        const item = source?.items.find((i) => i.id === quote.entryId);
+        const candidate = source?.candidates.find(
+          (c) => c.id === quote.candidateId,
+        );
+        if (
+          !source ||
+          source.projectId !== quote.projectId ||
+          (quote.entryId &&
+            !item?.versions.some((v) => v.revision === quote.revision)) ||
+          (quote.candidateId &&
+            (!candidate ||
+              candidate.targetId !== quote.entryId ||
+              candidate.baseRevision !== quote.revision))
+        )
+          throw new DomainError(
+            "invalid",
+            "引用的剧本已不可用，请检查引用后重试。",
+          );
+      } else if (quote.kind === "surface" && quote.applicationInstanceId) {
+        const source = state.applicationInstances.find(
+          (i) => i.id === quote.applicationInstanceId,
+        );
+        if (!source || source.workspaceId !== quote.projectId)
+          throw new DomainError(
+            "invalid",
+            "引用的应用已不可用，请检查引用后重试。",
+          );
+      }
+    }
     const conversationId = discussionId(op);
     if (op.newConversation) {
       if (actor.kind !== "human" || spaceKind(project) !== "project")
@@ -2076,6 +2143,9 @@ export function applyCommand(
       selection: op.selection,
       body: op.body,
       author: { ...access },
+      ...(op.textQuotes?.length
+        ? { textQuotes: structuredClone(op.textQuotes) }
+        : {}),
       targetActantId: op.targetActantId,
       ...(op.attachments?.length ? { attachments: op.attachments } : {}),
       ...(op.browser ? { browser: op.browser } : {}),

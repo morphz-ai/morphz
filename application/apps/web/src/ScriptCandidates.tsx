@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, CheckCheck, X } from "lucide-react";
+import { quoteSource } from "./text-quote-dom.js";
 import {
   scriptCandidateStale,
   type ScriptDraft,
@@ -141,6 +142,7 @@ export function ScriptCandidates({
       </nav>
       <article
         className="script-candidate-detail"
+        {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${c.draft.title} · 候选 ${ordinal}`, productionId: production.id, entryId: item.id, revision: c.baseRevision, candidateId: c.id })}
         key={c.id}
         data-script-result-id={c.id}
         data-delivery-target={deliveryTarget?.candidateId === c.id || undefined}

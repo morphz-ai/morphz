@@ -1,0 +1,223 @@
+.app [data-quote-ui] {
+  -webkit-app-region: no-drag;
+}
+::highlight(morphz-text-quotes) {
+  background: color-mix(in srgb, #42b4c5 22%, transparent);
+}
+.app .text-quote-select,
+.app .text-quote-editor,
+.app .text-quote-marker {
+  position: fixed;
+  z-index: 110;
+}
+.app .text-quote-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--accent-strong);
+  box-shadow: 0 3px 12px var(--shadow);
+  font-size: 13px;
+}
+.app .text-quote-editor {
+  width: min(320px, calc(100vw - 16px));
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 8px 30px var(--shadow);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+}
+.text-quote-editor header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.text-quote-editor header > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.app .text-quote-editor .icon-button {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 4px;
+  box-shadow: none;
+  border: 0;
+  background: transparent;
+}
+.text-quote-editor blockquote {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--accent);
+  padding: 2px 8px;
+  max-height: 72px;
+  overflow: auto;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app .text-quote-editor textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 7px 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.text-quote-editor footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  gap: 8px;
+  background: transparent;
+  padding: 0;
+}
+.app .text-quote-editor footer button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.app .text-quote-origin {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+.text-quote-number,
+.app .text-quote-marker {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 19px;
+  min-width: 19px;
+  height: 19px;
+  min-height: 19px;
+  border-radius: 6px;
+  background: var(--tint);
+  color: var(--accent-strong);
+  font: 600 11px/1 system-ui;
+  flex: 0 0 auto;
+}
+.app .text-quote-marker {
+  padding: 0;
+  border: 1px solid var(--accent);
+  box-shadow: none;
+}
+.text-quote-drafts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: min(120px, 20vh);
+  overflow: auto;
+  padding: 4px;
+  margin-bottom: 4px;
+}
+.text-quote-chip {
+  display: flex;
+  max-width: min(260px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--soft);
+  min-width: 0;
+}
+.app .text-quote-chip button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 5px;
+  min-height: 28px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  text-align: left;
+}
+.text-quote-chip button > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.text-quote-chip .text-quote-remove {
+  flex: 0 0 26px;
+  justify-content: center;
+}
+.text-quote-comment-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  flex: 0 0 auto;
+}
+.sent-text-quotes {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.app .sent-text-quote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 0;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: var(--tint);
+  color: var(--ink);
+  box-shadow: none;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.sent-text-quote > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.sent-text-quote small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.sent-text-quote > span > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.text-quote-comment {
+  margin: 5px 8px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.app .text-quote-select:hover,
+.app .text-quote-chip button:hover,
+.app .sent-text-quote:hover {
+  background: var(--hover);
+}
+.conversation-message[data-quote-revealed] {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
