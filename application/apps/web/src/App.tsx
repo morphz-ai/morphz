@@ -2823,7 +2823,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 {conversationVisible && (
                   <Conversation
                     toolbarTarget={conversationToolbarTarget}
-                    onReturnToLatest={() =>
+                    onFocusComposer={() =>
                       input.current?.focus({ preventScroll: true })
                     }
                     focusedApplicationId={conversationFocus.applicationId}

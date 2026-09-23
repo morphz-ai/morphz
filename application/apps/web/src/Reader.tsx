@@ -179,7 +179,15 @@ export function Reader(props: ReaderProps) {
           );
           const label =
             a.content.kind === "publication"
-              ? a.content.format.toUpperCase()
+              ? {
+                  epub: "EPUB",
+                  docx: "DOCX",
+                  doc: "DOC",
+                  rtf: "RTF",
+                  html: "HTML",
+                  markdown: "Markdown",
+                  text: "TXT",
+                }[a.content.format]
               : a.content.kind === "pdf"
                 ? "PDF"
                 : "Markdown";

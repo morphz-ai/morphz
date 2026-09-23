@@ -60,9 +60,9 @@ export function Conversation({
   focusedArtifactId,
   focusedApplicationId,
   toolbarTarget,
-  onReturnToLatest,
+  onFocusComposer,
 }: {
-  onReturnToLatest?: () => void;
+  onFocusComposer?: () => void;
   toolbarTarget?: HTMLElement | null;
   focusedArtifactId?: string;
   focusedApplicationId?: string;
@@ -105,6 +105,12 @@ export function Conversation({
     Record<string, { pending: boolean; error: string }>
   >({});
   async function stopResponse(inputId: string) {
+    // The stop button is disabled, then removed when cancellation completes.
+    // Hand focus to a stable control synchronously, before either change, so
+    // stopping is not mistaken for leaving the unpinned exchange. Never focus
+    // from the async reply: the user may have navigated elsewhere by then.
+    onFocusComposer?.();
+    if (!onFocusComposer) scroller.current?.focus({ preventScroll: true });
     setStopStates((states) => ({
       ...states,
       [inputId]: { pending: true, error: "" },
@@ -154,7 +160,7 @@ export function Conversation({
       // otherwise looks like leaving the unpinned exchange. Do not steal
       // focus when ordinary scrolling or new content reaches the bottom.
       if (latestButton.current === document.activeElement) {
-        onReturnToLatest?.();
+        onFocusComposer?.();
         if (latestButton.current === document.activeElement)
           scroller.current?.focus({ preventScroll: true });
       }

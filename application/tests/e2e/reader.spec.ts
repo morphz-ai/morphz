@@ -25,7 +25,7 @@ async function setup(page: Page) {
   await expect(library).toBeVisible();
 }
 async function importBook(page: Page) {
-  const name = `TEST 阅读 ${randomUUID().slice(0, 8)}.md`;
+  const name = `TEST 阅读长标题验收 ${randomUUID().slice(0, 8)} 人物关系与原文依据及跨章节讨论.md`;
   const body =
     "# 周纪一\n\n先王慎德。\n\n先王慎德。第二处原文。\n\n" +
     Array.from(
@@ -112,6 +112,9 @@ test("常见阅读格式走同一导入、选文标注和恢复流程，不隐�
     await (await picker).setFiles(join(directory, format.name));
     const body = page.locator(".reading-app:visible .reader-text");
     await expect(body).toContainText(format.text);
+    const title = await page
+      .locator(".reading-app:visible > header h2")
+      .innerText();
     await body.evaluate((root, expected) => {
       const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       let node: Node | null;
@@ -147,6 +150,14 @@ test("常见阅读格式走同一导入、选文标注和恢复流程，不隐�
       page.locator(".reader-mark").filter({ hasText: format.text }),
     ).toBeVisible();
     await page.getByRole("button", { name: "全部读物", exact: true }).click();
+    if (format.name.endsWith(".md") || format.name.endsWith(".txt")) {
+      const label = format.name.endsWith(".md") ? "Markdown" : "TXT";
+      await expect(
+        page
+          .getByRole("button", { name: `阅读：${title}`, exact: true })
+          .filter({ has: page.getByText(label, { exact: true }) }),
+      ).toBeVisible();
+    }
   }
   expect((await snapshot(page)).workspace.inputs.length).toBe(
     before.workspace.inputs.length,

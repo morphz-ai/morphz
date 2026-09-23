@@ -249,7 +249,13 @@ try {
   await page.screenshot({
     path: join(fixture, "stream-after-page-change.png"),
   });
-  await page.getByRole("button", { name: "停止这次处理", exact: true }).click();
+  const stop = page.getByRole("button", {
+    name: "停止这次处理",
+    exact: true,
+  });
+  await stop.focus();
+  await stop.press("Enter");
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toBeFocused();
   await expect
     .poll(
       async () =>
