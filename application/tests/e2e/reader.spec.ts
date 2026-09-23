@@ -398,13 +398,17 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await expect(
     page.getByLabel("引用 1 的评论（可选）", { exact: true }),
   ).toHaveValue(/简短解释这段原文/);
+  await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
-  ).toContainText(title);
+    page
+      .getByRole("group", { name: "选文与评论" })
+      .getByRole("button", { name: "查看引用 1 的原文", exact: true }),
+  ).toHaveAttribute("title", new RegExp(title));
   await expect(
-    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
-  ).not.toContainText("不剧透");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+    page
+      .getByRole("group", { name: "选文与评论" })
+      .getByRole("button", { name: "查看引用 1 的原文", exact: true }),
+  ).not.toHaveAttribute("title", /不剧透/);
   // Turning pages must never rewrite the prepared request.
   await page.getByRole("button", { name: "目录", exact: true }).click();
   await page

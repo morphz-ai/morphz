@@ -98,16 +98,16 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
   await expect(drafts).toContainText(selected);
   await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   await selectText(reply.locator("[data-quotable]"), selected);
   await quoteButton.click();
   await expect(drafts.locator(".text-quote-chip")).toHaveCount(1);
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await selectText(reply.locator("[data-quotable]"), "可以比较多个方案。");
   await quoteButton.click();
   await expect(drafts.locator(".text-quote-chip")).toHaveCount(2);
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await drafts.getByRole("button", { name: "移除引用 2", exact: true }).click();
   await expect(drafts.locator(".text-quote-chip")).toHaveCount(1);
   await drafts.getByRole("button", { name: "编辑引用 1 的评论" }).click();
@@ -115,7 +115,7 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
     .getByLabel("引用 1 的评论（可选）")
     .fill("先判断问题的依据是什么？");
   await page.screenshot({ path: info.outputPath("inline-comment.png") });
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page.getByLabel("AI 输入内容").fill("请举一个具体例子。");
   await page.reload();
   await openInput(page);
@@ -150,6 +150,135 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
   await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
 });
 
+test("评论只呈现两行输入，失焦保留草稿，窄窗和明暗主题不增加重复内容", async ({
+  page,
+}, info) => {
+  const { reply } = await fixture(page);
+  const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
+  const editor = page.getByRole("dialog", {
+    name: "引用 1 的评论",
+    exact: true,
+  });
+  const comment = page.getByLabel("引用 1 的评论（可选）");
+  const input = page.getByLabel("AI 输入内容", { exact: true });
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 760 });
+    await page.emulateMedia({ colorScheme: width === 390 ? "dark" : "light" });
+    await selectText(reply.locator("[data-quotable]"), "再选择工具。");
+    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await expect(comment).toBeFocused();
+    const box = (await editor.boundingBox())!;
+    expect(box.width).toBeLessThanOrEqual(260);
+    expect(box.height).toBeLessThanOrEqual(60);
+    expect(box.x).toBeGreaterThanOrEqual(8);
+    expect(box.x + box.width).toBeLessThanOrEqual(width - 8);
+    expect(box.y).toBeGreaterThanOrEqual(8);
+    expect(box.y + box.height).toBeLessThanOrEqual(752);
+    await expect(
+      editor.locator("header, blockquote, footer, button"),
+    ).toHaveCount(0);
+    await expect(comment).toHaveAttribute("rows", "2");
+    expect(
+      await comment.evaluate((node) => getComputedStyle(node).outlineStyle),
+    ).toBe("none");
+    await comment.fill("TEST 紧凑评论");
+    await comment.press("Enter");
+    await comment.pressSequentially("TEST");
+    await expect(comment).toHaveValue("TEST 紧凑评论\nTEST");
+    await page.screenshot({
+      path: info.outputPath(`compact-comment-${width}.png`),
+    });
+    await input.click();
+    await expect(editor).toHaveCount(0);
+    await expect(input).toBeFocused();
+    await expect(drafts).toContainText("TEST 紧凑评论");
+    await drafts
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+      .click();
+    await expect(comment).toHaveValue("TEST 紧凑评论\nTEST");
+    // A keyboard blur must dismiss too, without moving focus back to the editor.
+    await comment.press("Tab");
+    await expect(editor).toHaveCount(0);
+    await expect(drafts.locator(".text-quote-chip")).toHaveCount(1);
+  }
+  await page.reload();
+  await openInput(page);
+  await drafts
+    .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+    .click();
+  await expect(comment).toHaveValue("TEST 紧凑评论\nTEST");
+  await comment.press("Escape");
+  await expect(input).toBeFocused();
+});
+
+test("行中引用的编号位于正文外侧，同一行多个编号不重叠，点击可切换和收起评论", async ({
+  page,
+}, info) => {
+  const { reply } = await fixture(page);
+  const source = reply.locator("[data-quotable]");
+  for (const text of ["理解问题", "再选择工具", "代码与标点"]) {
+    await selectText(source, text);
+    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.keyboard.press("Escape");
+  }
+  const markers = page.locator(".text-quote-marker");
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 760 });
+    await page.emulateMedia({ colorScheme: width === 390 ? "dark" : "light" });
+    await source.scrollIntoViewIfNeeded();
+    await expect(markers).toHaveCount(3);
+    await expect
+      .poll(async () => {
+        const body = (await source.boundingBox())!;
+        const badges = await markers.evaluateAll((nodes) =>
+          nodes.map((node) => {
+            const r = node.getBoundingClientRect();
+            return {
+              left: r.left,
+              right: r.right,
+              top: r.top,
+              bottom: r.bottom,
+            };
+          }),
+        );
+        return badges.every(
+          (r, i) =>
+            // The whole content column, not just the selected word, stays clear.
+            r.right <= body.x - 2 &&
+            r.left >= 0 &&
+            r.bottom <= 760 &&
+            badges.every(
+              (other, j) =>
+                i === j ||
+                r.right <= other.left ||
+                r.left >= other.right ||
+                r.bottom + 2 <= other.top ||
+                r.top >= other.bottom + 2,
+            ),
+        );
+      })
+      .toBe(true);
+    const first = markers.filter({ hasText: /^1$/ });
+    const second = markers.filter({ hasText: /^2$/ });
+    const comment = page.getByRole("dialog", {
+      name: "引用 1 的评论",
+      exact: true,
+    });
+    await first.click();
+    await comment.getByRole("textbox").fill("TEST 第一处");
+    await first.click();
+    await expect(comment).toHaveCount(0);
+    await first.click();
+    await expect(comment.getByRole("textbox")).toHaveValue("TEST 第一处");
+    await second.click();
+    await expect(page.getByLabel("引用 2 的评论（可选）")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await page.screenshot({
+      path: info.outputPath(`quote-gutter-${width}.png`),
+    });
+  }
+});
+
 test("失败保留引用与正文，可重试；只引用也能发送", async ({ page }) => {
   const { reply } = await fixture(page);
   await selectText(
@@ -157,7 +286,7 @@ test("失败保留引用与正文，可重试；只引用也能发送", async ({
     "第二段：可以比较多个方案。",
   );
   await page.getByRole("button", { name: "评论选中文字" }).click();
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
   await page.route(
     "**/api/commands",
@@ -224,7 +353,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
   );
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("第一处：历史消息");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   const boot: Boot = await (await page.request.get("/api/workspace")).json();
   const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
   const title = "TEST 统一评论文档 " + Date.now();
@@ -250,7 +379,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
   await selectText(documentText, "文档中的第二处意见。");
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 2 的评论（可选）").fill("第二处：文档");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论" });
   await expect(drafts.locator(".text-quote-chip")).toHaveCount(2);
   await page
@@ -285,7 +414,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     .click();
   await expect(page.getByLabel("引用 3 的评论（可选）")).toBeFocused();
   await page.getByLabel("引用 3 的评论（可选）").fill("第三处：阅读第一章");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "收起 AI 输入框", exact: true })
     .click();
@@ -299,8 +428,11 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     name: "引用 3 的评论",
     exact: true,
   });
-  await expect(comment).toContainText("第一章的原文保持不变。");
-  await comment.getByRole("button", { name: "查看原文" }).click();
+  await expect(comment.getByRole("textbox")).toHaveValue("第三处：阅读第一章");
+  await expect(
+    drafts.getByRole("button", { name: "编辑引用 3 的评论" }),
+  ).toHaveAttribute("title", /第一章的原文保持不变。/);
+  await drafts.getByRole("button", { name: "查看引用 3 的原文" }).click();
   await expect(reader).toContainText("第一章的原文保持不变。");
   await openInput(page);
   await page
@@ -362,13 +494,15 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
     node.value.slice(node.selectionStart, node.selectionEnd),
   );
   await page.getByRole("button", { name: "评论选中文字" }).click();
-  await expect(
-    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
-  ).toContainText("编辑中");
+  const draftSource = page
+    .getByRole("group", { name: "选文与评论" })
+    .getByRole("button", { name: "查看引用 1 的原文", exact: true });
   await page
     .getByLabel("引用 1 的评论（可选）")
     .fill("TEST 讨论草稿，不保存正文");
-  await page.getByRole("button", { name: "查看原文", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(draftSource).toHaveAttribute("title", /编辑中/);
+  await draftSource.click();
   await expect(field).toBeFocused();
   expect(
     await field.evaluate((node: HTMLTextAreaElement) =>
@@ -401,7 +535,7 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
   );
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 原 Session 评论");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   const title = "TEST 独立引用 " + Date.now();
   await seedCenter(page, { type: "create-project", title });
   await page
@@ -424,7 +558,7 @@ test("服务器已保存但回执丢失时，原评论可重试且只保存一�
   await selectText(reply.locator("[data-quotable]"), "再选择工具。");
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 回执丢失");
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   const ids: string[] = [];
   await page.route("**/api/commands", async (route) => {
     const request = route.request().postDataJSON();

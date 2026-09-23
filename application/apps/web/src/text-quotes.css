@@ -24,80 +24,23 @@
   font-size: 13px;
 }
 .app .text-quote-editor {
-  width: min(320px, calc(100vw - 16px));
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  background: var(--paper);
-  color: var(--ink);
-  box-shadow: 0 8px 30px var(--shadow);
-  max-height: calc(100dvh - 16px);
-  overflow: auto;
-}
-.text-quote-editor header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.text-quote-editor header > span:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-.app .text-quote-editor .icon-button {
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
-  min-height: 26px;
-  padding: 4px;
-  box-shadow: none;
-  border: 0;
-  background: transparent;
-}
-.text-quote-editor blockquote {
-  margin: 0 0 8px;
-  border-left: 2px solid var(--accent);
-  padding: 2px 8px;
-  max-height: 72px;
-  overflow: auto;
-  font-size: 13px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  width: min(260px, calc(100vw - 16px));
 }
 .app .text-quote-editor textarea {
+  display: block;
   width: 100%;
-  min-height: 70px;
-  padding: 7px 9px;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 2px 8px var(--shadow);
   font-size: 13px;
   line-height: 1.5;
-  resize: vertical;
-}
-.text-quote-editor footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  gap: 8px;
-  background: transparent;
-  padding: 0;
-}
-.app .text-quote-editor footer button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 28px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.app .text-quote-origin {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  box-shadow: none;
+  resize: none;
+  outline: none;
 }
 .text-quote-number,
 .app .text-quote-marker {
@@ -114,9 +57,18 @@
   font: 600 11px/1 system-ui;
   flex: 0 0 auto;
 }
-.app .text-quote-marker {
+.app .text-quote-marker,
+.app .text-quote-marker:hover:not(:disabled) {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
   padding: 0;
-  border: 1px solid var(--accent);
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 700;
   box-shadow: none;
 }
 .text-quote-drafts {
@@ -149,7 +101,7 @@
   font-size: 12px;
   text-align: left;
 }
-.text-quote-chip button > span:nth-child(2) {
+.text-quote-chip .text-quote-edit > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -157,6 +109,10 @@
 .text-quote-chip .text-quote-remove {
   flex: 0 0 26px;
   justify-content: center;
+}
+.app .text-quote-chip .text-quote-source {
+  flex: 0 0 auto;
+  padding-right: 0;
 }
 .text-quote-comment-dot {
   width: 5px;

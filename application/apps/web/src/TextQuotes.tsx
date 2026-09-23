@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { MessageSquarePlus, X, ArrowUpLeft, Check } from "lucide-react";
+import { MessageSquarePlus, X, ArrowUpLeft } from "lucide-react";
 import {
   sameQuote,
   textQuotesSchema,
@@ -24,11 +24,15 @@ import {
   type QuoteSelection,
 } from "./text-quote-dom.js";
 
+type CommentPoint = QuotePoint & { above?: boolean };
+const markerSize = 18;
+const markerGap = 4;
 type QuoteActions = {
   reveal?: { quote: TextQuote; token: string } | null;
   comment: (selection?: QuoteSelection | null) => string | undefined;
   offer: (selection: QuoteSelection | null) => void;
-  edit: (id: string, point?: QuotePoint) => void;
+  edit: (id: string, point?: CommentPoint) => void;
+  open: (id: string) => void;
   remove: (id: string) => void;
 };
 const Context = createContext<QuoteActions | null>(null);
@@ -79,13 +83,13 @@ export function TextQuoteProvider({
   const [offer, setOffer] = useState<QuoteSelection | null>(null);
   const [editing, setEditing] = useState<{
     id: string;
-    point: QuotePoint;
+    point: CommentPoint;
   } | null>(null);
   const [markers, setMarkers] = useState<
     { id: string; index: number; point: QuotePoint }[]
   >([]);
   const panel = useRef<HTMLDivElement>(null);
-  const [bounds, setBounds] = useState({ width: 320, height: 240 });
+  const [bounds, setBounds] = useState({ width: 260, height: 53 });
   useEffect(() => {
     setOffer(null);
     setEditing(null);
@@ -125,7 +129,7 @@ export function TextQuoteProvider({
     setEditing(null);
     if (focus) latest.current.onFocusComposer();
   };
-  function edit(id: string, point?: QuotePoint) {
+  function edit(id: string, point?: CommentPoint) {
     if (latest.current.disabled) return;
     const quote = latest.current.quotes.find((q) => q.id === id);
     if (!quote) return;
@@ -142,6 +146,13 @@ export function TextQuoteProvider({
           ? { x: rect.right, y: rect.bottom }
           : { x: innerWidth / 2, y: innerHeight / 2 }),
     });
+  }
+  function open(id: string) {
+    const quote = latest.current.quotes.find((q) => q.id === id);
+    if (!quote) return;
+    setOffer(null);
+    finish();
+    latest.current.onOpen(quote);
   }
   function comment(selection = captureTextQuote()) {
     if (!selection || latest.current.disabled) return;
@@ -246,6 +257,7 @@ export function TextQuoteProvider({
       return;
     }
     let frame = 0;
+    const work = document.querySelector(".primary-panel");
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
@@ -270,20 +282,65 @@ export function TextQuoteProvider({
           const root = (field ?? range?.startContainer.parentElement)?.closest(
             "[data-text-source]",
           );
-          if (at && !root?.contains(at) && !at.closest("[data-quote-ui]"))
+          if (
+            !root ||
+            (at && !root.contains(at) && !at.closest("[data-quote-ui]"))
+          )
             return [];
+          // Use the content column's gutter, never the selected word's inline x.
+          // A word can start in the middle of a sentence; placing a badge before
+          // that word masks the preceding text. Reader padding is usable gutter.
+          const box = (field ?? root).getBoundingClientRect();
+          const style = getComputedStyle(root);
+          const left = box.left + (field ? 0 : parseFloat(style.paddingLeft));
+          const right =
+            box.right - (field ? 0 : parseFloat(style.paddingRight));
+          const workBox = work?.getBoundingClientRect();
+          const minX = Math.max(0, workBox?.left ?? 0);
+          const maxX = Math.min(innerWidth, workBox?.right ?? innerWidth);
+          const x =
+            left - markerSize - markerGap >= minX
+              ? left - markerSize - markerGap
+              : right + markerGap + markerSize <= maxX
+                ? right + markerGap
+                : null;
+          // Edge-to-edge surfaces keep their highlight and composer chip; never
+          // cover text or the neighboring application to force in a badge.
+          if (x === null) return [];
           return [
             {
               id: q.id,
               index,
               point: {
-                x: Math.min(innerWidth - 24, Math.max(4, rect.left - 22)),
-                y: Math.max(4, rect.top),
+                x,
+                y: Math.max(
+                  4,
+                  rect.top + Math.max(0, (rect.height - markerSize) / 2),
+                ),
               },
             },
           ];
         });
-        setMarkers(next);
+        // Several selections on one line share a gutter, not the same hit area.
+        const placed: typeof next = [];
+        for (const marker of next.sort(
+          (a, b) => a.point.y - b.point.y || a.index - b.index,
+        )) {
+          let overlap;
+          while (
+            (overlap = placed.find(
+              (other) =>
+                marker.point.x < other.point.x + markerSize + markerGap &&
+                marker.point.x + markerSize + markerGap > other.point.x &&
+                marker.point.y < other.point.y + markerSize + markerGap &&
+                marker.point.y + markerSize + markerGap > other.point.y,
+            ))
+          )
+            marker.point.y = overlap.point.y + markerSize + markerGap;
+          if (marker.point.y + markerSize <= innerHeight - 4)
+            placed.push(marker);
+        }
+        setMarkers(placed);
         if (typeof Highlight !== "undefined" && CSS.highlights)
           CSS.highlights.set("morphz-text-quotes", new Highlight(...ranges));
       });
@@ -303,7 +360,6 @@ export function TextQuoteProvider({
       )
         update();
     });
-    const work = document.querySelector(".primary-panel");
     if (work)
       observer.observe(work, {
         childList: true,
@@ -321,13 +377,19 @@ export function TextQuoteProvider({
   const quote = editing && quotes.find((q) => q.id === editing.id);
   const index = quote ? quotes.indexOf(quote) + 1 : 0;
   const host = document.querySelector(".app");
-  const position = (point: QuotePoint, width: number, height: number) => ({
+  const position = (point: CommentPoint, width: number, height: number) => ({
     left: Math.max(8, Math.min(point.x - width, innerWidth - width - 8)),
-    top: Math.max(8, Math.min(point.y + 8, innerHeight - height - 8)),
+    top: Math.max(
+      8,
+      Math.min(
+        point.above ? point.y - height - 8 : point.y + 8,
+        innerHeight - height - 8,
+      ),
+    ),
   });
   return (
     <Context.Provider
-      value={{ comment, offer: setOffer, edit, remove, reveal }}
+      value={{ comment, offer: setOffer, edit, open, remove, reveal }}
     >
       {children}
       {host &&
@@ -354,7 +416,17 @@ export function TextQuoteProvider({
                 className="text-quote-marker"
                 style={{ left: m.point.x, top: m.point.y }}
                 aria-label={`编辑引用 ${m.index + 1} 的评论`}
-                onClick={() => edit(m.id, m.point)}
+                aria-expanded={editing?.id === m.id}
+                disabled={disabled}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() =>
+                  editing?.id === m.id
+                    ? finish(true)
+                    : edit(m.id, {
+                        x: m.point.x + markerSize + markerGap + bounds.width,
+                        y: m.point.y + markerSize,
+                      })
+                }
               >
                 {m.index + 1}
               </button>
@@ -374,32 +446,20 @@ export function TextQuoteProvider({
                   }
                 }}
               >
-                <header>
-                  <span className="text-quote-number">{index}</span>
-                  <span title={quoteSourceLabel(quote.source)}>
-                    {quoteSourceLabel(quote.source)}
-                    {quote.draft ? " · 编辑中" : ""}
-                  </span>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="关闭评论"
-                    title="关闭评论"
-                    onClick={() => finish(true)}
-                  >
-                    <X size={16} />
-                  </button>
-                </header>
-                <blockquote>{quote.text}</blockquote>
                 <textarea
                   key={quote.id}
                   autoFocus
-                  rows={3}
+                  rows={2}
                   aria-label={`引用 ${index} 的评论（可选）`}
-                  placeholder="写下你的评论…"
+                  placeholder="写下评论…"
                   maxLength={10000}
                   disabled={disabled}
                   value={quote.comment}
+                  onBlur={() =>
+                    setEditing((current) =>
+                      current?.id === quote.id ? null : current,
+                    )
+                  }
                   onChange={(e) =>
                     onChange(
                       quotes.map((q) =>
@@ -410,27 +470,6 @@ export function TextQuoteProvider({
                     )
                   }
                 />
-                <footer>
-                  <button
-                    type="button"
-                    className="text-quote-origin"
-                    onClick={() => {
-                      finish();
-                      onOpen(quote);
-                    }}
-                  >
-                    <ArrowUpLeft size={14} />
-                    查看原文
-                  </button>
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => finish(true)}
-                  >
-                    <Check size={14} />
-                    完成
-                  </button>
-                </footer>
               </div>
             )}
           </>,
@@ -459,15 +498,24 @@ export function TextQuoteDrafts({
         <div className="text-quote-chip" key={q.id}>
           <button
             type="button"
+            className="text-quote-source"
+            title={`查看原文 · ${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}`}
+            aria-label={`查看引用 ${index + 1} 的原文`}
+            onClick={() => actions?.open(q.id)}
+          >
+            <span className="text-quote-number">{index + 1}</span>
+          </button>
+          <button
+            type="button"
+            className="text-quote-edit"
             disabled={disabled}
-            title={`${quoteSourceLabel(q.source)}\n${q.text}${q.comment ? `\n${q.comment}` : ""}`}
+            title={`${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}\n${q.text}${q.comment ? `\n${q.comment}` : ""}`}
             aria-label={`编辑引用 ${index + 1} 的评论`}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
-              actions?.edit(q.id, { x: r.right, y: r.top - 250 });
+              actions?.edit(q.id, { x: r.right, y: r.top, above: true });
             }}
           >
-            <span className="text-quote-number">{index + 1}</span>
             <span>{q.comment || q.text}</span>
             {q.comment && (
               <span className="text-quote-comment-dot" aria-label="已评论" />

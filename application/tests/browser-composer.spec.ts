@@ -177,16 +177,23 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await page.getByRole("button", { name: "评论选中文字" }).click();
     await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
     await page.getByLabel("引用 1 的评论（可选）").fill("TEST 网页选文评论");
-    await expect(
-      page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
-    ).toContainText("TEST 网页画布");
+    const commentBounds = (await page
+      .locator(".text-quote-editor")
+      .boundingBox())!;
+    expect(commentBounds.width).toBeLessThanOrEqual(260);
+    expect(commentBounds.height).toBeLessThanOrEqual(60);
     await info.attach("browser-inline-comment", {
       body: await page.screenshot({
         path: info.outputPath("browser-inline-comment.png"),
       }),
       contentType: "image/png",
     });
-    await page.getByRole("button", { name: "完成", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(
+      page
+        .getByRole("group", { name: "选文与评论" })
+        .getByRole("button", { name: "编辑引用 1 的评论", exact: true }),
+    ).toHaveAttribute("title", /TEST 网页画布/);
     await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
       "TEST 网页选文评论",
     );
@@ -194,9 +201,8 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     expect((await siteState())?.node).toBe("undefined");
     await page
       .getByRole("group", { name: "选文与评论" })
-      .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+      .getByRole("button", { name: "查看引用 1 的原文", exact: true })
       .click();
-    await page.getByRole("button", { name: "查看原文", exact: true }).click();
     await expect
       .poll(() =>
         desktop.evaluate(async ({ webContents }) => {
@@ -510,18 +516,32 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       name: "引用 1 的评论",
       exact: true,
     });
-    await expect(cleanQuote).toContainText("TEST 网页画布，TEST 可见尾句");
-    await expect(cleanQuote).toContainText("TEST 第二行");
-    await expect(cleanQuote).not.toContainText("PRIVATE_");
+    const cleanDraft = page
+      .getByRole("group", { name: "选文与评论" })
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true });
     await expect(cleanQuote).toBeInViewport();
+    const zoomedCommentBounds = (await cleanQuote.boundingBox())!;
+    expect(zoomedCommentBounds.width).toBeLessThanOrEqual(260);
+    expect(zoomedCommentBounds.height).toBeLessThanOrEqual(60);
+    await expect(
+      cleanQuote.locator("header, blockquote, footer, button"),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(cleanDraft).toHaveAttribute(
+      "title",
+      /TEST 网页画布，TEST 可见尾句/,
+    );
+    await expect(cleanDraft).toHaveAttribute("title", /TEST 第二行/);
+    await expect(cleanDraft).not.toHaveAttribute("title", /PRIVATE_/);
     await desktop.evaluate(async ({ webContents }) => {
       const site = webContents
         .getAllWebContents()
         .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
       await site.executeJavaScript("getSelection().removeAllRanges()");
     });
-    await cleanQuote
-      .getByRole("button", { name: "查看原文", exact: true })
+    await page
+      .getByRole("group", { name: "选文与评论" })
+      .getByRole("button", { name: "查看引用 1 的原文", exact: true })
       .click();
     await expect
       .poll(() =>

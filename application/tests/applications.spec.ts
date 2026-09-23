@@ -190,7 +190,7 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   await expect(page.getByLabel("引用 1 的评论（可选）")).toHaveValue(
     "TEST 同一个输入框",
   );
-  await page.getByRole("button", { name: "完成", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
     "TEST 同一个输入框",
   );
