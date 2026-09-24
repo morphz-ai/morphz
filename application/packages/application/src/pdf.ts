@@ -49,7 +49,10 @@ export async function extractPdf(bytes: Buffer): Promise<string[]> {
     bytes.length > maxPdfBytes ||
     bytes.subarray(0, 5).toString() !== "%PDF-"
   )
-    throw new DomainError("invalid", "请选择有效 PDF，文件不能超过 20 MB。");
+    throw new DomainError(
+      "invalid",
+      `请选择有效 PDF，文件不能超过 ${maxPdfBytes / 1024 / 1024} MB。`,
+    );
   if (active)
     throw new DomainError("conflict", "正在处理另一份 PDF，请稍后重试。");
   active = true;

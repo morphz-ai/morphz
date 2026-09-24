@@ -10,6 +10,7 @@ import { z, ZodError } from "zod";
 import { DomainError, localAccess } from "../../../packages/core/src/model.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
+import { maxReadingFileBytes } from "../../../packages/core/src/reader.js";
 import { maxSpeechSegmentBytes } from "../../../packages/core/src/audio.js";
 import {
   appContentSecurityPolicy,
@@ -573,7 +574,7 @@ export function createAppServer(
               data: await body(
                 req,
                 url.pathname.endsWith("/reading")
-                  ? 32 * 1024 * 1024
+                  ? maxReadingFileBytes
                   : maxPdfBytes,
               ),
             }),

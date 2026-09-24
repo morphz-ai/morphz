@@ -34,7 +34,7 @@ const provider = createServer(async (req, res) => {
   assert.ok(request.stream, "Exercise the actual streaming transport");
   assert.doesNotMatch(
     JSON.stringify(request),
-    /spoilers=false|personalContext=false|forbids later text|Ask before expanding to later text/,
+    /spoilers=false|personalContext=false|no[- ]spoiler|forbids later text|Ask before expanding to later text/i,
   );
   assert.equal(
     JSON.stringify(request).includes("兼听则明"),
@@ -255,6 +255,19 @@ try {
       element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     });
     await page.getByRole("button", { name: "解释这段", exact: true }).click();
+    // Reading shortcuts use the same local comment draft as every text source.
+    // Closing this editor returns to the shared composer; it never sends alone.
+    const comment = page.getByLabel("引用 1 的评论（可选）", { exact: true });
+    await expect(comment).toBeFocused();
+    await expect(comment).toHaveValue(
+      "简短解释这段原文，优先解答字词、主语和指代。",
+    );
+    await comment.press("Escape");
+    await expect(
+      page
+        .getByRole("group", { name: "选文与评论" })
+        .getByRole("button", { name: "编辑引用 1 的评论", exact: true }),
+    ).toHaveAttribute("title", /兼听则明，偏信则暗。/);
     await page.getByLabel("AI 输入内容", { exact: true }).fill(question);
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
   };
@@ -431,18 +444,31 @@ try {
     .toBe(1);
   const final = await bridge("workspace");
   const inputs = final.workspace.inputs.filter(
-    (i) => i.reading?.book.title === book.title,
+    (i) =>
+      i.reading?.book.title === book.title ||
+      i.textQuotes?.some((quote) => quote.source.artifactId === book.id),
   );
   assert.equal(inputs.length, 2);
   assert.equal(inputs[0].conversationId, inputs[1].conversationId);
-  assert.equal(inputs[1].selection, "兼听则明，偏信则暗。");
+  assert.equal(
+    inputs[1].reading,
+    undefined,
+    "An explicit quote replaces implicit viewport metadata",
+  );
+  assert.equal(inputs[1].textQuotes.length, 1);
+  const quote = inputs[1].textQuotes[0];
+  assert.equal(quote.source.kind, "reading");
+  assert.equal(quote.source.artifactId, book.id);
+  assert.equal(quote.source.revision, book.revision);
+  assert.equal(quote.text, "兼听则明，偏信则暗。");
+  assert.equal(quote.comment, "简短解释这段原文，优先解答字词、主语和指代。");
   assert.equal(
     inputs[0].reading.location.sectionId,
-    inputs[1].reading.location.sectionId,
+    quote.source.location.sectionId,
   );
   assert.equal(
     inputs[0].reading.location.sourceId,
-    inputs[1].reading.location.sourceId,
+    quote.source.location.sourceId,
   );
   // Public delivery snapshots deliberately omit transport Session IDs.
   // Verify the actual persisted binding, not equality of undefined properties.
@@ -493,12 +519,18 @@ try {
   for (const delivery of deliveries) {
     assert.equal(
       delivery.request.message.format.version,
-      delivery.inputId === input.id ? "9" : "8",
+      delivery.inputId === input.id ? "9" : "1",
     );
-    assert.equal(
-      delivery.request.message.content.value.reading.chapter,
-      "第一章",
-    );
+    const value = delivery.request.message.content.value;
+    if (delivery.inputId === input.id)
+      assert.equal(value.reading.chapter, "第一章");
+    else {
+      assert.equal(value.reading, undefined);
+      assert.match(value.text, /兼听则明，偏信则暗。/);
+      assert.match(value.text, /简短解释这段原文/);
+      assert.match(value.text, /第一章/);
+      assert.ok(value.text.includes(book.id));
+    }
   }
   assert.equal(
     calls,
@@ -557,6 +589,7 @@ try {
         stoppedOutputRestoredAfterReload: true,
         stoppedOutputRestoredAfterDesktopAndRuntimeRestart: true,
         continuedSameSession: true,
+        unifiedQuoteCommentVerified: true,
         ordinaryChatContainsNoSource: true,
         onDemandHostReadVerified: true,
         modelCalls: calls,
@@ -570,6 +603,19 @@ try {
     fixture,
   );
 } catch (error) {
+  const failedPage = app
+    ?.windows()
+    .find((candidate) => candidate.url() === "morphz://app/");
+  if (failedPage && !failedPage.isClosed()) {
+    await failedPage
+      .screenshot({ path: join(fixture, "failure.png") })
+      .catch(() => {});
+    const visible = await failedPage
+      .locator("body")
+      .ariaSnapshot()
+      .catch(() => "Window unavailable");
+    writeFileSync(join(fixture, "failure-ui.txt"), visible);
+  }
   console.error(logs.split(token).join("[redacted]"));
   console.error("Synthetic evidence retained:", fixture);
   throw error;

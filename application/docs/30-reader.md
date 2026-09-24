@@ -2,6 +2,8 @@
 
 状态：2026-09-24 用户发现高亮无法从原文直接取消。此前的验收覆盖了添加与恢复，却遗漏了原文内编辑、删除等基本操作，不能作为「阅读体验已完整验收」的证据。本轮修复与验证范围见下；2026-09-23 的格式、OCR 和 Session 记录保留为当时的专项证据，不代表全部用户流程或格式变体已经通过。
 
+2026-09-24 继续验收又修复了 Host 工具说明残留的「不剧透」策略和 PDF 20/32 MB 导入上限不一致；397 项单元集成、23 项界面、百万字阅读及真实 Runtime 链路复测通过。公开古籍扫描页实测暴露识别错漏，未达到质量验收标准。详见[继续验收记录](./reader-followup-acceptance-2026-09-24.md)，不以流程通过替代识别质量。
+
 ## 标注操作纠正（2026-09-24）
 
 参考 [Apple Books 的高亮和笔记管理](https://support.apple.com/zh-cn/guide/books/ibks3975f128/mac)及 [Kindle 的原文标注菜单](https://digprjsurvey.amazon.com/csad/help/node/TTqOsFUasbkY9S4V9x)：原文上的标注必须能直接管理，侧栏是汇总入口而不是唯一删除入口。
@@ -174,15 +176,15 @@
 ### 代码与运行
 
 - `packages/core/src/reader*.ts`：阅读上下文、类型化操作、不可变 OCR 来源和布局排序。
-- `packages/application/src/reader*.ts`、`store.ts`：有界解析 Worker、持久化、权限、模型缓存和 Agent 工具。数据库 schema 15；阅读正文按节读取，不塞进频繁 workspace 快照。
+- `packages/application/src/reader*.ts`、`store.ts`：有界解析 Worker、持久化、权限、模型缓存和 Agent 工具。数据库 schema 16；阅读正文按节读取，不塞进频繁 workspace 快照。
 - `apps/web/src/Reader*.tsx`：同一个阅读应用、书库/原文/笔记/引用；`reader-dom.ts` 对齐真实 DOM 与规范文字偏移。
 - `apps/desktop/reader-ocr*.cjs` 和 `apps/web/ocr.html`：一次性隔离 OCR 进程；Web/远程服务无本地引擎时明确提示，不悄悄调用云 OCR。
-- `session-io.ts`：沿用既有 Session/Agent/记忆链路；新输入固定 reading v6 引用，已存旧消息格式不改写。书籍内容明确为无授权的外部资料，不新建读书 Agent/Mind。
+- `session-io.ts`：沿用既有 Session/Agent/记忆链路；当前位置输入用 v9，统一选文评论以 `textQuotes` 传递固定原文和来源（本轮普通选文路径使用既有 v1 输入）。书籍内容明确为无授权的外部资料，不新建读书 Agent/Mind。旧专项中的 v6 记录不是当前部署要求。
 - `morphz/src/orchestrator/orchestrator.rs`（仓库根目录）与 `packages/core/src/live-conversation.ts`：持久化并恢复已经公开的部分输出；通用对话、阅读和其他认知应用共用，不属于阅读专用聊天实现。
 
 在 `application/` 执行 `npm run build`，使用原有 Desktop 启动方式。入口为工作台 → 应用 → 阅读；不要另启一套 Runtime、手动测试 profile 或工作中心。库中已有 PDF/Markdown 仍是同一个内容对象；新导入保存原文件和固定阅读来源。
 
-独立 Runtime 仅在启动时加载 `MORPHZ_HOST_TOOLS_FILE` 中的格式与工具定义；更新 Desktop 写出新 manifest 不代表旧 Runtime 已加载。部署时先确认无在途执行，保留原配置/凭据/数据库，通过该部署的原启动入口正常重载 Runtime，再核对 `/api/session-io/capabilities` 中的 `morphz.application.input@6`。不得为规避检查把引用改成普通提示词、另建 Session 或启动第二个 Runtime。本次原服务已按此完成，身份、模型和三个配置文件哈希不变；数据库备份经 integrity_check 核验。
+独立 Runtime 仅在启动时加载 `MORPHZ_HOST_TOOLS_FILE` 中的格式与工具定义；更新 Desktop 写出新 manifest 不代表旧 Runtime 已加载。部署时先确认无在途执行，保留原配置/凭据/数据库，通过该部署的原启动入口正常重载 Runtime，再核对 `/api/session-io/capabilities` 中当前位置输入 v9 及实际 Host 工具说明。不得为规避检查把引用改成普通提示词、另建 Session 或启动第二个 Runtime。2026-09-24 原服务已正常加载本轮工具说明修正，身份、模型和配置哈希不变；数据库备份经 integrity_check 核验。
 
 可重复验证命令：
 
@@ -194,10 +196,10 @@ npm run test:runtime-ipc
 npm run test:runtime-identity
 npm run test:reader-session
 node scripts/reader-fixtures.mjs
-node scripts/reader-ocr-desktop-smoke.mjs /absolute/model-fixture-directory /absolute/synthetic-scan-directory
+node scripts/reader-ocr-desktop-smoke.mjs /absolute/model-fixture-directory /absolute/scan-manifest.json
 ```
 
-格式样例生成器打印新建的临时目录，macOS 额外生成 DOC/RTF 合成文件。最后一项要求显式提供已校验的 `small-det.tar` / `small-rec.tar`，不会查找用户书库或配置。扫描生成器需要 Python 的 Pillow/reportlab/pypdf 和调用方提供的中文字体；字体与书籍均不提交。
+格式样例生成器打印新建的临时目录，macOS 额外生成 DOC/RTF 合成文件。最后一项要求显式提供已校验的 `small-det.tar` / `small-rec.tar` 和扫描清单，不会查找用户书库或配置。扫描生成器输出包含文件、来源、页码、版式和真值的 `scan-manifest.json`，需要 Python 的 Pillow/reportlab/pypdf 和调用方提供的中文字体及 face index；字体与书籍均不提交。
 
 ### 许可与未完成项
 

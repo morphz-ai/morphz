@@ -10,8 +10,70 @@ import { localAccess } from "../packages/core/src/model.js";
 import { pdfImportIssue, maxPdfBytes } from "../packages/core/src/pdf.js";
 import { searchArtifacts } from "../packages/core/src/retrieval.js";
 import { createAppServer } from "../apps/service/src/http.js";
+import { Application } from "../packages/application/src/application.js";
+import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
+import { maxReadingFileBytes } from "../packages/core/src/reader.js";
 
 const fixture = readFileSync(new URL("./fixtures/reader.pdf", import.meta.url));
+function paddedPdf(size: number) {
+  // Keep the original xref offsets valid and repeat its trailer after legal
+  // whitespace. No external sample or user document enters the regression suite.
+  const bytes = Buffer.alloc(size, 32);
+  fixture.copy(bytes);
+  const trailer = fixture.subarray(fixture.lastIndexOf("startxref"));
+  trailer.copy(bytes, size - trailer.length);
+  return bytes;
+}
+
+test("PDF 阅读和内容导入接受完整 32 MB，超限失败不产生对象", async () => {
+  const store = new WorkspaceStore(":memory:");
+  const host = new LocalApplicationConnection(new Application(store));
+  try {
+    const boot = (await host.call("workspace")) as { csrfToken: string };
+    const options = { identityGeneration: boot.csrfToken };
+    const source = paddedPdf(maxReadingFileBytes);
+    const request = {
+      commandId: randomUUID(),
+      projectId: "first-project",
+      relativePath: "TEST-large.pdf",
+      data: source,
+    };
+    const first = (await host.call("reader.import", request, options)) as {
+      entityId: string;
+    };
+    assert.deepEqual(await host.call("pdf.import", request, options), first);
+    const book = store
+      .snapshot()
+      .artifacts.find((a) => a.id === first.entityId)!;
+    assert.equal(book.content.kind, "pdf");
+    if (book.content.kind !== "pdf") throw new Error("Expected PDF");
+    assert.match(book.content.pages[0]!, /DESIGN NOTES/);
+    assert.equal(
+      store.asset(book.content.assetId)!.bytes.byteLength,
+      maxReadingFileBytes,
+    );
+    assert.equal(store.snapshot().artifacts.length, 1);
+    for (const method of ["reader.import", "pdf.import"] as const) {
+      await assert.rejects(
+        host.call(
+          method,
+          {
+            ...request,
+            commandId: randomUUID(),
+            data: Buffer.alloc(maxReadingFileBytes + 1),
+          },
+          options,
+        ),
+        /大小限制/,
+      );
+    }
+    assert.equal(store.snapshot().artifacts.length, 1);
+  } finally {
+    host.close();
+    store.close();
+  }
+});
+
 test("PDF 原文提取、按页引用、可信内容与重启保存", async () => {
   const pages = await extractPdf(fixture);
   assert.equal(pages.length, 2);
@@ -106,7 +168,7 @@ test("PDF 原文提取、按页引用、可信内容与重启保存", async () =
 });
 test("PDF 拒绝无效输入、越界来源及未解析伪造资料", async () => {
   await assert.rejects(extractPdf(Buffer.from("not pdf")), /有效 PDF/);
-  await assert.rejects(extractPdf(Buffer.alloc(maxPdfBytes + 1)), /20 MB/);
+  await assert.rejects(extractPdf(Buffer.alloc(maxPdfBytes + 1)), /32 MB/);
   await assert.rejects(
     extractPdf(Buffer.from("%PDF-1.7\ninvalid")),
     /无法解析/,
@@ -184,6 +246,25 @@ test("PDF HTTP 导入经过请求验证、权限检查与幂等写入", async ()
     const receipt = await first.json();
     assert.deepEqual(await (await post()).json(), receipt);
     assert.equal(store.snapshot().artifacts.length, 1);
+    const large = paddedPdf(maxReadingFileBytes);
+    const largeHeaders = {
+      ...headers,
+      "X-Command-Id": randomUUID(),
+      "X-Source-Path": "TEST-large.pdf",
+    };
+    let largeReceipt;
+    for (const route of ["/api/import/reading", "/api/import/pdf"]) {
+      const result = await fetch(origin + route, {
+        method: "POST",
+        headers: largeHeaders,
+        body: large,
+      });
+      assert.equal(result.status, 201);
+      const saved = await result.json();
+      if (largeReceipt) assert.deepEqual(saved, largeReceipt);
+      largeReceipt = saved;
+    }
+    assert.equal(store.snapshot().artifacts.length, 2);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     store.close();

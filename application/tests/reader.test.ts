@@ -276,6 +276,12 @@ test("草稿升级只移除废弃选项，保留选文、正文、附件、待�
 });
 
 test("阅读消息没有额外阅读策略，既有 Context 和前后文读取遵循用户问题", () => {
+  for (const tool of workToolDefinitions) {
+    assert.doesNotMatch(
+      tool.description,
+      /no[- ]spoiler|spoiler limits|forbids later|ask before expanding/i,
+    );
+  }
   for (const format of [readingInputFormat, readingPositionInputFormat]) {
     assert.doesNotMatch(
       JSON.stringify(format),

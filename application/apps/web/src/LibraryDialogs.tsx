@@ -75,7 +75,9 @@ export function ImportDocuments({
             (file.size > 6 * 1024 * 1024 ? "图片超过 6 MB。" : null))
           : /\.pdf$/i.test(path)
             ? (pdfImportIssue(path) ??
-              (file.size > maxPdfBytes ? "PDF 超过 20 MB。" : null))
+              (file.size > maxPdfBytes
+                ? `PDF 超过 ${maxPdfBytes / 1024 / 1024} MB。`
+                : null))
             : (documentImportIssue(path) ??
               (file.size > maxDocumentBytes ? "文件超过 8 MB。" : null)),
       };

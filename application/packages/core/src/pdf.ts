@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { documentImportIssue } from "./sources.js";
+import { maxReadingFileBytes } from "./reader.js";
 
-export const maxPdfBytes = 20 * 1024 * 1024;
+export const maxPdfBytes = maxReadingFileBytes;
 export const maxPdfPages = 300;
 export const pdfContentSchema = z
   .object({

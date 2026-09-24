@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 
 async function openTestBook(page: Page, paragraphs = 80) {
   await page.goto("/");
@@ -22,6 +23,7 @@ async function openTestBook(page: Page, paragraphs = 80) {
   const title = `TEST 阅读现场恢复 ${randomUUID().slice(0, 8)}`;
   const picker = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "导入读物", exact: true }).click();
+  const importStarted = Date.now();
   await (
     await picker
   ).setFiles({
@@ -38,7 +40,9 @@ async function openTestBook(page: Page, paragraphs = 80) {
   });
   await expect(page.locator(".reading-app:visible .reader-text")).toContainText(
     `第 ${Math.min(paragraphs, 80)} 段`,
+    { timeout: 60_000 },
   );
+  const importMs = Date.now() - importStarted;
   const boot = await (await page.request.get("/api/workspace")).json();
   const book = boot.workspace.artifacts.find(
     (a: { title: string }) => a.title === title,
@@ -54,6 +58,7 @@ async function openTestBook(page: Page, paragraphs = 80) {
   return {
     title,
     book,
+    importMs,
     position,
     view: page.locator(".reading-app:visible .reader-viewport"),
   };
@@ -119,6 +124,82 @@ test("长读物按段加载，连续滚动和保存进度不阻塞原文阅读",
   expect(timings[12]).toBeLessThan(65);
   expect(timings[22]).toBeLessThan(150);
   await expect.poll(position).toBeGreaterThan(800);
+});
+
+test("百万字读物有界加载，末章可达且刷新保留末章位置", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  const paragraphs = 25_000;
+  const { book, view, position, importMs } = await openTestBook(
+    page,
+    paragraphs,
+  );
+  const characters = book.content.sections.reduce(
+    (sum: number, section: { characters: number }) => sum + section.characters,
+    0,
+  );
+  expect(characters).toBeGreaterThan(1_000_000);
+  expect(book.content.sections.length).toBeGreaterThan(80);
+  // The workspace snapshot contains a catalog, never the million-character body.
+  expect(JSON.stringify(book).length).toBeLessThan(100_000);
+  for (const section of book.content.sections) {
+    expect(section.characters).toBeLessThan(12_100);
+    expect(section).not.toHaveProperty("text");
+    expect(section).not.toHaveProperty("html");
+  }
+  const text = page.locator(".reading-app:visible .reader-text");
+  // innerText also includes browser-generated blank lines between paragraphs.
+  expect((await text.innerText()).length).toBeLessThan(13_000);
+  await page.getByRole("button", { name: "目录", exact: true }).click();
+  const last = book.content.sections.at(-1);
+  await page
+    .getByRole("complementary", { name: "阅读目录", exact: true })
+    .getByRole("button", { name: last.title, exact: true })
+    .click();
+  await expect(text).toContainText(`第 ${paragraphs} 段`);
+  const close = page.getByRole("button", { name: "关闭阅读侧栏", exact: true });
+  if (await close.isVisible()) await close.click();
+  const timings = await view.evaluate(async (el) => {
+    const frames: number[] = [];
+    for (let i = 1; i <= 24; i++) {
+      const start = performance.now();
+      el.scrollTop = i * 100;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+      frames.push(performance.now() - start);
+    }
+    return frames.sort((a, b) => a - b);
+  });
+  const metrics = info.outputPath("million-character-reader.json");
+  await writeFile(
+    metrics,
+    JSON.stringify({
+      paragraphs,
+      characters,
+      sections: book.content.sections.length,
+      importMs,
+      medianMs: timings[12],
+      p95Ms: timings[22],
+    }),
+  );
+  await info.attach("million-character-reader", {
+    path: metrics,
+    contentType: "application/json",
+  });
+  expect(timings[12]).toBeLessThan(65);
+  expect(timings[22]).toBeLessThan(150);
+  await expect.poll(position).toBeGreaterThan(500);
+  const before = await view.evaluate((el) => el.scrollTop);
+  await page.reload();
+  await expect(text).toContainText(`第 ${paragraphs} 段`);
+  await expect
+    .poll(() => view.evaluate((el) => el.scrollTop))
+    .toBeGreaterThan(before - 80);
+  await page.screenshot({
+    path: info.outputPath("million-character-last-section.png"),
+  });
 });
 
 test("滚动后立即返回书库，最后看到的位置仍被保存，重开和刷新可以接续", async ({

@@ -354,7 +354,8 @@ export function useWorkspace() {
     relativePath: string,
   ): Promise<Receipt> {
     if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
-    if (file.size > maxPdfBytes) throw new Error("PDF 不能超过 20 MB。");
+    if (file.size > maxPdfBytes)
+      throw new Error(`PDF 不能超过 ${maxPdfBytes / 1024 / 1024} MB。`);
     const identity = current.current,
       { readLocal, writeLocal } = scopedStorage(
         `${identity.centerId}:${identity.principalId}`,

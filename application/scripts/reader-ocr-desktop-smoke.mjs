@@ -6,17 +6,18 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readingOcrModels } from "../dist/service/packages/application/src/reader-ocr.js";
 
-// Synthetic fixtures only. Model files are supplied explicitly, never taken from user books.
+// Isolated fixtures only. Books/models are explicitly supplied, never read from user data.
 const models = process.argv[2];
-const scanDirectory = process.argv[3];
+const scanManifest = process.argv[3];
 if (!models)
   throw new Error(
-    "Usage: node scripts/reader-ocr-desktop-smoke.mjs /absolute/model-fixture-directory [synthetic-scan-directory]",
+    "Usage: node scripts/reader-ocr-desktop-smoke.mjs /absolute/model-fixture-directory [scan-manifest.json]",
   );
 const fixture = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
 const cache = join(fixture, "data", "reader-ocr-models");
@@ -194,26 +195,33 @@ try {
     "校对测试",
   );
   const matrix = [];
-  if (scanDirectory) {
+  if (scanManifest) {
+    const sample = JSON.parse(readFileSync(scanManifest, "utf8"));
+    assert.ok(sample.title.startsWith("TEST "));
+    assert.ok(sample.source && sample.pages.length);
+    const pdf = readFileSync(resolve(dirname(scanManifest), sample.pdf));
+    const sha256 = createHash("sha256").update(pdf).digest("hex");
+    if (sample.sha256) assert.equal(sha256, sample.sha256);
+    writeFileSync(
+      join(fixture, "scan-provenance.json"),
+      JSON.stringify({ ...sample, sha256 }, null, 2),
+    );
     await page.getByRole("button", { name: "全部读物", exact: true }).click();
     const scanPicker = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "导入读物", exact: true }).click();
     await (
       await scanPicker
     ).setFiles({
-      name: "TEST OCR 合成扫描矩阵.pdf",
+      name: `${sample.title}.pdf`,
       mimeType: "application/pdf",
-      buffer: readFileSync(join(scanDirectory, "TEST-OCR扫描验收.pdf")),
+      buffer: pdf,
     });
     await expect(
       page.getByText("扫描页没有文字层 · 可在本机识别", { exact: true }),
     ).toBeVisible();
     const imported = await bridge("workspace");
     const scan = imported.workspace.artifacts.find(
-      (a) => a.title === "TEST OCR 合成扫描矩阵",
-    );
-    const expected = JSON.parse(
-      readFileSync(join(scanDirectory, "ground-truth.json"), "utf8"),
+      (a) => a.title === sample.title,
     );
     const normalized = (text) => text.replace(/\s/g, "");
     function distance(a, b) {
@@ -230,9 +238,21 @@ try {
       }
       return prev[b.length];
     }
-    for (const [index, expectedPage] of expected.entries()) {
-      if (index)
-        await page.getByRole("button", { name: "下一页", exact: true }).click();
+    for (const expectedPage of sample.pages) {
+      assert.ok(Number.isInteger(expectedPage.page) && expectedPage.page > 0);
+      await page.getByRole("button", { name: "目录", exact: true }).click();
+      await page
+        .getByRole("complementary", { name: "阅读目录", exact: true })
+        .getByRole("button", {
+          name: `第 ${expectedPage.page} 页`,
+          exact: true,
+        })
+        .click();
+      const close = page.getByRole("button", {
+        name: "关闭阅读侧栏",
+        exact: true,
+      });
+      if (await close.isVisible()) await close.click();
       await page
         .getByLabel("OCR 阅读顺序", { exact: true })
         .selectOption(expectedPage.layout);
@@ -250,7 +270,7 @@ try {
         operation: "status",
         artifactId: scan.id,
         revision: 1,
-        page: index + 1,
+        page: expectedPage.page,
       });
       const recognized = await bridge("reader.read", {
         artifactId: scan.id,
@@ -258,23 +278,30 @@ try {
         sectionId: state.sectionId,
       });
       assert.equal(recognized.ocr.layout, expectedPage.layout);
-      const truth = normalized(expectedPage.lines.join("\n")),
-        actual = normalized(recognized.text);
+      const truth = Array.from(normalized(expectedPage.lines.join("\n"))),
+        actual = Array.from(normalized(recognized.text));
+      const edits = distance(truth, actual);
       matrix.push({
-        page: index + 1,
+        page: expectedPage.page,
         layout: expectedPage.layout,
         milliseconds: Date.now() - began,
         expected: expectedPage.lines,
         recognized: recognized.ocr.items.map((i) => i.text),
-        edits: distance(truth, actual),
+        edits,
         characters: truth.length,
+        accuracyAsserted: Number.isInteger(expectedPage.maxEdits),
       });
+      if (Number.isInteger(expectedPage.maxEdits))
+        assert.ok(
+          edits <= expectedPage.maxEdits,
+          `OCR page ${expectedPage.page}: ${edits} edits exceed ${expectedPage.maxEdits}`,
+        );
       await expect(page.locator(".reader-ocr-original canvas")).toBeVisible();
       await expect(
         page.locator(".reader-ocr-original .pdf-page"),
       ).toHaveAttribute("aria-busy", "false");
       await page.screenshot({
-        path: join(fixture, `scan-page-${index + 1}.png`),
+        path: join(fixture, `scan-page-${expectedPage.page}.png`),
       });
     }
     writeFileSync(
