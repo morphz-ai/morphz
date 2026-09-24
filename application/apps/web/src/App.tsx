@@ -66,6 +66,10 @@ import {
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
+import {
+  replaceComposerSurface,
+  updateComposerDraft,
+} from "./composer-drafts.js";
 import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
 import {
   quotedInputText,
@@ -1073,21 +1077,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   function setDraft(key: string, value: InputDraft) {
     if (key === currentContext.current && value.body !== drafts[key]?.body)
       dictationControls.current?.interrupt();
-    updateDraft(key, () => value);
+    writeDrafts((previous) =>
+      replaceComposerSurface(previous, key, emptyDraft, value),
+    );
   }
   function updateDraft(key: string, update: (value: InputDraft) => InputDraft) {
+    writeDrafts((previous) =>
+      updateComposerDraft(previous, key, emptyDraft, update),
+    );
+  }
+  function writeDrafts(
+    update: (
+      previous: Record<string, InputDraft>,
+    ) => Record<string, InputDraft>,
+  ) {
     setDrafts((previous) => {
-      const quotesKey = key.split(":")[0] + ":quotes";
-      const { textQuotes = previous[quotesKey]?.textQuotes ?? [], ...value } =
-        update({
-          ...(previous[key] ?? emptyDraft),
-          textQuotes: previous[quotesKey]?.textQuotes ?? [],
-        });
-      const next = {
-        ...previous,
-        [key]: value,
-        [quotesKey]: { ...emptyDraft, textQuotes },
-      };
+      const next = update(previous);
       try {
         writeLocal(draftKey("inputs"), next);
       } catch {
@@ -1966,7 +1971,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           [conversationId]: receipt.entityId,
         }));
       }
-      setDraft(key, { ...emptyDraft, textQuotes: [] });
+      // The acknowledged input consumed this conversation's references.
+      updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
       if (currentContext.current === key) {
         if (asAnnotation) {
           if (compact) setMobileCollaboration(true);

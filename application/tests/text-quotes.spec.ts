@@ -150,6 +150,44 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
   await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
 });
 
+test("四条待发引用经普通输入、工作台切换和重载仍完整保留", async ({ page }) => {
+  const { reply } = await fixture(page);
+  const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
+  const selections = [
+    "理解问题",
+    "再选择工具",
+    "可以比较多个方案",
+    "代码与标点",
+  ];
+  for (const selection of selections) {
+    await selectText(reply.locator("[data-quotable]"), selection);
+    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.keyboard.press("Escape");
+  }
+  await expect(drafts.locator(".text-quote-chip")).toHaveCount(4);
+  await page.getByLabel("AI 输入内容").fill("这条消息暂时不发送");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await openInput(page);
+  await page.getByLabel("AI 输入内容").fill("工作台也有自己的输入");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await openInput(page);
+  await expect(drafts.locator(".text-quote-chip")).toHaveCount(4);
+  await expect(page.getByLabel("AI 输入内容")).toHaveValue(
+    "这条消息暂时不发送",
+  );
+  await page.reload();
+  await openInput(page);
+  await expect(drafts.locator(".text-quote-chip")).toHaveCount(4);
+  for (const selection of selections)
+    await expect(drafts).toContainText(selection);
+});
+
 test("评论只呈现两行输入，失焦保留草稿，窄窗和明暗主题不增加重复内容", async ({
   page,
 }, info) => {
