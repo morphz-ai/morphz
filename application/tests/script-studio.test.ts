@@ -25,6 +25,43 @@ import { workspaceFor } from "../packages/application/src/identity.js";
 import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
 
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
+
+test("创作文稿导出不需要自我审批，不修改状态；正式交付仍检查锁稿与版本", () => {
+  const f = fixture();
+  const episode = f.create("episode", { text: "TEST 已保存的创作正文" });
+  const before = structuredClone(f.item(episode));
+  const request = {
+    action: "record-export" as const,
+    productionId: f.productionId,
+    expectedRevision: f.production().revision,
+    items: [{ itemId: episode, revision: 1 }],
+    template: f.production().template,
+  };
+  assert.throws(() => f.run(request), /锁定稿/);
+  const exportId = f.run({ ...request, workingCopy: true });
+  assert.deepEqual(f.item(episode), before);
+  assert.equal(f.production().exports.at(-1)!.workingCopy, true);
+  const bytes = buildScriptDocx(f.production(), exportId);
+  const xml = Buffer.from(bytes).toString("utf8");
+  assert.match(xml, /TEST 已保存的创作正文/);
+  assert.match(xml, /创作副本，不代表已审阅/);
+  assert.doesNotMatch(xml, /本次交付/);
+  f.revise(episode, { text: "后来的正文不得改变已导出的副本" });
+  assert.deepEqual(buildScriptDocx(f.production(), exportId), bytes);
+  assert.throws(() => f.run({ ...request, workingCopy: true }), /新版本/);
+  const empty = f.create("episode");
+  assert.throws(
+    () =>
+      f.run({
+        ...request,
+        items: [{ itemId: empty, revision: 1 }],
+        workingCopy: true,
+      }),
+    /先保存/,
+  );
+  assert.equal(f.production().exports.length, 1);
+});
+
 function fixture() {
   let state = initialWorkspace();
   const execute = (

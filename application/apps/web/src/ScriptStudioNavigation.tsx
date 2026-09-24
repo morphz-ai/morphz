@@ -72,6 +72,10 @@ export function ScriptStudioNavigation({
   itemId,
   storageScope,
   locationKey,
+  directoryId,
+  open,
+  compact,
+  onClose,
   canWrite,
   onChoose,
   onCreate,
@@ -81,6 +85,10 @@ export function ScriptStudioNavigation({
   itemId: string;
   storageScope: string;
   locationKey: string;
+  directoryId: string;
+  open: boolean;
+  compact: boolean;
+  onClose: () => void;
   canWrite: boolean;
   onChoose: (id?: string) => void;
   onCreate: (kind: ScriptItem["kind"], parentId?: string) => void;
@@ -90,8 +98,7 @@ export function ScriptStudioNavigation({
   const storage = scopedStorage(storageScope);
   const id = useId();
   const nav = useRef<HTMLElement>(null);
-  const compactTrigger = useRef<HTMLButtonElement>(null);
-  const [compactOpen, setCompactOpen] = useState(false);
+  const wasOpen = useRef(open);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     storage.readLocal(locationKey, { people: true, sources: true }),
   );
@@ -107,18 +114,14 @@ export function ScriptStudioNavigation({
   const selectedParent = selected
     ? currentScriptDraft(selected).parentId
     : null;
-  const closeCompact = () => {
-    if (!compactTrigger.current?.getClientRects().length) return;
-    setCompactOpen(false);
-    compactTrigger.current.focus({ preventScroll: true });
-  };
   const choose = (id?: string) => {
     onChoose(id);
-    closeCompact();
+    if (compact) onClose();
   };
   useEffect(() => {
-    if (!compactOpen || !compactTrigger.current?.getClientRects().length)
-      return;
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (!opening) return;
     const current = nav.current?.querySelector<HTMLButtonElement>(
       '[aria-current="true"]',
     );
@@ -126,7 +129,7 @@ export function ScriptStudioNavigation({
       ? current
       : nav.current?.querySelector<HTMLButtonElement>(".script-overview-link");
     target?.focus();
-  }, [compactOpen]);
+  }, [open]);
   useEffect(() => {
     if (!itemId) return;
     // A newly selected/created or reparented item must be reachable. Manual
@@ -221,25 +224,9 @@ export function ScriptStudioNavigation({
     </section>
   );
   return (
-    <div className="script-directory" data-expanded={compactOpen}>
-      <button
-        ref={compactTrigger}
-        type="button"
-        className="script-directory-toggle"
-        aria-label="剧本目录开关"
-        aria-expanded={compactOpen}
-        aria-controls={`${id}-directory`}
-        title={selected ? currentScriptDraft(selected).title : "概览"}
-        onClick={() => setCompactOpen((previous) => !previous)}
-      >
-        <ChevronRight className="script-chevron" />
-        <span>目录</span>
-        <strong>
-          {selected ? currentScriptDraft(selected).title : "概览"}
-        </strong>
-      </button>
+    <div className="script-directory" hidden={!open}>
       <nav
-        id={`${id}-directory`}
+        id={directoryId}
         ref={nav}
         className="script-outline"
         aria-label="剧本目录"
@@ -247,12 +234,11 @@ export function ScriptStudioNavigation({
           if (
             event.key === "Escape" &&
             !event.defaultPrevented &&
-            !(event.target as HTMLElement).closest("[popover]") &&
-            compactTrigger.current?.getClientRects().length
+            !(event.target as HTMLElement).closest("[popover]")
           ) {
             event.preventDefault();
             event.stopPropagation();
-            closeCompact();
+            onClose();
             return;
           }
           if (

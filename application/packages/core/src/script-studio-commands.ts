@@ -865,13 +865,21 @@ export function applyScriptCommand(
       const item = getScriptItem(production, ref.itemId);
       requireVersion(item.revision, ref.revision);
       if (
-        item.status !== "locked" ||
-        !item.approval ||
-        !scriptContextCurrent(production, item.approval.contextRevision)
+        !command.workingCopy &&
+        (item.status !== "locked" ||
+          !item.approval ||
+          !scriptContextCurrent(production, item.approval.contextRevision))
       )
         throw new DomainError("conflict", "正式交付只能导出审阅有效的锁定稿。");
-      assertApprovable(production, item);
+      if (!command.workingCopy) assertApprovable(production, item);
     }
+    if (
+      command.workingCopy &&
+      !command.items.some((ref) =>
+        currentScriptDraft(getScriptItem(production, ref.itemId)).text.trim(),
+      )
+    )
+      throw new DomainError("invalid", "请先保存需要导出的正文。");
     production.exports.push({
       id: commandId,
       createdBy: { ...access },
@@ -880,6 +888,7 @@ export function applyScriptCommand(
       items: structuredClone(command.items),
       template: structuredClone(command.template),
       format: "docx",
+      ...(command.workingCopy ? { workingCopy: true as const } : {}),
     });
     entityId = commandId;
   } else {

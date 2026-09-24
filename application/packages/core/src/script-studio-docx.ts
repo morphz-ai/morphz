@@ -338,7 +338,12 @@ export function buildScriptDocx(
   document.add(`${declaration}<w:document xmlns:w="${wns}"><w:body>`);
   document.paragraph(metadata.title, "Title");
   document.paragraph(template.title, "Subtitle");
-  document.field("本次交付", `${items.length} 个条目的指定历史版本`);
+  document.field(
+    record.workingCopy ? "创作文稿" : "本次交付",
+    `${items.length} 个条目的指定历史版本`,
+  );
+  if (record.workingCopy)
+    document.field("文稿状态", "创作副本，不代表已审阅、已定稿或正式交付。");
   document.field(
     "创作要求",
     `${brief.mode === "original" ? "原创" : "改编"}；计划 ${brief.episodeCount} 集，每集 ${brief.episodeSeconds} 秒`,

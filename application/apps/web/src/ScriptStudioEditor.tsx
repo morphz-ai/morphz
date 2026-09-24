@@ -11,6 +11,7 @@ import {
 import {
   currentScriptDraft,
   prepareScriptGeneration,
+  scriptCandidateStale,
   scriptDraftSchema,
   scriptIssues,
   scriptImpact,
@@ -103,6 +104,16 @@ export function ScriptItemEditor({
   const stale = item.revision !== local.baseRevision;
   const editable = canWrite && item.status !== "locked";
   const reviewer = production.reviewerPrincipalIds.includes(boot.principalId);
+  const reviewerNames =
+    production.reviewerPrincipalIds
+      .map((principalId) =>
+        principalId === boot.principalId
+          ? "你"
+          : boot.workspace.actants.find(
+              (a) => a.principalId === principalId && a.kind === "human",
+            )?.name || "不可用的审阅人",
+      )
+      .join("、") || "未指定";
   const workflow = {
     productionId: production.id,
     itemId: item.id,
@@ -207,11 +218,82 @@ export function ScriptItemEditor({
   };
   const draft = local.draft;
   return (
-    <div className="script-editor" {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${draft.title}`, productionId: production.id, entryId: item.id, revision: local.baseRevision })}>
+    <div className="script-editor" data-pane={pane} {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${draft.title}`, productionId: production.id, entryId: item.id, revision: local.baseRevision })}>
       <header className="script-editor-header">
-        <strong tabIndex={-1} data-script-focus-anchor>
+        <strong
+          tabIndex={-1}
+          data-script-focus-anchor
+          title={`${scriptKindLabels[item.kind]} · ${current.title}`}
+        >
           {scriptKindLabels[item.kind]} · {current.title}
         </strong>
+        <div className="script-tabs" role="tablist" aria-label="剧本文稿视图">
+          {(
+            [
+              ["edit", "正文"],
+              ["candidates", "候选稿"],
+              ["reviews", "审阅"],
+              ["history", "历史"],
+              ["checks", "检查与影响"],
+            ] as const
+          ).map(([key, label]) => {
+            const count =
+              key === "candidates"
+                ? candidates.filter(
+                    (c) =>
+                      c.status === "pending" &&
+                      !scriptCandidateStale(production, c),
+                  ).length
+                : key === "reviews"
+                  ? reviews.filter((r) => !r.resolvedAt && !r.historicalOnly)
+                      .length
+                  : 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                id={`${tabId}-${key}`}
+                aria-controls={`${tabId}-${key}-panel`}
+                tabIndex={pane === key ? 0 : -1}
+                aria-selected={pane === key}
+                onClick={() => {
+                  setError("");
+                  setPane(key);
+                }}
+                onKeyDown={(event) => {
+                  const tabs = Array.from(
+                    event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
+                      '[role="tab"]',
+                    ),
+                  );
+                  const index = tabs.indexOf(event.currentTarget);
+                  const next =
+                    event.key === "ArrowRight"
+                      ? (index + 1) % tabs.length
+                      : event.key === "ArrowLeft"
+                        ? (index + tabs.length - 1) % tabs.length
+                        : event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? tabs.length - 1
+                            : -1;
+                  if (next < 0) return;
+                  event.preventDefault();
+                  tabs[next]!.click();
+                  tabs[next]!.focus();
+                }}
+              >
+                {label}
+                {count > 0 && (
+                  <span className="script-tab-count">
+                    {count} {key === "candidates" ? "待选" : "条意见"}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
         <small role="status" className="script-edit-status">
           {pane === "candidates" ? "正文 · " : ""}
           {scriptStatusLabels[item.status]} · v{item.revision}
@@ -220,6 +302,7 @@ export function ScriptItemEditor({
         {pane === "edit" && (
           <button
             type="button"
+            className="primary"
             disabled={!editable || !dirty}
             onClick={() => void action(save)}
           >
@@ -270,61 +353,6 @@ export function ScriptItemEditor({
           锁稿正文只读。修改必须先由指定审阅人说明原因解锁。
         </p>
       )}
-      <div className="script-tabs" role="tablist" aria-label="剧本文稿视图">
-        {(
-          [
-            ["edit", "正文"],
-            [
-              "candidates",
-              `候选 ${candidates.filter((c) => c.status === "pending").length}`,
-            ],
-            [
-              "reviews",
-              `审阅 ${reviews.filter((r) => !r.resolvedAt && !r.historicalOnly).length}`,
-            ],
-            ["history", "历史"],
-            ["checks", "检查与影响"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            id={`${tabId}-${key}`}
-            aria-controls={`${tabId}-${key}-panel`}
-            tabIndex={pane === key ? 0 : -1}
-            aria-selected={pane === key}
-            onClick={() => {
-              setError("");
-              setPane(key);
-            }}
-            onKeyDown={(event) => {
-              const tabs = Array.from(
-                event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
-                  '[role="tab"]',
-                ),
-              );
-              const index = tabs.indexOf(event.currentTarget);
-              const next =
-                event.key === "ArrowRight"
-                  ? (index + 1) % tabs.length
-                  : event.key === "ArrowLeft"
-                    ? (index + tabs.length - 1) % tabs.length
-                    : event.key === "Home"
-                      ? 0
-                      : event.key === "End"
-                        ? tabs.length - 1
-                        : -1;
-              if (next < 0) return;
-              event.preventDefault();
-              tabs[next]!.click();
-              tabs[next]!.focus();
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
       {pane === "edit" && (
         <div
           id={`${tabId}-edit-panel`}
@@ -605,6 +633,94 @@ export function ScriptItemEditor({
           aria-labelledby={`${tabId}-reviews`}
           role="tabpanel"
         >
+          <section className="script-workflow" aria-label="人工审阅与锁稿">
+            <div className="script-review-context">
+              <strong>
+                审阅人：{reviewerNames} · {scriptStatusLabels[item.status]} v
+                {item.revision}
+              </strong>
+              <p>
+                {item.status === "draft"
+                  ? "可选的人工审阅，不会发起智能体检查或通知他人。日常创作只需保存正文。"
+                  : item.status === "in-review"
+                    ? "此版本等待指定审阅人确认；批准表示认可此版本，不会锁定正文。"
+                    : item.status === "approved"
+                      ? "此版本已获人工批准。锁稿后正文只读，修改前需要解锁。"
+                      : "正文已锁定。修改前需要指定审阅人说明原因并解锁。"}
+              </p>
+            </div>
+            {item.status === "draft" && (
+              <button
+                type="button"
+                disabled={
+                  !editable || dirty || stale || item.status !== "draft"
+                }
+                onClick={() =>
+                  void action(() =>
+                    run({ action: "submit-review", ...workflow }),
+                  )
+                }
+              >
+                提交审阅
+              </button>
+            )}
+            {reviewer && item.status === "in-review" && (
+              <>
+                <button
+                  type="button"
+                  disabled={!canWrite || dirty || item.status !== "in-review"}
+                  onClick={() =>
+                    setNoteAction({
+                      action: "approve",
+                      revision: item.revision,
+                      workflowRevision: item.workflowRevision,
+                    })
+                  }
+                >
+                  批准此版本
+                </button>
+                <button
+                  type="button"
+                  disabled={!canWrite || dirty || item.status !== "in-review"}
+                  onClick={() =>
+                    setNoteAction({
+                      action: "request-changes",
+                      revision: item.revision,
+                      workflowRevision: item.workflowRevision,
+                    })
+                  }
+                >
+                  退回修改
+                </button>
+              </>
+            )}
+            {reviewer && item.status === "approved" && (
+              <button
+                type="button"
+                disabled={!canWrite || dirty || item.status !== "approved"}
+                onClick={() =>
+                  void action(() => run({ action: "lock-item", ...workflow }))
+                }
+              >
+                锁稿
+              </button>
+            )}
+            {reviewer && item.status === "locked" && (
+              <button
+                type="button"
+                disabled={!canWrite}
+                onClick={() =>
+                  setNoteAction({
+                    action: "unlock",
+                    revision: item.revision,
+                    workflowRevision: item.workflowRevision,
+                  })
+                }
+              >
+                说明原因并解锁
+              </button>
+            )}
+          </section>
           <ReviewForm
             item={item}
             production={production}
@@ -661,6 +777,7 @@ export function ScriptItemEditor({
           </pre>
           <button
             type="button"
+            className="secondary-action"
             disabled={!editable || dirty || historyRevision === item.revision}
             onClick={() =>
               void action(() =>
@@ -688,6 +805,7 @@ export function ScriptItemEditor({
                 <p key={v.revision}>
                   <button
                     type="button"
+                    className="secondary-action"
                     disabled={dirty}
                     onClick={() => {
                       const result = scriptDraftSchema.safeParse(
@@ -797,73 +915,6 @@ export function ScriptItemEditor({
               .join("、") || "尚无已登记下游"}
           </p>
         </div>
-      )}
-      {pane !== "candidates" && (
-        <footer className="script-workflow">
-          <button
-            type="button"
-            disabled={!editable || dirty || stale || item.status !== "draft"}
-            onClick={() =>
-              void action(() => run({ action: "submit-review", ...workflow }))
-            }
-          >
-            提交审阅
-          </button>
-          {reviewer && (
-            <>
-              <button
-                type="button"
-                disabled={!canWrite || dirty || item.status !== "in-review"}
-                onClick={() =>
-                  setNoteAction({
-                    action: "approve",
-                    revision: item.revision,
-                    workflowRevision: item.workflowRevision,
-                  })
-                }
-              >
-                批准此版本
-              </button>
-              <button
-                type="button"
-                disabled={!canWrite || dirty || item.status !== "in-review"}
-                onClick={() =>
-                  setNoteAction({
-                    action: "request-changes",
-                    revision: item.revision,
-                    workflowRevision: item.workflowRevision,
-                  })
-                }
-              >
-                退回修改
-              </button>
-              <button
-                type="button"
-                disabled={!canWrite || dirty || item.status !== "approved"}
-                onClick={() =>
-                  void action(() => run({ action: "lock-item", ...workflow }))
-                }
-              >
-                锁稿
-              </button>
-              {item.status === "locked" && (
-                <button
-                  type="button"
-                  disabled={!canWrite}
-                  onClick={() =>
-                    setNoteAction({
-                      action: "unlock",
-                      revision: item.revision,
-                      workflowRevision: item.workflowRevision,
-                    })
-                  }
-                >
-                  说明原因并解锁
-                </button>
-              )}
-            </>
-          )}
-        </footer>
       )}
       {noteAction && (
         <NoteDialog
@@ -1160,6 +1211,7 @@ function ReviewRow({
       ) : (
         <button
           type="button"
+          className="secondary-action"
           disabled={disabled}
           onClick={() => setResolving(true)}
         >

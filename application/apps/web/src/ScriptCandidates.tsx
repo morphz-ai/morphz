@@ -43,7 +43,9 @@ export function ScriptCandidates({
   );
   const [selected, setSelected] = useState(
     deliveryTarget?.candidateId ??
-      candidates.findLast((c) => c.status === "pending")?.id ??
+      candidates.findLast(
+        (c) => c.status === "pending" && !scriptCandidateStale(production, c),
+      )?.id ??
       candidates.at(-1)?.id ??
       "",
   );
@@ -52,13 +54,27 @@ export function ScriptCandidates({
   const [error, setError] = useState("");
   const submitting = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  const candidateList = useRef<HTMLElement>(null);
   useEffect(() => {
     if (deliveryTarget?.candidateId) setSelected(deliveryTarget.candidateId);
   }, [deliveryTarget?.requestId]);
   const candidate =
     candidates.find((c) => c.id === selected) ??
-    candidates.findLast((c) => c.status === "pending") ??
+    candidates.findLast(
+      (c) => c.status === "pending" && !scriptCandidateStale(production, c),
+    ) ??
     candidates.at(-1);
+  useEffect(() => {
+    const list = candidateList.current;
+    const selected = list?.querySelector<HTMLElement>('[aria-current="true"]');
+    if (!list || !selected) return;
+    // Scroll the switcher only; never move the user's reading viewport.
+    const bounds = list.getBoundingClientRect(),
+      target = selected.getBoundingClientRect();
+    if (target.left < bounds.left) list.scrollLeft -= bounds.left - target.left;
+    else if (target.right > bounds.right)
+      list.scrollLeft += target.right - bounds.right;
+  }, [candidate?.id]);
   if (!candidate)
     return (
       <p className="script-hint">
@@ -67,10 +83,17 @@ export function ScriptCandidates({
     );
   const c = candidate;
   const ordinal = candidates.indexOf(c) + 1;
+  const adoptedVersion = item.versions.find(
+    (version) => version.candidateId === c.id,
+  );
   const before = item.versions.find(
     (v) => v.revision === c.baseRevision,
   )?.draft;
   const obsolete = scriptCandidateStale(production, c);
+  const displayStatus = (entry: typeof c) =>
+    entry.status === "pending" && scriptCandidateStale(production, entry)
+      ? "旧稿"
+      : statusLabels[entry.status];
   const blocked = !canWrite
     ? "你没有修改权限。"
     : item.status === "locked"
@@ -111,7 +134,11 @@ export function ScriptCandidates({
   }
   return (
     <div className="script-candidate-browser">
-      <nav className="script-candidate-list" aria-label="选择候选稿">
+      <nav
+        ref={candidateList}
+        className="script-candidate-list"
+        aria-label="选择候选稿"
+      >
         {[...candidates].reverse().map((entry) => {
           const number = candidates.indexOf(entry) + 1;
           return (
@@ -120,22 +147,20 @@ export function ScriptCandidates({
               type="button"
               disabled={busy}
               aria-current={entry.id === c.id ? "true" : undefined}
-              aria-label={`候选 ${number} · ${statusLabels[entry.status]}`}
+              aria-label={`候选 ${number} · ${displayStatus(entry)}`}
+              title={`${number === candidates.length ? "最新生成 · " : ""}${scriptDisplayTime(entry.createdAt)} · ${Array.from(entry.draft.text).length} 字`}
               onClick={() => {
                 setSelected(entry.id);
                 setError("");
               }}
             >
-              <span>
-                <strong>候选 {number}</strong>
-                <span className="script-candidate-state">
-                  {statusLabels[entry.status]}
-                </span>
+              <strong>候选 {number}</strong>
+              <span className="script-candidate-state">
+                {displayStatus(entry)}
               </span>
-              <small>
-                {scriptDisplayTime(entry.createdAt)} ·{" "}
-                {Array.from(entry.draft.text).length} 字
-              </small>
+              {number === candidates.length && (
+                <small className="script-candidate-latest">最新</small>
+              )}
             </button>
           );
         })}
@@ -152,14 +177,11 @@ export function ScriptCandidates({
           <div>
             <h3 ref={heading} tabIndex={-1}>
               候选 {ordinal}
-              <span className="script-candidate-state">
-                {statusLabels[c.status]}
-              </span>
+              <span className="script-candidate-state">{displayStatus(c)}</span>
             </h3>
             <p className="script-hint">
-              {c.status === "pending"
-                ? `采纳后成为正文的新版本 · 基于 v${c.baseRevision}`
-                : `基于正文 v${c.baseRevision}`}
+              {scriptDisplayTime(c.createdAt)} ·{" "}
+              {Array.from(c.draft.text).length} 字 · 基于正文 v{c.baseRevision}
             </p>
           </div>
           <div className="script-edit-actions">
@@ -198,6 +220,13 @@ export function ScriptCandidates({
           </div>
         </header>
         {error && <p role="alert">{error}</p>}
+        {c.status === "accepted" && adoptedVersion && (
+          <p className="script-candidate-notice" role="status">
+            {adoptedVersion.revision === item.revision
+              ? `已保存为正文 v${adoptedVersion.revision}，可以继续编辑；其他旧稿保留供参考。`
+              : `曾采纳为正文 v${adoptedVersion.revision}；当前正文已是 v${item.revision}。`}
+          </p>
+        )}
         {c.status === "pending" && blocked && (
           <p className="script-candidate-warning">{blocked}</p>
         )}

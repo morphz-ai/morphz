@@ -282,7 +282,7 @@ try {
     .getByRole("button", { name: "工作台", exact: true })
     .click();
   await launchStudio();
-  await expect(page.getByText("从一部剧开始", { exact: true })).toBeVisible();
+  await expect(page.getByText("这里还没有剧本", { exact: true })).toBeVisible();
   await button("手动新建剧本").click();
   const create = page.getByRole("dialog", {
     name: "手动新建剧本",
@@ -360,7 +360,7 @@ try {
   await expect(editor()).toHaveValue(dirtyText);
   await capture("editing.png");
 
-  await page.getByRole("tab", { name: /审阅 0/ }).click();
+  await page.getByRole("tab", { name: "审阅", exact: true }).click();
   await page.getByLabel("审阅引用", { exact: true }).fill("母亲留下的信");
   await page
     .getByLabel("审阅意见", { exact: true })
@@ -379,7 +379,7 @@ try {
     .fill("TEST 已核对信件与回家决定的因果关系。");
   await resolution.getByRole("button", { name: "确认", exact: true }).click();
   await expect(resolution).toBeHidden();
-  await page.getByRole("tab", { name: "正文", exact: true }).click();
+  await page.getByRole("tab", { name: /^审阅/ }).click();
   await button("提交审阅").click();
   await button("批准此版本").click();
   const approval = page.getByRole("dialog", {
@@ -392,6 +392,7 @@ try {
   await approval.getByRole("button", { name: "确认", exact: true }).click();
   await expect(approval).toBeHidden();
   await button("锁稿").click();
+  await page.getByRole("tab", { name: "正文", exact: true }).click();
   await expect(editor()).toHaveAttribute("readonly", "");
   await expect(button("生成候选")).toBeDisabled();
   const docxPath = join(output, "synthetic-desktop-script.docx");
@@ -409,6 +410,9 @@ try {
           (window) => window.webContents.getURL() === "morphz://app/",
         );
       state.options = options;
+      // A real OS picker outlives renderer frame callbacks. An immediately
+      // resolved stub masks focus being moved by command completion meanwhile.
+      await new Promise((resolve) => setTimeout(resolve, 100));
       if (state.mode === "cancel") return { canceled: true };
       if (state.mode === "fail")
         throw new Error("TEST save destination unavailable");
@@ -428,6 +432,7 @@ try {
   });
   await focusOwnWindow();
   await button("导出 Word").click();
+  await page.getByLabel("导出用途", { exact: true }).selectOption("delivery");
   await page
     .getByRole("dialog", { name: "导出 Word", exact: true })
     .getByRole("button", { name: "导出所选", exact: true })
@@ -485,8 +490,11 @@ try {
     page.getByRole("heading", { name: "继续创作", exact: true }),
   ).toBeVisible();
   await page.getByText("导出历史（1）", { exact: true }).click();
-  const retrySave = page.getByRole("button", {
-    name: `重新下载 ${exportId.slice(0, 8)}`,
+  const exportRecord = page.locator(".script-export-record");
+  await expect(exportRecord).toHaveCount(1);
+  await expect(exportRecord).toContainText("第一集 · 合成雨夜");
+  const retrySave = exportRecord.getByRole("button", {
+    name: "重新下载",
     exact: true,
   });
   await desktop.evaluate(() => {

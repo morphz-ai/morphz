@@ -323,6 +323,8 @@ export const scriptProductionSchema = z
           items: z.array(scriptItemReferenceSchema),
           template: scriptExportTemplateSchema,
           format: z.literal("docx"),
+          // A working copy pins saved text, without asserting review or delivery.
+          workingCopy: z.literal(true).optional(),
         })
         .strict(),
     ),
@@ -457,6 +459,7 @@ export const scriptCommandSchema = z.discriminatedUnion("action", [
       expectedRevision: revision,
       items: z.array(scriptItemReferenceSchema).min(1).max(5000),
       template: scriptExportTemplateSchema,
+      workingCopy: z.literal(true).optional(),
     })
     .strict(),
 ]);

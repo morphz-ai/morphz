@@ -1,5 +1,8 @@
 import { ArrowUpRight, Clapperboard, Search, X } from "lucide-react";
-import type { ScriptProduction } from "../../../packages/core/src/script-studio.js";
+import {
+  scriptCandidateStale,
+  type ScriptProduction,
+} from "../../../packages/core/src/script-studio.js";
 import { scriptDisplayTime } from "../../../packages/core/src/script-studio-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
@@ -72,7 +75,7 @@ export function ScriptStudioLibrary({
             const episodes = p.items.filter((i) => i.kind === "episode").length;
             const scenes = p.items.filter((i) => i.kind === "scene").length;
             const pending = p.candidates.filter(
-              (c) => c.status === "pending",
+              (c) => c.status === "pending" && !scriptCandidateStale(p, c),
             ).length;
             return (
               <li key={p.id}>
