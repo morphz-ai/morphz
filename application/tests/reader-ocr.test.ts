@@ -13,6 +13,7 @@ import {
   orderOcr,
   ocrResultSchema,
   ocrEngine,
+  readingOcrScale,
   type OcrResult,
 } from "../packages/core/src/reader-ocr.js";
 
@@ -58,6 +59,90 @@ test("OCR 坐标校验和显式版式顺序；不把模型分数当正确率", (
       .success,
     false,
   );
+});
+test("横排同行字框的上下微差不能颠倒表格单元格；双栏仍先左栏", () => {
+  const input: OcrResult = {
+    image: { width: 800, height: 500 },
+    items: [
+      line(20, 20, "日期"),
+      line(300, 17, "页码"),
+      line(560, 21, "内容"),
+      line(20, 96, "2026-09-24"),
+      line(300, 92, "12"),
+      line(560, 94, "古籍校对"),
+      line(20, 170, "2026-09-25"),
+      line(300, 169, "36"),
+      line(560, 166, "论文阅读"),
+    ],
+  };
+  const original = structuredClone(input);
+  assert.deepEqual(
+    orderOcr(input, "horizontal").items.map((i) => i.text),
+    [
+      "日期",
+      "页码",
+      "内容",
+      "2026-09-24",
+      "12",
+      "古籍校对",
+      "2026-09-25",
+      "36",
+      "论文阅读",
+    ],
+  );
+  assert.deepEqual(
+    orderOcr(input, "columns").items.map((i) => i.text),
+    [
+      "日期",
+      "页码",
+      "2026-09-24",
+      "12",
+      "2026-09-25",
+      "36",
+      "内容",
+      "古籍校对",
+      "论文阅读",
+    ],
+  );
+  assert.deepEqual(
+    input,
+    original,
+    "Ordering must not rewrite recognized text or source polygons",
+  );
+});
+test("同行大小字并排；相邻行不因逐步偏移被串成一行", () => {
+  const taller = line(20, 90, "大字");
+  taller.poly[2]![1] = taller.poly[3]![1] = 140;
+  const input = {
+    image: { width: 800, height: 500 },
+    items: [
+      line(20, 128, "下一行"),
+      line(500, 100, "小字"),
+      taller,
+      line(20, 228, "第三行"),
+      line(200, 214, "第一行右"),
+      line(400, 200, "第一行左"),
+    ],
+  };
+  assert.deepEqual(
+    orderOcr(input, "horizontal").items.map((i) => i.text),
+    ["大字", "小字", "下一行", "第一行右", "第一行左", "第三行"],
+  );
+  assert.deepEqual(orderOcr({ ...input, items: [] }, "horizontal").items, []);
+});
+test("OCR 栅格按像素预算渲染，不受扫描 PDF 纸张单位大小影响", () => {
+  for (const [width, height] of [
+    [460.8, 379.6],
+    [595, 842],
+    [842, 595],
+    [3200, 1600],
+  ]) {
+    const scale = readingOcrScale(width!, height!);
+    assert.equal(Math.round(Math.max(width!, height!) * scale), 2000);
+  }
+  assert.ok(readingOcrScale(460.8, 379.6) > 2.5);
+  for (const size of [0, -1, NaN, Infinity, Number.MIN_VALUE])
+    assert.throws(() => readingOcrScale(size, size));
 });
 test("OCR 校对新增不可变来源；旧标注、选文引用和原 PDF 保留，重开可读", async () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-reader-ocr-test-")),

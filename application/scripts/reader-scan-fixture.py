@@ -44,6 +44,30 @@ im = horizontal(lines).resize((540, 720)).resize((1200, 1600)).filter(ImageFilte
 im = im.rotate(1.5, resample=Image.Resampling.BICUBIC, fillcolor="white")
 pages.append((im, {"layout": "horizontal", "lines": lines, "degraded": True}))
 
+# Ordinary structured print: reading order and characters, not a claim to infer
+# table semantics. Dense Chinese, Latin abbreviations and numbers stress small
+# glyphs without changing PDF point dimensions or using a hidden text layer.
+lines = ["阅读记录", "日期", "页码", "内容", "2026-09-24", "12", "古籍校对", "2026-09-25", "36", "论文阅读"]
+im = Image.new("RGB", (1200, 1600), "white")
+draw = ImageDraw.Draw(im)
+draw.text((80, 60), lines[0], font=font, fill="#242424")
+for row in range(3):
+    for col, x in enumerate([80, 460, 710]):
+        draw.text((x, 180 + row * 110), lines[1 + row * 3 + col], font=font, fill="#242424")
+for y in [160, 270, 380, 490]:
+    draw.line((65, y, 1120, y), fill="#777777", width=2)
+for x in [65, 430, 680, 1120]:
+    draw.line((x, 160, x, 490), fill="#777777", width=2)
+pages.append((im, {"layout": "horizontal", "lines": lines, "category": "synthetic-table"}))
+
+lines = ["合成阅读资料：多页连续阅读", "这份资料只用于核对文字，不包含用户的私人信息。", "第二行包含日期：2026年9月24日，以及页码123。", "第三行核对字词：原文、标注、引用、保存与恢复。", "第四行保持同一段原文，切换页面后应准确返回。", "第五行包含简称：PDF、OCR、EPUB。", "第六行说明版本：首次识别后，校对仍保留原始结果。"]
+small_font = ImageFont.truetype(sys.argv[2], 28, index=int(sys.argv[3]) if len(sys.argv) > 3 else 0)
+im = Image.new("RGB", (1200, 1600), "white")
+draw = ImageDraw.Draw(im)
+for row, text in enumerate(lines):
+    draw.text((60, 100 + row * 65), text, font=small_font, fill="#242424")
+pages.append((im, {"layout": "horizontal", "lines": lines, "category": "synthetic-small-print"}))
+
 pdf = out / "TEST-OCR扫描验收.pdf"
 writer = canvas.Canvas(str(pdf), pagesize=(600, 800), pageCompression=1)
 writer.setTitle("TEST OCR 合成扫描验收")

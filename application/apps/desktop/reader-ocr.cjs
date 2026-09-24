@@ -29,7 +29,7 @@ function createReadingOcrEngine({
       if (url.host !== "app" || req.method !== "GET")
         return new Response("Forbidden", { status: 403 });
       const model = /^\/ocr-model\/([01])\.tar$/.exec(url.pathname);
-      if (model)
+      if (model && request)
         return new Response(new Uint8Array(request.models[Number(model[1])]), {
           headers: {
             "Content-Type": "application/octet-stream",
@@ -122,6 +122,9 @@ function createReadingOcrEngine({
     } finally {
       if (!window.isDestroyed()) window.destroy();
       isolated.protocol.unhandle("morphz");
+      // The partition can outlive its window. Its callbacks must no longer
+      // retain this job's PDF and model buffers after teardown.
+      request = undefined;
       await isolated.clearCache();
     }
   };

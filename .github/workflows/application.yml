@@ -67,7 +67,7 @@ jobs:
   desktop:
     name: Embedded Desktop (macOS)
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: application
@@ -86,7 +86,26 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run test:embedded
+      - run: npm run test:draft-restart
       - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
+      # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
+      - name: Prepare OCR models for isolated regression fixtures
+        run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
+      - name: Reader OCR isolation and correction
+        run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
+      - name: Reader repeated navigation and OCR resource cleanup
+        run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: reader-desktop-regression
+          path: |
+            application/test-results/morphz-embedded-electron-*/reader-stability.json
+            application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
+            application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

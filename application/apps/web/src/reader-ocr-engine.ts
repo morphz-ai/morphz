@@ -1,6 +1,7 @@
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { PaddleOCR } from "@paddleocr/paddleocr-js";
+import { readingOcrScale } from "../../../packages/core/src/reader-ocr.js";
 
 declare global {
   interface Window {
@@ -34,11 +35,11 @@ if (host)
         page = await document.getPage(input.page),
         unscaled = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({
-        scale: Math.min(2.5, 2000 / Math.max(unscaled.width, unscaled.height)),
+        scale: readingOcrScale(unscaled.width, unscaled.height),
       });
       const canvas = window.document.createElement("canvas");
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
       await page.render({
         canvas,
         viewport,

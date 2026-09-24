@@ -4,6 +4,8 @@
 
 2026-09-24 继续验收又修复了 Host 工具说明残留的「不剧透」策略和 PDF 20/32 MB 导入上限不一致；397 项单元集成、23 项界面、百万字阅读及真实 Runtime 链路复测通过。公开古籍扫描页实测暴露识别错漏，未达到质量验收标准。详见[继续验收记录](./reader-followup-acceptance-2026-09-24.md)，不以流程通过替代识别质量。
 
+随后自动化修正了 OCR 同行排序、2000 像素渲染预算未充分使用，以及任务结束后 PDF／模型缓冲区仍被隔离分区闭包保留的问题。六页合成扫描通过；150 轮反复操作用于发现资源缺陷，修复后另有回收验证。真实古籍仍有错漏，瞬时内存仍较高，不能称作全部质量通过。草稿重启与本地 OCR 回归已接入 CI，完整范围见[OCR 与资源专项验收](./reader-ocr-stability-acceptance-2026-09-24.md)。下文早期数字保留为当时证据，不冒充最新状态。
+
 ## 标注操作纠正（2026-09-24）
 
 参考 [Apple Books 的高亮和笔记管理](https://support.apple.com/zh-cn/guide/books/ibks3975f128/mac)及 [Kindle 的原文标注菜单](https://digprjsurvey.amazon.com/csad/help/node/TTqOsFUasbkY9S4V9x)：原文上的标注必须能直接管理，侧栏是汇总入口而不是唯一删除入口。

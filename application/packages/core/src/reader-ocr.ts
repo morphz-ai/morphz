@@ -1,6 +1,15 @@
 import { z } from "zod";
 
-export const ocrEngine = "PaddleOCR.js 0.4.2 / PP-OCRv6_small";
+// The recipe is part of the immutable OCR source identity, not just the model.
+export const ocrEngine =
+  "PaddleOCR.js 0.4.2 / PP-OCRv6_small / page-2000-rows-v1";
+export function readingOcrScale(width: number, height: number): number {
+  if (![width, height].every((n) => Number.isFinite(n) && n > 0))
+    throw new Error("Invalid OCR page dimensions");
+  const scale = 2000 / Math.max(width, height);
+  if (!Number.isFinite(scale)) throw new Error("Invalid OCR page scale");
+  return scale;
+}
 export const ocrLayoutSchema = z.enum(["horizontal", "columns", "vertical"]);
 export type OcrLayout = z.infer<typeof ocrLayoutSchema>;
 const point = z.tuple([
@@ -135,12 +144,51 @@ export function orderOcr(result: OcrResult, layout: OcrLayout): OcrResult {
   } else if (layout === "columns") {
     // A two-column reading mode, not an automatic table/layout reconstruction claim.
     const half = result.image.width / 2;
-    items.sort(
-      (a, b) =>
-        Number(box(a).x >= half) - Number(box(b).x >= half) ||
-        box(a).y - box(b).y ||
-        box(a).x - box(b).x,
+    return {
+      ...result,
+      items: [false, true].flatMap((right) =>
+        rows(items.filter((item) => box(item).x >= half === right)),
+      ),
+    };
+  }
+  return { ...result, items: rows(items) };
+
+  function rows(input: typeof items) {
+    const positioned = input
+      .map((item) => {
+        const b = box(item);
+        return {
+          item,
+          x: b.x,
+          center: (b.y + b.bottom) / 2,
+          height: b.bottom - b.y,
+        };
+      })
+      .sort((a, b) => a.center - b.center || a.x - b.x);
+    const groups: Array<{
+      center: number;
+      height: number;
+      items: typeof positioned;
+    }> = [];
+    for (const entry of positioned) {
+      // Detection boxes on the same printed line have slightly different tops.
+      // Anchor each row instead of using a non-transitive fuzzy sort comparator;
+      // the shorter box sets tolerance so a tall box cannot swallow nearby rows.
+      const row = groups.find(
+        (g) =>
+          Math.abs(g.center - entry.center) <=
+          Math.min(g.height, entry.height) / 2,
+      );
+      if (row) row.items.push(entry);
+      else
+        groups.push({
+          center: entry.center,
+          height: entry.height,
+          items: [entry],
+        });
+    }
+    return groups.flatMap((g) =>
+      g.items.sort((a, b) => a.x - b.x).map((e) => e.item),
     );
-  } else items.sort((a, b) => box(a).y - box(b).y || box(a).x - box(b).x);
-  return { ...result, items };
+  }
 }

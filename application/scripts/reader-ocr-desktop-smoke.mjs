@@ -5,8 +5,9 @@ import {
   copyFileSync,
   readFileSync,
   writeFileSync,
+  readdirSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -34,7 +35,7 @@ const env = {
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
 };
 delete env.ELECTRON_RUN_AS_NODE;
-let app;
+let app, page;
 try {
   app = await _electron.launch({
     args: ["tests/fixtures/production-desktop-entry.cjs"],
@@ -62,7 +63,7 @@ try {
       timeout: 20000,
     })
     .toBe(true);
-  const page = app.windows().find((p) => p.url() === "morphz://app/");
+  page = app.windows().find((p) => p.url() === "morphz://app/");
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const bridge = async (method, params) =>
@@ -369,18 +370,39 @@ try {
     Buffer.from(zoomCapture, "base64"),
   );
   assert.deepEqual(errors, []);
-  console.log(
-    JSON.stringify({
-      ok: true,
-      fixture,
-      milliseconds: Date.now() - started,
-      recognizedLines: section.ocr.items.length,
-      sourceVersionPreserved: true,
-      restored: true,
-      isolation,
-      matrix,
-    }),
+  const report = {
+    ok: true,
+    fixture,
+    milliseconds: Date.now() - started,
+    recognizedLines: section.ocr.items.length,
+    sourceVersionPreserved: true,
+    restored: true,
+    isolation,
+    matrix,
+  };
+  writeFileSync(
+    join(fixture, "ocr-result.json"),
+    JSON.stringify(report, null, 2),
   );
+  console.log(JSON.stringify(report));
+} catch (error) {
+  await page
+    ?.screenshot({ path: join(fixture, "ocr-failure.png") })
+    .catch(() => {});
+  writeFileSync(
+    join(fixture, "ocr-failure.json"),
+    JSON.stringify({ error: error.stack ?? String(error) }, null, 2),
+  );
+  throw error;
 } finally {
   await app?.close();
+  const evidence = resolve("test-results", basename(fixture));
+  mkdirSync(evidence, { recursive: true });
+  for (const name of readdirSync(fixture))
+    if (
+      /^(reader-ocr-.*\.png|scan-page-\d+\.png|ocr-(matrix|result|failure)\.json|ocr-failure\.png|scan-provenance\.json)$/.test(
+        name,
+      )
+    )
+      copyFileSync(join(fixture, name), join(evidence, name));
 }

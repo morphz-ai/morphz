@@ -68,7 +68,9 @@ function preferenceSeed(previous, identity) {
             draft &&
             (draft.body?.trim() ||
               draft.selection?.trim() ||
-              draft.attachments?.length),
+              draft.attachments?.length ||
+              draft.textQuotes?.length ||
+              draft.intent),
         )
       )
         owners.add(match[1]);
@@ -140,14 +142,9 @@ async function restorePreferences(window, seed) {
     for (const [key, value] of seed.entries) {
       if (localStorage.getItem(key) === null) { localStorage.setItem(key, value); restored++; }
     }
-    let owner = localStorage.getItem(seed.prefix + 'desktop:last-window');
-    const previous = seed.entries.find(([key]) => key === seed.prefix + 'desktop:last-window')?.[1];
-    let currentHasDraft = false;
-    try { currentHasDraft = Object.values(JSON.parse(localStorage.getItem(seed.prefix + 'draft:' + owner + ':inputs') || '{}')).some(draft => draft && (draft.body?.trim() || draft.selection?.trim() || draft.attachments?.length)); } catch {}
-    if (!currentHasDraft && seed.draftOwners?.length === 1 && previous === seed.draftOwners[0]) {
-      owner = previous;
-      localStorage.setItem(seed.prefix + 'desktop:last-window', owner);
-    }
+    // The current origin's marker is authoritative, even with an empty composer
+    // or a quotes-only draft. An older origin must never retarget that window.
+    const owner = localStorage.getItem(seed.prefix + 'desktop:last-window');
     if (!sessionStorage.getItem('morphz:window')) {
       const existing = sessionStorage.getItem('morphzwork:window');
       const selected = existing || owner;

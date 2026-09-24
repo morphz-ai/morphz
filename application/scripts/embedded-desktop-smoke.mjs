@@ -182,18 +182,17 @@ try {
   );
   assert.equal(imported.ok, true, JSON.stringify(imported));
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
-  await page
-    .getByRole("button", { name: "查看本空间内容", exact: true })
-    .click();
+  await page.getByRole("button", { name: "查看项目内容", exact: true }).click();
   await page.locator(".artifact-card").filter({ hasText: "reader" }).click();
-  await expect(page.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
-  await expect(page.locator(".pdf-text-layer")).toContainText("合成测试资料");
-  await page.getByRole("button", { name: "PDF 下一页" }).click();
-  await expect(page.locator(".pdf-text-layer")).toContainText(
+  const reader = page.locator(".reading-app:visible");
+  await expect(reader.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
+  await expect(reader.locator(".pdf-text-layer")).toContainText("合成测试资料");
+  await reader.getByRole("button", { name: "下一页", exact: true }).click();
+  await expect(reader.locator(".pdf-text-layer")).toContainText(
     "durable butterfly",
   );
   assert.ok(
-    await page
+    await reader
       .locator(".pdf-page canvas")
       .evaluate((canvas) => canvas.width > 300),
   );
