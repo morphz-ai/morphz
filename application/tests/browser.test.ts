@@ -139,6 +139,39 @@ test("快速切换或关闭网站会取消尚未完成的打开请求", async ()
     browser.stop();
   }
 });
+test("浏览器加载状态来自真实网页，未连接、完成和失败不会伪造加载进度", () => {
+  const browser = new DesktopBrowser({}, "morphz://app");
+  try {
+    assert.equal(browser.state(), null);
+    browser.current = {
+      state: { pageId: "loading-page" },
+      partition: "fixture",
+      initialURL: "https://example.com/",
+      view: null,
+      error: "",
+    };
+    assert.equal(browser.state().loading, true);
+    let loading = true;
+    browser.current.view = {
+      webContents: {
+        isLoading: () => loading,
+        navigationHistory: {
+          canGoBack: () => false,
+          canGoForward: () => false,
+        },
+      },
+    };
+    assert.equal(browser.state().loading, true);
+    loading = false;
+    assert.equal(browser.state().loading, false);
+    browser.current.error = "网页未能载入，请检查地址或重新载入。";
+    assert.equal(browser.state().loading, false);
+    assert.match(browser.state().error, /未能载入/);
+  } finally {
+    browser.current = null;
+    browser.stop();
+  }
+});
 test("网页只接受宿主已批准的单个嵌入，不能附加预加载或继承应用权限", () => {
   const browser = new DesktopBrowser({}, "morphz://app");
   const pending = () => ({

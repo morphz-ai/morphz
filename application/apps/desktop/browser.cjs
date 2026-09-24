@@ -392,6 +392,7 @@ class DesktopBrowser {
           canGoBack: c.view?.webContents.navigationHistory.canGoBack() ?? false,
           canGoForward:
             c.view?.webContents.navigationHistory.canGoForward() ?? false,
+          loading: !c.view || c.view.webContents.isLoading(),
           pending: c.pending
             ? {
                 id: c.pending.id,

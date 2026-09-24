@@ -38,10 +38,13 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   }
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await openLibrary(page);
-  await expect(page.getByLabel("内容范围", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("内容范围", { exact: true })).toHaveValue("all");
   await expect(
-    page.getByRole("region", { name: "认知应用工作空间" }),
-  ).not.toContainText("导航甲文档");
+    page.locator(".artifact-card").filter({ hasText: "导航甲文档" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".artifact-card").filter({ hasText: "导航乙文档" }),
+  ).toBeVisible();
   await openSettings(page, "外观");
   await page.getByRole("button", { name: "暗色", exact: true }).click();
   await page.getByRole("button", { name: "电光青", exact: true }).click();
@@ -84,6 +87,10 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
   await page.locator(".project-card").click();
   await openLibrary(page);
   await expect(page.getByLabel("内容范围", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".library-collection")).toHaveAttribute(
+    "aria-label",
+    "导航甲的内容",
+  );
   await expect(page.locator(".artifact-card")).toHaveCount(1);
   await expect(page.locator(".artifact-card")).toContainText("导航甲文档");
   await page.reload();

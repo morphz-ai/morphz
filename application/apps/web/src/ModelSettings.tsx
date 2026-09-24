@@ -346,7 +346,7 @@ export function ModelSettings({
                 设为默认
               </button>
               <small className="muted">
-                用于后续未单独指定模型的请求，不会重新发送已有消息。
+                新消息默认使用此模型，也可在输入框中单独选择。
               </small>
             </form>
             <section aria-label="已连接账号">

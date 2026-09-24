@@ -172,6 +172,7 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
   await page
     .getByRole("button", { name: "继续打开：" + title, exact: true })
     .click();
+  await expect(page.locator(".object-paper > h1")).toHaveText(title);
   let calls = 0;
   let release!: () => void;
   const held = new Promise<void>((resolve) => {

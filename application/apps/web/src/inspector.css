@@ -50,7 +50,10 @@
 }
 .app .workspace:not([data-inspector-mode="docked"]) > .topbar,
 .app .workspace:not([data-inspector-mode="docked"]) .browser-toolbar {
-  padding-right: var(--inspector-controls-space);
+  /* Padding still belongs to Electron's drag rectangle. Leave the sibling
+     controls physically outside it, including while the inspector is closed. */
+  margin-right: var(--inspector-controls-space);
+  padding-right: 0;
 }
 .app .workspace[data-inspector-mode="docked"] {
   grid-template-columns: minmax(0, 1fr) var(--inspector-width);

@@ -233,9 +233,7 @@ test("历史引用显示并打开当时标题与版本，真实交付也保持�
 }) => {
   await page.goto("/");
   const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find(
-    (p) => p.kind === "dialogue",
-  )!.id;
+  const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
   const artifactId = await command(page, {
     type: "create-artifact",
     projectId,

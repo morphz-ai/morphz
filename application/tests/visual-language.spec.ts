@@ -47,7 +47,7 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
   await action(page.getByRole("button", { name: "编辑", exact: true }), "编辑");
   await action(
     page.getByRole("button", { name: "围绕选中文本输入", exact: true }),
-    "选区提问",
+    "评论选文",
   );
 
   for (const appearance of ["亮色", "暗色"]) {

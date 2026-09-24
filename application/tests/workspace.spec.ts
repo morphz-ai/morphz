@@ -64,9 +64,12 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
       s.removeAllRanges();
       s.addRange(r);
     });
-  await page.getByRole("button", { name: "围绕选中文本输入" }).click();
+  await page
+    .getByRole("toolbar", { name: "选中文本操作" })
+    .getByRole("button", { name: "批注", exact: true })
+    .click();
   await page.getByLabel("AI 输入内容").fill("这是核心机制。");
-  await composerAction(page, "保存为批注");
+  await page.getByRole("button", { name: "保存批注", exact: true }).click();
   await expect(page.locator(".annotation blockquote")).toHaveText(
     "多条工作线共享上下文。",
   );

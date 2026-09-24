@@ -84,6 +84,7 @@ export function ApplicationHost({
   recentContentVisits = [],
   children,
   onActivate,
+  navigationId,
   onOpen,
   onOpenContents,
   onCompose,
@@ -134,7 +135,8 @@ export function ApplicationHost({
   onScriptLibrary: () => void;
   recentContentVisits?: ContentVisit[];
   children: ReactNode;
-  onActivate: (id: string | null) => void;
+  navigationId: number;
+  onActivate: (id: string | null, expectedNavigation?: number) => void;
   onOpen: (id: string) => void;
   onOpenContents: () => Promise<void>;
   onCompose: (
@@ -228,7 +230,9 @@ export function ApplicationHost({
         applicationId: app.id,
         applicationVersion: app.version,
       });
-      onActivate(receipt.entityId);
+      // Persisting an application may finish after the user has chosen another
+      // tab or document. Its receipt must not take over that newer navigation.
+      onActivate(receipt.entityId, navigationId);
     } catch (error) {
       onNotice((error as Error).message);
     } finally {
@@ -247,6 +251,7 @@ export function ApplicationHost({
         const index = instances.findIndex((i) => i.id === instance.id);
         onActivate(
           instances[index + 1]?.id ?? instances[index - 1]?.id ?? null,
+          navigationId,
         );
       }
     } catch (error) {

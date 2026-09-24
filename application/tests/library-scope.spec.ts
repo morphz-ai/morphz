@@ -28,18 +28,16 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
 }) => {
   await page.goto("/");
   const initial = await snapshot(page);
-  const dialogue = initial.workspace.projects.find(
-    (p) => p.kind === "dialogue",
-  )!;
+  const owner = initial.workspace.projects.find((p) => p.kind === "desk")!;
   const title = "对话中生成的现场清单-" + randomUUID();
   const doc = await command(page, {
     type: "create-artifact",
-    projectId: dialogue.id,
+    projectId: owner.id,
     title,
     content: {
       kind: "document",
       markdown:
-        "这份文档属于对话，不属于工作台。\n\n" +
+        "这份文档由对话创建，保存在未归项目。\n\n" +
         "长文阅读与滚动验证。\n\n".repeat(120),
     },
   });
@@ -65,7 +63,7 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
     .getByRole("button", { name: "文档", exact: true })
     .click();
   const card = page.locator(".artifact-card").filter({ hasText: title });
-  await expect(card).toContainText("对话 · 文档");
+  await expect(card).toContainText("未归项目 · 文档");
   await expect(card.locator(".artifact-card-open")).toHaveAttribute(
     "title",
     title + " · v1",
@@ -76,7 +74,7 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   await card.click();
   await expect(page.locator(".object-paper > h1")).toHaveText(title);
   await expect(page.locator(".document-body")).toContainText(
-    "这份文档属于对话",
+    "这份文档由对话创建，保存在未归项目",
   );
   const main = page.getByRole("main", { name: "主工作区" });
   await main.evaluate((el) => el.scrollTo({ top: 300 }));
@@ -98,7 +96,7 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   await expect(card).toBeVisible();
   const after = await snapshot(page);
   expect(after.workspace.artifacts.find((a) => a.id === doc)?.projectId).toBe(
-    dialogue.id,
+    owner.id,
   );
   expect(after.workspace.inputs).toEqual(initial.workspace.inputs);
   expect(after.workspace.applicationInstances).toEqual(
@@ -119,7 +117,7 @@ test("搜索先看到刚创建的对象时，打开会补齐快照而不是无�
     .getByRole("button", { name: "内容", exact: true })
     .click();
   const initial = await snapshot(page);
-  const owner = initial.workspace.projects.find((p) => p.kind === "dialogue")!;
+  const owner = initial.workspace.projects.find((p) => p.kind === "desk")!;
   const title = "先被搜索发现的新对象-" + randomUUID();
   await seedCenter(
     page,

@@ -5,6 +5,12 @@ import { openLibrary } from "./application-helpers.js";
 
 test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({ page }) => {
   await page.goto("/");
+  // A preceding test may leave the browser selected in the shared center.
+  // This case measures the ordinary shell, not its browser-specific toolbar.
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
   const toggle = page.locator(".sidebar-toggle");
   await expect(toggle).toBeVisible();
   const sidebar = (await page.locator(".sidebar").boundingBox())!;

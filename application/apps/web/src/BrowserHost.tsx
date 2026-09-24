@@ -319,10 +319,21 @@ export function BrowserHost({
           </button>
           <button
             aria-label="重新载入网页"
+            title={opening || page?.loading ? "正在加载网页" : "重新载入网页"}
             disabled={!page}
             onClick={() => void control("reload")}
           >
-            <RotateCw />
+            {opening || page?.loading ? (
+              <span
+                className="browser-loading-indicator"
+                role="status"
+                aria-label="正在加载网页"
+              >
+                <RotateCw />
+              </span>
+            ) : (
+              <RotateCw />
+            )}
           </button>
         </div>
         <form
@@ -409,9 +420,11 @@ export function BrowserHost({
         <div className="browser-start">
           <Globe size={30} />
           <p>
-            {artifact?.content.kind === "website"
-              ? artifact.content.url
-              : "输入网址，开始浏览"}
+            {opening
+              ? "正在打开网页…"
+              : artifact?.content.kind === "website"
+                ? artifact.content.url
+                : "输入网址，开始浏览"}
           </p>
           <p className="muted">
             网站使用独立的浏览器配置。登录由你完成；开启协助后，Agent

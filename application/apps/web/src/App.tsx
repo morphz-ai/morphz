@@ -1412,7 +1412,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (generation === navigationGeneration.current) setOpeningObject(false);
     }
   }
-  function activateApplication(id: string | null) {
+  function activateApplication(
+    id: string | null,
+    expectedNavigation = navigationGeneration.current,
+  ) {
+    if (expectedNavigation !== navigationGeneration.current) return;
     if (!project) return;
     setWebsiteIntent(null);
     setCreating(null);
@@ -2730,6 +2734,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   }}
                   recentContentVisits={recentContentVisits}
                   enabled={applicationWorkspaceOpen}
+                  navigationId={navigationGeneration.current}
                   onActivate={activateApplication}
                   onOpen={open}
                   readingTarget={prefs.readingTarget}

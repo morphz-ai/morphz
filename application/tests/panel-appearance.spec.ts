@@ -2,19 +2,14 @@ import { openSettings } from "./settings-helpers.js";
 import { seedCenter } from "./center-fixtures.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { libraryDestination } from "./artifact-fixtures.js";
 
 test("搜索与通知在四主题亮暗模式下保持中性色层次和可见键盘焦点", async ({
   page,
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const label = await page
-    .locator(".library-collection")
-    .getAttribute("aria-label");
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => label === p.title + "的内容",
-  );
+  const project = await libraryDestination(page);
   await seedCenter(
     page,
     {

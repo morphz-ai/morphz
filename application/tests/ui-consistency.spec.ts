@@ -62,6 +62,11 @@ async function prepare(
 test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且不被项目挤走", async ({
   page,
 }) => {
+  // This is Desktop chrome; the Web-only product-family navigation is tested
+  // separately and is not part of the Desktop identity footer.
+  await page.addInitScript(() => {
+    (window as any).morphzDesktop = {};
+  });
   await prepare(page);
   for (let i = 0; i < 22; i++)
     await seedCenter(page, {

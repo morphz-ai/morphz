@@ -1,6 +1,7 @@
 import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
+import { libraryDestination } from "./artifact-fixtures.js";
 import { seedCenter } from "./center-fixtures.js";
 
 test("搜索无关闭按钮，外部点击关闭且不误触背后的页面", async ({ page }) => {
@@ -65,13 +66,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
 }) => {
   await page.goto("/");
   await openLibrary(page);
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const label = await page
-    .locator(".library-collection")
-    .getAttribute("aria-label");
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => label === p.title + "的内容",
-  );
+  const project = await libraryDestination(page);
   await seedCenter(
     page,
     {

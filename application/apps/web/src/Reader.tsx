@@ -149,20 +149,7 @@ export function Reader(props: ReaderProps) {
           <BookOpen />
           阅读
         </h2>
-        <button
-          className="primary"
-          disabled={importing}
-          onClick={() => {
-            onNativeDialog?.(true);
-            file.current?.click();
-          }}
-        >
-          <Plus />
-          {importing ? "正在导入…" : "导入读物"}
-        </button>
-      </header>
-      <div className="reader-library-filter">
-        <label>
+        <label className="reader-library-search">
           <Search />
           <input
             type="search"
@@ -172,13 +159,24 @@ export function Reader(props: ReaderProps) {
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
-        <span>{matches.length} 份读物</span>
-      </div>
+        <span className="reader-library-count">{matches.length} 份读物</span>
+        <button
+          className="primary"
+          aria-label={importing ? "正在导入读物" : "导入读物"}
+          disabled={importing}
+          onClick={() => {
+            onNativeDialog?.(true);
+            file.current?.click();
+          }}
+        >
+          <Plus />
+          {importing ? "正在导入…" : "导入"}
+        </button>
+      </header>
       {!books.length && (
         <div className="reader-empty">
           <BookOpen />
-          <h3>带着 Morphz 一起读</h3>
-          <p>打开一本书，选中原文，就能沿用平时的对话继续讨论。</p>
+          <h3>暂无读物</h3>
           <p>EPUB · PDF · Markdown · Word · TXT · HTML · RTF</p>
         </div>
       )}
@@ -233,10 +231,11 @@ export function Reader(props: ReaderProps) {
           );
         })}
       </ul>
-      <p className="reader-privacy">
-        读物导入当前工作中心；本地 Desktop 在本机解析。向 Morphz
-        交流时默认只附带书籍和位置，选文后才附带原文及必要上下文；讨论原文时按需读取，不自动上传整本书。
-      </p>
+      <details className="reader-privacy">
+        <summary>文件与阅读数据</summary>
+        <p>文件保存到当前工作中心；连接远程中心时，文件会上传至该中心。</p>
+        <p>选文会随提问提供给模型，其余原文由 Morphz 按需读取。</p>
+      </details>
       <input
         ref={file}
         className="hidden-file"
@@ -276,6 +275,7 @@ function ReadingBook({
     (v) => v.revision === (revision ?? artifact.revision),
   )!;
   const owner = client.boot!.principalId;
+  const centerId = client.boot!.centerId;
   const saved = client.boot!.workspace.readingStates.find(
     (p) => p.artifactId === artifact.id && p.ownerPrincipalId === owner,
   );
@@ -317,6 +317,7 @@ function ReadingBook({
   const article = useRef<HTMLDivElement>(null),
     viewport = useRef<HTMLDivElement>(null);
   const restoredSection = useRef<ReadingSection | null>(null);
+  const loadedAttempt = useRef<number | null>(null);
   const jump = useRef<ReadingLocation | null>(
     target?.artifactId === artifact.id
       ? target.location
@@ -328,6 +329,7 @@ function ReadingBook({
   const progress = useRef<ReadingLocation | null>(saved?.location ?? null),
     progressQueue = useRef(Promise.resolve());
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingPosition = useRef<ReadingLocation | null>(null);
   const marks = client.boot!.workspace.readingMarks.filter(
     (m) =>
       m.artifactId === artifact.id &&
@@ -474,13 +476,24 @@ function ReadingBook({
   }, [artifact.id, version.revision, active, retry]);
   useEffect(() => {
     if (!active || !sectionId) return;
+    // Switching applications only hides this reader. Reuse the loaded page so
+    // returning does not clear its DOM, selection or scroll position.
+    if (
+      latest.current.section?.id === sectionId &&
+      loadedAttempt.current === retry
+    )
+      return;
     const abort = new AbortController();
     setError("");
     setSection(null);
     setSelected(null);
     void client
       .readReading(artifact.id, version.revision, sectionId, abort.signal)
-      .then(setSection)
+      .then((value) => {
+        if (abort.signal.aborted) return;
+        loadedAttempt.current = retry;
+        setSection(value);
+      })
       .catch((e) => {
         if (!abort.signal.aborted) setError(e.message);
       });
@@ -509,10 +522,7 @@ function ReadingBook({
       .catch(() => {})
       .then(async () => {
         const snapshot = client.getSnapshot();
-        if (
-          snapshot?.principalId !== owner ||
-          snapshot.centerId !== client.boot!.centerId
-        )
+        if (snapshot?.principalId !== owner || snapshot.centerId !== centerId)
           return;
         const previous = snapshot.workspace.readingStates.find(
           (p) => p.artifactId === artifact.id && p.ownerPrincipalId === owner,
@@ -537,12 +547,18 @@ function ReadingBook({
       })
       .catch((e) => onNotice(`阅读进度未保存：${e.message}`));
   }
-  useEffect(
-    () => () => {
-      clearTimeout(timer.current);
-    },
-    [],
-  );
+  function flushPosition() {
+    clearTimeout(timer.current);
+    const pending = pendingPosition.current;
+    pendingPosition.current = null;
+    if (pending) savePosition(pending);
+  }
+  // Persist the last observed location, not geometry measured after the reader
+  // has been hidden or unmounted. Fast navigation must not cancel the last save.
+  useLayoutEffect(() => () => flushPosition(), []);
+  useLayoutEffect(() => {
+    if (!active) flushPosition();
+  }, [active]);
   useEffect(() => {
     if (!section || !article.current || !viewport.current || !active) return;
     const root = article.current,
@@ -585,7 +601,7 @@ function ReadingBook({
       if (!restored) {
         restored = true;
         restoredSection.current = section;
-        const location = jump.current;
+        const location = jump.current ?? progress.current;
         const anchor = anchorJump.current
           ? root.querySelector(`[id="${CSS.escape(anchorJump.current)}"]`)
           : null;
@@ -608,10 +624,13 @@ function ReadingBook({
             ]!,
           );
           if (range)
-            view.scrollTop +=
-              range.getBoundingClientRect().top -
-              view.getBoundingClientRect().top -
-              32;
+            view.scrollTop =
+              location.start === 0
+                ? 0
+                : view.scrollTop +
+                  range.getBoundingClientRect().top -
+                  view.getBoundingClientRect().top -
+                  32;
           if (location.end > location.start && registry && Highlight) {
             const cited = readerRange(
               root,
@@ -707,18 +726,17 @@ function ReadingBook({
     return true;
   }
   function changeSection(id: string, location?: ReadingLocation) {
-    clearTimeout(timer.current);
+    flushPosition();
     setSelected(null);
-    jump.current = location ?? null;
+    jump.current =
+      location ??
+      (section?.id === id
+        ? { sourceId: section.sourceId, sectionId: id, start: 0, end: 0 }
+        : null);
     setSectionId(id);
-    if (location && id === sectionId) setRetry((n) => n + 1);
-    if (section && id === section.id && !location)
-      savePosition({
-        sourceId: section.sourceId,
-        sectionId: id,
-        start: 0,
-        end: 0,
-      });
+    // A deliberate TOC click navigates even if that chapter is already open.
+    // Saving zero without restoring the viewport would leave the two out of sync.
+    if (id === sectionId) setRetry((n) => n + 1);
   }
   async function addMark(
     location: ReadingLocation,
@@ -837,6 +855,7 @@ function ReadingBook({
     }
   }
   function setPrefs(next: ReadingPreferences) {
+    flushPosition();
     setPreferences(next);
     if (section)
       savePosition(
@@ -1086,40 +1105,46 @@ function ReadingBook({
             )}
             {panel === "settings" && (
               <div className="reader-settings">
+                {(version.content.kind !== "pdf" || section?.ocr) && (
+                  <>
+                    <label>
+                      字号 <span>{preferences.fontSize}</span>
+                      <input
+                        aria-label="阅读字号"
+                        type="range"
+                        min="14"
+                        max="32"
+                        value={preferences.fontSize}
+                        onChange={(e) =>
+                          setPrefs({
+                            ...preferences,
+                            fontSize: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      字体
+                      <select
+                        aria-label="阅读字体"
+                        value={preferences.font}
+                        onChange={(e) =>
+                          setPrefs({
+                            ...preferences,
+                            font: e.target.value as ReadingPreferences["font"],
+                          })
+                        }
+                      >
+                        <option value="serif">书刊衬线</option>
+                        <option value="sans">简洁无衬线</option>
+                      </select>
+                    </label>
+                  </>
+                )}
                 <label>
-                  字号 <span>{preferences.fontSize}</span>
-                  <input
-                    aria-label="阅读字号"
-                    type="range"
-                    min="14"
-                    max="32"
-                    value={preferences.fontSize}
-                    onChange={(e) =>
-                      setPrefs({
-                        ...preferences,
-                        fontSize: Number(e.target.value),
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  字体
-                  <select
-                    aria-label="阅读字体"
-                    value={preferences.font}
-                    onChange={(e) =>
-                      setPrefs({
-                        ...preferences,
-                        font: e.target.value as ReadingPreferences["font"],
-                      })
-                    }
-                  >
-                    <option value="serif">书刊衬线</option>
-                    <option value="sans">简洁无衬线</option>
-                  </select>
-                </label>
-                <label>
-                  主题
+                  {version.content.kind === "pdf" && !section?.ocr
+                    ? "背景"
+                    : "主题"}
                   <select
                     aria-label="阅读主题"
                     value={preferences.theme}
@@ -1169,39 +1194,29 @@ function ReadingBook({
                 ? current
                 : null,
             );
-            if (!section || !article.current) return;
+            if (
+              !active ||
+              !section ||
+              !article.current ||
+              restoredSection.current !== section
+            )
+              return;
             clearTimeout(timer.current);
-            const root = article.current,
-              view = viewport.current!;
-            timer.current = setTimeout(() => {
-              if (
-                !latest.current.active ||
-                latest.current.section?.id !== section.id
-              )
-                return;
-              const offsets = readerOffsets(
-                root.textContent ?? "",
-                section.text,
-              );
-              if (!offsets) return;
-              const bounds = view.getBoundingClientRect();
-              let low = 0,
-                high = root.textContent?.length ?? 0;
-              while (low < high) {
-                const mid = (low + high) >>> 1,
-                  r = readerRange(root, mid, Math.min(mid + 1, high));
-                if (r && r.getBoundingClientRect().bottom < bounds.top + 24)
-                  low = mid + 1;
-                else high = mid;
-              }
-              const start = offsets.domToSource[low] ?? 0;
-              savePosition({
-                sourceId: section.sourceId,
-                sectionId: section.id,
-                start,
-                end: start,
-              });
-            }, 700);
+            const position = readerViewport(
+              article.current,
+              section.text,
+              viewport.current!,
+            );
+            if (!position) return;
+            const location = {
+              sourceId: section.sourceId,
+              sectionId: section.id,
+              start: position.start,
+              end: position.start,
+            };
+            progress.current = location;
+            pendingPosition.current = location;
+            timer.current = setTimeout(flushPosition, 700);
           }}
         >
           {error ? (

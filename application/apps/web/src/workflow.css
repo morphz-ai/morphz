@@ -659,6 +659,17 @@
   flex-shrink: 0;
   -webkit-app-region: no-drag;
 }
+.browser-loading-indicator {
+  display: inline-flex;
+}
+.browser-loading-indicator svg {
+  animation: reading-spin 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-loading-indicator svg {
+    animation: none;
+  }
+}
 .browser-toolbar .application-return {
   gap: 6px;
   margin-right: 6px;
@@ -681,6 +692,7 @@
 }
 .application-immersive .browser-toolbar,
 .application-browser-workspace .browser-toolbar {
+  border: 0;
   border-radius: 0;
   margin: 0;
   height: 52px;
@@ -691,11 +703,15 @@
 .application-immersive[data-desktop="mac"] .browser-toolbar,
 .application-browser-workspace.sidebar-hidden[data-desktop="mac"]
   .browser-toolbar {
-  padding-left: 144px;
+  /* The independently positioned sidebar switch must not sit inside this
+     native drag rectangle. Keep the same total space before browser actions. */
+  margin-left: 132px;
+  padding-left: 12px;
 }
 .application-browser-workspace.sidebar-hidden:not([data-desktop="mac"])
   .browser-toolbar {
-  padding-left: 52px;
+  margin-left: 44px;
+  padding-left: 8px;
 }
 .app .browser-start {
   flex: 1;

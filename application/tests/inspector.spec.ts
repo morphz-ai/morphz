@@ -3,6 +3,12 @@ import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
+test.afterEach(async ({ page }) => {
+  // Workspace polling can still be reading a routed response when assertions
+  // finish. Drain these requests before Playwright disposes their context.
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 async function enableExecution(page: Page) {
   await page.route("**/api/workspace", async (route) => {
     const response = await route.fetch({

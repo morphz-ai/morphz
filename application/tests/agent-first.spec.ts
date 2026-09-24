@@ -118,7 +118,10 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   expect(after.workspace.inputs.length).toBe(initial.workspace.inputs.length);
   await page.screenshot({ path: "test-results/agent-first-composer.png" });
   await page.getByLabel("收起 AI 输入框").click();
-  await page.getByLabel("关闭应用 内容", { exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
 });
 
 test("事项意图按空间保存；请求失败留草稿，未连接不冒充创建", async ({
@@ -168,7 +171,7 @@ test("事项意图按空间保存；请求失败留草稿，未连接不冒充�
     saved.workspace.projects.find(
       (p: { id: string }) => p.id === recorded.projectId,
     ).kind,
-  ).toBe("inbox");
+  ).toBe("desk");
   expect(recorded.conversationId).toBe("local-dialogue");
   expect(saved.workspace.artifacts.length).toBe(
     initial.workspace.artifacts.length,
@@ -226,11 +229,7 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
       );
     savedInputs.push(recorded);
   };
-  for (const [label, kind] of [
-    ["对话", "dialogue"],
-    ["事项", "inbox"],
-    ["工作台", "desk"],
-  ] as const) {
+  for (const label of ["对话", "事项", "工作台"] as const) {
     await nav
       .getByRole("button", {
         name: label === "事项" ? /^事项/ : label,
@@ -238,8 +237,10 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
       })
       .click();
     await openInput(page);
-    await expect(page.locator(".composer .context-chip")).toHaveText(label);
-    const space = initial.workspace.projects.find((p) => p.kind === kind)!;
+    await expect(page.locator(".composer .context-chip")).toHaveText(
+      "未归项目",
+    );
+    const space = initial.workspace.projects.find((p) => p.kind === "desk")!;
     await saveInput(`在${label}保存的关联测试`, space.id);
   }
   await nav.getByRole("button", { name: /^事项/ }).click();
@@ -260,9 +261,9 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
     .screenshot({ path: "test-results/task-input-association.png" });
   await nav.getByRole("button", { name: /^事项/ }).click();
   await openInput(page);
-  await expect(page.locator(".composer .context-chip")).toHaveText("事项");
+  await expect(page.locator(".composer .context-chip")).toHaveText("未归项目");
   await saveInput(
     "回到事项列表后不沿用对象",
-    initial.workspace.projects.find((p) => p.kind === "inbox")!.id,
+    initial.workspace.projects.find((p) => p.kind === "desk")!.id,
   );
 });

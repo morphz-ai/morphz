@@ -67,18 +67,16 @@ test("文档不重复首标题，关联按需展开，失败就近重试且不�
   );
   await page.getByRole("button", { name: "取消编辑", exact: true }).click();
   await page.setViewportSize({ width: 760, height: 540 });
-  const strip = page.locator(".application-strip");
-  const tab = page.getByRole("tab", { name: "内容", exact: true });
-  await expect(tab).toBeInViewport();
-  const stripBounds = (await strip.boundingBox())!;
-  const tabBounds = (await page
-    .locator('.application-tab[data-active="true"]')
-    .boundingBox())!;
-  // Being in the DOM is not enough: the application label must not be clipped
-  // to a sliver by the object actions at the minimum desktop size.
-  expect(tabBounds.x).toBeGreaterThanOrEqual(stripBounds.x);
-  expect(tabBounds.x + tabBounds.width).toBeLessThanOrEqual(
-    stripBounds.x + stripBounds.width,
+  const toolbar = page.getByRole("banner", { name: "内容工具栏" });
+  const back = toolbar.getByRole("button", { name: "内容", exact: true });
+  await expect(back).toBeInViewport();
+  const toolbarBounds = (await toolbar.boundingBox())!;
+  const backBounds = (await back.boundingBox())!;
+  // The global catalog is a destination, not an application tab. Its return
+  // control must remain reachable beside the object actions at narrow widths.
+  expect(backBounds.x).toBeGreaterThanOrEqual(toolbarBounds.x);
+  expect(backBounds.x + backBounds.width).toBeLessThanOrEqual(
+    toolbarBounds.x + toolbarBounds.width,
   );
   for (const name of ["朗读对象", "版本历史", "编辑"]) {
     const action = page.getByRole("button", { name, exact: true });
@@ -86,6 +84,11 @@ test("文档不重复首标题，关联按需展开，失败就近重试且不�
     expect((await action.boundingBox())!.width).toBeLessThanOrEqual(36);
   }
   await page.screenshot({ path: "test-results/object-reading-compact.png" });
+  await back.click();
+  await expect(page.locator(".content-actions")).toBeVisible();
+  await expect(
+    page.locator(".artifact-card").filter({ hasText: "文档阅读验收" }),
+  ).toBeVisible();
 });
 
 test("朗读用能力命名，服务身份只出现在按需查看的说明", async ({ page }) => {

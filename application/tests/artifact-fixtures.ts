@@ -1,6 +1,30 @@
 import { expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { contentSchema, type Content } from "../packages/core/src/model.js";
+import type { Boot } from "../apps/web/src/client.js";
+
+export async function libraryDestination(page: Page) {
+  const boot: Boot = await (await page.request.get("/api/workspace")).json();
+  const scope = page.getByLabel("内容范围", { exact: true });
+  const destination = (await scope.isVisible())
+    ? await scope.inputValue()
+    : null;
+  const label = await page
+    .locator(".library-collection:visible")
+    .getAttribute("aria-label");
+  const project = boot.workspace.projects.find((p) =>
+    destination === null
+      ? label === `${p.title}的内容`
+      : destination === "all"
+        ? p.kind === "desk" && p.ownerPrincipalId === boot.principalId
+        : p.id === destination,
+  );
+  expect(
+    project,
+    "Fixture ownership must match the visible content scope",
+  ).toBeTruthy();
+  return project!;
+}
 
 // Unrelated editor/notification tests seed real objects through the center API;
 // the Agent-first request-to-tool path has its own end-to-end coverage.
@@ -9,14 +33,8 @@ export async function seedLibraryArtifact(
   title: string,
   content: Content,
 ) {
-  const label = await page
-    .locator(".library-collection")
-    .getAttribute("aria-label");
+  const project = await libraryDestination(page);
   const boot = await (await page.request.get("/api/workspace")).json();
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => label === `${p.title}的内容`,
-  );
-  expect(project, "The fixture must use the visible workspace").toBeTruthy();
   const response = await page.request.post("/api/commands", {
     headers: {
       "X-Morphz-Token": boot.csrfToken,

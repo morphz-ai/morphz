@@ -356,7 +356,7 @@ export function ScriptItemEditor({
                 {label}
               </button>
             ))}
-            <small>先保存；生成操作只准备输入，不会自动发送。</small>
+            {dirty && !stale && <small>保存文稿后可生成或检查。</small>}
           </div>
           <input
             aria-label="文稿标题"

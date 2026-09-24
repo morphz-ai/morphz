@@ -101,7 +101,10 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
     window.getSelection()!.removeAllRanges();
     window.getSelection()!.addRange(r);
   });
-  await page.getByRole("button", { name: "围绕选中文本输入" }).click();
+  await page
+    .getByRole("toolbar", { name: "选中文本操作" })
+    .getByRole("button", { name: "批注", exact: true })
+    .click();
   // Opening this standalone content tool is outside the composer. Keep the
   // input pinned here so its unchanged draft can also be checked underneath.
   await composerAction(page, "固定输入框");
@@ -148,7 +151,7 @@ test("明确开始后分段识别，结束停止采集，文字确认后保留�
   await expect(page.getByLabel("AI 输入内容")).toHaveValue(
     "确认后的语音批注。",
   );
-  await composerAction(page, "保存为批注");
+  await page.getByRole("button", { name: "保存批注", exact: true }).click();
   await expect(page.locator(".annotation")).toContainText("确认后的语音批注。");
   await expect(page.locator(".annotation")).toContainText("v2");
   await expect(page.getByLabel("AI 输入内容")).toBeVisible();

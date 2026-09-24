@@ -21,6 +21,7 @@ export type BrowserView = {
   projectId?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  loading: boolean;
   epoch: string;
   url: string;
   title: string;

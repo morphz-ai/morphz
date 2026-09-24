@@ -1,5 +1,6 @@
 import { seedLegacyDocument } from "./center-fixtures.js";
 import { openLibrary } from "./application-helpers.js";
+import { libraryDestination } from "./artifact-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
 import { openTranscription } from "./interaction-helpers.js";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
@@ -111,13 +112,7 @@ test("旧百万字 TXT 副本仍可连续朗读、暂停不预取、章节跳转
   });
   await page.goto("/");
   await openLibrary(page);
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const label = await page
-    .locator(".library-collection")
-    .getAttribute("aria-label");
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => label === p.title + "的内容",
-  );
+  const project = await libraryDestination(page);
   await seedLegacyDocument(page, project.id, "百万字朗读.txt", source);
   await page
     .locator(".artifact-card")

@@ -39,7 +39,15 @@ test("旧导入副本仍可阅读、引用和打开历史版本，但不再进�
   await page
     .getByRole("button", { name: "围绕选中文本输入", exact: true })
     .click();
-  await expect(page.locator(".selection-quote")).toContainText("蝴蝶资料检索");
+  await expect(
+    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    page
+      .getByRole("group", { name: "选文与评论", exact: true })
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true }),
+  ).toHaveAttribute("title", /蝴蝶资料检索/);
   await page.getByLabel("AI 输入内容").fill("请解释这段资料");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   const after = await (await page.request.get("/api/workspace")).json();
@@ -47,7 +55,13 @@ test("旧导入副本仍可阅读、引用和打开历史版本，但不再进�
     (i: { body: string }) => i.body === "请解释这段资料",
   );
   expect(input.artifactRevision).toBe(1);
-  expect(input.selection).toContain("蝴蝶资料检索");
+  expect(input.textQuotes).toHaveLength(1);
+  expect(input.textQuotes[0].text).toContain("蝴蝶资料检索");
+  expect(input.textQuotes[0].source).toMatchObject({
+    kind: "artifact",
+    artifactId: input.artifactId,
+    revision: 1,
+  });
   await page.reload();
   await expect(page.locator(".document-body")).toContainText("蝴蝶资料检索");
   await page.getByRole("button", { name: "版本历史", exact: true }).click();

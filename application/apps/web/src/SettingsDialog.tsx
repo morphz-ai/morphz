@@ -250,8 +250,7 @@ export function SettingsDialog({
                 </div>
               </dl>
               <p className="settings-note">
-                对话页使用 {modifier} J
-                聚焦输入框。设置仅保存在本机，不改变已有草稿或消息。
+                对话页使用 {modifier} J 聚焦输入框。
               </p>
             </section>
           )}
