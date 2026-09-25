@@ -322,24 +322,24 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
   (seq
     (bind input (script-context))
     (bind intent
-      (if (decode Bool (get input generating))
-          (infer
-            (captures input)
-            (returns ScriptIntent)
-            """STAGE script-intent。
+      (if
+        (decode Bool (get input generating))
+        (infer
+          (captures input)
+          (returns ScriptIntent)
+          """STAGE script-intent。
 即使本次有固定生成范围，也先读用户实际意图：明确要生成、改写或检查才 execute=true。
 只是探讨、问建议、举例或明确说先不写则 execute=false，reply 直接回应，不启动后续工序。
 不用关键词计数，不因提到剧本就生成。
 缺决定性要求时只问一个具体问题。
 按 ScriptIntent 类型产出。""")
-          (discuss-script (input input))))
+        (discuss-script (input input))))
     (if intent.execute
-      (if (decode Bool (get input generating))
+      (if
+        (decode Bool (get input generating))
         (produce-script (context input))
         (seq
           (bind prepared (prepare-script (input input)))
           (bind context (script-context))
-          (if (decode Bool (get context generating))
-            (produce-script (context context))
-            prepared)))
+          (if (decode Bool (get context generating)) (produce-script (context context)) prepared)))
       intent.reply)))
