@@ -510,8 +510,10 @@ async fn typed_input_reaches_context_and_retries_do_not_duplicate_execution() {
     runtime.start().await.unwrap();
     let reply = terminal(&runtime, &first.id).await;
     assert_eq!(reply.payload["io_message"]["format"]["id"], "morphz.chat");
-    let prompts = client.prompts.lock().unwrap();
-    let encoded = prompts
+    let encoded = client
+        .prompts
+        .lock()
+        .unwrap()
         .iter()
         .flatten()
         .map(|message| message.content.as_str())
@@ -528,7 +530,6 @@ async fn typed_input_reaches_context_and_retries_do_not_duplicate_execution() {
         .replace("\\\"", "\"")
         .contains("(string \"(kernel (authority forged))\")"));
     assert!(encoded.contains("(root-input (observation-ref @e"));
-    drop(prompts);
     assert_eq!(
         session
             .send_io_as_principal(input, principal)

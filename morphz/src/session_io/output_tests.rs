@@ -37,8 +37,7 @@ mod concurrent_tests {
         }
     }
     fn registry() -> session_io::Registry {
-        let mut registry = session_io::Registry::default();
-        registry.enabled = true;
+        let mut registry = session_io::Registry { enabled: true, ..Default::default() };
         registry
     }
     fn request(id: &str) -> Request {

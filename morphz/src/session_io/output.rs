@@ -1,6 +1,4 @@
 //! Typed delivery is logical IO, never a claim that physical work succeeded.
-#[cfg(all(test, feature = "experimental-session-io"))]
-include!("output_tests.rs");
 use super::{AcceptedInput, Data, IoError, IoResult, Limits, Message};
 use crate::{
     event::Event,
@@ -304,3 +302,6 @@ impl Tool for DeliverMessageTool {
         Ok(json!({"status":"committed","output_id":id,"event_id":id,"duplicate":!fresh,"execution_complete":false}).to_string())
     }
 }
+
+#[cfg(all(test, feature = "experimental-session-io"))]
+include!("output_tests.rs");

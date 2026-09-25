@@ -175,7 +175,7 @@ impl OperationTiming {
 
     pub(super) fn mark(&mut self, stage: Stage) {
         if let Some(clock) = &mut self.0 {
-            tracing::trace!(target: "morphz::remote_store_stage", operation = clock.operation, ?stage, "native store phase");
+            tracing::trace!(target: "morphz::remote_store_stage", event_code = "morphz.remote_store.stage", operation = clock.operation, ?stage, "native store phase");
             clock.mark(stage, Instant::now());
         }
     }
@@ -213,7 +213,7 @@ impl Drop for OperationTiming {
                     .record_remote_store_operation(&attempt.root_turn_id, &record);
             }
             if let Ok(record) = serde_json::to_string(&record) {
-                tracing::debug!(target: "morphz::remote_store_timing", "morphz.remote.operation {record}");
+                tracing::debug!(target: "morphz::remote_store_timing", event_code = "morphz.remote_store.operation", "morphz.remote.operation {record}");
             }
         }
     }

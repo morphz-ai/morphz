@@ -5,9 +5,9 @@
 //! OAuth browser/device flows, refresh fencing and request authorization are
 //! owned here. Token material is stored only through [`SecretStore`].
 
-use super::{antigravity_request_user_agent, response_body_preview, ANTIGRAVITY_DAILY_BASE_URL};
-use super::refresh_diagnostics::RefreshDiagnostics;
 pub use super::refresh_diagnostics::OAuthRefreshDiagnostics;
+use super::refresh_diagnostics::RefreshDiagnostics;
+use super::{antigravity_request_user_agent, response_body_preview, ANTIGRAVITY_DAILY_BASE_URL};
 use crate::config::AuthAccountConfig;
 use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
 use crate::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
@@ -4439,40 +4439,87 @@ mod tests {
         registry.register(adapter.clone());
         let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
         let account = manager.account("oauth-account").unwrap();
-        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        manager
+            .store_token(&account, &held_token("private-initial-token", true))
+            .unwrap();
         let before = manager.refresh_diagnostics();
         assert_eq!(before.requests_started, 0);
         assert!(!before.incomplete);
-        let workers: Vec<_> = (0..4).map(|_| {
-            let manager = Arc::clone(&manager);
-            tokio::spawn(async move { manager.materialize_authorization("oauth-account").await })
-        }).collect();
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let manager = Arc::clone(&manager);
+                tokio::spawn(
+                    async move { manager.materialize_authorization("oauth-account").await },
+                )
+            })
+            .collect();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if manager.refresh_diagnostics().lease_contentions == 3 { break; }
+                if manager.refresh_diagnostics().lease_contentions == 3 {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let held = manager.refresh_diagnostics();
-        assert_eq!((held.requests_started, held.requests_active, held.requests_peak_active), (4, 4, 4));
-        assert_eq!((held.provider_calls_started, held.provider_calls_active), (1, 1));
+        assert_eq!(
+            (
+                held.requests_started,
+                held.requests_active,
+                held.requests_peak_active
+            ),
+            (4, 4, 4)
+        );
+        assert_eq!(
+            (held.provider_calls_started, held.provider_calls_active),
+            (1, 1)
+        );
         assert_eq!(held.credential_publications, 0);
         adapter.release.notify_one();
         for worker in workers {
-            let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker).await.unwrap().unwrap().unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             assert_eq!(result.bearer_token, "refreshed-token");
         }
         let after = manager.refresh_diagnostics();
         assert_eq!(after.instance_id, before.instance_id);
-        assert_eq!((after.requests_succeeded, after.requests_failed, after.requests_abandoned), (4, 0, 0));
+        assert_eq!(
+            (
+                after.requests_succeeded,
+                after.requests_failed,
+                after.requests_abandoned
+            ),
+            (4, 0, 0)
+        );
         assert_eq!((after.requests_active, after.provider_calls_active), (0, 0));
-        assert_eq!((after.provider_calls_started, after.provider_calls_peak_active, after.credential_publications), (1, 1, 1));
+        assert_eq!(
+            (
+                after.provider_calls_started,
+                after.provider_calls_peak_active,
+                after.credential_publications
+            ),
+            (1, 1, 1)
+        );
         assert!(!after.incomplete);
         let public = serde_json::to_string(&after).unwrap();
-        for private in ["oauth-account", "private-initial-token", "initial-refresh", "refreshed-token", "rotated-refresh-token"] {
+        for private in [
+            "oauth-account",
+            "private-initial-token",
+            "initial-refresh",
+            "refreshed-token",
+            "rotated-refresh-token",
+        ] {
             assert!(!public.contains(private));
         }
-        manager.materialize_authorization("oauth-account").await.unwrap();
+        manager
+            .materialize_authorization("oauth-account")
+            .await
+            .unwrap();
         assert_eq!(manager.refresh_diagnostics(), after); // Warm auth is not a refresh.
     }
 
@@ -4487,19 +4534,43 @@ mod tests {
         registry.register(adapter.clone());
         let (_directory, manager, _) = test_manager(oauth_account("held-oauth"), registry).await;
         let account = manager.account("oauth-account").unwrap();
-        manager.store_token(&account, &held_token("private-initial-token", true)).unwrap();
+        manager
+            .store_token(&account, &held_token("private-initial-token", true))
+            .unwrap();
         let worker = Arc::clone(&manager);
-        let running = tokio::spawn(async move { worker.materialize_authorization("oauth-account").await });
-        tokio::time::timeout(std::time::Duration::from_secs(5), adapter.entered.notified()).await.unwrap();
+        let running =
+            tokio::spawn(async move { worker.materialize_authorization("oauth-account").await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.entered.notified(),
+        )
+        .await
+        .unwrap();
         assert_eq!(manager.refresh_diagnostics().provider_calls_active, 1);
         running.abort();
         assert!(matches!(running.await, Err(error) if error.is_cancelled()));
         let snapshot = manager.refresh_diagnostics();
-        assert_eq!((snapshot.requests_started, snapshot.requests_abandoned), (1, 1));
-        assert_eq!((snapshot.requests_succeeded, snapshot.requests_failed), (0, 0));
-        assert_eq!((snapshot.requests_active, snapshot.provider_calls_active, snapshot.credential_publications), (0, 0, 0));
+        assert_eq!(
+            (snapshot.requests_started, snapshot.requests_abandoned),
+            (1, 1)
+        );
+        assert_eq!(
+            (snapshot.requests_succeeded, snapshot.requests_failed),
+            (0, 0)
+        );
+        assert_eq!(
+            (
+                snapshot.requests_active,
+                snapshot.provider_calls_active,
+                snapshot.credential_publications
+            ),
+            (0, 0, 0)
+        );
         assert!(!snapshot.incomplete);
-        assert_eq!(manager.load_token(&account).unwrap().access_token, "private-initial-token");
+        assert_eq!(
+            manager.load_token(&account).unwrap().access_token,
+            "private-initial-token"
+        );
     }
 
     #[tokio::test]
@@ -4604,11 +4675,24 @@ mod tests {
                 .unwrap();
             assert!(result.is_err(), "stale refresh authorized after {race}");
             let observed = manager.refresh_diagnostics();
-            assert_eq!((observed.requests_started, observed.requests_failed, observed.provider_calls_started), (1, 1, 1));
-            assert_eq!((observed.requests_active, observed.provider_calls_active), (0, 0));
+            assert_eq!(
+                (
+                    observed.requests_started,
+                    observed.requests_failed,
+                    observed.provider_calls_started
+                ),
+                (1, 1, 1)
+            );
+            assert_eq!(
+                (observed.requests_active, observed.provider_calls_active),
+                (0, 0)
+            );
             // Disable preserves routing authority even when the credential
             // CAS succeeded before the separate account-state CAS rejected it.
-            assert_eq!(observed.credential_publications, u64::from(race == "disable"));
+            assert_eq!(
+                observed.credential_publications,
+                u64::from(race == "disable")
+            );
             assert!(!observed.incomplete);
             let state = manager
                 .account_store

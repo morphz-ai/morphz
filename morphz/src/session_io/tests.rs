@@ -4,9 +4,10 @@ fn request(value: &str) -> Request {
     Request::parse(r#"{"io_version":"1","client_message_id":"test","message":{"format":{"id":"test.data","version":"1"},"validation":"generic","content":{"encoding":"json","value":__BODY__}}}"#.replace("__BODY__", value).as_bytes(), &Limits::default()).unwrap()
 }
 fn enabled() -> Registry {
-    let mut registry = Registry::default();
-    registry.enabled = true;
-    registry
+    Registry {
+        enabled: true,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -139,11 +140,13 @@ fn registry_and_delivery_contracts_fail_closed() {
         registry.bind(input, "a").unwrap_err().code,
         "unsupported_activation_mode"
     );
-    let mut subscription = Subscription::default();
-    subscription.receive_formats = Some(vec![OutputFormat {
-        encoding: "sexpr".into(),
-        ..OutputFormat::chat()
-    }]);
+    let subscription = Subscription {
+        receive_formats: Some(vec![OutputFormat {
+            encoding: "sexpr".into(),
+            ..OutputFormat::chat()
+        }]),
+        ..Default::default()
+    };
     assert_eq!(
         subscription.normalize().unwrap_err().code,
         "unsupported_encoding"

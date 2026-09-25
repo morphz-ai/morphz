@@ -20848,7 +20848,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter(|event| crate::event::is_input_event(&event))
+            .filter(|event| crate::event::is_input_event(event))
             .map(|event| event.id)
             .collect::<BTreeSet<_>>();
         let expected_active_observation_ids = (0..12)
