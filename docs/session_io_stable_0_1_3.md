@@ -8,15 +8,15 @@ It does not claim multi-tenant Cloud readiness or acceptance of a public MEP.
 
 ## Implementation
 
-- Ordinary builds include IO; `[session_io]` defaults to `enabled = true`.
+- Ordinary builds always provide IO; there is no enable/disable switch.
   Discovery reports `experimental: false`. Desktop uses an ordinary build.
 - Trusted definitions use `session_io.formats`; project configuration cannot
   install definitions or change the host's IO policy.
-- Retired build/process flags remain accepted for compatible launchers, but
-  cannot override explicit disablement. Old trusted descriptor configuration
-  remains readable; conflicting definitions still fail closed.
-- Disabled runtimes refuse typed history. Promotion does not install the
-  explicit old-writer fence or silently migrate/replay user data.
+- Experimental build/process flags and the old descriptor configuration key
+  are removed, not aliased. Only normal `session_io` configuration is supported.
+  Persisted format definitions and accepted requests are unchanged.
+- Promotion does not install the explicit old-writer fence or silently
+  migrate/replay user data. Downgrade still requires a pre-IO backup.
 - Empty inherited model aliases no longer prevent unlabelled direct Clients
   from executing. PostgreSQL ingress preserves per-task model/depth choices
   and does not batch different policies into one task.
@@ -44,12 +44,12 @@ are recorded below after execution; this document alone is not a passing CI run.
 
 Local validation on 2026-09-25, using ordinary default builds:
 
-- Runtime library: 1,407 passed, 10 explicitly ignored; CLI binary: 31 passed.
+- Runtime library: 1,408 passed, 10 explicitly ignored; CLI binary: 31 passed.
 - IO unit/fence/concurrency: 22 passed including the opt-in PostgreSQL cases.
 - IO integration: 14 passed including PostgreSQL with its explicit fence.
 - Actual v0.1.2 binary probes: 3 passed (SQLite/PostgreSQL cutover and restore).
 - SQLite/PostgreSQL RuntimeStore conformance: 7 passed.
-- Delegation/continuation attempt-loop regressions: 79 passed; CLI contract: 5 passed.
+- Delegation/continuation attempt-loop regressions: 79 passed; CLI contract: 6 passed.
 - Application: 407 unit tests and typecheck passed; real Runtime IPC, directed
   continuation and two-identity/restart fixtures passed without experimental flags.
 - The packaged-binary probe passed against the local default Runtime: stable

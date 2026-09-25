@@ -35,27 +35,25 @@ Build with:
 cargo build --locked -p morphz --bin morphz
 ```
 
-Default builds and release binaries include and enable Session IO. The normal
-host-owned configuration is:
+Default builds and release binaries always provide Session IO. There is no
+enable/disable switch and ordinary use needs no configuration. Hosts may
+optionally register trusted formats:
 
 ```toml
 [session_io]
-enabled = true
-# formats = [...]  # trusted Descriptor definitions
+formats = []  # optional trusted Descriptor definitions
 ```
 
-Explicit `enabled = false` disables new IO and refuses a database containing
-typed history. Project-local configuration cannot set this policy or install
-trusted formats. Embedders may supply `MorphzRuntimeBuilder::session_io_registry`.
+Project-local configuration cannot install trusted formats. Embedders may
+supply `MorphzRuntimeBuilder::session_io_registry` to register their formats.
 
-The old `experimental-session-io` Cargo feature and
-`--enable-experimental session-io` / `MORPHZ_EXPERIMENTAL_FEATURES=session-io`
-are accepted as retired compatibility inputs, not requirements or overrides.
-Legacy `experimental.session_io_formats` definitions are read alongside normal
-`session_io.formats`; an ID/version conflict fails rather than picking a winner.
-New launches and documentation use only the stable configuration.
+The former experimental build/process options and descriptor configuration key
+are removed. Remove Session IO from experimental launch options and place
+trusted descriptors under `session_io.formats`. Old spellings are rejected;
+there are no compatibility aliases. Persisted accepted messages, frozen format
+definitions and idempotency identities are unchanged.
 
-Default availability does **not** install a database fence. A new binary refuses typed history when IO is disabled, but that check alone cannot protect against older binaries. Before using a shared/existing database, initialize its current schema, stop/drain its writers, take and verify a recoverable pre-IO backup, then explicitly install the fence below. Existing user instances are not migrated by this change.
+Default availability does **not** install a database fence or prevent old binaries from writing by itself. Before using a shared/existing database, initialize its current schema, stop/drain its writers, take and verify a recoverable pre-IO backup, then explicitly install the fence below. Existing user instances are not migrated by this change.
 
 ## Explicit storage fence
 
@@ -71,7 +69,7 @@ morphz storage session-io-fence --sqlite /absolute/test/runtime.sqlite --install
 morphz storage session-io-fence --postgres-url-env TEST_DATABASE_URL --install --acknowledge-write-block
 ```
 
-Installation works in the ordinary Runtime build. Start compatible writers with Session IO enabled. Embedders injecting a store must use `SqliteStore::new_for_runtime` or `PostgresStore::new_for_runtime` with the selected cognitive backend and `session_io=true`; legacy constructors intentionally register an incompatible writer. The Runtime builder does this for its own stores. All replacement pool connections receive the same capability. Enabling IO in the registry alone does not upgrade an injected legacy connection pool.
+Installation works in the ordinary Runtime build. Embedders injecting a store must use `SqliteStore::new_for_runtime` or `PostgresStore::new_for_runtime` with the selected cognitive backend and `session_io=true`; this low-level connection marker declares writer-format compatibility, not a Runtime feature switch. Legacy constructors intentionally register an incompatible writer. The Runtime builder marks its own stores automatically. All replacement pool connections receive the same capability; a format registry cannot upgrade an injected legacy connection pool.
 
 SQLite installs `BEFORE INSERT/UPDATE/DELETE` guards on ordinary authority tables. A connection-local SQLite function identifies compatible writers; pre-IO binaries do not define it, so writes fail. Virtual FTS tables, their shadow tables and SQLite internals are derived/engine-owned data, not guard targets. PostgreSQL installs `ENABLE ALWAYS` statement guards for `INSERT/UPDATE/DELETE/TRUNCATE`, checking a connection-local writer version. The immutable `morphz_session_io_guard` table records version 1 and the exact protected table set. Startup verifies the version, coverage and trigger/function definitions before store migrations. Unknown versions or drift fail closed; installation does not silently repair drift.
 
@@ -131,7 +129,7 @@ The receipt contains `io_version`, `status: accepted`, `accepted`, `message_id`,
 
 The Rust API is `MorphzSdk::send_io_message` or `SessionHandle::send_io_as_principal`. Construct `session_io::Request` with `Request::parse(bytes, limits)` or typed `Data`. For raw domain JSON do not parse through floating-point `serde_json::Value`. Use `request.wire_data().json()` / `message.wire_data().json()` for external JSON. Derived Serde serialization is the **tagged persistence representation**, deliberately distinct from the wire representation so PostgreSQL JSONB cannot round domain numbers.
 
-Old `text + attachments` SDK/HTTP requests remain supported with unchanged fingerprints and durable history. They share the existing ingress/scheduler pipeline and are exposed as standard Chat by the new history adapter. With IO enabled, Context uses the same typed read adapter; stored events and fingerprints are **not rewritten**. Disabling IO keeps the legacy Context renderer. Attachment references retain a valid Chat shape, with trusted file metadata separate from the message body.
+Old `text + attachments` SDK/HTTP requests remain supported with unchanged fingerprints and durable history. They share the existing ingress/scheduler pipeline and are exposed as standard Chat by the history adapter. Context uses the same typed read adapter; stored events and fingerprints are **not rewritten**. Attachment references retain a valid Chat shape, with trusted file metadata separate from the message body.
 
 ## Attachments and immutable resources
 
@@ -169,7 +167,7 @@ Use `recall` with `event_id`, `json_pointer`, `offset` and `limit`, or `MorphzSd
 
 ## Installing a format
 
-A trusted embedding host calls `Registry::register(Descriptor)`. The CLI also accepts definitions from `session_io.formats` or the existing private host-tools manifest's optional top-level `formats` array. Message senders and project configuration cannot install schemas or code. The previous `experimental.session_io_formats` key is an upgrade compatibility input only.
+A trusted embedding host calls `Registry::register(Descriptor)`. The CLI also accepts definitions from `session_io.formats` or the existing private host-tools manifest's optional top-level `formats` array. Message senders and project configuration cannot install schemas or code.
 
 ```json
 {

@@ -1487,23 +1487,12 @@ pub struct UiConfig {
     pub language: UiLanguage,
 }
 
-/// Stable typed Session messaging. Disabling IO refuses typed history; it is
-/// not a downgrade or permission to let incompatible writers modify it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Trusted formats for the Runtime's always-available typed Session messaging.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SessionIoConfig {
-    pub enabled: bool,
     /// Trusted operator-installed descriptors, never message-sender input.
     pub formats: Vec<crate::session_io::Descriptor>,
-}
-
-impl Default for SessionIoConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            formats: Vec::new(),
-        }
-    }
 }
 
 /// Operator opt-ins for code which has no stability or compatibility promise.
@@ -1512,10 +1501,6 @@ impl Default for SessionIoConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentalConfig {
     pub enabled: BTreeSet<String>,
-    /// Compatibility input for pre-0.1.3 hosts. New configuration uses
-    /// `session_io.formats`; conflicting definitions still fail closed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub session_io_formats: Vec<crate::session_io::Descriptor>,
     /// Experimental Cognitive Coordination participant and Mesh settings.
     /// Empty configuration keeps the feature visible but fail-closed.
     pub cognitive_coordination: CognitiveCoordinationConfig,
@@ -3536,8 +3521,6 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("model_input.")
                 || key == "session_io"
                 || key.starts_with("session_io.")
-                || key == "experimental.session_io_formats"
-                || key.starts_with("experimental.session_io_formats.")
                 || key == "llm.base_url"
                 || key == "llm.api_key"
                 || key == "llm.protocol"
@@ -4753,19 +4736,15 @@ mod tests {
     #[test]
     fn stable_session_io_defaults_and_host_owned_configuration() {
         let default = toml::from_str::<AppConfig>("").unwrap();
-        assert!(default.session_io.enabled);
+        assert!(default.session_io.formats.is_empty());
         assert!(default.experimental.enabled.is_empty());
-        let disabled = toml::from_str::<AppConfig>(
-            "[session_io]\nenabled=false\n[experimental]\nenabled=['session-io']\n",
-        )
-        .unwrap();
-        assert!(!disabled.session_io.enabled);
-        crate::experimental::require_all_enabled_compiled(&disabled.experimental.enabled).unwrap();
+        assert!(toml::from_str::<AppConfig>("[session_io]\nenabled=false\n").is_err());
+        assert!(toml::from_str::<AppConfig>("[session_io]\nenabled=true\n").is_err());
         assert!(toml::from_str::<AppConfig>("[session_io]\nenbaled=true\n").is_err());
+        assert!(toml::from_str::<AppConfig>("[experimental]\nsession_io_formats=[]\n").is_err());
         for source in [
             "[session_io]\nenabled=false\n",
             "[session_io]\nformats=[]\n",
-            "[experimental]\nsession_io_formats=[]\n",
         ] {
             let value = toml::from_str::<toml::Value>(source).unwrap();
             assert!(!forbidden_project_keys(&value).is_empty());

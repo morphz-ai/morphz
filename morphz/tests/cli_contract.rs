@@ -6,6 +6,36 @@ fn morphz(args: &[&str]) -> Output {
         .output()
         .expect("morphz CLI should start")
 }
+
+#[test]
+fn removed_session_io_experiment_is_rejected_in_flags_and_environment() {
+    let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+    assert!(manifest["features"]
+        .get("experimental-session-io")
+        .is_none());
+    let fixture = tempfile::TempDir::new().unwrap();
+    for use_environment in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_morphz"));
+        command
+            .current_dir(fixture.path())
+            .env("MORPHZ_HOME", fixture.path().join("host"))
+            .env_remove("MORPHZ_EXPERIMENTAL_FEATURES")
+            .args(["experiment", "list", "--format", "json"]);
+        if use_environment {
+            command.env("MORPHZ_EXPERIMENTAL_FEATURES", "session-io");
+        } else {
+            command.args(["--enable-experimental", "session-io"]);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Unknown { name: \"session-io\" }")
+                || stderr.contains("unknown experimental feature 'session-io'"),
+            "{stderr}"
+        );
+    }
+}
 #[test]
 fn root_help_is_successful_and_side_effect_free() {
     let output = morphz(&["--help"]);

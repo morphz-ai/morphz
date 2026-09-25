@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
-const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db", "session-io"];
+const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db"];
 pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
 pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
 
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn retired_context_db_experiment_alias_is_accepted_but_not_listed() {
-        let enabled = BTreeSet::from(["context-db".to_string(), "session-io".to_string()]);
+        let enabled = BTreeSet::from(["context-db".to_string()]);
         validate_enabled(&enabled).unwrap();
         require_all_enabled_compiled(&enabled).unwrap();
         assert!(statuses(&enabled)
@@ -211,6 +211,17 @@ mod tests {
             enabled[0].available,
             cfg!(feature = "experimental-cognitive-coordination")
         );
+    }
+
+    #[test]
+    fn stable_session_io_is_not_an_experimental_alias() {
+        let enabled = BTreeSet::from(["session-io".to_string()]);
+        assert!(matches!(
+            validate_enabled(&enabled),
+            Err(FeatureGateError::Unknown { name }) if name == "session-io"
+        ));
+        assert!(require_all_enabled_compiled(&enabled).is_err());
+        assert!(!known_feature_names().contains(&"session-io"));
     }
 
     #[cfg(not(feature = "experimental-cognitive-coordination"))]

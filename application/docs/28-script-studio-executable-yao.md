@@ -274,7 +274,7 @@ Runtime 已启动后才创建任务，验证不必再次重启、旧 claim 被�
 仓库根构建 Runtime，再在 `application/` 运行：
 
 ```sh
-cargo build -p morphz --features experimental-session-io --bin morphz
+cargo build -p morphz --bin morphz
 ```
 
 ```sh

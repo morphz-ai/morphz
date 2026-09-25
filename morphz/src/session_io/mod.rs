@@ -387,7 +387,6 @@ pub struct AcceptedInput {
 
 #[derive(Debug, Clone)]
 pub struct Registry {
-    pub enabled: bool,
     pub allow_generic: bool,
     pub limits: Limits,
     definitions: BTreeMap<(String, String), Descriptor>,
@@ -395,7 +394,6 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         let mut registry = Self {
-            enabled: true,
             allow_generic: true,
             limits: Limits::default(),
             definitions: BTreeMap::new(),
@@ -477,9 +475,9 @@ impl Registry {
         Ok(())
     }
     pub fn capabilities(&self) -> Value {
-        json!({"experimental":false,"enabled":self.enabled,"io_versions":if self.enabled {vec!["1"]} else {vec![]},
+        json!({"experimental":false,"enabled":true,"io_versions":["1"],
             "stream_versions":["1"],"encodings":["json","utf8","resource"],"resources":true,"generic_json":self.allow_generic,
-            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":self.enabled,
+            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":true,
             "activation_modes":["evaluate"],"schema_keywords":schema::KEYWORDS,"schema_numeric_constants":"int64-or-uint64-only","limits":self.limits,
             "formats":self.definitions.values().map(|definition| json!({"definition":definition,"schema_hash":definition.schema.as_ref().map(hash),"contract_hash":definition.contract.as_ref().map(hash)})).collect::<Vec<_>>()})
     }
@@ -570,12 +568,6 @@ impl Registry {
         })
     }
     pub fn bind(&self, request: Request, principal: &str) -> IoResult<AcceptedInput> {
-        if !self.enabled {
-            return Err(IoError::new(
-                "unsupported_io_version",
-                "Experimental Session IO is disabled",
-            ));
-        }
         if request.io_version != "1" {
             return Err(IoError::new(
                 "unsupported_io_version",

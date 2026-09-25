@@ -46,7 +46,6 @@ impl Client for Fixture {
 
 fn registry() -> session_io::Registry {
     let mut registry = session_io::Registry::default();
-    registry.enabled = true;
     registry.register(Descriptor {id:"test.result".into(),version:"1".into(),encodings:vec!["json".into()],schema:Some(json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})),contract:Some("A test count; no physical operation is implied.".into()),publisher:"test".into(),required_visible_paths:vec![],resource_paths:vec![]}).unwrap();
     registry
 }
@@ -791,16 +790,15 @@ async fn reopened_store_retries_original_binding_before_new_registry_policy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stable_io_preserves_legacy_receipts_and_explicit_opt_out_refuses_typed_history() {
+async fn stable_io_preserves_legacy_receipts_and_reopens_typed_history() {
     let temp = TempDir::new().unwrap();
     let mut config = AppConfig::default();
     config.permissions.workspace_root = temp.path().to_string_lossy().into_owned();
     config.background_task.artifact_dir =
         temp.path().join("artifacts").to_string_lossy().into_owned();
     let path = temp.path().join("io.db").to_string_lossy().into_owned();
-    // No old workers are started. The upgraded Runtime recovers the pending
-    // legacy input rather than manufacturing another request.
-    config.session_io.enabled = false;
+    // Seed a receipt using the legacy text API without starting workers.
+    // Typed IO must preserve it rather than manufacture another request.
     let legacy = MorphzRuntime::builder(config.clone(), Arc::new(Fixture::default()))
         .database_path(&path)
         .build()
@@ -860,15 +858,18 @@ async fn stable_io_preserves_legacy_receipts_and_explicit_opt_out_refuses_typed_
         .await
         .unwrap();
     terminal(&upgraded, &typed.id).await;
-    let opted_out = MorphzRuntime::builder(config, Arc::new(Fixture::default()))
+    let reopened = MorphzRuntime::builder(config, Arc::new(Fixture::default()))
         .database_path(&path)
         .build()
-        .await;
-    assert!(opted_out
-        .err()
-        .expect("Opt-out must refuse typed history")
-        .to_string()
-        .contains("contains Session IO records"));
+        .await
+        .unwrap();
+    let retried = reopened
+        .session("typed-session")
+        .send_io_as_principal(request("after-upgrade"), &reopened.identity().principal_id)
+        .await
+        .unwrap();
+    assert_eq!(retried.id, typed.id);
+    assert_eq!(retried.payload["session_io"], typed.payload["session_io"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -210,13 +210,13 @@ npm run build
 node scripts/script-studio-desktop-smoke.mjs
 ```
 
-联合脚本使用兼容的 `../target/debug/morphz`，或显式 `MORPHZ_APP_RUNTIME_BINARY`。Runtime 必须同时具备编译特性 `experimental-session-io` 和运行时激活的 `session-io`；默认构建未必包含它，仅设置环境开关不能补上缺失的编译特性。本脚本只为自己启动的隔离 Runtime 设置 `MORPHZ_EXPERIMENTAL_FEATURES=session-io`。
+联合脚本使用本仓库的 `../target/debug/morphz`，或显式 `MORPHZ_APP_RUNTIME_BINARY`。Runtime 0.1.3 默认支持正式 Session IO，不再接受旧实验编译或启动参数。本脚本只启动自己的隔离 Runtime。
 
 若默认二进制不兼容，可在 `application/` 中使用独立构建目录验证，不替换仓库默认产物或正在运行的用户 Runtime：
 
 ```sh
 SCRIPT_RUNTIME_TARGET="$HOME/.morphz/workspace/.morphz/tmp/script-studio-runtime-build"
-(cd .. && cargo build --locked -p morphz --bin morphz --features experimental-session-io --target-dir "$SCRIPT_RUNTIME_TARGET")
+(cd .. && cargo build --locked -p morphz --bin morphz --target-dir "$SCRIPT_RUNTIME_TARGET")
 MORPHZ_APP_RUNTIME_BINARY="$SCRIPT_RUNTIME_TARGET/debug/morphz" ./node_modules/.bin/tsx scripts/script-studio-runtime-smoke.ts
 ```
 

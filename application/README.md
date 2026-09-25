@@ -155,7 +155,7 @@ npm --prefix application run test:runtime-identity
 的用户 Runtime。本地 SQLite、HTTP 和 Session IO 集成均使用隔离测试数据。
 
 Runtime 0.1.3 的 Session IO 是默认可用的正式功能，不需要实验编译或启动开关。
-旧启动参数继续接受，但不再控制该功能；显式关闭使用用户配置中的 `[session_io] enabled=false`。
+旧实验参数不再接受，也没有启用／关闭开关。`[session_io]` 仅用于按需注册自定义消息格式，普通使用无需配置。
 
 原创应用源码遵循仓库根目录的 [Apache-2.0 许可证](../LICENSE)及[适用范围](../LICENSE_SCOPE.md)。
 第三方依赖保持各自条款，清单见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；

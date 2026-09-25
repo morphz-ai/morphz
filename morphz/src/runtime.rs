@@ -916,8 +916,7 @@ impl MorphzRuntimeBuilder {
     }
 
     pub fn new(config: AppConfig, client: Arc<dyn Client>) -> Self {
-        let mut session_io = crate::session_io::Registry::default();
-        session_io.enabled = config.session_io.enabled;
+        let session_io = crate::session_io::Registry::default();
         Self {
             database_path: None,
             store: None,
@@ -1038,13 +1037,7 @@ impl MorphzRuntimeBuilder {
     #[allow(unused_mut)] // Cognitive Coordination rewrites the Mesh participant route when compiled.
     pub async fn build(mut self) -> Result<MorphzRuntime, RuntimeError> {
         crate::experimental::require_all_enabled_compiled(&self.config.experimental.enabled)?;
-        for descriptor in self
-            .config
-            .session_io
-            .formats
-            .iter()
-            .chain(&self.config.experimental.session_io_formats)
-        {
+        for descriptor in &self.config.session_io.formats {
             self.session_io.register(descriptor.clone())?;
         }
         let database_path = self
@@ -1083,7 +1076,7 @@ impl MorphzRuntimeBuilder {
             InMemoryEventBus::with_concurrency_limit(
                 self.config.orchestrator.event_bus.max_in_flight,
             )
-            .with_session_io(self.session_io.enabled),
+            .with_session_io(true),
         );
         let observability = Arc::new(crate::observability::Observability::default());
         let (store, sqlite_database_path, storage_label): (
@@ -1103,7 +1096,7 @@ impl MorphzRuntimeBuilder {
                         &database_path,
                         &self.config.storage.sqlite,
                         self.config.storage.cognitive_store,
-                        self.session_io.enabled,
+                        true,
                     )
                     .await?;
                     (
@@ -1130,7 +1123,7 @@ impl MorphzRuntimeBuilder {
                         self.config.storage.postgres.max_connections,
                         Arc::clone(&observability),
                         self.config.storage.cognitive_store,
-                        self.session_io.enabled,
+                        true,
                     )
                     .await?;
                     (
@@ -1144,18 +1137,6 @@ impl MorphzRuntimeBuilder {
                 }
             },
         };
-        if !self.session_io.enabled
-            && !store
-                .query(QueryFilter {
-                    types: vec![crate::event::TYPE_SESSION_MESSAGE.into()],
-                    top_k: Some(1),
-                    ..Default::default()
-                })
-                .await?
-                .is_empty()
-        {
-            return Err("This store contains Session IO records. Enable the session-io experiment before starting workers; use a pre-IO backup for rollback to an older binary.".into());
-        }
         if self.config.storage.retention.enabled {
             let now = chrono::Utc::now();
             let outbox_age = i64::try_from(
@@ -1260,7 +1241,7 @@ impl MorphzRuntimeBuilder {
                 self.config.orchestrator.clone(),
             )
             .with_observability(Arc::clone(&observability))
-            .with_typed_chat(self.session_io.enabled)
+            .with_typed_chat(true)
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_capability_binding_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ContextCapabilityBindingStore>
@@ -1497,17 +1478,15 @@ impl MorphzRuntimeBuilder {
             #[cfg(feature = "experimental-cognitive-coordination")]
             cognitive_coordination_network: cognitive_coordination_network.clone(),
         });
-        if self.session_io.enabled {
-            registry.register(Arc::new(
-                crate::session_io::output::DeliverMessageTool::new(
-                    Arc::clone(&store),
-                    Arc::clone(&bus),
-                    self.session_io.limits.clone(),
-                    self.config.background_task.artifact_dir.clone().into(),
-                    self.config.model_input.import_limits(),
-                ),
-            ));
-        }
+        registry.register(Arc::new(
+            crate::session_io::output::DeliverMessageTool::new(
+                Arc::clone(&store),
+                Arc::clone(&bus),
+                self.session_io.limits.clone(),
+                self.config.background_task.artifact_dir.clone().into(),
+                self.config.model_input.import_limits(),
+            ),
+        ));
         for tool in self.extra_tools {
             registry.register(tool);
         }

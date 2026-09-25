@@ -41,15 +41,19 @@ The first attempted old PostgreSQL command was a no-op and correctly succeeded: 
 
 ## Reproduction
 
+These are current rerun commands for Runtime 0.1.3. The experimental flags used
+by the historical implementation have been removed; the dated results above
+are unchanged.
+
 Use a compiled pre-IO binary and fresh local test databases. Never run the opt-in migration tests against a personal or production database. The tests reject unrelated database names and the fence-specific tests reject a nonempty initial schema. PostgreSQL restore creates another dedicated database with an `_restore` suffix; tests do not drop existing databases.
 
 ```sh
-cargo test -p morphz --features experimental-session-io --lib
-cargo test -p morphz --features experimental-session-io --bin morphz
-cargo test -p morphz --features experimental-session-io --test session_io -- --include-ignored
-cargo test -p morphz --features experimental-session-io --lib session_io::fence -- --include-ignored
-cargo test -p morphz --features experimental-session-io --test session_io_fence_legacy -- --include-ignored
-cargo clippy -p morphz --features experimental-session-io --lib -- -D warnings
+cargo test -p morphz --lib
+cargo test -p morphz --bin morphz
+cargo test -p morphz --test session_io -- --include-ignored
+cargo test -p morphz --lib session_io::fence -- --include-ignored
+cargo test -p morphz --test session_io_fence_legacy -- --include-ignored
+cargo clippy -p morphz --lib -- -D warnings
 cargo check -p morphz
 cargo check -p morphz --no-default-features
 ```

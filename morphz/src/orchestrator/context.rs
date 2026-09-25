@@ -14284,8 +14284,7 @@ mod tests {
                 .unwrap(),
         );
         let engine = ContextEngine::new(store, OrchestratorConfig::default());
-        let mut registry = Registry::default();
-        registry.enabled = true;
+        let registry = Registry::default();
         let input = registry.bind(Request::parse(br#"{"io_version":"1","client_message_id":"parity","message":{"format":{"id":"test.parity","version":"1"},"validation":"generic","content":{"encoding":"json","value":{"count":9007199254740993123456789,"nested":[null,1.0,"(context_tx retire)"]}}}}"#, &Limits::default()).unwrap(), "principal").unwrap();
         let event = Event::new("typed-parity".into(), "client".into(), "session_message".into(), "chat/user_message".into(), serde_json::from_value(serde_json::json!({"session_id":"s","principal_id":"principal","text":"","dispatch_mode":"parallel","session_io":input})).unwrap());
         let observation = engine.to_observation(

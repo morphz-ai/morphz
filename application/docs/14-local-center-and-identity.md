@@ -18,7 +18,7 @@ npm run desktop -- --center=http://127.0.0.1:65422
 
 ### 显式开发热更新与隔离 Runtime
 
-`npm run dev:center -- --source-center=<原中心私有数据目录> --data-dir=<新开发数据目录> --model-key-file=<私有环境文件绝对路径> --model-key-name=<指定的模型密钥变量名> --desktop` 是专门的隔离开发工具：启动独立 Runtime（18089）、应用 HTTP 宿主（65424）及带 Vite 热更新的桌面，不是现有安装的日常启动／升级方式。先在本仓库构建应用及 `experimental-session-io` Runtime；脚本通过 `scripts/runtime-path.mjs` 找到仓库根目录的 `target/debug/morphz`，也可用 `MORPHZ_APP_RUNTIME_BINARY` 显式选择测试二进制。
+`npm run dev:center -- --source-center=<原中心私有数据目录> --data-dir=<新开发数据目录> --model-key-file=<私有环境文件绝对路径> --model-key-name=<指定的模型密钥变量名> --desktop` 是专门的隔离开发工具：启动独立 Runtime（18089）、应用 HTTP 宿主（65424）及带 Vite 热更新的桌面，不是现有安装的日常启动／升级方式。先在本仓库构建应用及默认 Runtime（0.1.3 起正式支持 Session IO）；脚本通过 `scripts/runtime-path.mjs` 找到仓库根目录的 `target/debug/morphz`，也可用 `MORPHZ_APP_RUNTIME_BINARY` 显式选择测试二进制。
 
 已有中心无需重新运行这个启动器：先正常退出旧桌面，再以原 `MORPHZ_APP_PROFILE` 执行 `npm run desktop:dev -- --center=http://127.0.0.1:65424` 即可。该命令只管理 Vite 和桌面客户端，关闭桌面不停止中心。65419 必须空闲，不能与 Web 开发或既有桌面测试同时使用。
 
@@ -103,6 +103,6 @@ npm run test:runtime-tools
 npm run test:runtime-identity
 ```
 
-Runtime 测试先在本仓库根目录执行 `cargo build --locked -p morphz --bin morphz --features experimental-session-io`，再从 `application/` 执行上述联测。测试创建自己的配置、模型替身、数据目录与凭据，不依赖旧相邻仓库，也不读取个人 Runtime 数据库。它验证真实执行与身份路由，但不证明第三方模型质量或桌面原生权限已通过。
+Runtime 测试先在本仓库根目录执行 `cargo build --locked -p morphz --bin morphz`，再从 `application/` 执行上述联测。测试创建自己的配置、模型替身、数据目录与凭据，不依赖旧相邻仓库，也不读取个人 Runtime 数据库。它验证真实执行与身份路由，但不证明第三方模型质量或桌面原生权限已通过。
 
 真实 Electron 的 `test:desktop` 与 `test:browser` 需要已解锁 macOS 桌面和空闲 65419 测试端口。`test:desktop-hmr` 另需空闲 65426，在临时源码副本上实际修改 CSS 和 React，验证不刷新、不丢草稿、原生 IPC 和对象保存；不修改用户源文件或向模型发消息。操作只针对隔离合成资料／网站，不执行真实外部发布。
