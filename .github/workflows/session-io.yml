@@ -1,0 +1,75 @@
+name: Session IO
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  storage:
+    name: Stable IO, PostgreSQL and old-writer isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: morphz
+          POSTGRES_PASSWORD: isolated-fixture
+          POSTGRES_DB: morphz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U morphz -d morphz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_TEST_DEBUG: 0
+      RUSTFLAGS: "-D warnings"
+      PGPASSWORD: isolated-fixture
+      MORPHZ_SESSION_IO_POSTGRES_BIN_DIR: /usr/lib/postgresql/16/bin
+      MORPHZ_SESSION_IO_FENCE_TEST_POSTGRES_URL: postgres://morphz:isolated-fixture@127.0.0.1:5432/morphz_io_test_fence_current
+      MORPHZ_SESSION_IO_LEGACY_TEST_POSTGRES_URL: postgres://morphz:isolated-fixture@127.0.0.1:5432/morphz_io_test_fence_legacy
+      MORPHZ_SESSION_IO_LIVE_LEGACY_POSTGRES_URL: postgres://morphz:isolated-fixture@127.0.0.1:5432/morphz_io_test_fence_live
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Prepare isolated PostgreSQL fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16 bubblewrap
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          for database in morphz_io_test_ingress morphz_io_test_concurrency morphz_io_test_fence_current morphz_io_test_fence_legacy morphz_io_test_fence_live; do
+            "$MORPHZ_SESSION_IO_POSTGRES_BIN_DIR/createdb" --host=127.0.0.1 --username=morphz "$database"
+          done
+      - name: Verify a pinned pre-IO release binary
+        run: |
+          mkdir -p "$RUNNER_TEMP/session-io-legacy"
+          cd "$RUNNER_TEMP/session-io-legacy"
+          curl --fail --location --retry 3 --output morphz-linux-x86_64.tar.gz https://github.com/morphz-ai/morphz/releases/download/v0.1.2/morphz-linux-x86_64.tar.gz
+          printf '%s\n' '08fee882049418de3c86102af8999f2fb5816ac7cf34c1c77626d3851555e1bf  morphz-linux-x86_64.tar.gz' | sha256sum --check -
+          tar -xzf morphz-linux-x86_64.tar.gz morphz
+          ./morphz --version
+          printf 'MORPHZ_SESSION_IO_LEGACY_BINARY=%s/morphz\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Default-build IO unit, concurrency and fence tests
+        env:
+          MORPHZ_SESSION_IO_TEST_POSTGRES_URL: postgres://morphz:isolated-fixture@127.0.0.1:5432/morphz_io_test_concurrency
+        run: |
+          cargo test --locked -p morphz --lib session_io:: -- --include-ignored --test-threads=1
+      - name: Default-build IO integration with explicit PostgreSQL fence
+        env:
+          MORPHZ_SESSION_IO_TEST_POSTGRES_URL: postgres://morphz:isolated-fixture@127.0.0.1:5432/morphz_io_test_ingress
+          MORPHZ_SESSION_IO_TEST_INSTALL_FENCE: "1"
+        run: cargo test --locked -p morphz --test session_io -- --include-ignored --test-threads=1
+      - name: Actual old binaries, live cutover and backup restore
+        run: cargo test --locked -p morphz --test session_io_fence_legacy -- --include-ignored --test-threads=1

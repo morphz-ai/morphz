@@ -72,13 +72,13 @@ impl Registration {
         }
     }
     fn validate_transport(&self) -> Result<(), Error> {
-        if let Some(path) = &self.ipc_path {
+        if let Some(_path) = &self.ipc_path {
             if !self.endpoint.is_empty() {
                 return Err("host tool must select exactly one transport".into());
             }
             #[cfg(unix)]
             {
-                let path = Path::new(path);
+                let path = Path::new(_path);
                 if !path.is_absolute()
                     || path.as_os_str().len() > 103
                     || path.components().any(|c| {

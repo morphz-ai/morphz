@@ -194,9 +194,6 @@ impl SqliteStore {
         config: &SqliteStorageConfig,
         session_io: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        if session_io && !cfg!(feature = "experimental-session-io") {
-            return Err("Session IO writer requires experimental-session-io".into());
-        }
         let options = SqliteConnectOptions::new()
             .filename(db_path)
             .create_if_missing(true)

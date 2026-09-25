@@ -38,6 +38,10 @@ Morphz Windows helper bundle.
 See the [current implementation status](docs/morphz_runtime_core_implementation_status_v1.md) for
 the verified boundary between implemented, validated, experimental, and planned capabilities.
 
+Runtime 0.1.3 promotes [Session IO v1](docs/session_io_implementation_v0_1.md) to a
+default, supported capability. No experimental build or launch flag is required;
+database write fences and backup-based downgrade remain explicit operations.
+
 ## What Morphz changes
 
 - **Context is durable state.** An Agent owns versioned cognitive Frames independently of any one

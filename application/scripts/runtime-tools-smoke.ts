@@ -440,7 +440,6 @@ const runtime = spawn(
       MORPHZ_STORAGE_SQLITE_PATH: join(runtimeDirectory, "runtime.sqlite"),
       MORPHZ_DASHBOARD_TOKEN: runtimeToken,
       MORPHZ_HOST_TOOLS_FILE: manifest.path,
-      MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       MORPHZ_APP_TEST_KEY: testKey,
     },
     stdio: ["ignore", "pipe", "pipe"],

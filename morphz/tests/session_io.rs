@@ -1,4 +1,3 @@
-#![cfg(feature = "experimental-session-io")]
 use morphz::{
     config::AppConfig,
     llm::{Client, Message as ModelMessage, Response, ToolCallRepr, ToolDefinition},
@@ -57,6 +56,68 @@ fn request(id: &str) -> Request {
 
 fn chat_request(id: &str, content: serde_json::Value) -> Request {
     Request::parse(json!({"io_version":"1","client_message_id":id,"message":{"format":{"id":"morphz.chat","version":"1"},"content":{"encoding":"json","value":content}}}).to_string().as_bytes(),&Limits::default()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn default_runtime_delivers_stable_io_without_experimental_configuration() {
+    let temp = TempDir::new().unwrap();
+    let mut config: AppConfig = toml::from_str(
+        r#"
+        [[session_io.formats]]
+        id = "stable.input"
+        version = "1"
+        encodings = ["json"]
+        publisher = "isolated-test"
+        schema = { type = "object" }
+    "#,
+    )
+    .unwrap();
+    config.permissions.workspace_root = temp.path().to_string_lossy().into_owned();
+    config.background_task.artifact_dir =
+        temp.path().join("artifacts").to_string_lossy().into_owned();
+    let path = temp.path().join("stable.db");
+    let client = Arc::new(Fixture::default());
+    let runtime = MorphzRuntime::builder(config, client.clone())
+        .database_path(path.to_string_lossy().as_ref())
+        .build()
+        .await
+        .unwrap();
+    let capabilities = runtime.session_io_registry().capabilities();
+    assert_eq!(capabilities["experimental"], false);
+    assert_eq!(capabilities["enabled"], true);
+    assert_eq!(capabilities["io_versions"], json!(["1"]));
+    assert!(runtime.config().experimental.enabled.is_empty());
+    runtime.start().await.unwrap();
+    let session = session(&runtime).await;
+    let input = Request::parse(
+        json!({
+            "io_version":"1", "client_message_id":"stable-default",
+            "message":{"format":{"id":"stable.input","version":"1"},
+                "content":{"encoding":"json","value":{"text":"hello"}}}
+        })
+        .to_string()
+        .as_bytes(),
+        &Limits::default(),
+    )
+    .unwrap();
+    let accepted = session
+        .send_io_as_principal(input.clone(), &runtime.identity().principal_id)
+        .await
+        .unwrap();
+    terminal(&runtime, &accepted.id).await;
+    let retried = session
+        .send_io_as_principal(input, &runtime.identity().principal_id)
+        .await
+        .unwrap();
+    assert_eq!(accepted.id, retried.id);
+    assert!(!client.prompts.lock().unwrap().is_empty());
+    assert!(
+        !session_io::fence::sqlite_status(&path)
+            .await
+            .unwrap()
+            .installed,
+        "Stable IO must not silently install an old-writer fence"
+    );
 }
 
 async fn staged_chat(runtime: &MorphzRuntime, session_id: &str, id: &str) -> Request {
@@ -730,7 +791,7 @@ async fn reopened_store_retries_original_binding_before_new_registry_policy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn opt_in_preserves_legacy_receipts_and_new_binary_opt_out_refuses_typed_history() {
+async fn stable_io_preserves_legacy_receipts_and_explicit_opt_out_refuses_typed_history() {
     let temp = TempDir::new().unwrap();
     let mut config = AppConfig::default();
     config.permissions.workspace_root = temp.path().to_string_lossy().into_owned();
@@ -739,6 +800,7 @@ async fn opt_in_preserves_legacy_receipts_and_new_binary_opt_out_refuses_typed_h
     let path = temp.path().join("io.db").to_string_lossy().into_owned();
     // No old workers are started. The upgraded Runtime recovers the pending
     // legacy input rather than manufacturing another request.
+    config.session_io.enabled = false;
     let legacy = MorphzRuntime::builder(config.clone(), Arc::new(Fixture::default()))
         .database_path(&path)
         .build()

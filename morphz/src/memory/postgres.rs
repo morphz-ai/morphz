@@ -285,9 +285,6 @@ impl PostgresStore {
         observability: Arc<Observability>,
         session_io: bool,
     ) -> Result<Self, StoreError> {
-        if session_io && !cfg!(feature = "experimental-session-io") {
-            return Err("Session IO writer requires experimental-session-io".into());
-        }
         let options = database_url
             .parse::<PgConnectOptions>()?
             // As with SQLite, query events are dormant unless an explicit

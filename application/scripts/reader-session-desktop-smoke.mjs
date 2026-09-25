@@ -182,7 +182,6 @@ try {
           MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime.sqlite"),
           MORPHZ_DASHBOARD_TOKEN: token,
           MORPHZ_HOST_TOOLS_FILE: join(data, "host-tools-desktop.json"),
-          MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
           MORPHZ_APP_TEST_KEY: "synthetic-only",
         },
         stdio: ["ignore", "pipe", "pipe"],

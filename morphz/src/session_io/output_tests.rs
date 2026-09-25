@@ -77,7 +77,7 @@ mod concurrent_tests {
             .unwrap()
     }
     async fn terminal(runtime: &MorphzRuntime, root: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 if !runtime
                     .query_events(QueryFilter {
@@ -94,8 +94,10 @@ mod concurrent_tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        assert!(result.is_ok(), "Missing typed output terminal: {:#?}", runtime.query_events(QueryFilter {
+            root_turn_id: Some(root.into()), ..Default::default()
+        }).await.unwrap());
     }
     async fn staged_chat(runtime: &MorphzRuntime, session: &str, id: &str) -> Request {
         let bytes = b"%PDF-1.4\nIO transport fixture\n%%EOF";

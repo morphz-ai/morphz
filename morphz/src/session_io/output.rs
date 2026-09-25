@@ -303,5 +303,5 @@ impl Tool for DeliverMessageTool {
     }
 }
 
-#[cfg(all(test, feature = "experimental-session-io"))]
+#[cfg(test)]
 include!("output_tests.rs");

@@ -21,6 +21,7 @@ Morphz 的设计文档记录了多个阶段的探索、取舍和实现过程。�
 | --- | --- | --- | --- |
 | Scheduler Kernel v2 | 核心完成，运行期观察 | 统一 Kernel Command、权威 Store、结构化 Dependency、内部 Direct Signal、Thread/Activation/Group/Delivery 原子终态、Controller 与 Reconciler 分层、SQLite/PostgreSQL 契约测试 | 长期 soak、更多进程崩溃与外部故障注入、生产负载下的稳定性数据 |
 | Session / Thread 并发 | v1 完成 | 多 Session 并发、同 Session 对话串行门、工具执行与对话并发、持久 Thread/Activation、批量排队消息、因果路由 | 极端并发时的公平性、长时间运行下的恢复验证与交互细节 |
+| Session IO | 0.1.3 正式化 | 默认构建与普通配置、IO v1、精确 JSON、冻结格式契约、附件、分页、类型化交付、幂等、取消与恢复；保留显式旧写入器隔离 | [0.1.3 验收门禁与结果](session_io_stable_0_1_3.md)；不等于公共 MEP 已被接受 |
 | Objective Supervisor | v1 完成 | First-Class Objective、持久 Evaluation、Dependency 派生 readiness、暂停/继续/删除、持久收口审计、受监督并发 | 不同模型的自主收口质量、复杂目标下的长期行为评测 |
 | Mind / Context Projection | 核心完成 | Event History、Mind Projection、Snapshot 增量恢复、Session Projection、有界 Context Encoding、SQLite/PostgreSQL revision CAS | 大规模生产容量、Projection 重建运维、跨主机故障注入 |
 | Frame 级 MVCC | 已实现 | Runtime 从 SExpr 提取受影响对象；不同 Frame 的并发修改可安全 rebase；同一 Frame、来源已变化或全局生命周期操作保持冲突 fence | 生产冲突率与收益数据、更复杂 Relation/Checkpoint 场景验证 |

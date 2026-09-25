@@ -166,7 +166,6 @@ try {
         MORPHZ_STORAGE_SQLITE_PATH: join(runtimeDirectory, "runtime.sqlite"),
         MORPHZ_DASHBOARD_TOKEN: runtimeToken,
         MORPHZ_HOST_TOOLS_FILE: host.manifestPath,
-        MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
         MORPHZ_APP_TEST_KEY: "synthetic-fixture-key",
       },
       stdio: "pipe",
@@ -189,6 +188,8 @@ try {
     `http://127.0.0.1:${runtimePort}/api/session-io/capabilities`,
     { headers: { Authorization: `Bearer ${runtimeToken}` } },
   ).then((response) => response.json());
+  assert.equal(capabilities.experimental, false, "Session IO is a stable Runtime capability");
+  assert.equal(capabilities.enabled, true, "Default Runtime builds enable Session IO");
   assert.ok(
     capabilities.formats.some(
       (format: any) =>

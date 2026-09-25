@@ -1,4 +1,4 @@
-//! Experimental Session IO contracts. Transport data, execution authority and
+//! Stable Session IO v1 contracts. Transport data, execution authority and
 //! presentation preferences have separate, immutable boundaries.
 pub mod data;
 pub mod fence;
@@ -395,7 +395,7 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         let mut registry = Self {
-            enabled: false,
+            enabled: true,
             allow_generic: true,
             limits: Limits::default(),
             definitions: BTreeMap::new(),
@@ -477,7 +477,7 @@ impl Registry {
         Ok(())
     }
     pub fn capabilities(&self) -> Value {
-        json!({"experimental":true,"enabled":self.enabled,"io_versions":if self.enabled {vec!["1"]} else {vec![]},
+        json!({"experimental":false,"enabled":self.enabled,"io_versions":if self.enabled {vec!["1"]} else {vec![]},
             "stream_versions":["1"],"encodings":["json","utf8","resource"],"resources":true,"generic_json":self.allow_generic,
             "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":self.enabled,
             "activation_modes":["evaluate"],"schema_keywords":schema::KEYWORDS,"schema_numeric_constants":"int64-or-uint64-only","limits":self.limits,

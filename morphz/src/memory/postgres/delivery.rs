@@ -668,11 +668,13 @@ async fn claim_parallel_message_fast_path(
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at)
+                created_at, updated_at, model_alias, reasoning_effort)
              SELECT $14, 1, 1, authority.agent_id, $7, $1, $2, $4,
                     'dialogue_turn', 'open', 'active', 'self', $15,
                     'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
-                    'none', $6, $6
+                    'none', $6, $6,
+                    event_insert.payload ->> 'model_alias',
+                    event_insert.payload ->> 'reasoning_effort'
              FROM event_insert CROSS JOIN authority
              RETURNING id, generation
            ),
@@ -1042,6 +1044,8 @@ async fn claim_ordered_message_fast_path(
                ) < $18
                AND activation.initiating_principal_id IS NOT DISTINCT FROM $7
                AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
+               AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM ($13::jsonb ->> 'model_alias')
+               AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM ($13::jsonb ->> 'reasoning_effort')
              ORDER BY activation.trigger_sequence, activation.id
              LIMIT 1
              FOR UPDATE OF activation, thread
@@ -1063,6 +1067,8 @@ async fn claim_ordered_message_fast_path(
                AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                AND thread.initiating_principal_id IS NOT DISTINCT FROM $7
                AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
+               AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM ($13::jsonb ->> 'model_alias')
+               AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM ($13::jsonb ->> 'reasoning_effort')
                AND NOT EXISTS (
                  SELECT 1 FROM thread_activations activation
                  WHERE activation.root_turn_id = thread.root_turn_id
@@ -1178,11 +1184,13 @@ async fn claim_ordered_message_fast_path(
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at)
+                created_at, updated_at, model_alias, reasoning_effort)
              SELECT $14, 1, 1, authority.agent_id, $6, $1, $7, $3,
                     'dialogue_turn', 'open', 'active', 'self', $15,
                     'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
-                    'none', $5, $5
+                    'none', $5, $5,
+                    event_insert.payload ->> 'model_alias',
+                    event_insert.payload ->> 'reasoning_effort'
              FROM event_insert CROSS JOIN authority
              WHERE EXISTS (SELECT 1 FROM interrupted_candidate)
                 OR (

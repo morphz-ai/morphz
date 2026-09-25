@@ -91,7 +91,6 @@ const child = spawn(
       MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime/runtime.sqlite"),
       MORPHZ_DASHBOARD_TOKEN: config.token,
       MORPHZ_HOST_TOOLS_FILE: manifest,
-      MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       // This first-party deployment explicitly admits the application Host to
       // Yao. Each concrete call still passes its normal permission/root checks.
       MORPHZ_EVAL_CALLABLE_TOOLS:

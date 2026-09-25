@@ -1,6 +1,6 @@
 # Session 通用消息 IO 协议设计 v0.1
 
-> 状态：设计提案，已有默认关闭的实验实现。结构化输入、Context 投影、类型化交付、资源附件、类型化分页、客户端接入及显式升级／降级写入防护已落地，并通过 SQLite／PostgreSQL、旧版进程切换及隔离桌面链路验证。本文不等于正式可发布标准，实际接口、证据与运行边界见[实施记录](./session_io_implementation_v0_1.md)及[验收记录](./session_io_acceptance_v0_1.md)。
+> 状态：历史设计提案；对应 Session IO v1 实现在 Runtime 0.1.3 转为默认可用的正式功能，不再依赖实验开关。功能转正不等于本文自动成为已接受的公共 MEP。实际接口、证据与运行边界见[实施记录](./session_io_implementation_v0_1.md)及[0.1.3 验收记录](./session_io_stable_0_1_3.md)。
 >
 > 日期：2026-09-09。范围：Morphz Runtime、SDK、HTTP、Dashboard，以及 Morphz Desktop 的接入方式。
 >

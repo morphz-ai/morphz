@@ -1,5 +1,4 @@
 //! Opt-in real old-binary downgrade probes. Only fresh, dedicated fixtures.
-#![cfg(feature = "experimental-session-io")]
 use morphz::{
     config::{CognitiveStoreBackend, SqliteStorageConfig},
     memory::sqlite::SqliteStore,

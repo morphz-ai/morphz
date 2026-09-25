@@ -917,11 +917,7 @@ impl MorphzRuntimeBuilder {
 
     pub fn new(config: AppConfig, client: Arc<dyn Client>) -> Self {
         let mut session_io = crate::session_io::Registry::default();
-        session_io.enabled = crate::experimental::require_enabled(
-            &config.experimental.enabled,
-            crate::experimental::SESSION_IO,
-        )
-        .is_ok();
+        session_io.enabled = config.session_io.enabled;
         Self {
             database_path: None,
             store: None,
@@ -1042,10 +1038,13 @@ impl MorphzRuntimeBuilder {
     #[allow(unused_mut)] // Cognitive Coordination rewrites the Mesh participant route when compiled.
     pub async fn build(mut self) -> Result<MorphzRuntime, RuntimeError> {
         crate::experimental::require_all_enabled_compiled(&self.config.experimental.enabled)?;
-        if self.session_io.enabled && !cfg!(feature = "experimental-session-io") {
-            return Err("Session IO requires --features experimental-session-io".into());
-        }
-        for descriptor in &self.config.experimental.session_io_formats {
+        for descriptor in self
+            .config
+            .session_io
+            .formats
+            .iter()
+            .chain(&self.config.experimental.session_io_formats)
+        {
             self.session_io.register(descriptor.clone())?;
         }
         let database_path = self

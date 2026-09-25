@@ -1,6 +1,12 @@
-# Session IO v0.1 — experimental implementation
+# Session IO v1 — Runtime implementation
 
-Status: opt-in implementation of the [Session IO proposal](./morphz_session_message_protocol_v0_1.md), not an accepted MEP or a stable released protocol. The scoped implementation and isolated acceptance are complete, including resources, typed paging and explicit old-writer exclusion. See the [acceptance record](./session_io_acceptance_v0_1.md) for coverage and operating limits. No production data migration or automatic client rollout is implied.
+Status: promoted to a supported Runtime capability for 0.1.3. The existing wire
+`io_version: "1"` and persisted format definitions are unchanged. This is an
+implementation support decision, not acceptance of a separate public MEP.
+The [original acceptance record](./session_io_acceptance_v0_1.md) remains dated
+historical evidence; the [0.1.3 record](./session_io_stable_0_1_3.md) tracks the
+current release gate. No production data migration or automatic client rollout
+is implied.
 
 Main integration (2026-09-12): the experimental implementation is integrated into `main`, retaining both the opt-in Cargo feature and the process/configuration gate. Integration preserves the existing scheduler and steering-draft fixes, including parallel-input metadata in typed Context observations. This does not enable the experiment on an existing instance or install a storage fence. The isolated acceptance and no-rollout statements below describe the original 2026-09-10 verification.
 
@@ -21,17 +27,35 @@ Session remains a Context-owned IO route. A request's format does not create a s
 
 The input's `text` display hint is not the authoritative Context representation. Neither a rules prefix nor serialized domain JSON is inserted into the user's text. Stable Work behavior belongs to the host tool/format contract; dynamic scope is data. Actual object creation still requires the authenticated host tool and its durable receipt.
 
-## Enable explicitly
+## Default availability and configuration
 
 Build with:
 
 ```sh
-cargo build -p morphz --features experimental-session-io
+cargo build --locked -p morphz --bin morphz
 ```
 
-Enable the compiled feature with the existing process/configuration gate, for example `--enable-experimental session-io`, or `MORPHZ_EXPERIMENTAL_FEATURES=session-io`. Do not replace other enabled features when updating an existing configuration. Embedders can supply `MorphzRuntimeBuilder::session_io_registry`; the binary must still contain the feature.
+Default builds and release binaries include and enable Session IO. The normal
+host-owned configuration is:
 
-Use a separate test database initially. Merely enabling the experiment does **not** install a database fence. A new binary refuses typed history when IO is disabled, but that check alone cannot protect against older binaries. Before using a shared/existing database, initialize its current schema, stop/drain its writers, take and verify a recoverable pre-IO backup, then explicitly install the fence below. Existing user instances were not migrated during this implementation.
+```toml
+[session_io]
+enabled = true
+# formats = [...]  # trusted Descriptor definitions
+```
+
+Explicit `enabled = false` disables new IO and refuses a database containing
+typed history. Project-local configuration cannot set this policy or install
+trusted formats. Embedders may supply `MorphzRuntimeBuilder::session_io_registry`.
+
+The old `experimental-session-io` Cargo feature and
+`--enable-experimental session-io` / `MORPHZ_EXPERIMENTAL_FEATURES=session-io`
+are accepted as retired compatibility inputs, not requirements or overrides.
+Legacy `experimental.session_io_formats` definitions are read alongside normal
+`session_io.formats`; an ID/version conflict fails rather than picking a winner.
+New launches and documentation use only the stable configuration.
+
+Default availability does **not** install a database fence. A new binary refuses typed history when IO is disabled, but that check alone cannot protect against older binaries. Before using a shared/existing database, initialize its current schema, stop/drain its writers, take and verify a recoverable pre-IO backup, then explicitly install the fence below. Existing user instances are not migrated by this change.
 
 ## Explicit storage fence
 
@@ -47,7 +71,7 @@ morphz storage session-io-fence --sqlite /absolute/test/runtime.sqlite --install
 morphz storage session-io-fence --postgres-url-env TEST_DATABASE_URL --install --acknowledge-write-block
 ```
 
-Installation requires an `experimental-session-io` build. Start compatible writers with Session IO explicitly enabled. Embedders injecting a store must use `SqliteStore::new_for_runtime` or `PostgresStore::new_for_runtime` with the selected cognitive backend and `session_io=true`; legacy constructors intentionally register an incompatible writer. The Runtime builder does this for its own stores. All replacement pool connections receive the same capability. Enabling IO in the registry alone does not upgrade an injected legacy connection pool.
+Installation works in the ordinary Runtime build. Start compatible writers with Session IO enabled. Embedders injecting a store must use `SqliteStore::new_for_runtime` or `PostgresStore::new_for_runtime` with the selected cognitive backend and `session_io=true`; legacy constructors intentionally register an incompatible writer. The Runtime builder does this for its own stores. All replacement pool connections receive the same capability. Enabling IO in the registry alone does not upgrade an injected legacy connection pool.
 
 SQLite installs `BEFORE INSERT/UPDATE/DELETE` guards on ordinary authority tables. A connection-local SQLite function identifies compatible writers; pre-IO binaries do not define it, so writes fail. Virtual FTS tables, their shadow tables and SQLite internals are derived/engine-owned data, not guard targets. PostgreSQL installs `ENABLE ALWAYS` statement guards for `INSERT/UPDATE/DELETE/TRUNCATE`, checking a connection-local writer version. The immutable `morphz_session_io_guard` table records version 1 and the exact protected table set. Startup verifies the version, coverage and trigger/function definitions before store migrations. Unknown versions or drift fail closed; installation does not silently repair drift.
 
@@ -145,7 +169,7 @@ Use `recall` with `event_id`, `json_pointer`, `offset` and `limit`, or `MorphzSd
 
 ## Installing a format
 
-A trusted embedding host calls `Registry::register(Descriptor)`. The CLI also accepts definitions from `experimental.session_io_formats` or the existing private host-tools manifest's optional top-level `formats` array. Message senders cannot install schemas or code.
+A trusted embedding host calls `Registry::register(Descriptor)`. The CLI also accepts definitions from `session_io.formats` or the existing private host-tools manifest's optional top-level `formats` array. Message senders and project configuration cannot install schemas or code. The previous `experimental.session_io_formats` key is an upgrade compatibility input only.
 
 ```json
 {

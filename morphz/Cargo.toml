@@ -11,6 +11,7 @@ homepage.workspace = true
 [features]
 default = ["context-db"]
 experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
+# Compatibility build alias only. Session IO is always compiled and stable.
 experimental-session-io = []
 # ContextDB is the default cognitive Store. Keeping it as a named build feature
 # lets deliberately minimal binaries omit the backend without presenting it as

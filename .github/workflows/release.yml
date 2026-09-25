@@ -14,6 +14,9 @@ env:
   MORPHZ_BUILD_GIT_COMMIT: ${{ github.sha }}
 
 jobs:
+  session-io:
+    uses: ./.github/workflows/session-io.yml
+
   validate-tag:
     name: Validate release ref
     runs-on: ubuntu-latest
@@ -85,7 +88,7 @@ jobs:
           cmp scripts/install.sh website/public/install.sh
           sh scripts/test_install.sh
       - name: Run release-critical tests
-        run: cargo test --locked -p morphz --lib --bin morphz -- --test-threads=1
+        run: cargo test --locked -p morphz --lib --bin morphz --test session_io -- --test-threads=1
       - name: Reject compiler and Clippy warnings
         run: cargo clippy --locked -p morphz --all-targets --all-features -- -D warnings
 
@@ -114,7 +117,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install --yes \
             build-essential ca-certificates clang cmake curl git libssl-dev \
-            perl pkg-config bubblewrap
+            perl pkg-config bubblewrap python3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -155,6 +158,7 @@ jobs:
         run: |
           set -euo pipefail
           "dist/morphz-bundle/morphz" --version
+          python3 scripts/test-session-io-release.py dist/morphz-bundle/morphz
           required_glibc="$({ objdump -T dist/morphz-bundle/morphz || true; } \
             | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' \
             | sort -V \
@@ -258,6 +262,7 @@ jobs:
           host_arch="$(uname -m)"
           if [[ "$host_arch" == '${{ matrix.file_arch }}' ]]; then
             "dist/morphz-bundle/morphz" --version
+            python3 scripts/test-session-io-release.py dist/morphz-bundle/morphz
             install_root="$RUNNER_TEMP/morphz-install-smoke"
             MORPHZ_RELEASE_BASE_URL="file://$PWD/dist" \
             MORPHZ_INSTALL_DIR="$install_root" \
@@ -360,6 +365,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "packaged morphz.exe failed its version smoke test"
           }
+          python scripts/test-session-io-release.py (Join-Path $smoke "morphz.exe")
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged Runtime failed stable Session IO acceptance"
+          }
           @(
             "morphz-windows-sandbox-runner.exe",
             "morphz-windows-command-runner.exe",
@@ -400,7 +409,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [release-readiness, linux-bundles, macos-bundles, windows-bundle]
+    needs: [release-readiness, session-io, linux-bundles, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write

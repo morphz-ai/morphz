@@ -37,6 +37,9 @@ Morphz Windows bundle。
 已经实现、完成验证、仍属实验以及尚在规划的能力边界，以
 [当前核心实现状态](docs/morphz_runtime_core_implementation_status_v1.md)为准。
 
+Runtime 0.1.3 将 [Session IO v1](docs/session_io_implementation_v0_1.md) 转为默认可用的
+正式功能，无需实验编译或启动参数；数据库写入隔离及基于备份的降级仍是显式运维操作。
+
 ## Morphz 改变了什么
 
 - **Context 是持久状态。** Agent 拥有带版本的认知 Frames，不依附于某一个 Session 或聊天记录。

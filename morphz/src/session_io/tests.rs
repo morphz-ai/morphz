@@ -14,7 +14,16 @@ fn enabled() -> Registry {
 fn directed_typed_input_is_bound_without_overriding_the_original_route() {
     let registry = enabled();
     assert_eq!(registry.capabilities()["directed_input"], true);
-    assert_eq!(Registry::default().capabilities()["directed_input"], false);
+    assert_eq!(Registry::default().capabilities()["directed_input"], true);
+    assert_eq!(Registry::default().capabilities()["experimental"], false);
+    assert_eq!(
+        Registry {
+            enabled: false,
+            ..Default::default()
+        }
+        .capabilities()["directed_input"],
+        false
+    );
     let mut input = request("null");
     input.activation.input_destination = Some(crate::steering::InputDestination::Thread {
         thread_id: "thread-a".into(),
@@ -96,10 +105,13 @@ fn strings_remain_inert_typed_leaves_through_sexpr_round_trip() {
 #[test]
 fn registry_and_delivery_contracts_fail_closed() {
     assert_eq!(
-        Registry::default()
-            .bind(request("null"), "a")
-            .unwrap_err()
-            .code,
+        Registry {
+            enabled: false,
+            ..Default::default()
+        }
+        .bind(request("null"), "a")
+        .unwrap_err()
+        .code,
         "unsupported_io_version"
     );
     let registry = enabled();

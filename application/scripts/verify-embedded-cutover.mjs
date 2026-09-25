@@ -112,7 +112,6 @@ try {
         HOME: process.env.HOME,
         MORPHZ_HOME: join(root, "runtime"),
         MORPHZ_STORAGE_SQLITE_PATH: join(root, "runtime/runtime.sqlite"),
-        MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
       },
     };
     const config = execFileSync(binary, ["config", "show", ...args], options);

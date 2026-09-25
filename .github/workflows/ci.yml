@@ -14,6 +14,9 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  session-io:
+    uses: ./.github/workflows/session-io.yml
+
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
@@ -133,6 +136,10 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Verify native sandbox boundary
         run: cargo test -p morphz sandbox::tests -- --nocapture
+      - name: Verify stable Session IO on macOS
+        run: |
+          cargo test --locked -p morphz --lib session_io:: -- --test-threads=1
+          cargo test --locked -p morphz --test session_io -- --test-threads=1
       - name: Verify one-shot approval boundary
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
       - name: Verify signed Edge installer contract
@@ -275,6 +282,11 @@ jobs:
         run: |
           $env:MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST = "1"
           cargo test -p morphz sandbox::windows::tests -- --nocapture --test-threads=1
+      - name: Verify stable Session IO on Windows
+        shell: bash
+        run: |
+          cargo test --locked -p morphz --lib session_io:: -- --test-threads=1
+          cargo test --locked -p morphz --test session_io -- --test-threads=1
       - name: Assemble separate main and Edge Windows bundles
         shell: pwsh
         run: |

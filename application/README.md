@@ -144,7 +144,7 @@ npm run test:runtime-identity
 从 Morphz 仓库根目录构建联测用 Runtime：
 
 ```sh
-cargo build --locked -p morphz --bin morphz --features experimental-session-io
+cargo build --locked -p morphz --bin morphz
 npm --prefix application run test:runtime-ipc
 npm --prefix application run test:continuation-runtime
 npm --prefix application run test:runtime-identity
@@ -153,6 +153,9 @@ npm --prefix application run test:runtime-identity
 脚本默认使用本仓库 `target/debug/morphz`（Windows 为 `morphz.exe`），不依赖当前工作目录
 或旧相邻仓库。可用 `MORPHZ_APP_RUNTIME_BINARY` 显式选择测试二进制；这不会更换正在运行
 的用户 Runtime。本地 SQLite、HTTP 和 Session IO 集成均使用隔离测试数据。
+
+Runtime 0.1.3 的 Session IO 是默认可用的正式功能，不需要实验编译或启动开关。
+旧启动参数继续接受，但不再控制该功能；显式关闭使用用户配置中的 `[session_io] enabled=false`。
 
 原创应用源码遵循仓库根目录的 [Apache-2.0 许可证](../LICENSE)及[适用范围](../LICENSE_SCOPE.md)。
 第三方依赖保持各自条款，清单见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；

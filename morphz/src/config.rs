@@ -1487,13 +1487,34 @@ pub struct UiConfig {
     pub language: UiLanguage,
 }
 
+/// Stable typed Session messaging. Disabling IO refuses typed history; it is
+/// not a downgrade or permission to let incompatible writers modify it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionIoConfig {
+    pub enabled: bool,
+    /// Trusted operator-installed descriptors, never message-sender input.
+    pub formats: Vec<crate::session_io::Descriptor>,
+}
+
+impl Default for SessionIoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            formats: Vec::new(),
+        }
+    }
+}
+
 /// Operator opt-ins for code which has no stability or compatibility promise.
 /// Compilation alone never enables an experiment.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExperimentalConfig {
     pub enabled: BTreeSet<String>,
-    /// Trusted operator-installed Session IO descriptors, never client input.
+    /// Compatibility input for pre-0.1.3 hosts. New configuration uses
+    /// `session_io.formats`; conflicting definitions still fail closed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub session_io_formats: Vec<crate::session_io::Descriptor>,
     /// Experimental Cognitive Coordination participant and Mesh settings.
     /// Empty configuration keeps the feature visible but fail-closed.
@@ -1626,6 +1647,7 @@ pub struct AppConfig {
     pub execution_targets: ExecutionTargetsConfig,
     pub edge_execution: EdgeExecutionConfig,
     pub managed_ssh: ManagedSshConfig,
+    pub session_io: SessionIoConfig,
     pub experimental: ExperimentalConfig,
     pub ui: UiConfig,
     pub tui: TuiConfig,
@@ -3512,6 +3534,10 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("storage.")
                 || key == "model_input"
                 || key.starts_with("model_input.")
+                || key == "session_io"
+                || key.starts_with("session_io.")
+                || key == "experimental.session_io_formats"
+                || key.starts_with("experimental.session_io_formats.")
                 || key == "llm.base_url"
                 || key == "llm.api_key"
                 || key == "llm.protocol"
@@ -4722,6 +4748,28 @@ mod tests {
             configured.experimental.enabled,
             BTreeSet::from(["cognitive-coordination".to_string()])
         );
+    }
+
+    #[test]
+    fn stable_session_io_defaults_and_host_owned_configuration() {
+        let default = toml::from_str::<AppConfig>("").unwrap();
+        assert!(default.session_io.enabled);
+        assert!(default.experimental.enabled.is_empty());
+        let disabled = toml::from_str::<AppConfig>(
+            "[session_io]\nenabled=false\n[experimental]\nenabled=['session-io']\n",
+        )
+        .unwrap();
+        assert!(!disabled.session_io.enabled);
+        crate::experimental::require_all_enabled_compiled(&disabled.experimental.enabled).unwrap();
+        assert!(toml::from_str::<AppConfig>("[session_io]\nenbaled=true\n").is_err());
+        for source in [
+            "[session_io]\nenabled=false\n",
+            "[session_io]\nformats=[]\n",
+            "[experimental]\nsession_io_formats=[]\n",
+        ] {
+            let value = toml::from_str::<toml::Value>(source).unwrap();
+            assert!(!forbidden_project_keys(&value).is_empty());
+        }
     }
 
     #[test]

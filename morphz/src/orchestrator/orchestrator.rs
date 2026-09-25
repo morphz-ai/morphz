@@ -11999,7 +11999,12 @@ impl Orchestrator {
                     .filter(|model| !model.is_empty())
                     .map(ToOwned::to_owned)
             })
-            .or_else(|| thread.model_alias.clone());
+            .or_else(|| {
+                thread
+                    .model_alias
+                    .clone()
+                    .filter(|model| !model.trim().is_empty())
+            });
         let trigger_reasoning_effort = trigger_event
             .as_ref()
             .and_then(|event| {
@@ -12012,13 +12017,20 @@ impl Orchestrator {
                     .map(ToOwned::to_owned)
             })
             .or_else(|| thread.reasoning_effort.clone());
-        let session_model_alias = session_record.model_alias.clone();
+        // Empty legacy/default Session selections mean "inherit", not an
+        // explicit empty model route. Unlabelled direct Clients still own a
+        // valid fixed route and must reach the fallback below.
+        let session_model_alias = session_record
+            .model_alias
+            .clone()
+            .filter(|model| !model.trim().is_empty());
         let desired_model_alias = activation
             .model_alias
             .clone()
+            .filter(|model| !model.trim().is_empty())
             .or_else(|| trigger_model_alias.clone())
             .or(session_model_alias)
-            .or_else(|| self.client.model())
+            .or_else(|| self.client.model().filter(|model| !model.trim().is_empty()))
             // A third-party direct Client may intentionally expose no
             // operator-facing model alias. Its Client instance is already a
             // fixed physical route, so freeze the stable internal route name

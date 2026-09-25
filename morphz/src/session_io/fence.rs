@@ -12,7 +12,7 @@ const FUNCTION: &str = "morphz_session_io_check_writer";
 const SETTING: &str = "morphz.session_io_writer";
 const VERSION: i64 = 1;
 
-#[cfg(all(test, feature = "experimental-session-io"))]
+#[cfg(test)]
 #[path = "fence_tests.rs"]
 mod tests;
 
@@ -40,7 +40,7 @@ fn trigger_name(table: &str, operation: &str) -> String {
     )
 }
 fn compatible(enabled: bool) -> Result<(), Error> {
-    if enabled && cfg!(feature = "experimental-session-io") {
+    if enabled {
         Ok(())
     } else {
         Err("Session IO storage requires an IO-enabled compatible writer; restore a pre-IO backup to downgrade".into())
@@ -76,11 +76,7 @@ pub(crate) async fn sqlite_writer(
             0,
             ffi::SQLITE_UTF8 | ffi::SQLITE_INNOCUOUS,
             std::ptr::null_mut(),
-            Some(if enabled && cfg!(feature = "experimental-session-io") {
-                io_v1
-            } else {
-                legacy
-            }),
+            Some(if enabled { io_v1 } else { legacy }),
             None,
             None,
             None,
@@ -222,11 +218,7 @@ pub(crate) async fn postgres_writer(
 ) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT set_config($1, $2, false)")
         .bind(SETTING)
-        .bind(if enabled && cfg!(feature = "experimental-session-io") {
-            "1"
-        } else {
-            "0"
-        })
+        .bind(if enabled { "1" } else { "0" })
         .execute(connection)
         .await?;
     Ok(())

@@ -10,8 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
-pub const SESSION_IO: &str = "session-io";
-const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db"];
+const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db", "session-io"];
 pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
 pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
 
@@ -33,20 +32,12 @@ pub struct ExperimentalFeature {
     pub compiled: bool,
 }
 
-pub const FEATURES: &[ExperimentalFeature] = &[
-    ExperimentalFeature {
-        name: COGNITIVE_COORDINATION,
-        cargo_feature: "experimental-cognitive-coordination",
-        summary: "coordinated multi-subject cognitive evaluation",
-        compiled: cfg!(feature = "experimental-cognitive-coordination"),
-    },
-    ExperimentalFeature {
-        name: SESSION_IO,
-        cargo_feature: "experimental-session-io",
-        summary: "typed bidirectional Session messages",
-        compiled: cfg!(feature = "experimental-session-io"),
-    },
-];
+pub const FEATURES: &[ExperimentalFeature] = &[ExperimentalFeature {
+    name: COGNITIVE_COORDINATION,
+    cargo_feature: "experimental-cognitive-coordination",
+    summary: "coordinated multi-subject cognitive evaluation",
+    compiled: cfg!(feature = "experimental-cognitive-coordination"),
+}];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ExperimentalFeatureStatus {
@@ -200,13 +191,13 @@ mod tests {
 
     #[test]
     fn retired_context_db_experiment_alias_is_accepted_but_not_listed() {
-        let enabled = BTreeSet::from(["context-db".to_string()]);
+        let enabled = BTreeSet::from(["context-db".to_string(), "session-io".to_string()]);
         validate_enabled(&enabled).unwrap();
         require_all_enabled_compiled(&enabled).unwrap();
         assert!(statuses(&enabled)
             .unwrap()
             .iter()
-            .all(|status| status.name != "context-db"));
+            .all(|status| !RETIRED_STABLE_FEATURE_ALIASES.contains(&status.name)));
     }
 
     #[test]

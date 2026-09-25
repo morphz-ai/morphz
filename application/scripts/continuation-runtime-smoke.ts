@@ -80,7 +80,7 @@ writeFileSync(
 );
 writeFileSync(
   configFile,
-  `[llm]\nprovider="stub"\nmodel="test-model"\nreasoning_effort="low"\n[providers.stub]\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\ncredential="stub"\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+  `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
   { mode: 0o600 },
 );
 process.env.MORPHZ_APP_ENV_FILE = "";
@@ -141,7 +141,6 @@ try {
         MORPHZ_STORAGE_SQLITE_PATH: join(runtimeDirectory, "runtime.sqlite"),
         MORPHZ_DASHBOARD_TOKEN: token,
         MORPHZ_HOST_TOOLS_FILE: host.manifestPath,
-        MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
         MORPHZ_APP_TEST_KEY: "synthetic-fixture-key",
       },
       stdio: "pipe",
@@ -154,6 +153,11 @@ try {
   const bridge = host.connection.application.options.runtime!,
     store = host.connection.application.store;
   await wait(() => bridge.snapshot().connected, "connection");
+  const binding = await fetch(
+    `http://127.0.0.1:${runtimePort}/api/agents/default-agent/provider-accounts/stub`,
+    { method: "PUT", headers: { Authorization: `Bearer ${token}` } },
+  );
+  assert.ok(binding.ok, "Bind only the isolated fixture's synthetic account");
   let boot = (await host.connection.call("workspace")) as any;
   const message = async (command: unknown) =>
     host!.connection.call("message", command, {

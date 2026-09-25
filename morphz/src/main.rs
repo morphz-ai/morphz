@@ -266,10 +266,7 @@ async fn main() -> Result<(), AppError> {
         }
     };
     let mut app_config = resolved.config;
-    app_config
-        .experimental
-        .session_io_formats
-        .extend(host_tools.formats);
+    app_config.session_io.formats.extend(host_tools.formats);
     let explicit_sqlite_path = std::env::var("MORPHZ_STORAGE_SQLITE_PATH")
         .ok()
         .filter(|path| !path.trim().is_empty());

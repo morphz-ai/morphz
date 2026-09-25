@@ -3718,6 +3718,30 @@ where
         owners[0], owners[3],
         "identical policies retain input batching"
     );
+    for mode in [MessageDispatchMode::Parallel, MessageDispatchMode::FollowUp] {
+        let event = Event::new(
+            format!("task-policy-{}", mode.as_str()),
+            "Store-Conformance".into(),
+            morphz::event::TYPE_USER_MESSAGE.into(),
+            "chat/user_message".into(),
+            json!({"context_id":"conformance-context", "session_id":POLICY_SESSION,
+                "principal_id":PRINCIPAL, "text":"independent policy test",
+                "model_alias":"deep", "reasoning_effort":"max"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert!(matches!(
+            store
+                .claim_message(POLICY_SESSION, &event.id, &event, mode)
+                .await
+                .unwrap(),
+            MessageClaim::Accepted { .. }
+        ));
+        let thread = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        assert_eq!(thread.model_alias.as_deref(), Some("deep"));
+        assert_eq!(thread.reasoning_effort.as_deref(), Some("max"));
+    }
 }
 
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)

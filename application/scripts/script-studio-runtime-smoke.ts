@@ -479,7 +479,6 @@ try {
     MORPHZ_STORAGE_SQLITE_PATH: join(runtimeDirectory, "runtime.sqlite"),
     MORPHZ_DASHBOARD_TOKEN: runtimeToken,
     MORPHZ_HOST_TOOLS_FILE: runtimeManifestPath,
-    MORPHZ_EXPERIMENTAL_FEATURES: "session-io",
     MORPHZ_EVAL_CALLABLE_TOOLS: "host_morphz",
     MORPHZ_APP_TEST_KEY: "synthetic-fixture-key",
   };
