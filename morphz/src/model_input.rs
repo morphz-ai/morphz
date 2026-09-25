@@ -1268,7 +1268,7 @@ async fn prepare_message_attachment_files(
             {
                 return Err("workspace attachment directory escaped the Agent Workspace".into());
             }
-            let workspace_path = attachment_directory.join(&name);
+            let workspace_path = attachment_directory.join(workspace_attachment_file_name(&name));
             match &attachment.source {
                 MessageAttachmentImportSource::Inline(data) => {
                     ensure_workspace_attachment_copy(
@@ -1998,6 +1998,62 @@ fn safe_attachment_name(value: &str) -> Result<String, ModelInputError> {
     Ok(name)
 }
 
+/// Preserve the sender's name in message metadata, but use a portable path
+/// component for the Agent-writable copy. Windows rejects characters such as
+/// `<` and `>` and device names such as `CON`, even though those names are
+/// valid attachment labels on other hosts.
+fn workspace_attachment_file_name(name: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut file_name = String::with_capacity(name.len());
+    for (index, character) in name.char_indices() {
+        let trailing = index + character.len_utf8() == name.len();
+        if character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '%'
+            )
+            || (trailing && matches!(character, '.' | ' '))
+        {
+            let mut buffer = [0_u8; 4];
+            for byte in character.encode_utf8(&mut buffer).bytes() {
+                write!(file_name, "%{byte:02X}").expect("writing to a String cannot fail");
+            }
+        } else {
+            file_name.push(character);
+        }
+    }
+
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || (stem.len() == 4
+        && (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        // A literal leading '%' was escaped above, so this stays distinct
+        // from a sender-provided name that already starts with that character.
+        file_name.insert(0, '%');
+    }
+    if file_name.len() > 240 || file_name.encode_utf16().count() > 240 {
+        let extension = name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension)
+            .filter(|extension| {
+                (1..=16).contains(&extension.len())
+                    && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+            .map(|extension| format!(".{extension}"))
+            .unwrap_or_default();
+        file_name = format!(
+            "attachment-{:x}{extension}",
+            Sha256::digest(name.as_bytes())
+        );
+    }
+    file_name
+}
+
 fn safe_media_type(value: &str, name: &str) -> Result<String, ModelInputError> {
     let media_type = value.trim();
     let media_type = if media_type.is_empty() {
@@ -2018,6 +2074,26 @@ fn safe_media_type(value: &str, name: &str) -> Result<String, ModelInputError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_attachment_names_are_portable_without_changing_sender_names() {
+        assert_eq!(
+            workspace_attachment_file_name("<script>fixture.pdf"),
+            "%3Cscript%3Efixture.pdf"
+        );
+        assert_eq!(workspace_attachment_file_name("CON.txt"), "%CON.txt");
+        assert_eq!(workspace_attachment_file_name("report."), "report%2E");
+        assert_eq!(workspace_attachment_file_name("100%.pdf"), "100%25.pdf");
+        assert_eq!(
+            workspace_attachment_file_name("quarterly-report.docx"),
+            "quarterly-report.docx"
+        );
+        let long_name = format!("{}.pdf", "汉".repeat(100));
+        let portable = workspace_attachment_file_name(&long_name);
+        assert!(portable.starts_with("attachment-"));
+        assert!(portable.ends_with(".pdf"));
+        assert!(portable.len() <= 240);
+    }
 
     fn attachment_stage_limits() -> ModelInputLimits {
         ModelInputLimits {

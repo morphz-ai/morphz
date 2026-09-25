@@ -305,6 +305,18 @@ async fn explicit_fenced_sqlite_runs_attachment_io_and_reopens_with_original_bin
         .send_io_as_principal(input.clone(), &first.identity().principal_id)
         .await
         .unwrap();
+    assert_eq!(
+        accepted.payload["attachments"][0]["name"],
+        "<script>fixture.pdf"
+    );
+    let workspace_path = accepted.payload["attachments"][0]["workspace_path"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        std::path::Path::new(workspace_path).file_name().unwrap(),
+        "%3Cscript%3Efixture.pdf"
+    );
+    assert!(std::path::Path::new(workspace_path).is_file());
     terminal(&first, &accepted.id).await;
     assert!(
         morphz::memory::sqlite::SqliteStore::new(path.to_str().unwrap())
