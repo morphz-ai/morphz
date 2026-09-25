@@ -19794,6 +19794,45 @@ mod tests {
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("reviewer account is rate limited")));
+        let job = runtime
+            .inner
+            .store
+            .get_execution_job(&pending.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        // Escalation is emitted before the batch commits its durable wait.
+        // The Activation may be Running or already Queued at that boundary.
+        let checkpoint = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+            loop {
+                if let Some(checkpoint) = runtime
+                    .inner
+                    .store
+                    .get_thread_activation_approval_wait(&job.activation_id)
+                    .await
+                    .unwrap()
+                {
+                    break checkpoint;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("automatic-review fallback did not checkpoint the human approval wait");
+        assert_eq!(checkpoint.approval_ids, vec![approval_id.clone()]);
+        let activation = runtime
+            .inner
+            .store
+            .get_thread_activation(&job.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            activation.status,
+            crate::memory::ThreadActivationStatus::Queued
+        );
+        assert!(activation.claimed_by.is_none());
+        assert!(activation.lease_expires_at.is_none());
         assert!(runtime
             .inner
             .store
@@ -19805,18 +19844,6 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        let activations = runtime
-            .inner
-            .store
-            .list_context_thread_activations(&runtime.identity().context_id, true)
-            .await
-            .unwrap();
-        assert!(activations
-            .iter()
-            .any(|activation| activation.status == crate::memory::ThreadActivationStatus::Running));
-        assert!(activations
-            .iter()
-            .all(|activation| activation.status != crate::memory::ThreadActivationStatus::Failed));
 
         runtime
             .decide_approval(
