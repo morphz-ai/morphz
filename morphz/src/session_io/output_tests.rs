@@ -37,8 +37,7 @@ mod concurrent_tests {
         }
     }
     fn registry() -> session_io::Registry {
-        let mut registry = session_io::Registry { enabled: true, ..Default::default() };
-        registry
+        session_io::Registry { enabled: true, ..Default::default() }
     }
     fn request(id: &str) -> Request {
         Request::parse(json!({"io_version":"1","client_message_id":id,"message":{
