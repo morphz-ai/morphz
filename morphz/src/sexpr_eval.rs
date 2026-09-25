@@ -4864,6 +4864,63 @@ mod tests {
     }
 
     #[test]
+    fn v012_persisted_program_values_and_continuations_recover_without_recompilation() {
+        let fixtures: Vec<JsonValue> = serde_json::from_str(include_str!(
+            "../../yao/tests/fixtures/v0.1.2-programs.json"
+        ))
+        .unwrap();
+        for fixture in fixtures {
+            let old = &fixture["program"];
+            let node = serde_json::json!({"op":"typed", "program":old});
+            let program = serde_json::json!({
+                "owner":"runtime", "root":node, "tools":[], "declared":null
+            });
+            let admitted = serde_json::json!({"$yao":{
+                "kind":"program", "hash":old["source_hash"], "value":{
+                    "hash":old["source_hash"], "source":old["canonical_source"],
+                    "program":program, "output":old["output"], "effects":old["effects"],
+                    "provenance":{
+                        "parent_plan_execution_id":"fixture-parent",
+                        "producer_evaluation_id":"fixture-evaluation",
+                        "terminal_event_id":null, "validation_version":"yao-0.1"
+                    }
+                }
+            }});
+            let decoded = decode_program_value(&admitted).unwrap();
+            assert_eq!(encode_program_value(&decoded).unwrap(), admitted);
+            // v0.1.2 queued PlanMachine envelope, with the original typed body.
+            let mut machine: PlanMachine = serde_json::from_value(serde_json::json!({
+                "frames":[{"kind":"eval", "node":node}], "env":{},
+                "signal":null, "pending":null, "terminal":null, "declared_tools":null,
+                "budget":{"calls_left":32,"infers_left":8,"programs_left":8},
+                "next_effect_sequence":1, "typed_definitions":old["types"]
+            }))
+            .unwrap();
+            let registry = Registry::new();
+            let expected = match fixture["name"].as_str().unwrap() {
+                "infer_with_continuation" => serde_json::json!(43),
+                "legacy_returns" => serde_json::json!("hello"),
+                _ => serde_json::json!(42),
+            };
+            let mut result = machine.advance(&registry);
+            if let PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) = result {
+                let sequence = effect.sequence();
+                // Restoring a suspended continuation must resume that effect,
+                // not recompile/replay the enclosing program.
+                machine = serde_json::from_value(serde_json::to_value(&machine).unwrap()).unwrap();
+                let reply = if fixture["name"] == "legacy_returns" {
+                    serde_json::json!("hello")
+                } else {
+                    serde_json::json!(42)
+                };
+                machine.resume_effect(sequence, Ok(reply)).unwrap();
+                result = machine.advance(&registry);
+            }
+            assert_eq!(result, PlanAdvance::Complete(expected));
+        }
+    }
+
+    #[test]
     fn program_admission_requires_raw_yao_and_rejects_version_contract_escape_and_forgery() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let provenance = || ProgramValueProvenance {

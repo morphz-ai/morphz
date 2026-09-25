@@ -1,0 +1,623 @@
+[
+  {
+    "name": "literal",
+    "source": "(eval 42)",
+    "program": {
+      "body": {
+        "effects": [],
+        "kind": {
+          "op": "literal",
+          "value": {
+            "kind": "int",
+            "value": 42
+          }
+        },
+        "span": {
+          "end": {
+            "byte": 8,
+            "column": 9,
+            "line": 1
+          },
+          "start": {
+            "byte": 6,
+            "column": 7,
+            "line": 1
+          }
+        },
+        "ty": {
+          "kind": "int"
+        }
+      },
+      "canonical_source": "(eval 42)",
+      "effects": [],
+      "language_version": "0.1",
+      "output": {
+        "kind": "int"
+      },
+      "owner": "runtime",
+      "requirements": {
+        "effects": null,
+        "objects": null,
+        "tools": null
+      },
+      "source_hash": "sha256:4e3c3c74ba380ae5f01e351af1807db1fd344d093d540c37046382683b3a7fa1",
+      "types": {}
+    }
+  },
+  {
+    "name": "local_reference",
+    "source": "(eval (seq (bind x 42) x))",
+    "program": {
+      "body": {
+        "effects": [],
+        "kind": {
+          "op": "seq",
+          "steps": [
+            {
+              "effects": [],
+              "kind": {
+                "name": "x",
+                "op": "bind",
+                "value": {
+                  "effects": [],
+                  "kind": {
+                    "op": "literal",
+                    "value": {
+                      "kind": "int",
+                      "value": 42
+                    }
+                  },
+                  "span": {
+                    "end": {
+                      "byte": 21,
+                      "column": 22,
+                      "line": 1
+                    },
+                    "start": {
+                      "byte": 19,
+                      "column": 20,
+                      "line": 1
+                    }
+                  },
+                  "ty": {
+                    "kind": "int"
+                  }
+                }
+              },
+              "span": {
+                "end": {
+                  "byte": 22,
+                  "column": 23,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 11,
+                  "column": 12,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "nil"
+              }
+            },
+            {
+              "effects": [],
+              "kind": {
+                "op": "reference",
+                "path": [],
+                "root": "x"
+              },
+              "span": {
+                "end": {
+                  "byte": 24,
+                  "column": 25,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 23,
+                  "column": 24,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "span": {
+          "end": {
+            "byte": 25,
+            "column": 26,
+            "line": 1
+          },
+          "start": {
+            "byte": 6,
+            "column": 7,
+            "line": 1
+          }
+        },
+        "ty": {
+          "kind": "int"
+        }
+      },
+      "canonical_source": "(eval (seq (bind x 42) x))",
+      "effects": [],
+      "language_version": "0.1",
+      "output": {
+        "kind": "int"
+      },
+      "owner": "runtime",
+      "requirements": {
+        "effects": null,
+        "objects": null,
+        "tools": null
+      },
+      "source_hash": "sha256:0c112b0535453ba1ccbbee90a3cde5a3b7127a8afbcc4eef28f204306d888c08",
+      "types": {}
+    }
+  },
+  {
+    "name": "record_field",
+    "source": "(eval (types (record Box (n Int))) (seq (bind x (record Box (n 42))) x.n))",
+    "program": {
+      "body": {
+        "effects": [],
+        "kind": {
+          "op": "seq",
+          "steps": [
+            {
+              "effects": [],
+              "kind": {
+                "name": "x",
+                "op": "bind",
+                "value": {
+                  "effects": [],
+                  "kind": {
+                    "fields": [
+                      [
+                        "n",
+                        {
+                          "effects": [],
+                          "kind": {
+                            "op": "literal",
+                            "value": {
+                              "kind": "int",
+                              "value": 42
+                            }
+                          },
+                          "span": {
+                            "end": {
+                              "byte": 65,
+                              "column": 66,
+                              "line": 1
+                            },
+                            "start": {
+                              "byte": 63,
+                              "column": 64,
+                              "line": 1
+                            }
+                          },
+                          "ty": {
+                            "kind": "int"
+                          }
+                        }
+                      ]
+                    ],
+                    "op": "record",
+                    "type_name": "Box"
+                  },
+                  "span": {
+                    "end": {
+                      "byte": 67,
+                      "column": 68,
+                      "line": 1
+                    },
+                    "start": {
+                      "byte": 48,
+                      "column": 49,
+                      "line": 1
+                    }
+                  },
+                  "ty": {
+                    "kind": "named",
+                    "value": "Box"
+                  }
+                }
+              },
+              "span": {
+                "end": {
+                  "byte": 68,
+                  "column": 69,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 40,
+                  "column": 41,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "nil"
+              }
+            },
+            {
+              "effects": [],
+              "kind": {
+                "op": "reference",
+                "path": [
+                  "n"
+                ],
+                "root": "x"
+              },
+              "span": {
+                "end": {
+                  "byte": 72,
+                  "column": 73,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 69,
+                  "column": 70,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "span": {
+          "end": {
+            "byte": 73,
+            "column": 74,
+            "line": 1
+          },
+          "start": {
+            "byte": 35,
+            "column": 36,
+            "line": 1
+          }
+        },
+        "ty": {
+          "kind": "int"
+        }
+      },
+      "canonical_source": "(eval (types (record Box (n Int))) (seq (bind x (record Box (n 42))) x.n))",
+      "effects": [],
+      "language_version": "0.1",
+      "output": {
+        "kind": "int"
+      },
+      "owner": "runtime",
+      "requirements": {
+        "effects": null,
+        "objects": null,
+        "tools": null
+      },
+      "source_hash": "sha256:daeba72d7b870a2a4c48eb05560fe8120979892692a1744c157705195d372c87",
+      "types": {
+        "Box": {
+          "fields": [
+            {
+              "name": "n",
+              "span": {
+                "end": {
+                  "byte": 32,
+                  "column": 33,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 25,
+                  "column": 26,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "int"
+              }
+            }
+          ],
+          "kind": "record",
+          "name": "Box",
+          "span": {
+            "end": {
+              "byte": 33,
+              "column": 34,
+              "line": 1
+            },
+            "start": {
+              "byte": 13,
+              "column": 14,
+              "line": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "infer_with_continuation",
+    "source": "(eval (seq (bind x (infer (returns Int) 42)) (add x 1)))",
+    "program": {
+      "body": {
+        "effects": [
+          {
+            "kind": "infer"
+          }
+        ],
+        "kind": {
+          "op": "seq",
+          "steps": [
+            {
+              "effects": [
+                {
+                  "kind": "infer"
+                }
+              ],
+              "kind": {
+                "name": "x",
+                "op": "bind",
+                "value": {
+                  "effects": [
+                    {
+                      "kind": "infer"
+                    }
+                  ],
+                  "kind": {
+                    "body": {
+                      "effects": [],
+                      "kind": {
+                        "op": "literal",
+                        "value": {
+                          "kind": "int",
+                          "value": 42
+                        }
+                      },
+                      "span": {
+                        "end": {
+                          "byte": 42,
+                          "column": 43,
+                          "line": 1
+                        },
+                        "start": {
+                          "byte": 40,
+                          "column": 41,
+                          "line": 1
+                        }
+                      },
+                      "ty": {
+                        "kind": "int"
+                      }
+                    },
+                    "captures": [],
+                    "op": "infer_body",
+                    "result": {
+                      "kind": "int"
+                    },
+                    "source": "(infer (returns Int) 42)"
+                  },
+                  "span": {
+                    "end": {
+                      "byte": 43,
+                      "column": 44,
+                      "line": 1
+                    },
+                    "start": {
+                      "byte": 19,
+                      "column": 20,
+                      "line": 1
+                    }
+                  },
+                  "ty": {
+                    "kind": "int"
+                  }
+                }
+              },
+              "span": {
+                "end": {
+                  "byte": 44,
+                  "column": 45,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 11,
+                  "column": 12,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "nil"
+              }
+            },
+            {
+              "effects": [],
+              "kind": {
+                "op": "pure",
+                "operands": [
+                  {
+                    "effects": [],
+                    "kind": {
+                      "op": "reference",
+                      "path": [],
+                      "root": "x"
+                    },
+                    "span": {
+                      "end": {
+                        "byte": 51,
+                        "column": 52,
+                        "line": 1
+                      },
+                      "start": {
+                        "byte": 50,
+                        "column": 51,
+                        "line": 1
+                      }
+                    },
+                    "ty": {
+                      "kind": "int"
+                    }
+                  },
+                  {
+                    "effects": [],
+                    "kind": {
+                      "op": "literal",
+                      "value": {
+                        "kind": "int",
+                        "value": 1
+                      }
+                    },
+                    "span": {
+                      "end": {
+                        "byte": 53,
+                        "column": 54,
+                        "line": 1
+                      },
+                      "start": {
+                        "byte": 52,
+                        "column": 53,
+                        "line": 1
+                      }
+                    },
+                    "ty": {
+                      "kind": "int"
+                    }
+                  }
+                ],
+                "operator": "add"
+              },
+              "span": {
+                "end": {
+                  "byte": 54,
+                  "column": 55,
+                  "line": 1
+                },
+                "start": {
+                  "byte": 45,
+                  "column": 46,
+                  "line": 1
+                }
+              },
+              "ty": {
+                "kind": "int"
+              }
+            }
+          ]
+        },
+        "span": {
+          "end": {
+            "byte": 55,
+            "column": 56,
+            "line": 1
+          },
+          "start": {
+            "byte": 6,
+            "column": 7,
+            "line": 1
+          }
+        },
+        "ty": {
+          "kind": "int"
+        }
+      },
+      "canonical_source": "(eval (seq (bind x (infer (returns Int) 42)) (add x 1)))",
+      "effects": [
+        {
+          "kind": "infer"
+        }
+      ],
+      "language_version": "0.1",
+      "output": {
+        "kind": "int"
+      },
+      "owner": "runtime",
+      "requirements": {
+        "effects": null,
+        "objects": null,
+        "tools": null
+      },
+      "source_hash": "sha256:3d465667da836843cad877eb1fc6a412b7181ccb8e6bc33d82d3c6ae26744ff5",
+      "types": {}
+    }
+  },
+  {
+    "name": "legacy_returns",
+    "source": "(eval (infer (returns String) \"hello\"))",
+    "program": {
+      "body": {
+        "effects": [
+          {
+            "kind": "infer"
+          }
+        ],
+        "kind": {
+          "body": {
+            "effects": [],
+            "kind": {
+              "op": "literal",
+              "value": {
+                "kind": "string",
+                "value": "hello"
+              }
+            },
+            "span": {
+              "end": {
+                "byte": 37,
+                "column": 38,
+                "line": 1
+              },
+              "start": {
+                "byte": 30,
+                "column": 31,
+                "line": 1
+              }
+            },
+            "ty": {
+              "kind": "string"
+            }
+          },
+          "captures": [],
+          "op": "infer_body",
+          "result": {
+            "kind": "string"
+          },
+          "source": "(infer (returns String) \"hello\")"
+        },
+        "span": {
+          "end": {
+            "byte": 38,
+            "column": 39,
+            "line": 1
+          },
+          "start": {
+            "byte": 6,
+            "column": 7,
+            "line": 1
+          }
+        },
+        "ty": {
+          "kind": "string"
+        }
+      },
+      "canonical_source": "(eval (infer (returns String) \"hello\"))",
+      "effects": [
+        {
+          "kind": "infer"
+        }
+      ],
+      "language_version": "0.1",
+      "output": {
+        "kind": "string"
+      },
+      "owner": "runtime",
+      "requirements": {
+        "effects": null,
+        "objects": null,
+        "tools": null
+      },
+      "source_hash": "sha256:5ee0bf64862ef28cb9ac357cfc150fd647f743da1386051f87d725d89525ab77",
+      "types": {}
+    }
+  }
+]

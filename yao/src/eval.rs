@@ -73,10 +73,19 @@ pub fn evaluate_pure(
     }
     match &expression.kind {
         HirKind::Literal { value } => literal_value(value, expression),
-        HirKind::Reference { root } => environment.get(root).cloned().ok_or_else(|| EvalFailure {
-            message: format!("binding '{root}' is unavailable at runtime"),
-            span: expression.span,
-        }),
+        HirKind::Reference { root, path } => {
+            let mut value = environment.get(root).cloned().ok_or_else(|| EvalFailure {
+                message: format!("binding '{root}' is unavailable at runtime"),
+                span: expression.span,
+            })?;
+            for field in path.iter().flatten() {
+                // Old admitted paths could only traverse nominal or structural
+                // records, never Map/Json. Do not restore the old heuristic that
+                // guessed a plain object's meaning from its `$yao` property.
+                value = persisted_record_field(&value, field, definitions, expression.span)?;
+            }
+            Ok(value)
+        }
         HirKind::List { elements } => elements
             .iter()
             .map(|value| evaluate_pure(value, environment, definitions))
@@ -357,6 +366,39 @@ pub fn evaluate_pure(
             "effectful node reached the pure evaluator after semantic analysis",
         ),
     }
+}
+
+/// Reads only typed record paths admitted in persisted v0.1.2 programs.
+fn persisted_record_field(
+    value: &JsonValue,
+    field: &str,
+    definitions: &BTreeMap<String, TypeDefinition>,
+    span: SourceSpan,
+) -> Result<JsonValue, EvalFailure> {
+    let selected = match value.get(YAO_TAG).and_then(JsonValue::as_object) {
+        Some(tag) if tag.get("kind").and_then(JsonValue::as_str) == Some("record") => {
+            let name = tag.get("type").and_then(JsonValue::as_str);
+            match name {
+                Some(name)
+                    if matches!(definitions.get(name), Some(TypeDefinition::Record { .. })) =>
+                {
+                    decode_value(&Type::Named(name.into()), value.clone(), definitions, span)?;
+                    tag.get("fields")
+                        .and_then(|fields| fields.get(field))
+                        .cloned()
+                }
+                _ => None,
+            }
+        }
+        Some(tag) if tag.get("kind").and_then(JsonValue::as_str) == Some("structural_record") => {
+            structural_record_field(value, field).cloned()
+        }
+        _ => None,
+    };
+    selected.ok_or_else(|| EvalFailure {
+        message: format!("persisted record reference has no typed field '{field}'"),
+        span,
+    })
 }
 
 /// Validates and normalizes one transport value against a Yao type.

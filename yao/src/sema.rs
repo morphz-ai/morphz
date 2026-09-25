@@ -280,6 +280,11 @@ pub enum HirKind {
     },
     Reference {
         root: String,
+        /// Read-only support for admitted v0.1.2 artifacts. New source lowers
+        /// field access to typed Get nodes and never creates this field.
+        /// Preserve Some([]) on serialization so old artifact hashes survive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<Vec<String>>,
     },
     List {
         elements: Vec<HirExpr>,
@@ -1364,6 +1369,7 @@ impl<'a> Analyzer<'a> {
         let mut value = hir(
             HirKind::Reference {
                 root: root.to_string(),
+                path: None,
             },
             ty,
             EffectSet::default(),
