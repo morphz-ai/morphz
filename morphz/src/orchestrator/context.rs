@@ -1390,6 +1390,7 @@ pub struct ContextEngine {
     model_context_capacity: Arc<RwLock<ModelContextCapacity>>,
     model_context_capacities: Arc<RwLock<HashMap<String, ModelContextCapacity>>>,
     evaluation_model_policy: Arc<RwLock<EvaluationModelPolicy>>,
+    task_model_capabilities: RwLock<HashMap<String, Vec<String>>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
     context_state_cache: Arc<RwLock<ContextStateCache>>,
     capacity_metrics: ContextCapacityMetrics,
@@ -1549,6 +1550,7 @@ impl ContextEngine {
             model_context_capacity: Arc::new(RwLock::new(fallback_capacity)),
             model_context_capacities: Arc::new(RwLock::new(HashMap::new())),
             evaluation_model_policy: Arc::new(RwLock::new(EvaluationModelPolicy::default())),
+            task_model_capabilities: RwLock::new(HashMap::new()),
             context_locks: DashMap::new(),
             context_state_cache: Arc::new(RwLock::new(ContextStateCache::new(
                 context_state_cache_capacity,
@@ -1670,6 +1672,73 @@ impl ContextEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .agent_allowed
             .clone()
+    }
+
+    pub fn with_task_model_capabilities(self, config: &crate::config::AppConfig) -> Self {
+        self.set_task_model_capabilities(config);
+        self
+    }
+
+    pub fn set_task_model_capabilities(&self, config: &crate::config::AppConfig) {
+        let mut capabilities = HashMap::new();
+        for (name, route) in &config.model_routes {
+            let known = route
+                .candidates
+                .iter()
+                .filter_map(|candidate| {
+                    let provider = config.provider_instances.get(&candidate.provider)?;
+                    crate::provider::supported_reasoning_efforts_for_model(
+                        &provider.adapter,
+                        &candidate.model,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some(first) = known.first() {
+                let levels = first
+                    .iter()
+                    .filter(|effort| known.iter().all(|levels| levels.contains(effort)))
+                    .map(|effort| effort.as_str().to_string())
+                    .collect::<Vec<_>>();
+                capabilities.insert(name.clone(), levels.clone());
+                for alias in &route.aliases {
+                    capabilities.insert(alias.clone(), levels.clone());
+                }
+            }
+        }
+        *self
+            .task_model_capabilities
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = capabilities;
+    }
+
+    /// Validate known Provider constraints without treating an inherited,
+    /// operator-owned Session model as an Agent-authored selection.
+    pub fn validate_task_reasoning(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        let Some(effort) = effort.filter(|effort| *effort != "provider_default") else {
+            return Ok(());
+        };
+        let policy = self
+            .evaluation_model_policy
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let model = model.unwrap_or(&policy.primary);
+        let capabilities = self
+            .task_model_capabilities
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        if capabilities
+            .get(model)
+            .is_some_and(|levels| !levels.iter().any(|level| level == effort))
+        {
+            return Err(format!(
+                "reasoning effort '{effort}' is not supported by model '{model}'"
+            ));
+        }
+        Ok(())
     }
 
     pub async fn context_token_budget(
@@ -14506,6 +14575,8 @@ mod tests {
 
         let now = Utc::now();
         let mut thread = ThreadRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "thread-delivered".to_string(),
             revision: 3,
             generation: 1,
@@ -14776,6 +14847,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread:b".to_string(),
                 agent_id: "encoding-agent".to_string(),
                 context_id: "encoding-context".to_string(),
@@ -14871,6 +14944,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread:legacy-unattributed".to_string(),
                 agent_id: "encoding-agent".to_string(),
                 context_id: "encoding-context".to_string(),
@@ -15131,6 +15206,8 @@ mod tests {
         ] {
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: thread_id.to_string(),
                     agent_id: agent_id.to_string(),
                     context_id: context_id.to_string(),
@@ -15329,6 +15406,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "scheduled-causal-thread".to_string(),
                 agent_id: "scheduled-causal-agent".to_string(),
                 context_id: context_id.to_string(),
@@ -17100,6 +17179,8 @@ mod tests {
         };
         let now = Utc::now();
         let objectives = vec![ObjectiveRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-background".to_string(),
             agent_id: "agent-a".to_string(),
             context_id: "context-a".to_string(),
@@ -17164,6 +17245,8 @@ mod tests {
         };
         let now = Utc::now();
         let objectives = vec![ObjectiveRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-active".to_string(),
             agent_id: "agent-a".to_string(),
             context_id: "context-a".to_string(),
@@ -19406,6 +19489,8 @@ mod tests {
             let thread_id = format!("retirement-thread-{tick}");
             store
                 .ensure_thread(crate::memory::NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: thread_id.clone(),
                     agent_id: "retirement-agent".to_string(),
                     context_id: "retirement-context".to_string(),

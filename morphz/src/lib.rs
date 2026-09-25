@@ -43,6 +43,7 @@ pub mod llm;
 pub mod local_time;
 pub mod memory;
 pub mod model_input;
+pub mod model_selection;
 pub mod objective;
 pub mod observability;
 pub mod orchestrator;

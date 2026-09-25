@@ -461,6 +461,8 @@ impl DelegationStore for PostgresStore {
         let thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: stable_thread_id(&event.id),
                 agent_id: delegation.agent_id.clone(),
                 context_id: delegation.parent_context_id.clone(),

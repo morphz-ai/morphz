@@ -806,6 +806,16 @@ impl PlanExecutionStore for PostgresStore {
         let child_thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
+                model_alias: request_event
+                    .payload
+                    .get("model_alias")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+                reasoning_effort: request_event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
                 id: stable_thread_id(&request_event.id),
                 agent_id: current_plan.agent_id.clone(),
                 context_id: current_plan.context_id.clone(),

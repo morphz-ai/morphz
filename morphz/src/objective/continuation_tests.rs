@@ -73,6 +73,8 @@ async fn fixture() -> (
         .unwrap();
     let objective = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-route".into(),
             agent_id: "agent-route".into(),
             context_id: "context-route".into(),
@@ -156,6 +158,74 @@ fn tool_successor(binding: &ActiveObjectiveEvaluation, ordinal: usize) -> Event 
     binding.stamp_route(&mut event.payload);
     // Round-trip through durable Event JSON; no process-local registry fallback.
     serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn objective_model_controls_survive_reopen_and_supervisor_continuation() {
+    let (file, store, _, _) = fixture().await;
+    store
+        .create_objective(NewObjective {
+            model_alias: Some("goal-model".into()),
+            reasoning_effort: Some("high".into()),
+            id: "model-goal".into(),
+            agent_id: "agent-route".into(),
+            context_id: "context-route".into(),
+            coordinator_session_id: "session-route".into(),
+            delivery_session_id: "session-route".into(),
+            parent_objective_id: None,
+            source_event_id: "model-goal-source".into(),
+            initiating_principal_id: None,
+            stated_objective: "Use the requested model after a Runtime restart".into(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    let reopened = Arc::new(
+        SqliteStore::new(&file.path().to_string_lossy())
+            .await
+            .unwrap(),
+    );
+    let goal = reopened.get_objective("model-goal").await.unwrap().unwrap();
+    assert_eq!(goal.model_alias.as_deref(), Some("goal-model"));
+    assert_eq!(goal.reasoning_effort.as_deref(), Some("high"));
+    let bus = Arc::new(InMemoryEventBus::new());
+    let supervisor = Arc::new(
+        ObjectiveSupervisor::new(
+            reopened.clone(),
+            reopened.clone(),
+            bus.clone(),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(reopened.clone())),
+            std::time::Duration::from_secs(90),
+        )
+        .with_scheduler_dependency_store(reopened.clone()),
+    );
+    supervisor.start().await.unwrap();
+    let root = crate::memory::objective_primary_execution_root_id(&goal.id, goal.generation);
+    let thread = reopened.get_thread_by_root(&root).await.unwrap().unwrap();
+    assert_eq!(thread.model_alias, goal.model_alias);
+    assert_eq!(thread.reasoning_effort, goal.reasoning_effort);
+    let events = reopened
+        .query(QueryFilter {
+            context_id: Some(goal.context_id),
+            topic: Some("chat/tool_output".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let wake = events
+        .iter()
+        .find(|event| event.payload.get("objective_id") == Some(&json!("model-goal")))
+        .unwrap();
+    assert_eq!(wake.payload["model_alias"], "goal-model");
+    assert_eq!(wake.payload["reasoning_effort"], "high");
+    let session = reopened
+        .get_session("session-route")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(session.model_alias.is_none());
+    assert!(session.reasoning_effort.is_none());
 }
 
 #[tokio::test]

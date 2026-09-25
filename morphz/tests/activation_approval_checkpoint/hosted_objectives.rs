@@ -16,6 +16,8 @@ async fn interrupt_owner(
         .unwrap();
     let o = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("objective-{label}"),
             agent_id: a.agent_id,
             context_id: a.context_id,

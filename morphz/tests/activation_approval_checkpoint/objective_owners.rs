@@ -110,6 +110,8 @@ async fn directed_input_ownership_contract(store: &dyn RuntimeStore) {
         // this owner's live lease or human-approval checkpoint.
         let other = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: format!("unrelated-{label}"),
                 agent_id: held.agent_id.clone(),
                 context_id: held.context_id.clone(),
@@ -221,6 +223,8 @@ async fn infer_admission_contract(store: std::sync::Arc<dyn RuntimeStore>) {
         .unwrap();
     let o = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-infer-route".into(),
             agent_id: activation.agent_id,
             context_id: activation.context_id,
@@ -382,6 +386,8 @@ pub(super) async fn objective(
         .unwrap();
     let o = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("objective-{label}"),
             agent_id: a.agent_id,
             context_id: a.context_id,
@@ -504,6 +510,8 @@ async fn additional_owner_as(
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("thread-{label}"),
             agent_id: a.agent_id.clone(),
             context_id: a.context_id.clone(),
@@ -792,6 +800,8 @@ async fn principal_contract(store: &dyn RuntimeStore) {
     ));
     let bob = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "explicit-bob-objective".into(),
             agent_id: o.agent_id.clone(),
             context_id: o.context_id.clone(),

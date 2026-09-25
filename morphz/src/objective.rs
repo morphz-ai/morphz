@@ -135,6 +135,8 @@ fn objective_closure_review(
 
 #[derive(Debug, Deserialize)]
 struct ObjectiveCreateArgs {
+    #[serde(flatten)]
+    model_selection: crate::model_selection::ModelSelection,
     stated_objective: String,
     reason: String,
     #[serde(default)]
@@ -213,6 +215,8 @@ impl Tool for ObjectiveCreateTool {
                         "minimum": 1,
                         "description": "Optional Prompt Token budget; omission uses the Runtime policy with no explicit Objective budget"
                     },
+                    "model": {"type": "string", "enum": self.context_engine.agent_allowed_evaluation_models(), "description": "Model route for this Objective and its continuations; omit to inherit"},
+                    "reasoning_effort": crate::model_selection::reasoning_effort_schema(),
                     "harness": {
                         "type": "object",
                         "description": "Optional default Objective Harness. Set it only when this long-term objective clearly requires an installed Harness; use harness_list to discover the exact version first. Every Evaluation materializes its own immutable binding.",
@@ -230,7 +234,9 @@ impl Tool for ObjectiveCreateTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, DynError> {
-        let args: ObjectiveCreateArgs = serde_json::from_str(arguments)?;
+        let mut args: ObjectiveCreateArgs = serde_json::from_str(arguments)?;
+        args.model_selection
+            .authorize(&self.context_engine.agent_allowed_evaluation_models())?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
             .map_err(|_| "objective_create is missing the current Session injected by Runtime")?;
@@ -283,6 +289,13 @@ impl Tool for ObjectiveCreateTool {
         if session.context_id != context_id {
             return Err("objective_create current Session/Context route is inconsistent".into());
         }
+        self.context_engine.validate_task_reasoning(
+            args.model_selection
+                .model
+                .as_deref()
+                .or(session.model_alias.as_deref()),
+            args.model_selection.reasoning_effort.as_deref(),
+        )?;
 
         let mut source_event_ids = Vec::with_capacity(args.source_refs.len());
         for source_ref in &args.source_refs {
@@ -352,6 +365,19 @@ impl Tool for ObjectiveCreateTool {
                         == normalized_statement
             })
         {
+            if args
+                .model_selection
+                .model
+                .as_ref()
+                .is_some_and(|model| existing.model_alias.as_ref() != Some(model))
+                || args
+                    .model_selection
+                    .reasoning_effort
+                    .as_ref()
+                    .is_some_and(|effort| existing.reasoning_effort.as_ref() != Some(effort))
+            {
+                return Err("The equivalent Objective already exists with different model controls; duplicate creation cannot change its execution policy".into());
+            }
             if let Some(requested) = requested_harness.as_ref() {
                 let descriptor = requested.descriptor();
                 let existing_binding = load_objective_harness_binding(
@@ -431,6 +457,11 @@ impl Tool for ObjectiveCreateTool {
                 json!(parent_objective_id),
             ),
             ("token_budget".to_string(), json!(args.token_budget)),
+            ("model_alias".to_string(), json!(args.model_selection.model)),
+            (
+                "reasoning_effort".to_string(),
+                json!(args.model_selection.reasoning_effort),
+            ),
         ];
         if let Some(principal_id) = &initiating_principal_id {
             request_payload.push(("principal_id".to_string(), json!(principal_id)));
@@ -466,6 +497,8 @@ impl Tool for ObjectiveCreateTool {
             .store
             .create_objective_with_events(
                 NewObjective {
+                    model_alias: args.model_selection.model,
+                    reasoning_effort: args.model_selection.reasoning_effort,
                     id: objective_id,
                     agent_id: session.agent_id,
                     context_id: context_id.clone(),
@@ -3212,6 +3245,8 @@ impl ObjectiveSupervisor {
             .collect(),
         );
         let thread = NewThread {
+            model_alias: objective.model_alias.clone(),
+            reasoning_effort: objective.reasoning_effort.clone(),
             id: stable_thread_id(&root_turn_id),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),
@@ -3303,7 +3338,9 @@ impl ObjectiveSupervisor {
         }
         if let ObjectiveMutation::Updated(updated) = &mutation {
             self.publish_state_event("updated", updated, reason).await?;
-            self.reconcile(updated.clone()).await?;
+            // This path is also polled inside deeply nested tool task-local
+            // scopes. Do not inline the entire reconciliation state machine.
+            Box::pin(self.reconcile(updated.clone())).await?;
             if updated.status == ObjectiveStatus::Failed {
                 self.reconcile_context(&updated.context_id).await?;
             }
@@ -3488,7 +3525,9 @@ impl ObjectiveSupervisor {
                 // gap, claim a different Evaluation and suppress the reply.
                 let Some(claimed) = self
                     .claim_routed_evaluation_locked(
-                        reply_guard.as_ref().expect("exact replies hold the schedule lock"),
+                        reply_guard
+                            .as_ref()
+                            .expect("exact replies hold the schedule lock"),
                         &objective,
                         &event.id,
                         Some(activation_id),
@@ -4203,10 +4242,7 @@ impl ObjectiveSupervisor {
                     let task_id = task_id.clone();
                     self.cancel_wait_timer(&objective.id).await?;
                     self.remove_external_wait_subscription(&objective.id);
-                    if self
-                        .reconcile_tool_task_wait(objective.clone(), &task_id)
-                        .await?
-                    {
+                    if Box::pin(self.reconcile_tool_task_wait(objective.clone(), &task_id)).await? {
                         return Ok(());
                     }
                 }
@@ -4214,8 +4250,7 @@ impl ObjectiveSupervisor {
                     let delegation_id = delegation_id.clone();
                     self.cancel_wait_timer(&objective.id).await?;
                     self.remove_external_wait_subscription(&objective.id);
-                    if self
-                        .reconcile_delegation_wait(objective.clone(), &delegation_id)
+                    if Box::pin(self.reconcile_delegation_wait(objective.clone(), &delegation_id))
                         .await?
                     {
                         return Ok(());
@@ -4627,7 +4662,10 @@ impl ObjectiveSupervisor {
             .await?
             .into_iter()
             .next();
-        if !root_event.as_ref().is_some_and(crate::event::is_input_event) {
+        if !root_event
+            .as_ref()
+            .is_some_and(crate::event::is_input_event)
+        {
             return Ok(None);
         }
         let Some(objective) = self.store.get_objective(&binding.objective_id).await? else {
@@ -4941,6 +4979,11 @@ impl ObjectiveSupervisor {
         let objective_execution_root_id =
             crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
         let mut continuation_payload = vec![
+            ("model_alias".to_string(), json!(objective.model_alias)),
+            (
+                "reasoning_effort".to_string(),
+                json!(objective.reasoning_effort),
+            ),
             ("context_id".to_string(), json!(objective.context_id)),
             (
                 "session_id".to_string(),
@@ -4971,6 +5014,8 @@ impl ObjectiveSupervisor {
             continuation_payload.into_iter().collect(),
         );
         let continuation_thread = NewThread {
+            model_alias: objective.model_alias.clone(),
+            reasoning_effort: objective.reasoning_effort.clone(),
             id: stable_thread_id(&objective_execution_root_id),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),
@@ -5777,6 +5822,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: format!("objective-{suffix}"),
                 agent_id,
                 context_id,
@@ -5892,6 +5939,8 @@ mod tests {
         let thread_id = stable_thread_id(&root_turn_id);
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: objective.agent_id.clone(),
                 context_id: objective.context_id.clone(),
@@ -6211,6 +6260,8 @@ mod tests {
         let created = seed_objective_bundle(&store, "same-session-user-wake").await;
         let sibling = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-other-question".into(),
                 agent_id: created.agent_id.clone(),
                 context_id: created.context_id.clone(),
@@ -6585,6 +6636,8 @@ mod tests {
         store.append(source_event.clone()).await.unwrap();
         let dialogue_thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: stable_thread_id(&source_event.id),
                 agent_id: waiting.agent_id.clone(),
                 context_id: waiting.context_id.clone(),
@@ -6697,6 +6750,8 @@ mod tests {
                 &[],
                 &[],
                 &[NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: "thread-legacy-open-objective".to_string(),
                     agent_id: objective.agent_id.clone(),
                     context_id: objective.context_id.clone(),
@@ -7134,6 +7189,8 @@ mod tests {
         let parent = seed_objective_bundle(&store, "closure-review").await;
         let child = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-closure-review-child".to_string(),
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
@@ -7250,6 +7307,8 @@ mod tests {
         let root_turn_id = format!("root-{suffix}");
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: objective.agent_id.clone(),
                 context_id: objective.context_id.clone(),
@@ -7686,6 +7745,8 @@ mod tests {
         let trigger_event_id = "trigger-expired-evaluation-fence";
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-expired-evaluation-fence".to_string(),
                 agent_id: claimed.agent_id.clone(),
                 context_id: claimed.context_id.clone(),
@@ -7852,6 +7913,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-persisted-wake".to_string(),
                 agent_id: "agent-recovery".to_string(),
                 context_id: "context-recovery".to_string(),
@@ -8461,6 +8524,8 @@ mod tests {
             .unwrap();
         let created = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-fence".to_string(),
                 agent_id: "agent-fence".to_string(),
                 context_id: "context-fence".to_string(),

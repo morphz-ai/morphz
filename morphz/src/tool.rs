@@ -2967,6 +2967,8 @@ mod wake_route_tests {
 
     fn thread(lifecycle: ThreadLifecycle, supervision: ThreadSupervision) -> ThreadRecord {
         ThreadRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "thread-wake".into(),
             revision: 1,
             generation: 1,
@@ -3271,9 +3273,33 @@ impl ThreadScheduler {
         not_before: Option<chrono::DateTime<chrono::Utc>>,
         interval_seconds: Option<u64>,
     ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.reschedule_with_model_selection(
+            id,
+            expected_revision,
+            not_before,
+            interval_seconds,
+            Default::default(),
+        )
+        .await
+    }
+
+    pub async fn reschedule_with_model_selection(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<chrono::DateTime<chrono::Utc>>,
+        interval_seconds: Option<u64>,
+        model_selection: crate::model_selection::ModelSelection,
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let mutation = self
             .sessions
-            .reschedule_schedule(id, expected_revision, not_before, interval_seconds)
+            .reschedule_schedule_with_model_selection(
+                id,
+                expected_revision,
+                not_before,
+                interval_seconds,
+                model_selection,
+            )
             .await?;
         self.reconcile_control_mutation(&mutation).await?;
         Ok(mutation)
@@ -3398,6 +3424,14 @@ impl ThreadScheduler {
             owner.root_turn_id.clone()
         };
         let occurrence_thread = current.interval_seconds.map(|_| NewThread {
+            model_alias: current
+                .model_alias
+                .clone()
+                .or_else(|| owner.model_alias.clone()),
+            reasoning_effort: current
+                .reasoning_effort
+                .clone()
+                .or_else(|| owner.reasoning_effort.clone()),
             id: stable_thread_id(&root_turn_id),
             agent_id: owner.agent_id.clone(),
             context_id: owner.context_id.clone(),
@@ -3457,7 +3491,14 @@ impl ThreadScheduler {
             ("intent".to_string(), serde_json::json!(current.intent)),
             (
                 "model_alias".to_string(),
-                serde_json::json!(current.model_alias),
+                serde_json::json!(current.model_alias.as_ref().or(owner.model_alias.as_ref())),
+            ),
+            (
+                "reasoning_effort".to_string(),
+                serde_json::json!(current
+                    .reasoning_effort
+                    .as_ref()
+                    .or(owner.reasoning_effort.as_ref())),
             ),
             (
                 "occurrence_revision".to_string(),
@@ -3688,6 +3729,51 @@ impl ScheduleTxTool {
             .inspect_schedule_in_context(schedule_id, context_id)
             .await?;
 
+        if let (
+            Some(policy),
+            Some(schedule),
+            ScheduleOperation::Reschedule {
+                model,
+                reasoning_effort,
+                ..
+            },
+        ) = (&self.evaluation_model_policy, &inspected, &operation)
+        {
+            let thread = self.sessions.get_thread(&schedule.thread_id).await?;
+            let session = match thread.as_ref() {
+                Some(thread) => self.sessions.get_session(&thread.session_id).await?,
+                None => None,
+            };
+            policy.validate_task_reasoning(
+                model
+                    .as_deref()
+                    .or(schedule.model_alias.as_deref())
+                    .or_else(|| {
+                        thread
+                            .as_ref()
+                            .and_then(|thread| thread.model_alias.as_deref())
+                    })
+                    .or_else(|| {
+                        session
+                            .as_ref()
+                            .and_then(|session| session.model_alias.as_deref())
+                    }),
+                reasoning_effort
+                    .as_deref()
+                    .or(schedule.reasoning_effort.as_deref())
+                    .or_else(|| {
+                        thread
+                            .as_ref()
+                            .and_then(|thread| thread.reasoning_effort.as_deref())
+                    })
+                    .or_else(|| {
+                        session
+                            .as_ref()
+                            .and_then(|session| session.reasoning_effort.as_deref())
+                    }),
+            )?;
+        }
+
         let (operation_name, mutation) = match operation {
             ScheduleOperation::Inspect { .. } => {
                 return Ok(crate::local_time::localized_runtime_json(serde_json::json!({
@@ -3726,6 +3812,8 @@ impl ScheduleTxTool {
                 not_before,
                 delay_seconds,
                 every_seconds,
+                model,
+                reasoning_effort,
             } => {
                 if not_before.is_some() && delay_seconds.is_some() {
                     return Err("Provide only one of not_before and delay_seconds".into());
@@ -3734,7 +3822,16 @@ impl ScheduleTxTool {
                 (
                     "reschedule",
                     self.scheduler
-                        .reschedule(&schedule_id, expected_revision, due_at, every_seconds)
+                        .reschedule_with_model_selection(
+                            &schedule_id,
+                            expected_revision,
+                            due_at,
+                            every_seconds,
+                            crate::model_selection::ModelSelection {
+                                model,
+                                reasoning_effort,
+                            },
+                        )
                         .await?,
                 )
             }
@@ -3862,6 +3959,7 @@ impl ScheduleTxTool {
                 stated_objective,
                 completion_criteria,
                 token_budget,
+                model_selection,
             } => {
                 let stated_objective = stated_objective.trim().to_string();
                 let completion_criteria = completion_criteria.trim().to_string();
@@ -3879,7 +3977,12 @@ impl ScheduleTxTool {
                     objective_id,
                     None,
                     1,
-                    Some((stated_objective, completion_criteria.clone(), token_budget)),
+                    Some((
+                        stated_objective,
+                        completion_criteria.clone(),
+                        token_budget,
+                        model_selection,
+                    )),
                     completion_criteria,
                 )
             }
@@ -3913,13 +4016,15 @@ impl ScheduleTxTool {
             }],
         };
         let new_objective = new_objective_spec.map(
-            |(stated_objective, new_completion_criteria, token_budget)| {
+            |(stated_objective, new_completion_criteria, token_budget, model_selection)| {
                 let source_event_id = format!("objective_promoted_{objective_id}");
                 let initial_wait_condition = ObjectiveWaitCondition::ThreadGroup {
                     group_id: target_group_id.clone(),
                 };
                 NewScheduledObjective {
                     objective: NewObjective {
+                        model_alias: model_selection.model,
+                        reasoning_effort: model_selection.reasoning_effort,
                         id: objective_id.clone(),
                         agent_id: target.agent_id.clone(),
                         context_id: target.context_id.clone(),
@@ -4165,6 +4270,8 @@ enum ScheduleObjectiveBinding {
         completion_criteria: String,
         #[serde(default)]
         token_budget: Option<u64>,
+        #[serde(flatten)]
+        model_selection: crate::model_selection::ModelSelection,
     },
 }
 
@@ -4205,6 +4312,8 @@ enum ScheduleOperation {
         after: Vec<String>,
         #[serde(default)]
         model: Option<String>,
+        #[serde(default)]
+        reasoning_effort: Option<String>,
     },
     Spawn {
         #[serde(default)]
@@ -4227,6 +4336,8 @@ enum ScheduleOperation {
         completion: ScheduleCompletionArgs,
         #[serde(default)]
         model: Option<String>,
+        #[serde(default)]
+        reasoning_effort: Option<String>,
     },
     /// Transfer an already-running attached Thread from the current
     /// Evaluation to a durable Objective without starting duplicate work.
@@ -4255,6 +4366,10 @@ enum ScheduleOperation {
         delay_seconds: Option<u64>,
         #[serde(default)]
         every_seconds: Option<u64>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        reasoning_effort: Option<String>,
     },
     Cancel {
         schedule_id: String,
@@ -4306,7 +4421,9 @@ fn schedule_objective_binding_schema() -> serde_json::Value {
                     "mode": {"const": "create"},
                     "stated_objective": {"type": "string", "description": "New objective with an independent pause, resume, cancellation, and acceptance lifecycle"},
                     "completion_criteria": {"type": "string", "description": "Explicit completion criteria for the new Objective"},
-                    "token_budget": {"type": "integer", "minimum": 1}
+                    "token_budget": {"type": "integer", "minimum": 1},
+                    "model": {"type": "string", "description": "Agent-authorized default model route for the new Objective"},
+                    "reasoning_effort": crate::model_selection::reasoning_effort_schema()
                 },
                 "required": ["mode", "stated_objective", "completion_criteria"],
                 "additionalProperties": false
@@ -4355,7 +4472,7 @@ impl Tool for ScheduleTxTool {
         });
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. Multiple inspect operations may be batched together. promote and pause/resume/reschedule/cancel must be submitted alone; mutations use expected_revision to prevent stale writes. inspect cannot be mixed with create or mutating operations. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. Cancelling a Schedule stops only that wake source; to cancel the actual work use thread_control(action=cancel), which closes the Thread and settles its group. schedule_tx must be the only tool call in the response.".to_string(),
+            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn/reschedule accept model and reasoning_effort. Explicit controls override durable Thread/Objective defaults, then Session/Runtime defaults; omission preserves inheritance. reschedule preserves omitted controls. provider_default explicitly requests the Provider default thinking policy. Model choices must be Agent-authorized. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. Multiple inspect operations may be batched together. promote and pause/resume/reschedule/cancel must be submitted alone; mutations use expected_revision to prevent stale writes. inspect cannot be mixed with create or mutating operations. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. Cancelling a Schedule stops only that wake source; to cancel the actual work use thread_control(action=cancel), which closes the Thread and settles its group. schedule_tx must be the only tool call in the response.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -4375,7 +4492,8 @@ impl Tool for ScheduleTxTool {
                                         "not_before": {"type": "string", "description": "RFC3339 absolute time expressed in evaluation-environment.local-time with an explicit offset; prefer delay_seconds for a relative wait"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "after": {"type": "array", "items": {"type": "string"}, "description": "Dependency Thread IDs or $client_id references to spawns in this transaction"},
-                                        "model": model_schema.clone()
+                                        "model": model_schema.clone(),
+                                        "reasoning_effort": crate::model_selection::reasoning_effort_schema()
                                     },
                                     "required": ["op", "intent"],
                                     "additionalProperties": false
@@ -4408,7 +4526,8 @@ impl Tool for ScheduleTxTool {
                                             },
                                             "additionalProperties": false
                                         },
-                                        "model": model_schema.clone()
+                                        "model": model_schema.clone(),
+                                        "reasoning_effort": crate::model_selection::reasoning_effort_schema()
                                     },
                                     "required": ["op", "intent", "lifetime"],
                                     "additionalProperties": false
@@ -4451,7 +4570,9 @@ impl Tool for ScheduleTxTool {
                                         "expected_revision": {"type": "integer", "minimum": 1},
                                         "not_before": {"type": "string", "description": "New local RFC3339 absolute time with an explicit offset; mutually exclusive with delay_seconds"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
-                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "New recurrence interval; omit to make the schedule one-shot"}
+                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "New recurrence interval; omit to make the schedule one-shot"},
+                                        "model": model_schema.clone(),
+                                        "reasoning_effort": crate::model_selection::reasoning_effort_schema()
                                     },
                                     "required": ["op", "schedule_id", "expected_revision"],
                                     "additionalProperties": false
@@ -4489,7 +4610,50 @@ impl Tool for ScheduleTxTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let args: ScheduleTxArgs = serde_json::from_str(arguments)?;
+        let mut args: ScheduleTxArgs = serde_json::from_str(arguments)?;
+        let allowed = self
+            .allowed_evaluation_models()
+            .into_iter()
+            .collect::<Vec<_>>();
+        for operation in &mut args.operations {
+            match operation {
+                ScheduleOperation::Enqueue {
+                    model,
+                    reasoning_effort,
+                    ..
+                }
+                | ScheduleOperation::Spawn {
+                    model,
+                    reasoning_effort,
+                    ..
+                }
+                | ScheduleOperation::Reschedule {
+                    model,
+                    reasoning_effort,
+                    ..
+                } => {
+                    let mut selection = crate::model_selection::ModelSelection {
+                        model: model.take(),
+                        reasoning_effort: reasoning_effort.take(),
+                    };
+                    selection.authorize(&allowed)?;
+                    *model = selection.model;
+                    *reasoning_effort = selection.reasoning_effort;
+                }
+                _ => {}
+            }
+            let objective = match operation {
+                ScheduleOperation::Spawn { objective, .. } => objective.as_mut(),
+                ScheduleOperation::Promote { objective, .. } => Some(objective),
+                _ => None,
+            };
+            if let Some(ScheduleObjectiveBinding::Create {
+                model_selection, ..
+            }) = objective
+            {
+                model_selection.authorize(&allowed)?;
+            }
+        }
         if args.operations.is_empty() || args.operations.len() > MAX_SCHEDULE_OPERATIONS {
             return Err(format!(
                 "schedule_tx.operations count must be within 1..={MAX_SCHEDULE_OPERATIONS}"
@@ -4517,29 +4681,6 @@ impl Tool for ScheduleTxTool {
                 }
             }
         }
-        for operation in &args.operations {
-            let requested_model = match operation {
-                ScheduleOperation::Enqueue { model, .. }
-                | ScheduleOperation::Spawn { model, .. } => model.as_deref(),
-                _ => None,
-            };
-            let Some(requested_model) = requested_model else {
-                continue;
-            };
-            let requested_model = requested_model.trim();
-            if requested_model.is_empty() {
-                return Err(
-                    "schedule_tx model must not be empty; omit the field to inherit the model"
-                        .into(),
-                );
-            }
-            if !self.allowed_evaluation_models().contains(requested_model) {
-                return Err(format!(
-                    "model route '{requested_model}' is not authorized for the Agent by llm.allowed_evaluation_models"
-                )
-                .into());
-            }
-        }
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
             .map_err(|_| "schedule_tx is missing the current Session route")?;
@@ -4561,6 +4702,28 @@ impl Tool for ScheduleTxTool {
             .ok_or("Current schedule_tx Session does not exist")?;
         if session.context_id != context_id {
             return Err("schedule_tx Session and Context routes are inconsistent".into());
+        }
+        for operation in &args.operations {
+            let objective = match operation {
+                ScheduleOperation::Spawn { objective, .. } => objective.as_ref(),
+                ScheduleOperation::Promote { objective, .. } => Some(objective),
+                _ => None,
+            };
+            if let (
+                Some(policy),
+                Some(ScheduleObjectiveBinding::Create {
+                    model_selection, ..
+                }),
+            ) = (&self.evaluation_model_policy, objective)
+            {
+                policy.validate_task_reasoning(
+                    model_selection
+                        .model
+                        .as_deref()
+                        .or(session.model_alias.as_deref()),
+                    model_selection.reasoning_effort.as_deref(),
+                )?;
+            }
         }
         let inspect_count = args
             .operations
@@ -4654,7 +4817,12 @@ impl Tool for ScheduleTxTool {
                 .await;
         }
 
-        let mut create_spec: Option<(String, String, Option<u64>)> = None;
+        let mut create_spec: Option<(
+            String,
+            String,
+            Option<u64>,
+            crate::model_selection::ModelSelection,
+        )> = None;
         for operation in &args.operations {
             let ScheduleOperation::Spawn {
                 lifetime,
@@ -4663,6 +4831,7 @@ impl Tool for ScheduleTxTool {
                         stated_objective,
                         completion_criteria,
                         token_budget,
+                        model_selection,
                     }),
                 ..
             } = operation
@@ -4684,6 +4853,7 @@ impl Tool for ScheduleTxTool {
                 stated_objective.to_string(),
                 completion_criteria.to_string(),
                 *token_budget,
+                model_selection.clone(),
             );
             if let Some(existing) = &create_spec {
                 if existing != &candidate {
@@ -4697,13 +4867,13 @@ impl Tool for ScheduleTxTool {
             }
         }
         let created_objective_id = create_spec.as_ref().map(
-            |(stated_objective, completion_criteria, token_budget)| {
-                let digest = sha256_hex(
-                    format!(
-                        "{attempt_id}\0objective-create\0{stated_objective}\0{completion_criteria}\0{token_budget:?}"
-                    )
-                    .as_bytes(),
-                );
+            |(stated_objective, completion_criteria, token_budget, model_selection)| {
+                let mut seed = format!("{attempt_id}\0objective-create\0{stated_objective}\0{completion_criteria}\0{token_budget:?}");
+                // Preserve pre-upgrade retry identity when no controls were supplied.
+                if model_selection != &Default::default() {
+                    seed.push_str(&format!("\0{model_selection:?}"));
+                }
+                let digest = sha256_hex(seed.as_bytes());
                 format!("objective-auto-{}", &digest[..24])
             },
         );
@@ -4723,6 +4893,8 @@ impl Tool for ScheduleTxTool {
                 lifetime,
                 objective,
                 completion,
+                model,
+                reasoning_effort,
                 ..
             } = operation
             {
@@ -4835,9 +5007,35 @@ impl Tool for ScheduleTxTool {
                     }
                 };
                 supervision.completion_contract = completion.contract.clone();
+                let objective_defaults = supervision
+                    .supervisor_id
+                    .as_ref()
+                    .and_then(|id| existing_objectives.get(id));
+                let new_defaults =
+                    matches!(objective, Some(ScheduleObjectiveBinding::Create { .. }))
+                        .then(|| create_spec.as_ref().map(|spec| &spec.3))
+                        .flatten();
+                let model_alias = model
+                    .clone()
+                    .or_else(|| {
+                        objective_defaults.and_then(|objective| objective.model_alias.clone())
+                    })
+                    .or_else(|| new_defaults.and_then(|selection| selection.model.clone()))
+                    .or_else(|| current_thread.model_alias.clone());
+                let reasoning_effort = reasoning_effort
+                    .clone()
+                    .or_else(|| {
+                        objective_defaults.and_then(|objective| objective.reasoning_effort.clone())
+                    })
+                    .or_else(|| {
+                        new_defaults.and_then(|selection| selection.reasoning_effort.clone())
+                    })
+                    .or_else(|| current_thread.reasoning_effort.clone());
                 prepared_supervisions.push(Some(supervision));
                 prepared_required.push(completion.required);
                 threads.push(NewThread {
+                    model_alias,
+                    reasoning_effort,
                     id: thread_id.clone(),
                     agent_id: session.agent_id.clone(),
                     context_id: context_id.clone(),
@@ -5024,8 +5222,10 @@ impl Tool for ScheduleTxTool {
         }
 
         let mut scheduled_objectives = Vec::new();
-        if let (Some(objective_id), Some((stated_objective, completion_criteria, token_budget))) =
-            (created_objective_id.as_ref(), create_spec.as_ref())
+        if let (
+            Some(objective_id),
+            Some((stated_objective, completion_criteria, token_budget, model_selection)),
+        ) = (created_objective_id.as_ref(), create_spec.as_ref())
         {
             let member_thread_ids = threads
                 .iter()
@@ -5074,6 +5274,8 @@ impl Tool for ScheduleTxTool {
             );
             scheduled_objectives.push(NewScheduledObjective {
                 objective: NewObjective {
+                    model_alias: model_selection.model.clone(),
+                    reasoning_effort: model_selection.reasoning_effort.clone(),
                     id: objective_id.clone(),
                     agent_id: session.agent_id.clone(),
                     context_id: context_id.clone(),
@@ -5097,6 +5299,7 @@ impl Tool for ScheduleTxTool {
                 target_thread_id,
                 intent,
                 model_alias,
+                reasoning_effort,
                 not_before,
                 delay_seconds,
                 interval_seconds,
@@ -5106,6 +5309,7 @@ impl Tool for ScheduleTxTool {
                     thread_id,
                     intent,
                     model,
+                    reasoning_effort,
                     not_before,
                     delay_seconds,
                     after,
@@ -5113,6 +5317,7 @@ impl Tool for ScheduleTxTool {
                     thread_id.unwrap_or_else(|| route.thread_id.clone()),
                     intent,
                     model,
+                    reasoning_effort,
                     not_before,
                     delay_seconds,
                     None,
@@ -5121,6 +5326,7 @@ impl Tool for ScheduleTxTool {
                 ScheduleOperation::Spawn {
                     intent,
                     model,
+                    reasoning_effort,
                     not_before,
                     delay_seconds,
                     every_seconds,
@@ -5130,6 +5336,7 @@ impl Tool for ScheduleTxTool {
                     prepared[index].clone(),
                     intent,
                     model,
+                    reasoning_effort,
                     not_before,
                     delay_seconds,
                     every_seconds,
@@ -5173,7 +5380,26 @@ impl Tool for ScheduleTxTool {
             let digest = sha256_hex(
                 format!("{attempt_id}\0{index}\0{target_thread_id}\0{intent}").as_bytes(),
             );
+            if let Some(policy) = &self.evaluation_model_policy {
+                let target = match threads.iter().find(|thread| thread.id == target_thread_id) {
+                    Some(thread) => (thread.model_alias.clone(), thread.reasoning_effort.clone()),
+                    None => self
+                        .sessions
+                        .get_thread(&target_thread_id)
+                        .await?
+                        .map(|thread| (thread.model_alias, thread.reasoning_effort))
+                        .unwrap_or_default(),
+                };
+                policy.validate_task_reasoning(
+                    model_alias
+                        .as_deref()
+                        .or(target.0.as_deref())
+                        .or(session.model_alias.as_deref()),
+                    reasoning_effort.as_deref().or(target.1.as_deref()),
+                )?;
+            }
             intents.push(NewSchedule {
+                reasoning_effort,
                 id: format!("schedule_{}", &digest[..24]),
                 thread_id: target_thread_id,
                 source_turn_id: route.root_turn_id.clone(),
@@ -9921,16 +10147,27 @@ impl Tool for KillTaskTool {
 // ==========================================
 pub struct DelegateTool {
     bus: Arc<InMemoryEventBus>,
+    evaluation_model_policy: Option<Arc<ContextEngine>>,
 }
 
 impl DelegateTool {
     pub fn new(bus: Arc<InMemoryEventBus>) -> Self {
-        Self { bus }
+        Self {
+            bus,
+            evaluation_model_policy: None,
+        }
+    }
+
+    pub fn with_evaluation_model_policy(mut self, context_engine: Arc<ContextEngine>) -> Self {
+        self.evaluation_model_policy = Some(context_engine);
+        self
     }
 }
 
 #[derive(Deserialize)]
 struct DelegateArgs {
+    #[serde(flatten)]
+    model_selection: crate::model_selection::ModelSelection,
     task: String,
     #[serde(default)]
     success_when: Option<String>,
@@ -9965,6 +10202,8 @@ impl Tool for DelegateTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "model": {"type": "string", "description": "Agent-authorized model route for the delegated task; omit to inherit", "enum": self.evaluation_model_policy.as_ref().map(|policy| policy.agent_allowed_evaluation_models()).unwrap_or_default()},
+                    "reasoning_effort": crate::model_selection::reasoning_effort_schema(),
                     "task": {
                         "type": "string",
                         "description": "The complete task for the Sub Agent"
@@ -9995,7 +10234,14 @@ impl Tool for DelegateTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let args: DelegateArgs = serde_json::from_str(arguments)?;
+        let mut args: DelegateArgs = serde_json::from_str(arguments)?;
+        args.model_selection.authorize(
+            &self
+                .evaluation_model_policy
+                .as_ref()
+                .map(|policy| policy.agent_allowed_evaluation_models())
+                .unwrap_or_default(),
+        )?;
         if args.task.trim().is_empty() {
             return Err("delegate.task must not be empty".into());
         }
@@ -10018,6 +10264,14 @@ impl Tool for DelegateTool {
         let child_context_id = format!("delegate-context-{suffix}");
         let child_session_id = format!("delegate-session-{suffix}");
         let mut payload = vec![
+            (
+                "model_alias".to_string(),
+                serde_json::json!(args.model_selection.model),
+            ),
+            (
+                "reasoning_effort".to_string(),
+                serde_json::json!(args.model_selection.reasoning_effort),
+            ),
             (
                 "context_id".to_string(),
                 serde_json::json!(parent_context_id),
@@ -10810,6 +11064,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: parent.thread_id.clone(),
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
@@ -11147,6 +11403,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-current".to_string(),
                 agent_id: "agent-scheduler".to_string(),
                 context_id: "context-scheduler".to_string(),
@@ -11267,6 +11525,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-model-batch-current".to_string(),
                 agent_id: "agent-model-batch".to_string(),
                 context_id: "context-model-batch".to_string(),
@@ -11300,7 +11560,8 @@ Body
                     "intent": "research independently",
                     "lifetime": "attached",
                     "delay_seconds": 3600,
-                    "model": "fast-route"
+                    "model": "fast-route",
+                    "reasoning_effort": "low"
                 },
                 {
                     "op": "spawn",
@@ -11308,7 +11569,8 @@ Body
                     "intent": "review independently",
                     "lifetime": "attached",
                     "delay_seconds": 3600,
-                    "model": "primary-route"
+                    "model": "primary-route",
+                    "reasoning_effort": "high"
                 }
             ],
             "group": {"policy": "all"}
@@ -11350,6 +11612,72 @@ Body
         assert!(schedules
             .iter()
             .any(|schedule| schedule.model_alias.as_deref() == Some("primary-route")));
+        let reopened = SqliteStore::new(database.path().to_string_lossy().as_ref())
+            .await
+            .unwrap();
+        for schedule in &schedules {
+            let expected_effort = if schedule.model_alias.as_deref() == Some("fast-route") {
+                "low"
+            } else {
+                "high"
+            };
+            assert_eq!(schedule.reasoning_effort.as_deref(), Some(expected_effort));
+            assert_eq!(
+                reopened.get_schedule(&schedule.id).await.unwrap().as_ref(),
+                Some(schedule)
+            );
+            let thread = reopened
+                .get_thread(&schedule.thread_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(thread.model_alias, schedule.model_alias);
+            assert_eq!(thread.reasoning_effort, schedule.reasoning_effort);
+        }
+        let initial = &schedules[0];
+        let changed = scheduler
+            .reschedule_with_model_selection(
+                &initial.id,
+                initial.revision,
+                initial.not_before,
+                None,
+                crate::model_selection::ModelSelection {
+                    model: Some("primary-route".into()),
+                    reasoning_effort: Some("max".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let ScheduleMutation::Updated(changed) = changed else {
+            panic!("reschedule failed")
+        };
+        assert_eq!(changed.model_alias.as_deref(), Some("primary-route"));
+        assert_eq!(changed.reasoning_effort.as_deref(), Some("max"));
+        assert!(matches!(
+            scheduler
+                .reschedule_with_model_selection(
+                    &initial.id,
+                    initial.revision,
+                    initial.not_before,
+                    None,
+                    crate::model_selection::ModelSelection {
+                        model: Some("fast-route".into()),
+                        reasoning_effort: Some("none".into()),
+                    }
+                )
+                .await
+                .unwrap(),
+            ScheduleMutation::Conflict { .. }
+        ));
+        assert_eq!(
+            reopened.get_schedule(&initial.id).await.unwrap().unwrap(),
+            changed
+        );
+        assert!(tool.execute(&serde_json::json!({"operations": [
+            {"op":"spawn", "intent":"valid sibling", "lifetime":"attached", "model":"fast-route"},
+            {"op":"spawn", "intent":"invalid sibling", "lifetime":"attached", "reasoning_effort":"typo"}
+        ]}).to_string()).await.unwrap_err().to_string().contains("reasoning_effort"));
+        assert_eq!(store.list_schedules(None, None).await.unwrap().len(), 2);
 
         let unauthorized = serde_json::json!({
             "operations": [{
@@ -11417,6 +11745,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-objective-schedule-current".to_string(),
                 agent_id: "agent-objective-schedule".to_string(),
                 context_id: "context-objective-schedule".to_string(),
@@ -11436,7 +11766,8 @@ Body
         let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
         let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
-            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
+            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>)
+            .with_allowed_evaluation_models(vec!["goal-model".into()]);
         let arguments = serde_json::json!({
             "operations": [{
                 "op": "spawn",
@@ -11445,7 +11776,9 @@ Body
                     "mode": "create",
                     "stated_objective": "持续验证并发布独立基准",
                     "completion_criteria": "基准可重复运行且报告包含稳定性结论",
-                    "token_budget": 12000
+                    "token_budget": 12000,
+                    "model": "goal-model",
+                    "reasoning_effort": "high"
                 },
                 "client_id": "initial-benchmark",
                 "intent": "建立第一轮基准方案",
@@ -11492,6 +11825,8 @@ Body
             .expect("objective");
         assert_eq!(objective.status, ObjectiveStatus::Active);
         assert_eq!(objective.token_budget, Some(12000));
+        assert_eq!(objective.model_alias.as_deref(), Some("goal-model"));
+        assert_eq!(objective.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             objective.wait_condition,
             Some(ObjectiveWaitCondition::ThreadGroup {
@@ -11504,6 +11839,8 @@ Body
             .unwrap()
             .expect("durable thread");
         assert_eq!(thread.supervision.lifetime, ThreadLifetime::Durable);
+        assert_eq!(thread.model_alias, objective.model_alias);
+        assert_eq!(thread.reasoning_effort, objective.reasoning_effort);
         assert_eq!(
             thread.supervision.supervisor_id.as_deref(),
             Some(objective_id)
@@ -11586,6 +11923,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-existing-objective-current".to_string(),
                 agent_id: "agent-existing-objective".to_string(),
                 context_id: "context-existing-objective".to_string(),
@@ -11602,6 +11941,8 @@ Body
             .unwrap();
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-existing".to_string(),
                 agent_id: "agent-existing-objective".to_string(),
                 context_id: "context-existing-objective".to_string(),
@@ -11810,6 +12151,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-thread-promotion-parent".to_string(),
                 agent_id: "agent-thread-promotion".to_string(),
                 context_id: "context-thread-promotion".to_string(),
@@ -11893,6 +12236,8 @@ Body
         let binding = if binding_mode == "existing" {
             let objective = store
                 .create_objective(NewObjective {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: "objective-promotion-existing".to_string(),
                     agent_id: "agent-thread-promotion".to_string(),
                     context_id: "context-thread-promotion".to_string(),
@@ -12086,6 +12431,8 @@ Body
         for (thread_id, root_turn_id) in thread_ids {
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: (*thread_id).to_string(),
                     agent_id: "agent-scheduler-test".to_string(),
                     context_id: "context-scheduler-test".to_string(),
@@ -12112,6 +12459,7 @@ Body
     ) -> ScheduleRecord {
         store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: id.to_string(),
                 thread_id: thread_id.to_string(),
                 source_turn_id: format!("source-{id}"),
@@ -12186,6 +12534,8 @@ Body
         let objective_id = "objective-scheduled-interrupt";
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: objective_id.to_string(),
                 agent_id: "agent-scheduler-test".to_string(),
                 context_id: "context-scheduler-test".to_string(),
@@ -12204,6 +12554,8 @@ Body
         let thread_id = stable_thread_id(&root);
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: "agent-scheduler-test".to_string(),
                 context_id: "context-scheduler-test".to_string(),
@@ -12254,6 +12606,8 @@ Body
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-stale-child".to_string(),
                 agent_id: "agent-scheduler-test".to_string(),
                 context_id: "context-scheduler-test".to_string(),
@@ -12269,6 +12623,8 @@ Body
             .unwrap();
         let child = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-stale-child".to_string(),
                 agent_id: objective.agent_id.clone(),
                 context_id: objective.context_id.clone(),
@@ -12318,6 +12674,7 @@ Body
         // Seed stale persisted work as if a pre-fix writer had produced it.
         let schedule = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-stale-child".to_string(),
                 thread_id: child.id,
                 source_turn_id: child.root_turn_id,
@@ -12404,6 +12761,8 @@ Body
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-paused-schedule".to_string(),
                 agent_id: "agent-scheduler-test".to_string(),
                 context_id: "context-scheduler-test".to_string(),
@@ -12420,6 +12779,8 @@ Body
         let thread_id = "thread-objective-paused-schedule";
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.to_string(),
                 agent_id: "agent-scheduler-test".to_string(),
                 context_id: "context-scheduler-test".to_string(),
@@ -12439,6 +12800,7 @@ Body
             .unwrap();
         let schedule = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-paused-objective".to_string(),
                 thread_id: thread_id.to_string(),
                 source_turn_id: "source-schedule-paused-objective".to_string(),
@@ -12493,6 +12855,7 @@ Body
 
         let immediate = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-paused-objective-immediate".to_string(),
                 thread_id: thread_id.to_string(),
                 source_turn_id: "source-schedule-paused-objective-immediate".to_string(),
@@ -13058,6 +13421,7 @@ Body
         let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let intent = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-dependent".to_string(),
                 thread_id: "thread-dependent".to_string(),
                 source_turn_id: "root-dependent".to_string(),
@@ -13144,6 +13508,7 @@ Body
         let first_scheduler = start_test_scheduler(first_bus, Arc::clone(&store));
         let intent = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-recovery-dependent".to_string(),
                 thread_id: "thread-recovery-dependent".to_string(),
                 source_turn_id: "root-recovery-dependent".to_string(),
@@ -13237,6 +13602,7 @@ Body
         let scheduler = start_test_scheduler(bus, Arc::clone(&store));
         let intent = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-fenced-dependent".to_string(),
                 thread_id: "thread-fenced-dependent".to_string(),
                 source_turn_id: "root-fenced-dependent".to_string(),
@@ -13304,6 +13670,7 @@ Body
         .await;
         store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-after-restart".to_string(),
                 thread_id: "thread-after-restart".to_string(),
                 source_turn_id: "root-after-restart".to_string(),
@@ -13362,6 +13729,7 @@ Body
         let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
         let intent = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-recurring-route".to_string(),
                 thread_id: "thread-recurring-template".to_string(),
                 source_turn_id: "root-recurring-template".to_string(),
@@ -16910,6 +17278,8 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "wait-rearm-thread".to_string(),
                 agent_id: "wait-rearm-agent".to_string(),
                 context_id: "wait-rearm-context".to_string(),

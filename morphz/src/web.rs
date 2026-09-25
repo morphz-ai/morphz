@@ -484,6 +484,8 @@ struct OAuthProviderSetupServicesResponse {
 
 #[derive(serde::Deserialize)]
 struct MutateScheduleRequest {
+    #[serde(flatten)]
+    model_selection: crate::model_selection::ModelSelection,
     action: String,
     expected_revision: u64,
     not_before: Option<chrono::DateTime<chrono::Utc>>,
@@ -511,6 +513,8 @@ struct EditObjectiveRequest {
 
 #[derive(serde::Deserialize)]
 struct CreateObjectiveRequest {
+    #[serde(flatten)]
+    model_selection: crate::model_selection::ModelSelection,
     id: Option<String>,
     coordinator_session_id: String,
     delivery_session_id: Option<String>,
@@ -6076,6 +6080,12 @@ async fn handle_mutate_schedule(
         return unauthorized_response();
     }
     let action = request.action.trim().to_ascii_lowercase();
+    if action != "reschedule" && request.model_selection != Default::default() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "model and reasoning_effort require reschedule",
+        );
+    }
     let mutation = match action.as_str() {
         "pause" => {
             state
@@ -6092,11 +6102,12 @@ async fn handle_mutate_schedule(
         "reschedule" => {
             state
                 .runtime
-                .reschedule(
+                .reschedule_with_model_selection(
                     &schedule_id,
                     request.expected_revision,
                     request.not_before,
                     request.interval_seconds,
+                    request.model_selection,
                 )
                 .await
         }
@@ -8361,7 +8372,26 @@ async fn handle_control_session_schedule(
     {
         return sdk_error_response(error);
     }
-    let result = match request.action.as_str() {
+    let action = request.action.trim().to_ascii_lowercase();
+    if action != "reschedule" && request.model_selection != Default::default() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "model and reasoning_effort require reschedule",
+        );
+    }
+    let result = match action.as_str() {
+        "reschedule" => {
+            state
+                .runtime
+                .reschedule_with_model_selection(
+                    &schedule_id,
+                    request.expected_revision,
+                    request.not_before,
+                    request.interval_seconds,
+                    request.model_selection,
+                )
+                .await
+        }
         "pause" => {
             state
                 .runtime
@@ -8383,7 +8413,7 @@ async fn handle_control_session_schedule(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "Only pause, resume and cancel are supported",
+                "Only pause, resume, reschedule and cancel are supported",
             )
         }
     };
@@ -8613,6 +8643,7 @@ async fn handle_create_objective(
         .create_objective(
             &principal,
             CreateObjectiveCommand {
+                model_selection: request.model_selection,
                 id: objective_id,
                 coordinator_session_id: coordinator.id,
                 delivery_session_id: Some(delivery.id),
@@ -10233,6 +10264,10 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateObjectiveRequest {
+                model_selection: crate::model_selection::ModelSelection {
+                    model: None,
+                    reasoning_effort: Some("high".into()),
+                },
                 id: Some("objective-http-harness".to_string()),
                 coordinator_session_id: "harness-http-session".to_string(),
                 delivery_session_id: None,
@@ -10252,6 +10287,7 @@ mod tests {
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["objective"]["reasoning_effort"], "high");
         assert_eq!(
             value["objective"]["id"],
             serde_json::json!("objective-http-harness")
@@ -10297,6 +10333,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateObjectiveRequest {
+                model_selection: Default::default(),
                 id: Some("objective-http-harness".to_string()),
                 coordinator_session_id: "harness-http-session".to_string(),
                 delivery_session_id: None,
@@ -11033,6 +11070,7 @@ mod tests {
             gateway_headers(Some("site-user-1")),
             Query(AuthQuery::default()),
             Json(CreateObjectiveRequest {
+                model_selection: Default::default(),
                 id: Some("gateway-objective-a".to_string()),
                 coordinator_session_id: "gateway-session-a".to_string(),
                 delivery_session_id: None,
@@ -16348,6 +16386,8 @@ account = "xai-account"
         for suffix in ["a", "b"] {
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-{suffix}"),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -16427,6 +16467,7 @@ account = "xai-account"
             .await
             .unwrap();
         let request = crate::sdk::SessionScheduleRequest {
+            reasoning_effort: Some("high".into()),
             id: "work-once".into(),
             intent: "execute one persisted work request".into(),
             model_alias: None,
@@ -16446,6 +16487,14 @@ account = "xai-account"
             .await
             .unwrap();
         assert_eq!(first, again);
+        assert_eq!(first.reasoning_effort.as_deref(), Some("high"));
+        let mut different_effort = request.clone();
+        different_effort.reasoning_effort = Some("low".into());
+        assert!(state
+            .sdk
+            .create_session_schedule(principal, "work-schedule-session", different_effort)
+            .await
+            .is_err());
         let mut changed = request.clone();
         changed.interval_seconds = Some(60);
         assert!(state
@@ -16468,7 +16517,7 @@ account = "xai-account"
         assert_eq!(
             state
                 .sdk
-                .create_session_schedule(principal, "work-schedule-session", request)
+                .create_session_schedule(principal, "work-schedule-session", request.clone())
                 .await
                 .unwrap()
                 .status,
@@ -16483,11 +16532,15 @@ account = "xai-account"
         };
         let mut replies = runtime.subscribe("chat/reply", 4);
         runtime
-            .reschedule(
+            .reschedule_with_model_selection(
                 &first.id,
                 resumed.revision,
                 Some(chrono::Utc::now() + chrono::Duration::milliseconds(30)),
                 None,
+                crate::model_selection::ModelSelection {
+                    model: None,
+                    reasoning_effort: Some("low".into()),
+                },
             )
             .await
             .unwrap();
@@ -16496,6 +16549,21 @@ account = "xai-account"
             .unwrap()
             .unwrap();
         assert_eq!(reply.payload["session_id"], "work-schedule-session");
+        let detail = runtime
+            .thread_detail(&runtime.identity().context_id, &first.thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detail.snapshot.thread.reasoning_effort.as_deref(),
+            Some("low")
+        );
+        let retry = state
+            .sdk
+            .create_session_schedule(principal, "work-schedule-session", request)
+            .await
+            .unwrap();
+        assert_eq!(retry.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(
             runtime
                 .inspect_schedule(&first.id)
@@ -16529,6 +16597,8 @@ account = "xai-account"
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "api-schedule-thread".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -16545,6 +16615,7 @@ account = "xai-account"
             .unwrap();
         let schedule = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "api-schedule".to_string(),
                 thread_id: thread.id,
                 source_turn_id: "api-schedule-turn".to_string(),
@@ -16563,6 +16634,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(MutateScheduleRequest {
+                model_selection: Default::default(),
                 action: "pause".to_string(),
                 expected_revision: schedule.revision,
                 not_before: None,
@@ -16579,6 +16651,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(MutateScheduleRequest {
+                model_selection: Default::default(),
                 action: "pause".to_string(),
                 expected_revision: schedule.revision,
                 not_before: None,
@@ -16618,6 +16691,8 @@ account = "xai-account"
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "api-supersede-thread".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),

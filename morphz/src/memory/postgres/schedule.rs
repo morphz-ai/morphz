@@ -90,6 +90,7 @@ fn parse_status(value: &str) -> Result<ScheduleStatus, StoreError> {
 
 fn schedule_from_row(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
     Ok(ScheduleRecord {
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
         thread_id: row.get("thread_id"),
@@ -223,12 +224,13 @@ impl ScheduleStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT INTO schedules
-               (id, revision, thread_id, source_turn_id, intent, model_alias, status,
+               (reasoning_effort, id, revision, thread_id, source_turn_id, intent, model_alias, status,
                 not_before, interval_seconds, dependency_thread_ids_json,
                 created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $9)
+               VALUES ($1, $2, 1, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $10)
                ON CONFLICT(id) DO NOTHING"#,
         )
+        .bind(&intent.reasoning_effort)
         .bind(&intent.id)
         .bind(&intent.thread_id)
         .bind(&intent.source_turn_id)
@@ -311,16 +313,19 @@ impl ScheduleStore for PostgresStore {
         }
     }
 
-    async fn reschedule_schedule(
+    async fn reschedule_schedule_with_model_selection(
         &self,
         id: &str,
         expected_revision: u64,
         not_before: Option<DateTime<Utc>>,
         interval_seconds: Option<u64>,
+        mut model_selection: crate::model_selection::ModelSelection,
     ) -> Result<ScheduleMutation, StoreError> {
+        model_selection.normalize()?;
         let row = sqlx::query(
             r#"UPDATE schedules SET not_before = $1, interval_seconds = $2,
-               revision = revision + 1, updated_at = $3
+               revision = revision + 1, updated_at = $3,
+               model_alias = COALESCE($6, model_alias), reasoning_effort = COALESCE($7, reasoning_effort)
                WHERE id = $4 AND revision = $5 AND status IN ('queued', 'paused')
                RETURNING *"#,
         )
@@ -329,6 +334,8 @@ impl ScheduleStore for PostgresStore {
         .bind(now_text())
         .bind(id)
         .bind(i64::try_from(expected_revision)?)
+        .bind(model_selection.model)
+        .bind(model_selection.reasoning_effort)
         .fetch_optional(&self.pool)
         .await?;
         match row {
@@ -420,15 +427,17 @@ impl ScheduleStore for PostgresStore {
             thread.supervision.validate(thread.kind)?;
             sqlx::query(
                 r#"INSERT INTO threads
-                   (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+                   (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                     kind, status, executor_kind, executor_id, target_id,
                     lifetime, supervisor_kind, supervisor_id, supervision_generation,
                     origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                     delivery_status, created_at, updated_at)
-                   VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10,
-                           $11, $12, $13, $14, $15, $16, $17, $18, 'none', $19, $19)
+                   VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
+                           $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
                    ON CONFLICT DO NOTHING"#,
             )
+            .bind(&thread.model_alias)
+            .bind(&thread.reasoning_effort)
             .bind(&thread.id)
             .bind(&thread.agent_id)
             .bind(&thread.context_id)
@@ -720,12 +729,13 @@ impl ScheduleStore for PostgresStore {
             let dependencies = encoded_dependencies(intent)?;
             sqlx::query(
                 r#"INSERT INTO schedules
-                   (id, revision, thread_id, source_turn_id, intent, model_alias, status,
+                   (reasoning_effort, id, revision, thread_id, source_turn_id, intent, model_alias, status,
                     not_before, interval_seconds, dependency_thread_ids_json,
                     created_at, updated_at)
-                   VALUES ($1, 1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $9)
+                   VALUES ($1, $2, 1, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $10)
                    ON CONFLICT(id) DO NOTHING"#,
             )
+            .bind(&intent.reasoning_effort)
             .bind(&intent.id)
             .bind(&intent.thread_id)
             .bind(&intent.source_turn_id)
@@ -1385,6 +1395,12 @@ impl ScheduleStore for PostgresStore {
         } else {
             record.thread_id.clone()
         };
+        sqlx::query("UPDATE threads SET model_alias = COALESCE($1, model_alias), reasoning_effort = COALESCE($2, reasoning_effort), revision = revision + 1, updated_at = $4 WHERE id = $3 AND (($1 IS NOT NULL AND $1 IS DISTINCT FROM model_alias) OR ($2 IS NOT NULL AND $2 IS DISTINCT FROM reasoning_effort))")
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(event.payload.get("reasoning_effort").and_then(JsonValue::as_str))
+            .bind(&delivery_thread_id)
+            .bind(now_text())
+            .execute(&mut *tx).await?;
         append_event_in_tx(&mut tx, event).await?;
         append_direct_thread_signal_in_tx(&mut tx, event, &delivery_thread_id).await?;
         tx.commit().await?;

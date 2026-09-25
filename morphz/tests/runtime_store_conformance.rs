@@ -1083,6 +1083,8 @@ where
     S: morphz::memory::RuntimeStore + 'static,
 {
     let thread = NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: "conformance-thread".to_string(),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
@@ -1141,6 +1143,8 @@ where
 
     let cas_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-thread-cas".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -1256,6 +1260,8 @@ where
         .clone(),
     );
     let delivery_thread = NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: "conformance-delivery-thread".to_string(),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
@@ -1311,6 +1317,8 @@ where
     // supervision route which owns the eventual outcome.
     let supersede_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-supersede-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -1434,6 +1442,8 @@ where
 {
     let thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-signal-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -1697,6 +1707,8 @@ where
 
     let successor_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-dialogue-successor-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -1808,6 +1820,8 @@ where
 
     let outcome_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-outcome-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -1913,6 +1927,8 @@ where
     // backends cannot silently acquire different cancellation semantics.
     let race_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-control-outcome-race-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -3649,6 +3665,59 @@ where
         interrupt_signals[0].thread_id, interrupt_signals[1].thread_id,
         "the second concurrent interrupt must observe and batch into the first pending Thread"
     );
+
+    const POLICY_SESSION: &str = "conformance-task-model-session";
+    create_session(POLICY_SESSION).await;
+    let mut owners = Vec::new();
+    for (index, (model, depth)) in [
+        ("fast", "low"),
+        ("fast", "high"),
+        ("deep", "high"),
+        ("fast", "low"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let event = Event::new(format!("task-policy-{index}"), "Store-Conformance".into(),
+            morphz::event::TYPE_USER_MESSAGE.into(), "chat/user_message".into(),
+            json!({"context_id":"conformance-context", "session_id":POLICY_SESSION,
+                "principal_id":PRINCIPAL, "text":"policy test", "model_alias":model, "reasoning_effort":depth})
+                .as_object().unwrap().clone());
+        let claim = store
+            .claim_message(
+                POLICY_SESSION,
+                &event.id,
+                &event,
+                MessageDispatchMode::Interrupt,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(claim, MessageClaim::Accepted { .. }));
+        let signals = store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap();
+        let signal = signals
+            .iter()
+            .find(|signal| signal.event_id == event.id)
+            .unwrap();
+        let thread = store.get_thread(&signal.thread_id).await.unwrap().unwrap();
+        assert_eq!(thread.model_alias.as_deref(), Some(model));
+        assert_eq!(thread.reasoning_effort.as_deref(), Some(depth));
+        owners.push(thread.id);
+    }
+    assert_ne!(
+        owners[0], owners[1],
+        "different depths must not share an Activation"
+    );
+    assert_ne!(
+        owners[1], owners[2],
+        "different models must not share an Activation"
+    );
+    assert_eq!(
+        owners[0], owners[3],
+        "identical policies retain input batching"
+    );
 }
 
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
@@ -3800,6 +3869,8 @@ where
     ] {
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: id.to_string(),
                 agent_id: "conformance-agent".to_string(),
                 context_id: "conformance-context".to_string(),
@@ -3818,11 +3889,12 @@ where
 
     let controlled = store
         .ensure_schedule(morphz::memory::NewSchedule {
+            reasoning_effort: Some("high".into()),
             id: "conformance-schedule-control".to_string(),
             thread_id: "conformance-schedule-thread".to_string(),
             source_turn_id: "root-conformance-schedule-thread".to_string(),
             intent: "control-plane conformance".to_string(),
-            model_alias: None,
+            model_alias: Some("task-route".into()),
             not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
             interval_seconds: None,
             dependency_thread_ids: vec!["conformance-dependency-thread".to_string()],
@@ -3892,6 +3964,28 @@ where
         mutation => panic!("unexpected reschedule mutation: {mutation:?}"),
     };
     assert_eq!(rescheduled.interval_seconds, Some(120));
+    assert_eq!(rescheduled.model_alias.as_deref(), Some("task-route"));
+    assert_eq!(rescheduled.reasoning_effort.as_deref(), Some("high"));
+    let rescheduled = match store
+        .reschedule_schedule_with_model_selection(
+            &rescheduled.id,
+            rescheduled.revision,
+            rescheduled.not_before,
+            Some(120),
+            morphz::model_selection::ModelSelection {
+                model: Some("other-route".into()),
+                reasoning_effort: Some("provider_default".into()),
+            },
+        )
+        .await
+        .unwrap()
+    {
+        ScheduleMutation::Updated(schedule) => schedule,
+        mutation => panic!("unexpected model reschedule: {mutation:?}"),
+    };
+    let reread = store.get_schedule(&rescheduled.id).await.unwrap().unwrap();
+    assert_eq!(reread.model_alias.as_deref(), Some("other-route"));
+    assert_eq!(reread.reasoning_effort.as_deref(), Some("provider_default"));
     assert!(matches!(
         store
             .cancel_schedule(&rescheduled.id, rescheduled.revision)
@@ -3902,6 +3996,7 @@ where
 
     let dependency_schedule = store
         .ensure_schedule(morphz::memory::NewSchedule {
+            reasoning_effort: Some("medium".into()),
             id: "conformance-schedule-dependency".to_string(),
             thread_id: "conformance-schedule-thread".to_string(),
             source_turn_id: "root-conformance-schedule-thread".to_string(),
@@ -3923,6 +4018,7 @@ where
 
     let dispatch = store
         .ensure_schedule(morphz::memory::NewSchedule {
+            reasoning_effort: None,
             id: "conformance-schedule-dispatch".to_string(),
             thread_id: "conformance-dispatch-thread".to_string(),
             source_turn_id: "root-conformance-dispatch-thread".to_string(),
@@ -3997,6 +4093,7 @@ where
 
     let recurring = store
         .ensure_schedule(morphz::memory::NewSchedule {
+            reasoning_effort: None,
             id: "conformance-schedule-recurring".to_string(),
             thread_id: "conformance-dispatch-thread".to_string(),
             source_turn_id: "root-conformance-dispatch-thread".to_string(),
@@ -4010,6 +4107,8 @@ where
         .unwrap();
     let occurrence_root = "root-conformance-schedule-occurrence";
     let occurrence = NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: stable_thread_id(occurrence_root),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
@@ -4068,6 +4167,8 @@ where
             &[],
             &[],
             &[NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "conformance-schedule-rolled-back-thread".to_string(),
                 agent_id: "conformance-agent".to_string(),
                 context_id: "conformance-context".to_string(),
@@ -4081,6 +4182,7 @@ where
                 supervision: morphz::memory::ThreadSupervision::legacy(),
             }],
             &[morphz::memory::NewSchedule {
+                reasoning_effort: None,
                 id: "conformance-invalid-schedule".to_string(),
                 thread_id: "missing-conformance-thread".to_string(),
                 source_turn_id: "missing-root".to_string(),
@@ -4108,6 +4210,8 @@ where
 
     let objective = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-schedule-objective".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -4135,6 +4239,8 @@ where
     assert_ne!(objective.revision, objective.generation);
     let children = (0..2)
         .map(|index| NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("conformance-objective-generation-child-{index}"),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),
@@ -4169,6 +4275,8 @@ where
     }
     let objective_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-schedule-objective-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -4190,6 +4298,7 @@ where
         .unwrap();
     let supervised = store
         .ensure_schedule(morphz::memory::NewSchedule {
+            reasoning_effort: None,
             id: "conformance-schedule-objective-timer".to_string(),
             thread_id: objective_thread.id,
             source_turn_id: objective_thread.root_turn_id,
@@ -4791,6 +4900,8 @@ where
 
     let delivery_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-ingress-delivery-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -5476,6 +5587,8 @@ where
         .unwrap();
     let return_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-attached-return-thread".to_string(),
             agent_id: routed.agent_id.clone(),
             context_id: routed.parent_context_id.clone(),
@@ -6510,6 +6623,8 @@ where
     interrupt_frontier::assert_interrupt_frontier(store.as_ref()).await;
     let created = store
         .create_objective(NewObjective {
+            model_alias: Some("goal-route".into()),
+            reasoning_effort: Some("high".into()),
             id: "conformance-objective".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -6581,6 +6696,8 @@ where
         .collect(),
     );
     let amendment_thread = NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: stable_thread_id(&amendment_root),
         agent_id: waiting.agent_id.clone(),
         context_id: waiting.context_id.clone(),
@@ -6852,6 +6969,8 @@ where
 
     let primary_root = objective_primary_execution_root_id(&finished.id, finished.generation);
     let continuation_thread = NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: stable_thread_id(&primary_root),
         agent_id: "conformance-agent".to_string(),
         context_id: "conformance-context".to_string(),
@@ -8742,6 +8861,8 @@ where
     // clear without consuming the Session-fallback fixture below.
     let direct_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-wake-direct-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -9136,6 +9257,8 @@ where
         .unwrap();
     let archived_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-wake-archived-thread".to_string(),
             agent_id: "conformance-agent".to_string(),
             context_id: "conformance-context".to_string(),
@@ -9768,6 +9891,8 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
     let thread_id = format!("multi-worker-thread-{suffix}");
     first
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: thread_id.clone(),
             agent_id: agent_id.clone(),
             context_id: context_id.clone(),
@@ -9950,6 +10075,8 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
 
     let objective = first
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("multi-worker-objective-{suffix}"),
             agent_id,
             context_id: context_id.clone(),

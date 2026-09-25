@@ -7,6 +7,72 @@ use tempfile::TempDir;
 
 struct NeverCalledClient;
 
+#[tokio::test]
+async fn delegation_model_controls_are_persisted_without_changing_parent() {
+    let f = Fixture::new().await;
+    f.orchestrator
+        .context_engine
+        .set_evaluation_model_policy("parent-model", ["child-model".into()]);
+    f.store
+        .update_session(
+            "parent-session",
+            SessionUpdate {
+                model_alias: Some(Some("parent-model".into())),
+                reasoning_effort: Some(Some("low".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let request = Event::new("model-delegate-request".into(), "Parent-Agent-parent-session".into(),
+        TYPE_AGENT_CALL.into(), "chat/delegate".into(), json!({
+            "parent_context_id":"parent-context", "parent_session_id":"parent-session",
+            "child_context_id":"model-child-context", "child_session_id":"model-child-session",
+            "delegation_id":"model-delegation", "task":"Test model controls", "context_scope":"mind_only",
+            "mode":"detached", "model_alias":"child-model", "reasoning_effort":"high"
+        }).as_object().unwrap().clone());
+    f.orchestrator.start_delegation(&request).await.unwrap();
+    let child = f
+        .store
+        .get_session("model-child-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child.model_alias.as_deref(), Some("child-model"));
+    assert_eq!(child.reasoning_effort.as_deref(), Some("high"));
+    let parent = f
+        .store
+        .get_session("parent-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(parent.model_alias.as_deref(), Some("parent-model"));
+    assert_eq!(parent.reasoning_effort.as_deref(), Some("low"));
+    let mut rejected = request.clone();
+    rejected
+        .payload
+        .insert("model_alias".into(), json!("not-authorized"));
+    rejected
+        .payload
+        .insert("child_session_id".into(), json!("rejected-child"));
+    rejected
+        .payload
+        .insert("delegation_id".into(), json!("rejected-delegation"));
+    assert!(f
+        .orchestrator
+        .start_delegation(&rejected)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not authorized"));
+    assert!(f
+        .store
+        .get_session("rejected-child")
+        .await
+        .unwrap()
+        .is_none());
+}
+
 #[async_trait::async_trait]
 impl Client for NeverCalledClient {
     async fn create_completion(
@@ -158,6 +224,8 @@ impl Fixture {
         self.store.append(root.clone()).await.unwrap();
         self.store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: stable_thread_id(id),
                 agent_id: "agent".into(),
                 context_id: "child-context".into(),

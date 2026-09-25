@@ -2015,6 +2015,22 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
         }
+        // Nullable overrides preserve the inheritance behavior of existing work.
+        for table in ["threads", "objectives", "schedules"] {
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await?;
+            for column in ["model_alias", "reasoning_effort"] {
+                if !columns
+                    .iter()
+                    .any(|row| row.get::<String, _>("name") == column)
+                {
+                    sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
+                        .execute(&pool)
+                        .await?;
+                }
+            }
+        }
         migrate_bounded_read_model(&pool).await?;
         if !objective_columns
             .iter()
@@ -4983,6 +4999,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                ),
                objective_rows AS (
                  SELECT json_object(
+                   'model_alias', model_alias, 'reasoning_effort', reasoning_effort,
                    'id', id, 'agent_id', agent_id, 'context_id', context_id,
                    'coordinator_session_id', coordinator_session_id,
                    'delivery_session_id', delivery_session_id,
@@ -5418,6 +5435,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  SELECT projected.projection_bucket, projected.order_time,
                         projected.order_id,
                    json_object(
+                     'model_alias', thread.model_alias, 'reasoning_effort', thread.reasoning_effort,
                      'id', thread.id, 'revision', thread.revision,
                      'generation', thread.generation, 'agent_id', thread.agent_id,
                      'context_id', thread.context_id, 'session_id', thread.session_id,
@@ -5514,6 +5532,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                      'thread_id', schedule.thread_id,
                      'source_turn_id', schedule.source_turn_id,
                      'intent', schedule.intent, 'model_alias', schedule.model_alias,
+                     'reasoning_effort', schedule.reasoning_effort,
                      'status', schedule.status, 'not_before', schedule.not_before,
                      'interval_seconds', schedule.interval_seconds,
                      'dependency_thread_ids', json(schedule.dependency_thread_ids_json),
@@ -5619,6 +5638,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  )), '[]') AS activation_signals_json,
                  COALESCE((SELECT json_object(
                    'id', thread.id, 'revision', thread.revision,
+                   'model_alias', thread.model_alias, 'reasoning_effort', thread.reasoning_effort,
                    'generation', thread.generation, 'agent_id', thread.agent_id,
                    'context_id', thread.context_id, 'session_id', thread.session_id,
                    'initiating_principal_id', thread.initiating_principal_id,
@@ -7054,6 +7074,8 @@ fn thread_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
     Ok(ThreadRecord {
+        model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
         generation: sqlite_u64(row, "generation")?,
@@ -7100,13 +7122,15 @@ async fn ensure_thread_in_transaction(
     let completion_contract_json = serde_json::to_string(&thread.supervision.completion_contract)?;
     sqlx::query(
         r#"INSERT OR IGNORE INTO threads
-           (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+           (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
             kind, status, executor_kind, executor_id, target_id,
             lifetime, supervisor_kind, supervisor_id, supervision_generation,
             origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
             delivery_status, created_at, updated_at)
-           VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
     )
+    .bind(&thread.model_alias)
+    .bind(&thread.reasoning_effort)
     .bind(&thread.id)
     .bind(&thread.agent_id)
     .bind(&thread.context_id)
@@ -7156,6 +7180,7 @@ fn schedule_from_row(
     let dependency_thread_ids =
         serde_json::from_str::<Vec<String>>(&row.get::<String, _>("dependency_thread_ids_json"))?;
     Ok(ScheduleRecord {
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
         thread_id: row.get("thread_id"),
@@ -7331,6 +7356,8 @@ fn objective_from_row(
         .map(|json| serde_json::from_str::<ObjectiveCompletionIntent>(&json))
         .transpose()?;
     Ok(ObjectiveRecord {
+        model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
@@ -8114,6 +8141,8 @@ async fn append_dialogue_signal_in_transaction(
                OR (activation.initiating_principal_id IS NULL AND ? IS NULL)
              )
              AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
+             AND json_extract(root_event.payload, '$.model_alias') IS ?
+             AND json_extract(root_event.payload, '$.reasoning_effort') IS ?
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1"#,
         )
@@ -8123,6 +8152,13 @@ async fn append_dialogue_signal_in_transaction(
         .bind(principal_id)
         .bind(requested_target_id)
         .bind(requested_target_id)
+        .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+        .bind(
+            event
+                .payload
+                .get("reasoning_effort")
+                .and_then(JsonValue::as_str),
+        )
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -8163,6 +8199,8 @@ async fn append_dialogue_signal_in_transaction(
                    OR (thread.initiating_principal_id IS NULL AND ? IS NULL)
                  )
                  AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
+                 AND json_extract(root_event.payload, '$.model_alias') IS ?
+                 AND json_extract(root_event.payload, '$.reasoning_effort') IS ?
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -8179,6 +8217,13 @@ async fn append_dialogue_signal_in_transaction(
             .bind(principal_id)
             .bind(requested_target_id)
             .bind(requested_target_id)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
             .bind(batch_limit)
             .fetch_optional(&mut **tx)
             .await?
@@ -8199,10 +8244,10 @@ async fn append_dialogue_signal_in_transaction(
                     initiating_principal_id, root_turn_id, kind, status, control_state,
                     executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
-                    created_at, updated_at)
+                    created_at, updated_at, model_alias, reasoning_effort)
                    VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
                            'self', ?, 'durable', 'runtime', 'dialogue-router', 1, '{}',
-                           'none', ?, ?)"#,
+                           'none', ?, ?, ?, ?)"#,
             )
             .bind(&thread_id)
             .bind(&session.agent_id)
@@ -8213,6 +8258,13 @@ async fn append_dialogue_signal_in_transaction(
             .bind(requested_target_id)
             .bind(&now)
             .bind(&now)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
             .execute(&mut **tx)
             .await?;
             (thread_id, 1, None)
@@ -8472,10 +8524,10 @@ async fn interrupt_dialogue_turn_in_transaction(
             initiating_principal_id, root_turn_id, kind, status, control_state,
             executor_kind, lifetime, supervisor_kind, supervisor_id,
             supervision_generation, completion_contract_json, delivery_status,
-            created_at, updated_at)
+            created_at, updated_at, model_alias, reasoning_effort)
            VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
                    'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
-                   'none', ?, ?)"#,
+                   'none', ?, ?, ?, ?)"#,
     )
     .bind(&replacement_thread_id)
     .bind(&session.agent_id)
@@ -8485,6 +8537,13 @@ async fn interrupt_dialogue_turn_in_transaction(
     .bind(&event.id)
     .bind(&now)
     .bind(&now)
+    .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+    .bind(
+        event
+            .payload
+            .get("reasoning_effort")
+            .and_then(JsonValue::as_str),
+    )
     .execute(&mut **tx)
     .await?;
 
@@ -15195,13 +15254,15 @@ impl ThreadStore for SqliteStore {
             serde_json::to_string(&thread.supervision.completion_contract)?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+               (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                 delivery_status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
         )
+        .bind(&thread.model_alias)
+        .bind(&thread.reasoning_effort)
         .bind(&thread.id)
         .bind(&thread.agent_id)
         .bind(&thread.context_id)
@@ -17075,11 +17136,12 @@ impl ScheduleStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO schedules
-               (id, revision, thread_id, source_turn_id, intent, model_alias, status,
+               (reasoning_effort, id, revision, thread_id, source_turn_id, intent, model_alias, status,
                 not_before, interval_seconds, dependency_thread_ids_json,
                 created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)"#,
+               VALUES (?, ?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)"#,
         )
+        .bind(&intent.reasoning_effort)
         .bind(&intent.id)
         .bind(&intent.thread_id)
         .bind(&intent.source_turn_id)
@@ -17189,13 +17251,15 @@ impl ScheduleStore for SqliteStore {
             .await
     }
 
-    async fn reschedule_schedule(
+    async fn reschedule_schedule_with_model_selection(
         &self,
         id: &str,
         expected_revision: u64,
         not_before: Option<DateTime<Utc>>,
         interval_seconds: Option<u64>,
+        mut model_selection: crate::model_selection::ModelSelection,
     ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        model_selection.normalize()?;
         let revision = i64::try_from(expected_revision)
             .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let interval_seconds = interval_seconds
@@ -17217,6 +17281,7 @@ impl ScheduleStore for SqliteStore {
         let mut rows = sqlx::query(
             r#"UPDATE schedules
                SET not_before = ?, interval_seconds = ?,
+                   model_alias = COALESCE(?, model_alias), reasoning_effort = COALESCE(?, reasoning_effort),
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?
                  AND status IN ('queued', 'paused')
@@ -17224,6 +17289,8 @@ impl ScheduleStore for SqliteStore {
         )
         .bind(not_before)
         .bind(interval_seconds)
+        .bind(model_selection.model)
+        .bind(model_selection.reasoning_effort)
         .bind(now)
         .bind(id)
         .bind(revision)
@@ -17304,14 +17371,16 @@ impl ScheduleStore for SqliteStore {
                 serde_json::to_string(&thread.supervision.completion_contract)?;
             sqlx::query(
                 r#"INSERT OR IGNORE INTO threads
-                   (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+                   (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                     kind, status, executor_kind, executor_id, target_id,
                     lifetime, supervisor_kind, supervisor_id, supervision_generation,
                     origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                     delivery_status, created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            'none', ?, ?)"#,
             )
+            .bind(&thread.model_alias)
+            .bind(&thread.reasoning_effort)
             .bind(&thread.id)
             .bind(&thread.agent_id)
             .bind(&thread.context_id)
@@ -17617,12 +17686,13 @@ impl ScheduleStore for SqliteStore {
             let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
             sqlx::query(
                 r#"INSERT INTO schedules
-                   (id, revision, thread_id, source_turn_id, intent, model_alias, status,
+                   (reasoning_effort, id, revision, thread_id, source_turn_id, intent, model_alias, status,
                     not_before, interval_seconds, dependency_thread_ids_json,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                   VALUES (?, ?, 1, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO NOTHING"#,
             )
+            .bind(&intent.reasoning_effort)
             .bind(&intent.id)
             .bind(&intent.thread_id)
             .bind(&intent.source_turn_id)
@@ -18366,6 +18436,14 @@ impl ScheduleStore for SqliteStore {
         } else {
             record.thread_id.clone()
         };
+        // Carry schedule overrides through subsequent physical continuations,
+        // not just the first activation produced by this timer.
+        sqlx::query("UPDATE threads SET model_alias = COALESCE(?1, model_alias), reasoning_effort = COALESCE(?2, reasoning_effort), revision = revision + 1, updated_at = ?4 WHERE id = ?3 AND ((?1 IS NOT NULL AND ?1 IS NOT model_alias) OR (?2 IS NOT NULL AND ?2 IS NOT reasoning_effort))")
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(event.payload.get("reasoning_effort").and_then(JsonValue::as_str))
+            .bind(&delivery_thread_id)
+            .bind(&now)
+            .execute(&mut *tx).await?;
         append_event_in_transaction(&mut tx, event).await?;
         append_direct_thread_signal_in_transaction(&mut tx, event, &delivery_thread_id).await?;
         tx.commit().await?;
@@ -20031,6 +20109,8 @@ impl DelegationStore for SqliteStore {
         let thread = ensure_thread_in_transaction(
             &mut tx,
             &NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: stable_thread_id(&event.id),
                 agent_id: delegation.agent_id.clone(),
                 context_id: delegation.parent_context_id.clone(),
@@ -20052,7 +20132,7 @@ impl DelegationStore for SqliteStore {
     }
 }
 
-const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
+const OBJECTIVE_SELECT: &str = r#"SELECT model_alias, reasoning_effort, id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
     initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, completion_intent_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
@@ -20137,13 +20217,15 @@ async fn insert_new_objective_in_transaction(
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
     sqlx::query(
         r#"INSERT INTO objectives
-           (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+           (model_alias, reasoning_effort, id, agent_id, context_id, coordinator_session_id, delivery_session_id,
             parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
             wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
             continuation_sequence, token_budget, tokens_used, time_used_seconds,
             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
     )
+    .bind(&objective.model_alias)
+    .bind(&objective.reasoning_effort)
     .bind(&objective.id)
     .bind(&objective.agent_id)
     .bind(&objective.context_id)
@@ -28565,6 +28647,8 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "attached-migration-parent".to_string(),
                 agent_id: "attached-migration-agent".to_string(),
                 context_id: "attached-migration-context".to_string(),
@@ -29042,6 +29126,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "identity-thread".to_string(),
                 agent_id: "identity-agent".to_string(),
                 context_id: "identity-context".to_string(),
@@ -29092,6 +29178,8 @@ mod tests {
 
         let conflict = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "identity-thread-conflict".to_string(),
                 agent_id: "identity-agent".to_string(),
                 context_id: "identity-context".to_string(),
@@ -30338,6 +30426,8 @@ mod tests {
         ] {
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: thread_id.clone(),
                     agent_id: "schedule-agent".to_string(),
                     context_id: context_id.clone(),
@@ -30355,6 +30445,7 @@ mod tests {
         }
         store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: format!("schedule-{suffix}"),
                 thread_id: target_thread_id,
                 source_turn_id: format!("schedule-source-{suffix}"),
@@ -30399,6 +30490,8 @@ mod tests {
             threads.push(
                 store
                     .ensure_thread(NewThread {
+                        model_alias: None,
+                        reasoning_effort: None,
                         id: format!("delivery-thread-{suffix}-{index}"),
                         agent_id: "delivery-agent".to_string(),
                         context_id: context_id.clone(),
@@ -31003,6 +31096,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: "job-agent".to_string(),
                 context_id: context_id.clone(),
@@ -33350,6 +33445,8 @@ mod tests {
         );
         event.timestamp = pending_at;
         let delivery_thread = NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: stable_thread_id(&event.id),
             agent_id: threads[0].agent_id.clone(),
             context_id: context_id.clone(),
@@ -34459,6 +34556,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "retry-thread".to_string(),
                 agent_id: "retry-agent".to_string(),
                 context_id: "retry-context".to_string(),
@@ -34525,6 +34624,8 @@ mod tests {
         attached_supervision.thread_group_id = Some("retry-attached-group".to_string());
         let attached = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "retry-attached-child".to_string(),
                 agent_id: "retry-agent".to_string(),
                 context_id: "retry-context".to_string(),
@@ -34985,6 +35086,8 @@ mod tests {
         store.append(root.clone()).await.unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "target-retry-thread".to_string(),
                 agent_id: "target-retry-agent".to_string(),
                 context_id: "target-retry-context".to_string(),
@@ -35403,6 +35506,8 @@ mod tests {
                 .unwrap();
             let thread = store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("admission-thread-{name}"),
                     agent_id: "admission-agent".to_string(),
                     context_id: "admission-context".to_string(),
@@ -35674,6 +35779,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "signal-thread".to_string(),
                 agent_id: "signal-agent".to_string(),
                 context_id: "signal-context".to_string(),
@@ -36051,6 +36158,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "contention-thread".to_string(),
                 agent_id: "contention-agent".to_string(),
                 context_id: "contention-context".to_string(),
@@ -36184,6 +36293,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "binding-contention-thread".to_string(),
                 agent_id: "binding-contention-agent".to_string(),
                 context_id: "binding-contention-context".to_string(),
@@ -36348,6 +36459,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "terminal-replay-thread".to_string(),
                 agent_id: "terminal-replay-agent".to_string(),
                 context_id: "terminal-replay-context".to_string(),
@@ -36476,6 +36589,8 @@ mod tests {
         for index in 1..=3 {
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("dialogue-batch-thread-{index}"),
                     agent_id: "dialogue-batch-agent".to_string(),
                     context_id: "dialogue-batch-context".to_string(),
@@ -36760,6 +36875,8 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "control-thread".to_string(),
                 agent_id: "control-agent".to_string(),
                 context_id: "control-context".to_string(),
@@ -36895,6 +37012,8 @@ mod tests {
         supervision.thread_group_id = Some("group-control".to_string());
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "group-control-thread".to_string(),
                 agent_id: "group-control-agent".to_string(),
                 context_id: "group-control-context".to_string(),
@@ -37026,6 +37145,8 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "attached-barrier-parent".to_string(),
                 agent_id: "attached-barrier-agent".to_string(),
                 context_id: "attached-barrier-context".to_string(),
@@ -37048,6 +37169,8 @@ mod tests {
         child_supervision.thread_group_id = Some("attached-barrier-group".to_string());
         let child = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "attached-barrier-child".to_string(),
                 agent_id: "attached-barrier-agent".to_string(),
                 context_id: "attached-barrier-context".to_string(),
@@ -37152,6 +37275,8 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "orphaned-group-parent".to_string(),
                 agent_id: "orphaned-group-agent".to_string(),
                 context_id: "orphaned-group-context".to_string(),
@@ -37183,6 +37308,8 @@ mod tests {
             children.push(
                 store
                     .ensure_thread(NewThread {
+                        model_alias: None,
+                        reasoning_effort: None,
                         id: format!("orphaned-group-child-{ordinal}"),
                         agent_id: "orphaned-group-agent".to_string(),
                         context_id: "orphaned-group-context".to_string(),
@@ -38938,6 +39065,8 @@ mod tests {
             .await
             .unwrap();
         let objective = |id: &str| NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: id.to_string(),
             agent_id: "objective-init-agent".to_string(),
             context_id: "objective-init-context".to_string(),
@@ -39043,6 +39172,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-outbox".to_string(),
                 agent_id: "objective-outbox-agent".to_string(),
                 context_id: "objective-outbox-context".to_string(),
@@ -39092,6 +39223,8 @@ mod tests {
         };
         let continuation = event("objective-continuation-event", "objective-evaluation");
         let continuation_thread = NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: stable_thread_id(&continuation_root),
             agent_id: "objective-outbox-agent".to_string(),
             context_id: "objective-outbox-context".to_string(),
@@ -39361,6 +39494,8 @@ mod tests {
 
         let created = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-1".to_string(),
                 agent_id: "agent-objective".to_string(),
                 context_id: "context-objective".to_string(),
@@ -39544,6 +39679,8 @@ mod tests {
 
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-usage".to_string(),
                 agent_id: "agent-objective".to_string(),
                 context_id: "context-objective".to_string(),
@@ -39683,6 +39820,8 @@ mod tests {
             .unwrap();
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-wait-backfill".to_string(),
                 agent_id: "agent-wait-backfill".to_string(),
                 context_id: "context-wait-backfill".to_string(),
@@ -42233,6 +42372,8 @@ mod tests {
         create_sql_performance_fixture(&store, "plan-kind").await;
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "perf-thread-plan-kind".to_string(),
                 agent_id: "perf-agent-plan-kind".to_string(),
                 context_id: "perf-context-plan-kind".to_string(),

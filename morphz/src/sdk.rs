@@ -683,6 +683,8 @@ impl ObjectiveRequestOrigin {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateObjectiveCommand {
+    #[serde(flatten)]
+    pub model_selection: crate::model_selection::ModelSelection,
     pub id: String,
     pub coordinator_session_id: String,
     pub delivery_session_id: Option<String>,
@@ -744,7 +746,10 @@ impl SessionEventStream {
 pub struct SessionScheduleRequest {
     pub id: String,
     pub intent: String,
+    #[serde(default, alias = "model")]
     pub model_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub not_before: chrono::DateTime<chrono::Utc>,
     pub interval_seconds: Option<u64>,
     #[serde(default)]
@@ -994,9 +999,22 @@ impl MorphzSdk {
         &self,
         principal_id: &str,
         session_id: &str,
-        request: SessionScheduleRequest,
+        mut request: SessionScheduleRequest,
     ) -> SdkResult<crate::memory::ScheduleRecord> {
         let session = self.get_session(principal_id, session_id).await?;
+        let selection = self
+            .runtime
+            .validate_task_model_selection(
+                crate::model_selection::ModelSelection {
+                    model: request.model_alias,
+                    reasoning_effort: request.reasoning_effort,
+                },
+                session.model_alias.as_deref(),
+            )
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        request.model_alias = selection.model;
+        request.reasoning_effort = selection.reasoning_effort;
         if request.id.is_empty()
             || request.id.len() > 100
             || !request
@@ -1014,19 +1032,6 @@ impl MorphzSdk {
                 SdkErrorCode::InvalidArgument,
                 "Invalid schedule request",
             ));
-        }
-        if let Some(model) = &request.model_alias {
-            let options = self
-                .runtime
-                .inference_model_options()
-                .await
-                .map_err(SdkError::internal)?;
-            if !options.iter().any(|option| &option.id == model) {
-                return Err(SdkError::new(
-                    SdkErrorCode::InvalidArgument,
-                    "Unknown model route; no fallback performed",
-                ));
-            }
         }
         for dependency in &request.dependency_thread_ids {
             let thread = self
@@ -2623,11 +2628,23 @@ impl MorphzSdk {
     pub async fn create_objective(
         &self,
         principal: &PrincipalAssertion,
-        command: CreateObjectiveCommand,
+        mut command: CreateObjectiveCommand,
     ) -> SdkResult<CreateObjectiveResult> {
+        command
+            .model_selection
+            .normalize()
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))?;
         let coordinator = self
             .authorize_session(&principal.principal_id, &command.coordinator_session_id)
             .await?;
+        command.model_selection = self
+            .runtime
+            .validate_task_model_selection(
+                command.model_selection,
+                coordinator.model_alias.as_deref(),
+            )
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
         let delivery_session_id = command
             .delivery_session_id
             .as_deref()
@@ -2648,6 +2665,8 @@ impl MorphzSdk {
             ));
         }
         let objective = NewObjective {
+            model_alias: command.model_selection.model,
+            reasoning_effort: command.model_selection.reasoning_effort,
             id: command.id.clone(),
             agent_id: coordinator.agent_id.clone(),
             context_id: coordinator.context_id.clone(),

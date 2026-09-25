@@ -651,6 +651,8 @@ mod tests {
 
     fn objective(now: DateTime<Utc>) -> ObjectiveRecord {
         ObjectiveRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-1".into(),
             agent_id: "agent-1".into(),
             context_id: "context-1".into(),
@@ -698,6 +700,8 @@ mod tests {
 
     fn thread(now: DateTime<Utc>, lifecycle: ThreadLifecycle) -> ThreadRecord {
         ThreadRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "thread-1".into(),
             revision: 1,
             generation: 1,
@@ -899,6 +903,8 @@ mod tests {
         let objective = objective(now);
         let root = objective_primary_execution_root_id(&objective.id, objective.generation);
         let primary = ThreadRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: stable_thread_id(&root),
             revision: 1,
             generation: 1,

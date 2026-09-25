@@ -61,6 +61,8 @@ pub fn input_request_id(objective: &ObjectiveRecord) -> Option<String> {
 pub fn objective_thread(objective: &ObjectiveRecord) -> NewThread {
     let root = objective_primary_execution_root_id(&objective.id, objective.generation);
     NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: stable_thread_id(&root),
         agent_id: objective.agent_id.clone(),
         context_id: objective.context_id.clone(),
@@ -859,6 +861,8 @@ mod tests {
     async fn assert_question_race(store: &dyn RuntimeStore, source: &Event) {
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-steer".into(),
                 agent_id: "agent-steer".into(),
                 context_id: "context-steer".into(),

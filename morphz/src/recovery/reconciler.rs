@@ -155,6 +155,8 @@ mod tests {
 
     fn thread(id: &str) -> ThreadRecord {
         ThreadRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: id.into(),
             revision: 1,
             generation: 1,

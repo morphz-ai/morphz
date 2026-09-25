@@ -42,6 +42,8 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
         .unwrap();
     let objective = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-handoff".to_string(),
             agent_id: "objective-handoff-agent".to_string(),
             context_id: "objective-handoff-context".to_string(),
@@ -70,6 +72,8 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
             &[],
             &[],
             &[NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.to_string(),
                 agent_id: objective.agent_id.clone(),
                 context_id: objective.context_id.clone(),
@@ -203,6 +207,8 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
     let direct_root_turn_id = "objective-handoff-direct-root";
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: direct_thread_id.to_string(),
             agent_id: objective.agent_id.clone(),
             context_id: objective.context_id.clone(),

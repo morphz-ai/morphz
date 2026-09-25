@@ -123,6 +123,8 @@ fn is_unique_violation(error: &sqlx::Error) -> bool {
 
 pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     Ok(ThreadRecord {
+        model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
         generation: u64::try_from(row.get::<i64, _>("generation"))?,
@@ -164,15 +166,17 @@ pub(super) async fn ensure_thread_in_tx(
     let now = now_text();
     sqlx::query(
         r#"INSERT INTO threads
-           (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+           (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
             kind, status, executor_kind, executor_id, target_id,
             lifetime, supervisor_kind, supervisor_id, supervision_generation,
             origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
             delivery_status, created_at, updated_at)
-           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10,
-                   $11, $12, $13, $14, $15, $16, $17, $18, 'none', $19, $19)
+           VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
+                   $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
            ON CONFLICT DO NOTHING"#,
     )
+    .bind(&thread.model_alias)
+    .bind(&thread.reasoning_effort)
     .bind(&thread.id)
     .bind(&thread.agent_id)
     .bind(&thread.context_id)
@@ -225,13 +229,13 @@ impl ThreadStore for PostgresStore {
         let now = now_text();
         let insert = sqlx::query(
             r#"INSERT INTO threads
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+               (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                 delivery_status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10,
-                       $11, $12, $13, $14, $15, $16, $17, $18, 'none', $19, $19)
+               VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
+                       $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
                ON CONFLICT (root_turn_id) DO UPDATE SET
                  initiating_principal_id = COALESCE(
                    threads.initiating_principal_id,
@@ -239,6 +243,8 @@ impl ThreadStore for PostgresStore {
                  )
                RETURNING *"#,
         )
+        .bind(&thread.model_alias)
+        .bind(&thread.reasoning_effort)
         .bind(&thread.id)
         .bind(&thread.agent_id)
         .bind(&thread.context_id)

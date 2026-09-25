@@ -85,6 +85,8 @@ async fn seed(
     let store = &runtime.inner.store;
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: thread_id.clone(),
             agent_id: "approval-agent".into(),
             context_id: "approval-context".into(),

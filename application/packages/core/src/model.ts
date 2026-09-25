@@ -69,6 +69,7 @@ export const taskContentSchema = z
     description: text,
     assigneeId: id,
     model: z.string().trim().min(1).max(100).nullable(),
+    reasoningEffort: reasoningEffortSchema.nullable().optional(),
     priority: z.enum(["low", "normal", "high"]).default("normal"),
     dueDate: z.iso.date().nullable(),
     assignment: z.enum(["proposed", "accepted", "declined"]),
@@ -883,8 +884,11 @@ function checkContent(state: Workspace, projectId: string, content: Content) {
   const project = state.projects.find((p) => p.id === projectId)!;
   if (!assignee || !project.members.includes(assignee.principalId))
     throw new DomainError("invalid", "负责人不在这个项目中。");
-  if (assignee.kind === "human" && content.model !== null)
-    throw new DomainError("invalid", "人工事项不使用执行模型。");
+  if (
+    assignee.kind === "human" &&
+    (content.model !== null || content.reasoningEffort != null)
+  )
+    throw new DomainError("invalid", "人工事项不使用执行模型或思考深度。");
   if (
     assignee.kind === "human" &&
     (content.runRequested || content.everySeconds)
@@ -1308,6 +1312,7 @@ export function applyCommand(
       // Assignment alone never submits an execution request, including undo.
       content.assigneeId = changes.assigneeId;
       content.model = null;
+      content.reasoningEffort = null;
       content.runRequested = 0;
       content.notBefore = null;
       content.everySeconds = null;

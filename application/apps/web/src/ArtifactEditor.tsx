@@ -773,6 +773,7 @@ export function TaskFields({
               ...value,
               assigneeId: e.target.value,
               model: null,
+              reasoningEffort: null,
               assignment: "proposed",
               runRequested: 0,
               everySeconds: null,
@@ -794,6 +795,12 @@ export function TaskFields({
           value={value.model ?? ""}
           disabled={!editable}
           onChange={(model) => onChange({ ...value, model: model || null })}
+          reasoning={{
+            value: value.reasoningEffort ?? undefined,
+            onChange: (reasoningEffort) =>
+              onChange({ ...value, reasoningEffort: reasoningEffort ?? null }),
+            label: "事项思考深度",
+          }}
         />
       )}
       <label className="field">

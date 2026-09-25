@@ -154,6 +154,7 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
       task({
         runRequested: 1,
         model: "exact-model",
+        reasoningEffort: "high",
         dependsOnIds: [human],
         watchSourceIds: [source],
         everySeconds: 60,
@@ -178,9 +179,11 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
     assert.equal(c.snapshot(work).runs[0]!.error, "");
     const request = [...requests.values()][0] as {
       model_alias: string;
+      reasoning_effort: string;
       intent: string;
     };
     assert.equal(request.model_alias, "exact-model");
+    assert.equal(request.reasoning_effort, "high");
     assert.match(request.intent, /同意，可以推进/);
     execute(s, {
       type: "revise-artifact",
@@ -223,6 +226,7 @@ test("事项映射为 Runtime 持久安排：依赖人工答复、模型隔离�
         ...(current.content as TaskContent),
         assigneeId: "local-human",
         model: null,
+        reasoningEffort: null,
         runRequested: 0,
         everySeconds: null,
       },

@@ -64,6 +64,8 @@ async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal()
 
     let parent = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "terminal-handoff-parent".to_string(),
             agent_id: runtime.identity().agent_id.clone(),
             context_id: runtime.identity().context_id.clone(),
@@ -80,6 +82,8 @@ async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal()
         .unwrap();
     let child = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "terminal-handoff-child".to_string(),
             agent_id: runtime.identity().agent_id.clone(),
             context_id: runtime.identity().context_id.clone(),

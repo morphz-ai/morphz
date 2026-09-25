@@ -3924,6 +3924,11 @@ async fn create_objective_command(
         .create_objective(
             &sdk.default_principal(),
             CreateObjectiveCommand {
+                model_selection: morphz::model_selection::ModelSelection {
+                    model: option_value(invocation, "model").map(str::to_string),
+                    reasoning_effort: option_value(invocation, "reasoning-effort")
+                        .map(str::to_string),
+                },
                 id: objective_id,
                 coordinator_session_id: session.id.clone(),
                 delivery_session_id: None,

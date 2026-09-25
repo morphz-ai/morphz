@@ -1853,6 +1853,7 @@ struct ActivationRoute {
     /// infer or scheduled task override). Unlike mutable Session policy, this
     /// is part of the work contract and remains fixed for the Activation.
     explicit_model_alias: Option<String>,
+    explicit_reasoning_effort: Option<String>,
     /// Initial reasoning-policy audit snapshot. Ordinary physical requests
     /// resolve current Session/Runtime policy at their request boundary. The
     /// sentinel `provider_default` means no override is emitted.
@@ -7497,6 +7498,49 @@ impl Orchestrator {
             )
             .into());
         }
+        let mut model_selection = crate::model_selection::ModelSelection {
+            model: event
+                .payload
+                .get("model_alias")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            reasoning_effort: event
+                .payload
+                .get("reasoning_effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        };
+        model_selection.authorize(&self.context_engine.agent_allowed_evaluation_models())?;
+        let parent_thread = match event
+            .payload
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(id) => session_store.get_thread(id).await?.filter(|thread| {
+                thread.session_id == parent_session_id && thread.context_id == parent_context_id
+            }),
+            None => None,
+        };
+        model_selection.model = model_selection
+            .model
+            .or_else(|| {
+                parent_thread
+                    .as_ref()
+                    .and_then(|thread| thread.model_alias.clone())
+            })
+            .or_else(|| parent.model_alias.clone());
+        model_selection.reasoning_effort = model_selection
+            .reasoning_effort
+            .or_else(|| {
+                parent_thread
+                    .as_ref()
+                    .and_then(|thread| thread.reasoning_effort.clone())
+            })
+            .or_else(|| parent.reasoning_effort.clone());
+        self.context_engine.validate_task_reasoning(
+            model_selection.model.as_deref(),
+            model_selection.reasoning_effort.as_deref(),
+        )?;
         if let Some(route) = return_route.as_ref() {
             let thread = session_store
                 .get_thread(&route.thread_id)
@@ -7639,8 +7683,8 @@ impl Orchestrator {
                 SessionUpdate {
                     title: None,
                     status: None,
-                    model_alias: None,
-                    reasoning_effort: None,
+                    model_alias: Some(model_selection.model.clone()),
+                    reasoning_effort: Some(model_selection.reasoning_effort.clone()),
                     permission_mode: Some(parent.permission_mode),
                     sandbox_mode: Some(parent.sandbox_mode),
                     default_target_id: Some(parent.default_target_id),
@@ -7712,6 +7756,11 @@ impl Orchestrator {
             .await?;
         self.register_session_context(&child_session_id, &child_context_id);
         let mut start_payload = vec![
+            ("model_alias".to_string(), json!(model_selection.model)),
+            (
+                "reasoning_effort".to_string(),
+                json!(model_selection.reasoning_effort),
+            ),
             ("context_id".to_string(), json!(child_context_id)),
             ("session_id".to_string(), json!(child_session_id)),
             ("delegation_id".to_string(), json!(delegation_id)),
@@ -8899,6 +8948,16 @@ impl Orchestrator {
         };
         let ensure_thread_started = Instant::now();
         let new_thread = NewThread {
+            model_alias: event
+                .payload
+                .get("model_alias")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            reasoning_effort: event
+                .payload
+                .get("reasoning_effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
             id: stable_thread_id(&root_turn_id),
             agent_id: session.agent_id.clone(),
             context_id: session.context_id.clone(),
@@ -9882,7 +9941,32 @@ impl Orchestrator {
             .get_session(session_id)
             .await?
             .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
-        Ok(self.effective_model_request_policy_from_session(&session, attempt_id))
+        let mut policy = self.effective_model_request_policy_from_session(&session, attempt_id);
+        if let (Some(supervisor), Some(binding)) = (
+            &self.objective_supervisor,
+            self.objective_evaluations.get_for_activation(attempt_id),
+        ) {
+            if let Some(objective) = supervisor.get(&binding.objective_id).await? {
+                let route = self.activation_route(attempt_id);
+                if !route
+                    .as_ref()
+                    .is_some_and(|route| route.explicit_model_alias.is_some())
+                {
+                    if let Some(model) = objective.model_alias {
+                        policy.model_alias = model;
+                    }
+                }
+                if !route
+                    .as_ref()
+                    .is_some_and(|route| route.explicit_reasoning_effort.is_some())
+                {
+                    if let Some(effort) = objective.reasoning_effort {
+                        policy.reasoning_effort = effort;
+                    }
+                }
+            }
+        }
+        Ok(policy)
     }
 
     fn effective_model_request_policy_from_session(
@@ -9898,9 +9982,10 @@ impl Orchestrator {
             .or_else(|| self.client.model())
             .or_else(|| route.as_ref().map(|route| route.model_alias.clone()))
             .unwrap_or_else(|| "direct".to_string());
-        let reasoning_effort = session
-            .reasoning_effort
-            .clone()
+        let reasoning_effort = route
+            .as_ref()
+            .and_then(|route| route.explicit_reasoning_effort.clone())
+            .or_else(|| session.reasoning_effort.clone())
             .or_else(|| {
                 self.client
                     .reasoning_effort()
@@ -11903,24 +11988,30 @@ impl Orchestrator {
             }
         }
         let thread_kind = thread.kind.as_str();
-        let trigger_model_alias = trigger_event.as_ref().and_then(|event| {
-            event
-                .payload
-                .get("model_alias")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(ToOwned::to_owned)
-        });
-        let trigger_reasoning_effort = trigger_event.as_ref().and_then(|event| {
-            event
-                .payload
-                .get("reasoning_effort")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|effort| !effort.is_empty())
-                .map(ToOwned::to_owned)
-        });
+        let trigger_model_alias = trigger_event
+            .as_ref()
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("model_alias")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| thread.model_alias.clone());
+        let trigger_reasoning_effort = trigger_event
+            .as_ref()
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|effort| !effort.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| thread.reasoning_effort.clone());
         let session_model_alias = session_record.model_alias.clone();
         let desired_model_alias = activation
             .model_alias
@@ -12000,6 +12091,7 @@ impl Orchestrator {
                 context_snapshot_version: activation.context_snapshot_version,
                 model_alias: activation_model_alias.clone(),
                 explicit_model_alias: trigger_model_alias,
+                explicit_reasoning_effort: trigger_reasoning_effort,
                 reasoning_effort: activation_reasoning_effort,
                 context_token_budget: None,
                 thread_kind,
@@ -12781,8 +12873,9 @@ impl Orchestrator {
                 );
             }
         }
-        let initial_request_policy =
-            self.effective_model_request_policy_from_session(&session_record, &attempt_id);
+        let initial_request_policy = self
+            .effective_model_request_policy(session_id, &attempt_id)
+            .await?;
         self.observability.record_turn_stage(
             &activation.root_turn_id,
             Some(&context_id),
@@ -15341,6 +15434,8 @@ impl Orchestrator {
         // generation and survives process restart.
         event.timestamp = delivery_flush_timestamp(&timer);
         let delivery_thread = NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: stable_thread_id(&delivery_event_id),
             agent_id: session.agent_id.clone(),
             context_id: session.context_id.clone(),
@@ -19427,7 +19522,10 @@ impl Orchestrator {
                                                     crate::tool::CURRENT_CONTEXT_ID
                                                         .scope(context_id.clone(), async move {
                                                             crate::tool::CURRENT_SESSION_ID
-                                                    .scope(session_id.clone(), async move {
+                                                    // Keep the tool body behind its own heap boundary:
+                                                    // every surrounding task-local wrapper otherwise
+                                                    // carries this large concrete state machine.
+                                                    .scope(session_id.clone(), Box::pin(async move {
                                                         let fence_current = match (
                                                             objective_supervisor.as_ref(),
                                                             activation_route.as_ref(),
@@ -19793,7 +19891,7 @@ impl Orchestrator {
                                                             already_persisted: already_persisted
                                                                 || group_committed,
                                                         })
-                                                    })
+                                                    }))
                                                     .await
                                                         })
                                                         .await
@@ -23519,6 +23617,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-approval-scope".to_string(),
                 agent_id: "agent-approval-objective".to_string(),
                 context_id: "context-approval-objective".to_string(),
@@ -23533,6 +23633,8 @@ mod tests {
             .await
             .unwrap();
         let new_thread = |id: &str, supervision| NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: id.to_string(),
             agent_id: "agent-approval-objective".to_string(),
             context_id: "context-approval-objective".to_string(),
@@ -23805,6 +23907,8 @@ mod tests {
             .unwrap();
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "provider-recovery-objective".to_string(),
                 agent_id: "provider-recovery-agent".to_string(),
                 context_id: "provider-recovery-context".to_string(),
@@ -24567,6 +24671,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-cancel".to_string(),
                 agent_id: "agent-cancel".to_string(),
                 context_id: "context-cancel".to_string(),
@@ -25817,6 +25923,8 @@ mod tests {
         );
         let now = chrono::Utc::now();
         let mut objective = crate::memory::ObjectiveRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-1".into(),
             agent_id: "agent-1".into(),
             context_id: "context-1".into(),
@@ -26119,6 +26227,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.to_string(),
                 agent_id: "agent-thread-wait".to_string(),
                 context_id: context_id.to_string(),
@@ -26740,6 +26850,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.to_string(),
                 agent_id: "agent-live-recovery".to_string(),
                 context_id: context_id.to_string(),

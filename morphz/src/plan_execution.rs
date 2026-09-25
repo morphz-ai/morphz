@@ -3447,6 +3447,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: "plan-agent".to_string(),
                 context_id: context_id.clone(),
@@ -3681,6 +3683,8 @@ mod tests {
         let mut route = seed_route(&store).await;
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "yao-objective-wait".to_string(),
                 agent_id: route.agent_id.clone(),
                 context_id: route.context_id.clone(),
@@ -3790,6 +3794,8 @@ mod tests {
         let mut route = seed_route(&store).await;
         let objective = store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "yao-objective-completion".to_string(),
                 agent_id: route.agent_id.clone(),
                 context_id: route.context_id.clone(),

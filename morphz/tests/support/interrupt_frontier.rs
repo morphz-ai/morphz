@@ -7,6 +7,8 @@ pub async fn assert_interrupt_frontier<
 ) {
     let objective = store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "conformance-interrupt-frontier".into(),
             agent_id: "conformance-agent".into(),
             context_id: "conformance-context".into(),

@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openLibrary } from "./application-helpers.js";
 import { openInput } from "./interaction-helpers.js";
-import { humanTask } from "./artifact-fixtures.js";
+import { humanTask, seedLibraryArtifact } from "./artifact-fixtures.js";
 import type { Command } from "../packages/core/src/model.js";
 import type { Boot } from "../apps/web/src/client.js";
 
@@ -101,6 +101,52 @@ async function desk(page: Page) {
   await openLibrary(page);
   return id;
 }
+
+test("事项可独立选择模型和思考深度，改派给人清除设置", async ({ page }) => {
+  await desk(page);
+  await seedLibraryArtifact(page, "任务模型设置", humanTask("检查任务设置"));
+  await page.route("**/api/models", (route) =>
+    route.fulfill({
+      json: {
+        current: "model-a",
+        reasoning: { current: "low", levels: ["low", "high"] },
+        options: [
+          { id: "model-a", label: "模型 A" },
+          { id: "model-b", label: "模型 B" },
+        ],
+      },
+    }),
+  );
+  let submitted: any = null;
+  await page.route("**/api/commands", (route) => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({
+      status: 503,
+      json: { message: "隔离测试保留编辑状态" },
+    });
+  });
+  await page.getByRole("button", { name: "手动编辑", exact: true }).click();
+  const owner = page.getByLabel("事项负责人");
+  const human = await owner.inputValue();
+  await owner.selectOption("morphz-agent");
+  await page.getByLabel("执行模型", { exact: true }).selectOption("model-b");
+  await page.getByLabel("事项思考深度", { exact: true }).selectOption("high");
+  await page.getByRole("button", { name: "保存版本", exact: true }).click();
+  await expect.poll(() => submitted?.operation?.content?.model).toBe("model-b");
+  await expect
+    .poll(() => submitted?.operation?.content?.reasoningEffort)
+    .toBe("high");
+  await expect(page.getByLabel("事项思考深度", { exact: true })).toHaveValue(
+    "high",
+  );
+  await owner.selectOption(human);
+  await expect(page.getByLabel("事项思考深度", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "保存版本", exact: true }).click();
+  await expect.poll(() => submitted?.operation?.content?.model).toBeNull();
+  await expect
+    .poll(() => submitted?.operation?.content?.reasoningEffort)
+    .toBeNull();
+});
 
 test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不切换会话", async ({
   page,

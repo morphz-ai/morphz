@@ -658,6 +658,20 @@ impl PostgresStore {
                     store.migrate_bounded_read_model(),
                 )
                 .await?;
+            store
+                .run_versioned_migration("20260925_01_task_model_selection", async {
+                    for table in ["threads", "objectives", "schedules"] {
+                        for column in ["model_alias", "reasoning_effort"] {
+                            sqlx::query(&format!(
+                                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} TEXT"
+                            ))
+                            .execute(&store.pool)
+                            .await?;
+                        }
+                    }
+                    Ok(())
+                })
+                .await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
@@ -4577,6 +4591,8 @@ fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
         .map(serde_json::from_value::<ObjectiveCompletionIntent>)
         .transpose()?;
     Ok(ObjectiveRecord {
+        model_alias: row.get("model_alias"),
+        reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
@@ -6331,7 +6347,7 @@ impl RecallProjectionStore for PostgresStore {
     }
 }
 
-const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
+const OBJECTIVE_SELECT: &str = r#"SELECT model_alias, reasoning_effort, id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
     initiating_principal_id, stated_objective, revision, generation, status, status_reason, wait_condition_json, completion_intent_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
@@ -6407,14 +6423,16 @@ pub(super) async fn insert_new_objective_in_tx(
     let now = now_text();
     sqlx::query(
         r#"INSERT INTO objectives
-           (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+           (model_alias, reasoning_effort, id, agent_id, context_id, coordinator_session_id, delivery_session_id,
             parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
             wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
             continuation_sequence, token_budget, tokens_used, time_used_seconds,
             created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 'active',
-                   NULL, NULL, NULL, 0, $10, 0, 0, $11, $11)"#,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, 'active',
+                   NULL, NULL, NULL, 0, $12, 0, 0, $13, $13)"#,
     )
+    .bind(&objective.model_alias)
+    .bind(&objective.reasoning_effort)
     .bind(&objective.id)
     .bind(&objective.agent_id)
     .bind(&objective.context_id)

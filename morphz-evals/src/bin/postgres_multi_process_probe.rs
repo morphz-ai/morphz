@@ -402,6 +402,8 @@ async fn parent() -> Result<(), ProbeError> {
 
     let thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: format!("process-probe-crash-thread-{suffix}"),
             agent_id: agent_id.clone(),
             context_id: context_id.clone(),

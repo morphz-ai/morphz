@@ -7777,6 +7777,8 @@ mod tests {
     fn test_objective() -> ObjectiveRecord {
         let now = Utc::now();
         ObjectiveRecord {
+            model_alias: None,
+            reasoning_effort: None,
             id: "objective-1".to_string(),
             agent_id: "agent-default".to_string(),
             context_id: "context-default".to_string(),

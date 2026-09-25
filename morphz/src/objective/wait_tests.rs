@@ -479,6 +479,8 @@ async fn objective_update_resolves_only_its_own_finished_thread_group() {
             &[],
             &[],
             &[NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "group-member".into(),
                 agent_id: fixture.objective.agent_id.clone(),
                 context_id: fixture.objective.context_id.clone(),

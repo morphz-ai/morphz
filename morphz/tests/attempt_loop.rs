@@ -111,6 +111,7 @@ struct MixedIncompleteContinuationClient {
 struct SessionModelSwitchContinuationClient {
     calls: AtomicUsize,
     bindings: Mutex<Vec<String>>,
+    options_seen: Mutex<Vec<morphz::llm::ModelRequestOptions>>,
     messages_seen: Mutex<Vec<Vec<Message>>>,
     store: Arc<SqliteStore>,
     session_id: String,
@@ -922,6 +923,20 @@ impl Client for SessionModelSwitchContinuationClient {
         Some("route-a".to_string())
     }
 
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        _binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        options: morphz::llm::ModelRequestOptions,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.options_seen.lock().unwrap().push(options);
+        self.create_completion_measured_stream(messages, tools, measurement, stream)
+            .await
+    }
+
     async fn bind_requested_model_attempt(
         &self,
         _request: &ModelRequestContext,
@@ -1575,6 +1590,7 @@ async fn publish_user_with_model(
     payload.insert("session_id".to_string(), json!(session_id));
     payload.insert("text".to_string(), json!(text));
     payload.insert("model_alias".to_string(), json!(model_alias));
+    payload.insert("reasoning_effort".to_string(), json!("high"));
     bus.publish(Event::new(
         format!(
             "test_user_{}",
@@ -1926,6 +1942,8 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: format!("recovery-thread-{index}"),
                 agent_id: "recovery-agent".to_string(),
                 context_id: "recovery-context".to_string(),
@@ -2027,6 +2045,8 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "recovery-orphan-thread".to_string(),
             agent_id: "recovery-agent".to_string(),
             context_id: "recovery-context".to_string(),
@@ -2110,6 +2130,8 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "recovery-active-background-job-thread".to_string(),
             agent_id: "recovery-agent".to_string(),
             context_id: "recovery-context".to_string(),
@@ -2600,6 +2622,8 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "plan-recovery-thread".to_string(),
             agent_id: "plan-recovery-agent".to_string(),
             context_id: "plan-recovery-context".to_string(),
@@ -2955,6 +2979,8 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "context-tx-recovery-thread".to_string(),
             agent_id: "context-tx-recovery-agent".to_string(),
             context_id: "context-tx-recovery-context".to_string(),
@@ -3363,6 +3389,7 @@ async fn run_session_model_switch_continuation(
     let client = Arc::new(SessionModelSwitchContinuationClient {
         calls: AtomicUsize::new(0),
         bindings: Mutex::new(Vec::new()),
+        options_seen: Mutex::new(Vec::new()),
         messages_seen: Mutex::new(Vec::new()),
         store: Arc::clone(&store),
         session_id: session_id.to_string(),
@@ -3398,6 +3425,20 @@ async fn run_session_model_switch_continuation(
     );
     let bindings = client.bindings.lock().unwrap().clone();
     let messages = client.messages_seen.lock().unwrap().clone();
+    let options = client.options_seen.lock().unwrap();
+    assert_eq!(options.len(), 2);
+    if explicit_trigger_model {
+        assert!(options
+            .iter()
+            .all(|options| options.reasoning_effort
+                == Some(Some(morphz::llm::ReasoningEffort::High))));
+    } else {
+        assert_eq!(options[0].reasoning_effort, Some(None));
+        assert_eq!(
+            options[1].reasoning_effort,
+            Some(Some(morphz::llm::ReasoningEffort::Low))
+        );
+    }
     (bindings, messages)
 }
 
@@ -6665,6 +6706,7 @@ async fn assert_delegated_task_survives_progress_inquiry(deferred_delivery: bool
         // exercises that production branch without introducing another wake.
         let schedule = store
             .ensure_schedule(NewSchedule {
+                reasoning_effort: None,
                 id: "delegated-task-checkpoint".into(),
                 thread_id: morphz::memory::stable_thread_id(&start.id),
                 source_turn_id: start.id,
@@ -6985,6 +7027,8 @@ async fn startup_recovers_legacy_attached_result_misrouted_to_a_detached_thread(
         .unwrap();
     let return_thread = store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: "legacy-attached-return-thread".to_string(),
             agent_id: "legacy-attached-agent".to_string(),
             context_id: "legacy-attached-context".to_string(),

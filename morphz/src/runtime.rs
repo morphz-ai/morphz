@@ -1279,6 +1279,7 @@ impl MorphzRuntimeBuilder {
                 self.config.llm.model.clone(),
                 self.config.llm.allowed_evaluation_models.clone(),
             )
+            .with_task_model_capabilities(&self.config)
             .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
@@ -1995,7 +1996,10 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         background_scheduler,
     ))));
     if !policy.coding_eval {
-        registry.register(Arc::new(DelegateTool::new(Arc::clone(bus))));
+        registry.register(Arc::new(
+            DelegateTool::new(Arc::clone(bus))
+                .with_evaluation_model_policy(Arc::clone(context_engine)),
+        ));
         registry.register(Arc::new(ListSkillsTool));
     }
 }
@@ -2233,6 +2237,9 @@ impl MorphzRuntime {
             config.llm.model.clone(),
             config.llm.allowed_evaluation_models.clone(),
         );
+        self.inner
+            .context_engine
+            .set_task_model_capabilities(&config);
         config.permissions.auto_review_model = self.inner.permissions.auto_review_model();
         let selected_model = self.model();
         let fallback_capacity = resolve_model_context_capacity(&config, &selected_model);
@@ -3784,8 +3791,19 @@ impl MorphzRuntime {
         &self,
         session: &SessionRecord,
         principal_id: &str,
-        request: crate::sdk::SessionScheduleRequest,
+        mut request: crate::sdk::SessionScheduleRequest,
     ) -> Result<ScheduleRecord, RuntimeError> {
+        let selection = self
+            .validate_task_model_selection(
+                crate::model_selection::ModelSelection {
+                    model: request.model_alias,
+                    reasoning_effort: request.reasoning_effort,
+                },
+                session.model_alias.as_deref(),
+            )
+            .await?;
+        request.model_alias = selection.model;
+        request.reasoning_effort = selection.reasoning_effort;
         let root = format!("client-schedule-{}", request.id);
         let thread_id = crate::memory::stable_thread_id(&root);
         let request_fingerprint = crate::scheduler::stable_command_id(
@@ -3803,14 +3821,17 @@ impl MorphzRuntime {
                 || owner.initiating_principal_id.as_deref() != Some(principal_id)
                 || existing.thread_id != thread_id
                 || existing.intent != request.intent
-                || existing.model_alias != request.model_alias
                 || owner.supervision.supervisor_id.as_deref() != Some(request_fingerprint.as_str())
             {
                 return Err("Schedule identity already belongs to another request".into());
             }
+            // The immutable request fingerprint proves retry identity. The
+            // current model/depth may have legitimately changed via reschedule.
             return Ok(existing);
         }
         let thread = NewThread {
+            model_alias: request.model_alias.clone(),
+            reasoning_effort: request.reasoning_effort.clone(),
             id: thread_id.clone(),
             agent_id: session.agent_id.clone(),
             context_id: session.context_id.clone(),
@@ -3824,6 +3845,7 @@ impl MorphzRuntime {
             supervision: crate::memory::ThreadSupervision::runtime(request_fingerprint),
         };
         let schedule = crate::memory::NewSchedule {
+            reasoning_effort: request.reasoning_effort,
             id: request.id.clone(),
             thread_id,
             source_turn_id: root.clone(),
@@ -3904,6 +3926,119 @@ impl MorphzRuntime {
             .thread_scheduler
             .cancel(id, expected_revision)
             .await
+    }
+
+    pub async fn reschedule_with_model_selection(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<chrono::DateTime<chrono::Utc>>,
+        interval_seconds: Option<u64>,
+        selection: crate::model_selection::ModelSelection,
+    ) -> Result<ScheduleMutation, RuntimeError> {
+        let schedule = self.inspect_schedule(id).await?;
+        let thread = match schedule.as_ref() {
+            Some(schedule) => self.inner.store.get_thread(&schedule.thread_id).await?,
+            None => None,
+        };
+        let session = match thread.as_ref() {
+            Some(thread) => self.get_session(&thread.session_id).await?,
+            None => None,
+        };
+        let inherited_model = schedule
+            .as_ref()
+            .and_then(|schedule| schedule.model_alias.as_deref())
+            .or_else(|| {
+                thread
+                    .as_ref()
+                    .and_then(|thread| thread.model_alias.as_deref())
+            })
+            .or_else(|| {
+                session
+                    .as_ref()
+                    .and_then(|session| session.model_alias.as_deref())
+            });
+        let selection = self
+            .validate_task_model_selection(selection, inherited_model)
+            .await?;
+        if selection.model.is_some() && selection.reasoning_effort.is_none() {
+            // A model-only edit keeps the existing depth; validate that pair
+            // without turning an inherited depth into a new explicit override.
+            let inherited_effort = schedule
+                .as_ref()
+                .and_then(|schedule| schedule.reasoning_effort.clone())
+                .or_else(|| {
+                    thread
+                        .as_ref()
+                        .and_then(|thread| thread.reasoning_effort.clone())
+                })
+                .or_else(|| {
+                    session
+                        .as_ref()
+                        .and_then(|session| session.reasoning_effort.clone())
+                });
+            self.validate_task_model_selection(
+                crate::model_selection::ModelSelection {
+                    model: selection.model.clone(),
+                    reasoning_effort: inherited_effort,
+                },
+                inherited_model,
+            )
+            .await?;
+        }
+        self.inner
+            .thread_scheduler
+            .reschedule_with_model_selection(
+                id,
+                expected_revision,
+                not_before,
+                interval_seconds,
+                selection,
+            )
+            .await
+    }
+
+    /// Human/SDK entry points use the enabled catalog, not the narrower Agent allowlist.
+    pub async fn validate_task_model_selection(
+        &self,
+        mut selection: crate::model_selection::ModelSelection,
+        inherited_model: Option<&str>,
+    ) -> Result<crate::model_selection::ModelSelection, RuntimeError> {
+        selection.normalize()?;
+        if selection.model.is_none() && selection.reasoning_effort.is_none() {
+            return Ok(selection);
+        }
+        let options = self.inference_model_options().await?;
+        if let Some(model) = &selection.model {
+            if !options.iter().any(|option| &option.id == model) {
+                return Err(format!("model '{model}' is not present in the enabled model catalog; no fallback performed").into());
+            }
+        }
+        let fallback = self.model();
+        let effective_model = selection
+            .model
+            .as_deref()
+            .or(inherited_model)
+            .unwrap_or(&fallback);
+        if let Some(effort) = selection
+            .reasoning_effort
+            .as_deref()
+            .filter(|effort| *effort != "provider_default")
+        {
+            if let Some(supported) = options
+                .iter()
+                .find(|option| option.id == effective_model)
+                .and_then(|option| option.supported_reasoning_efforts.as_ref())
+            {
+                if !supported.iter().any(|candidate| candidate == effort) {
+                    return Err(format!(
+                        "reasoning effort '{effort}' is not supported by model '{effective_model}'"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(selection)
     }
 
     pub fn sqlite_database_path(&self) -> Option<&str> {
@@ -5373,6 +5508,8 @@ impl MorphzRuntime {
             .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
                 request_event: request_event.clone(),
                 thread: NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: identity.thread_id.clone(),
                     agent_id: session.agent_id.clone(),
                     context_id: session.context_id.clone(),
@@ -6314,20 +6451,38 @@ impl MorphzRuntime {
         &self,
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, RuntimeError> {
-        self.inner.objective_supervisor.create(objective).await
+        Box::pin(self.create_objective_with_initial_events(objective, Vec::new())).await
     }
 
     /// Atomically creates a schedulable Objective and its immutable
     /// initialization facts before the first Evaluation can be claimed.
     pub async fn create_objective_with_initial_events(
         &self,
-        objective: NewObjective,
+        mut objective: NewObjective,
         events: Vec<Event>,
     ) -> Result<ObjectiveRecord, RuntimeError> {
-        self.inner
-            .objective_supervisor
-            .create_with_initial_events(objective, events)
-            .await
+        let session = self.get_session(&objective.coordinator_session_id).await?;
+        let selection = self
+            .validate_task_model_selection(
+                crate::model_selection::ModelSelection {
+                    model: objective.model_alias,
+                    reasoning_effort: objective.reasoning_effort,
+                },
+                session
+                    .as_ref()
+                    .and_then(|session| session.model_alias.as_deref()),
+            )
+            .await?;
+        objective.model_alias = selection.model;
+        objective.reasoning_effort = selection.reasoning_effort;
+        // Creation can synchronously dispatch the first Evaluation. Keep that
+        // supervisor future off the caller's stack across API/SDK wrappers.
+        Box::pin(
+            self.inner
+                .objective_supervisor
+                .create_with_initial_events(objective, events),
+        )
+        .await
     }
 
     /// Atomically creates a schedulable Objective and binds one exact Harness
@@ -6368,9 +6523,7 @@ impl MorphzRuntime {
         )?;
         events.push(event);
         let created = self
-            .inner
-            .objective_supervisor
-            .create_with_initial_events(objective, events)
+            .create_objective_with_initial_events(objective, events)
             .await?;
         Ok((created, binding))
     }
@@ -11748,6 +11901,8 @@ mod tests {
             .inner
             .store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-model-configuration-wake".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -11798,6 +11953,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-model-configuration-provider-wake".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -12018,6 +12175,8 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-model-switch-{suffix}"),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -13061,6 +13220,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-live-schedule".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -13079,6 +13240,7 @@ mod tests {
             .inner
             .store
             .ensure_schedule(crate::memory::NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-live-once".to_string(),
                 thread_id: "thread-live-schedule".to_string(),
                 source_turn_id: "root-live-schedule".to_string(),
@@ -13139,6 +13301,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-live-recurring-template".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -13157,6 +13321,7 @@ mod tests {
             .inner
             .store
             .ensure_schedule(crate::memory::NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-live-recurring".to_string(),
                 thread_id: "thread-live-recurring-template".to_string(),
                 source_turn_id: "root-live-recurring-template".to_string(),
@@ -13226,6 +13391,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-live-signal-recovery".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -13327,6 +13494,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&event.id),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -13435,6 +13604,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&wake.id),
                 agent_id: crashed_runtime.identity().agent_id.clone(),
                 context_id: crashed_runtime.identity().context_id.clone(),
@@ -16972,6 +17143,8 @@ mod tests {
             .inner
             .store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-scheduler-snapshot".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -17015,6 +17188,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-scheduler-snapshot".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -17139,6 +17314,7 @@ mod tests {
             .inner
             .store
             .ensure_schedule(crate::memory::NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-scheduler-snapshot".to_string(),
                 thread_id: thread.id.clone(),
                 source_turn_id: root_turn_id.to_string(),
@@ -17307,6 +17483,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-scheduler-pagination".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -17467,6 +17645,8 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-scheduler-bounds-{index}"),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -17488,6 +17668,7 @@ mod tests {
             .inner
             .store
             .ensure_schedule(crate::memory::NewSchedule {
+                reasoning_effort: None,
                 id: "schedule-scheduler-bounds".to_string(),
                 thread_id: quiet_owner.id.clone(),
                 source_turn_id: quiet_owner.root_turn_id.clone(),
@@ -17570,6 +17751,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-scheduler-orphan".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -17786,6 +17969,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-orphaned-approved-job".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -18458,6 +18643,8 @@ mod tests {
         runtime
             .create_objective_with_harness(
                 NewObjective {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: "objective-harness-entry".to_string(),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -20100,6 +20287,8 @@ mod tests {
                 .unwrap();
             store
                 .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: "cancel-gate-thread".to_string(),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -20483,6 +20672,8 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-{session_id}-{index}"),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -20757,6 +20948,8 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-delivery-recovery-{index}"),
                     agent_id: crashed.identity().agent_id.clone(),
                     context_id: crashed.identity().context_id.clone(),
@@ -20887,6 +21080,8 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: format!("thread-delivery-snapshot-{index}"),
                     agent_id: seed.identity().agent_id.clone(),
                     context_id: seed.identity().context_id.clone(),
@@ -20939,6 +21134,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-delivery-snapshot-late".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -21328,6 +21525,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-live-activation-recovery".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -21513,6 +21712,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-activation-recovery".to_string(),
                 agent_id: crashed.identity().agent_id.clone(),
                 context_id: crashed.identity().context_id.clone(),
@@ -21961,6 +22162,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&second.id),
                 agent_id: crashed_runtime.identity().agent_id.clone(),
                 context_id: crashed_runtime.identity().context_id.clone(),
@@ -22358,6 +22561,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-runtime".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -22455,6 +22660,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-concurrent-route".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -22574,6 +22781,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-scoped-a".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -22661,6 +22870,8 @@ mod tests {
 
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-scoped-b".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -22990,6 +23201,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-blocked".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -23059,6 +23272,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-long-run".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -23430,6 +23645,8 @@ mod tests {
         let store = &runtime.inner.store;
         let thread = store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-periodic-job-recovery".into(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -23631,6 +23848,8 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "thread-objective-wait-task".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -23703,6 +23922,8 @@ mod tests {
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-wait".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
@@ -23837,6 +24058,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-recover".to_string(),
                 agent_id: "default-agent".to_string(),
                 context_id: "context-default".to_string(),
@@ -23942,6 +24165,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-completion-recover".to_string(),
                 agent_id: "default-agent".to_string(),
                 context_id: "context-default".to_string(),
@@ -23980,6 +24205,8 @@ mod tests {
             ]),
         );
         let thread = NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: crate::memory::stable_thread_id(&root_turn_id),
             agent_id: "default-agent".to_string(),
             context_id: "context-default".to_string(),
@@ -24212,6 +24439,8 @@ mod tests {
         {
             store
                 .create_objective(NewObjective {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: objective_id.to_string(),
                     agent_id: "default-agent".to_string(),
                     context_id: "context-default".to_string(),
@@ -24326,6 +24555,8 @@ mod tests {
             .unwrap();
         store
             .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
                 id: "objective-recover".to_string(),
                 agent_id: "default-agent".to_string(),
                 context_id: "context-default".to_string(),
@@ -25041,6 +25272,8 @@ mod tests {
             .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
                 request_event,
                 thread: NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
                     id: identity.thread_id.clone(),
                     agent_id: session.agent_id.clone(),
                     context_id: session.context_id.clone(),

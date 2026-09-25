@@ -28,6 +28,7 @@ export function ModelPicker({
   reasoning?: {
     value?: ReasoningEffort;
     onChange(value?: ReasoningEffort): void;
+    label?: string;
   };
 }) {
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
@@ -149,12 +150,15 @@ export function ModelPicker({
                   ? "正在读取模型设置…"
                   : !catalog.reasoning
                     ? "当前运行服务不支持推理强度设置。"
-                    : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。"
+                    : reasoning.label
+                      ? "用于这件事项的后续执行；默认沿用模型设置，不改变其他事项。"
+                      : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。"
           }
         >
           <Brain aria-hidden="true" />
+          {!compact && reasoning.label && <span>{reasoning.label}</span>}
           <select
-            aria-label="本次输入推理强度"
+            aria-label={reasoning.label ?? "本次输入推理强度"}
             value={reasoning.value ?? ""}
             disabled={
               disabled ||

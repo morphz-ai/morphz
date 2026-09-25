@@ -265,6 +265,8 @@ async fn assert_directed_interrupt_chain(with_infer: bool) {
         .inner
         .store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "live-interrupt-objective".into(),
             agent_id: parent.agent_id.clone(),
             context_id: parent.context_id.clone(),
@@ -584,6 +586,8 @@ async fn assert_directed_interrupt_chain(with_infer: bool) {
 
 fn thread(runtime: &MorphzRuntime, id: &str) -> NewThread {
     NewThread {
+        model_alias: None,
+        reasoning_effort: None,
         id: id.into(),
         agent_id: runtime.identity().agent_id.clone(),
         context_id: runtime.identity().context_id.clone(),
@@ -694,6 +698,8 @@ async fn four_unstarted_children_cancel_completely_and_can_be_replaced_after_reo
         .inner
         .store
         .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
             id: "cancel-chain-objective".into(),
             agent_id: parent.agent_id.clone(),
             context_id: parent.context_id.clone(),

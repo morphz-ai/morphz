@@ -275,17 +275,25 @@ export class ApplicationSession {
         ? this.store.snapshot().artifacts.find((a) => a.id === op.artifactId)
             ?.content
         : null;
+    const effort =
+      op.type === "record-input"
+        ? op.reasoningEffort
+        : (op.type === "create-artifact" || op.type === "revise-artifact") &&
+            op.content.kind === "task"
+          ? (op.content.reasoningEffort ?? undefined)
+          : undefined;
     if (
-      (chosen || (op.type === "record-input" && op.reasoningEffort)) &&
-      !(previous?.kind === "task" && previous.model === chosen)
+      (chosen || effort) &&
+      !(
+        previous?.kind === "task" &&
+        previous.model === chosen &&
+        (previous.reasoningEffort ?? undefined) === effort
+      )
     ) {
       if (!this.options.runtime)
         throw new DomainError("invalid", "Agent 尚未连接，无法确认所选模型。");
       await this.options.runtime.as(this.access, () =>
-        this.options.runtime!.validateInference(
-          chosen ?? undefined,
-          op.type === "record-input" ? op.reasoningEffort : undefined,
-        ),
+        this.options.runtime!.validateInference(chosen ?? undefined, effort),
       );
     }
     this.active();

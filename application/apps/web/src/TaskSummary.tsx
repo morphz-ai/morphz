@@ -16,6 +16,7 @@ import type {
 import { actorName } from "./client.js";
 import type { WorkspaceClient } from "./client.js";
 import { TaskArrangement } from "./TaskArrangement.js";
+import { reasoningLabels } from "../../../packages/core/src/inference.js";
 
 const executionLabel = {
   planned: "已计划",
@@ -106,7 +107,12 @@ export function TaskSummary({
                 <Cpu size={14} />
                 <span className="sr-only">执行模型</span>
               </dt>
-              <dd>{value.model || "自动选择模型"}</dd>
+              <dd>
+                {value.model || "自动选择模型"}
+                {value.reasoningEffort
+                  ? ` · 思考深度：${reasoningLabels[value.reasoningEffort]}`
+                  : ""}
+              </dd>
             </div>
           )}
         </dl>

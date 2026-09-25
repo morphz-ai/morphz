@@ -249,6 +249,8 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> Batch {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: thread.clone(),
             agent_id: agent.clone(),
             context_id: context.clone(),
@@ -535,6 +537,8 @@ async fn assert_later_dialogue_is_not_blocked(store: &dyn RuntimeStore, batch: &
     }))).await.unwrap();
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: root.clone(),
             agent_id: job.agent_id.clone(),
             context_id: job.context_id.clone(),

@@ -283,6 +283,8 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> NewPlanExecution {
     let activation = format!("activation-{label}");
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: thread.clone(),
             agent_id: agent.clone(),
             context_id: context.clone(),
@@ -654,6 +656,8 @@ async fn cancellation_contract(store: &dyn RuntimeStore, label: &str) -> Vec<Str
     sibling.activation_id.push_str("-sibling");
     store
         .ensure_thread(NewThread {
+            model_alias: None,
+            reasoning_effort: None,
             id: sibling.thread_id.clone(),
             agent_id: new.agent_id.clone(),
             context_id: new.context_id.clone(),

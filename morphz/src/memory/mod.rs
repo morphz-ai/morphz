@@ -4922,6 +4922,11 @@ impl DeliveryStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadRecord {
+    /// Task-scoped overrides. Absence preserves live Session/Runtime defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub revision: u64,
     /// Monotonic Evaluation generation for this logical Thread.
@@ -4950,6 +4955,8 @@ pub struct ThreadRecord {
 
 #[derive(Debug, Clone)]
 pub struct NewThread {
+    pub model_alias: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub agent_id: String,
     pub context_id: String,
@@ -4998,6 +5005,8 @@ impl ScheduleStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScheduleRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub revision: u64,
     pub thread_id: String,
@@ -5017,6 +5026,7 @@ pub struct ScheduleRecord {
 
 #[derive(Debug, Clone)]
 pub struct NewSchedule {
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub thread_id: String,
     pub source_turn_id: String,
@@ -5282,6 +5292,11 @@ pub struct ObjectiveCompletionIntent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectiveRecord {
+    /// Defaults for this Objective's evaluations and supervised work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub agent_id: String,
     pub context_id: String,
@@ -5353,6 +5368,8 @@ pub struct ObjectiveReadinessCounts {
 
 #[derive(Debug, Clone)]
 pub struct NewObjective {
+    pub model_alias: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub agent_id: String,
     pub context_id: String,
@@ -7537,6 +7554,25 @@ pub trait ScheduleStore: Send + Sync {
         expected_revision: u64,
         not_before: Option<DateTime<Utc>>,
         interval_seconds: Option<u64>,
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.reschedule_schedule_with_model_selection(
+            id,
+            expected_revision,
+            not_before,
+            interval_seconds,
+            Default::default(),
+        )
+        .await
+    }
+    /// Atomically replaces timing and any supplied model controls. Omitted
+    /// controls preserve the existing schedule policy; dispatched work is immutable.
+    async fn reschedule_schedule_with_model_selection(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<DateTime<Utc>>,
+        interval_seconds: Option<u64>,
+        model_selection: crate::model_selection::ModelSelection,
     ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn cancel_schedule(
         &self,

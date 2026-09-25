@@ -741,6 +741,16 @@ impl PlanExecutionStore for SqliteStore {
         let child_thread = ensure_thread_in_transaction(
             &mut tx,
             &NewThread {
+                model_alias: request_event
+                    .payload
+                    .get("model_alias")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
+                reasoning_effort: request_event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string),
                 id: stable_thread_id(&request_event.id),
                 agent_id: current_plan.agent_id.clone(),
                 context_id: current_plan.context_id.clone(),
@@ -1108,6 +1118,8 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
                 id: thread_id.clone(),
                 agent_id: "plan-agent".to_string(),
                 context_id: context_id.clone(),

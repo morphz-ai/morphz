@@ -81,6 +81,8 @@ async fn append_dialogue_signal_in_tx(
              ) < $2
              AND activation.initiating_principal_id IS NOT DISTINCT FROM $3
              AND ($4 IS NULL OR thread.target_id IS NULL OR thread.target_id = $4)
+             AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM $5
+             AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM $6
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1
            FOR UPDATE OF activation, thread"#,
@@ -89,6 +91,13 @@ async fn append_dialogue_signal_in_tx(
         .bind(batch_limit)
         .bind(principal_id)
         .bind(requested_target_id)
+        .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+        .bind(
+            event
+                .payload
+                .get("reasoning_effort")
+                .and_then(JsonValue::as_str),
+        )
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -120,6 +129,8 @@ async fn append_dialogue_signal_in_tx(
                  AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                  AND thread.initiating_principal_id IS NOT DISTINCT FROM $2
                  AND ($3 IS NULL OR thread.target_id IS NULL OR thread.target_id = $3)
+                 AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM $5
+                 AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM $6
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -135,6 +146,13 @@ async fn append_dialogue_signal_in_tx(
             .bind(principal_id)
             .bind(requested_target_id)
             .bind(batch_limit)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
             .fetch_optional(&mut **tx)
             .await?
         } else {
@@ -154,10 +172,10 @@ async fn append_dialogue_signal_in_tx(
                     initiating_principal_id, root_turn_id, kind, status, control_state,
                     executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
-                    created_at, updated_at)
+                    created_at, updated_at, model_alias, reasoning_effort)
                    VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
                            'active', 'self', $7, 'durable', 'runtime', 'dialogue-router', 1,
-                           '{}'::jsonb, 'none', $8, $8)"#,
+                           '{}'::jsonb, 'none', $8, $8, $9, $10)"#,
             )
             .bind(&thread_id)
             .bind(agent_id)
@@ -167,6 +185,13 @@ async fn append_dialogue_signal_in_tx(
             .bind(&event.id)
             .bind(requested_target_id)
             .bind(&now)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
             .execute(&mut **tx)
             .await?;
             (thread_id, 1, None)
@@ -415,10 +440,10 @@ async fn interrupt_dialogue_turn_in_tx(
             initiating_principal_id, root_turn_id, kind, status, control_state,
             executor_kind, lifetime, supervisor_kind, supervisor_id,
             supervision_generation, completion_contract_json, delivery_status,
-            created_at, updated_at)
+            created_at, updated_at, model_alias, reasoning_effort)
            VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
                    'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
-                   '{}'::jsonb, 'none', $7, $7)"#,
+                   '{}'::jsonb, 'none', $7, $7, $8, $9)"#,
     )
     .bind(&replacement_thread_id)
     .bind(agent_id)
@@ -427,6 +452,13 @@ async fn interrupt_dialogue_turn_in_tx(
     .bind(principal_id)
     .bind(&event.id)
     .bind(&now)
+    .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+    .bind(
+        event
+            .payload
+            .get("reasoning_effort")
+            .and_then(JsonValue::as_str),
+    )
     .execute(&mut **tx)
     .await?;
 
