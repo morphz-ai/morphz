@@ -67,6 +67,9 @@ export function ApplicationDock({
           triggerIcon={<Grid2X2 />}
           triggerClassName="application-dock-shortcut"
           menuClassName={`application-dock-menu application-dock-menu-${Math.min(4, Math.max(1, applications.length))}`}
+          // Opening the Launcher does not select the first app or reveal its
+          // secondary pin action. Tab enters the existing launch/pin sequence.
+          initialFocus="panel"
           options={[]}
           content={(close) => (
             <>

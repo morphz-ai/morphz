@@ -559,6 +559,42 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
   await expect(
     catalog.getByRole("button", { name: "在工作台管理应用", exact: true }),
   ).toBeVisible();
+  // Programmatic opening focuses the panel, not the first app. Otherwise the
+  // first entry's :focus-within falsely exposes its secondary pin at rest.
+  await expect(catalog).toBeFocused();
+  const pins = catalog.locator(".application-dock-pin");
+  await page.mouse.move(1, 1);
+  for (const pin of await pins.all()) {
+    await expect(pin).toHaveCSS("opacity", "0");
+    await expect(pin).toHaveCSS("pointer-events", "none");
+  }
+  const firstLaunch = catalog.locator(".application-dock-launch").first();
+  const firstPin = pins.first();
+  await firstLaunch.hover();
+  await expect(firstPin).toHaveCSS("opacity", "1");
+  await expect(firstPin).toHaveCSS("pointer-events", "auto");
+  await expect(pins.nth(1)).toHaveCSS("opacity", "0");
+  await page.mouse.move(1, 1);
+  await expect(firstPin).toHaveCSS("opacity", "0");
+  await page.keyboard.press("Tab");
+  await expect(firstLaunch).toBeFocused();
+  await expect(firstPin).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Tab");
+  await expect(firstPin).toBeFocused();
+  await expect(firstPin).toHaveCSS("pointer-events", "auto");
+  await page.keyboard.press("Escape");
+  const launcher = dock.getByRole("button", {
+    name: "全部应用",
+    exact: true,
+  });
+  await expect(launcher).toBeFocused();
+  await expect(catalog).not.toBeVisible();
+  await expect(await openInput(page)).toHaveValue(draft);
+  await launcher.focus();
+  await page.keyboard.press("Enter");
+  await expect(catalog).toBeFocused();
+  for (const pin of await pins.all())
+    await expect(pin).toHaveCSS("opacity", "0");
   // Inspect rendered geometry, not just the presence of a Grid icon.
   for (const [width, columns] of [
     [1440, 4],
@@ -650,6 +686,9 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
   ).toBeVisible();
   await dock.getByRole("button", { name: "全部应用", exact: true }).click();
   await catalog
+    .getByRole("button", { name: "打开浏览器", exact: true })
+    .hover();
+  await catalog
     .getByRole("button", { name: "从 Dock 移除：浏览器", exact: true })
     .click();
   await page.keyboard.press("Escape");
@@ -716,4 +755,73 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
     page.getByRole("region", { name: "应用", exact: true }),
   ).toBeVisible();
   expect(writes).toEqual([]);
+});
+
+test.describe("触控 Launcher 固定操作", () => {
+  test.use({ hasTouch: true });
+
+  test("无悬停设备图钉直接可达，固定不启动应用或改变草稿／会话", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "对话", exact: true })
+      .click();
+    const draft = "TEST 触控固定应用不发送的原草稿";
+    await (await openInput(page)).fill(draft);
+    const before = await (
+      await page.request.get("/api/platform/conversations/navigation?limit=100")
+    ).json();
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        /\/api\/platform\/(?:messages|conversations\/start|app-views\/launch)(?:\?|$)/.test(
+          request.url(),
+        )
+      )
+        writes.push(request.url());
+    });
+    expect(
+      await page.evaluate(
+        () => matchMedia("(hover: none), (pointer: coarse)").matches,
+      ),
+    ).toBe(true);
+    const launcher = page
+      .getByLabel("应用 Dock", { exact: true })
+      .getByRole("button", { name: "全部应用", exact: true });
+    await launcher.tap();
+    const catalog = page.getByRole("group", {
+      name: "选择应用",
+      exact: true,
+    });
+    await expect(catalog).toBeVisible();
+    const pins = catalog.locator(".application-dock-pin");
+    expect(await pins.count()).toBeGreaterThan(0);
+    for (const pin of await pins.all()) {
+      await expect(pin).toHaveCSS("opacity", "1");
+      await expect(pin).toHaveCSS("pointer-events", "auto");
+      await expect(pin).toBeInViewport();
+    }
+    const firstPin = pins.first();
+    const selected = await firstPin.getAttribute("aria-pressed");
+    await firstPin.tap();
+    await expect(firstPin).toHaveAttribute(
+      "aria-pressed",
+      selected === "true" ? "false" : "true",
+    );
+    await expect(catalog).toBeVisible();
+    await launcher.tap();
+    await expect(catalog).not.toBeVisible();
+    await expect(await openInput(page)).toHaveValue(draft);
+    expect(
+      await (
+        await page.request.get(
+          "/api/platform/conversations/navigation?limit=100",
+        )
+      ).json(),
+    ).toEqual(before);
+    expect(writes).toEqual([]);
+  });
 });
