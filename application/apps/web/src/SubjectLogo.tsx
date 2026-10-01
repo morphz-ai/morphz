@@ -15,6 +15,7 @@ export function SubjectLogo({
       className="wordmark agent-presence"
       data-state={presence.state}
       data-working={presence.working}
+      data-processing={presence.processing || undefined}
       aria-label={`Morphz · ${presence.label} · 查看${action}`}
       title={`${presence.label} · 查看${action}`}
       onClick={() => onOpen(presence.view)}

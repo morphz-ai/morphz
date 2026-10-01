@@ -30,13 +30,16 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   :root:not([data-app-motion="reduce"])
-    .agent-presence:not([data-working="true"])
+    .agent-presence:not([data-working="true"]):not([data-processing="true"])
     .brand-mark-glint {
     /* Quiet presence is not a claim that a task is running. */
     animation: subject-mark-glint 8s ease-in-out infinite;
   }
   :root:not([data-app-motion="reduce"])
-    .agent-presence:not([data-working="true"]):is(:hover, :focus-visible)
+    .agent-presence:not([data-working="true"]):not([data-processing="true"]):is(
+      :hover,
+      :focus-visible
+    )
     .brand-mark-glint {
     animation: subject-mark-greeting 1.4s ease-out infinite;
   }
@@ -49,6 +52,16 @@
     .agent-presence[data-working="true"]
     .brand-mark-glint {
     animation: subject-mark-glint 3.6s ease-in-out infinite;
+  }
+  :root:not([data-app-motion="reduce"])
+    .agent-presence[data-processing="true"]:not([data-working="true"])
+    .brand-mark {
+    animation: subject-mark-breathe 1.8s ease-in-out infinite;
+  }
+  :root:not([data-app-motion="reduce"])
+    .agent-presence[data-processing="true"]:not([data-working="true"])
+    .brand-mark-glint {
+    animation: subject-mark-glint 2.4s ease-in-out infinite;
   }
 }
 @keyframes subject-mark-breathe {

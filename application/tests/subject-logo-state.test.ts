@@ -146,7 +146,7 @@ test("断线、缺快照、读取失败、截断空和审批未知均不冒充�
   check(runtime(), "idle");
 });
 
-test("未终态delivery只是待处理提示，不证明实际执行", () => {
+test("未终态delivery区分首字处理与排队，不冒充实际执行", () => {
   for (const state of ["queued", "sending", "running"] as const)
     check(
       runtime({
@@ -154,7 +154,7 @@ test("未终态delivery只是待处理提示，不证明实际执行", () => {
           { inputId: "logo-input", state, error: null, retryable: false },
         ],
       }),
-      "waiting",
+      state === "running" ? "processing" : "waiting",
     );
   for (const state of ["completed", "failed", "cancelled"] as const)
     check(
@@ -165,6 +165,80 @@ test("未终态delivery只是待处理提示，不证明实际执行", () => {
       }),
       "idle",
     );
+});
+
+test("首字前处理反馈优先于长期提醒，且不依赖线程快照已刷新", () => {
+  const delivery = {
+    inputId: "new-input",
+    state: "running" as const,
+    error: null,
+    retryable: false,
+  };
+  const waiting = runtime({
+    deliveries: [delivery],
+    activity: {
+      available: true,
+      threads: [thread({ phase: "waiting" })],
+      truncated: false,
+    },
+  });
+  for (const value of [waiting, { ...waiting, activity: undefined }]) {
+    const presence = subjectLogoState(value, true);
+    assert.equal(presence.state, "processing");
+    assert.equal(presence.processing, true);
+    assert.equal(presence.working, false);
+  }
+  check({ ...waiting, connected: false }, "unknown");
+  for (const overrides of [
+    { cancelRequested: true },
+    { error: "已失败" },
+    { supplement: "pending" as const },
+  ])
+    check(
+      { ...waiting, deliveries: [{ ...delivery, ...overrides }] },
+      "waiting",
+    );
+  const replied = {
+    id: "reply",
+    projectId: "logo-project",
+    conversationId: "logo-conversation",
+    artifactId: null,
+    inputId: "new-input",
+    rootId: "root",
+    createdAt: stamp,
+    text: "已完成",
+    kind: "reply" as const,
+  };
+  check({ ...waiting, messages: [replied] }, "waiting");
+  assert.equal(
+    subjectLogoState(waiting, true, { connected: true, messages: [replied] })
+      .state,
+    "waiting",
+  );
+  assert.equal(
+    subjectLogoState(waiting, true, undefined, ["new-input"]).state,
+    "waiting",
+  );
+  assert.equal(
+    subjectLogoState({ ...waiting, deliveries: [] }, true).processing,
+    false,
+  );
+  const ownApproval = {
+    ...approvals[0]!,
+    scope: { ...approvals[0]!.scope, inputId: "new-input" },
+  };
+  const blocked = subjectLogoState(
+    { ...waiting, attention: { available: true, approvals: [ownApproval] } },
+    true,
+  );
+  assert.equal(blocked.state, "approval");
+  assert.equal(blocked.processing, false);
+  const parallel = subjectLogoState(
+    { ...waiting, attention: { available: true, approvals } },
+    true,
+  );
+  assert.equal(parallel.state, "approval");
+  assert.equal(parallel.processing, true);
 });
 
 test("历史截断不影响完整当前工作快照，真实流式回应不等待轮询", () => {
@@ -201,7 +275,7 @@ test("历史截断不影响完整当前工作快照，真实流式回应不等�
         inputId: "logo-input",
         rootId: "logo-root",
         createdAt: stamp,
-        text: "",
+        text: "实际首字",
         kind: "reply" as const,
         streaming: true,
       },

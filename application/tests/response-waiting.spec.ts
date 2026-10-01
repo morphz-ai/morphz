@@ -127,6 +127,84 @@ async function setup(page: Page) {
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
 
+test("首字前的真实输入等待带动Logo，不被长期提醒遮住；首字接替、终态与减少动态正确", async ({
+  page,
+}, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const f = await setup(page);
+  f.threads.push({
+    id: "future-reminder",
+    ...f.scope(),
+    inputId: "old-reminder-input",
+    rootId: "old-reminder-root",
+    sessionId: "waiting-session",
+    title: "TEST 下个月提醒",
+    kind: "execution",
+    lifecycle: "open",
+    phase: "waiting",
+    revision: 1,
+    updatedAt: "2026-09-22T00:00:00Z",
+  });
+  await f.update();
+  const logo = page.locator(".sidebar .wordmark.agent-presence");
+  const mark = logo.locator(".brand-mark");
+  await expect(waiting(page).getByRole("status")).toHaveText("正在处理…");
+  await expect(page.locator(".agent-reply")).toHaveCount(0);
+  await expect(logo).toHaveAttribute("data-state", "processing");
+  await expect(logo).toHaveAttribute("data-working", "false");
+  await expect(logo).toHaveAttribute("data-processing", "true");
+  await expect(mark).toHaveCSS("animation-name", "subject-mark-breathe");
+  const animation = () =>
+    mark.evaluate((node) => {
+      const live = node.getAnimations()[0]!;
+      return {
+        state: live.playState,
+        time: Number(live.currentTime),
+        transform: getComputedStyle(node).transform,
+      };
+    });
+  const before = await animation();
+  expect(before.state).toBe("running");
+  await expect
+    .poll(async () => (await animation()).time)
+    .toBeGreaterThan(before.time + 300);
+  await expect
+    .poll(async () => (await animation()).transform)
+    .not.toBe(before.transform);
+  // Capture two actual, freely advancing rendered frames: no CSS clock seeking,
+  // animation pause or synthetic working flag in this regression.
+  const bounds = (await logo.boundingBox())!;
+  const first = await page.screenshot({
+    clip: bounds,
+    path: info.outputPath("pending-first.png"),
+  });
+  const sample = await animation();
+  await expect
+    .poll(async () => (await animation()).time)
+    .toBeGreaterThan(sample.time + 350);
+  const second = await page.screenshot({
+    clip: bounds,
+    path: info.outputPath("pending-later.png"),
+  });
+  expect(second.equals(first)).toBe(false);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(mark).toHaveCSS("animation-name", "none");
+  await expect(logo).toHaveAttribute("data-state", "processing");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await f.stream("实际首字");
+  await expect(logo).toHaveAttribute("data-state", "working");
+  await expect(waiting(page)).toHaveCount(0);
+  await f.stream("实际首字", false);
+  await f.update();
+  // Even a delayed running delivery receipt must not revive the answered input.
+  await expect(logo).toHaveAttribute("data-state", "waiting");
+  await expect(mark).toHaveCSS("animation-name", "none");
+  f.deliveries[0]!.state = "completed";
+  await f.update();
+  await expect(logo).toHaveAttribute("data-state", "waiting");
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+});
+
 test("首字前有反馈，不依赖停止权限；首字接替提示，增量不缓冲、不清空草稿", async ({
   page,
 }) => {
@@ -166,6 +244,10 @@ test("等待、发送、断线、停止确认与终态不混淆，亮暗和减�
     delivery.state = state;
     await f.update();
     await expect(waiting(page)).toContainText(label);
+    await expect(page.locator(".sidebar .agent-presence")).toHaveAttribute(
+      "data-state",
+      state === "running" ? "processing" : "waiting",
+    );
   }
   delivery.cancellable = true;
   await f.update();

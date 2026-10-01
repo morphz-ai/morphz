@@ -2541,6 +2541,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               client.boot!.runtime,
               client.online,
               stream,
+              [
+                ...client.boot!.outputs.map((output) => output.inputId),
+                ...client.boot!.scriptOutputs.map((output) => output.inputId),
+              ],
             )}
             onOpen={openSubjectFromLogo}
           />

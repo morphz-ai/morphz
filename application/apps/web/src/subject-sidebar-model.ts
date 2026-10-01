@@ -5,9 +5,17 @@ import type { ConversationStream } from "../../../packages/core/src/live-convers
 export type SubjectView = "activity" | "permissions" | "schedules" | "settings";
 
 export type SubjectLogoState = {
-  state: "working" | "approval" | "paused" | "waiting" | "idle" | "unknown";
+  state:
+    | "working"
+    | "processing"
+    | "approval"
+    | "paused"
+    | "waiting"
+    | "idle"
+    | "unknown";
   label: string;
   working: boolean;
+  processing?: boolean;
   view: "activity" | "permissions";
 };
 
@@ -18,15 +26,18 @@ export function subjectLogoState(
   runtime: ConversationRuntime,
   online: boolean,
   stream?: ConversationStream,
+  outputInputIds: readonly string[] = [],
 ): SubjectLogoState {
   const result = (
     state: SubjectLogoState["state"],
     label: string,
     working = false,
+    processing = false,
   ): SubjectLogoState => ({
     state,
     label,
     working,
+    processing,
     view: state === "approval" ? "permissions" : "activity",
   });
   if (!online || !runtime.connected)
@@ -45,8 +56,38 @@ export function subjectLogoState(
     !!stream?.connected &&
     stream.messages.some(
       (message) =>
-        message.streaming && ["reply", "tool"].includes(message.kind),
+        message.streaming &&
+        (message.kind === "tool" ||
+          (message.kind === "reply" && !!message.text.trim())),
     );
+  // A Runtime acceptance is not proof of model/tool execution. It is however
+  // the same observable pending-response stage shown by Conversation before
+  // the first visible token. Keep this distinct from a future scheduled wait.
+  const answered = new Set(outputInputIds);
+  for (const message of [
+    ...runtime.messages,
+    ...(stream?.connected ? stream.messages : []),
+  ])
+    if (
+      message.inputId &&
+      ["reply", "error"].includes(message.kind) &&
+      message.text.trim()
+    )
+      answered.add(message.inputId);
+  const pending = runtime.configured
+    ? runtime.deliveries.filter(
+        (delivery) =>
+          !delivery.error &&
+          !delivery.supplement &&
+          !delivery.cancelRequested &&
+          ["queued", "sending", "running"].includes(delivery.state) &&
+          !answered.has(delivery.inputId) &&
+          !runtime.attention?.approvals.some(
+            (approval) => approval.scope.inputId === delivery.inputId,
+          ),
+      )
+    : [];
+  const processing = pending.some((delivery) => delivery.state === "running");
   if (runtime.attention?.available && runtime.attention.approvals.length)
     return result(
       "approval",
@@ -54,9 +95,9 @@ export function subjectLogoState(
         ? "有操作等待你的批准，其他工作仍在进行"
         : "有操作等待你的批准",
       running.length > 0 || responding,
+      processing,
     );
   if (responding) return result("working", "正在回应你", true);
-  if (!activity?.available) return result("unknown", "工作状态待核对");
   if (running.length) {
     const paused = running.filter((thread) => thread.controlState === "paused");
     return result(
@@ -71,6 +112,15 @@ export function subjectLogoState(
       true,
     );
   }
+  if (processing) return result("processing", "正在处理你的输入", false, true);
+  if (pending.length)
+    return result(
+      "waiting",
+      pending.some((delivery) => delivery.state === "sending")
+        ? "正在发送你的输入"
+        : "输入等待处理",
+    );
+  if (!activity?.available) return result("unknown", "工作状态待核对");
   const advancing = known.filter((thread) => thread.controlState !== "paused");
   if (advancing.some((thread) => thread.phase === "runnable"))
     return result("waiting", "工作待推进");
@@ -86,12 +136,6 @@ export function subjectLogoState(
     )
   )
     return result("waiting", "有目标等待推进或处理");
-  if (
-    runtime.deliveries.some((delivery) =>
-      ["queued", "sending", "running"].includes(delivery.state),
-    )
-  )
-    return result("waiting", "输入等待处理结果");
   if (
     (activity.openWorkComplete === undefined
       ? activity.truncated || activity.objectivesTruncated
