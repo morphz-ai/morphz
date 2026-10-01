@@ -1,5 +1,6 @@
 import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import type { TaskRuntime } from "../../../packages/core/src/task-runtime.js";
+import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 
 export type SubjectView = "activity" | "permissions" | "schedules" | "settings";
 
@@ -16,6 +17,7 @@ export type SubjectLogoState = {
 export function subjectLogoState(
   runtime: ConversationRuntime,
   online: boolean,
+  stream?: ConversationStream,
 ): SubjectLogoState {
   const result = (
     state: SubjectLogoState["state"],
@@ -37,14 +39,23 @@ export function subjectLogoState(
     ["execution", "dialogue_turn"].includes(thread.kind ?? ""),
   );
   const running = known.filter((thread) => thread.phase === "running");
+  // Public stream events are actual model activity, not delivery acceptance.
+  // A short reply can otherwise start and finish between scheduler polls.
+  const responding =
+    !!stream?.connected &&
+    stream.messages.some(
+      (message) =>
+        message.streaming && ["reply", "tool"].includes(message.kind),
+    );
   if (runtime.attention?.available && runtime.attention.approvals.length)
     return result(
       "approval",
-      running.length
+      running.length || responding
         ? "有操作等待你的批准，其他工作仍在进行"
         : "有操作等待你的批准",
-      running.length > 0,
+      running.length > 0 || responding,
     );
+  if (responding) return result("working", "正在回应你", true);
   if (!activity?.available) return result("unknown", "工作状态待核对");
   if (running.length) {
     const paused = running.filter((thread) => thread.controlState === "paused");
@@ -82,8 +93,9 @@ export function subjectLogoState(
   )
     return result("waiting", "输入等待处理结果");
   if (
-    activity.truncated ||
-    activity.objectivesTruncated ||
+    (activity.openWorkComplete === undefined
+      ? activity.truncated || activity.objectivesTruncated
+      : !activity.openWorkComplete) ||
     !runtime.attention?.available ||
     objectives.some(
       (goal) => !["completed", "cancelled", "failed"].includes(goal.status),
@@ -103,8 +115,12 @@ export function subjectStatus(runtime: ConversationRuntime, online: boolean) {
     ) ?? [];
   const count = threads.length;
   if (!runtime.activity?.available) return "状态待核对";
+  const incomplete =
+    runtime.activity.openWorkComplete === undefined
+      ? runtime.activity.truncated
+      : !runtime.activity.openWorkComplete;
   if (count) {
-    const prefix = runtime.activity.truncated ? "至少 " : "";
+    const prefix = incomplete ? "至少 " : "";
     if (threads.every((t) => t.controlState === "paused"))
       return `${prefix}${count} 项工作已暂停`;
     const running = threads.filter(
@@ -116,7 +132,7 @@ export function subjectStatus(runtime: ConversationRuntime, online: boolean) {
       ? `${prefix}${running} 项工作正在推进`
       : `${prefix}${count} 项工作等待后续条件`;
   }
-  return runtime.activity.truncated ? "状态待核对" : "目前没有进行中的执行";
+  return incomplete ? "状态待核对" : "目前没有进行中的执行";
 }
 export const objectiveStatus = (status: string) =>
   ({

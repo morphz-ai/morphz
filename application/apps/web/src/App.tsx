@@ -2588,7 +2588,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       >
         <div className="sidebar-header">
           <SubjectLogo
-            presence={subjectLogoState(client.boot!.runtime, client.online)}
+            presence={subjectLogoState(
+              client.boot!.runtime,
+              client.online,
+              stream,
+            )}
             onOpen={openSubjectFromLogo}
           />
           <div className="sidebar-tools">

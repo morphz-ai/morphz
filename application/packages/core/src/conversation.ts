@@ -13,6 +13,9 @@ export type ArtifactOutput = z.infer<typeof artifactOutputSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
   truncated: z.boolean().default(false),
+  /** Current open threads/Objectives were fully read and causally attributed.
+   * Independent of the bounded terminal activity history; absent is unknown. */
+  openWorkComplete: z.boolean().optional(),
   /** Per Context snapshot bound, not a claim of complete execution history. */
   limit: z.number().int().positive().optional(),
   objectivesTruncated: z.boolean().optional(),

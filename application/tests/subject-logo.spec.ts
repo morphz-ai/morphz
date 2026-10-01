@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Locator } from "@playwright/test";
 import {
   conversationRuntimeSchema,
   type ConversationRuntime,
@@ -21,6 +21,16 @@ const baseRuntime = (): ConversationRuntime =>
     attention: { available: true, approvals: [] },
   });
 type Thread = ExecutionActivity["threads"][number];
+
+async function expectBareLogo(logo: Locator) {
+  // Any state adornment, even one renamed away from the old CSS class, would
+  // add a sibling to the original brand SVG and violate the user's direction.
+  await expect(logo.locator(".agent-presence-status")).toHaveCount(0);
+  await expect(logo.locator(".agent-presence-mark > *")).toHaveCount(1);
+  await expect(logo.locator(".agent-presence-mark > .brand-mark")).toHaveCount(
+    1,
+  );
+}
 
 test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授权且不发送或建会话", async ({
   page,
@@ -47,7 +57,7 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
   const mark = logo.locator(".brand-mark");
   const originalPath = await mark.locator("path").getAttribute("d");
   await expect(logo).toHaveAttribute("data-state", "idle");
-  await expect(logo.locator(".agent-presence-status")).toHaveCount(0);
+  await expectBareLogo(logo);
   await logo.click();
   const panel = page.getByRole("complementary", {
     name: "Morphz 信息",
@@ -80,6 +90,7 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
   await fixture.refresh();
   await expect(logo).toHaveAttribute("data-state", "working");
   await expect(logo).toHaveAttribute("data-working", "true");
+  await expectBareLogo(logo);
   await logo.screenshot({ path: testInfo.outputPath("working-logo.png") });
   await expect(input).toBeFocused();
   await expect(input).toHaveValue(draft);
@@ -110,6 +121,7 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
   await fixture.refresh();
   await expect(logo).toHaveAttribute("data-state", "approval");
   await expect(logo).toHaveAttribute("data-working", "true");
+  await expectBareLogo(logo);
   await logo.screenshot({ path: testInfo.outputPath("approval-logo.png") });
   const presence = subjectLogoState(runtime, true);
   await expect(logo).toHaveAccessibleName(
@@ -130,10 +142,12 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
   await fixture.refresh();
   await expect(logo).toHaveAttribute("data-state", "paused");
   await expect(logo).toHaveAttribute("data-working", "false");
+  await expectBareLogo(logo);
   await logo.screenshot({ path: testInfo.outputPath("paused-logo.png") });
   runtime.activity!.threads = [{ ...running, phase: "waiting" }];
   await fixture.refresh();
   await expect(logo).toHaveAttribute("data-state", "waiting");
+  await expectBareLogo(logo);
   await expect(
     tabs.getByRole("tab", { name: "授权", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -158,6 +172,7 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
   await fixture.refresh();
   await expect(logo).toHaveAttribute("data-state", "unknown");
   await expect(logo).toHaveAttribute("data-working", "false");
+  await expectBareLogo(logo);
   await expect(
     tabs.getByRole("tab", { name: "活动", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -192,6 +207,7 @@ test("灵动遵守系统与本机减少动画，原Logo轮廓和展开／80图�
   const mark = logo.locator(".brand-mark");
   const glint = mark.locator("rect.brand-mark-glint");
   await expect(logo).toHaveAttribute("data-working", "true");
+  await expectBareLogo(logo);
   await expect(glint).toHaveCount(1);
   await expect(glint).toHaveCSS("animation-name", "subject-mark-glint");
   await expect(mark).toHaveCSS("animation-name", "subject-mark-breathe");

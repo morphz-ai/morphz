@@ -92,6 +92,35 @@ test("主体状态只使用新鲜且在线的执行快照，缺失和陈旧不�
     "状态待核对",
   );
   assert.equal(subjectStatus(runtime(), true), "目前没有进行中的执行");
+  assert.equal(
+    subjectStatus(
+      runtime({
+        activity: {
+          available: true,
+          truncated: true,
+          objectivesTruncated: true,
+          openWorkComplete: true,
+          threads: [],
+        },
+      }),
+      true,
+    ),
+    "目前没有进行中的执行",
+  );
+  assert.equal(
+    subjectStatus(
+      runtime({
+        activity: {
+          available: true,
+          truncated: false,
+          openWorkComplete: false,
+          threads: [],
+        },
+      }),
+      true,
+    ),
+    "状态待核对",
+  );
 });
 
 test("主体不把暂停、等待、对话或终态执行称为正在推进", () => {

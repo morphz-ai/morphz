@@ -3367,6 +3367,7 @@ export class RuntimeBridge {
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
+      openWorkComplete: false,
       limit: 200,
       objectivesTruncated: false,
       objectives: [],
@@ -3386,16 +3387,69 @@ export class RuntimeBridge {
           { inputId: d.inputId, source: d.platformSource!, rootId: d.rootId! },
         ]),
     );
+    const routeKey = (sessionId: string, id: string, contextId: string) =>
+      `${this.config.namespace}:${contextId}:${sessionId}:${id}:${this.actor().principalId}`;
+    const scheduledSources = new Map<string, Set<string>>();
+    const objectiveSources = new Map<string, string>();
+    const threadRoots = new Map<string, string>();
+    // Previously verified bindings supply an exact parent-root reference, not
+    // project authority. resolveRoot still checks the initiating input below.
+    for (const binding of Object.values(this.state.threadBindings)) {
+      if (!sessionsById.has(binding.sessionId)) continue;
+      threadRoots.set(
+        routeKey(
+          binding.sessionId,
+          binding.id,
+          this.contextId(binding.projectId),
+        ),
+        binding.rootId,
+      );
+    }
     let lookupBudget = 16;
     const resolveRoot = async (
       sessionId: string,
       eventId: string,
       contextId: string,
-    ): Promise<{ inputId: string; source: PlatformInputSource; rootId: string } | null> => {
+      visited = new Set<string>(),
+    ): Promise<{
+      inputId: string;
+      source: PlatformInputSource;
+      rootId: string;
+    } | null> => {
+      const key = routeKey(sessionId, eventId, contextId);
+      if (visited.has(key)) return null;
+      const nextVisited = new Set(visited).add(key);
       const local = routes.get(`${sessionId}:${eventId}`);
       if (local) return local;
-      const key = `${this.config.namespace}:${contextId}:${sessionId}:${eventId}:${this.actor().principalId}`;
       const cached = this.activityRootRoutes.get(key);
+      // An enqueue may come from a later input. It must not reattribute a
+      // real root that was already verified through the Runtime Event.
+      if (cached?.route) return cached.route;
+      const inherited = scheduledSources.get(key);
+      if (inherited) {
+        // Schedule.source_turn_id is a persisted Runtime causal link. Never
+        // derive a parent ID from a synthetic root prefix or the selected UI.
+        if (inherited.size !== 1) return null;
+        const sourceId = [...inherited][0]!;
+        const route = await resolveRoot(
+          sessionId,
+          sourceId,
+          contextId,
+          nextVisited,
+        );
+        const session = sessionsById.get(sessionId);
+        return route &&
+          session &&
+          route.source.sharedDefault === session.sharedDefault &&
+          this.contextId(route.source.projectId) === contextId &&
+          this.objectSessionId(
+            route.source.projectId,
+            route.source.conversationId,
+            route.source.sharedDefault,
+          ) === sessionId
+          ? route
+          : null;
+      }
       if (cached && (cached.route || Date.now() - cached.checkedAt < 30_000))
         return cached.route;
       if (lookupBudget-- <= 0) return null;
@@ -3419,7 +3473,38 @@ export class RuntimeBridge {
           return null;
         const rootId = payloadString(event, "root_turn_id");
         if (rootId && rootId !== eventId) {
-          route = await resolveRoot(sessionId, rootId, contextId);
+          route = await resolveRoot(sessionId, rootId, contextId, nextVisited);
+        } else if (
+          event.topic === "objective/scheduled_created" &&
+          payloadString(event, "context_id") === contextId &&
+          !!objectiveSources.get(key) &&
+          objectiveSources.get(key) === payloadString(event, "objective_id")
+        ) {
+          const parentId = payloadString(event, "source_thread_id");
+          const parentRoot = parentId
+            ? threadRoots.get(routeKey(sessionId, parentId, contextId))
+            : undefined;
+          if (parentRoot) {
+            const sourceRoute = await resolveRoot(
+              sessionId,
+              parentRoot,
+              contextId,
+              nextVisited,
+            );
+            const session = sessionsById.get(sessionId);
+            if (
+              sourceRoute &&
+              session &&
+              sourceRoute.source.sharedDefault === session.sharedDefault &&
+              this.contextId(sourceRoute.source.projectId) === contextId &&
+              this.objectSessionId(
+                sourceRoute.source.projectId,
+                sourceRoute.source.conversationId,
+                sourceRoute.source.sharedDefault,
+              ) === sessionId
+            )
+              route = sourceRoute;
+          }
         } else {
           const inputId = payloadString(event, "client_message_id");
           const source = inputId
@@ -3455,73 +3540,96 @@ export class RuntimeBridge {
       return route;
     };
     try {
+      const schema = z.object({
+        schedules: z
+          .array(
+            z.object({
+              id: z.string(),
+              thread_id: z.string(),
+              source_turn_id: z.string(),
+            }),
+          )
+          .optional(),
+        detail_bounds: z
+          .object({
+            limit: z.number(),
+            has_more_threads: z.boolean(),
+            has_more_objectives: z.boolean().optional(),
+          })
+          .optional(),
+        objectives: z
+          .array(
+            z.object({
+              readiness: z.object({ state: z.string() }),
+              objective: z.object({
+                id: z.string(),
+                context_id: z.string(),
+                coordinator_session_id: z.string(),
+                source_event_id: z.string(),
+                stated_objective: z.string(),
+                status: z.string(),
+                status_reason: z.string().nullable(),
+                parent_objective_id: z.string().nullable(),
+                updated_at: z.string(),
+              }),
+            }),
+          )
+          .optional(),
+        threads: z.array(
+          z.object({
+            intent: z.string().nullable().optional(),
+            phase: z.string(),
+            schedules: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  thread_id: z.string(),
+                  source_turn_id: z.string(),
+                }),
+              )
+              .optional(),
+            outcome: z
+              .object({
+                terminal_kind: z.string(),
+                disposition: z.string(),
+                summary: z.string().nullable(),
+                created_at: z.string(),
+              })
+              .nullable()
+              .optional(),
+            thread: z
+              .object({
+                id: z.string(),
+                kind: z.string().optional(),
+                session_id: z.string(),
+                context_id: z.string(),
+                root_turn_id: z.string(),
+                lifecycle: z.string(),
+                control_state: z.string().optional(),
+                created_at: z.string().optional(),
+                supervision: z
+                  .object({
+                    supervisor_kind: z.string(),
+                    supervisor_id: z.string().nullable(),
+                    parent_thread_id: z.string().nullable().optional(),
+                  })
+                  .passthrough()
+                  .optional(),
+                revision: z.number(),
+                updated_at: z.string(),
+              })
+              .passthrough(),
+          }),
+        ),
+      });
+      const snapshots: {
+        contextId: string;
+        active: z.infer<typeof schema>;
+        history: z.infer<typeof schema>;
+      }[] = [];
       for (const contextId of new Set(
         sessions.map((s) => this.contextId(s.projectId)),
       )) {
-        const schema = z.object({
-          detail_bounds: z
-            .object({
-              limit: z.number(),
-              has_more_threads: z.boolean(),
-              has_more_objectives: z.boolean().optional(),
-            })
-            .optional(),
-          objectives: z
-            .array(
-              z.object({
-                readiness: z.object({ state: z.string() }),
-                objective: z.object({
-                  id: z.string(),
-                  context_id: z.string(),
-                  coordinator_session_id: z.string(),
-                  source_event_id: z.string(),
-                  stated_objective: z.string(),
-                  status: z.string(),
-                  status_reason: z.string().nullable(),
-                  parent_objective_id: z.string().nullable(),
-                  updated_at: z.string(),
-                }),
-              }),
-            )
-            .optional(),
-          threads: z.array(
-            z.object({
-              intent: z.string().nullable().optional(),
-              phase: z.string(),
-              outcome: z
-                .object({
-                  terminal_kind: z.string(),
-                  disposition: z.string(),
-                  summary: z.string().nullable(),
-                  created_at: z.string(),
-                })
-                .nullable()
-                .optional(),
-              thread: z
-                .object({
-                  id: z.string(),
-                  kind: z.string().optional(),
-                  session_id: z.string(),
-                  context_id: z.string(),
-                  root_turn_id: z.string(),
-                  lifecycle: z.string(),
-                  control_state: z.string().optional(),
-                  created_at: z.string().optional(),
-                  supervision: z
-                    .object({
-                      supervisor_kind: z.string(),
-                      supervisor_id: z.string().nullable(),
-                      parent_thread_id: z.string().nullable().optional(),
-                    })
-                    .passthrough()
-                    .optional(),
-                  revision: z.number(),
-                  updated_at: z.string(),
-                })
-                .passthrough(),
-            }),
-          ),
-        });
         const [active, history] = await Promise.all(
           [false, true].map(async (terminal) =>
             schema.parse(
@@ -3531,14 +3639,116 @@ export class RuntimeBridge {
             ),
           ),
         );
-        activity.truncated ||= [active!, history!].some(
+        snapshots.push({ contextId, active: active!, history: history! });
+      }
+      for (const { contextId, active, history } of snapshots) {
+        const known = new Map(
+          [...history.threads, ...active.threads].flatMap(({ thread }) =>
+            sessionsById.has(thread.session_id) &&
+            thread.context_id === contextId
+              ? [[thread.id, thread] as const]
+              : [],
+          ),
+        );
+        for (const thread of known.values())
+          threadRoots.set(
+            routeKey(thread.session_id, thread.id, contextId),
+            thread.root_turn_id,
+          );
+        const schedules = [
+          ...(history.schedules ?? []),
+          ...(active.schedules ?? []),
+          ...[...history.threads, ...active.threads].flatMap((value) =>
+            (value.schedules ?? []).filter(
+              (schedule) => schedule.thread_id === value.thread.id,
+            ),
+          ),
+        ];
+        for (const schedule of schedules) {
+          const thread = known.get(schedule.thread_id);
+          if (
+            !thread ||
+            !schedule.source_turn_id ||
+            schedule.source_turn_id === thread.root_turn_id
+          ) continue;
+          const key = routeKey(
+            thread.session_id,
+            thread.root_turn_id,
+            contextId,
+          );
+          const links = scheduledSources.get(key) ?? new Set<string>();
+          links.add(schedule.source_turn_id);
+          scheduledSources.set(key, links);
+        }
+        for (const { objective } of [
+          ...(history.objectives ?? []),
+          ...(active.objectives ?? []),
+        ])
+          if (
+            objective.context_id === contextId &&
+            sessionsById.has(objective.coordinator_session_id)
+          )
+            objectiveSources.set(
+              routeKey(
+                objective.coordinator_session_id,
+                objective.source_event_id,
+                contextId,
+              ),
+              objective.id,
+            );
+      }
+      // include_terminal=false is the Runtime's bounded open-work inventory:
+      // open Threads and active/paused/blocked Objectives. Its explicit bounds
+      // can prove current coverage even when terminal history is incomplete.
+      // This Host's tracked Platform Sessions define the authority domain.
+      // An empty registry is a complete empty domain, not a statement about
+      // unrelated Runtime Sessions; connection/availability remain separate.
+      activity.openWorkComplete = snapshots.length > 0 || sessions.length === 0;
+      for (const { active } of snapshots) {
+        activity.openWorkComplete &&=
+          !!active.detail_bounds &&
+          !active.detail_bounds.has_more_threads &&
+          active.detail_bounds.has_more_objectives === false &&
+          !!active.objectives;
+      }
+      // Reserve the existing source-lookup budget for current work in every
+      // Context before any terminal history. History must not starve an open
+      // Thread or an Objective of its exact persisted initiating-input route.
+      for (const { contextId, active } of snapshots) {
+        for (const value of active.threads) {
+          const t = value.thread;
+          if (!sessionsById.has(t.session_id)) continue;
+          if (
+            t.context_id !== contextId ||
+            t.lifecycle !== "open" ||
+            !(await resolveRoot(t.session_id, t.root_turn_id, contextId))
+          )
+            activity.openWorkComplete = false;
+        }
+        for (const { objective } of active.objectives ?? []) {
+          if (!sessionsById.has(objective.coordinator_session_id)) continue;
+          if (
+            objective.context_id !== contextId ||
+            !["active", "paused", "blocked"].includes(objective.status) ||
+            !(await resolveRoot(
+              objective.coordinator_session_id,
+              objective.source_event_id,
+              contextId,
+            ))
+          )
+            activity.openWorkComplete = false;
+        }
+      }
+      for (const { contextId, active, history } of snapshots) {
+        activity.truncated ||= [active, history].some(
           (view) =>
             view.detail_bounds?.has_more_threads ?? view.threads.length >= 200,
         );
         // The existing Runtime caps its recent terminal query at limit (not
         // limit + 1). A full history page cannot prove there is no older row,
         // even when its detail_bounds flag is false.
-        activity.truncated ||= history!.threads.length >= (history!.detail_bounds?.limit ?? 200);
+        activity.truncated ||=
+          history!.threads.length >= (history!.detail_bounds?.limit ?? 200);
         activity.objectivesTruncated ||=
           !history!.objectives ||
           (history!.detail_bounds?.has_more_objectives ??
@@ -3551,7 +3761,9 @@ export class RuntimeBridge {
           if (
             !previous ||
             value.thread.revision > previous.thread.revision ||
-            value.thread.updated_at > previous.thread.updated_at
+            value.thread.updated_at > previous.thread.updated_at ||
+            (value.thread.revision === previous.thread.revision &&
+              value.thread.updated_at === previous.thread.updated_at)
           )
             threads.set(value.thread.id, value);
         }
@@ -3571,6 +3783,7 @@ export class RuntimeBridge {
           // A shared transport is not authority to guess an unknown work project.
           if (!source) {
             activity.truncated = true;
+            if (t.lifecycle === "open") activity.openWorkComplete = false;
             continue;
           }
           sources.set(route!.inputId, source);
@@ -3609,7 +3822,21 @@ export class RuntimeBridge {
               : {}),
           });
         }
-        for (const value of history!.objectives ?? []) {
+        const objectives = new Map(
+          (history.objectives ?? []).map((value) => [
+            value.objective.id,
+            value,
+          ]),
+        );
+        for (const value of active.objectives ?? []) {
+          const previous = objectives.get(value.objective.id);
+          if (
+            !previous ||
+            value.objective.updated_at >= previous.objective.updated_at
+          )
+            objectives.set(value.objective.id, value);
+        }
+        for (const value of objectives.values()) {
           const objective = value.objective;
           if (
             objective.context_id !== contextId ||
@@ -3623,6 +3850,8 @@ export class RuntimeBridge {
           );
           if (!route) {
             activity.objectivesTruncated = true;
+            if (["active", "paused", "blocked"].includes(objective.status))
+              activity.openWorkComplete = false;
             continue;
           }
           sources.set(route.inputId, route.source);
@@ -3655,6 +3884,7 @@ export class RuntimeBridge {
       this.state.activity = {
         ...(this.state.activity ?? activity),
         available: false,
+        openWorkComplete: false,
       };
     }
   }

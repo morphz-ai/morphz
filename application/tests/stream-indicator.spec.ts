@@ -29,6 +29,9 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
     };
   });
   const inputs: PlatformHistory["inputs"] = [];
+  const threads: NonNullable<
+    PlatformHistory["runtime"]["activity"]
+  >["threads"] = [];
   const presentation = await mockPlatformConversation(page, () => ({
     inputs,
     runtime: {
@@ -37,6 +40,13 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       connected: true,
       model: "fixture-model",
       messages: [],
+      activity: {
+        available: true,
+        truncated: false,
+        openWorkComplete: true,
+        threads,
+      },
+      attention: { available: true, approvals: [] },
       deliveries: [
         {
           inputId: "fixture-input",
@@ -51,6 +61,22 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
   inputs.push(
     presentation.input("fixture-input", "流式交互验收", "2026-09-09T00:00:00Z"),
   );
+  // Activity is actual execution-thread presentation, no longer every input.
+  // Keep the same durable root/input association as the streamed reply/tool.
+  threads.push({
+    id: "fixture-thread",
+    kind: "execution",
+    ...presentation.scope,
+    inputId: "fixture-input",
+    rootId: "fixture-root",
+    sessionId: "fixture-session",
+    title: "流式交互验收",
+    phase: "running",
+    lifecycle: "open",
+    controlState: "active",
+    revision: 1,
+    updatedAt: "2026-09-09T00:00:00Z",
+  });
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -81,7 +107,8 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
                   id: "stream:fixture",
                   ...scope,
                   inputId: "fixture-input",
-                  rootId: null,
+                  rootId: "fixture-root",
+                  threadId: "fixture-thread",
                   artifactId: null,
                   createdAt: "2026-09-09T00:00:00Z",
                   text: options.text ?? "这一段正在逐步输出",
@@ -117,7 +144,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
     .poll(() =>
       paragraph.evaluate((el) => getComputedStyle(el, "::after").animationName),
     )
-    .toBe("stream-caret");
+    .toBe("stream-activity");
   await emit({ text: "这一段正在逐步输出，新的内容已到达。" });
   await expect(paragraph).toHaveText("这一段正在逐步输出，新的内容已到达。");
   const fresh = paragraph.locator(".stream-text-reveal");
@@ -218,14 +245,33 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       paragraph.evaluate((el) => getComputedStyle(el, "::after").content),
     )
     .toBe("none");
-  await page.route("**/api/executions?*", (route) =>
-    route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
-  );
+  const executionQueries: URLSearchParams[] = [];
+  await page.route("**/api/executions?*", (route) => {
+    executionQueries.push(new URL(route.request().url()).searchParams);
+    return route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } });
+  });
   await openExecutionPanel(page);
-  await page
-    .locator(".execution-work-row")
-    .filter({ hasText: "流式交互验收" })
-    .click();
+  const panel = page.getByRole("complementary", {
+    name: "Morphz 信息",
+    exact: true,
+  });
+  const activity = panel.locator('[data-thread-id="fixture-thread"]');
+  await expect(activity).toHaveAttribute("data-root-id", "fixture-root");
+  await expect(activity).toContainText("流式交互验收");
+  await activity.click();
+  await expect(
+    panel.getByRole("button", { name: "返回活动列表", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => executionQueries.at(-1)?.get("threadId"))
+    .toBe("fixture-thread");
+  expect(executionQueries.at(-1)?.get("inputId")).toBe("fixture-input");
+  expect(executionQueries.at(-1)?.get("projectId")).toBe(
+    presentation.scope.projectId,
+  );
+  expect(executionQueries.at(-1)?.get("conversationId")).toBe(
+    presentation.scope.conversationId,
+  );
   await expect
     .poll(() => page.evaluate(() => (window as any).__streamSources.size))
     .toBe(1);
@@ -250,7 +296,7 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
         .last()
         .evaluate((el) => getComputedStyle(el, "::after").animationName),
     )
-    .toBe("stream-caret");
+    .toBe("stream-activity");
   await page.evaluate(() => {
     for (const source of (window as any).__streamSources) source.onerror?.();
   });

@@ -167,6 +167,66 @@ test("未终态delivery只是待处理提示，不证明实际执行", () => {
     );
 });
 
+test("历史截断不影响完整当前工作快照，真实流式回应不等待轮询", () => {
+  const boundedHistory = runtime({
+    activity: {
+      available: true,
+      truncated: true,
+      objectivesTruncated: true,
+      openWorkComplete: true,
+      threads: [],
+      objectives: [],
+    },
+  });
+  check(boundedHistory, "idle");
+  check(
+    runtime({
+      activity: {
+        available: true,
+        truncated: false,
+        openWorkComplete: false,
+        threads: [],
+      },
+    }),
+    "unknown",
+  );
+  const stream = {
+    connected: true,
+    messages: [
+      {
+        id: "actual-stream",
+        projectId: "logo-project",
+        conversationId: "logo-conversation",
+        artifactId: null,
+        inputId: "logo-input",
+        rootId: "logo-root",
+        createdAt: stamp,
+        text: "",
+        kind: "reply" as const,
+        streaming: true,
+      },
+    ],
+  };
+  assert.equal(subjectLogoState(boundedHistory, true, stream).state, "working");
+  assert.equal(subjectLogoState(boundedHistory, true, stream).working, true);
+  assert.equal(
+    subjectLogoState(boundedHistory, true, { ...stream, connected: false })
+      .state,
+    "idle",
+  );
+  assert.equal(
+    subjectLogoState(boundedHistory, true, {
+      ...stream,
+      messages: stream.messages.map((message) => ({
+        ...message,
+        streaming: false,
+      })),
+    }).state,
+    "idle",
+  );
+  assert.equal(subjectLogoState(boundedHistory, false, stream).working, false);
+});
+
 test("单个Objective不能把整个主体称暂停或正在执行，未知类型保持未知", () => {
   for (const status of ["active", "paused", "blocked", "future-status"]) {
     const goal = activitySchema.shape.objectives.unwrap().element.parse({
