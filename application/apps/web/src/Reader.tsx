@@ -45,6 +45,7 @@ import {
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 import { RequestError } from "./application-transport.js";
+import { projectDisplayLabel } from "./project-display-label.js";
 import { useContentDirectory } from "./useContentDirectory.js";
 import {
   readerOffsets,
@@ -238,8 +239,9 @@ export function Reader(props: ReaderProps) {
                   </small>
                   {globalLibrary && (
                     <small>
-                      {state.projects.find((p) => p.id === a.projectId)
-                        ?.title ?? "未归项目"}
+                      {projectDisplayLabel(
+                        state.projects.find((p) => p.id === a.projectId),
+                      ) ?? "无项目"}
                     </small>
                   )}
                 </span>

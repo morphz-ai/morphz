@@ -6,6 +6,7 @@ import { ObjectIcon } from "./ArtifactEditor.js";
 import { useModal } from "./useModal.js";
 import { visibleProfileMenuTrigger } from "./profile-menu-focus.js";
 import { searchPreview } from "./document-presentation.js";
+import { projectDisplayLabel } from "./project-display-label.js";
 
 export function SearchDocuments({
   client,
@@ -234,7 +235,7 @@ export function SearchDocuments({
             )
             .map((p) => (
               <option key={p.id} value={p.id}>
-                {p.kind === "desk" ? "未归项目" : p.title}
+                {projectDisplayLabel(p)}
               </option>
             ))}
         </select>

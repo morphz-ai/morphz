@@ -32,6 +32,7 @@ import {
   type ActivityThread,
 } from "./execution-activity.js";
 import "./execution-activity.css";
+import { projectDisplayLabel } from "./project-display-label.js";
 
 export function ExecutionSidebar({
   client,
@@ -224,7 +225,7 @@ export function ExecutionSidebar({
             </time>
             {showProject && (
               <span className="execution-activity-project">
-                {project.title}
+                {projectDisplayLabel(project)}
               </span>
             )}
           </span>
@@ -296,10 +297,9 @@ export function ExecutionSidebar({
                 runtime.connected &&
                 runtime.attention!.available
               }
-              origin={
-                state.projects.find((p) => p.id === entry.scope.projectId)
-                  ?.title
-              }
+              origin={projectDisplayLabel(
+                state.projects.find((p) => p.id === entry.scope.projectId),
+              )}
               onInspect={() => onSelect(entry.scope)}
             />
           ))}
@@ -372,7 +372,9 @@ export function ExecutionSidebar({
               )}
               <div>
                 <small>
-                  {state.projects.find((p) => p.id === input.projectId)?.title}
+                  {projectDisplayLabel(
+                    state.projects.find((p) => p.id === input.projectId),
+                  )}
                 </small>
                 {delivery &&
                   (delivery.cancellable || delivery.cancelRequested) && (
@@ -512,7 +514,9 @@ export function ExecutionSidebar({
       context={
         allWork && !detail
           ? "全部工作"
-          : state.projects.find((p) => p.id === scope.projectId)?.title
+          : projectDisplayLabel(
+              state.projects.find((p) => p.id === scope.projectId),
+            )
       }
       resizeLabel="调整活动面板宽度"
       layout={layout}

@@ -21,6 +21,7 @@ import "./subject-sidebar.css";
 import { ProfileEditor } from "./ProfileEditor.js";
 import { ProfileAvatar } from "./ProfileAvatar.js";
 import type { ProfileController } from "./useProfile.js";
+import { projectDisplayLabel } from "./project-display-label.js";
 import {
   subjectLogoState,
   type SubjectLogoState,
@@ -195,11 +196,11 @@ export function SubjectSidebar({
                   available={
                     client.online && runtime.connected && attention.available
                   }
-                  origin={
+                  origin={projectDisplayLabel(
                     boot.workspace.projects.find(
                       (p) => p.id === entry.scope.projectId,
-                    )?.title
-                  }
+                    ),
+                  )}
                   onInspect={() => onInspect(entry.scope)}
                 />
               ))

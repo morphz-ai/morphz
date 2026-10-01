@@ -4,6 +4,12 @@ import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 
+// Navigation refreshes can outlive the last assertion. Drain mocked responses
+// before Playwright disposes their APIRequestContext; do not swallow failures.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 async function openSubject(page: Page) {
   const panel = page.getByRole("complementary", {
     name: "Morphz 信息",
@@ -60,7 +66,7 @@ async function expectLauncherCentered(panel: Locator, scale = 1) {
   return result;
 }
 
-test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置入口和未发送草稿", async ({
+test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项目摘要，保留配置入口和未发送草稿", async ({
   page,
 }, testInfo) => {
   // Controlled presentation data: no real model, harness or personality
@@ -127,7 +133,7 @@ test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
-      /\/api\/(?:platform\/(?:messages|conversations\/start)|model-settings\/(?:save|add|update|remove)|connection\/save)(?:\?|$)/.test(
+      /\/api\/(?:profile(?:\/avatar(?:\/clear)?)?|platform\/(?:messages|conversations\/start)|model-settings\/(?:save|add|update|remove)|connection\/save)(?:\?|$)/.test(
         request.url(),
       )
     )
@@ -136,20 +142,28 @@ test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置
   const panel = await openSubject(page);
   const tabs = panel.getByRole("tablist", { name: "Morphz 信息分类" });
   const settings = tabs.getByRole("tab", { name: "设定", exact: true });
-  const mark = settings.locator("svg.brand-mark");
+  const avatar = settings.locator(".profile-avatar");
+  const mark = avatar.locator("svg.profile-avatar-character");
   const leftMark = page.locator(".sidebar .agent-presence .brand-mark");
   await expect(mark).toHaveCount(1);
   await expect(leftMark).toHaveCount(1);
-  expect(await mark.getAttribute("viewBox")).toBe(
-    await leftMark.getAttribute("viewBox"),
-  );
-  expect(await mark.locator("path").getAttribute("d")).toBe(
-    await leftMark.locator(":scope > path").getAttribute("d"),
-  );
-  await expect(mark.locator("path")).toHaveCount(1);
-  await expect(mark.locator("defs, g, .brand-mark-glint")).toHaveCount(0);
+  await expect(settings.locator("svg.brand-mark")).toHaveCount(0);
+  await expect(avatar).toHaveAttribute("data-motion", "off");
+  await expect(avatar).toHaveAttribute("data-small", "true");
+  await expect(avatar).toHaveCSS("width", "18px");
+  await expect(avatar).toHaveCSS("height", "18px");
+  await expect(mark.locator("ellipse")).toHaveCount(2);
   await expect(mark).toHaveCSS("animation-name", "none");
-  await expect(mark.locator("path")).toHaveCSS("animation-name", "none");
+  expect(
+    await avatar.evaluate(
+      (element) => element.getAnimations({ subtree: true }).length,
+    ),
+  ).toBe(0);
+  await expect(leftMark).toHaveAttribute("viewBox", "0 0 96 96");
+  await expect(leftMark.locator(":scope > path")).toHaveAttribute(
+    "d",
+    "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z",
+  );
   for (const name of ["设定", "活动", "授权", "安排", "设定"]) {
     await tabs.getByRole("tab", { name, exact: true }).click();
     await expect(tabs.getByRole("tab", { name, exact: true })).toHaveAttribute(
@@ -164,12 +178,11 @@ test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置
   ).toHaveCount(0);
   await expect(panel.locator(".subject-settings dl")).toContainText(model);
   await panel.getByText("已安装执行方式", { exact: true }).click();
-  await expect(panel.locator(".subject-settings details")).toContainText(
-    "TEST-profile-harness",
-  );
-  await expect(panel.locator(".subject-settings details small")).toHaveText(
-    "1",
-  );
+  const harnesses = panel
+    .locator(".subject-settings details")
+    .filter({ hasText: "已安装执行方式" });
+  await expect(harnesses).toContainText("TEST-profile-harness");
+  await expect(harnesses.locator("small")).toHaveText("1");
   await panel.getByRole("button", { name: "模型与账号", exact: true }).click();
   const modelDialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(modelDialog).toBeVisible();
@@ -527,6 +540,79 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   await fixture.refresh();
   await expect(panel.locator(".execution-quiet")).toHaveCount(0);
   await expect(panel.locator(".execution-activity-row")).toHaveCount(4);
+});
+
+test("活动全部工作中 desk 显示无项目，真实项目标题保留，查看不改原持久标题", async ({
+  page,
+}) => {
+  // Only presentation threads are controlled. Project identity/kind/title come
+  // from the isolated test Host, not an inconsistent bootstrap replacement.
+  const threads: NonNullable<
+    PlatformHistory["runtime"]["activity"]
+  >["threads"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      activity: { available: true, truncated: false, threads },
+      attention: { available: true, approvals: [] },
+    },
+  }));
+  const projectId = crypto.randomUUID(),
+    title = "TEST 正常项目标题";
+  await fixture.client.createProject(title, crypto.randomUUID(), projectId);
+  const deskBefore = await fixture.client.project(fixture.spaces.deskId);
+  expect(deskBefore.kind).toBe("desk");
+  expect(deskBefore.title).toBe("未归项目");
+  for (const [id, owner] of [
+    ["display-desk-work", fixture.spaces.deskId],
+    ["display-project-work", projectId],
+  ])
+    threads.push({
+      id: id!,
+      projectId: owner!,
+      conversationId: owner!,
+      inputId: null,
+      rootId: `${id}-root`,
+      sessionId: `${id}-session`,
+      title: `TEST ${id}`,
+      kind: "execution",
+      phase: "running",
+      lifecycle: "open",
+      revision: 1,
+      updatedAt: "2026-10-01T12:00:00.000Z",
+    });
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const input = await openInput(page),
+    draft = "TEST 查看项目来源不能改输入范围和草稿";
+  await input.fill(draft);
+  const panel = await openSubject(page);
+  await panel.getByRole("tab", { name: "活动", exact: true }).click();
+  await panel.getByRole("button", { name: "全部工作", exact: true }).click();
+  await expect(
+    panel.locator(
+      '[data-thread-id="display-desk-work"] .execution-activity-project',
+    ),
+  ).toHaveText("无项目");
+  await expect(
+    panel.locator('[data-thread-id="display-desk-work"]'),
+  ).not.toContainText("未归项目");
+  await expect(
+    panel.locator(
+      '[data-thread-id="display-project-work"] .execution-activity-project',
+    ),
+  ).toHaveText(title);
+  await expect(input).toHaveValue(draft);
+  expect(await fixture.client.project(fixture.spaces.deskId)).toEqual(
+    deskBefore,
+  );
+  expect((await fixture.client.project(projectId)).title).toBe(title);
 });
 
 test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Session，各工作现场草稿独立可恢复", async ({
