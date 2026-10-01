@@ -34,6 +34,7 @@ export class WorkspaceStore {
         "reader-originals/manifest.sqlite",
         "objects-images/manifest.sqlite",
         "message-attachments/manifest.sqlite",
+        "profile-avatars/manifest.sqlite",
       ].some((name) => existsSync(join(dirname(filename), name)));
       if (hasExistingAuthority) {
         if (!existsSync(filename) || statSync(filename).size === 0)

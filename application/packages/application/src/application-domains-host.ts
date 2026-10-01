@@ -44,6 +44,8 @@ import { PlatformWorkService } from "./platform-work-service.js";
 import { ReaderService, platformReaderAuthority } from "./reader-service.js";
 import { MessageAttachmentService } from "./message-attachment-service.js";
 import { ImageService } from "./image-service.js";
+import { ProfileAvatarService } from "./profile-avatar-service.js";
+import { ProfileService } from "./profile-service.js";
 import { UiPackageService } from "./ui-package-service.js";
 import { sourceContainsSelection } from "./platform-message-source.js";
 import {
@@ -239,7 +241,7 @@ export async function openApplicationDomainsHost(
       stagingRoot: string;
       bytes: S3ByteLocation;
       connectionString: string;
-      schemas: { ui: string; reader: string; images: string };
+      schemas: { ui: string; reader: string; images: string; avatars?: string };
       s3Client?: S3Client;
     };
   } = {},
@@ -256,7 +258,7 @@ export async function openApplicationDomainsHost(
     throw new Error(
       "云对象 Store 需要 PostgreSQL Platform／应用私库，且不能同时配置本机界面包 Store。",
     );
-  const cloudBytes = (kind: "ui" | "reader" | "images") => ({
+  const cloudBytes = (kind: "ui" | "reader" | "images" | "avatars") => ({
     ...cloudStore!.bytes,
     prefix: `${cloudStore!.bytes.prefix}/${tenantId}/${kind}`,
   });
@@ -406,7 +408,16 @@ export async function openApplicationDomainsHost(
   let reader: ReaderStore | undefined;
   let messageAttachments: MessageAttachmentService | undefined;
   let images: ImageService | undefined;
+  let avatars: ProfileAvatarService | undefined;
   const remaining: Omit<PlatformAuthorityVerifier, "resolveActor"> = {
+    async resolveProfileAgent({ tenantId: scopeTenant, principalId }) {
+      if (scopeTenant !== tenantId || !activeAgent) return null;
+      const resolved = await activeAgent.runtime.profiles.identity({ principalId });
+      return { agentId: resolved.agentId, editable: resolved.agentEditable };
+    },
+    async verifyProfileAvatar({ actor, subject, subjectId, media }) {
+      return !!avatars && avatars.verifyMedia(actor, subject, subjectId, media);
+    },
     async resolveActant({ tenantId: scopeTenant, actantId }) {
       if (scopeTenant !== tenantId) return null;
       if (actantId === morphzAgentAccess.actantId)
@@ -702,6 +713,15 @@ export async function openApplicationDomainsHost(
           }
         : {}),
     });
+    const avatarRoot = cloudStore ? join(cloudStore.stagingRoot, tenantId, "avatars") : join(directory, "profile-avatars");
+    const avatarReferences = await platform.hasProfileAvatarReferences(tenantId);
+    if (cloudStore && existsSync(join(directory, "profile-avatars", "manifest.sqlite"))) throw new Error("已有本机头像 Store；请显式迁移原件后再切到云 Store。");
+    if (!cloudStore && avatarReferences && !existsSync(join(avatarRoot, "manifest.sqlite"))) throw new Error("头像原件 Store 缺失，拒绝创建空 Store 覆盖已保存头像。");
+    if (cloudStore && !cloudStore.schemas.avatars && avatarReferences) throw new Error("已有头像引用但云头像 Store 未配置，拒绝不完整启动。");
+    if (!cloudStore || cloudStore.schemas.avatars) {
+      avatars = await ProfileAvatarService.open({ root: avatarRoot, tenantId, platform, verifier, ...(cloudStore ? { cloud: { connectionString: cloudStore.connectionString, schema: cloudStore.schemas.avatars!, bytes: cloudBytes("avatars"), ...(cloudStore.s3Client ? { s3Client: cloudStore.s3Client } : {}) } } : {}) });
+    }
+    if (avatarReferences && avatars && !await avatars.hasCommittedVersions()) throw new Error("已保存头像引用但头像 Store 缺少已提交原件，拒绝不完整启动。");
     if (
       cloudStore &&
       (await objects.hasImageVersions(tenantId)) &&
@@ -862,6 +882,8 @@ export async function openApplicationDomainsHost(
     const contentReaderOriginals = readerOriginals;
     const contentMessageAttachments = messageAttachments;
     const contentImages = images;
+    const contentAvatars = avatars;
+    const profiles = new ProfileService(() => activeAgent?.runtime, platform, contentAvatars, identity ? access => identity.displayName(access) : undefined);
     const service = new BrowserBookmarkService(platform, contentBrowser);
     const work = new PlatformWorkService(
       platform,
@@ -936,6 +958,7 @@ export async function openApplicationDomainsHost(
         service: contentMessageAttachments,
       },
       images: { authority: human, service: contentImages },
+      profiles: { authority: human, service: profiles },
       uiPackages: uiPackages
         ? { authority: human, service: uiPackages }
         : undefined,
@@ -1234,7 +1257,8 @@ export async function openApplicationDomainsHost(
         await contentReader.close();
         await contentReaderOriginals.close();
         await contentMessageAttachments.close();
-        await contentImages.close();
+          await contentImages.close();
+          await contentAvatars?.close();
         await uiPackages?.close();
         await contentStudio.close();
         await contentObjects.close();
@@ -1247,6 +1271,7 @@ export async function openApplicationDomainsHost(
     await readerOriginals?.close();
     await messageAttachments?.close();
     await images?.close();
+    await avatars?.close();
     await uiPackages?.close();
     await studio?.close();
     await objects?.close();

@@ -139,6 +139,56 @@ CREATE TABLE notification_reads (
 CREATE INDEX notification_reads_by_order
   ON notification_reads(tenant_id, principal_id, read_order);
 
+-- BEGIN profile-avatar-v1
+-- Presentation bytes only. Names, personality and private address are Runtime
+-- ROM authority. Subject IDs are authenticated Human Principals or the actual
+-- trusted Runtime Agent ID, never a Client-supplied owner.
+CREATE TABLE profile_avatar_heads (
+  tenant_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('human','agent')),
+  subject_id TEXT NOT NULL CHECK (length(subject_id) BETWEEN 1 AND 512),
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  PRIMARY KEY (tenant_id, subject_kind, subject_id),
+  FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+);
+CREATE TABLE profile_avatar_versions (
+  tenant_id TEXT NOT NULL, subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL,
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  original_store_id TEXT, original_artifact_id TEXT, original_revision BIGINT,
+  original_sha256 TEXT, original_byte_length BIGINT, original_mime TEXT,
+  poster_store_id TEXT, poster_artifact_id TEXT, poster_revision BIGINT,
+  poster_sha256 TEXT, poster_byte_length BIGINT, poster_mime TEXT,
+  width BIGINT, height BIGINT, frames BIGINT, duration_ms BIGINT,
+  changed_by_principal_id TEXT NOT NULL, changed_by_actant_id TEXT NOT NULL,
+  changed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, subject_kind, subject_id, revision),
+  FOREIGN KEY (tenant_id, subject_kind, subject_id)
+    REFERENCES profile_avatar_heads(tenant_id, subject_kind, subject_id),
+  CHECK (
+    (original_store_id IS NULL AND original_artifact_id IS NULL AND original_revision IS NULL
+      AND original_sha256 IS NULL AND original_byte_length IS NULL AND original_mime IS NULL
+      AND poster_store_id IS NULL AND poster_artifact_id IS NULL AND poster_revision IS NULL
+      AND poster_sha256 IS NULL AND poster_byte_length IS NULL AND poster_mime IS NULL
+      AND width IS NULL AND height IS NULL AND frames IS NULL AND duration_ms IS NULL)
+    OR
+    (original_store_id IS NOT NULL AND original_artifact_id IS NOT NULL
+      AND original_revision IS NOT NULL AND original_sha256 IS NOT NULL
+      AND original_byte_length IS NOT NULL AND original_mime IS NOT NULL
+      AND original_revision > 0 AND length(original_sha256)=64
+      AND original_byte_length BETWEEN 1 AND 4194304
+      AND original_mime IN ('image/png','image/jpeg','image/gif','image/webp')
+      AND poster_store_id IS NOT NULL AND poster_artifact_id IS NOT NULL
+      AND poster_revision IS NOT NULL AND poster_sha256 IS NOT NULL
+      AND poster_byte_length IS NOT NULL AND poster_mime IS NOT NULL
+      AND poster_revision > 0 AND length(poster_sha256)=64
+      AND poster_byte_length BETWEEN 1 AND 4194304 AND poster_mime='image/png'
+      AND width IS NOT NULL AND height IS NOT NULL AND frames IS NOT NULL AND duration_ms IS NOT NULL
+      AND width BETWEEN 1 AND 2048 AND height BETWEEN 1 AND 2048
+      AND frames BETWEEN 1 AND 120 AND duration_ms BETWEEN 0 AND 30000)
+  )
+);
+-- END profile-avatar-v1
+
 -- A conversation is a project-scoped navigation/organization record. Runtime
 -- alone owns the Session, messages and execution. The default conversation
 -- deliberately retains its project's ID for existing input routes.

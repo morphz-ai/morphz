@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import { reasoningEffortSchema } from "../../core/src/inference.js";
+import { profileToolSchema } from "../../core/src/profile.js";
 import { searchSchema } from "../../core/src/retrieval.js";
 import {
   objectToolName,
@@ -176,6 +177,7 @@ const requestSchema = z
   .object({
     action: z.enum([
       "operations",
+      "profile",
       "read-input",
       "work-task",
       "script",
@@ -217,6 +219,7 @@ const requestSchema = z
     ]),
     artifactId: id.optional(),
     operations: operationRequestSchema.optional(),
+    profile: profileToolSchema.optional(),
     workTask: workTaskSchema.optional(),
     management: z
       .object({
@@ -320,6 +323,8 @@ const requestSchema = z
 export type AgentToolArguments = z.infer<typeof requestSchema>;
 export const hostOperations = applicationOperations(requestSchema.shape);
 const platformOperationIds = new Set([
+  "profile.read",
+  "profile.propose",
   "applications.list",
   "applications.launch",
   "input.read",
@@ -798,6 +803,8 @@ export class AgentTools {
                 (op.id !== "reader.ocr" ||
                   this.options.platformAgent.supportsReaderOcr))) &&
             (op.domain !== "bookmarks" || !!this.options.bookmarkDomain) &&
+            (op.domain !== "profile" ||
+              !!this.options.platformAgent?.supportsProfile) &&
             (op.id === "input.read" ||
               op.id === "connection.status" ||
               op.domain === "bookmarks" ||

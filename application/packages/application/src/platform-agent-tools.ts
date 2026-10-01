@@ -38,6 +38,7 @@ import type { ReaderCommand } from "../../core/src/reader.js";
 import { z } from "zod";
 import type { AccessContext } from "../../core/src/model.js";
 import type { ReasoningEffort } from "../../core/src/inference.js";
+import type { ProfileService } from "./profile-service.js";
 import {
   directoryGrantSchema,
   localFileReferenceSchema,
@@ -60,6 +61,7 @@ import {
 } from "./script-production-service.js";
 
 export type PlatformAgentDomain = {
+  profile?: ProfileService;
   authority: RuntimePlatformAuthority;
   work: PlatformWorkService;
   readUnderstanding?: (
@@ -102,6 +104,9 @@ export class PlatformAgentTools {
 
   get supportsRunStatus() {
     return !!this.domain.runtimeTaskStatus;
+  }
+  get supportsProfile() {
+    return !!this.domain.profile;
   }
 
   get supportsReader() {
@@ -211,6 +216,13 @@ export class PlatformAgentTools {
           projectId,
         ),
       };
+    }
+    if (args.action === "profile") {
+      if (!this.domain.profile || !args.profile)
+        throw new DomainError("invalid", "Profile 操作不可用。");
+      if (platformSource === "task-run" || !inputId)
+        throw new DomainError("forbidden", "后台事项不能请求修改用户资料。");
+      return this.domain.profile.agentOperation(actor, args.profile);
     }
     if (args.action === "applications") {
       if (platformSource === "task-run" || !inputId)

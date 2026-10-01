@@ -266,6 +266,7 @@ test("中心冷备份成套恢复 Platform、应用原件与稳定实例身份",
       "reader-originals",
       "message-attachments",
       "objects-images",
+      "profile-avatars",
       "ui-packages",
     ]);
     await assert.rejects(

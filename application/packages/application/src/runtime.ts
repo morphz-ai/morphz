@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -38,6 +38,7 @@ import {
   type ModelCatalog,
 } from "../../../packages/core/src/inference.js";
 import { publicSummary } from "../../../packages/core/src/understanding.js";
+import { RuntimeProfileClient } from "./runtime-profile-client.js";
 import {
   DomainError,
   browserReferenceSchema,
@@ -97,15 +98,46 @@ const configSchema = z
   .object({
     url: z.url(),
     token: z.string().min(1),
+    // Host-only control-plane credential. Never emitted in connection state,
+    // renderer settings or model tool inputs; Team gateway token stays scoped.
+    operatorToken: z.string().min(1).max(8192)
+      .regex(/^[\x21-\x7e]+$/).optional(),
     namespace: z.string().uuid(),
     identityMode: z.literal("trusted_gateway").optional(),
   })
   .strict();
 export type RuntimeConfig = z.infer<typeof configSchema>;
+export function runtimeOperatorTokenFromEnvironment() {
+  try {
+    return configSchema.shape.operatorToken.parse(
+      process.env.MORPHZ_APP_RUNTIME_OPERATOR_TOKEN,
+    );
+  } catch {
+    throw new Error("Runtime 管理凭据格式无效，请联系管理员。");
+  }
+}
 export function loadRuntimeConfig(directory: string): RuntimeConfig | null {
   const filename = join(directory, "runtime.json");
   if (!existsSync(filename)) return null;
-  const config = configSchema.parse(JSON.parse(readFileSync(filename, "utf8")));
+  let config: RuntimeConfig;
+  try {
+    config = configSchema.parse(JSON.parse(readFileSync(filename, "utf8")));
+  } catch {
+    throw new Error("Runtime 配置无效，请由管理员检查私有配置文件。");
+  }
+  if (
+    config.operatorToken ||
+    process.env.MORPHZ_APP_RUNTIME_OPERATOR_TOKEN !== undefined
+  ) {
+    const stat = lstatSync(filename);
+    if (
+      !stat.isFile() || stat.isSymbolicLink() ||
+      (process.platform !== "win32" &&
+        (stat.mode & 0o077 || stat.uid !== process.getuid!()))
+    ) throw new Error("Runtime 管理凭据必须放在当前用户私有配置文件中。");
+  }
+  if (process.env.MORPHZ_APP_RUNTIME_OPERATOR_TOKEN !== undefined)
+    config.operatorToken = runtimeOperatorTokenFromEnvironment();
   const url = new URL(config.url);
   // First adapter is explicitly local-only. Never silently send this token to another host.
   if (
@@ -1969,6 +2001,7 @@ export class RuntimeBridge {
     );
   }
   readonly modelSettings = new RuntimeModelSettings(() => this.config);
+  readonly profiles = new RuntimeProfileClient(() => this.config);
   private state: z.infer<typeof storedSchema>;
   private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.

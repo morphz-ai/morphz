@@ -136,6 +136,7 @@ export async function openEmbeddedApplication(
       platformReader: domains.reader,
       messageAttachments: domains.messageAttachments,
       images: domains.images,
+      profiles: domains.profiles,
       uiPackages: domains.uiPackages,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(runtime),
@@ -173,6 +174,7 @@ export async function openEmbeddedApplication(
             authority: bookmarkAgent.authority,
             work: domains.work.service,
             content: domains.content,
+            profile: domains.profiles.service,
             reader: domains.reader.service,
           },
           {
@@ -217,6 +219,7 @@ export async function openEmbeddedApplication(
                   authority: candidateBookmarks.authority,
                   work: domains!.work.service,
                   content: domains!.content,
+                  profile: domains!.profiles.service,
                   reader: domains!.reader.service,
                 },
                 {

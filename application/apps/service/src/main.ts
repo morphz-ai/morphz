@@ -35,6 +35,7 @@ const cloudStore = {
   uiSchema: process.env.MORPHZ_APP_CLOUD_STORE_UI_SCHEMA,
   readerSchema: process.env.MORPHZ_APP_CLOUD_STORE_READER_SCHEMA,
   imageSchema: process.env.MORPHZ_APP_CLOUD_STORE_IMAGE_SCHEMA,
+  avatarSchema: process.env.MORPHZ_APP_CLOUD_STORE_AVATAR_SCHEMA,
   stagingRoot: process.env.MORPHZ_APP_CLOUD_STORE_STAGING_ROOT,
   bucket: process.env.MORPHZ_APP_CLOUD_STORE_BUCKET,
   prefix: process.env.MORPHZ_APP_CLOUD_STORE_PREFIX,
@@ -165,6 +166,7 @@ const domains = await openApplicationDomainsHost(
               ui: cloudStore.uiSchema,
               reader: cloudStore.readerSchema,
               images: cloudStore.imageSchema,
+              ...(cloudStore.avatarSchema ? { avatars: cloudStore.avatarSchema } : {}),
             },
             bytes: {
               bucket: cloudStore.bucket,
@@ -229,6 +231,7 @@ const server = createAppServer(store, {
   platformReader: domains.reader,
   messageAttachments: domains.messageAttachments,
   images: domains.images,
+  profiles: domains.profiles,
   uiPackages: domains.uiPackages,
   notifications: domains.notifications,
   platformTaskRuns: domains.taskRuns(runtime),
@@ -242,6 +245,7 @@ const server = createAppServer(store, {
             authority: bookmarkAgent.authority,
             work: domains.work.service,
             content: domains.content,
+            profile: domains.profiles.service,
             reader: domains.reader.service,
           },
           {

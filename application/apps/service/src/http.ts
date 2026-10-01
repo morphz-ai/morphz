@@ -385,6 +385,19 @@ export function createAppServer(
           json(res, 200, business.platformBootstrap(requestToken));
           return;
         }
+        if (url.pathname === "/api/profile") {
+          platformQuery(url, []);
+          json(res, 200, await business.readProfile());
+          return;
+        }
+        if (url.pathname === "/api/profile/avatar") {
+          const query = platformQuery(url, ["subject", "revision", "variant"]);
+          const file = await business.readProfileAvatar({ subject: query.value("subject"), revision: query.number("revision"), variant: query.value("variant") });
+          assertIdentity();
+          res.writeHead(200, { "Content-Type": file.mime, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+          res.end(file.bytes);
+          return;
+        }
         if (url.pathname === "/api/platform/apps") {
           platformQuery(url, []);
           json(res, 200, await business.listUiPackages());
@@ -1850,6 +1863,21 @@ export function createAppServer(
             201,
             await business.addAsset(await body(req, 6 * 1024 * 1024)),
           );
+          return;
+        }
+        if (url.pathname === "/api/profile") {
+          platformQuery(url, []);
+          json(res, 200, await business.updateProfile(await jsonBody(req, 8192)));
+          return;
+        }
+        if (url.pathname === "/api/profile/avatar/clear") {
+          platformQuery(url, []);
+          json(res, 200, await business.clearProfileAvatar(await jsonBody(req, 1024)));
+          return;
+        }
+        if (url.pathname === "/api/profile/avatar") {
+          const query = platformQuery(url, ["subject", "commandId", "expectedRevision"]);
+          json(res, 200, await business.setProfileAvatar({ subject: query.value("subject"), commandId: query.value("commandId"), expectedRevision: query.number("expectedRevision"), data: await body(req, 4 * 1024 * 1024) }));
           return;
         }
       }

@@ -15,7 +15,11 @@ import {
   unconfiguredConnection,
   type ConnectionDetails,
 } from "../../core/src/connection.js";
-import { loadRuntimeConfig, type RuntimeConfig } from "./runtime.js";
+import {
+  loadRuntimeConfig,
+  runtimeOperatorTokenFromEnvironment,
+  type RuntimeConfig,
+} from "./runtime.js";
 import type { WorkspaceStore } from "./store.js";
 
 export function runtimeOrigin(value: string) {
@@ -237,10 +241,13 @@ export class LocalRuntimeConnection {
           "conflict",
           "已有会话绑定了原运行服务；不能通过重新连接切换到另一个服务。",
         );
+      const privateOperatorToken =
+        runtimeOperatorTokenFromEnvironment() ?? old?.operatorToken;
       const config: RuntimeConfig = {
         url: endpoint,
         token: request.token,
         namespace: old?.namespace ?? saved?.namespace ?? this.store.identity(),
+        ...(privateOperatorToken ? { operatorToken: privateOperatorToken } : {}),
       };
       const checked = await inspectRuntimeConnection(config, signal);
       if (checked.state !== "connected")
@@ -250,7 +257,23 @@ export class LocalRuntimeConnection {
       if (this.version() !== version)
         throw new DomainError("conflict", "连接设置已变化，原配置没有被覆盖。");
       temporary = this.file() + "." + randomUUID();
-      writeFileSync(temporary, JSON.stringify(config), {
+      const persistedConfig = { ...config };
+      // Preserve protected-file admin settings without copying an injected
+      // environment secret into a renderer-initiated connection save.
+      let originalPrivateToken: string | undefined;
+      try {
+        originalPrivateToken = old
+          ? (JSON.parse(readFileSync(this.file(), "utf8")) as {
+              operatorToken?: string;
+            }).operatorToken
+          : undefined;
+      } catch {
+        throw new DomainError("invalid", "连接配置无效，原配置未被覆盖。");
+      }
+      if (originalPrivateToken)
+        persistedConfig.operatorToken = originalPrivateToken;
+      else delete persistedConfig.operatorToken;
+      writeFileSync(temporary, JSON.stringify(persistedConfig), {
         flag: "wx",
         mode: 0o600,
       });

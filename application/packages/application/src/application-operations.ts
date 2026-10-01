@@ -6,6 +6,7 @@ import { scriptToolSchema } from "../../core/src/script-tool.js";
 import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
 import { readerToolSchema } from "../../core/src/reader.js";
 import { applicationToolSchema } from "../../core/src/application-tool.js";
+import { profileToolSchema } from "../../core/src/profile.js";
 
 export const operationRequestSchema = z.discriminatedUnion("action", [
   z
@@ -83,6 +84,18 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       ...params,
     }));
   const withoutAction = (schema: z.ZodObject) => schema.omit({ action: true });
+  for (const schema of profileToolSchema.options) {
+    const action = schema.shape.action.value;
+    add(
+      `profile.${action}`,
+      action === "read"
+        ? "读取本人和智能体资料"
+        : "请求用户确认资料修改（不会直接保存）",
+      action === "read" ? "read" : "write",
+      withoutAction(schema),
+      (params) => ({ action: "profile", profile: { action, ...params } }),
+    );
+  }
   for (const schema of applicationToolSchema.options) {
     const action = schema.shape.action.value;
     add(

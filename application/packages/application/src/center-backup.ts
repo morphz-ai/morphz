@@ -23,6 +23,7 @@ import { DatabaseSync, backup } from "node:sqlite";
 import { z } from "zod";
 import { ManagedArtifactStore } from "../../managed-artifact-store/src/store.js";
 import { readEmbeddedApplicationInstanceIds } from "./embedded-application-identity.js";
+import { profileAvatarArtifactId, profileAvatarStoreId } from "./profile-avatar-service.js";
 
 const databases = [
   "workspace.sqlite",
@@ -78,6 +79,14 @@ const manifestSchema = z
       .nullable()
       .optional(),
     uiStore: z
+      .object({
+        storeId: z.string(),
+        backupInfoSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    avatarStore: z
       .object({
         storeId: z.string(),
         backupInfoSha256: z.string().regex(/^[0-9a-f]{64}$/),
@@ -225,13 +234,14 @@ function verifiedStoreVersion(
 ) {
   return store
     .prepare(
-      `SELECT a.owner_tenant_id,a.deleted_at,v.sha256,v.byte_length,v.mime
+      `SELECT a.owner_tenant_id,a.owner_principal_id,a.deleted_at,v.sha256,v.byte_length,v.mime
        FROM artifact_versions v JOIN artifacts a ON a.artifact_id=v.artifact_id
       WHERE v.artifact_id=? AND v.revision=?`,
     )
     .get(artifactId, revision) as
     | {
         owner_tenant_id: string;
+        owner_principal_id: string;
         deleted_at: string | null;
         sha256: string;
         byte_length: number;
@@ -240,6 +250,20 @@ function verifiedStoreVersion(
     | undefined;
 }
 
+function profileAvatarReferences(database: DatabaseSync) {
+  if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='profile_avatar_versions'").get()) return 0;
+  return Number((database.prepare("SELECT COUNT(*) AS count FROM profile_avatar_versions WHERE original_store_id IS NOT NULL").get() as { count: number }).count);
+}
+function verifyProfileAvatarReferences(platform: DatabaseSync, store: DatabaseSync, tenantId: string, storeId: string) {
+  if (!profileAvatarReferences(platform)) return;
+  for (const row of platform.prepare("SELECT * FROM profile_avatar_versions WHERE original_store_id IS NOT NULL").iterate() as Iterable<Record<string, unknown>>) {
+    for (const prefix of ["original", "poster"] as const) {
+      const version = verifiedStoreVersion(store, String(row[prefix + "_artifact_id"]), Number(row[prefix + "_revision"]));
+      const expectedId = profileAvatarArtifactId(tenantId, row.subject_kind as "human" | "agent", String(row.subject_id), prefix, String(row[prefix + "_sha256"]));
+      if (row.tenant_id !== tenantId || row[prefix + "_store_id"] !== storeId || row[prefix + "_artifact_id"] !== expectedId || Number(row[prefix + "_revision"]) !== 1 || !version || version.owner_tenant_id !== tenantId || version.owner_principal_id !== "profile-avatar-service" || version.deleted_at || version.sha256 !== row[prefix + "_sha256"] || version.byte_length !== Number(row[prefix + "_byte_length"]) || version.mime !== row[prefix + "_mime"]) throw new Error("头像原件或静态预览与 Store 不一致，拒绝不完整备份。");
+    }
+  }
+}
 function verifyImageReferences(
   objects: DatabaseSync,
   store: DatabaseSync,
@@ -546,6 +570,8 @@ export async function backupCenterStorage(options: {
   let messageManifest: DatabaseSync | undefined;
   let imageStore: ManagedArtifactStore | undefined;
   let imageManifest: DatabaseSync | undefined;
+  let avatarStore: ManagedArtifactStore | undefined;
+  let avatarManifest: DatabaseSync | undefined;
   let uiStore: ManagedArtifactStore | undefined;
   let uiManifest: DatabaseSync | undefined;
   let staging: string | undefined;
@@ -639,6 +665,15 @@ export async function backupCenterStorage(options: {
       );
     }
     const uiRoot = join(sourceDirectory, "ui-packages");
+    const avatarRoot = join(sourceDirectory, "profile-avatars"), hasAvatarStore = existsSync(avatarRoot);
+    const avatarReferences = names.includes("platform.sqlite") ? profileAvatarReferences(handles.get("platform.sqlite")!) : 0;
+    if (avatarReferences && !hasAvatarStore) throw new Error("头像引用了缺失的原件 Store，拒绝不完整备份。");
+    if (hasAvatarStore) {
+      if (!names.includes("platform.sqlite")) throw new Error("头像 Store 缺少 Platform 私库，拒绝不完整备份。");
+      avatarStore = await ManagedArtifactStore.sqlite({ root: avatarRoot, storeId: profileAvatarStoreId(id), authorizer: backupAuthorizer, maxBytes: 4 * 1024 * 1024 });
+      avatarManifest = new DatabaseSync(join(avatarRoot, "manifest.sqlite"), { readOnly: true });
+      verifyProfileAvatarReferences(handles.get("platform.sqlite")!, avatarManifest, id, profileAvatarStoreId(id));
+    }
     const hasUiStore = existsSync(uiRoot);
     const uiReferences = names.includes("platform.sqlite")
       ? uiPackageReferences(handles.get("platform.sqlite")!)
@@ -716,6 +751,7 @@ export async function backupCenterStorage(options: {
     const uiStoreBackup = uiStore
       ? await uiStore.backupTo(join(staging, "ui-packages"))
       : null;
+    const avatarStoreBackup = avatarStore ? await avatarStore.backupTo(join(staging, "profile-avatars")) : null;
     for (const [name, db] of handles) {
       if (
         Object.values(db.prepare("PRAGMA data_version").get() ?? {})[0] !==
@@ -795,6 +831,7 @@ export async function backupCenterStorage(options: {
             ),
           }
         : null,
+      avatarStore: avatarStoreBackup ? { storeId: avatarStoreBackup.storeId, backupInfoSha256: sha256(join(staging, "profile-avatars", "backup-info.json")) } : null,
     });
     writeFileSync(join(staging, "manifest.json"), JSON.stringify(manifest), {
       flag: "wx",
@@ -817,6 +854,7 @@ export async function backupCenterStorage(options: {
         ...(readerStoreBackup ? ["reader-originals"] : []),
         ...(messageStoreBackup ? ["message-attachments"] : []),
         ...(imageStoreBackup ? ["objects-images"] : []),
+        ...(avatarStoreBackup ? ["profile-avatars"] : []),
         ...(uiStoreBackup ? ["ui-packages"] : []),
       ],
     };
@@ -827,6 +865,8 @@ export async function backupCenterStorage(options: {
     await messageStore?.close();
     imageManifest?.close();
     await imageStore?.close();
+    avatarManifest?.close();
+    await avatarStore?.close();
     uiManifest?.close();
     await uiStore?.close();
     for (const db of handles.values()) db.close();
@@ -863,6 +903,7 @@ export async function restoreCenterStorage(options: {
         ...(manifest.readerStore ? ["reader-originals"] : []),
         ...(manifest.messageStore ? ["message-attachments"] : []),
         ...(manifest.imageStore ? ["objects-images"] : []),
+        ...(manifest.avatarStore ? ["profile-avatars"] : []),
         ...(manifest.uiStore ? ["ui-packages"] : []),
       ]
         .sort()
@@ -951,6 +992,8 @@ export async function restoreCenterStorage(options: {
         manifest.uiStore.backupInfoSha256)
   )
     throw new Error("界面包 Store 与中心备份身份或摘要不匹配。");
+  if (manifest.avatarStore && (!names.includes("platform.sqlite") || manifest.avatarStore.storeId !== profileAvatarStoreId(manifest.centerId) || sha256(join(backupDirectory, "profile-avatars", "backup-info.json")) !== manifest.avatarStore.backupInfoSha256)) throw new Error("头像 Store 与中心备份身份或摘要不匹配。");
+  if (names.includes("platform.sqlite") && !manifest.avatarStore && inspectBackupDatabase(join(backupDirectory, "platform.sqlite"), profileAvatarReferences) > 0) throw new Error("备份缺少头像原件 Store。");
   if (names.includes("platform.sqlite") && !manifest.uiStore) {
     const references = inspectBackupDatabase(
       join(backupDirectory, "platform.sqlite"),
@@ -1032,6 +1075,8 @@ export async function restoreCenterStorage(options: {
       }
     }
     if (manifest.uiStore) {
+      // Executable packages remain a separate byte domain.
+      // The package restore below does not include Profile assets.
       const uiStore = await ManagedArtifactStore.restoreSqlite({
         root: join(staging, "ui-packages"),
         storeId: manifest.uiStore.storeId,
@@ -1058,6 +1103,13 @@ export async function restoreCenterStorage(options: {
         platform.close();
       }
     }
+    if (manifest.avatarStore) {
+      const service = await ManagedArtifactStore.restoreSqlite({ root: join(staging, "profile-avatars"), storeId: manifest.avatarStore.storeId, maxBytes: 4 * 1024 * 1024, authorizer: backupAuthorizer, backupDirectory: join(backupDirectory, "profile-avatars") });
+      await service.close();
+      const platform = new DatabaseSync(join(staging, "platform.sqlite"), { readOnly: true });
+      const store = new DatabaseSync(join(staging, "profile-avatars", "manifest.sqlite"), { readOnly: true });
+      try { verifyProfileAvatarReferences(platform, store, manifest.centerId, manifest.avatarStore.storeId); } finally { store.close(); platform.close(); }
+    }
     syncDirectory(staging);
     if (existsSync(destinationDirectory))
       throw new Error("恢复目标已存在；没有覆盖现有数据。");
@@ -1071,6 +1123,7 @@ export async function restoreCenterStorage(options: {
         ...(manifest.readerStore ? ["reader-originals"] : []),
         ...(manifest.messageStore ? ["message-attachments"] : []),
         ...(manifest.imageStore ? ["objects-images"] : []),
+        ...(manifest.avatarStore ? ["profile-avatars"] : []),
         ...(manifest.uiStore ? ["ui-packages"] : []),
       ],
     };

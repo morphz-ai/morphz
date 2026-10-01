@@ -58,7 +58,8 @@ export class HttpApplicationClient {
     let path: string,
       data: BodyInit | undefined,
       verb = "GET",
-      wav = false;
+      wav = false,
+      avatarBytes = false;
     const headers: Record<string, string> = {};
     const post = (value?: unknown) => {
       verb = "POST";
@@ -70,6 +71,30 @@ export class HttpApplicationClient {
     switch (method) {
       case "platform.bootstrap":
         path = "/api/platform/bootstrap";
+        break;
+      case "profile.read":
+        path = "/api/profile";
+        break;
+      case "profile.update":
+        path = "/api/profile";
+        post(params);
+        break;
+      case "profile.avatar.clear":
+        path = "/api/profile/avatar/clear";
+        post(params);
+        break;
+      case "profile.avatar.set": {
+        const p = fields(params),
+          { data: bytes, ...metadata } = p;
+        path = "/api/profile/avatar?" + query(metadata);
+        post();
+        data = binary(bytes);
+        headers["Content-Type"] = "application/octet-stream";
+        break;
+      }
+      case "profile.avatar.read":
+        path = "/api/profile/avatar?" + query(fields(params));
+        avatarBytes = true;
         break;
       case "runtime.snapshot":
         path = "/api/platform/runtime-snapshot";
@@ -766,9 +791,14 @@ export class HttpApplicationClient {
         throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
       throw new ApplicationRequestError(response.status, message, code);
     }
-    const value: unknown = wav
-      ? new Uint8Array(await response.arrayBuffer())
-      : await response.json();
+    const value: unknown = avatarBytes
+      ? {
+          bytes: new Uint8Array(await response.arrayBuffer()),
+          mime: response.headers.get("Content-Type"),
+        }
+      : wav
+        ? new Uint8Array(await response.arrayBuffer())
+        : await response.json();
     if (epoch !== this.epoch)
       throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
     return value;

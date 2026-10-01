@@ -133,8 +133,11 @@ import {
 import { ReaderStorageError } from "../../reader/src/store.js";
 import type { MessageAttachmentService } from "./message-attachment-service.js";
 import type { UiPackageService } from "./ui-package-service.js";
+import type { ProfileService } from "./profile-service.js";
+import { profileAvatarCommandSchema } from "../../core/src/profile.js";
 
 export type ApplicationOptions = {
+  profiles?: { authority: HumanPlatformAuthority; service: ProfileService };
   readerOcr?: import("./reader-ocr.js").ReaderOcr;
   runtime?: RuntimeBridge;
   identity?: IdentityCenter;
@@ -620,6 +623,39 @@ export class ApplicationSession {
         modelSettings: this.canManageModelSettings(),
       },
     };
+  }
+  private profileDomain() {
+    this.active();
+    const domain = this.options.profiles;
+    if (!domain) throw new ApplicationUnavailable("Profile 服务暂不可用。");
+    return domain;
+  }
+  readProfile() {
+    const domain = this.profileDomain();
+    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.read(actor, () => this.active()));
+  }
+  updateProfile(raw: unknown) {
+    const domain = this.profileDomain();
+    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.update(actor, raw, () => this.active()));
+  }
+  setProfileAvatar(raw: unknown) {
+    const domain = this.profileDomain();
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new DomainError("invalid", "头像参数无效。");
+    const { data, ...metadata } = raw as Record<string, unknown>;
+    const request = profileAvatarCommandSchema.parse(metadata);
+    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) throw new DomainError("invalid", "请上传头像文件。");
+    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.set(actor, request, data instanceof Uint8Array ? data : new Uint8Array(data)));
+  }
+  clearProfileAvatar(raw: unknown) {
+    const domain = this.profileDomain();
+    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.clear(actor, raw));
+  }
+  readProfileAvatar(raw: unknown) {
+    const domain = this.profileDomain();
+    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.read(actor, raw));
   }
   /** Runtime-owned conversation status for the unchanged exchange chrome.
    * Project and application data are not read from the old workspace here. */
@@ -3248,6 +3284,11 @@ export function invokeApplication(
   switch (method) {
     case "platform.bootstrap":
       return session.platformBootstrap(identityGeneration);
+    case "profile.read": return session.readProfile();
+    case "profile.update": return session.updateProfile(params);
+    case "profile.avatar.set": return session.setProfileAvatar(params);
+    case "profile.avatar.clear": return session.clearProfileAvatar(params);
+    case "profile.avatar.read": return session.readProfileAvatar(params);
     case "runtime.snapshot":
       return session.platformRuntimeSnapshot();
     case "runtime.navigation":

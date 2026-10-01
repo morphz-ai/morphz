@@ -22,6 +22,10 @@ import {
   type NotificationState,
 } from "../../core/src/notification-state.js";
 import { platformSchemaSql } from "./schema.js";
+import {
+  profileAvatarMediaSchema, profileAvatarSnapshotSchema,
+  type ProfileAvatarMedia, type ProfileAvatarSnapshot, type ProfileSubject,
+} from "../../core/src/profile.js";
 import type { NavigationRevisions } from "../../core/src/application-api.js";
 import {
   understandingSourcesSchema,
@@ -123,6 +127,10 @@ export type PlatformAuthorityVerifier = {
   resolveProjectAgent(request: {
     tenantId: string;
   }): Promise<{ principalId: string; actantId: string } | null>;
+  /** Profile presentation uses the kernel Agent ID, not the display Actant ID.
+   * Only the trusted Host can bind this ID and its current edit policy. */
+  resolveProfileAgent?(request: { tenantId: string; principalId: string }): Promise<{ agentId: string; editable: boolean } | null>;
+  verifyProfileAvatar?(request: { actor: PlatformActor; subject: ProfileSubject; subjectId: string; media: ProfileAvatarMedia }): Promise<boolean>;
   verifyApplicationObject(request: {
     tenantId: string;
     principalId: string;
@@ -850,6 +858,8 @@ export class PlatformStore {
         "8f534910c59705175b876c85902d5d60e277d7f0c5a7cc88ac5f0eedd021bb02";
       const v8SchemaSha256 =
         "eb0eb5d3dd4dea09b39b5b9c2ec317973225eff0f0dd953931d0255cef378780";
+      const v9SchemaSha256 =
+        "95bd108425eacc274efd75837ea7f47e5dcea853d4c23128171efe87e18f0161";
       if (versions.length > 1)
         throw new PlatformStorageError(
           "conflict",
@@ -878,7 +888,8 @@ export class PlatformStore {
           version !== 6 &&
           version !== 7 &&
           version !== 8 &&
-          version !== 9
+          version !== 9 &&
+          version !== 10
         )
           throw new PlatformStorageError(
             "conflict",
@@ -907,7 +918,8 @@ export class PlatformStore {
           (version === 6 && installedHash !== v6SchemaSha256) ||
           (version === 7 && installedHash !== v7SchemaSha256) ||
           (version === 8 && installedHash !== v8SchemaSha256) ||
-          (version === 9 && installedHash !== schemaSha256)
+          (version === 9 && installedHash !== v9SchemaSha256) ||
+          (version === 10 && installedHash !== schemaSha256)
         )
           throw new PlatformStorageError(
             "conflict",
@@ -919,7 +931,8 @@ export class PlatformStore {
           version !== 6 &&
           version !== 7 &&
           version !== 8 &&
-          version !== 9
+          version !== 9 &&
+          version !== 10
         ) {
           await q.exec(
             "CREATE INDEX content_by_app_object ON content_entries(tenant_id, app_id, app_object_id, deleted_at, content_id)",
@@ -1034,8 +1047,17 @@ export class PlatformStore {
           `);
           await q.change(
             "UPDATE platform_schema_version SET version=9,schema_sha256=? WHERE version=8 AND schema_sha256=?",
-            [schemaSha256, v8SchemaSha256],
+            [v9SchemaSha256, v8SchemaSha256],
           );
+        }
+        if (version < 10) {
+          // The named, immutable migration section is generated from the same
+          // SQL source as fresh creation; unrelated later DDL is not included.
+          const begin = platformSchemaSql.indexOf("-- BEGIN profile-avatar-v1");
+          const end = platformSchemaSql.indexOf("-- END profile-avatar-v1", begin);
+          if (begin < 0 || end < begin) throw new PlatformStorageError("conflict", "头像存储迁移定义不完整。");
+          await q.exec(platformSchemaSql.slice(begin, end));
+          await q.change("UPDATE platform_schema_version SET version=10,schema_sha256=? WHERE version=9 AND schema_sha256=?", [schemaSha256, v9SchemaSha256]);
         }
         try {
           await verifySchemaObjects(q, this.backend.kind, platformSchemaSql, [
@@ -1053,7 +1075,7 @@ export class PlatformStore {
         );
       await q.exec(platformSchemaSql);
       await q.change(
-        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(9,?)",
+        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(10,?)",
         [schemaSha256],
       );
     });
@@ -1835,6 +1857,75 @@ export class PlatformStore {
         result_ids: row.result_ids ? row.result_ids.split("|") : [],
       }));
     }, "read");
+  }
+
+  /** Personal presentation only; ROM remains the sole name/persona authority. */
+  async profileAvatarSubject(access: PlatformActor, subject: ProfileSubject, write = false) {
+    const actor = await this.authorize(access);
+    if (subject !== "human" && subject !== "agent") throw new PlatformStorageError("invalid", "头像主体无效。");
+    if (write && actor.kind !== "human") throw new PlatformStorageError("forbidden", "修改头像需要用户确认。");
+    if (actor.kind === "agent") await this.transaction(q => this.assertMember(q, actor, actor.scopeProjectId!), "read");
+    if (subject === "human") return { actor, subjectId: actor.principalId };
+    const agent = await this.capabilities.resolveProfileAgent?.({ tenantId: actor.tenantId, principalId: actor.principalId });
+    if (!agent || !agent.agentId || agent.agentId.length > 512 || /[\x00-\x1f\x7f]/.test(agent.agentId)) throw new PlatformStorageError("forbidden", "智能体身份尚未可靠连接。");
+    if (write && !agent.editable) throw new PlatformStorageError("forbidden", "当前智能体资料只读。");
+    return { actor, subjectId: agent.agentId };
+  }
+
+  private async profileAvatarState(q: Query, tenantId: string, subject: ProfileSubject, subjectId: string): Promise<ProfileAvatarSnapshot> {
+    const row = (await q.all<Record<string, unknown>>(
+      "SELECT v.*,h.revision AS head_revision FROM profile_avatar_heads h LEFT JOIN profile_avatar_versions v ON v.tenant_id=h.tenant_id AND v.subject_kind=h.subject_kind AND v.subject_id=h.subject_id AND v.revision=h.revision WHERE h.tenant_id=? AND h.subject_kind=? AND h.subject_id=?",
+      [tenantId, subject, subjectId],
+    ))[0];
+    if (!row) return { revision: 0, media: null };
+    if (row.revision === null || row.revision === undefined) throw new PlatformStorageError("conflict", "头像版本关系不完整，请先恢复存储。");
+    const ref = (prefix: string) => ({
+      storeId: row[prefix + "_store_id"], artifactId: row[prefix + "_artifact_id"],
+      revision: safeInteger(row[prefix + "_revision"] as number | string, "头像字节修订"),
+      sha256: row[prefix + "_sha256"], byteLength: safeInteger(row[prefix + "_byte_length"] as number | string, "头像字节大小"), mime: row[prefix + "_mime"],
+    });
+    return profileAvatarSnapshotSchema.parse({ revision: safeInteger(row.revision as number | string, "头像修订"), media: row.original_store_id === null ? null : {
+      original: ref("original"), poster: ref("poster"), width: safeInteger(row.width as number | string, "头像宽度"), height: safeInteger(row.height as number | string, "头像高度"),
+      frames: safeInteger(row.frames as number | string, "头像帧数"), durationMs: safeInteger(row.duration_ms as number | string, "头像时长"),
+    } });
+  }
+
+  async readProfileAvatar(access: PlatformActor, subject: ProfileSubject) {
+    const { actor, subjectId } = await this.profileAvatarSubject(access, subject);
+    return this.transaction(q => this.profileAvatarState(q, actor.tenantId, subject, subjectId), "read");
+  }
+
+  /** Host startup recovery guard; never creates an empty Store for live refs. */
+  async hasProfileAvatarReferences(tenantId: string) {
+    requireId(tenantId, "租户标识");
+    return this.transaction(async q => (await q.all("SELECT 1 FROM profile_avatar_versions WHERE tenant_id=? AND original_store_id IS NOT NULL LIMIT 1", [tenantId])).length > 0, "read");
+  }
+
+  async updateProfileAvatar(access: PlatformActor, request: { subject: ProfileSubject; commandId: string; expectedRevision: number; media: ProfileAvatarMedia | null }) {
+    const { actor, subjectId } = await this.profileAvatarSubject(access, request.subject, true);
+    requireId(request.commandId, "操作标识");
+    if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) throw new PlatformStorageError("invalid", "头像修订无效。");
+    const media = request.media === null ? null : profileAvatarMediaSchema.parse(request.media);
+    if (media && (media.poster.mime !== "image/png" || !await this.capabilities.verifyProfileAvatar?.({ actor: access, subject: request.subject, subjectId, media }))) throw new PlatformStorageError("forbidden", "头像字节版本未经核验。");
+    const hash = fingerprint({ actor, subject: request.subject, subjectId, expectedRevision: request.expectedRevision, media });
+    const now = new Date().toISOString();
+    return this.transaction(async q => {
+      const prior = await this.replay(q, actor, request.commandId, hash);
+      if (prior !== null) return profileAvatarSnapshotSchema.parse(JSON.parse(prior));
+      const current = await this.profileAvatarState(q, actor.tenantId, request.subject, subjectId);
+      if (current.revision !== request.expectedRevision) throw new PlatformStorageError("conflict", "头像已更新，请重新读取。");
+      const revision = current.revision + 1;
+      if (!Number.isSafeInteger(revision)) throw new PlatformStorageError("conflict", "头像修订超出范围。");
+      const changed = current.revision === 0
+        ? await q.change("INSERT INTO profile_avatar_heads(tenant_id,subject_kind,subject_id,revision) VALUES(?,?,?,?) ON CONFLICT(tenant_id,subject_kind,subject_id) DO NOTHING", [actor.tenantId, request.subject, subjectId, revision])
+        : await q.change("UPDATE profile_avatar_heads SET revision=? WHERE tenant_id=? AND subject_kind=? AND subject_id=? AND revision=?", [revision, actor.tenantId, request.subject, subjectId, current.revision]);
+      if (changed !== 1) throw new PlatformStorageError("conflict", "头像已更新，请重新读取。");
+      const values = media ? [...[media.original, media.poster].flatMap(v => [v.storeId, v.artifactId, v.revision, v.sha256, v.byteLength, v.mime]), media.width, media.height, media.frames, media.durationMs] : Array(16).fill(null);
+      await q.change("INSERT INTO profile_avatar_versions(tenant_id,subject_kind,subject_id,revision,original_store_id,original_artifact_id,original_revision,original_sha256,original_byte_length,original_mime,poster_store_id,poster_artifact_id,poster_revision,poster_sha256,poster_byte_length,poster_mime,width,height,frames,duration_ms,changed_by_principal_id,changed_by_actant_id,changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [actor.tenantId, request.subject, subjectId, revision, ...values, actor.principalId, actor.actantId, now]);
+      const result = { revision, media };
+      await this.receipt(q, actor, request.commandId, hash, "profile-avatar", JSON.stringify(result), now, actor.runtimeInputId, false);
+      return result;
+    });
   }
 
   private async notificationState(

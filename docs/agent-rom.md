@@ -160,7 +160,7 @@ from the validated control-plane credential; embedded Hosts supply their trusted
 adapter authority identity. `principal_scope` is a target, never proof of a caller.
 
 Before any conversation exists, the local Host can read default Agent/Principal
-IDs from authenticated `/api/runtime/status`. A trusted Human gateway can POST an
+IDs from authenticated `/api/status`. A trusted Human gateway can POST an
 **empty body** to `/api/principal/self`; the existing authenticated ingress
 assertion is persisted and `{principal_id}` returned, without creating a Session.
 Untrusted headers, a missing gateway assertion, and body-supplied identities are

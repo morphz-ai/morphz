@@ -24,6 +24,7 @@ import {
   postgresApplicationInstanceIds,
   type PostgresApplicationDomains,
 } from "./application-domains-host.js";
+import { profileAvatarArtifactId } from "./profile-avatar-service.js";
 
 const schemaPattern = /^[a-z][a-z0-9_]{0,62}$/;
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -34,7 +35,7 @@ const relationNames = [
   "reader",
   "browser",
 ] as const;
-const storeNames = ["ui", "reader", "images"] as const;
+const storeNames = ["ui", "reader", "images", "avatars"] as const;
 type RelationName = (typeof relationNames)[number];
 type StoreName = (typeof storeNames)[number];
 
@@ -44,7 +45,7 @@ export type CloudApplicationStorage = {
   applications: PostgresApplicationDomains;
   stores: {
     connectionString: string;
-    schemas: Record<StoreName, string>;
+    schemas: Record<Exclude<StoreName, "avatars">, string> & { avatars?: string };
     bytes: S3ByteLocation;
   };
   s3Client?: S3Client;
@@ -80,10 +81,13 @@ const manifestSchema = z
           })
           .strict(),
       )
-      .length(storeNames.length),
+      .min(3).max(4),
   })
   .strict();
 type Manifest = z.infer<typeof manifestSchema>;
+function configuredStores(location: CloudApplicationStorage): StoreName[] {
+  return storeNames.filter(name => !!location.stores.schemas[name]);
+}
 
 function validateLocation(location: CloudApplicationStorage) {
   z.uuid().parse(location.tenantId);
@@ -100,9 +104,9 @@ function validateLocation(location: CloudApplicationStorage) {
   const schemasByDatabase = new Map<string, Set<string>>();
   const domains = [
     ...relationNames.map((name) => relation(location, name)),
-    ...storeNames.map((name) => ({
+    ...configuredStores(location).map((name) => ({
       connectionString: location.stores.connectionString,
-      schema: location.stores.schemas[name],
+      schema: location.stores.schemas[name]!,
     })),
   ];
   for (const domain of domains) {
@@ -329,6 +333,32 @@ async function verifyByteReferences(location: CloudApplicationStorage) {
       await manifests.end();
     }
   }
+  await verifyCloudAvatarReferences(location);
+}
+
+async function verifyCloudAvatarReferences(location: CloudApplicationStorage) {
+  const platform = new Pool({ connectionString: location.platform.connectionString, max: 1 });
+  const manifests = new Pool({ connectionString: location.stores.connectionString, max: 1 });
+  try {
+    const present = await platform.query<{ relation: string | null }>("SELECT to_regclass($1) AS relation", [`${location.platform.schema}.profile_avatar_versions`]);
+    if (!present.rows[0]?.relation) return;
+    let cursor: [string, string, string] | undefined;
+    for (;;) {
+      const rows = await platform.query<Record<string, unknown>>(`SELECT * FROM "${location.platform.schema}".profile_avatar_versions WHERE tenant_id=$1 AND original_store_id IS NOT NULL ${cursor ? "AND (subject_kind,subject_id,revision)>($2,$3,$4)" : ""} ORDER BY subject_kind,subject_id,revision LIMIT 500`, [location.tenantId, ...(cursor ?? [])]);
+      if (!rows.rows.length) break;
+      if (!location.stores.schemas.avatars) throw new Error("头像引用存在但云头像 Store 未配置，拒绝不完整备份或恢复。");
+      for (const row of rows.rows) {
+        for (const variant of ["original", "poster"] as const) {
+          const reference = await manifests.query<Record<string, unknown>>(`SELECT a.owner_tenant_id,a.owner_principal_id,a.deleted_at,v.sha256,v.byte_length,v.mime FROM "${location.stores.schemas.avatars}".artifact_versions v JOIN "${location.stores.schemas.avatars}".artifacts a ON a.artifact_id=v.artifact_id WHERE v.artifact_id=$1 AND v.revision=$2`, [row[variant + "_artifact_id"], row[variant + "_revision"]]);
+          const version = reference.rows[0];
+          const expectedId = profileAvatarArtifactId(location.tenantId, row.subject_kind as "human" | "agent", String(row.subject_id), variant, String(row[variant + "_sha256"]));
+          if (row[variant + "_store_id"] !== storeId(location, "avatars") || row[variant + "_artifact_id"] !== expectedId || String(row[variant + "_revision"]) !== "1" || !version || version.owner_tenant_id !== location.tenantId || version.owner_principal_id !== "profile-avatar-service" || version.deleted_at !== null || version.sha256 !== row[variant + "_sha256"] || String(version.byte_length) !== String(row[variant + "_byte_length"]) || version.mime !== row[variant + "_mime"]) throw new Error("头像原件或静态预览版本不完整，拒绝成套备份或恢复。");
+        }
+      }
+      const last = rows.rows.at(-1)!; cursor = [String(last.subject_kind), String(last.subject_id), String(last.revision)];
+      if (rows.rows.length < 500) break;
+    }
+  } finally { await platform.end(); await manifests.end(); }
 }
 
 function relation(location: CloudApplicationStorage, name: RelationName) {
@@ -347,6 +377,7 @@ function storeId(location: CloudApplicationStorage, name: StoreName) {
   if (name === "ui") return `store_ui_${tenantHash.slice(0, 32)}`;
   if (name === "images")
     return `store_objects_images_${tenantHash.slice(0, 24)}`;
+  if (name === "avatars") return `store_profile_avatars_${tenantHash.slice(0, 24)}`;
   return `store_${postgresApplicationInstanceIds(location.tenantId, location.applications).reader}`;
 }
 
@@ -486,7 +517,7 @@ async function openCloudStore(
     root: join(stagingRoot, name),
     storeId: storeId(location, name),
     connectionString: location.stores.connectionString,
-    schema: location.stores.schemas[name],
+    schema: location.stores.schemas[name]!,
     bytes: storeLocation(location, name),
     ...(location.s3Client ? { s3Client: location.s3Client } : {}),
     authorizer: {
@@ -541,7 +572,7 @@ export async function backupCloudApplicationStorage(options: {
       relations.push({ name, schema: source.schema, ...digest });
     }
     const stores: Manifest["stores"] = [];
-    for (const name of storeNames) {
+    for (const name of configuredStores(options.location)) {
       const service = await openCloudStore(
         options.location,
         name,
@@ -553,7 +584,7 @@ export async function backupCloudApplicationStorage(options: {
         const digest = await fileDigest(join(directory, "backup-info.json"));
         stores.push({
           name,
-          schema: options.location.stores.schemas[name],
+          schema: options.location.stores.schemas[name]!,
           storeId: service.storeId,
           backupInfoSha256: digest.sha256,
         });
@@ -596,7 +627,8 @@ function readManifest(directory: string) {
   if (
     new Set(manifest.relations.map((row) => row.name)).size !==
       relationNames.length ||
-    new Set(manifest.stores.map((row) => row.name)).size !== storeNames.length
+    new Set(manifest.stores.map((row) => row.name)).size !== manifest.stores.length ||
+    ["ui", "reader", "images"].some(name => !manifest.stores.some(row => row.name === name))
   )
     throw new Error("云备份缺少必需的关系域或对象 Store。");
   return manifest;
@@ -617,6 +649,7 @@ export async function restoreCloudApplicationStorage(options: {
   validateLocation(options.location);
   privateDirectory(options.stagingRoot);
   const manifest = readManifest(options.backupDirectory);
+  if (manifest.stores.map(row => row.name).sort().join(",") !== configuredStores(options.location).sort().join(",")) throw new Error("云备份对象 Store 集合与恢复配置不匹配。");
   if (
     manifest.tenantId !== options.location.tenantId ||
     manifest.deploymentId !== options.location.applications.deploymentId
@@ -652,9 +685,9 @@ export async function restoreCloudApplicationStorage(options: {
   }
   const targets = [
     ...relationNames.map((name) => relation(options.location, name)),
-    ...storeNames.map((name) => ({
+    ...configuredStores(options.location).map((name) => ({
       connectionString: options.location.stores.connectionString,
-      schema: options.location.stores.schemas[name],
+      schema: options.location.stores.schemas[name]!,
     })),
   ];
   for (const target of targets) {
@@ -684,7 +717,7 @@ export async function restoreCloudApplicationStorage(options: {
       forcePathStyle: options.location.stores.bytes.forcePathStyle ?? false,
     });
   try {
-    for (const name of storeNames) {
+    for (const name of configuredStores(options.location)) {
       const bytes = storeLocation(options.location, name);
       const listed = await s3.send(
         new ListObjectsV2Command({

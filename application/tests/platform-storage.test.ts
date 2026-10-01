@@ -30,7 +30,193 @@ test("Platform 生产 schema 与评审 SQL 相同", () => {
   assert.equal(platformSchemaSql.trim(), reviewed.trim());
 });
 
-const priorNavigationProjectionsSql = platformSchemaSql.replace(
+const priorAvatarSql = platformSchemaSql.replace(
+  /^-- BEGIN profile-avatar-v1\n[\s\S]*?^-- END profile-avatar-v1\n\n/gm,
+  "",
+);
+const priorAvatarHash =
+  "95bd108425eacc274efd75837ea7f47e5dcea853d4c23128171efe87e18f0161";
+
+async function checkAvatarMigrationContents(store: PlatformStore) {
+  const alice = { credential: "human:tenant-a:alice" };
+  const project = await store.getProject(alice, "v9-project");
+  assert.equal(project.title, "迁移前已有项目");
+  assert.equal(project.revision, 7);
+  assert.deepEqual(await store.readProfileAvatar(alice, "human"), {
+    revision: 0,
+    media: null,
+  });
+  assert.equal(await store.hasProfileAvatarReferences("tenant-a"), false);
+}
+
+test("Platform SQLite 从 v9 增加头像关系，项目原件和空头像跨重开保留", async () => {
+  assert.notEqual(priorAvatarSql, platformSchemaSql);
+  assert.equal(schemaHash(priorAvatarSql), priorAvatarHash);
+  const directory = mkdtempSync(join(tmpdir(), "morphz-platform-v9-"));
+  const filename = join(directory, "platform.sqlite");
+  const now = "2026-10-01T00:00:00.000Z";
+  try {
+    const db = new DatabaseSync(filename);
+    try {
+      db.exec(priorAvatarSql);
+      db.exec(
+        "CREATE TABLE platform_schema_version (version BIGINT PRIMARY KEY CHECK(version > 0),schema_sha256 TEXT NOT NULL)",
+      );
+      db.prepare("INSERT INTO platform_schema_version VALUES(9,?)").run(
+        priorAvatarHash,
+      );
+      db.prepare("INSERT INTO tenants VALUES('tenant-a',?)").run(now);
+      db.prepare(
+        "INSERT INTO projects(tenant_id,project_id,kind,owner_principal_id,title,revision,created_at,updated_at) VALUES('tenant-a','v9-project','project','alice','迁移前已有项目',7,?,?)",
+      ).run(now, now);
+      db.prepare(
+        "INSERT INTO project_members(tenant_id,project_id,principal_id) VALUES('tenant-a','v9-project','alice')",
+      ).run();
+    } finally {
+      db.close();
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const store = await PlatformStore.sqlite(filename, testCapabilities);
+      try {
+        await checkAvatarMigrationContents(store);
+      } finally {
+        await store.close();
+      }
+    }
+    const migrated = new DatabaseSync(filename, { readOnly: true });
+    try {
+      assert.deepEqual(
+        {
+          ...migrated
+            .prepare(
+              "SELECT version,schema_sha256 FROM platform_schema_version",
+            )
+            .get(),
+        },
+        { version: 10, schema_sha256: schemaHash(platformSchemaSql) },
+      );
+      assert.deepEqual(
+        {
+          ...migrated
+            .prepare(
+              "SELECT title,revision,created_at,updated_at FROM projects WHERE project_id='v9-project'",
+            )
+            .get(),
+        },
+        {
+          title: "迁移前已有项目",
+          revision: 7,
+          created_at: now,
+          updated_at: now,
+        },
+      );
+      assert.equal(
+        (
+          migrated
+            .prepare("SELECT count(*) AS count FROM profile_avatar_heads")
+            .get() as { count: number }
+        ).count,
+        0,
+      );
+      assert.equal(
+        (
+          migrated
+            .prepare("SELECT count(*) AS count FROM profile_avatar_versions")
+            .get() as { count: number }
+        ).count,
+        0,
+      );
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test(
+  "Platform PostgreSQL 从 v9 增加头像关系，保留项目和空头像",
+  { skip: !process.env.MORPHZ_TEST_POSTGRES_URL },
+  async () => {
+    assert.notEqual(priorAvatarSql, platformSchemaSql);
+    assert.equal(schemaHash(priorAvatarSql), priorAvatarHash);
+    const connectionString = process.env.MORPHZ_TEST_POSTGRES_URL!;
+    const schema = `morphz_test_${randomUUID().replaceAll("-", "")}`;
+    const admin = new Pool({ connectionString });
+    const now = "2026-10-01T00:00:00.000Z";
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    try {
+      const client = await admin.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL search_path TO "${schema}", pg_catalog`);
+        await client.query(priorAvatarSql);
+        await client.query(
+          "CREATE TABLE platform_schema_version (version BIGINT PRIMARY KEY CHECK(version > 0),schema_sha256 TEXT NOT NULL)",
+        );
+        await client.query("INSERT INTO platform_schema_version VALUES(9,$1)", [
+          priorAvatarHash,
+        ]);
+        await client.query("INSERT INTO tenants VALUES('tenant-a',$1)", [now]);
+        await client.query(
+          "INSERT INTO projects(tenant_id,project_id,kind,owner_principal_id,title,revision,created_at,updated_at) VALUES('tenant-a','v9-project','project','alice','迁移前已有项目',7,$1,$1)",
+          [now],
+        );
+        await client.query(
+          "INSERT INTO project_members(tenant_id,project_id,principal_id) VALUES('tenant-a','v9-project','alice')",
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const store = await PlatformStore.postgres(
+          { connectionString, schema },
+          testCapabilities,
+        );
+        try {
+          await checkAvatarMigrationContents(store);
+        } finally {
+          await store.close();
+        }
+      }
+      const version = (
+        await admin.query(
+          `SELECT version,schema_sha256 FROM "${schema}".platform_schema_version`,
+        )
+      ).rows[0];
+      assert.deepEqual(version, {
+        version: "10",
+        schema_sha256: schemaHash(platformSchemaSql),
+      });
+      const project = (
+        await admin.query(
+          `SELECT title,revision,created_at,updated_at FROM "${schema}".projects WHERE project_id='v9-project'`,
+        )
+      ).rows[0];
+      assert.deepEqual(project, {
+        title: "迁移前已有项目",
+        revision: "7",
+        created_at: now,
+        updated_at: now,
+      });
+      for (const table of ["profile_avatar_heads", "profile_avatar_versions"]) {
+        const count = await admin.query(
+          `SELECT count(*)::integer AS count FROM "${schema}".${table}`,
+        );
+        assert.equal(count.rows[0].count, 0);
+      }
+    } finally {
+      await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await admin.end();
+    }
+  },
+);
+
+const priorNavigationProjectionsSql = priorAvatarSql.replace(
   /^  (?:projects|conversations|tasks|access)_revision BIGINT NOT NULL DEFAULT 0 CHECK \([^\n]+\),\n/gm,
   "",
 );
@@ -100,7 +286,7 @@ test("Platform SQLite 从 v7 增加当前理解视图并保留项目", async () 
             version: number;
           }
         ).version,
-        9,
+        10,
       );
     } finally {
       migrated.close();
@@ -173,7 +359,7 @@ test(
       const result = await admin.query<{ version: string }>(
         `SELECT version FROM "${schema}".platform_schema_version`,
       );
-      assert.equal(Number(result.rows[0]?.version), 9);
+      assert.equal(Number(result.rows[0]?.version), 10);
     } finally {
       await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
       await admin.end();
@@ -233,7 +419,7 @@ test("Platform SQLite 从 v6 增加应用窗口关系并保留项目", async () 
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        9,
+        10,
       );
       assert.equal(
         (
@@ -475,7 +661,7 @@ test("Platform SQLite 从 v5 增加团队会话关系，不改已有项目", asy
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        9,
+        10,
       );
       assert.equal(
         (
@@ -754,7 +940,7 @@ test("Platform SQLite 从 v4 原位增加安装包索引，保留既有应用安
             version: number;
           }
         ).version,
-        9,
+        10,
       );
       assert.equal(
         (
@@ -838,7 +1024,7 @@ test("Platform SQLite 从 v3 增加对象定位索引并保留目录数据", asy
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        9,
+        10,
       );
       assert.equal(
         (
@@ -915,7 +1101,7 @@ test(
       const version = await admin.query(
         `SELECT version FROM "${schema}".platform_schema_version`,
       );
-      assert.equal(Number(version.rows[0].version), 9);
+      assert.equal(Number(version.rows[0].version), 10);
       const index = await admin.query(
         "SELECT count(*)::integer AS count FROM pg_indexes WHERE schemaname=$1 AND indexname='content_by_app_object'",
         [schema],
@@ -988,7 +1174,7 @@ test("Platform SQLite 从已存在的 v1 库原位迁移栅栏表且保留项目
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        9,
+        10,
       );
       assert.equal(
         (
@@ -1064,7 +1250,7 @@ test("Platform SQLite 将已有目录迁入事务修订号", async () => {
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        9,
+        10,
       );
     } finally {
       upgraded.close();

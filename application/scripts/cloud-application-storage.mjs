@@ -54,6 +54,7 @@ const location = {
       ui: required("MORPHZ_APP_CLOUD_STORE_UI_SCHEMA"),
       reader: required("MORPHZ_APP_CLOUD_STORE_READER_SCHEMA"),
       images: required("MORPHZ_APP_CLOUD_STORE_IMAGE_SCHEMA"),
+      ...(process.env.MORPHZ_APP_CLOUD_STORE_AVATAR_SCHEMA ? { avatars: process.env.MORPHZ_APP_CLOUD_STORE_AVATAR_SCHEMA } : {}),
     },
     bytes: {
       bucket: required("MORPHZ_APP_CLOUD_STORE_BUCKET"),

@@ -25,6 +25,11 @@ export const runtimeNavigationRequestSchema = z
 
 export const applicationMethods = [
   "platform.bootstrap",
+  "profile.read",
+  "profile.update",
+  "profile.avatar.set",
+  "profile.avatar.clear",
+  "profile.avatar.read",
   "runtime.snapshot",
   "runtime.navigation",
   "connection.check",
