@@ -50,6 +50,7 @@ export function ComposerExecutionSettings({
       menuLabel="本次输入执行设置"
       triggerClassName="composer-settings-trigger"
       menuClassName="composer-settings-menu"
+      initialFocus="panel"
       triggerIcon={
         <>
           <span className="composer-settings-summary">

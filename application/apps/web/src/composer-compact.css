@@ -182,13 +182,17 @@
   outline: none;
   box-shadow: none;
 }
+.app .composer-settings-menu:focus,
 .app .composer-settings-menu :is(select, summary):focus-visible {
+  outline: none;
+}
+.app
+  .composer-settings-menu[data-keyboard-navigation]
+  :is(select, summary):focus-visible {
+  /* Native selects may match focus-visible after pointer focus too. Only
+     explicit keyboard navigation should reveal their compact focus cue. */
   outline: 1px solid var(--muted);
   outline-offset: -1px;
-}
-.app .composer-settings-menu .composer-setting-row:focus-within,
-.app .composer-directory-settings > summary:hover {
-  background: var(--soft);
 }
 .app .composer-settings-menu .model-picker-menu small {
   margin: 4px 8px;

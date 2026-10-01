@@ -35,6 +35,7 @@ export function ComposerOptions({
   content,
   persistentContent,
   triggerRef,
+  initialFocus = "control",
 }: {
   model?: string;
   unread?: boolean;
@@ -52,11 +53,14 @@ export function ComposerOptions({
   /** Keep stateful input tools mounted while this menu is closed. */
   persistentContent?: ReactNode;
   triggerRef?: RefObject<HTMLButtonElement | null>;
+  /** A settings group can receive initial focus without selecting a value. */
+  initialFocus?: "control" | "panel";
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [keyboardNavigation, setKeyboardNavigation] = useState(false);
 
   useLayoutEffect(() => {
     const element = panel.current!;
@@ -77,13 +81,15 @@ export function ComposerOptions({
     position();
     const resize = new ResizeObserver(position);
     resize.observe(element);
-    Array.from(
-      element.querySelectorAll<HTMLElement>(
-        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary",
-      ),
-    )
-      .find((control) => control.getClientRects().length > 0)
-      ?.focus();
+    if (initialFocus === "panel") element.focus({ preventScroll: true });
+    else
+      Array.from(
+        element.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary",
+        ),
+      )
+        .find((control) => control.getClientRects().length > 0)
+        ?.focus();
     const outside = (event: Event) => {
       if (
         !element.contains(event.target as Node) &&
@@ -103,7 +109,7 @@ export function ComposerOptions({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open, below]);
+  }, [open, below, initialFocus]);
 
   function closeToTrigger() {
     // Modal hooks capture the stable trigger, never a disappearing menu item.
@@ -125,7 +131,10 @@ export function ComposerOptions({
         aria-controls={id}
         aria-expanded={open}
         aria-describedby={unread ? `${id}-unread` : undefined}
-        onClick={() => setOpen(!open)}
+        onClick={(event) => {
+          setKeyboardNavigation(event.detail === 0);
+          setOpen(!open);
+        }}
       >
         {triggerIcon}
         {unread && (
@@ -142,7 +151,14 @@ export function ComposerOptions({
         className={`composer-options ${menuClassName}`}
         role="group"
         aria-label={menuLabel}
+        tabIndex={initialFocus === "panel" ? -1 : undefined}
+        data-keyboard-navigation={keyboardNavigation || undefined}
+        onPointerDownCapture={() => setKeyboardNavigation(false)}
         onKeyDown={(event) => {
+          if (
+            ["Tab", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+          )
+            setKeyboardNavigation(true);
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();

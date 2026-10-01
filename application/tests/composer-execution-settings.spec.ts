@@ -232,6 +232,95 @@ test("执行设置首屏仅三行，长模型名在 390×540 内可见；Escape 
   expect(messageHost.deliveries()).toHaveLength(0);
 });
 
+test("鼠标打开执行设置不高亮模型行或画选择器框，键盘主动导航仍可见且可操作", async ({
+  page,
+  messageHost,
+}, info) => {
+  const { input, settings } = await desktopFixture(page, messageHost);
+  const trigger = page.getByRole("button", { name: "执行设置", exact: true });
+  const model = settings.getByLabel("本次输入模型", { exact: true });
+  const reasoning = settings.getByLabel("本次输入推理强度", { exact: true });
+  const modelRow = settings.locator(".composer-setting-row").first();
+  const neutralModel = async () => {
+    const style = await model.evaluate((element) => {
+      const select = getComputedStyle(element);
+      const row = getComputedStyle(element.closest("label")!);
+      return {
+        background: row.backgroundColor,
+        rowShadow: row.boxShadow,
+        outline: select.outlineStyle,
+        selectShadow: select.boxShadow,
+        border: select.borderTopWidth,
+      };
+    });
+    expect(style.background).toBe("rgba(0, 0, 0, 0)");
+    expect(style.rowShadow).toBe("none");
+    expect(style.outline).toBe("none");
+    expect(style.selectShadow).toBe("none");
+    expect(style.border).toBe("0px");
+  };
+  await expect(settings).toBeFocused();
+  await expect(model).not.toBeFocused();
+  const initial = await settings.boundingBox();
+  for (const appearance of ["light", "dark"] as const) {
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+        appearance;
+    }, appearance);
+    await neutralModel();
+    await modelRow.hover();
+    await neutralModel();
+    await settings.screenshot({
+      path: info.outputPath(`${appearance}-neutral-settings.png`),
+    });
+  }
+  await page.keyboard.press("Escape");
+  await input.fill("TEST 模型设置焦点保持草稿");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(settings).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(model).toBeFocused();
+  await expect(settings).toHaveAttribute("data-keyboard-navigation", "true");
+  await expect(model).toHaveCSS("outline-style", "solid");
+  await expect(model).toHaveCSS("outline-width", "1px");
+  await expect(modelRow).toHaveCSS("box-shadow", "none");
+  await expect(modelRow).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await model.selectOption(modelId);
+  await expect(model).toHaveValue(modelId);
+  await page.keyboard.press("Tab");
+  await expect(reasoning).toBeFocused();
+  await expect(modelRow).toHaveCSS("box-shadow", "none");
+  await expect(reasoning).toHaveCSS("outline-style", "solid");
+  await expect(reasoning).toHaveCSS("outline-width", "1px");
+  await page.keyboard.press("Tab");
+  const directory = settings.locator("details > summary");
+  await expect(directory).toBeFocused();
+  await expect(directory).toHaveCSS("outline-style", "solid");
+  await expect(directory).toHaveCSS("outline-width", "1px");
+  await page.keyboard.press("Space");
+  await expect(settings.locator("details")).toHaveAttribute("open", "");
+  await page.keyboard.press("Escape");
+  await expect(settings).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await expect(input).toHaveValue("TEST 模型设置焦点保持草稿");
+  await trigger.click();
+  await expect(settings).toBeFocused();
+  await expect(settings).not.toHaveAttribute(
+    "data-keyboard-navigation",
+    "true",
+  );
+  await neutralModel();
+  // Pointer navigation into a native select must not inherit its unconditional
+  // :focus-visible appearance or leave the keyboard cue behind.
+  await model.click();
+  await neutralModel();
+  await model.selectOption(modelId);
+  expect((await settings.boundingBox())!.width).toBe(initial!.width);
+  expect(messageHost.deliveries()).toHaveLength(0);
+});
+
 test("模型推理绑定真实新输入；后续菜单与目录撤销不能修改已冻结的输入授权", async ({
   page,
   messageHost,

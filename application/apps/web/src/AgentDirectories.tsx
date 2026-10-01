@@ -95,8 +95,13 @@ export function AgentDirectories({
         callbacks.current.onState({ scope, ready, grants });
       }
     } finally {
-      if (alive.current) setBusy(false);
-      onSelecting(false);
+      // Commit the re-enabled trigger before the next-frame focus guard.
+      // A fast chooser rejection can otherwise reach that guard while the
+      // button is still disabled and leave focus on the document body.
+      flushSync(() => {
+        if (alive.current) setBusy(false);
+        onSelecting(false);
+      });
       restoreInputToolFocus(origin);
     }
   }
