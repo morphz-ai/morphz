@@ -96,7 +96,13 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
   ).not.toHaveAttribute("data-selected", "true");
   await expect(f.control.locator(".composer-reasoning-model")).toHaveCount(0);
   await expect(f.slider).toHaveAttribute("title", /TEST-real-model/);
-  await expect(f.control.locator("select")).toHaveCount(0);
+  await expect(f.control.locator("select")).toHaveCount(1);
+  await expect(
+    f.control.getByLabel("本次输入模型", { exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    f.control.locator("select[aria-label='本次输入推理强度']"),
+  ).toHaveCount(0);
   await expect(f.reset).toBeDisabled();
   // Native range DOM value is already min while inherited. A real click on
   // that same first stop still has to become an explicit choice.

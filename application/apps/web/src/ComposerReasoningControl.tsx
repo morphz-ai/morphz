@@ -1,4 +1,4 @@
-import { useId, useRef, type CSSProperties } from "react";
+import { useId, useRef, type CSSProperties, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { Brain, RotateCcw } from "lucide-react";
 import {
@@ -14,6 +14,7 @@ export function ComposerReasoningControl({
   value,
   levels,
   model,
+  modelControl,
   label = "本次输入推理强度",
   title,
   disabled = false,
@@ -24,6 +25,7 @@ export function ComposerReasoningControl({
   value?: ReasoningEffort;
   levels: ReasoningEffort[];
   model: string;
+  modelControl?: ReactNode;
   label?: string;
   title: string;
   disabled?: boolean;
@@ -87,6 +89,7 @@ export function ComposerReasoningControl({
           <RotateCcw aria-hidden="true" />
         </button>
       </div>
+      {modelControl}
       <div
         className="composer-reasoning-rail"
         data-empty={!stops.length || undefined}

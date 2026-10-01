@@ -162,7 +162,7 @@
 }
 .app .composer-settings-menu {
   width: 320px;
-  padding: 6px;
+  padding: 8px;
 }
 .app .composer-scope-menu h3 {
   margin: 0 0 8px;
@@ -376,6 +376,75 @@
 .composer-directory-details .directory-grant small {
   color: var(--muted);
 }
+.app .composer-settings-menu .composer-session-permissions:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.app .composer-settings-menu .composer-setting-row.composer-approval-choice,
+.app .composer-settings-menu .composer-directory-settings > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.app .composer-settings-menu .composer-approval-choice select {
+  flex: 1;
+  min-height: 26px;
+  padding: 0;
+  font-size: 12px;
+  text-align: left;
+}
+.app .composer-approval-choice {
+  grid-column: 1;
+  grid-row: 1;
+}
+.app .composer-directory-settings > summary {
+  grid-column: 2;
+  grid-row: 1;
+}
+.app .composer-settings-menu .composer-directory-settings {
+  /* Keep native disclosure and its mounted controls. Only its layout box is
+     removed so the summary shares the shortcut row and content spans it. */
+  display: contents;
+}
+.app .composer-directory-settings::details-content {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.app .composer-directory-settings:not([open])::details-content {
+  display: none;
+}
+.app .composer-directory-settings[open]::details-content {
+  display: block;
+}
+.app .composer-settings-menu .composer-directory-value {
+  flex: 1;
+  justify-content: space-between;
+  color: var(--ink);
+}
+.app .composer-directory-value > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .composer-session-permissions > .composer-permission-error,
+.app .composer-session-permissions > .composer-permission-confirm,
+.app .composer-directory-details {
+  grid-column: 1 / -1;
+}
+.app .composer-directory-details {
+  padding: 4px 2px 2px;
+}
 @container exchange (max-width: 540px) {
   .composer-settings-summary {
     max-width: 98px;
@@ -410,6 +479,11 @@
   }
 }
 @media (pointer: coarse) {
+  .app .composer-settings-menu .composer-setting-row.composer-approval-choice,
+  .app .composer-settings-menu .composer-directory-settings > summary,
+  .app .composer-settings-menu .composer-model-selector select {
+    min-height: 44px;
+  }
   .app .composer-settings-menu select {
     font-size: 16px;
   }

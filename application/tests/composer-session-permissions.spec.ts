@@ -102,7 +102,7 @@ async function fixture(page: Page, host: Host, realRead = false) {
       fingerprint: (revisions.get(key) ?? 1).toString(16).padStart(64, "0"),
       workspace: {
         targetId: "TEST-node",
-        targetName: "TEST 本机执行节点",
+        targetName: "TEST-local-default-node",
         workspaceRoot: state.workspaceReason
           ? null
           : join(
@@ -567,10 +567,36 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
 }) => {
   const f = await fixture(page, messageHost);
   await f.settings.locator("summary").click();
+  const defaultWorkspace = f.settings.locator(
+    ".composer-default-workspace code",
+  );
+  const defaultPath = join(
+    messageHost.directory,
+    "TEST-node-default",
+    "工作目录长路径".repeat(12),
+  );
+  await expect(defaultWorkspace).toHaveText(defaultPath);
+  await expect(defaultWorkspace).toHaveAttribute("title", defaultPath);
+  await expect(defaultWorkspace).toHaveAccessibleDescription(
+    "执行节点：TEST-local-default-node",
+  );
+  await expect(f.settings).not.toContainText("TEST-local-default-node");
   await expect(
-    f.settings.locator(".composer-default-workspace code"),
-  ).toContainText("TEST-node-default");
-  await expect(f.settings).toContainText("TEST 本机执行节点");
+    f.settings.locator(".composer-default-workspace small"),
+  ).toHaveCount(0);
+  const directoryDescription =
+    "额外目录仅当前对话与工作空间可读写，持续有效直到撤销。目录授权不含执行命令或删除文件；撤销会阻止进行中工作的后续目录访问。";
+  const directoryDetails = f.settings.locator(".composer-directory-details");
+  await expect(directoryDetails).toHaveAttribute("title", directoryDescription);
+  await expect(directoryDetails).toHaveAccessibleDescription(
+    directoryDescription,
+  );
+  await expect(directoryDetails).not.toContainText(
+    "额外目录仅当前对话与工作空间可读写",
+  );
+  await expect(directoryDetails).not.toContainText(
+    "目录授权不含执行命令或删除文件",
+  );
   await expect(f.settings).not.toContainText("未授权");
   const scopes = await seedScopes(page);
   await scopes.parent(scopes.a).click();
@@ -1075,13 +1101,23 @@ test("390 窄窗和 200% 放大不溢出；键盘可抵达审批和目录，不�
   await page.keyboard.press("Enter");
   await expect(f.settings).toBeFocused();
   for (const name of ["本次输入模型", "本次输入推理强度", "当前会话审批方式"]) {
-    await page.keyboard.press("Tab");
     const select = f.settings.getByLabel(name, { exact: true });
+    const idleBackground = await select
+      .locator("..")
+      .evaluate((element) => getComputedStyle(element).backgroundColor);
+    if (name === "当前会话审批方式")
+      expect(idleBackground).toBe(
+        await f.settings
+          .locator("summary")
+          .evaluate((element) => getComputedStyle(element).backgroundColor),
+      );
+    else expect(idleBackground).toBe("rgba(0, 0, 0, 0)");
+    await page.keyboard.press("Tab");
     await expect(select).toBeFocused();
     await expect(select).toHaveCSS("outline-width", "1px");
     await expect(select.locator("..")).toHaveCSS(
       "background-color",
-      "rgba(0, 0, 0, 0)",
+      idleBackground,
     );
   }
   await page.keyboard.press("Tab");

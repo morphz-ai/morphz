@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Brain, Cpu } from "lucide-react";
+import { Brain } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
 import { composerSettingsSummary } from "./composer-settings-summary.js";
 import { ComposerReasoningControl } from "./ComposerReasoningControl.js";
@@ -110,77 +110,77 @@ export function ModelPicker({
       }),
     );
   }, [catalog, value, current, reasoning?.value, onSummaryChange]);
+  const modelControl = (
+    <div
+      ref={picker}
+      tabIndex={-1}
+      className={`model-picker${compact ? " model-picker-compact" : ""}${menu ? " model-picker-menu" : ""}`}
+    >
+      <label className={menu ? "composer-model-selector" : undefined}>
+        {menu ? (
+          <span className="visually-hidden">模型</span>
+        ) : (
+          !compact && label
+        )}
+        <select
+          ref={select}
+          aria-label={label}
+          title={
+            compact || menu
+              ? `${selected ? modelLabel(selected) : value || defaultLabel} · ${value ? "本次指定" : "跟随默认"}，仅用于下一次发送`
+              : undefined
+          }
+          value={value}
+          disabled={disabled || !catalog}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">
+            {menu
+              ? `默认 · ${defaultMenuLabel}`
+              : compact
+                ? `默认 · ${defaultLabel}`
+                : `自动选择${catalog?.current ? " · " + catalog.current : ""}`}
+          </option>
+          {value && !catalog?.options.some((m) => m.id === value) && (
+            <option value={value}>{value} · 待确认</option>
+          )}
+          {catalog?.options.map((m) => (
+            <option key={m.id} value={m.id}>
+              {modelLabel(m)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error && (
+        <small role="alert">
+          模型列表暂不可用。
+          <button
+            ref={retryButton}
+            onClick={() => {
+              picker.current?.focus({ preventScroll: true });
+              retry(attempt + 1);
+            }}
+            title={error}
+          >
+            重试
+          </button>
+        </small>
+      )}
+      {!compact && !error && !catalog && !disabled && (
+        <small>读取可用模型…</small>
+      )}
+      {!compact && !menu && (
+        <small>
+          {label === "本次输入模型"
+            ? "仅用于下一次发送，不改变其他工作。"
+            : "用于这件事项的后续执行，不切换正在运行的模型。"}
+        </small>
+      )}
+    </div>
+  );
   return (
     <>
-      <div
-        ref={picker}
-        tabIndex={-1}
-        className={`model-picker${compact ? " model-picker-compact" : ""}${menu ? " model-picker-menu" : ""}`}
-      >
-        <label className={menu ? "composer-setting-row" : undefined}>
-          {menu ? (
-            <>
-              <Cpu aria-hidden="true" />
-              <span>模型</span>
-            </>
-          ) : (
-            !compact && label
-          )}
-          <select
-            ref={select}
-            aria-label={label}
-            title={
-              compact || menu
-                ? `${selected ? modelLabel(selected) : value || defaultLabel} · ${value ? "本次指定" : "跟随默认"}，仅用于下一次发送`
-                : undefined
-            }
-            value={value}
-            disabled={disabled || !catalog}
-            onChange={(e) => onChange(e.target.value)}
-          >
-            <option value="">
-              {menu
-                ? `默认 · ${defaultMenuLabel}`
-                : compact
-                  ? `默认 · ${defaultLabel}`
-                  : `自动选择${catalog?.current ? " · " + catalog.current : ""}`}
-            </option>
-            {value && !catalog?.options.some((m) => m.id === value) && (
-              <option value={value}>{value} · 待确认</option>
-            )}
-            {catalog?.options.map((m) => (
-              <option key={m.id} value={m.id}>
-                {modelLabel(m)}
-              </option>
-            ))}
-          </select>
-        </label>
-        {error && (
-          <small role="alert">
-            模型列表暂不可用。
-            <button
-              ref={retryButton}
-              onClick={() => {
-                picker.current?.focus({ preventScroll: true });
-                retry(attempt + 1);
-              }}
-              title={error}
-            >
-              重试
-            </button>
-          </small>
-        )}
-        {!compact && !error && !catalog && !disabled && (
-          <small>读取可用模型…</small>
-        )}
-        {!compact && !menu && (
-          <small>
-            {label === "本次输入模型"
-              ? "仅用于下一次发送，不改变其他工作。"
-              : "用于这件事项的后续执行，不切换正在运行的模型。"}
-          </small>
-        )}
-      </div>
+      {!(reasoning && menu) && modelControl}
       {reasoning && menu && (
         <ComposerReasoningControl
           value={reasoning.value}
@@ -192,6 +192,7 @@ export function ModelPicker({
             value ||
             defaultMenuLabel
           }
+          modelControl={modelControl}
           label={reasoning.label}
           title={reasoningTitle}
           disabled={disabled || !catalog?.reasoning}

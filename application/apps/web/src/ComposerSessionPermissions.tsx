@@ -25,6 +25,8 @@ const labels: Record<PermissionMode, string> = {
   auto_review: "自动审批",
   full_access: "完全访问",
 };
+const directoryDescription =
+  "额外目录仅当前对话与工作空间可读写，持续有效直到撤销。目录授权不含执行命令或删除文件；撤销会阻止进行中工作的后续目录访问。";
 const workspaceReasons: Record<string, string> = {
   not_started: "首次发送后可查看默认工作目录。",
   workspace_root_unavailable: "执行节点尚未配置默认工作目录。",
@@ -293,10 +295,14 @@ export function ComposerSessionPermissions({
   }
 
   return (
-    <section className="composer-session-permissions" hidden={continuation} aria-busy={current?.loading || current?.saving || undefined}>
-      <label className="composer-setting-row">
+    <section
+      className="composer-session-permissions"
+      hidden={continuation}
+      aria-busy={current?.loading || current?.saving || undefined}
+    >
+      <label className="composer-setting-row composer-approval-choice">
         <ComposerApprovalIcon mode={snapshot?.permissionMode} />
-        <span>审批</span>
+        <span className="visually-hidden">审批</span>
         <select
           ref={select}
           aria-label="当前会话审批方式"
@@ -336,7 +342,9 @@ export function ComposerSessionPermissions({
         {/* Read/save feedback must not add a grid row and move the anchored
             popover. The disabled control and its title retain visible context;
             announce the operation without changing the canvas geometry. */}
-        <small className="visually-hidden" role="status">{note}</small>
+        <small className="visually-hidden" role="status">
+          {note}
+        </small>
       </label>
       {current?.error && (
         <div className="composer-permission-error" role="alert">
@@ -389,20 +397,27 @@ export function ComposerSessionPermissions({
       <details className="composer-directory-settings">
         <summary>
           <FolderKey aria-hidden="true" />
-          <span>工作目录</span>
+          <span className="visually-hidden">工作目录</span>
           <span className="composer-directory-value">
             <span>{directoryLabel}</span>
             <ChevronDown aria-hidden="true" />
           </span>
         </summary>
-        <div className="composer-directory-details">
+        <div
+          className="composer-directory-details"
+          title={directoryDescription}
+          aria-description={directoryDescription}
+        >
           {workspace?.ready && workspace.workspaceRoot ? (
             <div className="composer-default-workspace">
-              <small>
-                默认工作目录
-                {workspace.targetName ? ` · ${workspace.targetName}` : ""}
-              </small>
-              <code title={workspace.workspaceRoot}>
+              <code
+                title={workspace.workspaceRoot}
+                aria-description={
+                  workspace.targetName
+                    ? `执行节点：${workspace.targetName}`
+                    : undefined
+                }
+              >
                 {workspace.workspaceRoot}
               </code>
             </div>
@@ -413,10 +428,6 @@ export function ComposerSessionPermissions({
                 : "默认工作目录待核对。"}
             </p>
           )}
-          <p>额外目录仅当前对话与工作空间可读写，持续有效直到撤销。</p>
-          <p>
-            目录授权不含执行命令或删除文件；撤销会阻止进行中工作的后续目录访问。
-          </p>
           {directoryControls || <p>当前环境不提供额外本机目录授权。</p>}
         </div>
       </details>

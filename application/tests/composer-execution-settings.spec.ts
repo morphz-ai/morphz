@@ -212,18 +212,40 @@ async function desktopFixture(page: Page, host: Host) {
   return { ...state, state, input, settings };
 }
 
-test("执行设置首屏四行，长模型名在 390×540 内可见；Escape 保留草稿并回触发器", async ({
+test("执行设置以强度、模型和滑轨为主，审批与目录同排；390×540 长模型名不撑破弹层", async ({
   page,
   messageHost,
-}) => {
+}, info) => {
   const { input, settings } = await desktopFixture(page, messageHost);
   await page.keyboard.press("Escape");
   await input.fill("TEST 三行执行设置草稿，不发送");
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 540 });
     await openComposerSettings(page);
-    const rows = settings.locator(".composer-setting-row, details > summary");
-    await expect(rows).toHaveCount(4);
+    const heading = settings.locator(".composer-reasoning-heading");
+    const modelRow = settings.locator(".composer-model-selector");
+    const model = settings.getByLabel("本次输入模型", { exact: true });
+    const rail = settings.getByLabel("本次输入推理强度", { exact: true });
+    const footer = settings.locator(".composer-session-permissions");
+    const approval = settings.locator(".composer-approval-choice");
+    const directory = settings.locator(
+      ".composer-directory-settings > summary",
+    );
+    for (const control of [
+      heading,
+      modelRow,
+      rail,
+      footer,
+      approval,
+      directory,
+    ])
+      await expect(control).toHaveCount(1);
+    await expect(model).toBeEnabled();
+    await expect(rail).toHaveAttribute("type", "range");
+    await expect(
+      approval.getByLabel("当前会话审批方式", { exact: true }),
+    ).toBeDisabled();
+    await expect(directory).toHaveAccessibleName(/工作目录/);
     await expect(settings.locator("details")).not.toHaveAttribute("open", "");
     const geometry = await settings.evaluate((element) => {
       const rect = element.getBoundingClientRect();
@@ -243,9 +265,94 @@ test("执行设置首屏四行，长模型名在 390×540 内可见；Escape 保
     expect(geometry.left).toBeGreaterThanOrEqual(7);
     expect(geometry.right).toBeLessThanOrEqual(width - 7);
     expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
-    await expect(
-      settings.getByLabel("本次输入模型", { exact: true }),
-    ).toHaveAttribute("title", new RegExp("TEST 很长"));
+    const layout = await settings.evaluate((element) => {
+      const rect = (selector: string) => {
+        const bounds = element.querySelector(selector)!.getBoundingClientRect();
+        return {
+          top: bounds.top,
+          bottom: bounds.bottom,
+          left: bounds.left,
+          right: bounds.right,
+          width: bounds.width,
+          centerX: (bounds.left + bounds.right) / 2,
+          centerY: (bounds.top + bounds.bottom) / 2,
+        };
+      };
+      return {
+        heading: rect(".composer-reasoning-heading"),
+        model: rect(".composer-model-selector select"),
+        rail: rect(".composer-reasoning-rail input"),
+        footer: rect(".composer-session-permissions"),
+        approval: rect(".composer-approval-choice"),
+        directory: rect(".composer-directory-settings > summary"),
+      };
+    });
+    expect(layout.heading.bottom).toBeLessThanOrEqual(layout.model.top + 1);
+    expect(layout.model.bottom).toBeLessThanOrEqual(layout.rail.top + 1);
+    expect(layout.rail.bottom).toBeLessThanOrEqual(layout.footer.top + 1);
+    expect(layout.rail.width).toBeGreaterThan(200);
+    expect(
+      Math.abs(layout.model.centerX - layout.heading.centerX),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(layout.approval.centerY - layout.directory.centerY),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      layout.directory.left - layout.approval.right,
+    ).toBeGreaterThanOrEqual(4);
+    expect(layout.directory.right).toBeLessThanOrEqual(layout.footer.right + 1);
+    expect(
+      layout.footer.bottom -
+        Math.max(layout.approval.bottom, layout.directory.bottom),
+    ).toBeLessThanOrEqual(2);
+    // Duplicate field names remain available to assistive technology, but
+    // cannot take a permanent text column from the primary/secondary controls.
+    for (const label of [
+      modelRow.locator(".visually-hidden"),
+      approval.locator("span.visually-hidden"),
+      directory.locator(".visually-hidden"),
+    ]) {
+      await expect(label).toHaveCount(1);
+      await expect(label).toHaveCSS("clip-path", "inset(50%)");
+      await expect(label).toHaveCSS("width", "1px");
+    }
+    await expect(model).toHaveAttribute("title", new RegExp("TEST 很长"));
+    await expect(model).toHaveCSS("text-align-last", "center");
+    await expect(model).toHaveCSS("text-overflow", "ellipsis");
+    await model.selectOption(modelId);
+    await expect(model).toHaveValue(modelId);
+    await expect(input).toHaveValue("TEST 三行执行设置草稿，不发送");
+    if (width === 390) {
+      const overflow = await model.evaluate((element) => {
+        const select = element as HTMLSelectElement;
+        const style = getComputedStyle(select);
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d")!;
+        context.font = style.font;
+        return {
+          textWidth: context.measureText(select.selectedOptions[0]!.label)
+            .width,
+          controlWidth: select.getBoundingClientRect().width,
+        };
+      });
+      expect(overflow.textWidth).toBeGreaterThan(overflow.controlWidth);
+      for (const appearance of ["light", "dark"] as const) {
+        await page.evaluate((appearance) => {
+          document.documentElement.dataset.appearance = appearance;
+          document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+            appearance;
+        }, appearance);
+        await settings.screenshot({
+          path: info.outputPath(
+            `${appearance}-390-primary-secondary-settings.png`,
+          ),
+        });
+      }
+    }
+    // Restore inheritance so keyboard traversal in the next opening does not
+    // gain an enabled reset control, and prove selection never sends a message.
+    await model.selectOption("");
+    await expect(model).toHaveValue("");
     await page.keyboard.press("Escape");
     await expect(settings).not.toBeVisible();
     await expect(
@@ -264,7 +371,7 @@ test("鼠标打开执行设置不高亮模型行或画选择器框，键盘主�
   const trigger = page.getByRole("button", { name: "执行设置", exact: true });
   const model = settings.getByLabel("本次输入模型", { exact: true });
   const reasoning = settings.getByLabel("本次输入推理强度", { exact: true });
-  const modelRow = settings.locator(".composer-setting-row").first();
+  const modelRow = settings.locator(".composer-model-selector");
   const neutralModel = async () => {
     const style = await model.evaluate((element) => {
       const select = getComputedStyle(element);
@@ -419,11 +526,20 @@ test("目录 details 和执行弹层关闭不卸载授权控制器、不额外�
   await input.fill("TEST disclosure 保持授权与草稿");
   await openComposerSettings(page);
   await settings.locator("summary").click();
-  await expect(settings).toContainText(
-    "额外目录仅当前对话与工作空间可读写，持续有效直到撤销",
-  );
-  await expect(settings).toContainText("不含执行命令或删除文件");
-  await expect(settings).toContainText("撤销会阻止进行中工作的后续目录访问");
+  const directoryDetails = settings.locator(".composer-directory-details");
+  // The permission boundary remains explicit in hover/accessibility details,
+  // without repeating paragraphs in this compact directory disclosure.
+  for (const attribute of ["title", "aria-description"]) {
+    for (const boundary of [
+      "额外目录仅当前对话与工作空间可读写，持续有效直到撤销",
+      "不含执行命令或删除文件",
+      "撤销会阻止进行中工作的后续目录访问",
+    ])
+      await expect(directoryDetails).toHaveAttribute(
+        attribute,
+        new RegExp(boundary),
+      );
+  }
   const listCount = state.calls.filter(
     (call) => call.method === "directories.list",
   ).length;
