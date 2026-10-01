@@ -3,7 +3,10 @@ import { Target, ChevronDown, ChevronRight } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { inConversation } from "../../../packages/core/src/model.js";
-import { objectiveStatus } from "./subject-sidebar-model.js";
+import {
+  objectiveDetailStatus,
+  objectiveStatus,
+} from "./subject-sidebar-model.js";
 import { executionActivityScope } from "./execution-activity.js";
 
 export function SubjectObjectives({
@@ -67,8 +70,11 @@ export function SubjectObjectives({
             </button>
             {open && (
               <div className="subject-objective-detail">
-                {goal.statusReason && <p>{goal.statusReason}</p>}
-                {!fresh && <p role="status">目标状态待核对。</p>}
+                <p role="status">
+                  {fresh
+                    ? objectiveDetailStatus(goal.status, goal.readiness)
+                    : "目标状态待核对"}
+                </p>
                 {threads.map((thread) => (
                   <button
                     key={thread.id}
@@ -82,6 +88,12 @@ export function SubjectObjectives({
                 ))}
                 {!threads.length && (
                   <p className="muted">当前概览中没有关联执行</p>
+                )}
+                {goal.statusReason && (
+                  <details className="subject-objective-diagnostics">
+                    <summary>技术详情</summary>
+                    <p>{goal.statusReason}</p>
+                  </details>
                 )}
               </div>
             )}

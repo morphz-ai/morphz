@@ -144,6 +144,22 @@ export const objectiveStatus = (status: string) =>
     failed: "失败",
   })[status] ?? "状态待核对";
 
+/** Use the scheduler's structured state, never parse its diagnostic prose or
+ * rewrite the persisted Agent intent. The original reason remains inspectable. */
+export function objectiveDetailStatus(status: string, readiness: string) {
+  if (status !== "active") return objectiveStatus(status);
+  return (
+    {
+      runnable: "等待推进",
+      waiting: "等待关联工作或条件",
+      leased: "正在评估进展",
+      suspended: "等待恢复推进",
+      paused: "已暂停",
+      blocked: "需要处理",
+    }[readiness] ?? "状态待核对"
+  );
+}
+
 /** A saved due date is not a live Agent schedule. Only an exact Runtime run
  * observation can describe an admitted future/repeating/watch execution. */
 export function liveArrangement(runtime: TaskRuntime, runNumber: number) {

@@ -13,10 +13,23 @@ import {
 import {
   liveArrangement,
   objectiveStatus,
+  objectiveDetailStatus,
   subjectStatus,
 } from "../apps/web/src/subject-sidebar-model.js";
 
 type Thread = ExecutionActivity["threads"][number];
+test("目标说明来自结构化状态，不解析或伪造 Runtime 原始原因", () => {
+  for (const [readiness, label] of [
+    ["runnable", "等待推进"],
+    ["waiting", "等待关联工作或条件"],
+    ["leased", "正在评估进展"],
+    ["suspended", "等待恢复推进"],
+  ])
+    assert.equal(objectiveDetailStatus("active", readiness!), label);
+  assert.equal(objectiveDetailStatus("completed", "waiting"), "已完成");
+  assert.equal(objectiveDetailStatus("paused", "runnable"), "已暂停");
+  assert.equal(objectiveDetailStatus("active", "future-state"), "状态待核对");
+});
 const stamp = "2026-10-01T12:00:00.000Z";
 function thread(overrides: Partial<Thread> = {}): Thread {
   return activitySchema.shape.threads.element.parse({

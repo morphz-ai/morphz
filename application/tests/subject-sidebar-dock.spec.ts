@@ -209,8 +209,9 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     rootId: "subject-root",
     sessionId: "subject-session",
     status: "active",
-    statusReason: "正在检查下载和依赖",
-    readiness: "ready",
+    statusReason:
+      "waiting for the first supervised executions to complete; completion criteria: 检查下载和依赖",
+    readiness: "waiting",
     parentId: null,
     threadIds: ["subject-open", "subject-ended"],
     updatedAt: "2026-10-01T12:00:00.000Z",
@@ -273,6 +274,13 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   await expect(panel).not.toContainText("普通聊天不冒充执行任务");
   const goal = panel.locator('[data-objective-id="subject-objective"]');
   await goal.getByRole("button", { name: /验证语音环境/ }).click();
+  await expect(goal.getByRole("status")).toHaveText("等待关联工作或条件");
+  const reason = goal.getByText(objectives[0]!.statusReason!, { exact: true });
+  await expect(reason).not.toBeVisible();
+  await goal.getByText("技术详情", { exact: true }).click();
+  await expect(reason).toBeVisible();
+  await goal.getByText("技术详情", { exact: true }).click();
+  await expect(reason).not.toBeVisible();
   await expect(
     goal.getByRole("button", { name: "检查下载进度", exact: true }),
   ).toBeVisible();
