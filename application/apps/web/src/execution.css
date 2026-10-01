@@ -208,23 +208,6 @@
   margin: 8px 0;
   font-size: 12px;
 }
-.workspace .execution-status-control {
-  width: auto;
-  min-width: 32px;
-  gap: 5px;
-  height: 32px;
-  padding: 0 8px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: var(--ui-radius-sm, 6px);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-}
-.execution-status-control[data-attention] {
-  color: var(--accent-strong);
-  font-weight: 600;
-}
 @property --execution-glow-angle {
   syntax: "<angle>";
   initial-value: 0deg;

@@ -7,10 +7,6 @@
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--inspector-toolbar-height) minmax(0, 1fr);
 }
-.app
-  .workspace:has(> .workspace-inspector-controls > .execution-status-control) {
-  --inspector-controls-space: 132px;
-}
 .app .workspace > .workspace-inspector-controls {
   position: absolute;
   top: calc(
@@ -34,12 +30,6 @@
   }
   .app .workspace {
     --inspector-controls-space: 68px;
-  }
-  .app
-    .workspace:has(
-      > .workspace-inspector-controls > .execution-status-control
-    ) {
-    --inspector-controls-space: 144px;
   }
 }
 .app

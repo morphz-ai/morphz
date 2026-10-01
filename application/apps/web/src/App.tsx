@@ -144,7 +144,6 @@ import {
   useSidebarLayout,
 } from "./SidebarResizeHandle.js";
 import { sidebarPreference } from "./sidebar-layout.js";
-import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
 import { contentVisits, visitContent } from "./recent-content.js";
 import { useConversationStream } from "./useConversationStream.js";
 import {
@@ -2441,23 +2440,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       inputId: source.id,
     });
   };
-  const activeExecutionCount = new Set([
-    ...(client.online ? activeExecutionThreads(client.boot!.runtime) : []).map(
-      (t) => t.inputId ?? t.rootId,
-    ),
-    ...(client.online && client.boot!.runtime.connected
-      ? client
-          .boot!.runtime.deliveries.filter((d) =>
-            ["queued", "sending", "running"].includes(d.state),
-          )
-          .map((d) => d.inputId)
-      : []),
-  ]).size;
-  const approvalCount = client.boot!.runtime.attention?.approvals.length ?? 0;
-  const attentionAvailable =
-    client.online &&
-    client.boot!.runtime.connected &&
-    client.boot!.runtime.attention?.available;
   const inspectorTitle = understandingOpen
     ? "已发布摘要"
     : collaborationVisible
@@ -2470,39 +2452,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   };
   const inspectorControls = (
     <div className="workspace-inspector-controls">
-      {(approvalCount > 0 || activeExecutionCount > 0) && (
-        <button
-          className="execution-status-control"
-          aria-label="执行记录与审批"
-          aria-controls="workspace-inspector"
-          aria-describedby="workspace-execution-status"
-          data-attention={approvalCount > 0 || undefined}
-          title="查看执行记录与审批"
-          onClick={() =>
-            selectSubjectView(approvalCount ? "permissions" : "activity")
-          }
-        >
-          {approvalCount > 0 ? (
-            <span
-              id="workspace-execution-status"
-              aria-label={
-                attentionAvailable
-                  ? `${approvalCount} 项待审批`
-                  : "审批状态待确认"
-              }
-            >
-              {attentionAvailable ? `${approvalCount} 待审批` : "待确认"}
-            </span>
-          ) : (
-            <span
-              id="workspace-execution-status"
-              aria-label={`${activeExecutionCount} 项进行中`}
-            >
-              {activeExecutionCount} 进行中
-            </span>
-          )}
-        </button>
-      )}
       <SidebarToggle
         className="inspector-toggle"
         side="right"

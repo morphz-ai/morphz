@@ -242,6 +242,13 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     panel.getByRole("button", { name: "全部工作", exact: true }),
   ).toHaveCount(1);
   await expect(panel.locator(".execution-activity-row")).toHaveCount(4);
+  await expect(
+    page.locator(".workspace-inspector-controls > button"),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "执行记录与审批", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("#workspace-execution-status")).toHaveCount(0);
   await expect(panel.locator(".execution-activity-row").first()).toContainText(
     "检查下载进度",
   );
