@@ -32,7 +32,12 @@ if (models) {
   );
 }
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_ENV_FILE: "",
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
 };
@@ -117,8 +122,10 @@ try {
         const api = window.morphzDesktop.application;
         const boot = await api.invoke({
           id: crypto.randomUUID(),
-          method: "workspace",
+          method: "platform.bootstrap",
         });
+        if (!boot.ok) throw new Error(boot.error.message);
+        if (method === "platform.bootstrap") return boot.value;
         const result = await api.invoke({
           id: crypto.randomUUID(),
           method,
@@ -188,15 +195,26 @@ try {
     "false",
     { timeout: 30_000 },
   );
-  const boot = await invoke("workspace");
-  const book = boot.workspace.artifacts.find(
-    (a) => a.title === "TEST 阅读稳定性",
-  );
-  assert.ok(book);
+  const catalog = await invoke("content.list", {
+    appIds: ["morphz.reader"],
+    limit: 50,
+  });
+  const entry = catalog.find((a) => a.title === "TEST 阅读稳定性");
+  assert.ok(entry, "Imported PDF must have an authorized Platform entry");
+  const book = {
+    id: entry.id,
+    revision: Number(entry.observedVersionRef),
+  };
+  assert.ok(Number.isSafeInteger(book.revision) && book.revision > 0);
+  const contents = await invoke("reader.contents", {
+    artifactId: book.id,
+    revision: book.revision,
+  });
+  assert.ok(contents.length, "The exact PDF version must have actual pages");
   let firstSource;
   for (let round = 0; round < rounds; round++) {
     const start = Date.now(),
-      pageNumber = (round % book.content.pages.length) + 1;
+      pageNumber = (round % contents.length) + 1;
     await page.getByRole("button", { name: "目录", exact: true }).click();
     await page
       .getByRole("complementary", { name: "阅读目录", exact: true })
@@ -289,7 +307,7 @@ try {
   await expect(page.getByRole("region", { name: "阅读书库" })).toBeVisible();
   await measure("reloaded", 0);
   await page.getByRole("button", { name: /TEST 阅读稳定性/ }).click();
-  const lastPage = ((rounds - 1) % book.content.pages.length) + 1;
+  const lastPage = ((rounds - 1) % contents.length) + 1;
   await expect(page.locator(".reading-app:visible .pdf-page")).toHaveAttribute(
     "aria-label",
     `PDF 第 ${lastPage} 页`,

@@ -127,8 +127,7 @@
     .project-card p,
     .notification-list small,
     .document-body blockquote,
-    .task-description,
-    .source-connections > p:not([role="alert"])
+    .task-description
   ) {
   color: var(--text-secondary);
 }

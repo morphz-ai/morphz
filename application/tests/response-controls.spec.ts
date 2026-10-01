@@ -1,10 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 
 type Delivery = ConversationRuntime["deliveries"][number];
 test.afterEach(async ({ page }) => {
-  // Drain snapshot fixtures before Playwright closes their request context.
+  // Drain transport fixtures before Playwright closes their request context.
   // Keep genuine request errors visible instead of ignoring route exceptions.
   await page.unrouteAll({ behavior: "wait" });
 });
@@ -14,36 +17,28 @@ async function fixture(page: Page) {
     { delivery: Omit<Delivery, "inputId">; replies: string[] }
   >();
   const ids = new Map<string, string>();
-  let configured = true;
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    body.runtime = {
-      ...body.runtime,
-      configured,
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => {
+    const runtime: ConversationRuntime = {
+      ...disconnectedRuntime,
+      configured: true,
       connected: true,
       model: "fixture-model",
       deliveries: [],
       messages: [],
     };
-    body.workspace.inputs = body.workspace.inputs.filter(
-      (input: { body: string }) => entries.has(input.body),
-    );
-    for (const input of body.workspace.inputs) {
+    for (const input of inputs) {
       const entry = entries.get(input.body);
       if (!entry) continue;
-      ids.set(input.body, input.id);
-      body.runtime.deliveries.push({ ...entry.delivery, inputId: input.id });
-      body.runtime.messages.push(
+      runtime.deliveries.push({ ...entry.delivery, inputId: input.id });
+      runtime.messages.push(
         ...entry.replies.map((text, index) => ({
           id: `${input.id}-reply-${index}`,
           inputId: input.id,
           projectId: input.projectId,
           conversationId: input.conversationId,
           artifactId: null,
-          kind: "reply",
+          kind: "reply" as const,
           text,
           createdAt: new Date(
             Date.parse(input.createdAt) + index + 1,
@@ -52,13 +47,37 @@ async function fixture(page: Page) {
       );
     }
     // No source input in this conversation: it must not acquire a stop control.
-    body.runtime.deliveries.push({
+    runtime.deliveries.push({
       inputId: "elsewhere",
       state: "running",
       error: null,
       cancellable: true,
+      retryable: false,
     });
-    await route.fulfill({ response, json: body });
+    return { inputs, runtime };
+  });
+  // Exercise the real composer and current message request shape. Only the
+  // transport receipt/delivery presentation is synthetic; no model is called.
+  await page.route("**/api/platform/messages", (route) => {
+    const command = route.request().postDataJSON();
+    const operation = command.operation;
+    if (!entries.has(operation.body))
+      throw new Error("Unexpected input in the response-control fixture");
+    ids.set(operation.body, command.commandId);
+    if (!inputs.some((input) => input.id === command.commandId))
+      inputs.push({
+        ...presentation.input(
+          command.commandId,
+          operation.body,
+          new Date().toISOString(),
+        ),
+        projectId: operation.projectId,
+        conversationId: operation.conversationId,
+      });
+    return route.fulfill({
+      status: 202,
+      json: { commandId: command.commandId, entityId: command.commandId },
+    });
   });
   // Presentation fixture only: no real model dispatch or cancellation.
   await page.route("**/api/inputs/*/send", (route) =>
@@ -84,25 +103,18 @@ async function fixture(page: Page) {
       },
       replies,
     });
-    // Save through the actual center command path without a Runtime; only the
-    // returned delivery presentation is simulated for the following assertions.
-    configured = false;
-    await expect(
-      page.getByRole("button", { name: "保存输入", exact: true }),
-    ).toBeVisible();
     await input.fill(text);
-    await page.getByRole("button", { name: "保存输入", exact: true }).click();
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await expect(
       page.locator(".human-message").filter({ hasText: text }),
     ).toBeVisible();
     await expect.poll(() => ids.get(text)).toBeTruthy();
-    configured = true;
     await expect(
       page.getByRole("button", { name: "发送消息", exact: true }),
     ).toBeVisible();
     return page.locator(`[data-response-input-id="${ids.get(text)}"]`);
   }
-  return { entries, ids, input, add };
+  return { entries, ids, input, add, refresh: presentation.refresh };
 }
 
 test("中间投递状态不占气泡空间，停止仅在对应的回复区域", async ({ page }) => {
@@ -169,7 +181,7 @@ test("中间投递状态不占气泡空间，停止仅在对应的回复区域",
 test("分别停止并发回复，等待确认不冒充取消，失败可重试且不丢草稿", async ({
   page,
 }) => {
-  const { entries, ids, input, add } = await fixture(page);
+  const { entries, ids, input, add, refresh } = await fixture(page);
   await add("并发工作 A", "queued");
   const second = await add("并发工作 B", "running", ["B 的部分回复"]);
   await input.fill("继续讨论的草稿");
@@ -219,6 +231,7 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   // The first response arrives while cancellation is in flight. Its new
   // position must not reset the pending action or enable a duplicate request.
   entries.get("并发工作 A")!.replies.push("A 的迟到回复");
+  await refresh();
   await expect(
     page.locator(".agent-reply").filter({ hasText: "A 的迟到回复" }),
   ).toBeVisible();
@@ -241,6 +254,7 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
     cancellable: false,
     retryable: false,
   };
+  await refresh();
   await expect(first).toHaveCount(0);
   await expect(page.getByText("已取消", { exact: true })).toBeVisible();
   const failed = await add("失败工作", "failed");
@@ -249,6 +263,7 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
     error: "请求失败",
     retryable: true,
   };
+  await refresh();
   await expect(failed).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "重试发送", exact: true }),

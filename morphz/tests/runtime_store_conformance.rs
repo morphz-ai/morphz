@@ -11,7 +11,7 @@ use morphz::memory::{
     objective_primary_execution_root_id, stable_thread_id, stable_thread_signal_id,
     thread_supersede_event, ActivationStore, EdgeCommandMutation, EdgeCommandStatus,
     EdgeExecutionStore, EdgeOutputStream, ExecutionNodeMutation, ExecutionNodeStatus,
-    SessionDirectoryStore,
+    SessionDirectoryStore, SessionTimelineCursor, SessionTimelineStore,
 };
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
@@ -74,6 +74,196 @@ type AttentionFuture<'a> = Pin<
 >;
 
 fn assert_complete_runtime_store<T: morphz::memory::RuntimeStore>() {}
+
+async fn assert_session_timeline_conformance<S: morphz::memory::RuntimeStore>(store: &S) {
+    let make_event = |id: &str, topic: &str, timestamp: &str, payload: serde_json::Value| {
+        let mut payload = payload.as_object().unwrap().clone();
+        payload.insert("context_id".to_string(), json!("conformance-context"));
+        let mut event = Event::new(
+            id.to_string(),
+            "timeline-test".to_string(),
+            "session_message".to_string(),
+            topic.to_string(),
+            payload,
+        );
+        event.timestamp = chrono::DateTime::parse_from_rfc3339(timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        event
+    };
+    let session_id = "timeline-session";
+    for id in [session_id, "timeline-other"] {
+        store
+            .ensure_session(NewSession {
+                id: id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                parent_session_id: None,
+                title: "Timeline Conformance".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+    }
+    let root_one = make_event(
+        "timeline-root-one",
+        "chat/user_message",
+        "2026-09-28T01:00:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-one","client_message_id":"timeline-client-one","text":"one"}),
+    );
+    let output_one = make_event(
+        "model_public_output_timeline-attempt-one",
+        "runtime/model_public_output",
+        "2026-09-28T01:05:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-one","attempt_id":"timeline-attempt-one","first_visible_at":"2026-09-28T01:01:00Z","text":"partial"}),
+    );
+    let root_two = make_event(
+        "timeline-root-two",
+        "chat/user_message",
+        "2026-09-28T01:02:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-two","client_message_id":"timeline-client-two","text":"two"}),
+    );
+    let final_one = make_event(
+        "timeline-final-one",
+        "chat/reply",
+        "2026-09-28T01:06:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-one","attempt_id":"timeline-attempt-one","text":"complete one"}),
+    );
+    let final_two = make_event(
+        "timeline-final-two",
+        "chat/reply",
+        "2026-09-28T01:07:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-two","attempt_id":"timeline-attempt-two","text":"complete two"}),
+    );
+    for event in [root_one, output_one, root_two, final_one.clone(), final_two] {
+        store.append(event).await.unwrap();
+    }
+    // Replaying the same immutable Event does not duplicate a timeline entry.
+    store.append(final_one).await.unwrap();
+    let newest = store
+        .query_session_timeline(session_id, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        newest
+            .iter()
+            .map(|item| item.entry_id.as_str())
+            .collect::<Vec<_>>(),
+        ["timeline-client-two", "publication:timeline-attempt-two"]
+    );
+    let cursor = SessionTimelineCursor {
+        visible_at_micros: newest[0].visible_at.timestamp_micros(),
+        entry_id: newest[0].entry_id.clone(),
+    };
+    let older = store
+        .query_session_timeline(session_id, Some(&cursor), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        older
+            .iter()
+            .map(|item| item.entry_id.as_str())
+            .collect::<Vec<_>>(),
+        ["timeline-client-one", "publication:timeline-attempt-one"]
+    );
+    assert_eq!(older[1].event.id, "timeline-final-one");
+    assert_eq!(
+        older[1].root_event.as_ref().map(|event| event.id.as_str()),
+        Some("timeline-root-one")
+    );
+    assert_eq!(
+        older[1].visible_at.to_rfc3339(),
+        "2026-09-28T01:01:00+00:00"
+    );
+    assert!(older[1].final_event);
+
+    // A final Event can be committed before the durable public-output fact.
+    // Backfill or concurrent delivery must retain the final text but correct
+    // its presentation position to the first visible stream instant.
+    store
+        .append(make_event(
+            "timeline-root-three",
+            "chat/user_message",
+            "2026-09-28T01:08:00Z",
+            json!({"session_id":session_id,"root_turn_id":"timeline-root-three","client_message_id":"timeline-client-three","text":"three"}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(make_event(
+            "timeline-final-three",
+            "chat/reply",
+            "2026-09-28T01:10:00Z",
+            json!({"session_id":session_id,"root_turn_id":"timeline-root-three","attempt_id":"timeline-attempt-three","text":"complete three"}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(make_event(
+            "model_public_output_timeline-attempt-three",
+            "runtime/model_public_output",
+            "2026-09-28T01:11:00Z",
+            json!({"session_id":session_id,"root_turn_id":"timeline-root-three","attempt_id":"timeline-attempt-three","first_visible_at":"2026-09-28T01:09:00Z","text":"partial three"}),
+        ))
+        .await
+        .unwrap();
+    let latest = store
+        .query_session_timeline(session_id, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(latest[0].entry_id, "timeline-client-three");
+    assert_eq!(latest[1].entry_id, "publication:timeline-attempt-three");
+    assert_eq!(latest[1].event.id, "timeline-final-three");
+    assert_eq!(
+        latest[1].root_event.as_ref().map(|event| event.id.as_str()),
+        Some("timeline-root-three")
+    );
+    assert_eq!(
+        latest[1].visible_at.to_rfc3339(),
+        "2026-09-28T01:09:00+00:00"
+    );
+    assert!(latest[1].final_event);
+
+    // A reused physical attempt ID must not move a publication under an
+    // unrelated input root, even if the caller supplies a different Event ID.
+    let colliding = make_event(
+        "timeline-attempt-collision",
+        "chat/reply",
+        "2026-09-28T01:10:30Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-two","attempt_id":"timeline-attempt-one","text":"wrong root"}),
+    );
+    assert!(store.append(colliding).await.is_err());
+    assert_eq!(
+        store
+            .query_session_timeline(session_id, None, 20)
+            .await
+            .unwrap()
+            .iter()
+            .find(|item| item.entry_id == "publication:timeline-attempt-one")
+            .unwrap()
+            .event
+            .id,
+        "timeline-final-one"
+    );
+
+    store
+        .append(make_event(
+            "timeline-other-session",
+            "chat/user_message",
+            "2026-09-28T01:12:00Z",
+            json!({"session_id":"timeline-other","root_turn_id":"timeline-other-session","client_message_id":"timeline-other-client","text":"private"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .query_session_timeline(session_id, None, 20)
+            .await
+            .unwrap()
+            .len(),
+        6
+    );
+}
 
 #[cfg(feature = "remote-store")]
 #[tokio::test]
@@ -11102,6 +11292,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         )
         .await
         .unwrap();
+    assert_session_timeline_conformance(store.as_ref()).await;
     assert_agent_provider_binding_conformance(Arc::clone(&store)).await;
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
@@ -11158,7 +11349,72 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_context_runtime_scheduler_snapshot_conformance(Arc::clone(&store)).await;
     assert_context_activation_causality_snapshot_conformance(Arc::clone(&store)).await;
     assert_context_execution_resources_snapshot_conformance(Arc::clone(&store)).await;
-    assert_context_runtime_directory_snapshot_conformance(store).await;
+    assert_context_runtime_directory_snapshot_conformance(Arc::clone(&store)).await;
+
+    // A prior projection used Event IDs for inputs. Rebuild only its derived
+    // keys; immutable Events and accepted messages remain untouched.
+    let inspection_pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()),
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE session_message_timeline SET entry_id = root_turn_id WHERE display_kind = 'input'",
+    )
+    .execute(&inspection_pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+        .bind("20260928_02_session_message_timeline")
+        .execute(&inspection_pool)
+        .await
+        .unwrap();
+    inspection_pool.close().await;
+    drop(store);
+    let reopened = SqliteStore::new(database.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let upgraded = reopened
+        .query_session_timeline("timeline-session", None, 20)
+        .await
+        .unwrap();
+    assert_eq!(upgraded.len(), 6);
+    assert!(upgraded
+        .iter()
+        .any(|item| item.entry_id == "timeline-client-one"));
+    assert!(!upgraded
+        .iter()
+        .any(|item| item.entry_id == "timeline-root-one"));
+
+    // A lost projection also rebuilds from the same Events without rerunning
+    // the Agent or restoring Host-local message copies.
+    let inspection_pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()),
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM session_message_timeline")
+        .execute(&inspection_pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+        .bind("20260928_02_session_message_timeline")
+        .execute(&inspection_pool)
+        .await
+        .unwrap();
+    inspection_pool.close().await;
+    drop(reopened);
+    let rebuilt = SqliteStore::new(database.path().to_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        rebuilt
+            .query_session_timeline("timeline-session", None, 20)
+            .await
+            .unwrap()
+            .len(),
+        6
+    );
 }
 
 #[tokio::test]
@@ -11283,6 +11539,15 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     // remain available from `public` across repeated conformance runs.
     let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
     let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT to_regclass('idx_pg_events_session_root_attempt_sequence') IS NOT NULL"
+        )
+        .fetch_one(store.pool())
+        .await
+        .unwrap(),
+        "Session/root/attempt lookup must have a PostgreSQL index"
+    );
     // Simulate an existing installation with the old, unconditional FIFO
     // function and all earlier migration markers. The new migration must
     // replace that function, not merely fix newly-created databases.
@@ -11562,6 +11827,50 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         )
         .await
         .unwrap();
+    assert_session_timeline_conformance(store.as_ref()).await;
+    sqlx::query(
+        "UPDATE session_message_timeline SET entry_id = root_turn_id WHERE display_kind = 'input'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20260928_02_session_message_timeline")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store.pool().close().await;
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    let upgraded = store
+        .query_session_timeline("timeline-session", None, 20)
+        .await
+        .unwrap();
+    assert_eq!(upgraded.len(), 6);
+    assert!(upgraded
+        .iter()
+        .any(|item| item.entry_id == "timeline-client-one"));
+    assert!(!upgraded
+        .iter()
+        .any(|item| item.entry_id == "timeline-root-one"));
+    sqlx::query("DELETE FROM session_message_timeline")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20260928_02_session_message_timeline")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store.pool().close().await;
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert_eq!(
+        store
+            .query_session_timeline("timeline-session", None, 20)
+            .await
+            .unwrap()
+            .len(),
+        6
+    );
     assert_agent_provider_binding_conformance(Arc::clone(&store)).await;
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;

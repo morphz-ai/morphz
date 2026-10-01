@@ -2,14 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedLegacyWebsite } from "./legacy-website-fixture.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { BrowserBroker } from "../apps/service/src/browser.js";
+import { browserControlFixture } from "./browser-control-fixture.js";
 import { localAccess } from "../packages/core/src/model.js";
 import type { HostInvocation } from "../apps/service/src/agent-tools.js";
+import type {
+  AgentToolArguments,
+  ToolScope,
+} from "../packages/application/src/agent-tools.js";
+import { PlatformAgentTools } from "../packages/application/src/platform-agent-tools.js";
+import type { PlatformAgentDomain } from "../packages/application/src/platform-agent-tools.js";
+import type { BrowserReceipt } from "../packages/core/src/browser.js";
 const require = createRequire(import.meta.url);
 const { browserURL, DesktopBrowser } = require("../apps/desktop/browser.cjs");
 const route: HostInvocation = {
@@ -32,38 +40,21 @@ test("浏览器只允许网站地址，不将第三方页面提升为应用", ()
   ])
     assert.throws(() => browserURL(url));
 });
-test("浏览器控制：授权、版本、接管、超时和未知结果都不能触发重复提交", () => {
-  const filename = join(
-    mkdtempSync(join(tmpdir(), "morphz-browser-")),
-    "workspace.sqlite",
-  );
-  const store = new WorkspaceStore(filename);
+test("浏览器控制：授权、版本、接管、超时和未知结果都不能触发重复提交", async (t) => {
+  const fixture = await browserControlFixture();
+  t.after(() => fixture.close());
   let now = 100000;
-  const broker = new BrowserBroker(store, () => now);
-  const scope = {
-    projectId: "first-project",
-    access: { principalId: "morphz-service", actantId: "morphz-agent" },
-  };
-  const a = seedLegacyWebsite(
-    filename,
-    {
-      commandId: randomUUID(),
-      operation: {
-        type: "create-artifact",
-        projectId: "first-project",
-        title: "网站",
-        content: {
-          kind: "website",
-          url: "https://example.com",
-          description: "",
-        },
-      },
-    },
-    localAccess,
-  ).entityId;
+  const broker = fixture.createBroker(() => now);
+  const invoke = (
+    args: unknown,
+    invocation = route,
+    projectId = fixture.projectId,
+  ) =>
+    broker.callAuthorized(args, invocation, projectId, localAccess.principalId);
   let state = {
     pageId: randomUUID(),
-    artifactId: a,
+    artifactId: null,
+    projectId: fixture.projectId,
     epoch: randomUUID(),
     url: "https://example.com/",
     title: "测试",
@@ -71,57 +62,63 @@ test("浏览器控制：授权、版本、接管、超时和未知结果都不�
     visible: true,
   };
   const key = "a".repeat(64);
-  broker.register(state, key, localAccess);
+  await broker.register(state, key, localAccess);
   const request = () => ({
     pageId: state.pageId,
     epoch: state.epoch,
     action: { type: "click", snapshotId: randomUUID(), ref: "e1" },
   });
-  assert.throws(() => broker.call(request(), route, scope), /尚未授权/);
+  assert.throws(() => invoke(request()), /尚未授权/);
   state = { ...state, granted: true };
-  broker.exchange({ state, receipts: [] }, key, localAccess);
+  await broker.exchange({ state, receipts: [] }, key, localAccess);
   const args = request();
-  const r = broker.call(args, route, scope) as { id: string };
-  assert.deepEqual(broker.call(args, route, scope), r);
-  assert.throws(
-    () => broker.exchange({ state, receipts: [] }, "b".repeat(64), localAccess),
+  const r = invoke(args) as { id: string };
+  assert.equal((await broker.waitForResult(r.id, 1)).status, "queued");
+  assert.deepEqual(invoke(args), r);
+  await assert.rejects(
+    broker.exchange({ state, receipts: [] }, "b".repeat(64), localAccess),
     /失效/,
   );
-  assert.throws(() =>
-    broker.call({ requestId: r.id }, route, { ...scope, projectId: "other" }),
-  );
+  assert.throws(() => invoke({ requestId: r.id }, route, "other"));
   assert.equal(
-    broker.exchange({ state, receipts: [] }, key, localAccess).requests.length,
+    (await broker.exchange({ state, receipts: [] }, key, localAccess)).requests
+      .length,
     1,
   );
-  broker.exchange(
+  await broker.exchange(
     { state, receipts: [{ id: r.id, status: "executing", result: null }] },
     key,
     localAccess,
   );
   state = { ...state, epoch: randomUUID(), granted: false };
-  broker.exchange({ state, receipts: [] }, key, localAccess);
-  const unknown = broker.call({ requestId: r.id }, route, scope) as {
+  await broker.exchange({ state, receipts: [] }, key, localAccess);
+  const unknown = invoke({ requestId: r.id }) as {
     status: string;
   };
   assert.equal(unknown.status, "unknown");
-  const restart = new BrowserBroker(store, () => now);
+  const restart = fixture.createBroker(() => now);
   assert.equal(
-    (restart.call(args, route, scope) as { status: string }).status,
+    (
+      restart.callAuthorized(
+        args,
+        route,
+        fixture.projectId,
+        localAccess.principalId,
+      ) as { status: string }
+    ).status,
     "unknown",
   );
   state = { ...state, granted: true };
-  broker.exchange({ state, receipts: [] }, key, localAccess);
+  await broker.exchange({ state, receipts: [] }, key, localAccess);
   assert.throws(
-    () => broker.call(request(), { ...route, job_id: "before-refresh" }, scope),
+    () => invoke(request(), { ...route, job_id: "before-refresh" }),
     /重新读取页面/,
   );
   now += 11000;
   assert.throws(
-    () => broker.call(request(), { ...route, job_id: "new" }, scope),
+    () => invoke(request(), { ...route, job_id: "new" }),
     /尚未授权/,
   );
-  store.close();
 });
 test("快速切换或关闭网站会取消尚未完成的打开请求", async () => {
   const browser = new DesktopBrowser({}, "http://127.0.0.1:65420");
@@ -270,59 +267,35 @@ test("网页只接受宿主已批准的单个嵌入，不能附加预加载或�
     browser.stop();
   }
 });
-test("桌面回执接续在丢回执、对象改版和重启后仍然只创建一次输入", () => {
-  const filename = join(
-    mkdtempSync(join(tmpdir(), "morphz-browser-")),
-    "workspace.sqlite",
-  );
-  const store = new WorkspaceStore(filename),
-    scope = {
-      projectId: "first-project",
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    };
+test("浏览器回执重启后仍可读取，且不会伪造工作区输入", async () => {
+  const fixture = await browserControlFixture();
   try {
-    const content = {
-        kind: "website" as const,
-        url: "https://example.com/",
-        description: "",
-      },
-      artifactId = seedLegacyWebsite(
-        filename,
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "create-artifact",
-            projectId: scope.projectId,
-            title: "网页",
-            content,
-          },
-        },
-        localAccess,
-      ).entityId;
-    let broker = new BrowserBroker(store);
+    let broker = fixture.createBroker();
     const state = {
         pageId: randomUUID(),
-        artifactId,
+        artifactId: null,
+        projectId: fixture.projectId,
         epoch: randomUUID(),
-        url: content.url,
+        url: "https://example.com/",
         title: "网页",
         granted: false,
         visible: true,
       },
       key = "c".repeat(64);
-    broker.register(state, key, localAccess);
+    await broker.register(state, key, localAccess);
     state.granted = true;
-    broker.exchange({ state, receipts: [] }, key, localAccess);
-    const r = broker.call(
+    await broker.exchange({ state, receipts: [] }, key, localAccess);
+    const r = broker.callAuthorized(
       {
         pageId: state.pageId,
         epoch: state.epoch,
         action: { type: "snapshot" },
       },
       route,
-      scope,
+      fixture.projectId,
+      localAccess.principalId,
     ) as { id: string };
-    broker.exchange(
+    await broker.exchange(
       {
         state,
         receipts: [
@@ -333,79 +306,207 @@ test("桌面回执接续在丢回执、对象改版和重启后仍然只创建�
       key,
       localAccess,
     );
-    broker.drain(
-      () => false,
-      () => assert.fail("尚在工作的会话不重复唤醒"),
+    assert.equal(fixture.store.runtimeState(), null);
+    state.epoch = randomUUID();
+    state.granted = false;
+    await broker.exchange({ state, receipts: [] }, key, localAccess);
+    await fixture.reopen();
+    broker = fixture.createBroker();
+    assert.equal(
+      (
+        broker.callAuthorized(
+          { requestId: r.id },
+          route,
+          fixture.projectId,
+          localAccess.principalId,
+        ) as { status: string }
+      ).status,
+      "succeeded",
     );
-    assert.equal(store.snapshot().inputs.length, 0);
-    const conversationId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-conversation",
-          projectId: "first-project",
-          title: "浏览器原对话",
-        },
-      },
-      localAccess,
-    ).entityId;
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "update-conversation",
-          conversationId,
-          expectedRevision: 1,
-          archived: true,
-        },
-      },
-      localAccess,
+    assert.equal(fixture.store.runtimeState(), null);
+    assert.equal(fixture.store.serviceState("browser-receipts"), null);
+    assert.equal(
+      (await fixture.client.content({ projectId: fixture.projectId })).items
+        .length,
+      0,
     );
-    assert.throws(
-      () =>
-        broker.drain(
-          () => true,
-          () => {
-            throw new Error("lost ack");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("Host 旧回执一次性迁入关系日志，旧 JSON 状态不再参与读写", () => {
+  const filename = join(
+    mkdtempSync(join(tmpdir(), "morphz-browser-upgrade-")),
+    "workspace.sqlite",
+  );
+  const receipt: BrowserReceipt = {
+    id: randomUUID(),
+    pageId: randomUUID(),
+    epoch: randomUUID(),
+    projectId: "first-project",
+    artifactId: null,
+    sourceSessionId: "old-session",
+    action: { type: "snapshot" },
+    status: "succeeded",
+    createdAt: new Date().toISOString(),
+    result: "旧页面快照",
+  };
+  const db = new DatabaseSync(filename);
+  db.exec(
+    "CREATE TABLE service_state (name TEXT PRIMARY KEY, body TEXT NOT NULL); PRAGMA user_version=17;",
+  );
+  db.prepare("INSERT INTO service_state(name,body) VALUES(?,?)").run(
+    "browser-receipts",
+    JSON.stringify([receipt]),
+  );
+  db.close();
+  const store = new WorkspaceStore(filename, { mode: "transport" });
+  try {
+    assert.deepEqual(
+      store.browserControlJournal().read(receipt.id)?.receipt,
+      receipt,
+    );
+    assert.equal(store.serviceState("browser-receipts"), null);
+    assert.equal(
+      store.browserControlJournal().read(receipt.id)?.ownerPrincipalId,
+      null,
+    );
+  } finally {
+    store.close();
+  }
+  const reopened = new WorkspaceStore(filename, { mode: "transport" });
+  try {
+    assert.deepEqual(
+      reopened.browserControlJournal().read(receipt.id)?.receipt,
+      receipt,
+    );
+  } finally {
+    reopened.close();
+  }
+});
+
+test("正式 Agent 浏览器工具以 Runtime 来源和 Platform 项目授权访问本机页面", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const projectId = "platform-only-project";
+  const principalId = localAccess.principalId;
+  const broker = new BrowserBroker(store, {
+    authorizeProject: async (requested, access) => {
+      assert.equal(requested, projectId);
+      assert.equal(access.principalId, principalId);
+    },
+    readWebsite: async () => assert.fail("普通页面不是网站内容对象"),
+  });
+  const state = {
+    pageId: randomUUID(),
+    epoch: randomUUID(),
+    artifactId: null,
+    projectId,
+    url: "https://example.com/",
+    title: "正式项目浏览器",
+    granted: true,
+    visible: true,
+  };
+  const key = "f".repeat(64);
+  try {
+    assert.equal(store.runtimeState(), null);
+    await broker.register(state, key, localAccess);
+    await broker.exchange({ state, receipts: [] }, key, localAccess);
+    const actorReads: string[] = [];
+    const toolsFor = (owner: string) =>
+      new PlatformAgentTools({
+        authority: {
+          withInvocation: async (
+            _route: unknown,
+            action: (
+              actor: unknown,
+              source: unknown,
+              identity: unknown,
+            ) => Promise<unknown>,
+          ) =>
+            action(
+              { credential: "verified-runtime-input" },
+              { projectId, inputId: "input-one" },
+              { principalId: owner, humanActantId: "human-one" },
+            ),
+        },
+        content: {
+          platform: {
+            getProject: async (actor: { credential: string }, id: string) => {
+              actorReads.push(actor.credential);
+              assert.equal(id, projectId);
+              return { deleted_at: null };
+            },
           },
-          (id) => {
-            assert.equal(id, route.session_id);
-            return conversationId;
-          },
-        ),
-      /lost ack/,
-    );
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "revise-artifact",
-          artifactId,
-          expectedRevision: 1,
-          title: "网页改版",
-          content,
         },
+        browser: broker,
+      } as unknown as PlatformAgentDomain);
+    const scope = {
+      platform: true,
+      projectId,
+      inputId: "input-one",
+    } as ToolScope;
+    const tools = toolsFor(principalId);
+    assert.equal(
+      (
+        (await tools.call(route, scope, {
+          action: "browser",
+          browser: {},
+        } as AgentToolArguments)) as { pages: unknown[] }
+      ).pages.length,
+      1,
+    );
+    const pending = tools.call(route, scope, {
+      action: "browser",
+      browser: {
+        pageId: state.pageId,
+        epoch: state.epoch,
+        action: { type: "snapshot" },
       },
+    } as AgentToolArguments) as Promise<BrowserReceipt>;
+    await new Promise((resolve) => setImmediate(resolve));
+    const receipt = store
+      .browserControlJournal()
+      .firstQueued(state.pageId, state.epoch)!;
+    assert.equal(receipt.status, "queued");
+    await broker.exchange(
+      {
+        state,
+        receipts: [
+          { id: receipt.id, status: "executing", result: null },
+          { id: receipt.id, status: "succeeded", result: "当前页面" },
+        ],
+      },
+      key,
       localAccess,
     );
-    broker = new BrowserBroker(store);
-    let sends = 0;
-    broker.drain(
-      () => true,
-      () => {
-        sends++;
-      },
+    assert.equal((await pending).result, "当前页面");
+    assert.equal(
+      (
+        (await tools.call(route, scope, {
+          action: "browser",
+          browser: { requestId: receipt.id },
+        } as AgentToolArguments)) as BrowserReceipt
+      ).result,
+      "当前页面",
     );
-    broker.drain(
-      () => true,
-      () => {
-        sends++;
-      },
+    assert.deepEqual(
+      await toolsFor("another-human").call(route, scope, {
+        action: "browser",
+        browser: {},
+      } as AgentToolArguments),
+      { pages: [] },
     );
-    assert.equal(sends, 1);
-    assert.equal(store.snapshot().inputs.length, 1);
-    assert.equal(store.snapshot().inputs[0]!.artifactRevision, 1);
-    assert.equal(store.snapshot().inputs[0]!.conversationId, conversationId);
+    await assert.rejects(
+      toolsFor("another-human").call(route, scope, {
+        action: "browser",
+        browser: { requestId: receipt.id },
+      } as AgentToolArguments),
+      /不存在/,
+    );
+    assert.ok(actorReads.every((value) => value === "verified-runtime-input"));
+    assert.equal(store.runtimeState(), null);
+    assert.equal(store.serviceState("browser-receipts"), null);
   } finally {
     store.close();
   }

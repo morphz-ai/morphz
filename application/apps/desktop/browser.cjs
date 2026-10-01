@@ -28,14 +28,26 @@ class DesktopBrowser {
   }
   async boot() {
     if (this.application)
-      return this.application.call("workspace", undefined, {
+      return this.application.call("platform.bootstrap", undefined, {
         signal: AbortSignal.timeout(4000),
       });
-    const r = await this.request(this.centerURL + "/api/workspace", {
+    const r = await this.request(this.centerURL + "/api/platform/bootstrap", {
       signal: AbortSignal.timeout(4000),
     });
     if (!r.ok) throw new Error("暂时无法读取应用数据，请重试。");
     return r.json();
+  }
+  async readPlatform(method, path, params, boot) {
+    if (this.application)
+      return this.application.call(method, params, {
+        identityGeneration: boot.csrfToken,
+        signal: AbortSignal.timeout(4000),
+      });
+    const response = await this.request(this.centerURL + path, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) throw new Error("内容不存在或无权访问，请重试。");
+    return response.json();
   }
   async post(path, body, c) {
     const boot = await this.boot();
@@ -90,12 +102,27 @@ class DesktopBrowser {
     const boot = await this.boot();
     if (generation !== this.generation)
       throw new Error("页面打开已取消或被替换。");
-    const artifact = boot.workspace.artifacts.find((a) => a.id === artifactId);
-    if (artifactId && (!artifact || artifact.content.kind !== "website"))
+    const artifact = artifactId
+      ? await this.readPlatform(
+          "objects.read",
+          `/api/platform/objects/${artifactId}`,
+          { contentId: artifactId },
+          boot,
+        )
+      : null;
+    if (artifactId && artifact?.content?.kind !== "website")
       throw new Error("网站对象不存在或无权访问。");
     const projectId = artifact?.projectId ?? target.projectId;
-    if (!boot.workspace.projects.some((p) => p.id === projectId))
-      throw new Error("工作空间不存在或无权访问。");
+    const project = await this.readPlatform(
+      "projects.get",
+      `/api/platform/projects/${projectId}`,
+      { projectId },
+      boot,
+    );
+    if (project?.id !== projectId || project.deletedAt)
+      throw new Error("项目不存在或无权访问。");
+    if (generation !== this.generation)
+      throw new Error("页面打开已取消或被替换。");
     const url = browserURL(artifact?.content.url ?? target.url, this.centerURL);
     const partition = persistentPartition(
       app.getPath("userData"),

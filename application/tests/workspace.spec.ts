@@ -4,6 +4,7 @@ import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
 test("真实对象、刷新恢复、引用批注、关联、事项和全局输入", async ({ page }) => {
+  test.setTimeout(90_000);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
@@ -14,6 +15,12 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   await expect(
     page.getByRole("button", { name: "应用启动台", exact: true }),
   ).toBeVisible();
+  // This test center starts empty. Create the project through the same UI that
+  // the workflow under test uses, instead of assuming a legacy workspace seed.
+  await page.getByRole("button", { name: "新建项目", exact: true }).click();
+  await page.getByLabel("项目名称", { exact: true }).fill("我的项目");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.locator(".project-link").filter({ hasText: "我的项目" }).click();
   await openLibrary(page);
   await page.getByLabel("其他内容创作", { exact: true }).click();
@@ -134,6 +141,20 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
       .locator(".task-inline-properties")
       .getByLabel("负责人", { exact: true }),
   ).toHaveValue("morphz-agent");
+  await page.getByRole("button", { name: "手动编辑", exact: true }).click();
+  await expect(page.getByLabel("分派状态")).toHaveValue("proposed");
+  await page.getByLabel("分派状态").selectOption("declined");
+  await page.getByRole("button", { name: "保存版本" }).click();
+  await page.getByRole("button", { name: "手动编辑", exact: true }).click();
+  await expect(page.getByLabel("分派状态")).toHaveValue("declined");
+  await page.getByRole("button", { name: "取消编辑", exact: true }).click();
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "检查文章", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "手动编辑", exact: true }).click();
+  await expect(page.getByLabel("分派状态")).toHaveValue("declined");
+  await page.getByRole("button", { name: "取消编辑", exact: true }).click();
   await page.locator("nav").getByRole("button", { name: /^事项/ }).click();
   await expect(
     page.getByRole("button", { name: /^打开事项：/ }).filter({

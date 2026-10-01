@@ -1,4 +1,8 @@
 import { z } from "zod";
+import type {
+  ScriptDirectoryItem,
+  ScriptEditorReadModel,
+} from "./script-editor.js";
 
 // Application-owned business records. Runtime remains the execution authority.
 const id = z
@@ -184,19 +188,23 @@ export const scriptPreparationSchema = z
 
 /** Pure preparation, not a model call, permission grant or workflow scheduler. */
 export function prepareScriptGeneration(
-  production: ScriptProduction,
+  production: ScriptProduction | ScriptEditorReadModel,
   raw: z.input<typeof scriptPreparationRequestSchema>,
 ): ScriptGeneration {
   const request = scriptPreparationRequestSchema.parse(raw);
+  const head = "head" in production ? production.head : production;
+  const items = scriptStructureItems(production);
   if (
-    request.productionId !== production.id ||
-    !scriptContextCurrent(production, request.contextRevision)
+    request.productionId !== head.id ||
+    !("head" in production
+      ? request.contextRevision === head.revision
+      : scriptContextCurrent(production, request.contextRevision))
   )
     throw new Error("剧本要求已有变化，请重新读取并核对版本。");
   const references = new Map<string, number>();
   const visited = new Set<string>();
   const visit = (itemId: string, revision: number) => {
-    const item = production.items.find((i) => i.id === itemId);
+    const item = items.find((i) => i.id === itemId);
     if (!item || item.revision !== revision)
       throw new Error("目标或上游引用已过期，请先明确核对依赖版本。");
     if (references.has(itemId) && references.get(itemId) !== revision)
@@ -206,8 +214,7 @@ export function prepareScriptGeneration(
       throw new Error("本次资料超过 200 项，请缩小生成范围。");
     if (visited.has(itemId)) return;
     visited.add(itemId);
-    for (const ref of currentScriptDraft(item).dependencies)
-      visit(ref.itemId, ref.revision);
+    for (const ref of item.dependencies) visit(ref.itemId, ref.revision);
   };
   visit(request.targetId, request.baseRevision);
   for (const ref of request.references) visit(ref.itemId, ref.revision);
@@ -290,6 +297,17 @@ export const scriptProductionSchema = z
     projectId: id,
     title,
     revision,
+    // Platform directory CAS; creative and metadata revisions stay app-owned.
+    catalogRevision: revision.optional(),
+    // Client projection only; never reuse an original after its provider moves.
+    providerRevision: revision.optional(),
+    // Authorized Platform directory identity for the current Client projection.
+    // The Script Studio original still owns the production and its versions.
+    contentId: id.optional(),
+    // Live Script Studio directory revision. Historical workspace records do
+    // not carry it; the editor projection uses it to avoid rereading an
+    // unchanged production on every navigation refresh.
+    activityRevision: revision.optional(),
     // Metadata CAS is separate from creative validity (see scriptContextCurrent).
     brief: scriptBriefSchema,
     reviewerPrincipalIds: z.array(id).min(1).max(50),
@@ -379,6 +397,7 @@ export const scriptCommandSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("create-item"),
       ...scope,
+      expectedActivityRevision: revision.optional(),
       kind: z.enum(scriptItemKinds),
       draft: scriptDraftSchema,
     })
@@ -482,26 +501,58 @@ export type ScriptIssue = {
   relatedId: string;
   message: string;
 };
+/** One structural representation for both the offline full model and the
+ * live editor. It never fabricates versions or empty draft bodies. */
+export function scriptStructureItems(
+  production: ScriptProduction | ScriptEditorReadModel,
+): Pick<
+  ScriptDirectoryItem,
+  | "id"
+  | "kind"
+  | "revision"
+  | "title"
+  | "parentId"
+  | "order"
+  | "dependencies"
+  | "characters"
+>[] {
+  return "head" in production
+    ? production.items
+    : production.items.map((item) => {
+        const draft = currentScriptDraft(item);
+        return {
+          id: item.id,
+          kind: item.kind,
+          revision: item.revision,
+          title: draft.title,
+          parentId: draft.parentId,
+          order: draft.order,
+          dependencies: draft.dependencies,
+          characters: draft.characters,
+        };
+      });
+}
 /** Deterministic structural checks, not a claim of semantic/story quality. */
-export function scriptIssues(production: ScriptProduction): ScriptIssue[] {
+export function scriptStructureIssues(
+  production: ScriptProduction | ScriptEditorReadModel,
+): ScriptIssue[] {
   const issues: ScriptIssue[] = [];
-  for (const item of production.items) {
-    const draft = currentScriptDraft(item);
+  const items = scriptStructureItems(production);
+  for (const item of items) {
+    const draft = item;
     for (const ref of draft.dependencies) {
-      const dependency = production.items.find((i) => i.id === ref.itemId);
+      const dependency = items.find((i) => i.id === ref.itemId);
       if (!dependency || dependency.revision !== ref.revision)
         issues.push({
           code: "stale-dependency",
           itemId: item.id,
           relatedId: ref.itemId,
-          message: `引用的上游版本已变化：${dependency ? currentScriptDraft(dependency).title : ref.itemId} v${ref.revision}`,
+          message: `引用的上游版本已变化：${dependency ? dependency.title : ref.itemId} v${ref.revision}`,
         });
     }
     if (
       item.kind === "scene" &&
-      !production.items.some(
-        (i) => i.id === draft.parentId && i.kind === "episode",
-      )
+      !items.some((i) => i.id === draft.parentId && i.kind === "episode")
     )
       issues.push({
         code: "missing-parent",
@@ -509,6 +560,18 @@ export function scriptIssues(production: ScriptProduction): ScriptIssue[] {
         relatedId: draft.parentId ?? "",
         message: "分场必须属于一集。",
       });
+  }
+  return issues;
+}
+
+/** Review checks require explicitly loaded, authoritative reviews. Call the
+ * structural-only function when a panel has not loaded review records yet. */
+export function scriptIssues(
+  production:
+    ScriptProduction | (ScriptEditorReadModel & { reviews: ScriptReview[] }),
+): ScriptIssue[] {
+  const issues = scriptStructureIssues(production);
+  for (const item of production.items) {
     for (const review of production.reviews.filter(
       (r) =>
         r.itemId === item.id &&
@@ -526,15 +589,16 @@ export function scriptIssues(production: ScriptProduction): ScriptIssue[] {
   return issues;
 }
 export function scriptImpact(
-  production: ScriptProduction,
+  production: ScriptProduction | ScriptEditorReadModel,
   changedIds: string[],
 ): string[] {
   const affected = new Set(changedIds);
+  const items = scriptStructureItems(production);
   let size = -1;
   while (size !== affected.size) {
     size = affected.size;
-    for (const item of production.items) {
-      const draft = currentScriptDraft(item);
+    for (const item of items) {
+      const draft = item;
       if (
         draft.dependencies.some((d) => affected.has(d.itemId)) ||
         draft.characters.some((id) => affected.has(id)) ||

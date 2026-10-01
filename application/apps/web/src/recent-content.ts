@@ -1,4 +1,4 @@
-import type { ContentEntry } from "../../../packages/core/src/content.js";
+import type { CatalogContentEntry } from "./catalog-content-entries.js";
 
 export type ContentVisit = { artifactId: string; openedAt: number };
 const historyLimit = 100;
@@ -37,14 +37,19 @@ export function visitContent(
 
 export function recentContent(
   history: ContentVisit[],
-  entries: ContentEntry[],
+  entries: CatalogContentEntry[],
   workspaceId: string | null,
   limit = 4,
 ) {
   const available = new Map(
     entries
       .filter((entry) => !workspaceId || entry.value.projectId === workspaceId)
-      .map((entry) => [entry.value.id, entry]),
+      .map((entry) => [
+        entry.kind === "script"
+          ? (entry.value.contentId ?? entry.value.id)
+          : entry.value.id,
+        entry,
+      ]),
   );
   return contentVisits(history)
     .flatMap((visit) => {

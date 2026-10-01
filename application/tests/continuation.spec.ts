@@ -2,68 +2,101 @@ import { test, expect, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 
 async function setup(page: Page) {
-  const inputs = ["报告 A", "资料 B"].map((body, i) => ({
-    id: `continuation-fixture-${i}`,
-    projectId: "first-project",
-    conversationId: "local-dialogue",
-    artifactId: null,
-    artifactRevision: null,
-    selection: "",
-    body,
-    status: "recorded",
-    targetActantId: "morphz-agent",
-    author: { principalId: "local-owner", actantId: "local-human" },
-    createdAt: `2026-09-18T00:00:0${i}Z`,
-  }));
+  let principalId = "local-owner";
+  let actantId = "local-human";
+  const inputFor = (projectId: string, conversationId: string) =>
+    ["报告 A", "资料 B"].map((body, i) => ({
+      id: `continuation-fixture-${i}`,
+      projectId,
+      conversationId,
+      selection: "",
+      body,
+      status: "recorded",
+      targetActantId: "morphz-agent",
+      author: { principalId, actantId },
+      createdAt: `2026-09-18T00:00:0${i}Z`,
+    }));
   const requests: any[] = [];
   let failure: "closed" | "unknown" | undefined;
-  await page.route("**/api/workspace", async (route) => {
+  await page.route("**/api/platform/bootstrap", async (route) => {
     const response = await route.fetch({
-        headers: { ...route.request().headers(), "if-none-match": "" },
-      }),
-      body = await response.json();
-    body.workspace.inputs = inputs;
+      headers: { ...route.request().headers(), "if-none-match": "" },
+    });
+    const body = await response.json();
+    principalId = body.principalId;
+    actantId = body.actantId;
     body.capabilities.directedInput = true;
-    body.runtime = {
-      configured: true,
-      connected: true,
-      model: "fixture",
-      error: "",
-      messages: [],
-      deliveries: inputs.map((i) => ({
-        inputId: i.id,
-        state: "running",
-        error: null,
-      })),
-      activity: {
-        available: true,
-        truncated: false,
-        threads: inputs.map((i) => ({
-          id: `thread-${i.id}`,
-          kind: "execution",
-          inputId: i.id,
-          projectId: i.projectId,
-          conversationId: i.conversationId,
-          rootId: `root-${i.id}`,
-          sessionId: "fixture-session",
-          title: i.body,
-          phase: "running",
-          lifecycle: "open",
-          revision: 1,
-          updatedAt: i.createdAt,
-          continuation: {
-            mode: "supplement",
-            inputId: i.id,
-            threadId: `thread-${i.id}`,
-            generation: 1,
-          },
-        })),
-      },
-      attention: { available: true, approvals: [] },
-    };
     await route.fulfill({ response, json: body });
   });
-  await page.route("**/api/messages", async (route) => {
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.runtime = {
+        ...body.runtime,
+        configured: true,
+        connected: true,
+        model: "fixture",
+        error: "",
+      };
+      await route.fulfill({ response, json: body });
+    },
+  );
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
+    async (route) => {
+      const match = new URL(route.request().url()).pathname.match(
+        /\/projects\/([^/]+)\/conversations\/([^/]+)\/history$/,
+      );
+      if (!match) throw new Error("Expected a Platform conversation history");
+      const inputs = inputFor(match[1]!, match[2]!);
+      await route.fulfill({
+        json: {
+          inputs,
+          nextCursor: null,
+          runtime: {
+            configured: true,
+            connected: true,
+            model: "fixture",
+            error: "",
+            messages: [],
+            deliveries: inputs.map((i) => ({
+              inputId: i.id,
+              state: "running",
+              error: null,
+            })),
+            activity: {
+              available: true,
+              truncated: false,
+              threads: inputs.map((i) => ({
+                id: `thread-${i.id}`,
+                kind: "execution",
+                inputId: i.id,
+                projectId: i.projectId,
+                conversationId: i.conversationId,
+                rootId: `root-${i.id}`,
+                sessionId: "fixture-session",
+                title: i.body,
+                phase: "running",
+                lifecycle: "open",
+                revision: 1,
+                updatedAt: i.createdAt,
+                continuation: {
+                  mode: "supplement",
+                  inputId: i.id,
+                  threadId: `thread-${i.id}`,
+                  generation: 1,
+                },
+              })),
+            },
+            attention: { available: true, approvals: [] },
+          },
+        },
+      });
+    },
+  );
+  await page.route("**/api/platform/messages", async (route) => {
     const command = route.request().postDataJSON();
     requests.push(command);
     if (failure)
@@ -159,7 +192,7 @@ test("已结束：保留草稿和目标，刷新不丢失，只有明确继续�
   await f.composer.fill("增加风险总结");
   await page.getByRole("button", { name: "发送补充", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "作为后续请求继续" }),
+    page.getByRole("button", { name: "改为普通消息发送" }),
   ).toBeVisible();
   await expect(f.composer).toHaveValue("增加风险总结");
   expect(f.requests).toHaveLength(1);
@@ -169,12 +202,13 @@ test("已结束：保留草稿和目标，刷新不丢失，只有明确继续�
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
     "报告 A",
   );
-  await page.getByRole("button", { name: "作为后续请求继续" }).click();
+  await page.getByRole("button", { name: "改为普通消息发送" }).click();
   expect(f.requests).toHaveLength(1);
+  await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   f.fail(undefined);
-  await page.getByRole("button", { name: "发送后续请求", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(composer).toHaveValue("");
-  expect(f.requests[1].operation.continuation.mode).toBe("follow-up");
+  expect(f.requests[1].operation).not.toHaveProperty("continuation");
 });
 
 test("未知回执冻结同份投递，刷新后只核对原命令，不重发另一份", async ({
@@ -190,7 +224,7 @@ test("未知回执冻结同份投递，刷新后只核对原命令，不重发�
   ).toBeVisible();
   await expect(f.composer).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "作为后续请求继续" }),
+    page.getByRole("button", { name: "改为普通消息发送" }),
   ).toHaveCount(0);
   await page.reload();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("仅补充 A");

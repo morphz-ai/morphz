@@ -1,5 +1,347 @@
 # 桌面能力实施记录
 
+## 2026-10-01 最终合并验收
+
+本轮存储切换目标已完成：正式 UI／Agent 使用唯一写入权威，退役业务写处理器、旧测试依赖和服务端旧编译文件已清理，最终生产构建成功。冻结源码后的界面回归分两轮完成 **362＋2 项全部通过、无跳过**；最终原版已正常重启，原件、完整未保存草稿、阅读标注和附件经实际窗口及只读摘要核验保留。最终构建 `/tmp/morphz-server-build-prune-final-build-20261001.log` 成功，新增构建收尾六项安全测试后的实际 PostgreSQL 全量单测 **945 项：942 通过、0 失败、3 项仅 S3 专用跳过**，日志 `/tmp/morphz-server-build-prune-final-full-unit-20261001.log`。此前清理后的 939／936 和清理前 941／938 日志保留；数量变化来自退役用例改为现行领域契约以及新增六项构建安全测试，具体覆盖见下。未经验证的 S3 服务、Mobile GUI、第三方托管及新的跨节点 Store 不纳入本轮已完成能力。
+
+最新界面回归发现并实际复现了改色后的选中标注丢失：原用例三次重复为一过两败，原 30 秒等待和断言未改变。根因是刷新／窄窗重排后用旧像素坐标重新命中，而非持久 mark 被删除。修复只冻结首次点击字形的精确原文位置，在完整当前授权页返回后核对重叠标注；不缓存旧权限、不扩大到整章。新增真实 HTTP 延迟、640 宽最新页消费、新批注重叠，以及段间空白／重复字／emoji 精确位置断言。最终 Reader **21／21**、受影响原 50 项加新 2 项 **52／52**，日志 `/tmp/morphz-reader-mark-repro.34zt2B/final-freeze-reader-suite.log`、`final-freeze-affected-suite.log`；旧失败 trace 和先失败后修复证据保留在同目录。
+
+最后完整 GUI 首轮 **363 通过／1 失败，0 跳过，16.2 分钟**，原日志 `/tmp/morphz-storage-final-complete-ui-20261001.log` 和全部 trace 保留。唯一失败是 `document-late-read-platform.spec.ts` 的按 URL 门闩把卡片可见预览与显式打开混计；旧成功 trace 也有两次同 URL 读取，只是第二次在断言后到达。该用例要验证的是显式打开后的撤权，不是请求合并。现仅在第一次目录挂载前设置正常、真实身份作用域的列表偏好，新增打开前读取为零、列表可见且无卡片预览的前提；原 count=1、撤权 404、两次成功 200、同 CSRF 和允许项目草稿断言均不变，没有产品 hook 或生产／UI 修改。真实重复 **5／5 通过**，日志 `/tmp/morphz-document-late-read-list-fixture-20261001.log`。随后同一生产构建的完整重跑取得 **364 项：362 通过／2 失败，0 跳过，16.1 分钟**，日志 `/tmp/morphz-storage-final-complete-ui-after-fixture-20261001.log`、全部 364 个 trace 位于 `/tmp/morphz-storage-final-complete-ui-after-fixture-traces.HpD313`。文档、Reader 及原生侧栏通过；网页交流与截图两项均在原 5 秒 `BrowserWindow.isFocused()` 前提前失败，未进入对应功能步骤，源码和断言未改。上海 04:20:33 和 04:45:42 的独立只读系统状态均为锁屏；旧成功 trace 初始 focused=true，新失败 focused=false 且没有 focus 事件。这是待解锁复验的原生环境门槛，不把本轮记为全绿或据此声称产品故障已修复。
+
+最终源码审计另发现 `core/model.ts` 的 `applyCommand`、`script-studio-commands.ts` 和 `reader-commands.ts` 已无正式消费者，仍只被旧单测／DTO 夹具引用。这三套退役写处理器及其专用的内容整理、项目管理、收藏身份／Inbox 处理分支已删除，不迁到测试目录另留一份实现。当前 `Workspace`／schema 仍是正式 Client 的展示 DTO，展示读取、当前事项顺序、应用定位和格式契约保留，UI 不重设计。核心七项业务契约改走实际 Host、Platform／Objects 私库，包含冷重开、原件版本、CAS、历史批注、Human／Agent 授权、持久事项顺序、关联及未投递输入；与收藏冷迁入专项和接口缺席断言共 **12／12 通过**，日志 `/tmp/morphz-retired-reducer-core-bookmark-final-20261001.log`。未消费的旧网站迁入夹具已删；收藏历史输入直接声明旧格式样本，不为构造样本保留旧业务处理器。
+
+十份纯视图回归改用明确的 DTO 样本，仅声明项目、原件、输入和关联，不实现授权、CAS、命令、回执或持久化。原 **46 项／369 个断言**保留，真实执行 **46／46 通过**，日志 `/tmp/morphz-view-model-dto-cleanup-unit-20261001.log`。剧本旧处理器的 20 项改为八组 SQLite／实际 PostgreSQL 领域回归和一项参数 schema，共 **17／17 通过**；与既有剧本领域测试联合 **121／121 通过、0 跳过**，日志 `/tmp/morphz-script-domain-scoped-owned-oid-final-20261001.log`。新测试直接调用正式领域服务，固定真实授权来源、原件及 workflow 修订，核对权限、创作代际、候选范围、迟到意见、阻断问题、历史和冷重开；清理仅删除本测试成功创建且再次核对同一 OID 的 PostgreSQL schema。
+
+测试迁移不复活已停用契约：旧 Workspace 字段兼容、漏依赖／重复引用必须拒绝、变化后先保存 stale 候选、累加整份原作的 prepare 预算退出退役处理器测试。正式实现及其有效断言保持：依赖自动闭包／去重，已有候选过期后不可采纳但可拒绝，迟到提交拒绝；Host 的有界生成 packet、确切原作／引文授权分页继续测试。有效 CAS、历史恢复、人工许可／采纳、撤权、跨集影响和正式导出由当前领域联合测试验证，不为保持旧标题数保留另一份实现。
+
+最终产物核对发现 TypeScript 编译不会自动删除已删除源码的旧 `.js`／声明／map。构建现于服务端编译成功后定向清理没有对应 `.ts`／`.tsx` 源码的输出，跳过未知扩展和符号链接，删除前重查实际目录与文件；不清空目录，不处理 `dist/web`。六项临时目录安全回归通过。最终构建实际移除 **38 个退役模块的 114 个编译文件**，无符号链接跳过；再次执行删除数为 0。正式五个入口的 121 个可达编译模块全部仍在，114 个旧文件全部不在，前后构建的 Web 哈希资源文件名一致。日志 `/tmp/morphz-server-build-prune-final-build-20261001.log`、核对 `/tmp/morphz-server-build-prune-final-output-verification-20261001.json`。仅删除可追溯的旧构建输出，未触及用户数据库、原件、草稿或界面源文件；脚本在正常受信构建目录使用，不声称能原子抵御恶意路径竞态。
+
+源码冻结后的当前 GUI 重跑取得 **362／362 通过、0 失败、0 跳过，15.9 分钟**，进程实际退出 0；日志 `/tmp/morphz-retired-reducer-final-ui-362-20261001.log`，全部 362 个 trace 位于 `/private/tmp/morphz-retired-reducer-final-ui-362-traces.IhVZYk`。`--list` 的 364 与 362 差集严格只有 `browser-composer.spec.ts:62` 和 `capture-window.spec.ts:42` 两项原生焦点用例，不是用宽泛过滤跳过其他测试。解锁后，这两项保持原配置、1440×960 窗口、5 秒焦点断言及后续完整断言，实际 **2／2 通过、0 失败、0 跳过，12.8 秒，退出 0**；日志 `/tmp/morphz-retired-reducer-final-ui-native-2-20261001.log`，trace 位于 `/private/tmp/morphz-retired-reducer-final-ui-native-2-traces.eZyFoE`。两轮共同覆盖当前全部 364 项，不能说成一次完整 364 项重跑。正常沙箱首跑因 macOS MachPort 权限未能创建 Electron 窗口，原日志保留为同前缀的 `sandbox-denied`；之后同配置、尺寸、超时和断言的受权运行才取得上述终态。
+
+最终原版正常退出后，同一 `ai.morphz.desktop`、原 profile 和中心于上海 **10:04:15** 重启为 PID **32756**，此前 PID 78215 已退出，Runtime PID 2195 未重启。实际原窗口中，对话历史与连接正常、下一输入默认显示 `gpt-6.1-sol`；原 125,332 字节附件打开后实际解码显示；「TEST 剧本分页验收 0930」仍为 v2，编辑器完整保留原本机未提交草稿及末尾“不能写成正文 v3”，未保存；「TEST 文档持久化 0930」仍显示原 v2 正文，原书签、高亮、批注共三条存在，实际坐标点击原文高亮显示改色、取消高亮、编辑及删除批注。只查看、不修改、不重发或取消原输入，最后恢复对话、连接和空输入框。
+
+重启前后以只读方式核验六库完整性和外键，所有 schema 不变；三个 Store 的身份、版本、回执、配额及物理字节摘要完全相同，Host 投递、Browser、Objects、Script 和 Reader 全表摘要不变。仅 Platform 的八条 `app_view_instances` 导航状态和两条对应新导航命令回执变化，不是专业原件被改写。证据 `/tmp/morphz-final-original-before-restart-20261001.jsonl`、`/tmp/morphz-final-original-after-restart-20261001.jsonl`、`/tmp/morphz-final-original-restart-comparison-20261001.jsonl`、`/tmp/morphz-final-original-restart-domain-preservation-20261001.jsonl`。原短剧输入仍为 failed，提醒输入为 completed，原中心 queued／sending／running 投递计数为 0；精确输入／root、未请求取消及只读终态见 `/tmp/morphz-original-user-input-terminal-final-audit-20261001.jsonl`，没有重放原请求或重复创建提醒。
+
+源码清理后实际 Runtime 联合复验 `/tmp/morphz-runtime-ipc-retired-reducer-final-20261001.log` 已退出 0；最终构建并移除旧输出后，`/tmp/morphz-runtime-ipc-final-pruned-build-20261001.log` 再次退出 0：阅读原件与不可变选文进入 Platform 输入，通过 Unix 工具回调写 Objects 原件并形成确切目录交付回执；Host 重开保持原件，同命令不重放合成模型。没有旧 workspace 业务表或应用 TCP 监听。它仍是 SQLite 内嵌 Host 与真实 Runtime，不扩称 PostgreSQL IPC 或真实模型质量。
+
+| 验收范围             | 当前权威证据与口径                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 原版 Store 升级      | 三个原 Store 精确 1→2，逻辑 ID、物理根绑定、原创建时间、六张业务表摘要、版本、回执及配额不变；原消息附件实际 125,332 字节 SHA-256 不变。`/tmp/morphz-original-store-v2-upgrade-20261001.jsonl`。无调用的 Workspace 迁移文件已删除，当前 Store 公共 API／SQL／备份没有节点字段。                                                                                                                                                                                                                                                                               |
+| 原版冷备份／独立恢复 | 正常退出后六库无写入者，现有 CLI 生成 `center-2026-09-30T19-43-42-500Z-f3cd42e0`，恢复到 `/private/tmp/morphz-store-v2-original-restore-vmmavW/restored-center`；121 张表／2,204 行的完整 schema 和全部行摘要、应用实例绑定、三个 Store 的业务版本与原非空附件一致。恢复目录是新物理根，不复用旧绑定。日志 `/tmp/morphz-original-store-v2-cold-backup-20261001.log`、`/tmp/morphz-original-store-v2-restoration-20261001.log`、`/tmp/morphz-original-store-v2-restoration-consistency-20261001.jsonl`。不含 Runtime、客户端草稿、第三方私库或 UI 包非空恢复。 |
+| 原版最终构建重开     | 同一 `ai.morphz.desktop`／profile／中心于上海 10:04:15 正常重开为 PID 32756；原 Runtime PID 2195 未重启。实际窗口保持原对话、连接和默认 sol，原附件实际解码可预览；剧本 v2 和未提交草稿全文保留，Reader 的原书签／高亮／批注存在，原文坐标点击显示改色、取消高亮和编辑／删除批注。前后只读核验原件库及三个 Store 摘要不变。只查看、不保存、不重发／取消用户输入，结束恢复原对话和空输入；客户端草稿保留不冒充中心备份包含草稿。                                                                                                                               |
+| Runtime 独立恢复     | 实际 SQLite 原生备份、PG `pg_dump`／`pg_restore` 到新 inode／新 schema OID；73 表／132 行、65 表／159 行，SQL 及序列、7 个文件字节／长度／权限摘要全部相等。恢复后未来 Schedule 原状态、跨身份 403、严格消息引用／附件／跨 Host／幂等断言仍通过，模型调用 3→3，未重放。日志 `/tmp/morphz-runtime-backup-sqlite-final-20261001.log`、`/tmp/morphz-runtime-backup-pg-final-20261001.log`；归档和 manifest 目录见日志。                                                                                                                                          |
+| 执行节点请求基线     | 既有 Runtime HTTP → Job → 双 Edge Worker →显式 Transfer 的实际 64KiB 字节，各后端 2 次预热加 20 正式样本；摘要／回执／Target 固定验证，重试不新增物理写入。日志 `/tmp/morphz-node-request-performance-isolation-final-20261001.jsonl`；不使用新的 Store／文件索引／扫描。仅 loopback、串行、温缓存和 Transfer 子集，不能推定广域网、吞吐、read/list 或批准 SLO。                                                                                                                                                                                              |
+
+原生 Runtime 恢复是路径保持式离线验证：绝对附件路径保持，来源 schema 经 OID 保护隔离后恢复到新的 schema 实体；没有任意迁址、在线跨库快照、OS keyring 或第三方文件备份承诺。此次 fixture 的 Node／Job／Approval 行为空；这些非空生命周期由既有执行节点／状态专项证明，不能冒称备份样本也覆盖。真实执行节点双后端证据使用同机两个 Worker，不代表两台实体电脑或 Mobile 产品。
+
+独立中心还原耗时另按真实原版冷备份补测，不能用 Host 重开计时代替。生产 `restore:center` 连续五次恢复至全新临时目录；每次之后额外核对六库 121 表／2,204 行完整 schema／行摘要、应用实例、三个 Store 版本／回执和原 125,332 字节附件 SHA，并清理本次生成的恢复目录。SQLite 库文件共 54,501,376 字节；CLI 过程（含进程启动与内部恢复校验）p50／p95 **430.443／681.104ms**，外部完整摘要审计另计、不混入该时间。最终退出 0、五次无失败，备份原包的文件清单、manifest 和各文件摘要未变，日志 `/tmp/morphz-center-independent-restore-timing-20261001.jsonl`。同归档此前已恢复过，未清 OS 缓存，同时有其他回归负载；n=5 的 nearest-rank p95 为最大值，不是生产尾分布、PG 恢复、Runtime 恢复或批准 SLO。首次验证脚本在五次还原后清理空父目录时报 EISDIR，改用准确的空目录删除后完整重跑；失败证据保留为同前缀的 `first-cleanup-failure` 日志，不冒充第一次已正常退出。
+
+请求基线还保留了首次严格失败：自有 Session 请求另一个主体的私有 Target 时，当前 Runtime 拒绝执行但包装为 HTTP 500，不是预期 403；没有文件访问或写入。最终合法 Target／Session 权限探针返回 401／403，不因此声称该 Runtime 错误映射已修复。该既有错误呈现与“未知 POST 的停止待确认”限制如实保留，不为本次存储切换新增协议、可靠投递接管或跨节点 Store。
+
+节点基准脚本最终隔离复核已完成：随机 schema 创建后固定真实 OID，`search_path` 只含该 schema 与 `pg_catalog`，删除前再次核对 OID、删除后核对不存在；缺少或被替换的 schema 一律不执行 DROP。原权限、字节、路由、回执、幂等及测量断言未改。最终 SQLite／实际 PostgreSQL 各 2 次预热、20 次实测全部通过，40 次正式传输无丢弃样本，脚本临时进程和自建 schema 已清理。新日志 `/tmp/morphz-node-request-performance-isolation-final-20261001.jsonl`；类型检查与五个安全分支证据为同前缀的 `isolation-typecheck-final`／`isolation-guard-final` 日志。观测端到端 p50／p95 为 SQLite 537.705／547.655 ms、PostgreSQL 97.316／119.626 ms，仍仅限上述 loopback／串行／暖缓存场景；`modelRequestsIssued: 0` 是脚本执行范围的声明，不当作模型服务请求计数器。
+
+架构核验已对照正式实现和测试体：Platform 目录无正文，应用域保存精确原件／版本；Human 与 Agent 共用授权、CAS、幂等回执及目录补偿；`WorkspaceStore` 只管本机身份、投递与页面控制，旧 RPC／Workspace 业务读写有负向陷阱测试。现有 Desktop 本机文件引用／目录授权仍由 Host `LocalFiles` 按实际输入和当前权限执行，不把它的本机测试说成远端 Target 路由；远端 Node 操作及显式 Transfer 使用既有执行节点机制。第三方 UI 包只准导航状态，不能得到私库 SQL 或保存专业正文；完整第三方服务接入和托管不是本轮交付。
+
+提交前清理与复验（2026-10-01）：删除三份没有调用方的迁移残留：`packages/core/src/collaboration-state.ts`、`packages/core/src/legacy-command-fingerprint.ts`、`packages/application/src/postgres-stage-digest.ts`。随后正式构建通过，构建清理器另移除这三份源文件对应的 9 份编译产物；此前记录的 114 份清理结果仍属于此前那次验收。构建日志：`/tmp/morphz-storage-cutover-commit-build-20261001.log`。
+
+清理后重新运行完整应用单测，配置实际 PostgreSQL：945 项中 942 项通过、0 失败、0 取消，仅 3 项未配置 S3 端点的测试跳过，耗时 65,027.742 ms；日志：`/tmp/morphz-storage-cutover-commit-unit-20261001.log`。类型检查、Rust 格式检查和 6 项构建产物清理测试均通过。本次无调用文件清理后未重跑 GUI，GUI 证据仍是上述 362＋2 两次运行。
+
+## 此前阶段与诊断证据
+
+最终审计进展（2026-10-01）：Reader v4 已拆为位置独立读取、正文可见范围分页及原侧栏滚动续页；双后端千条专项 4／4、真实 Client 迟到 2／2、原 Reader／新分页／PDF 完整 GUI 18／18 通过，日志 `/tmp/morphz-reader-marks-pagination-20260930.log`、`/tmp/morphz-reader-marks-client-late-read-20260930.log`、`/tmp/morphz-reader-marks-ui-accepted-20260930.log`。首次点击在异步标注读取前被丢弃的真实回归已修正，并保留全部编辑、删除、恢复及引用跳转断言。
+
+原版用户实测的两处消息缺陷已修正：① 引用仍先用 Session／输入 ID／消息 ID 精确定位并核验身份，选文校验与界面共用 CJK／GFM Markdown 解析，不靠正文搜索定位消息、不任意剥星号。真实 Runtime 的 SQLite、PostgreSQL 验证原 61 字 Markdown 对应 53 字可见选文通过，篡改文字、消息／输入根或 1µs 时间仍拒绝；实际 PG 输出 `/tmp/morphz-platform-message-runtime-pg-final-20261001.log`。② 本机首次普通输入在持久 outbox 提交前读取 Runtime 当前默认模型，显式选择优先；同命令重试／重开使用首次固定信封，补充不改原模型，默认读取失败保留草稿而不回退旧 Session 模型。实际 Runtime 同 Session 原 astra、新默认 sol、再次改默认并重开仍 sol 的 Thread／接受请求证明见 `/tmp/morphz-input-model-runtime-final-20261001.log`；只用不可达本机合成供应商，不作为真实模型质量证据。受限团队网关无 operator 默认读取权限，不另授予该权限，仍明确呈现 Runtime 管理的默认。未重发、取消或改写用户原输入。
+
+真实 PG 冒烟同时发现 Session IO 两条快速准入 SQL 没有写 causal 索引列及 input timeline；已在原单次 CTE／事务内补齐，不新增消息副本、网络协议或补写兼容路径。真实 PG 专项覆盖普通 Parallel／Interrupt／FollowUp、steering、重复／冲突、权限与 CAS；投影插入故障使请求、Event、Thread、Signal、outbox 与会话一起回滚，同 ID 重试恢复。实际 PG 热路径 statement 预算、完整 storage conformance、SQLite 事务 conformance 和原跨 Host 来源／重开幂等冒烟均通过，原断言未降级。
+
+短剧真实失败原因已确定：原 Runtime 没带入本部署 Yao 允许调用 `host_morphz` 的启动配置，首轮模型成功、Harness 选择成功后被工具边界拒绝。实际已安装 Harness 和对应库的纯校验复现同一错误。原 Runtime 已在无运行中 Activation 时正常退出并重启为 PID 2195，原参数、目录、数据库和凭据保留；只读进程核验确认启用原七工具加 `host_morphz`，Host 清单路径不变，不扩大 Runtime 全局默认权限。当前已安装 `morphz.script-studio@1.4.0` 的源码／摘要不变，新 build 的纯准入及八个导出接口校验通过，实际 HTTP 状态正常且默认模型为 sol。证据 `/private/tmp/morphz-live-failure-diag.cn8y4S/evidence.md`、`/private/tmp/morphz-live-failure-diag.cn8y4S/deployment-gate-evidence.md`。这是部署与准入验证，不冒充原短剧已成功生成；未自动重发原失败输入。提醒原 `schedule_tx` 已成功提交，`schedule_048bc5bac5e022eb04a8a1d4` 仍 queued、revision 1、2026-10-23T01:00:00Z（上海 09:00）；503 后原 Thread 于 15:58:42Z 完成，不重复创建提醒。
+
+Reader／消息修正后的实际双后端完整单测 **929 项，926 通过、0 失败、3 项仅 S3 专用跳过**，日志 `/tmp/morphz-quote-model-reader-final-unit-20261001.log`；合并生产构建 `/tmp/morphz-quote-model-reader-final-build-20261001.log` 成功。最新整套界面首轮 **362 项，353 通过、9 失败**，日志 `/tmp/morphz-quote-model-reader-complete-headless-20261001.log`。7 项项目对话失败来自其真实 HTTP 夹具返回空默认模型，正式入口正确保留草稿并拒绝发送；仅补上隔离测试模型后原 8 项全部通过，`/tmp/morphz-project-conversations-model.mEOMWE/project-conversations-final.log`。浏览器拖拽 trace 直接记录脚本路线之外的无按键鼠标事件引起 capture 丢失，生产按既有规则取消；未忽略 capture 丢失或宣称修复产品。截图失败发生于取消后第四次 picker 打开；新增被动诊断的专项两次均 3／3 通过，取消后原生与 renderer 焦点恢复、没有焦点授权拒绝，不能仅凭候选解释改生产代码。最新完整诊断 `/tmp/morphz-native-two-diagnostic-complete-20261001.log`。最终同一 GUI owner 的完整回归 **362／362 通过、0 失败／跳过，退出码 0，16.5 分钟**，日志 `/tmp/morphz-quote-model-reader-final-complete-20261001.log`，完整 trace 位于 `/tmp/morphz-quote-model-reader-final-complete-results-20261001`；真实原生浏览器、截图、剧本 Electron 和侧栏用例均通过，没有用专项拼接冒充整套。最初 Chrome 启动错误及该应用路径后来实际不存在的记录保留；现使用已安装的隔离 headless Chromium，实际 Electron 用例仍启动真实隔离 Electron，不将 headless 截图冒充原版窗口。
+
+分页修改前的完整界面回归已取得 **359／359 通过、0 跳过**，日志 `/tmp/morphz-storage-final-acceptance-ui-20260930.log`；不能用它替代 Reader／消息修正后最终合并构建的完整验收。原版清理构建的正常冷重开、六库恢复、2 万对象及引擎 WAL 已验证，保留真实长尾和测量边界。当前原版 Desktop 已正常退出并以同一 `ai.morphz.desktop`／profile／中心重开为 PID 20425，原会话恢复、Agent 已连接、默认显示 sol。原窗口实见「TEST 剧本分页验收 0930」仍为 v2，原未保存草稿全文保留，未按保存；阅读「TEST 文档持久化 0930」仍为原 v2，有原书签／高亮／批注及原批注文案。只读原库断言确认 Reader schema 已为 v4，三条 mark ID 及 revision 1／3／3、位置 section-1／0／font20／revision1 不变，外部 Objects 原件仍是原 ID／v2、book_id 为 null，无导入副本；Script 与 Objects 原不可变版本列表仍各为 [1,2]，没有 v3。验收只切换原界面查看，结束后恢复原对话页，未发送、删除或重发用户请求。最新完整合并回归已通过；下述两项无消费者的遗留仍未清理，当前整体目标未完成。
+
+正式接线状态（2026-10-01）：UI／Agent 的项目、事项、目录、文档、剧本、阅读及消息入口已使用 Platform／所属应用／Runtime。旧 Workspace 在线业务权威、Collaboration、通用搜索索引和 RuntimeBridge 快照回退已删除；`WorkspaceStore` 只提供本机身份、可靠投递及页面控制日志，renderer 的 Workspace 形状只是展示适配器。历史业务表不是当前写入权威，未增加双读或双写。Objects v5 按行表格、投递脏键增量提交、导航分域修订复用、剧本卡片轻量读取及编辑器 head／分页／确切正文均已接通。Reader v3 解析缓存及 v4 标注分页已分别验收。Application 来源关注沿用 typed Session IO／Signal，不新增协议或调度器；停止待确认表达与既有执行节点契约已有专项和整套证据。首次收齐导航、选中事项历史及 Host 启动验证保留记录仍有明确成本。最终消息缺陷、完整合并构建与原窗口验收以本节开头为准，不将正式接线等同于整个目标完成。
+
+本轮较早只读 A／B／D 架构审计确认双后端独立领域 schema、Human／Agent 共用写服务、授权／CAS／幂等回执／私库 outbox 和目录恢复的正式入口，没有缺域时回退旧 Workspace 的写路径；同时找到死迁移文件、Store 节点字段和 §7／§8 的两个证据缺口。这四项已在上方最终合并验收中清理或补齐，不能再以本段旧状态称尚未实现。真实 S3 部署及其云备份仍未验证，不纳入已完成证据。
+
+本轮清理后的完整单测已取得终态：实际 PostgreSQL 参与的 **914 项，911 通过／0 失败／3 跳过**，日志 `/tmp/morphz-storage-last-cleanup-unit-20260930.log`。生产构建 `/tmp/morphz-storage-last-cleanup-build-20260930.log` 成功；六份 DDL 与当前 schema 导出逐字节一致，日志 `/tmp/morphz-storage-final-cleanup-ddl-match-20260930.log`，结构专项 24／24 通过，日志 `/tmp/morphz-storage-final-cleanup-schema-proof-20260930.log`。最后两种无 caller 的来源同步操作也已从核心 command 移除，负断言拒绝它们；没有恢复旧文件同步。三项跳过只针对未配置的 S3 中心字节替代后端，不是 PostgreSQL 缺失，也不是本次切换必需功能；不能据此宣称 S3 部署或其成套云恢复已验收。以上终态在新标注分页修改之前取得。
+
+删除 Platform、Objects、Script 生产类中仅供旧测试数据使用的导入／免授权核验方法及专属转换 helper，没有转移成另一个 Workspace 兼容适配器；正式 SQL schema 升级保留。有效测试改用当前领域 API，Platform 58／58、Objects 25／25、Script 16／16 的 SQLite／实际 PostgreSQL 专项通过。保留对话分页、授权、CAS、幂等、候选、来源、依赖、历史及冷重开断言；退休一条仅验证旧 Workspace 剧本格式导入的用例，并新增生产不暴露旧接口的负断言。尚无 Objects PDF 创建操作，既存 PDF 读取测试使用小型当前 schema 初态，不称它为 Human 创建；正式 PDF 创建另通过 Reader 导入后 Agent 读取验证。生产及运行脚本没有旧导入 caller，不为开发样本遗留生产兼容入口。
+
+保留此前一次 Playwright 失败证据：**359 项中 358 通过、1 失败、0 跳过**，日志 `/tmp/morphz-storage-final-frozen-ui-20260930.log`；浏览器交流向下拖动后仍停在完整记录。新增测试内事件诊断保持原坐标、断言、阈值与超时，原用例连续 15 次通过，随后完整套件 359／359 通过。原偶发失败未复现，不能声称找到根因或已修复；没有改产品或盲加等待。外观重复通知及正文竞态 waiter 的计量修正也保留原业务断言。专项日志 `/tmp/morphz-browser-exchange-diagnostic-repeated-20260930.log`、`/tmp/morphz-browser-exchange-diagnostic-passive-20260930.log`；最新合并构建还需完整回归，不拿 Reader 等专项替代。
+
+来源关注的真实 Runtime 专项 `npm run test:platform-task-source-runtime` 在三域旧导入清理后完整复跑八阶段通过，日志 `/tmp/morphz-task-source-runtime-post-legacy-cleanup-20260930.log`：活动 Thread 精确 generation 接续、终态后同 Session 新 root 且不新建 Schedule、暂停期间三个修订合并、真实 200 回执丢失后两次冷重开不重复、已接受接续的读取失联期间不确认停止／不允许改派、当前 Schedule 排队／实际延后日期／未终依赖不提前调用模型、POST 尚未到达时停止保持待确认且迟到接收后确切取消、首次 POST 前失败后活动执行以同一 client ID／完整 wire 安全重试。真实编译 Runtime、内嵌 Host 与 Unix Agent 工具实际写入 Objects，15 次本地合成供应商调用、7 条来源 IO；不证明真实模型理解质量或实际审批生命周期。旧阶段日志 `/tmp/morphz-task-source-runtime-final-stop-20260930.log` 及摘要证明保留为历史，不替代清理后终态。
+
+三域清理后的真实 Runtime IPC `npm run test:runtime-ipc` 通过，日志 `/tmp/morphz-runtime-ipc-after-script-cleanup-20260930.log`。Reader 原文及不可变引用经 Platform 输入和 Unix 工具回调形成 Objects 精确交付；Host 冷重开保持同一原件／来源／回执，同命令不增加供应商调用。核对没有应用 TCP 监听和旧 Workspace／command／asset 业务表；这是实际 Runtime 与 SQLite 内嵌 Host、合成供应商，不是 PostgreSQL IPC 或模型质量验收。
+
+来源与执行检查器专项 `/tmp/morphz-task-source-all-final-20260930.log`：SQLite／实际 PostgreSQL 联合 **45／45 通过，0 跳过**。两个独立 Host／Pool 验证相同冻结请求及停止门槛，104 条历史执行仍可分页；只读检查器按原执行的确切 Thread 和来源接续 roots 查询，不从 Session 最近 100 个其他任务推测归属。已停止、移过项目的历史仍按原准入和当前真实授权可读；第三项目选择或任一必需权限撤销均拒绝。停止门槛同时保护移动、改派和新 run，即使原 Thread 已终态或当前执行引用已清，也不绕过已接受／未知来源投递。当前 Runtime 没有对未知 client_message_id 原子拒收的操作：尝试已落盘但 POST 前崩溃且从未接收时，停止可能持续待确认；不删除证据、不伪造停止成功、不为停止主动发起新工作。此失败边界保留为明确限制。
+
+停止状态的最小可见性修复：事项清单与原面板在已有 stopRequested 为真时统一显示「停止待确认」，说明「已请求停止，等待执行结果确认。」；原按钮、禁用条件和操作保持不变，不新增状态表或 Runtime 协议。核心、正式组件 DOM 与实际双后端操作专项 21／21 通过，日志 `/tmp/morphz-stop-presentation-unit-20260930.log`；即使观测 Thread 已终态，停止回执未确认也不显示已停止或开放重新执行。原 UI 清单／面板／刷新用例加入最新整套，其受控 Runtime 投影只验证展示，物理停止证据仍由实际 Runtime 专项提供。
+
+既有执行节点契约复验：6 个精确 Runtime 用例及 SQLite／实际 PostgreSQL conformance **8／8 通过，0 忽略**，分别见 `/tmp/morphz-storage-final-existing-target-contracts-20260930.log`、`/tmp/morphz-storage-final-existing-target-conformance-20260930.log`。追加双后端真实 HTTP／Runtime／EdgeWorker 验收 **2／2 通过**，`/tmp/morphz-storage-final-multi-target-cleanup-20260930.log` 最后一次终态：四个真实 write／exec Jobs、两次 exec 同时 Running 且有实际开始文件与 side-effect 时间；Thread、Job、Node、Target 固定绑定，明确 Edge relay Transfer 校验实际长度、摘要和回执，重放不再次写目标。Human HTTP 发现与精确 Target 读取拒绝未登录和其他所有者的私有节点／执行；停止 A Worker 后真实心跳到期，HTTP 显示 A 离线、B 在线。仅使用既有机制和同机两个独立 Worker，不新增路由／Store，也不称作两台物理电脑或 Mobile 产品验收。日志保留了首次夹具错误：全局公共 Target 可见，不能将其误判成私有 Target 泄露；最终断言仍严格验证私有节点和执行不可访问。
+
+中心字节的非 S3 双 Host 验收 `/tmp/morphz-center-bytes-multi-host-20260930.log`：SQLite／实际 PostgreSQL **2／2 通过**。独立投递库与连接显式共用同一中心目录，Reader 原件、图片的旧／新版本及两个 UI 包版本跨 Host 精确读取；撤权、重开、CAS、幂等及缺失原件拒绝保留，A 的本机投递不由 B 接管。已接受附件另经当前真实 Runtime 冒烟 `/tmp/morphz-platform-message-runtime-final-cleanup-20260930.log`，第二 Host 从 Event／resource 核验字节，不读取发送方私有 Store。这些是共置文件型中心的能力，不是任意 NFS、跨机器文件服务或 S3 部署。
+
+容量追加基线 `/tmp/morphz-storage-capacity-enhanced-20260930.jsonl` 已完整通过 SQLite／实际 PostgreSQL：每后端 24 个不同摘要原件、554 章、5,858,794 解析字符、主租户 480 条／另一租户 20 条标注、72 次有界正文读取与三次冷重开。两个租户各四个真实 Agent 工具请求同时在途，24 个独立提交，同版一成功三冲突、同命令四并发一后继；Runtime 来源为受控夹具，不证明模型吞吐。首次导入 p50／p95 SQLite 270.399／362.401ms、PostgreSQL 312.785／452.239ms；4,000 字符服务读取 0.399／0.623ms、1.796／2.805ms。详细口径见实施设计；用户态原件写量及分配容量不是物理设备 IO／写放大，不承诺复杂 PDF／OCR、无限书库或批准 SLO。
+
+写成本测量 `/tmp/morphz-storage-write-cost-wal-20260930.jsonl`：实际 SQLite／PostgreSQL 各八个正式 Human 操作与精确重开通过，测试观察器与临时 schema 清理完成。文档创建／修订各九个直接影响行，单行表格修改只新增一个行状态、三个单元格和十条版本引用，其他九行复用；重放零行，旧版 CAS 零 DML／一次回滚。SQLite 连续有效 WAL 帧，PostgreSQL 实际连接 XID 归属的解码记录分别测得文档修订 103,000／5,643 字节、单行表格修改 131,840／14,441 字节；重放与过期 CAS 均为 0。PG 独立 xid=0 的 167 字节噪声使全局窗口增长，但准确排除，未算入重放。标量绑定、分配容量和引擎日志均不冒充 SSD 物理 IO；未测 SQLite checkpoint 主库写量及 PG 页头／对齐／段分配。详细口径和实际比率见实施设计。
+
+2 万对象实测 `/tmp/morphz-storage-20k-final-20260930.jsonl` 完整通过：SQLite／PostgreSQL 各生成 1k／20k，400 页各不超过 50 条且完整去重，总数 20k；正式授权原件读取、CAS、60 次四并发修订、同版一胜三冲突及五次重开核对。2 万目录首屏 p50／p95 SQLite 0.323／10.288ms、PostgreSQL 9.985／302.856ms；重开 50.769／485.075ms、61.750／126.602ms。SQLite 创建最大 5,387.224ms 是真实长尾，当前日志不能归因。15／5 样本的 p95 即最大值，不作为稳定尾分布或批准 SLO；重开不清系统缓存，单 Host／单 Human／静态游标的边界保留。
+
+最后来源操作清理后的生产构建在同一原版 `ai.morphz.desktop`、原 profile／中心正常退出、冷备份并重开。冷备份恢复到独立新目录，日志 `/tmp/morphz-original-last-cleanup-cold-backup-20260930.log`、`/tmp/morphz-original-final-restoration-20260930.log`；六库全部 schema 和有序全行摘要核对为 121 张用户表、2,120 行，另有一张 SQLite 内部表，见 `/tmp/morphz-original-final-restoration-consistency-20260930.log`。本中心三类受管 Store 实际均为空、UI 包引用为零且未声明 UI Store，不能把它称为非空字节／UI 包恢复；非空覆盖由当前单测的 `center-backup` 与双 Host 中心字节用例另行证明。
+
+原窗口重开实际显示「TEST 剧本分页验收 0930」正文 v2 和独立本机未提交草稿，其末段「TEST 本机未提交草稿：正常退出后仍保留，不能写成正文 v3。」仍在。只读核对 head／版本数均为 2，没有 v3；原 Reader 显示 Objects 文档 v2，批注栏有原高亮、书签、批注，三个标注 ID／修订及位置／字号保持不变，`book_id` 为空，没有复制正文。随后回到退出前的原「对话」页面，22:09–22:16 的实际历史仍可见；未保存、发送或重新执行。此项在新标注分页修改之前取得，后续修改后需复验其可见操作，不以隔离截图代替。
+
+额外原生脚本的正式端口清理：七个脚本的退役 `workspace`／通用 `command` IPC 调用已移除，没有生产兼容适配器。隔离原生 draft、Exchange、Reader 稳定性、模型与账号、真实 OCR、Reader Session 和连接脚本均已通过；最后两项保留原断言，复验取消后部分回复 reload／cold restart、Runtime 断开时 Platform 数据与草稿仍可用。证据包括 `/tmp/morphz-reader-session-port-20260930.log`、`/tmp/morphz-connection-port-20260930.log`；PDF 和 OCR 各 12 轮稳定性另行通过。这些脚本不在完整 Playwright 套件中，不能以界面套件通过代替它们。Reader Session 使用真实 Runtime 和合成模型供应商，不作为真实模型效果证明。
+
+实际 Client 撤权缓存专项 `/tmp/morphz-document-client-race-real-20260930.log`：2／2 通过。React 正式 renderer 创建真实 `useWorkspace` 方法及 refs，正式 HTTP 客户端连接隔离真实 Host；服务端先真实授权取得正文、随后才延迟响应。同 CSRF 撤权后旧正文释放前后 `getSnapshot()` 的 current 不变，原件不进入 artifacts；重新授权并真实读取 v2 后，迟到 v1 不能覆盖 v2。仅适配浏览器 cookie／偏好，没有模拟业务结果或增加生产测试 API。此直接缓存断言补足了 GUI 重新授权自身清缓存可能掩盖旧响应回填的问题，不替代原生操作验收。
+
+阅读解析缓存 `/tmp/morphz-reader-cache-integration-20260930.log`：SQLite／实际 PostgreSQL 联合 59／59 通过，0 跳过。Reader 私库只增加对既有 canonical reading source 的解析索引，不保存另一份正文；缓存键核对原件摘要、格式、实际解析模块／依赖版本和解析选项，命中前检查当前身份和原件授权。真实 Worker 首次／变化／损坏时启动、命中和稳定重试不启动；新书、旧解析版本、个人标注和原命令幂等仍各自独立。索引提交与 Reader import 同事务，故障回滚与旧 schema 结构错误拒绝已覆盖。缓存只避免重复解析，原件完整性验证和新书保存仍有 O(N) 成本。
+
+PDF Range 专项 `/tmp/morphz-reader-range-integration-20260930.log`：真实 SQLite／PostgreSQL 联合 46 项通过。原件元数据先核对当前授权、不可变 manifest、路径和长度，不扫描全文件；读取 16 字节只核验所触及的 1MiB 校验块，授权变化、损坏块及显式全文件验证仍拒绝错误字节。2,100,689 字节原件的元数据读取实测为 0 字节文件读取；未触及块的损坏由该块实际读取或显式全验证发现，不把元数据检查冒充整文件完整性证明。
+
+表格专项：SQLite／实际 PostgreSQL 的 Objects、Agent、Human 本地与正式 HTTP、原编辑器命令联合 30／30 通过，0 跳过。原 GUI 普通记录增改删发送 `interactive.patch`，字段／视图／顺序变更保留完整修订契约；2／2 原界面用例验证局部请求及原有 XSS、视图、历史、刷新断言。旧表格版本一次性事务转换，错误回滚，无正式 JSON 读取 fallback。1000 行 × 24 字段改变一行只新增一个行状态，但版本清单与全文投影／提交核验仍有界 O(N)，不把减少写入当作只读一行。
+
+表格单元格查询追加优化 `/tmp/morphz-interactive-point-final-20260930.log`：改为每批最多 100 个完整版本主键 SELECT UNION ALL；真实 SQLite／PostgreSQL 联合 19／19 通过，0 跳过，含千行当前／历史版本、冷重开、损坏与缺失单元格、实际 Agent／Human 权限、CAS 和幂等。未改 schema、容量、历史或摘要语义；查询计划及正式 Human n20 读／改计时见实施设计。不因查询提速而取消有界版本清单和全文投影成本。
+
+导航专项 `/tmp/morphz-navigation-final-20260930.log`：SQLite／实际 PostgreSQL 及现有 Platform／Client 联合 106／106 通过，0 跳过。真实 Agent 连续三次修订文档不重读项目／会话／事项列表；项目、对话和事项命令只使对应分组失效。112 项目按两页完整读取，页间变化不能缓存成一份同版本列表；撤权清除受保护投影，身份配置轮换使访问修订失效，冷重开保持计数。另有真实授权读取后延迟返回、期间撤权及重新授权的响应竞态专项：旧代响应不能回填缓存，也不能清掉同 key 的新请求。初次完整导航树仍收齐所有授权页，没有截断或改变现有展开／筛选／排序操作。
+
+剧本消息交付 `/tmp/morphz-script-delivery-48-20260930-final-http.log`：真实 SQLite／PostgreSQL 联合 48／48 通过，含正式 HTTP 登录、精确历史、采纳后状态及撤权；2／2 新构建界面回归通过。未打开时卡片只读明确的元数据 DTO，不读取 `scripts.snapshot`；点击精确原件与候选，同名其他剧本不预读，返回保留草稿。编辑器现在也已接 head／分页／确切正文，但其证据另列，不能由消息卡片专项推导整个编辑器通过。
+
+剧本编辑器领域读取 `/tmp/morphz-script-editor-integration-20260930.log`：真实 SQLite／PostgreSQL 联合 34／34 通过，0 跳过；正式 HTTP 登录及 CSRF、当前 head、目录／候选／历史／事件分页、精确正文／候选／检查／导出 manifest、权限撤销及冷重开均已覆盖。Script schema v4／v5 一次性升级到 v6 的固定结构和回滚验证通过，没有正式快照回退；测试令完整 `productionSnapshot` 读取直接失败，编辑器端口仍通过。原 UI 的接线、分页刷新、迟到响应及原生 Word 导出正在专项验收，尚不能用这 34 项代替界面整体通过。
+
+已修复创建者投影：Agent 创建的原件被人工修订、改名或撤销后，仍显示最初创建者；修订作者另属该版本。客户端通过既有版本元数据接口精确读取 v1，不读取旧正文或扫描历史，并核对当前授权、原件身份与版本。62 项专项回归及隔离 Catalog／Desktop Electron 冒烟通过。便笺示例 1.3.0 保存后仅把文档 ID 留在视图状态，重载读取同一 Objects 原件，继续保存以确切修订修改同一文档；冲突保留输入。没有把正文或未保存私有草稿塞入 `saveState`。5 项正式界面验收通过；未保存的第三方便笺草稿持久化不在该例提供的能力中。
+
+原版窗口最新复验：同一 `ai.morphz.desktop`、原 profile／中心，在上述最新构建正常重开后，Script v6 实际显示「TEST 剧本分页验收 0930」的正文 v2 和独立本机未保存草稿；数据库仍只有 v1／v2，没有自动写成 v3。Reader 原库已升级到 v3，原窗口仍显示同一 Objects 文档 v2、书签、高亮和批注；三个标注 ID／修订保持不变，`reading_sources` 指向原 Objects ID／版本，`book_id` 为空，没有复制正文。正常退出并确认六库无写入者后，冷备份 `center-2026-09-30T11-48-30-261Z-c869e4ce` 成功恢复到全新目录；六个数据库 121 张用户表、2,096 行的结构和逐行 SHA-256 全部一致。日志 `/tmp/morphz-original-reader-v3-cold-backup-20260930.log`、`/tmp/morphz-original-reader-v3-cold-restore-20260930.log`。未覆盖运行目录，未启动第二个手工验收应用。备份不包含 Runtime、客户端草稿或 PostgreSQL 私库，不能称为全系统恢复；草稿保留由同一原版应用的冷重开另行验证。原中心中的旧测试表同样被备份，保留备份不代表其业务代码仍可运行。
+
+此前全量单测记录 `/tmp/morphz-storage-full-20260930-final.log` 为 842 项：838 通过、1 个真实来源事件缺口失败、3 项未配置 S3 测试端点跳过；实际 PostgreSQL 已参与。354 项完整界面运行终态为 341 通过／13 失败／0 跳过：两处旧夹具错误（便笺保存后空白预期、将原件写入 dialogue scope）及后者留下未投影原件导致的后续恢复失败。修正后干净中心复跑 42 项，41 通过，剩余连接刷新用例与既有 5 秒刷新周期竞争；测试现等待真实 bootstrap 503 响应后核验原 UI，不增加超时或放宽恢复保护，该项单独复验通过。上述分批通过不能合并冒充最新完整套件通过；最新表格、导航和剧本页式读取定版后必须重跑。下方 804／352 全绿是清理前的历史证据。
+
+性能基线已新增 opt-in 脚本 `tests/storage-performance-baseline.ts`，1k／10k 记录均通过正式 Human Application 写入，不用 SQL 业务种子。SQLite 和实际 PostgreSQL 的目录 50 条、全游标遍历、精确原件版本、CAS 修订／拒绝及重开恢复均通过；串行记录为 `/tmp/morphz-storage-baseline-full-20260930.jsonl`，追加四并发及内存采样为 `/tmp/morphz-storage-concurrent-full-20260930.jsonl`。每后端运行 60 次独立原件并发修订；同版四命令竞争严格一成功／三冲突，重开后当前版本及旧 v1 不变。10k 时目录响应约 22KB、原件约 4KB，与总量独立。它测的是一个 Host 的领域 API，不证明多 Host／多租户吞吐；全进程内存样本含测试状态且未强制 GC，不是峰值或泄漏证明。重开只有 5 个样本且未清 OS 缓存，未测物理写放大、大文件或批准 SLO。具体基线见实施设计性能节。
+
+2026-09-30 最新收口验收：启用本机 PostgreSQL 的全量单测 804 项中 801 通过、0 失败、3 项未配置外部对象服务端点而跳过；生产构建通过。完整 Playwright 界面套件 352／352 通过。真实编译 Runtime、Yao Harness、Unix Host 工具的剧本联合流程通过，16／16 故障恢复分支通过；模型供应商为合成夹具，不作为真实模型写作质量证明。Browser 控制入口已删除旧快照授权方法，正式测试使用 Platform 项目、页面所有者和持久操作日志；冷重开仍返回原回执。单测并发显式限制为 4，避免本机默认 14 个测试进程争抢数据库／进程启动资源；未延长产品超时或删掉故障断言。
+
+同一原版 Morphz（`ai.morphz.desktop`，原 profile／中心）已实际创建「TEST 文档持久化 0930」：真实 Agent 工具保存 v1，人工编辑保存 v2；在 Reader 打开同一 Objects 原件后，书签删除／撤销、高亮取消／撤销和批注保存均通过。正常退出、中心冷备份校验并重开后，原输入、Agent 回复、精确 v1 交付入口、文档 v2 和三条标注均恢复；数据库核对标注原 ID 未变，`reading_sources` 指向 Objects 的同一对象 v2，`book_id` 为空，没有为阅读复制正文，待投递计数为 0。冷备份为 `center-2026-09-30T06-36-52-369Z-6bb42a0e`，不含 Runtime、客户端草稿或 PostgreSQL 私库。本轮原版读写／重启验收已完成上述范围，不能替代未逐项核对的全产品实机验收。
+
+主要剩余代码工作：删除旧 Workspace 业务实现及 RuntimeBridge 的快照回退，迁移仍依赖旧模型的流程测试，并核对事项来源变化、暂停／恢复等原有生命周期能力。历史业务表仍存在于原中心但不由正式入口写入；未以保留开发数据为由恢复双写。此项未完成前，整体目标仍保持进行中。未修改已接受 UI，未新增跨节点 Store、文件上报或 Runtime 消息机制，代码未提交。下列较早“完整界面套件运行中／原版重启未验收”记录以本条为准。
+
+2026-09-30 剧本与多对话正式回归更新：剧本工作室 18／18 界面用例通过，覆盖实际应用私库中的创作、候选、采纳、历史版本、审改、导出与隔离内嵌 Electron 四主题／200% 缩放。项目多对话原有 8 项用例现使用真实 HTTP Host、Platform 会话目录、应用私库及持久 Runtime outbox，不再访问旧 workspace／command API；8／8 通过，保留未发送草稿、只发附件、首发失败、丢失回执不重复、迟到回执不抢导航、独立 Session 与共享默认 Session 完整历史、引用归属、归档／恢复与刷新断言。Runtime 接收／模型执行在该界面夹具中停用，排队不冒充实际发送或生成结果。回归复现并修复了未发送会话草稿被请求为已存在会话、导致导航读取 404 和输入禁用的问题：草稿首次提交前只保留原授权历史范围，不创建空会话，不改 UI。启用本机 PostgreSQL 的全量单测 802 项：799 通过、0 失败、3 项外部对象服务端点未配置跳过；生产构建通过。完整 Playwright 套件已重新启动，整套结果尚未确认；旧业务实现清理及原版 Morphz 本轮打包／实际写入／重启恢复验收仍未完成，整体目标保持进行中。
+
+2026-09-30 事项依赖与阅读验收更新：事项开始仍使用既有 Platform outbox 与 Runtime Schedule，没有另建调度器。准备请求固定人工答复 ID 和 Agent Thread 引用；停止未准备执行不创建 Schedule，重复停止不增加版本，也不能误停下一次执行。正式快照核对真实前置状态、审批和当前权限；排队不冒充正在执行。真实编译 Runtime 与本地合成模型的联合冒烟通过：人工结果未提交时没有执行安排，Agent 前置未结束时后续不调用模型，结束后正常接续。该测试暴露并修复了待准备请求不足一页时游标未复位、导致下一轮跳过已满足条件请求的问题。SQLite／本机 PostgreSQL 的应用全量单测为 800 项：797 通过、0 失败、3 项因外部对象服务端点未配置跳过；类型检查与生产构建通过。本条取代下方较早的 775 项／16 失败作为当前测试状态。
+
+阅读原有六条界面用例已从退役 workspace 接口迁到 Platform 目录、Reader 私库和实际客户端未发送输入；首次合跑四项失败是夹具读取输入时漏了执行身份，界面实际已保存。修正后与正式 Reader 和事项测试合跑 17／17 通过，保留取消高亮、撤销、批注、常见格式、精确选文、翻页不改引用、位置恢复、窄窗和失败不误报成功断言。未连接 Runtime 的保存不冒充已发送消息。内嵌 Electron 冒烟也已改用正式 Platform／Reader／应用包接口，通过真实打包入口的幂等项目创建、PDF 画布与文字层、原位文件读取不导入、原生网页隔离、应用沙箱、刷新及关闭／activate 恢复，并确认没有应用 TCP 监听或旧 workspace／assets 业务表。真实 Runtime IPC 的阅读选文 → Platform 输入 → Objects 交付及 Host 重开幂等复验通过。
+
+剩余三项：旧业务实现及剩余旧流程夹具清理；完整界面与恢复回归；原版 Morphz 本轮打包、实际写入和重启验收。完整 Playwright 套件正在运行，尚不能报告整套通过。上述 Electron 和浏览器验收使用隔离数据，不代替原版窗口验收。未修改已接受 UI，未新增跨节点 Store、文件上报、第三方托管或 Runtime 存储；整体目标保持进行中，代码未提交。
+
+2026-09-30 Agent 新领域接线复验：共享会话测试改走真实 Platform 消息入口、应用私库及 Runtime 来源授权，不再在 workspace JSON 中造输入或交付。保留跨项目默认 Session 的完整历史、独立 Session 隔离、Yao 子执行来源校验、伪造来源拒绝、审批失联和重启幂等断言，并确认传输库没有旧业务表。剧本生成、材料与审查用例改走实际准备记录和领域命令；复现并修复生成中更改风格会偷换固定创作要求的问题，新增按确切元数据版本读取和固定材料目录分页，生成摘要不重复携带正文。补齐现有 Yao Harness 必需的 `reviewPasses`、输出规则及审查数组 schema，提交与资料包共用同一 schema；整批原文校验失败不部分保存，越预算／阻塞拒绝，合法意见重开后沿用原回执。SQLite／本机 PostgreSQL 的固定创作要求与事务专项通过；真实编译 Runtime 的阅读输入 → 本地 Unix 工具 → Objects 交付与 Host 重开冒烟通过，模型供应商为合成夹具，不冒充真实模型质量验收。
+
+本轮类型检查与生产构建通过。启用本机 PostgreSQL 的最新全量单测为 775 项：756 通过、16 失败、3 项对象服务端点未配置跳过；失败由本轮开始的 20 项降至 16 项，剩余集中在剧本 Agent 的旧流程用例，覆盖取消／迟到结果、撤权、来源读取、影响范围、结果恢复及精确版本审批，须继续迁到真实领域并修补实际缺口，不能直接删断言或恢复旧工作区。旧冒烟入口及旧业务实现清理、完整界面套件和原版 Morphz 本轮打包／写入／重启验收仍未收口。未修改已接受 UI、未改 Runtime 存储、未新增跨节点 Store 或普通文件上报；目标保持进行中，代码尚未提交。
+
+2026-09-30 共享入口旧存储回退清理：删除旧 `artifact.read`、HTTP 原件读取和未指定 Platform 对话的订阅路径；正式消息重试／取消、目录授权、图片／附件、OCR 与执行查询在缺少所属领域配置时明确失败，不再回退到 workspace 快照或旧字节表。新增负向测试用陷阱拦截旧读写，验证 11 种调用与两类字节读取不会触达旧库；本地身份、取消、迟到结果和订阅失效测试改用实际 Platform／应用私库。启用本机 PostgreSQL 的全量单测 774 项中 771 通过、0 失败，3 项对象服务端点未配置跳过；生产构建通过。真实 Runtime IPC 的阅读选文 → Platform 消息 → Objects 精确交付与 Host 重开幂等通过；隔离内嵌 Electron 的项目、文档、事项与 PDF 重启恢复也通过。本轮 11 个测试文件、38 项联合界面回归全部通过，覆盖连接设置、听写、消息框伸缩、执行与审批、通知、身份切换，以及百万字 TXT 阅读和完整转写保存；原尺寸、焦点、草稿、确切控制范围及原件不变断言保留。修正的夹具问题包括：待发输入的键前缀必须包含实际身份；并发 Runtime 快照不能修改共享空状态；身份用例必须配置真实应用域。这些不代表全部界面套件或原版窗口已经验收。Agent 工具及其他旧业务实现、剩余旧流程测试和原版 Morphz 的本轮打包写入／重启验收仍未收口，目标保持进行中；未修改已接受 UI，也未扩展跨节点 Store、文件上报或 Runtime 存储。
+
+2026-09-30 原界面导航、外观与身份接线复验：启动台、视觉层级、搜索／通知外观、原生侧栏、紧凑外壳、检查器、通用交互及账号一致性共 8 个测试文件改用正式 Platform／应用域读取与写入，不再访问退役 workspace／command 业务入口；全部 27 项合并回归通过，原尺寸、键盘、焦点、未发送草稿、导航迟到回执及原件不变断言保留。首次合跑有 3 项卡在启动台、2 项未运行：前序用例已在真实 Platform 保存浏览器视图，测试却假定工作台总是启动台外壳；导航助手现通过既有「返回工作空间」再打开启动台，不重置数据、不改变 UI。验收另复现并修复成员名称丢失：私有成员配置的既有名称通过当前身份 bootstrap 传给原界面，不再硬编码为「我」；改名不改变登录凭据摘要或注销会话，撤权仍拒绝访问，返回值不包含登录令牌或摘要。专项 31／31、启用本机 PostgreSQL 的全量单测 773 项中 770 通过／0 失败／3 项对象服务端点未配置跳过、生产构建、格式与差异检查通过；真实 Runtime IPC 的 Reader → Platform 输入 → Objects 精确交付及 Host 重启冒烟也通过。界面中的 Agent 原创／实时消息为受控应用域和 Runtime 展示夹具，不能代替真实模型执行；隔离 Electron 外观验证也不代替原版窗口。其余旧业务实现、旧测试／冒烟以及完整套件仍需清理和验收，原版 Morphz 的本轮打包写入／重启复验未做，整体目标保持进行中。
+
+同轮隔离界面复验：正式消息操作与长历史性能的 4 项 Playwright 回归全部通过；保留窄窗、悬停、键盘焦点、复制与当前授权校验断言。这不代替原版窗口或完整界面套件验收。
+
+2026-09-30 本地旧业务入口与真实联合冒烟收口：删除共享调用协议及 `ApplicationSession` 中的旧 `workspace`、通用 `command`、`message` 入口和 HTTP 客户端映射；本地桥未经 Platform 配置也不能恢复这些入口。原取消、迟到结果、身份撤销、HTTP 404 和领域回执断言保留。目录与原位文件、定向补充测试现使用真实 Platform／应用私库、正式消息投递及 Runtime 授权器；Runtime HTTP 接收、线程与事件由受控夹具提供，不冒充实际模型执行。验收暴露并修复两处幂等问题：已接受的文件输入重试只核对原回执，不因后来撤销文件授权而误判失败；补充 HTTP 回执丢失后重启重试，由 Runtime 对同一 immutable 请求判定是否已接收，不先以线程结束拒绝。身份、项目／对话授权与新文件访问仍逐次校验，相同命令更换输入被拒绝。`test:runtime-ipc` 已改为实际 Reader 导入／选文、Platform 输入、Unix 回调、Objects 原件及精确交付来源，真实编译 Runtime 与合成模型联合通过；Host 重开原件不变、同命令重试不再次调用模型，投递库不创建旧 workspace／assets 业务表。启用本机 PostgreSQL 的全量单测 773 项中 770 通过、0 失败、3 项对象服务测试端点未配置跳过；生产构建通过。仍有 26 个界面测试文件及部分旧冒烟依赖退役夹具，其他旧业务实现残留和原版 Morphz 写入／重启复验未清完；整体目标保持进行中，不修改已接受 UI，不增加跨节点 Store 或普通文件上报。
+
+2026-09-30 旧 HTTP 回退清理与真实身份回归：删除 `/api/workspace`、`/api/commands` 和 `/api/messages` 的旧快照／通用命令处理；即使没有配置 Platform 也不会恢复这些入口，新增 HTTP 404 回归。将共享 Desktop／HTTP 命令回执、CSRF、对象修订冲突、登录、私有附件、项目共享与撤权用例迁到实际 Platform／应用域，并保留原有隔离和失败断言。身份流用受控空 Runtime 传输验证真实 HTTP／授权生命周期，不冒充真实 Runtime 消息执行。启用本机 PostgreSQL 的全量单测 772 项中 769 通过、0 失败、3 项对象服务端点未配置跳过；生产构建通过。消息操作与长历史性能的四项界面回归通过，已完成消息使用正式 Platform 历史夹具，原尺寸、悬停、键盘、复制与权限断言保留。仍有 26 个界面测试文件依赖旧 workspace 夹具；共享本地调用中的旧 workspace／command 业务实现、其余旧路径与完整界面回归还未清完，原版 Morphz 写入及重启复验未完成。整体目标保持进行中，未修改已接受的 UI 布局，未扩展跨节点 Store。
+
+2026-09-30 按最新范围继续验收：内容目录、当前理解、历史消息、失败重试、停止、首字等待、流式标记、未读与返回最新的夹具改为走正式 Platform／应用入口，不再模拟已关闭的 workspace 端点。51 项界面回归通过。发现并修复历史引用冷启动时显示新版标题却标注旧版本的问题：标题按对应应用的精确版本读取，Objects 版本元数据接口统一为 `objects.versions`，不读取正文、不把旧标题另存进 Platform；最多解析当前消息的 100 个去重引用、8 并发，缓存与当前授权目录及 provider 绑定核对。启用本机 PostgreSQL 的全量单测 771 项中 768 通过、0 失败、3 项云对象端点未配置跳过，生产构建通过。原版 Morphz 窗口只读核验了现有文档及项目页“查看全部交流”，能显示完整个人 Session 历史；未向真实模型新发请求，也未重启原版，不能据此声称新修复已完成原版打包验收。仍有 27 个界面测试文件依赖旧 workspace 夹具，旧业务实现清理及其余正式交互、原版重启复验仍未完成；总目标保持进行中，不扩展跨节点 Store 或普通文件上报。
+
+2026-09-30 公开“当前理解”真实执行验收：新增隔离 Runtime／Host／Platform／合成模型联合冒烟。模型先调用真实 `context_tx` 提交项目公开帧，再调用正式 `host_morphz.publish-understanding`；Host 从确切已提交帧读取正文，Platform 保存版本，模型取得成功回执。第二条输入修订同一帧并发布 v2 后，v1 正文仍可按版本读取。`npm run test:platform-understanding-runtime` 通过，未接触原版资料或真实模型服务。此前“仅有预置夹具、尚未证明真实 Runtime 发布”的缺口在此路径已关闭；原版窗口、完整多端恢复与其余旧界面套件仍不能据此称已验收，存储总目标继续进行中。
+
+2026-09-30 正式“当前理解”存储接入：旧 workspace 中的同名文档不再是检查器数据源。Agent 必须先提交 Runtime 的项目公开认知帧；Host 按确切帧修订读取后，Platform 以独立、不可变、按项目授权的版本和幂等回执发布展示视图，不混入应用内容目录。来源目前只接受本项目 Objects 文档的确切版本：Host 验证原件版本，Platform 在发布事务内复核目录归属和类型。已验证 SQLite／PostgreSQL v7 原位迁移、两种后端授权与重试语义、Desktop／HTTP 正式读取、构建与类型检查；应用全量 765 项中 762 通过、0 失败、3 项因对象服务端点未配置跳过。隔离浏览器界面确认检查器从正式视图读取，引用在文档更新至 v2 后仍打开 v1，窄窗及草稿交互 2／2 通过；旧假快照测试的同一有效断言已迁走。此阶段界面测试仅使用隔离中心的受控发布夹具，真实 Runtime 联合验收见上。扩大 Playwright 回归在第 73 项因 10 项失败提前停止，63 项通过、278 项未运行，运行器另报告 1 项非测试错误；已观察到的失败多是退役 workspace／消息模拟夹具，不能推断其余用例通过，也不能为夹具恢复旧入口。原版窗口与完整云端恢复仍未完成，整体目标保持进行中。
+
+2026-09-29 全量界面验收定位与来源修复：在隔离中心启动完整 Playwright 套件，351 项中的前 62 项运行后因 5 项失败提前停止：57 项通过；其中 4 项共用旧 `seedCenter`，直接向已停用的整份 `workspace` 写入，另 1 项用旧 `/api/workspace` 消息桩。没有为测试恢复旧 API。将一条“内容入口／搜索／来源”用例改用正式 Platform、Objects 和导入领域操作；这暴露出 Agent 以发起 Human 的主体 ID 创作时，卡片误显示“作者未知”，现按 Agent 执行身份显示“Morphz生成”，Human 来源仍需主体与身份同时匹配。对应领域单测、正式内容界面和原搜索界面回归通过，生产构建通过。其余旧夹具需逐项迁到真实入口；旧“当前理解”发布仅见于旧工具，正式 Platform 路径尚需单独明确保存方并验收，不能从旧夹具失败直接宣称原版现有理解数据已丢失。完整界面套件仍未通过。
+
+2026-09-29 中心字节实现与并发启动：把实际用于附件暂存、Reader 原件、图片及界面包的实现命名为 `ManagedArtifactStore`，移除代码中的 `NodeArtifactStore` 名称；v1 manifest SQL 内容、Store 身份及原件字节不变，不把它变成跨节点服务。全新 PostgreSQL 库上的全量并行测试暴露 Objects 多个独立 schema 同时安装数据库级 `pg_trgm` 扩展时的唯一键竞态；初始化现以数据库级事务锁串行化该一步。六个 schema 并发启动专项、全新 PostgreSQL 库上的应用全量单测、生产构建、四条正式 Reader／Objects／附件界面测试及隔离内嵌 Desktop 重启均通过。对象服务端点专项仍需单独环境验证；本轮未改原版用户中心，也不代表整体存储目标完成。
+
+2026-09-29 中心受管字节与原版窗口复核：设计文档明确 Morphz 已接收并承诺保存的字节使用中心部署域，本机中心目录或中心对象服务均不需要执行节点之间的 Store 通道；所属 Runtime／应用域仍管理授权和版本，Platform 业务表不保存字节。原版 Morphz 窗口只读检查能打开现有项目文档，事项“全部”及“我的”最终均能显示同一待处理和已取消测试事项；切回筛选时曾短暂显示旧的 0，异步加载后恢复，不能据此认定数据丢失。本轮没有发送消息或修改原版中心。正式内容上下文的未发送草稿回归及旧 `workflow-details.spec.ts` 的批注／截图附件／听写三项已改用 Platform／应用私库；截图保存为未发送消息后刷新仍有附件，目录内容和 Runtime 投递未增加。与事项、表格、Reader、PDF 等正式路径合并运行 16/16 通过。旧界面测试中引用退役 workspace／command HTTP 接口的文件降至 38 个；完整云端灾备、其余旧验收迁移和全部产品流程仍未完成。
+
+2026-09-29 正式表格验收替换旧快照：将 `interactive.spec.ts` 中依赖已停用 workspace 写入的表格录入、未保存草稿刷新、XSS 文本、三种视图、历史版本及只读切换断言迁至 Platform／Objects 正式原件测试，旧测试文件已删除；与事项、文档、PDF、Reader 合并的正式界面回归 12/12，隔离内嵌 Electron 项目／文档／事项／PDF 重启冒烟通过。应用单测在隔离 PostgreSQL 库重跑两次均为 757 项中 754 通过、0 失败、3 项对象服务端点未启用而跳过；首次重跑曾有一次双 Service Host 启动前退出，单独及随后两次全量运行未复现，测试现保留脱敏启动诊断，根因尚未证明。隔离 PostgreSQL 测试库已删除，原版用户中心未改动；仍有 39 个旧界面测试文件引用退役 HTTP 接口，完整云端故障恢复也未验收。
+
+2026-09-29 正式事项与受管附件复核：新增 Platform 事项界面的真实回归，覆盖按日期分组、完成／撤销／刷新后的同一事项版本及写入失败不误报成功；与文档、PDF、Reader 合并运行 10/10 通过。消息附件的未发送字节留在发起 Host，Runtime 接收后由其消息事件保存并供获授权的其他 Host 读取；附件身份、重启与双 Host 预览专项 3/3 通过，不需要为此建立通用跨节点 Store。原版用户窗口及完整云端故障恢复仍未在本轮验收，存储总目标仍在进行。
+
+2026-09-29 阅读正式入口复核：将导入文档的阅读／引用／版本、Markdown 读物的离开与刷新后位置恢复／百万字有界章节、PDF 的画布／文字层／批注／搜索排除测试从旧 `/api/workspace` 快照改为 Platform 目录与 Reader 私库实读，三组共 8/8 通过。修正 PDF 设置中误显示无效字号／字体控件；同一读物的两个视图提交相同进度时，客户端在冲突或结果不确定后核对 Reader 已保存位置，仅在内容一致时确认成功，不吞掉不同位置或权限错误。PDF 测试强制制造过期修订并核对恢复写入，重复运行 3/3 通过；隔离内嵌 Electron 重启与 PDF 设置回归、生产构建、类型检查和格式检查通过。仍有 40 个旧界面测试文件引用已停用 HTTP 接口；原版用户窗口与完整云端恢复尚未验收，存储总目标仍在进行。
+
+2026-09-29 正式入口附件与后端复核：粘贴、文件选择共用的消息附件上传在读取文件前检查类型对应的 6／8／20 MB 上限，错误直接说明限制；应用域服务端复用同一大小规则，避免大文件只显示泛化 HTTP 错误。附件未发送时不创建 Platform 内容或消息，超限文件不发出上传请求；粘贴附件 4/4、附件服务与大小边界单测 3/3 通过。`test:e2e` 现在先构建当前源码，避免误测旧前端包；最新构建后，正式 Platform／Reader／剧本／内容／消息及附件界面回归共 40/40 通过，隔离内嵌 Desktop 项目／文档／事项／PDF 重启冒烟通过。本机隔离 PostgreSQL 测试库参与的应用全量单测 757 项中 754 通过、0 失败；3 项因本机未配置对象服务测试端点跳过，测试库随后已删除。仍有 43 个旧界面测试文件引用已停用的 workspace／command HTTP 接口；原版用户窗口和完整云端故障恢复尚未验收，存储总目标仍在进行。
+
+2026-09-29 Runtime 存储边界清理：撤回未被正式入口消费的通用节点 Store 登记／观察试验接口及其专用迁移、SDK、HTTP 路由、应用桥接和冒烟脚本；保留 Runtime 授权 Session timeline、消息来源和 Execution Target，也保留附件、Reader 原件、图片及 UI 包实际使用的应用域受管字节 Store。下方较早的“Node Store 登记”“远端 Store 路由待接通”是历史阶段记录，不再是当前存储切换的前置工作。Rust 编译、格式、SQLite／本机 PostgreSQL 存储契约 7/7 和消息时间线 HTTP 测试通过；真实 Runtime 的 Platform 消息重启／跨 Host／幂等冒烟通过。应用全量单测 756 项中 753 通过、0 失败、3 项因外部对象测试端点未配置跳过；类型检查、生产构建与正式内容／消息分页界面回归 8/8 通过。目录授权与 PDF 附件两条旧界面测试已改用正式 Platform 入口；其余 44 个界面测试文件仍引用旧 HTTP 入口，不能把整套 E2E 当成已通过。未操作原版用户窗口，也未验收完整云部署；存储总目标仍未完成。
+
+2026-09-29 正式消息验收夹具收口：跨 Host 消息、选文、附件、补充及重试的集成用例现以两个各自独立的 `transport` 投递库运行，断言两边均不创建旧 `workspace`／`assets` 表；它仍通过 Platform 授权读取 Runtime 的同一 Session 历史，不靠旧快照或第二 Host 接管队列。正式内容改名新增界面并发冲突回归：外部修订后，过期保存被拒绝，未提交名称仍留在表单，应用原件不被覆盖。上述两项定向测试通过；旧 Playwright 套件还有多处依赖已停用 `/api/workspace` 的夹具，需要按正式领域 API 更新，不能为测试恢复旧接口。
+
+2026-09-29 存储目标范围修正：用户确认，普通节点文件由 Execution Target 按授权实时访问；Agent 文件操作已有此抽象，面向 Human 的跨端文件浏览如需实现也沿此边界。本轮不建设通用跨节点 Store、节点文件预上报或第二份目录索引。已接收的消息附件、Reader 原件、应用包等仍由各自所属 Runtime／应用域的受管字节后端负责，可物理部署在中心节点；这不把专业正文或字节改归 Platform 业务库。此前记录中把“远端节点 Store 通道未接通”列为整体存储切换阻碍的判断已撤销；保留这些日期记录用于追溯，不再据此扩展 Runtime。下一步按正式 UI／Agent 写路径和现有受管字节消费者逐项验收。
+
+2026-09-29 修正后主路径回归：Reader 三条领域 Host 测试改在正式 `transport` 模式运行，直接断言投递库没有旧 `workspace` 表；Markdown 标注／取消、书籍导入、PDF 范围读取与 OCR 校对重启仍通过，不再靠“旧 JSON 恰好没变化”证明切换。隔离 Desktop 重启冒烟保住项目／文档／事项／PDF 原件；32 条正式 Platform／应用界面用例通过。应用全量单测在本机 PostgreSQL 可用时 759 项中 756 通过、0 失败、3 项因外部对象端点未配置跳过；类型检查与生产构建通过。这些是所列入口的证据，不等于原版窗口全部功能或 Cloud 故障恢复已验收。
+
+2026-09-29 正式 Host 中心身份缺失防护：当同目录已有 Platform 库、应用实例／私库或受管字节 Store，而本机投递库不存在、为空或缺少中心身份记录时，启动现在在写库前拒绝生成新的中心身份，避免把旧项目和原件显示成一个空中心。已有投递库仍可按原身份重开；原版用户中心只读核对身份记录，未被写入或重启。隔离测试先复现误建库，修复后定向 14/14、应用全量 759 项中 689 通过／0 失败／70 条环境条件跳过，类型检查、生产构建与差异检查通过。此项是数据保护，不代表节点 Store 的远端读写已经接通。
+
+2026-09-29 原版普通对话界面复核：对当前运行的同一 Morphz.app 窗口（CGWindow ID 224906）作窗口级截图，实际看到「对话」页中的「你好」及 Agent 回复，旧的 Runtime 能力错误不再显示在该消息上。此前只读核对同一输入在 Platform 本机投递为 `completed`、Runtime 有输入与回复；这次补上了可见界面的证据，没有重新发送消息、修改用户中心或改动 UI。此验收只覆盖普通对话，不代表节点 Store 远端字节路径或整体存储目标完成。
+
+2026-09-29 普通对话能力探测纠错：Platform 原消息已排队时，Runtime 能力接口的临时 5xx／网络失败不再被误判为版本不支持并标记发送失败；保持原命令待发，Host 重启及探测恢复后仍只投递同一条。接口确实缺少 `client_metadata` 时明确拒绝发送，提示改为用户可理解的服务版本信息。真实 HTTP 故障恢复专项、启用本机 PostgreSQL 的应用全量单测 757 项中 754 通过／0 失败／3 项因外部对象端点未配置跳过，类型检查及生产构建通过。原版 Morphz.app 在确认本机没有待发／运行投递后正常重开同一中心，Platform 项目／事项／内容目录计数保持 4／2／3，投递状态计数不变；未代用户重发消息。macOS 拒绝辅助访问，不能把本次进程和数据库检查称为目视界面验收；节点 Store 远程字节路径仍未接通。
+
+2026-09-29 Node Store 虚假提供者防护：Runtime 的 Store 登记、观察和恢复登记现在要求绑定 Node 在当前能力列表中声明 `artifact_store`；执行型 Node 不会因在线就被当作 Store。SQLite／真实 PostgreSQL 存储专项 2/2、Runtime HTTP 授权／能力撤回专项 1/1、Rust 格式与差异检查通过。**仅收紧身份与观察，不构成节点受管字节跨端读写已接通**；当前 Edge 默认不声明 Store 能力，正式数据通道仍待实现。
+
+2026-09-29 Platform 对话本机事件镜像收口：正式会话的输入和回复仍由 Runtime timeline 持久保存、授权分页读取；Host 轮询只在同一事务保存已处理游标、投递状态和因果关联，不再向本机 `runtime_session_events` 追加 Platform 会话的事件正文。旧会话的事件投影维持原行为，既存镜像行不删除。新旧并存、两次重启后续写及既存行保护专项 11/11，本机 PostgreSQL 参与的应用测试 757 项中 754 通过、0 失败、3 项外部对象端点未配置跳过；真实 Runtime 的 Platform 输入／跨 Host 来源／重试冒烟及生产构建通过。此项减少重复持久化，不代表节点 Store 跨端字节通道已接通。
+
+2026-09-29 保存方范围纠偏：复核设计后，删除了未接入正式入口、且错误地把 Runtime 节点心跳当成认知应用可用性裁决的解析器，也撤回了只为该解析器增加的 Platform 节点所有者字段与 v8 迁移。应用原件仍由应用自己的领域 API 和保存策略负责；Morphz 必须接通的是其明确承诺的节点 Store／普通文件按需能力，不是通用应用领域代理。此前对原版中心 v7 一致性副本所做的 v8 升级验证仅证明试验分支未损坏记录，不再作为待发布迁移；临时副本已删除，原库未写入。**节点 Store 的跨端字节读写仍未接通。**
+
+2026-09-29 本机应用实例与私库封存：Objects、剧本、Reader、Browser 四个 SQLite 私库分别保存租户／应用／实例绑定，Host 在 Platform 发布实例路由前完成四库封存。首次启动中断可沿用原实例继续初始化；旧 v1 身份在四库结构核对后一次升级，已封存的完整异实例库或未绑定库不能冒充原件，冷备份也拒绝错库。一次性收藏迁入先建立待封存实例身份，再写 Browser 库；正式 Host 随后封存四库。备份包校验通过隔离副本打开 SQLite，不在封存包中制造 WAL／SHM；活动源库仍读取其现存 WAL。专项 Host、收藏迁入与冷备份 27/27；SQLite／本机 PostgreSQL 应用单测 755 项中 752 通过、0 失败、3 项外部对象端点未配置跳过；类型检查与生产构建通过。原版正在运行的中心四库只读身份核验通过，但尚未重启迁入；节点应用跨端请求路由仍未实现，整体目标未完成。
+
+2026-09-29 本机应用私库防丢失：已有应用实例身份时，正式 Host 启动前现在同时核对 Objects、剧本、Reader、Browser 四个 SQLite 私库均为私有真实文件且具有原应用结构；Reader／Browser 文件丢失、空文件替代或符号链接替代均拒绝启动，不创建空库掩盖原件、标注或书签。原版中心只读校验通过，未重启或改写当前窗口数据。专项 17/17、启用本机 PostgreSQL 的应用单测 751 项中 748 通过、0 失败、3 项外部对象端点未配置跳过；类型检查、生产构建、格式和差异检查通过。此项不替代节点应用跨端路由，整体存储目标仍未完成。
+
+2026-09-29 原版窗口普通对话与 Agent 跨项目验收：截图中的「Runtime 尚不支持对话来源记录」来自仍在运行的旧 Runtime 二进制；加载支持来源记录的版本并修正本机 Runtime 身份核对后，原版 Morphz 的「你好」已收到真实回复。随后发现个人对话的 Agent 项目查询错误地局限于「未归项目」；现仅允许同一实时成员集合的个人对话跨项目查询和操作，项目会话与定时任务仍受原项目约束，SQL 在分页前过滤，创建事项可使用查得的精确项目 ID。原版窗口中 Agent 找到 `TEST Platform 切换验收 0927` 并创建待处理事项 `TEST 存储切换主路径 0929`；Platform 持久事项 ID 与 Runtime 工具回执一致，旧 workspace 正文字节未变。该测试事项随后从界面取消，仍以取消状态保留为测试记录。SQLite／PostgreSQL 应用单测 748 项中 745 通过、0 失败、3 项未配置外部对象端点跳过；类型检查、生产构建与差异检查通过。本轮未改 UI，也不代表整个存储目标或节点应用跨端路由已经完成。
+
+2026-09-29 Desktop 目录按需读取与项目提示校正：非事项页只读 Platform 授权事项汇总，保留侧栏未完成数、项目卡片的待推进数与最近活动排序；进入事项页才分页取事项，消息链接仍可按 ID 打开单个事项。内容目录汇总同时返回当前授权范围内的最近更新时间，项目排序不会因内容目录首屏只加载 50 项而遗漏较早页面的活动。项目删除提示直接按已登记的会话目录计数，不再以当前会话已加载的消息判断其他会话是否存在。未修改 Runtime 或原 UI 布局。SQLite／PostgreSQL 应用单测 739 项中 736 通过、0 失败、3 项对象服务端点未配置而跳过；生产构建、按需目录 Web 5/5、项目管理 Web 4/4 通过；首屏外内容排序 Web 1/1 通过。原版日常窗口与整体存储目标尚未完成验收。
+
+2026-09-29 Desktop 项目目录性能收口：保留原页面与排序语义，把每次项目排序／卡片渲染时对整份展示工作区的重复扫描改为一次聚合，再按项目 ID 读取活动时间和待推进事项数。共享默认 Session 的回复仍按实际输入归属；未知输入不借消息上的项目字段混入活动。逐项目语义对照与事项状态测试 7/7、正式导航界面 1/1、类型检查、生产构建、隔离内嵌 Desktop 重启通过；启用本机 PostgreSQL 后应用单测 739 项中 736 通过、0 失败、3 项云对象端点未配置而跳过。本轮没有改动 `morphz/` Runtime、持久存储模型或 UI 布局；项目与事项冷启动仍会分页取齐导航所需记录（客户端上限 10,000），原版日常窗口也未人工验收，不能据此称整个存储切换完成。
+
+2026-09-29 正式 Host 旧 Session 工具边界：`application/` 的 RuntimeBridge 在 `transport` 模式收到旧工作区 Session 的工具回调时，过去可能落入旧权限范围兜底；现在核对会话身份后、读取旧 `workspace` 前明确拒绝，新 Platform Session 继续走持久输入与 Platform 授权。隔离回归先红后绿，专项 9/9、启用本机 PostgreSQL 的应用全量单测退出码 0、类型检查、生产构建以及真实 Runtime 的 Platform 消息重启／跨 Host 幂等冒烟通过。本轮未修改 `morphz/` Runtime，也不表示旧 Session 已迁移或原版窗口已验收。
+
+2026-09-29 正式界面存储回归复核：搜索弹窗现用「全文搜索」而非旧的「按标题搜索内容」，三条首屏外原件／引用用例原本因过期定位器超时；修正测试定位后，搜索结果打开精确版本、带入实际原文和拒绝伪造引用均通过。扩展运行 Platform 内容、项目、事项、消息分页及 Reader 界面共 27/27 通过。此轮未改变产品界面或 Runtime；这证明所覆盖路径，不代表原版日常窗口、全部客户端或整体存储目标已验收。
+
+2026-09-29 Desktop 切换回归：正式 Platform bootstrap 恢复向客户端声明本机模型设置能力，保留原「模型与账号」入口；未配置 Runtime 或非本机管理身份时不展示不可用入口。修正旧 `/api/workspace` 的界面测试桩，改按正式 Platform bootstrap 验证。模型设置界面 13/13、应用全量单测退出码 0、生产构建、隔离内嵌 Desktop 重启冒烟和差异检查通过。本轮只修 Application Host 与客户端的能力传递，未把 Runtime 远端 Store 路由作为 Desktop 切换前置条件；原版日常窗口尚未人工验收。
+
+2026-09-29 Desktop 存储切换继续收口：正式 Application Host 的 RuntimeBridge 定时轮询只处理 Platform 会话与投递；旧会话和待发记录留在原库，不被正式 Host 重排、发送或拿来解析旧 `workspace` 快照。Platform 补充消息的失败回执也不再以旧输入作兜底。新增旧会话混存、旧待发记录重启和失败回执回归；定向 13/13、应用全量测试退出码 0、类型检查、生产构建与隔离内嵌 Desktop 项目／文档／事项／PDF 重启冒烟通过。本次只改 Application Host，未新增 `morphz/` Runtime 改动，也未改变界面；原版窗口、旧实现整体清理和节点应用跨端路由仍未验收或完成。
+
+2026-09-29 正式旧数据依赖清理：Desktop／Service 的 Platform Host 不再在启动时查询旧 `workspace` 收藏或通知状态、强制先迁移开发期旧数据；Application Host 的旧事项协作轮询也不再让旧待执行事项触发旧快照解析或装载旧调度状态。旧行原样留在原库，不自动删除或并入新权威。删除未被正式入口引用的候选 HTTP 适配器及其替换脚本；原 HTTP 入口不变。旧数据不改写、独立新域可用和定时事项隔离定向 14/14；本机 PostgreSQL 参与的应用单测 735 项中 732 通过／0 失败／3 项云对象端点未配置跳过，生产构建和隔离内嵌 Desktop 重启冒烟通过。本轮未修改 `morphz/` Runtime；旧业务实现仍有代码待清理，原版用户窗口未人工验收，节点应用跨端路由未接通。
+
+2026-09-29 范围纠偏：Desktop 正式存储切换不以新增 Runtime 远端 Store 路由为前置条件；该路由属于后续节点应用／多节点能力，不能替代当前 Platform 与内置应用域的正式入口验收。本轮仅修客户端 PDF／书籍导入的重试确认：同一文件、项目和导入方式在结果未确认前复用命令 ID，目录刷新失败不再清掉该 ID；刷新成功后再次明确导入才使用新 ID。专项 4/4、启用本机 PostgreSQL 的应用单测 734 项中 731 通过／0 失败／3 项未配置云对象测试端点跳过，类型检查、生产构建和隔离内嵌 Desktop 项目／文档／事项／PDF 重启冒烟通过。未修改 Runtime；原版日常窗口未实际操作验收，旧实现清理和节点应用路由仍是独立缺口。
+
+2026-09-29 正式 HTTP 路由再收口：配置 Platform 业务域的 Service 不再提供旧 `/api/workspace` 快照和 `/api/commands` 写入端点，返回 404；同一进程的 Platform bootstrap、项目与文档领域操作仍可用。旧端点仅留在未启用 Platform 的历史测试服务中，尚未从类型／实现中整体删除。正式 HTTP 专项 6/6、隔离内嵌 Electron 的项目／文档／事项／PDF 重启冒烟、启用本机 PostgreSQL 的应用单测 730 项中 727 通过／0 失败／3 项云对象端点未配置跳过，生产构建通过。原版 Morphz 仍运行且本机投递库仅有终态回执，但 Mac 锁屏且辅助访问被拒，未重启或实际操作用户窗口；原中心数据未改动，真实窗口验收仍待解锁。
+
+2026-09-29 正式 Agent 能力发现补齐已接通的 `content.organize`、Reader 和浏览器收藏：`operations.list/describe/invoke` 现在能走现有 Platform／应用域处理器，Reader OCR 只在本机引擎可用时展示；收藏仍从 Runtime 持久输入核验发起者。正式 `transport` Store 即使打开含旧业务表的中心，也在存储层拒绝旧命令、成员、附件、PDF 和读物写入。真实领域测试验证 Agent 经发现入口创建／改名原件、读取可阅读内容目录和保存收藏，旧 workspace 没有新增对象。启用本机 PostgreSQL 的 730 项应用单测中 727 通过、0 失败、3 项云对象端点未配置跳过，类型检查和生产构建通过。本轮未修改 Runtime 或原版日常窗口；节点应用路由、旧实现清理和原版窗口验收仍未完成。
+
+2026-09-29 原版中心只读核对：当前运行的 Morphz 进程确实打开同一 `center` 下的新旧库。旧 `workspace` 尚有 9 个项目、44 个 Artifact、9 部剧本；Platform 现有 4 个项目、3 条内容目录和 1 个事项，项目／内容／事项 ID 与旧对象均无交集。旧字节未删除，但不能称作已迁入新存储，也不能用新入口的少量对象证明旧对象得到保护。最近一份封存的 2026-09-28 11:50 中心备份包含六个关系库和 Reader／图片／消息三个受管 Store；在全新临时目录恢复并校验成功，恢复的 Platform 计数为 4／3／1、旧 Artifact 为 44。原应用持续运行，本次未生成当前时刻的冷备份、未修改或删除原中心，也未对原版窗口作交互验收。临时恢复副本已移入系统废纸篓，可恢复。
+
+2026-09-29 内容整理契约收口：正式 Client 与 Agent 共享单次只改名称、移到已有项目或新建项目并归入三者之一的校验；混合请求在任何原件或目录写入前拒绝，不再误报“应用原件未接通”。新建项目并归入仍是 Platform 单事务；改名涉及应用私库和目录投影，不能与移动伪装成跨域原子命令。正式 Desktop 重启测试不再通过创建旧 `WorkspaceStore` 污染测试目录，而是在项目创建及重启后只读核对旧业务表不存在。专项 39/39、内嵌 Host 6/6、正式内容界面回归 2/2、隔离内嵌 Electron 项目／文档／事项／PDF 重启冒烟、类型检查、生产构建及本机 PostgreSQL 启用的应用全量 729 项中 726 通过／0 失败／3 项云对象测试端点未配置跳过。本次未修改 Runtime、界面布局或运行中的原版窗口；节点应用路由与真实窗口验收仍未完成。
+
+2026-09-29 应用保存方切换缓存校验：Platform 的内容目录现在向 Client 提供应用实例路由修订号；正式 Desktop 即使遇到正文版本号未变，也会在保存方切换后重新读取原件，且不再把旧保存方的历史版本并入新原件。客户端专项 28/28、类型检查、生产构建、启用本机 PostgreSQL 的应用全量测试 729 项中 726 通过／0 失败／3 项云对象端点未配置跳过，以及隔离 Desktop 重启冒烟均通过。此修复只处理已成功刷新目录后的客户端原件缓存；不表示节点应用请求路由、应用数据迁移或原版日常窗口验收已完成，Runtime 未因此增加消息或存储机制。
+
+2026-09-29 内容搜索存储切换：Platform 继续只查已授权目录的标题；Objects 私库新增独立正文搜索投影，创建时仅收录 Agent 原创且非导入的原件，后续人工修订更新同一投影。Human 搜索入口与 Agent `content.search` 共用应用域候选、Platform 当前目录权限／实例／版本核对，不把正文或节点普通文件写进 Platform。旧 Objects v3 的创建者类型无法从原件可靠还原，升级保留原件但不猜测性补建旧正文索引。SQLite 与本机 PostgreSQL 应用域测试、正式搜索面板 6 项界面回归、构建和类型检查通过；应用单测 729 项中 726 通过、0 失败、3 项云对象端点未配置跳过。界面回归使用隔离 E2E 中心，不代表原版 Desktop 人工验收；其他应用正文及节点应用路由仍未接通，存储总目标未完成。
+
+2026-09-28 应用数据保存方校验：Platform 的应用原件授权现在可同时核对当前 `route_kind + route_ref + node_id`；正式 Host 的 Objects、剧本、Reader、Browser 私库及图片／阅读原件字节操作都绑定其启动时实际登记的保存方。实例路由更新后，旧 Host 不再因持有原私库句柄而继续响应读写。SQLite／PostgreSQL 路由专项 3/3、两种正式 Host 的原件保护测试、应用全量单测 724 项中 721 通过／0 失败／3 项云对象端点未配置跳过，生产构建通过。**这不构成节点应用路由已接通**：正式 Host 仍只注册 `service` 实例，节点应用请求转发及原版窗口验收未完成；跨应用域迁移仍须显式停写、迁移、校验和切换，不以一次路由字段更新代替。
+
+## Platform 存储切换纠偏（2026-09-27，未完成）
+
+2026-09-28 路由边界复核：Runtime 的 Execution Target 已通过已认证的 Edge Node 连接执行受权物理工具和 Artifact Transfer；不需要为 Node Store 再建立第二套设备连接。内置 Reader／Objects 等受管 Store 目前由 Application Host 创建，其短期授权在所属应用服务内核验；Rust Edge Worker 不能直接读取这些私库。Platform 已有 `app_instances.route_kind='node'` 的登记模型，但正式应用域只登记本机 `service` 实例，尚无将节点应用实例的领域请求经现有 Edge 连接交给该节点 Application Host 的执行适配器。**节点上专业原件的跨端打开／修订仍未接通**。下一步须以所属应用域的授权命令为入口复用节点连接，不能仅增加 Runtime Store 请求表或把通用 Target 文件操作冒充应用版本提交。
+
+2026-09-28 全新正式 Desktop／Service Host 的本机库只初始化身份、Runtime 投递和浏览器控制回执，不再创建 `workspace` 整行 JSON、旧业务命令及 `assets.bytes` BLOB 等表；已存在的旧表不删除，旧迁移哨兵仍可识别已有数据。正式 Desktop 从空目录创建项目后核对库结构的新增回归 1/1、所在专项 5/5；双 Service／PostgreSQL 真实进程也核对两台 Host 均没有旧业务表，1/1 通过。冷备份／恢复测试已改为从这种无旧业务表的正式库出发，恢复后仍无旧表，并验证 Platform 与内置应用原件及其字节，专项 2/2。应用全量单测 721 项中 718 通过、0 失败、3 项云对象测试端点未配置跳过；生产构建、隔离 Electron 重启，以及真实 Runtime 的 Platform 消息持久投递／跨 Host 定位冒烟通过。**旧业务实现代码尚未全部删除，远端 Node Store 数据路由仍未完成；这不是整体切换完成。**
+
+2026-09-28 节点 Store 补上独立命令回执查询：远端写入或删除丢失响应后，可凭原命令 ID、原始版本前提及写入摘要查询已提交结果；查询重新核验当前 Store 授权和原件所有者，写入回执还要核验受管字节与分块摘要，损坏时不报告为完整提交。未提交、参数冲突、跨所有者、提交失败后重试与备份恢复均有 SQLite／PostgreSQL 测试。Node Store 专项 28/28、应用类型检查与完整单测 720 项中 717 通过、0 失败、3 项云对象测试端点未配置而跳过。**Runtime 到远端节点 Store 的实际请求路由仍未接通**；此回执契约不能冒充跨节点读写已完成。
+
+2026-09-28 冷备份补齐跨域一致性校验：Platform 中标为可用、且由本次备份包含的内置应用实例拥有的内容，必须对应未删除的私库原件；指向其他实例的目录条目保留为外部引用，不冒充其原件已备份。SQLite 备份与恢复额外执行外键检查；PostgreSQL 云备份与恢复按同一实例边界分页核对目录。Objects 图片与 Reader 导入书籍的版本还须对应 Store manifest 的身份、摘要与长度。篡改目录对象、关系或字节版本会被拒绝；测试同时覆盖同类型外部应用实例仍可保留。专项测试及生产构建通过；启用本机 PostgreSQL 的完整应用单测 720 项中 717 通过、0 失败、3 项云对象端点未配置跳过。原中心既有冷备份在独立临时目录通过新外键与引用校验，未改动原版应用或其数据。完整云对象备份／恢复因无测试端点仍未验证；原版日常窗口未验收，节点 Store 的正式跨节点字节读取尚未接线，整体目标未完成。
+
+2026-09-28 隔离 Desktop 重启冒烟发现并修复正式入口回归：`artifactId: null` 是“打开项目内容列表”的合法导航状态，新的应用窗口校验误将其拒绝。现内置和第三方窗口均保留这一导航语义，但仍拒绝正文和草稿写入窗口状态。状态专项 7/7、隔离 Desktop 的建项目→建文档→重启保留文档与事项状态通过；启用本机 PostgreSQL 的完整应用单测 720 项中 717 通过、0 失败、3 项云对象端点未配置跳过，生产构建通过。原版日常窗口和整体存储切换尚未验收。
+
+2026-09-28 Web 健康检查已改为直接读取 Runtime 连接状态，不再为一个布尔值展开旧工作区和整段会话事件；正式 HTTP 与隔离候选适配器保持同一语义。回归测试让完整快照调用直接报错并连续检查 3 次响应；本机 PostgreSQL 已启用的完整应用单测 720 项中 717 通过、0 失败、3 项云对象端点未配置跳过，生产构建通过。此项消除正式请求上的旧全量读取，不等于全链路性能或整体存储切换验收。
+
+2026-09-28 窗口状态补上应用数据边界：Platform 只接受明确的导航字段，第三方便笺正文或草稿不能通过 `saveState` 写入窗口表。便笺示例改为仅在当前窗口暂存，显式「保存为文档」才经 Objects 领域命令持久化；示例包升为 1.2.0，不改变旧已安装包的不可变字节。SQLite／PostgreSQL 全量应用测试 719 项中 716 通过、0 失败、3 项云对象端点未配置跳过；相关界面 6/6、生产构建通过。原版窗口仍未人工验收，整体存储目标未完成。
+
+2026-09-28 应用窗口状态已从浏览器 `application-instances` 写入切到独立的 Platform `app_view_instances` 关系；它与认知应用服务路由 `app_instances` 分开。正式 Desktop 与 HTTP 入口共用打开、保存、关闭及读取命令，按用户和项目授权，具备版本冲突和幂等回执。旧浏览器窗口记录不导入；旧选中 ID 不会遮蔽新存储中实际打开的窗口，应用原件不受影响。SQLite／PostgreSQL 存储专项 50/50、Desktop／HTTP Host 7/7、客户端 28/28、应用界面隔离浏览器回归 4/4 及生产构建通过；全量 Node 测试 714 通过、0 失败、3 项云对象存储端点未配置而跳过。尚未在用户原版窗口人工验收，也不能把窗口状态接线视为整体存储目标完成。
+
+2026-09-28 正式事项编辑补齐：原编辑器的分派状态选择、换负责人后重置为待接受，现经同一 `tasks.revise` 命令写入 Platform 的不可变事项版本；未借修改内容暗改执行轮次。负责人变化不再静默清除已有依赖与关注来源，仍按项目授权、版本和幂等回执校验。Human UI 与 Agent 的修订参数走同一领域操作；SQLite／PostgreSQL 专项、Desktop Host、Agent 路由、713 项应用单测（710 通过、0 失败、3 项云对象端点未配置而跳过）、生产构建和隔离浏览器“保存→重开→刷新”回归通过。未在原版日常窗口验收；其他未接通的正式操作与整体存储切换仍未完成。
+
+2026-09-28 跨 Host 退役安全边界：正式共享 PostgreSQL Service 不再以其中一台 Host 的本机消息投递列表认定全项目已空闲；无法核验其他 Host 在途输入时，归档／删除直接拒绝且不建立退役栅栏。单 Host 流程仍按 Runtime 输入和事项执行状态核验。跨 Host 未完成投递的全局核验尚未实现，故这不是多 Host 归档完成。定向测试验证拒绝后项目版本不变、无残留栅栏和 PostgreSQL 正式 Host 的实际接线；完整应用单测启用本机 PostgreSQL 后 712 项中 709 通过、0 失败，3 项云对象端点未配置而跳过，类型检查通过。另更正存储模型文档中过时的“图片内容写入未接通”：正式图片入口已切到 Objects 私库与独立 Store，Agent 图片生成／上传仍未接通。
+
+2026-09-28 界面回归夹具纠偏：旧 `workspace.spec.ts` 不再假定隔离中心预置「我的项目」，改由原界面创建后执行原有文档、输入、批注、关联与事项断言，3/3 通过。阅读套件中的标注完整操作和常见格式导入两条已改为从 Platform 目录及 Reader 私库核对结果，不再靠旧工作区快照；并发运行的 7 条新存储界面用例、这两条阅读用例及类型检查通过。批注用例通过正式标题查找定位新对象，避免把分页目录第 51 项误判成数据丢失。其余旧阅读／剧本用例仍使用 `/api/workspace` 与旧命令夹具，完整界面回归尚未通过；这轮只修验收路径，没有新增产品能力或完成原窗口验收。
+
+2026-09-28 消息附件跨 Host 补齐：已接受的附件由另一台 Host 按确切 Runtime 输入根读取；当前 Platform 对话授权、消息来源声明、Runtime Event 的名称／类型／摘要和返回字节均逐次核对，不复制发送 Host 的私有附件 Store。未发送草稿仍由上传者本机 Store 读取，Web、内嵌 Desktop 与远端 Desktop 预览传递同一消息来源。隔离双 Host 测试覆盖错误范围／摘要、篡改和两种入口；真实 Runtime 联合冒烟覆盖接受、重启后读取及其他身份拒读。应用生产构建与当前默认环境的 711 项单测已运行：646 通过、0 失败、65 项因 PostgreSQL／云对象测试端点未配置而跳过；Runtime PDF 附件端点专项通过。此项不等于原版窗口或整体存储切换完成。
+
+2026-09-28 核对：剧本 `submit-workflow` 已经由真实 Agent 输入和固定的生成准备约束，写入 Script Studio 私库，并将回执投影到 Platform 目录；普通客户端的旧 `script-command.submit-candidate` 仍拒绝直写，以免绕过来源和人工采纳边界。下文较早阶段把这概括为“候选生成未接通”已过时。全量界面回归当前仍有大量旧 `/api/workspace` 夹具：本轮抽样跑到 107/342 时为 54 通过、53 失败，余项未跑，不能把旧夹具失败直接算作产品失败，也不能称全套界面验收通过。已把 `agent-first.spec.ts` 的未发送不创建用例改为查询 Platform 内容目录及 Runtime 投递；断线用例现在拦截带查询参数的导航请求。四项专项回归通过。原版窗口及完整跨端验收仍未做。
+
+2026-09-28：Host 的正式 Runtime Bridge 启动不再装载本机 Session 的全部事件正文：只按 Session 索引取得持久尾部位置，投递、会话和连接状态照常读取。新事件与投递结算同一 SQLite 事务追加；提交后清空内存中的本轮事件，下一轮只处理新增尾部。旧事件镜像保留在磁盘，只有明确调用旧历史读取时才按需载入；v18→v19 一次性流式提取各投递的最近回复时间及因果 Thread ID，保留共享 Session 合并回复的歧义拒绝规则。运行中的投递重启后凭这些精简关系结算，不靠启动时重放全部旧事件。另将连接配置检查改为只读小型连接 envelope，避免它暗中触发旧历史加载。损坏事件导致升级失败时，事务回滚并保留原投递和库版本。SQLite／PostgreSQL 参与的 710 项应用单测：707 通过、3 项因云对象端点未配置跳过；构建、消息分页正式界面 3 项、真实 Runtime 的 Platform 输入／跨 Host 定位／重启幂等冒烟及隔离 Desktop 重启冒烟通过。**尚未在原版日常窗口验收**，旧历史显式读取仍是全量操作，长期投递数组规模与端到端性能基线仍需单独核查；这不是整体存储目标完成。
+
+2026-09-28：正式对话历史在 Runtime 单页上限之外，Host 单次请求现在最多读取 8 页（每页至多 100 条）；遇到大量已撤权、不可见记录时，返回实际扫描位置的微秒精度续页游标，不为凑满可见消息而扫完整个 Session。本机待投递输入若早于扫描边界留给后页，避免跨页丢失；客户端一次点击最多继续跨过 4 个空的授权窗口，并共享 15 秒总等待上限。新增 450 组不可见输入／回复与待投递混排的专项，验证有界读取及无漏页；构建、消息相关 35 项单测、历史分页／引用／缓存 3 项正式界面回归通过。完整应用测试 708 项：705 通过、3 项云对象端点未配置而跳过。界面回归还修正了测试夹具未拦截带查询参数的导航请求；这不是产品路由改动。**尚未解决 Host 启动时加载本机全量事件镜像**，也不代表旧存储清理或原版窗口验收已完成。
+
+2026-09-28：团队登录会话已从 Host 本机 `identity-sessions` 迁入 Platform 逐会话关系表；旧哈希只作一次性导入，提交后清除本机行，中断后按完全相同记录幂等重试，不保存明文凭据。新的登录、每次 HTTP 请求验权、跨 Host 退出和凭据撤销均以 Platform 为权威。`members.json` 的身份配置摘要、项目成员授权、目录修订与失效会话清理在同一个 Platform 事务提交；移除成员同时撤掉其项目关系，另一 Host 的旧配置不能写回，加载同一份已提交配置时只接纳结果而不重放写入。凭据重新绑定到另一身份再恢复时，旧会话不会复活。本机 `identity-mode` 仅留缺配置时的拒绝启动标记，不再保存会话权威。SQLite／PostgreSQL 的事务、失败回滚和旧 Host 拒写专项，两台独立 HTTP Host 的登录／退出回归、完整应用测试 707 项（704 通过、3 项未配置云对象端点跳过）及生产构建通过。**仍未完成整个目标**：Runtime 历史的服务端有界读取、其余旧写路径清理、原版窗口及完整跨端验收仍缺；本轮未修改原版登录数据。
+
+此前阶段：团队成员配置加载不再调用旧 `workspace` 整体快照写入。既有 `members.json` 的项目授权关系由受信 Host 写入 Platform 的 `project_members`，在单个事务中校验目标、变更成员关系与目录修订；重复加载不制造修订，停用成员撤权，新建项目的创建者不会因尚未更新配置文件而被撤权。配置读取使用成员／项目索引和有界批次，不枚举整个租户目录。SQLite／PostgreSQL 同义测试、正式领域 Host 的旧 workspace 禁写回归、当时的完整应用测试 699 项（696 通过、3 项云对象端点未配置跳过）和生产构建通过。当时团队登录会话仍依赖 Host 本机状态，已由上段切换取代。
+
+2026-09-28：正式事项创建／修订把既有的依赖、关注来源和交付产物写入 Platform 的不可变事项版本关联表，不再因这些字段拒绝原界面保存；Agent 的同一领域工具也接入这些参数。Platform 在事务内核对同项目有效对象、依赖类型、自引用与依赖环；PostgreSQL 按项目串行化关联变更和跨项目移动，防止并发引入环或跨项目悬空引用。SQLite／PostgreSQL 同一组版本、权限、幂等及并发测试通过；正式 Desktop 领域入口验证写入和读回，旧 workspace 未新增事项；Agent 的创建、修订、读回专项通过。完整应用单测启用本机 PostgreSQL 后 696 项中 693 通过、3 项因未配置云对象测试端点跳过，类型检查和生产构建通过。仍保留未接通状态流转的明确拒绝；全文搜索、团队身份状态等其他旧路径尚未因此切换，整体目标未完成。
+
+2026-09-28：原有可编辑表格的创建、修订与 Agent 读写已接入 Objects 应用私库和 Platform 目录；Web HTTP 与 Desktop 本机调用使用同一领域命令，目录投影失败后可凭原回执重试，不写旧 workspace。正式内容界面完成“打开→增加记录→保存版本→刷新恢复”的 Playwright 回归；SQLite／PostgreSQL 的原件版本、权限、回执与补投影测试均通过。完整应用单测在本机 PostgreSQL 下 693 项中 690 通过、3 项因未配置云对象测试端点跳过；构建与类型检查通过。两份本轮专用 PostgreSQL 测试库已删除。此项补齐已有功能，不代表整体存储切换完成；尚未接通的旧路径仍需逐项审计。
+
+2026-09-28：移除已停用、正式界面不再引用的目录导入／自动同步入口及其 Desktop IPC、服务代码和专用样式；不删除用户已保存的来源配置或旧内容。正式 Desktop 项目、文档、事项重启冒烟，Platform 导航／最近内容界面回归，旧 workspace 禁写和消息入口专项均通过；独立本机 PostgreSQL 测试库上的应用测试 692 项中 689 通过、3 项因未配置云对象端点跳过，生产构建通过，测试库已删除。这是清理旧写路径，不代表存储切换完成；团队成员配置仍有旧 workspace 写入，搜索和部分旧操作也尚未接通新领域存储。
+
+隔离 Platform Desktop 冒烟已验证项目、应用原件文档与事项状态在重启后仍可读取；另用数据库触发器禁止旧 `workspace` 行更新，正式 Desktop 创建项目、文档、事项仍全部通过。未触碰原版日常窗口。
+
+2026-09-28 浏览器控制的 Host 本机投递记录已从旧 `service_state` 三份 JSON 改为逐条关系日志，旧回执一次性迁入；重启时未完成操作标记为拒绝／结果未知，已完成回执保留。正式 Agent 工具现在以 Runtime 实际输入证明和 Platform 当前项目授权读取当前 Human 授权的页面，不要求项目存在于旧 workspace；同一次工具调用有限等待页面结果。旧的“伪造 Human 输入唤醒 Agent”写路径已移除，慢于等待窗口的审批只返回待处理回执，**尚无自动继续该 Session 的新 Runtime 机制**。旧回执若无法证明原 Human 所有者，不向新的 Agent 工具开放；可在本机日志审计。正式 Host 的旧工作区快照／搜索／原件读取入口拒绝回退；纯 Platform 域启动只定向检查旧数据迁移哨兵，当前版 Host 重启不再改写整份旧 workspace。旧版本升级时仍执行一次性索引修复，正式新版本启动不为旧测试索引反复重建。完整应用单测（含本机 PostgreSQL）、8 项正式界面回归、隔离 Electron 浏览器冒烟、类型检查及生产构建通过；专用测试库已清理。**原版日常窗口未完成本轮实际交互验收**，此次改动也不等于整体存储切换完成。下段较早记录中的“浏览器 Agent 控制回执仍未切换”已由本段取代。
+
+2026-09-28 正式客户端继续脱离整份工作区投影：保存对象批注按内容 ID 重新核对 Platform 授权与应用归属；修改事项读取 Platform 当前不可变版本后沿原 CAS 命令保存；整理内容按目录 ID／应用对象 ID 授权定位；剧本设置、条目、审阅、候选决定与导出也按应用对象 ID 定位剧本目录，不再要求目标先出现在客户端首屏快照。未接通的候选生成仍明确拒绝，不写旧库。SQLite／PostgreSQL 应用测试 689 项中 686 通过、3 项因未配置对象存储测试端点跳过；生产构建、批注与剧本设置正式界面回归通过。新正式界面用例还验证“创建剧本→加入新项目→目录中的应用对象 ID 不变→刷新后重新打开”。旧 `workspace.spec.ts` 的一条用例仍等待已经不存在的“我的项目”入口而超时；旧 `script-studio.spec.ts` 的剧本归属用例仍从 `/api/workspace` 查新剧本而失败，均不作新存储验收依据。浏览器 Agent 控制回执与唤醒仍依赖旧 Host 状态，尚未切换，本次不以换一张表假装完成。
+
+2026-09-28 Agent 剧本目录查询：剧本列表现在沿用 Platform 同一套授权筛选和计数，再按所请求的窗口分页读取；不再把项目下所有剧本加载进 Host 内存后筛选。SQLite／PostgreSQL 原件与目录集成测试、105 条目录项的跨页窗口回归、类型检查和生产构建通过；完整应用单测 686 项中 683 通过，3 项未配置 S3 测试端点而条件跳过。大偏移量仍须顺序经过前面的目录页；Runtime 历史加载的无界问题也未因此解决。S3 仍是未单独评审的可选实现，不因相关测试存在而成为确定的产品方案。
+
+2026-09-28 Host 启动内存修正：本机 Ledger 读出的事件数组在 Bridge 校验后直接沿用，不再由 schema 校验长期保留第二份全量事件数组；逐条事件形状仍验证，损坏行仍拒绝启动，追加写入仍沿用原数组游标。定向 12 项、类型检查、生产构建和完整应用单测通过（685 项：624 通过、61 项因本轮未配置 PostgreSQL／S3 测试端点而跳过）。**这不是有界历史读取**：Ledger 仍加载所有会话事件，打开历史页仍扫描整段授权会话；跨 Host 消息读取也未因此完成。未修改原版 Morphz 数据或运行配置。
+
+2026-09-28 历史与轮询减载：Host 仍须读取 Runtime Session 的全量本机事件缓存，但构造历史页时不再另外复制、排序全部输入与回复正文；遍历期间只保留请求页最多 100 条候选，流式阶段仍以首次发布身份／时间合并，迟到回复和上一页游标语义不变。运行中投递的结算改为每个 Session 先建立一次 thread→root 因果关系，再遍历终态事件；合并回复可结算多个 root，但不冒认唯一消息来源。130 组双阶段回复的跨页回归、并发因果回归、真实 PostgreSQL 参与的应用单测（684 项：681 通过、3 项 S3 条件跳过）、类型检查、生产构建及历史分页界面回归通过。测试专用 PostgreSQL 数据库已删除。这降低的是每页投影的额外内存和排序工作，以及轮询逐投递重扫的成本，**没有解决启动时加载全量事件或每页扫描全量事件**；真正的有界读路径仍是未完成项。S3 兼容云字节适配器是开发中加入、尚未单独评审的可选实现，不应当作已确定的 Store 协议或 Desktop 默认存储。
+
+2026-09-28 跨 Host 身份与冷备份复核：Service 的 PostgreSQL Platform 部署现在要求显式稳定的中心 UUID；新 Host 使用自己的本机投递库连接同一云端 Platform／应用私库／Store，不再靠复制旧 Host 的 `workspace.sqlite` 获得中心身份。已有本机库若绑定别的中心，启动前拒绝改绑；备份与恢复命令也从同一部署配置读取 UUID，不再另收一份命令行身份。两个真实 Service 进程的正式 HTTP 客户端已交叉读取同一项目、文档与剧本。真实 PostgreSQL 15＋LocalStack 4.4.0 环境的跨 Host 原件读取、冷备份／隔离恢复、损坏及覆盖拒绝测试通过；全套应用测试 682／682、生产构建与工作流检查通过。原版 Morphz 仍从既有中心启动，窗口可见原有事项和 Agent 已连接；这是基本运行检查，不代表多 Host 在线消息入口或完整界面流程已验收。原版数据与安装包未改动。
+
+2026-09-28 云应用存储冷备份补齐：新增停写条件下的一组备份／恢复命令，把单中心的 Platform、四个内置应用 PostgreSQL schema、三个 Store manifest 与 S3 对象字节作为一个校验单位。备份先核对界面包、图片和阅读原件引用的真实 Store 版本；恢复前核对关系归档、Store manifest 和每个 Blob 的摘要，拒绝损坏包及已有 schema／对象 prefix。隔离 PostgreSQL 15＋LocalStack 4.4.0 的备份→新库新 prefix 恢复→重开 Host 读取 PDF／图片／界面包、损坏引用／字节／覆盖拒绝测试通过；完整应用测试 680／680、生产构建通过。CI 的 PostgreSQL 作业已配置 PostgreSQL 客户端和云对象模拟服务。本命令不覆盖 Runtime、其他 Host 的本机投递／附件、客户端草稿和第三方应用，也不证明在线多 Host 或真实云账号灾备；原版 Morphz 中心未改动。
+
+2026-09-28 云对象存储进展：Service Host 在显式配置 PostgreSQL Platform／认知应用私库后，可将界面包、Reader 导入原件和 Objects 图片接到三个独立 PostgreSQL manifest＋S3 兼容字节空间。不同 Host 的本机暂存目录不共享；隔离测试验证第二个 Host 读取同一 PDF、图片和界面包，以及错位置拒绝、云字节损坏拒读、孤立字节隔离和 Store 级备份恢复。CI 的 PostgreSQL 作业加入 S3 兼容服务，使这组测试不能被环境跳过。原版 Morphz 当前仍使用其原有本机中心；本轮没有把原有书籍或图片上传到云端。云部署整体尚未验收：消息附件由投递 Host 管理，PostgreSQL＋云对象的成套部署备份／恢复和真实云账号／故障切换仍缺；不把新字节后端称为存储目标已完成。
+
+2026-09-28 界面包安装切换：Human 确认后，Platform 只保存应用声明、安装者与不可变 Store 版本引用；独立 NodeArtifactStore 保存并校验 HTML 字节。工作台只读取包摘要，打开精确版本时才取界面；Web 与 Desktop 均已接通，冷备份／恢复现在同时校验安装记录和包 Store。修复包摘要被旧完整 Manifest 校验拒绝、`@` 编码后界面路径 404，以及沙箱仅有读取权限却能写入的回归；已测试跨项目写入拒绝。生产构建、671 项应用单测（启用本机 PostgreSQL）与两种包协议的握手／恢复、4 条应用浏览器回归全部通过。PostgreSQL 用独立 schema 验证界面包 Store 与 Platform 重启读取，Platform 和 Node Store 的 65 条 SQLite／PostgreSQL 测试全部通过。原开发中心另做了正常退出后的冷备份并恢复到独立目录，恢复层读取到中心身份、4 个内置应用实例和 3 项内容；原版进程已重开。当前截图接口只能取得桌面背景，不能把这次自动化或独立目录检查算作原版窗口目视验收；大量界面包的分页与云端多 Host 尚未验证。
+
+2026-09-28 会话历史分页进展：Platform 对话接口、HTTP/Desktop 客户端和正式消息列表按输入与回复的统一时间线分页，默认读取最近 100 条；可继续加载旧消息，引用回跳可按需找回旧页，权限版本改变时丢弃已缓存旧页。实时订阅从已持久化的 Session 游标接续，避免首次重放整段历史；消息列表的多处逐条全表查找改为索引查找。200 条同时间戳回复、迟到回复、引用回跳、滚动位置和撤权缓存的定向测试，以及生产构建、类型检查和完整应用单测通过（610 通过，56 条环境条件跳过）。完整 Playwright 套件仍有旧命令接口预期失败，不能宣称全套界面验收通过。**这只是传输和客户端有界**：Host 启动及历史页生成仍读取／扫描整段 Session 事件，长期开启的实时投影也会积累历史；原版窗口本轮未完成可见界面验收。
+
+2026-09-28 补充验收：将原开发中心的冷备份恢复到独立目录后，以独立 Desktop profile 启动当前构建，真实界面只读检查显示 4 个项目、3 项内容和 1 项事项；Platform、各应用库及 Store 的备份／恢复校验已通过。该测试没有写入原中心，也不等于原窗口或云端多 Host 验收。会话历史的批量归属改为每个 Session 建一次因果索引，保留合并回复的歧义拒绝规则；2,000 条合成事件／投递的局部对照约为 0.66 ms 对 58.89 ms，属于同机微基准，不代表端到端 p95。历史首次归一化 200 个模型发布身份时只提交一次本机投递状态，重读不写入。历史仍会一次读取整段会话，真正有界分页及启动时按需加载仍未完成。
+
+2026-09-28 最新进展：正式 Web/Desktop 客户端冷启动改为读取授权内容目录首屏 50 项，再按稳定内容 ID 补当前打开、最近打开和当前会话中明确引用的对象；超出首屏的剧本及其引用原文按应用对象 ID 定位。内容、剧本、阅读书库仍分别在自己的列表上分页，客户端正式路径不再调用 `allContent` 枚举整份目录。已验证首屏外最近内容恢复、剧本卡片按需进度、历史导航、目录搜索及切换范围；SQLite／PostgreSQL 相关存储测试、完整应用测试、生产构建和 11 条正式 Web 回归通过。下方同日“冷启动仍枚举全目录”的段落是此前阶段记录，已由本段取代。当前 Runtime 会话历史的打开路径仍需有界分页；原版 Morphz 窗口尚未完成本轮人工验收，不能据自动化测试宣称整个存储目标完成。
+
+2026-09-28：原「内容」页、剧本工作室和阅读书库列表已改为 Platform 授权分页查询：范围、应用／类型／可用性、标题词与排序在服务端同一查询上执行，UI 每次只呈现 50 项，可继续加载且显示过滤后的准确总数；切换范围会立即撤下旧页。剧本条目「引用项目原文」从全量客户端目录改为同项目分页与标题查找，超过首屏的原作可继续加载，原有版本和引文校验保留。「关联对象」的候选从同项目目录分页查找，已有关联的标题按对象 ID 授权定位，不再因目标没出现在首屏而隐藏关系；超过 50 项的保存、刷新和打开回归通过。分页多取一条判断是否还有下一页，不靠与列表分开读取的计数决定游标，避免并发变更造成后续内容不可达；恰好 50 项时不显示空的下一页入口。修复悬浮输入挡住列表末尾操作的问题，使末尾卡片和加载按钮可滚到浮层上方。SQLite／PostgreSQL 的目录筛选测试、HTTP 客户端及超页正式界面回归通过；原按需卡片／打开、阅读正式界面回归通过，生产构建及全套应用测试通过。**客户端冷启动仍调用 `allContent` 枚举全目录**，最近打开、消息交付、其他引用显示等入口还依赖完整客户端目录；本轮只完成已列页面的有界展示和查询，不能称为冷启动或整体存储目标完成。正文全文搜索仍未接新应用目录，现明确只提供标题查找；阅读书库也只按书名查找，不声称支持未打开读物的作者搜索。
+
+2026-09-28：内容目录的类型／标题词筛选、精确分组计数和「最近修改／最近创建／名称」排序使用同一授权查询；SQLite 与 PostgreSQL 均以确定性游标分页，HTTP 和 Desktop 复用同一语义。项目目录及项目操作提示改读服务端计数，不再为每张项目卡遍历整份内容目录；搜索面板的最近内容按应用与项目有界读取，切换范围会立即清空旧结果，原 UI 结构未改。39 项 SQLite／PostgreSQL 定向测试、601 项应用测试（56 条条件跳过）、生产构建和 12 项相关正式界面回归通过；项目管理旧测试改为验证 Runtime 不可达时拒绝归档、离线输入只保存不发送的现行行为，不再期待旧错误或未获准的归档。原版开发配置完成一次非覆盖冷备份和独立目录恢复；恢复的 Platform、各应用库与对象清单均通过 SQLite 完整性检查，Platform 的项目／内容／事项数量与原目录一致。**正式客户端冷启动仍枚举全目录**，其他目录消费者尚需迁至分页查询，不能据此声称整体切换与全量界面验收完成。
+
+2026-09-28：Platform 内容目录新增按应用 ID、对象 ID（及可选实例 ID）精确定位，SQLite／PostgreSQL 同一授权与冲突语义；剧本从消息／旧位置打开时不再依赖先枚举到该目录项。已缓存的文档与剧本在再次打开时重查当前目录权限和版本；历史前进后退按对象 ID 解析，内容移到另一项目后仍能打开同一获授权原件。SQLite／PostgreSQL 的 v3→v4 升级、Agent 项目范围、39 项定向存储／Host 测试通过；生产构建、601 项应用测试通过（56 条环境条件跳过），8 项当前 Platform 浏览器回归通过。**冷启动仍枚举全目录；有界分页和旧界面测试迁移尚未完成**，不把精确定位称为整体存储目标完成。
+
+2026-09-28：剧本目录投影现只使用 Platform 已登记的对象身份、归属和版本，不在冷启动时逐部读取剧本应用摘要。内容目录和剧本工作室的卡片进入可视区域时才读取简介／进度；打开剧本仍单独读取完整原件，并核对目录与原件身份和版本。身份变化清空摘要缓存。655 项应用测试中 600 通过、55 条环境条件跳过，生产构建和 4 项按需读取 Web 回归通过；原版 Morphz 重载后，两部既有剧本的内容卡片、工作室列表和返回事项页面均实际可见。**仍未完成目录分页**：客户端冷启动会枚举全部授权内容，现有 10000 条上限与列表 DOM 规模仍是后续性能工作，不能把本次减少摘要请求称为整体性能目标完成。
+
+正式消息入口已接通网页与工作台界面的选文：同一项目或访问成员完全一致的项目可发送；撤权、未知项目和跨受众引用被拒绝。网页／界面选文由 Client 提供，Host 没有持久原件可核对，因此给 Agent 的文本明确标为“来源原文未核验”，不附带网页控制权。定向消息／引用测试、类型检查、生产构建和全套 648 项应用测试通过（594 通过、54 条环境条件跳过）；尚未在原窗口发送真实网页选文验收。Runtime 仍是消息和 Session 的权威；各 Host 只负责自己的本机投递与重试，另一 Host 不接管它的队列。此处不需要在 Platform 重建消息库或增加跨 Host 投递恢复。
+
+未连接 Runtime 时，正式消息入口将未发送输入按当前中心、用户与身份保存在客户端；项目命名对话的首条输入仍是可恢复草稿，不会因保存而在 Platform 建立对话。恢复连接后，发送按钮用原输入 ID 调用 Platform 消息准入；已由 Runtime 接收的失败输入才走服务端重试。修正了本机保存与重发使用不同身份范围键的问题。构建、648 项应用测试（594 通过、54 条环境条件跳过）及三条正式 Web 回归通过；回归覆盖刷新恢复、服务器端无空命名对话、重连后原 ID 发送。不把拦截式重连回归当作真实 Runtime 恢复验收。
+
+正式界面的冷启动应用原件读取现共用 8 路并发上限，避免目录有大量对象时同时向 Host 发出全部读取请求。事项列表只读取首版与当前版；打开事项时再补齐完整版本历史，原版本菜单不变。定向并发／按需历史测试、真实 Web「列表无全历史请求→打开事项→版本菜单」回归、全套应用测试（591 通过、54 条因当前环境缺少 PostgreSQL 等条件而跳过）、生产构建及隔离 Platform Desktop 重启冒烟通过。**仍未实现有界目录页面加载**：冷启动仍枚举全目录并读取每项内容或剧本原件；本轮降低请求峰值和事项历史读取量，不把它称作性能目标完成，也未在用户原窗口手工验收。
+
+正式消息现在还可引用剧本工作室的已保存条目、不可变候选稿和明确标记的未保存编辑草稿。已保存引用按当前 Platform 目录权限进入剧本私库，核对剧本、条目／候选、基准版本、标题与原文；候选只读取该候选，不加载整部剧本。草稿作为用户提供的编辑中材料，不伪装为已保存原文。SQLite／PostgreSQL 的候选读取与权限测试、Host 实际消息入队／伪造来源拒绝测试通过。网页和通用界面来源仍未接通。
+
+正式消息入口现可校验文档和读物的选文引用：文档核对 Objects 中获授权的确切版本与原文；读物核对 Reader 私库中的章节、来源标识和有界选文片段。客户端提供的位置只是定位信息，不能凭它伪造引用或扩大读取权限。针对性引用测试、SQLite／PostgreSQL 全套 643 项应用测试、类型检查和正式阅读界面隔离回归通过。网页及通用界面来源尚未接通；这不表示整个存储切换已完成。
+
+通知候选现直接从 Platform 当前事项及不可变版本推导，按当前用户的项目成员资格读取，通知进入时间取连续相同阶段的首个版本；改标题／说明不重新提醒，离开后再进入会产生新提醒。偏好与已读仍在 Platform，正式通知界面不再读取旧 `WorkspaceStore` 事项快照。SQLite／PostgreSQL 的候选、版本及隔离测试、正式 Web 创建事项→通知→刷新→打开原事项、全套 643 项应用测试、生产构建和隔离 Desktop 主路径冒烟通过。旧测试事项不会因为仍留在 workspace 文件里就重新出现在新通知中；本轮未在用户原窗口手工验收，也不代表其他尚未接通的入口已经完成。
+
+Platform 目录增加与命令回执同事务推进的租户修订号；个人空间首次创建也推进一次。正式客户端先完成首次初始化，再读取修订号；轮询中目录未变时复用已授权的目录投影，导航和消息均未变的空闲轮询也不再重复解析、序列化整份工作区正文。身份切换会清空缓存，幂等重试不制造新修订。SQLite／PostgreSQL 的旧 schema 升级、修订隔离和重试测试，正式 Web 定时刷新请求计数回归、全套应用测试和生产构建通过。**冷启动仍会读取全部目录及应用原件**，当前目录适配器仍有 10000 条上限；此项只消除未变化时的重复工作，不等于已实现按页冷加载。
+
+Runtime 桥的本机投递表不再把全部历史事件正文复制到第二份内存 Map；追加事件只处理新尾部，重启后也不重新序列化已有事件。替换／截短历史时仍逐会话从持久表校验，保留原子事务和原有 Session 结果。新增千条历史的重启追加回归，类型检查和 SQLite／PostgreSQL 全套应用测试通过。**这只降低桥的重复内存与写入工作**：启动仍把所有历史事件加载进活跃桥，当前会话历史和工作区展示适配器仍会全量读取，尚不满足有界分页目标。
+
+原内容页的「关联对象」现写入 Platform `work_relations`，从当前对象按页读取，不再读取空的旧 workspace 关系快照；刷新可恢复并打开关联目标。Agent 的同一操作绑定实际输入项目，不能拿别的项目对象建立关联。SQLite／PostgreSQL 的授权、幂等、分页和跨项目拒绝，Desktop／HTTP Host、Agent 路由及原界面隔离浏览器回归均通过；全套应用测试与生产构建也通过。此项不改变 Cognitive App 原件归属，且不代表全部旧 UI 操作已切换。
+
+Service Host 的认知应用私库现可整组使用四个独立 PostgreSQL schema，显式部署 ID 固定跨 Host 应用实例身份；各 schema 的随机绑定 ID 固定在 Platform 实例路由，误连另一组空库（包括只换 Browser 库）会拒绝启动。本机已有私库、目录指向不同实例，以及另一 Host 缺少已有书籍／图片字节时也拒绝静默切换。隔离 PostgreSQL 测试实际跨两个 Host 读取同一 Objects 原件，验证身份错配与缺字节保护。Platform 和应用可以物理共用 PostgreSQL 服务器，但仍各守 schema／迁移边界。图片、书籍及附件字节仍在本机 Node Store，云端对象字节路由尚未完成，不能据此声称多 Host 云端部署已可用。
+
+消息引用发送现按输入 ID 找到获授权的投递，再从 Runtime 精确读取被引用的事件 ID，核对它与原输入的因果归属、时间和实际选文；无效事件返回不可用，Runtime 不可达则保留可重试错误。发送一条引用不再构造整个会话的消息历史。Host／Runtime 模拟入口回归包含“全历史读取被禁止”的断言；隔离真实 Runtime 冒烟验证原始输入的精确来源在投递及重启后均可读取。当前会话打开时的完整历史仍无分页，不能把引用路径的优化当作历史列表已优化。
+
+Host 的 Runtime 投递状态已从单行 JSON 拆为按输入、会话、事件、发布身份和 Thread 绑定的关系行；旧库升级在同一 SQLite 事务中搬迁原投递和事件，不重发输入。正常事件追加只持久化新尾部，投递状态变更只更新对应行；`runtime_state` 仅保留小型连接状态。632/632 应用测试（SQLite／PostgreSQL 环境均参与，0 跳过）、生产构建、隔离 Desktop 主路径和真实 Runtime 消息／附件重启幂等冒烟通过。**这只是本机 Host 传输存储的拆分**：桥仍会在启动时读取所有历史事件和投递到内存，消息历史没有有界分页；云端多个 Host 也不能共享这个本机库，项目退役仍只有单 Host 安全证明。未在原 Morphz 窗口手工验收，不把这一步称为整体目标完成。
+
+正式客户端的「停止生成」现按 Platform 输入来源查找同一条 Runtime 投递：只允许原发送者在仍有权读取该对话时停止，排队输入不发往 Runtime，运行中输入按确切 Session／root 执行停止；不再查询旧工作区输入。Host 调用与 Runtime 根级取消均有回归测试。
+
+原内容界面的选文批注已切到 Objects 私库：写入固定原件版本、引文、作者与稳定命令回执；选中对象时分页读取批注，重开仍可见。Agent 从真实 Runtime 输入经同一应用命令写入，不再回退旧 workspace。SQLite／PostgreSQL 全套应用测试 619/619、构建、真实 HTTP 入口及原界面隔离 Playwright 保存／重开回归通过。当前原 Morphz 窗口尚未人工验收；内容改名等其他正式操作仍有未接通项，整个存储切换未完成。
+
+正式消息刷新不再每 5 秒重取当前会话的全部正文：Runtime 导航返回绑定当前主体、可读项目、投递状态和 Session 事件游标的失效标识；Client 仅在标识及会话范围均未变化时复用当前历史，新事件或授权范围变化会重新读取。原界面未改。新增缓存范围／事件失效测试及正式 Web 入口的轮询回归、类型检查、生产构建、SQLite 应用测试（567 通过、46 条条件跳过）、PostgreSQL 15 独立测试库全套 613 项（613 通过、0 跳过）及隔离 Desktop 主路径冒烟通过；专用测试库已删除。当前仍每轮拉取 Platform 导航目录，Runtime 桥的投递状态仍为整行 JSON，不能宣称全链路性能完成。另有 12 条旧 Playwright 用例仍向 `/api/workspace` 注入历史或调用已停写的 `/api/commands`，在新主路径下失败；这些旧夹具需改为真实 Platform 接口，不恢复旧写路径，也不把这批失败解释成现行消息路径已验收。
+
+正式阅读入口的 PDF OCR 已接入 Reader 私库：识别和人工校对追加不可变页版本，原 PDF 仍由受管 Node Artifact Store 保存，Platform 只保留书籍目录；重启后可读取校对版本，不写旧 workspace。Agent 经真实输入的 Platform 授权调用同一阅读服务；后台步骤逐次重新核验输入归属，模型下载仍须用户在阅读器确认。类型检查、生产构建、SQLite 环境应用测试（567 通过、46 条条件跳过）、本机 PostgreSQL 15 独立测试库的全套 613 项（613 通过、0 跳过）、2 项正式阅读界面回归和隔离 Desktop 冒烟通过；独立测试库已删除。OCR 引擎的真实模型识别质量和当前原窗口尚未验收；整个存储切换仍未完成。
+
+原事项看板的跨状态拖动现将状态修订与选中事项的顺序调整作为一条 Platform 事务提交；复用与单独安排一致的身份、负责人、依赖和版本校验，重复命令只返回原回执，陈旧版本或无权操作不会留下半次排序。原 UI 不变。SQLite 领域测试、Desktop／HTTP 领域入口测试与全套 611 项应用测试（565 通过、46 条环境条件跳过）、类型检查和生产构建通过；PostgreSQL 测试因本机未配置服务跳过，不据此宣称已做该后端本轮实际验收。其他尚未接通的正式操作仍需继续切换。
+
+图片内容的正式入口已切到 Objects 应用私有存储：上传字节进入独立 Node Artifact Store；原件与不可变版本在 Objects 库，Platform 只记录内容目录。原 UI 的上传、创建、修订和按摘要预览不变；未绑定内容的上传不能凭摘要公开读取，读图复核当前目录权限与 Store 字节摘要。图片目录投影可从应用回执恢复，冷备份和恢复包含该 Store，损坏 Blob 拒绝恢复；已有图片时 Store 缺失则拒绝创建空 Store 遮盖原件。新增摘要查询索引通过原子 schema 迁移添加到已有 Objects 库，不重写原件。针对性 Host／真实 HTTP／备份测试、全套 610 项应用测试（564 通过、46 条环境条件跳过）、类型检查、生产构建和隔离 Desktop 冒烟通过。尚未做当前原窗口的鼠标验收；Agent 的图片生成／上传能力也未接新存储，不宣称整个切换已完成。
+
+消息附件已接入正式 Desktop／Web 入口：上传先进入独立的受管 Node Artifact Store（关系 manifest＋文件字节），草稿只保留内容引用；Platform 输入入队校验原件和身份，Runtime 发送前按引用读取、验证摘要并上传到其 Session 附件暂存，消息事件继续由 Runtime 持有。原工作区的 `assets` BLOB 不再接收新消息附件。历史回显保留确切附件引用，读取前复核当前对话权限；冷备份同时包含该 Store。上传、HTTP／Desktop 预览、重复投递、重启及备份恢复已有自动回归；隔离真实 Runtime 验收又核对了消息绑定的原始字节、重启重试和跨身份拒读，并修正附件字段顺序导致的幂等误冲突。未进行原窗口人工验收；旧输入的资产路径及其他未切换操作仍未完成，不能据此宣称整体目标完成。
+
+Runtime 桥保存投递进度不再读取并重写旧 `workspace` JSON，也不增加业务工作空间修订；正式 Client 的消息与目录刷新各走现有独立路径。结构回归、606 项单元／集成（其中 46 项条件跳过）、隔离 Desktop 和真实 Runtime 消息验收通过。桥自身仍把投递状态保存为 `runtime_state` JSON，正式界面仍构造旧 `Workspace` 形状作为展示适配器；这两处还不是目标中的按实体有界模型，不能把移除一次写放大称作完成迁移。
+
+曾把正式挂载入口错误地替换成只有部分功能的简化 `PlatformApp`，导致原有阅读器、剧本工作室、浏览器和旧内容暂不可见。这不是数据模型切换的必要结果，而是把界面重写与数据迁移混为一谈。该入口及其专用 UI、烟测已撤回；原 Morphz 窗口已重新加载原 `App`，旧项目、消息和剧本工作室入口实际可见，旧数据未删除。
+
+现已保留原 `App` 界面，将项目、事项、内容目录、对话以及剧本工作室的读取改为 Platform 目录与所属应用原件；新建项目／事项／文档／剧本／剧本条目、人工正文修订及已有候选的采纳／拒绝已逐项接入领域命令，不再通过旧 workspace 写入。原事项列表的纯排序经 Platform 事务保留未选中事项的位置，跨状态移动仍未接通。剧本完整编辑态按单部剧本读取，未变目录版本复用前次投影；正文修订在应用私库事务中新增不可变版本并使受影响的下游审阅失效，Platform 仅凭原件回执更新目录，目录失败可按同命令恢复。候选决定沿用剧本私库的同类事务与目录投影；投影失败的原命令 ID 会留在客户端供安全重试。Agent 已可从真实输入范围经同一领域服务创建剧本和空条目，并按确切版本分页读取；不能绕过候选决定直接写正文。HTTP 与嵌入式 Desktop 共用同一业务接口。此切换**尚未完成**：新候选生成及审阅、部分事项安排、其他认知应用写入，以及 Agent 其余剧本操作仍有未接通项；界面明确拒绝这些操作，不能把当前可读取或可保存正文称为完整验收。旧测试数据未作为继续保留旧写路径的理由。
+
 范围见[桌面能力实施路线](./12-desktop-capability-roadmap.md)。四轮作为一个目标实施，已完成本轮 macOS 开发版验收。最后一项系统截图选区、预览与保存于 2026 年 9 月 8 日通过；这是开发交付，不是正式发行包或所有平台验收。
 
 ## 继续自动化：OCR 顺序、资源释放与草稿恢复（2026-09-24）

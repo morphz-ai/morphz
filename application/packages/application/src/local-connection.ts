@@ -114,18 +114,23 @@ export class LocalApplicationConnection {
           .parse(request.params);
         const identity = this.application.options.identity;
         if (!identity) throw new DomainError("invalid", "本机工作区无需登录。");
-        const secret = identity.login(token, "desktop");
+        const secret = await identity.login(token, "desktop");
         this.invalidate();
         this.cookie = `${identity.cookieName}=${secret}`;
         return { ok: true, value: { connected: true } };
       }
-      if (request.method !== "workspace" && !request.identityGeneration)
+      if (
+        request.method !== "platform.bootstrap" &&
+        !request.identityGeneration
+      )
         throw new DomainError("forbidden", "请先读取当前工作区身份。");
       const { generation, session } = this.session(request.identityGeneration);
       if (request.method === "logout") {
         const authentication = this.authentication();
         if (authentication)
-          this.application.options.identity!.logout(authentication.sessionHash);
+          await this.application.options.identity!.logout(
+            authentication.sessionHash,
+          );
         this.invalidate();
         this.cookie = undefined;
         return { ok: true, value: { disconnected: true } };
@@ -172,7 +177,7 @@ export class LocalApplicationConnection {
   cancel(id: unknown) {
     if (typeof id === "string") this.requests.get(id)?.abort();
   }
-  observe(
+  async observe(
     id: unknown,
     scope: unknown,
     generation: unknown,
@@ -184,18 +189,40 @@ export class LocalApplicationConnection {
     if (this.subscriptions.has(key) || this.subscriptions.size >= 32)
       throw new DomainError("invalid", "订阅过多或标识重复。");
     let disposed = false;
+    let dispose: (() => void) | undefined;
     const close = () => {
+      if (disposed) return;
       disposed = true;
       this.subscriptions.delete(key);
       onClose();
     };
-    const dispose = this.session(expected).session.observeConversation(
-      scope,
-      emit,
-      close,
-    );
-    if (disposed) dispose();
-    else this.subscriptions.set(key, dispose);
+    this.subscriptions.set(key, () => {
+      close();
+      dispose?.();
+    });
+    try {
+      const session = this.session(expected).session;
+      const platform = z
+        .object({
+          kind: z.literal("platform"),
+          projectId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+          conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+        })
+        .strict()
+        .parse(scope);
+      dispose = await session.observePlatformConversation(
+        {
+          projectId: platform.projectId,
+          conversationId: platform.conversationId,
+        },
+        emit,
+        close,
+      );
+      if (disposed) dispose();
+    } catch (error) {
+      this.subscriptions.delete(key);
+      throw error;
+    }
   }
   unobserve(id: unknown) {
     if (typeof id !== "string") return;
@@ -203,14 +230,37 @@ export class LocalApplicationConnection {
     this.subscriptions.delete(id);
     dispose?.();
   }
-  resource(kind: "assets" | "attachments" | "application-view", id: string) {
+  async resource(
+    kind: "assets" | "attachments" | "application-view",
+    id: string,
+    source?: { projectId: string; conversationId: string; inputId: string },
+  ) {
     const { session } = this.session();
     if (kind === "application-view")
       return {
         mime: "text/html; charset=utf-8",
-        bytes: Buffer.from(session.applicationView(id)),
+        bytes: Buffer.from(await session.applicationView(id)),
       };
-    return session.asset(id, kind === "attachments");
+    return session.asset(id, kind === "attachments", source);
+  }
+  readerOriginalMetadata(artifactId: string, revision: number) {
+    return this.session().session.readPlatformReaderOriginalMetadata({
+      artifactId,
+      revision,
+    });
+  }
+  readerOriginalRange(
+    artifactId: string,
+    revision: number,
+    start: number,
+    endExclusive: number,
+  ) {
+    return this.session().session.readPlatformReaderOriginalRange({
+      artifactId,
+      revision,
+      start,
+      endExclusive,
+    });
   }
   invalidate() {
     this.generation = randomBytes(32).toString("hex");

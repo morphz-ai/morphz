@@ -12,10 +12,8 @@ import {
   conversationFrameSchema,
   type ConversationStream,
 } from "../../packages/core/src/live-conversation.js";
-import {
-  applicationFailure,
-  conversationScope,
-} from "../../packages/application/src/application.js";
+import { applicationFailure } from "../../packages/application/src/application.js";
+import { maxReadingFileBytes } from "../../packages/core/src/reader.js";
 
 const requestSchema = z
   .object({
@@ -79,7 +77,7 @@ export class RemoteApplicationConnection {
       if (this.requests.size >= 64 || this.requests.has(request.id))
         throw new ApplicationRequestError(400, "请求过多或标识重复。");
       if (
-        !["workspace", "login"].includes(request.method) &&
+        !["platform.bootstrap", "login"].includes(request.method) &&
         (!request.identityGeneration ||
           request.identityGeneration !== this.generation)
       )
@@ -102,7 +100,7 @@ export class RemoteApplicationConnection {
           408,
           "连接已改变；已提交的操作不会回滚。",
         );
-      if (request.method === "workspace")
+      if (request.method === "platform.bootstrap")
         this.generation = z
           .object({ csrfToken: z.string() })
           .parse(result).csrfToken;
@@ -137,13 +135,16 @@ export class RemoteApplicationConnection {
   async resource(
     kind: "assets" | "attachments" | "application-view",
     id: string,
+    source?: { projectId: string; conversationId: string; inputId: string },
   ) {
     this.assertOpen();
     if (this.identityTransition)
       throw new ApplicationRequestError(409, "身份正在切换。");
     if (
       !["assets", "attachments", "application-view"].includes(kind) ||
-      !/^[a-zA-Z0-9_-]{1,200}$/.test(id)
+      !(kind === "application-view"
+        ? /^[a-z][a-z0-9.-]{2,80}@\d+\.\d+\.\d+$/.test(id)
+        : /^[a-zA-Z0-9_-]{1,200}$/.test(id))
     )
       throw new ApplicationRequestError(400, "资源标识无效。");
     if (this.requests.size >= 64)
@@ -156,7 +157,13 @@ export class RemoteApplicationConnection {
     const limit = 24 * 1024 * 1024;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await this.request(`${this.origin}/api/${kind}/${id}`, {
+      const resourceURL = new URL(`/api/${kind}/${id}`, this.origin);
+      if (source) {
+        if (kind !== "attachments")
+          throw new ApplicationRequestError(400, "资源来源参数无效。");
+        resourceURL.search = new URLSearchParams(source).toString();
+      }
+      const response = await this.request(resourceURL.toString(), {
         credentials: "include",
         redirect: "error",
         signal: controller.signal,
@@ -207,6 +214,138 @@ export class RemoteApplicationConnection {
       this.requests.delete(requestId);
     }
   }
+  private async withReaderOriginalRange<T>(
+    artifactId: string,
+    revision: number,
+    start: number,
+    endExclusive: number,
+    use: (
+      response: Response,
+      metadata: { byteLength: number; sha256: string },
+      assertActive: () => void,
+    ) => Promise<T>,
+  ): Promise<T> {
+    this.assertOpen();
+    if (this.identityTransition)
+      throw new ApplicationRequestError(409, "身份正在切换。");
+    if (
+      !/^[a-zA-Z0-9_-]{1,200}$/.test(artifactId) ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1 ||
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(endExclusive) ||
+      start < 0 ||
+      endExclusive <= start ||
+      endExclusive - start > 1024 * 1024
+    )
+      throw new ApplicationRequestError(400, "PDF 原件读取范围无效。");
+    if (this.requests.size >= 64)
+      throw new ApplicationRequestError(400, "请求过多。");
+    const epoch = this.epoch;
+    const requestId = randomUUID();
+    const controller = new AbortController();
+    this.requests.set(requestId, controller);
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response: Response | undefined;
+    const assertActive = () => {
+      this.assertOpen();
+      if (epoch !== this.epoch || controller.signal.aborted)
+        throw new ApplicationRequestError(403, "连接身份已变化或读取已取消。");
+    };
+    try {
+      const url = new URL("/api/reader/original", this.origin);
+      url.search = new URLSearchParams({
+        artifactId,
+        revision: String(revision),
+      }).toString();
+      response = await this.request(url.toString(), {
+        credentials: "include",
+        redirect: "error",
+        headers: { Range: `bytes=${start}-${endExclusive - 1}` },
+        signal: controller.signal,
+      });
+      assertActive();
+      if (response.status !== 206)
+        throw new ApplicationRequestError(
+          response.status,
+          "PDF 原件不存在或已无访问权限。",
+        );
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
+        response.headers.get("content-range") ?? "",
+      );
+      const sha = /^"([a-f0-9]{64})"$/.exec(response.headers.get("etag") ?? "");
+      const byteLength = Number(range?.[3]);
+      if (
+        response.headers.get("content-type") !== "application/pdf" ||
+        !range ||
+        !sha ||
+        Number(range[1]) !== start ||
+        Number(range[2]) !== endExclusive - 1 ||
+        !Number.isSafeInteger(byteLength) ||
+        byteLength < endExclusive ||
+        byteLength > maxReadingFileBytes ||
+        Number(response.headers.get("content-length")) !== endExclusive - start
+      )
+        throw new ApplicationRequestError(502, "远端 PDF 原件响应无效。");
+      return await use(response, { byteLength, sha256: sha[1]! }, assertActive);
+    } finally {
+      clearTimeout(timeout);
+      try {
+        await response?.body?.cancel();
+      } catch {}
+      controller.abort();
+      this.requests.delete(requestId);
+    }
+  }
+  readerOriginalMetadata(artifactId: string, revision: number) {
+    return this.withReaderOriginalRange(
+      artifactId,
+      revision,
+      0,
+      1,
+      async (_response, metadata) => metadata,
+    );
+  }
+  readerOriginalRange(
+    artifactId: string,
+    revision: number,
+    start: number,
+    endExclusive: number,
+    expectedSha256?: string,
+  ) {
+    return this.withReaderOriginalRange(
+      artifactId,
+      revision,
+      start,
+      endExclusive,
+      async (response, metadata, assertActive) => {
+        if (expectedSha256 && metadata.sha256 !== expectedSha256)
+          throw new ApplicationRequestError(502, "PDF 原件版本已变化。");
+        const reader = response.body?.getReader();
+        if (!reader)
+          throw new ApplicationRequestError(502, "远端 PDF 原件没有字节流。");
+        const bytes = new Uint8Array(endExclusive - start);
+        let offset = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            assertActive();
+            if (done) break;
+            if (offset + value.byteLength > bytes.byteLength)
+              throw new ApplicationRequestError(502, "远端 PDF 分块超出范围。");
+            bytes.set(value, offset);
+            offset += value.byteLength;
+          }
+          if (offset !== bytes.byteLength)
+            throw new ApplicationRequestError(502, "远端 PDF 分块不完整。");
+          return bytes;
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+        }
+      },
+    );
+  }
   async observe(
     rawId: unknown,
     rawScope: unknown,
@@ -216,7 +355,14 @@ export class RemoteApplicationConnection {
   ) {
     this.assertOpen();
     const id = z.string().uuid().parse(rawId),
-      scope = conversationScope.parse(rawScope);
+      platform = z
+        .object({
+          kind: z.literal("platform"),
+          projectId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+          conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+        })
+        .strict()
+        .parse(rawScope);
     if (
       this.identityTransition ||
       !generation ||
@@ -235,14 +381,12 @@ export class RemoteApplicationConnection {
       }
     };
     const run = async () => {
-      const response = await this.request(
-        this.origin + "/api/conversation/stream?" + new URLSearchParams(scope),
-        {
-          credentials: "include",
-          redirect: "error",
-          signal: controller.signal,
-        },
-      );
+      const streamPath = `/api/platform/projects/${encodeURIComponent(platform.projectId)}/conversations/${encodeURIComponent(platform.conversationId)}/stream`;
+      const response = await this.request(this.origin + streamPath, {
+        credentials: "include",
+        redirect: "error",
+        signal: controller.signal,
+      });
       if (!response.ok || !response.body) throw new Error("远端订阅不可用。");
       const reader = response.body.getReader(),
         decoder = new TextDecoder();

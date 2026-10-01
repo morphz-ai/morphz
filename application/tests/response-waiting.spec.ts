@@ -1,7 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import type { Boot } from "../apps/web/src/client.js";
-import type { ConversationRuntime } from "../packages/core/src/conversation.js";
+import {
+  disconnectedRuntime,
+  type ConversationRuntime,
+} from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { openInput } from "./interaction-helpers.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
@@ -15,7 +19,7 @@ async function setup(page: Page) {
   ];
   const replies: ConversationRuntime["messages"] = [];
   const threads: NonNullable<ConversationRuntime["activity"]>["threads"] = [];
-  let scope = { projectId: "", conversationId: "" };
+  const inputs: PlatformHistory["inputs"] = [];
   await page.addInitScript(() => {
     const sources = new Set<any>();
     (window as any).__waitingStreams = sources;
@@ -30,40 +34,10 @@ async function setup(page: Page) {
       }
     };
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    boot.capabilities.directedInput = true;
-    const dialogue = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!;
-    scope = { projectId: dialogue.id, conversationId: dialogue.id };
-    boot.workspace.inputs = ["waiting-a", "waiting-b"].map((id, i) => ({
-      id,
-      ...scope,
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: `TEST 首字反馈 ${i + 1}`,
-      author: { actantId: boot.actantId, principalId: boot.principalId },
-      targetActantId: "morphz-agent",
-      status: "recorded",
-      createdAt: `2026-09-22T00:00:0${i}Z`,
-    }));
-    // A real conversation is required for the shared streaming subscription.
-    if (!boot.workspace.conversations.some((c) => c.id === dialogue.id))
-      boot.workspace.conversations.push({
-        id: dialogue.id,
-        projectId: dialogue.id,
-        title: "对话",
-        revision: 1,
-        archivedAt: null,
-        createdAt: "2026-09-22T00:00:00Z",
-        updatedAt: "2026-09-22T00:00:00Z",
-      });
-    boot.runtime = {
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected,
       model: `waiting-fixture-${generation}`,
@@ -72,9 +46,30 @@ async function setup(page: Page) {
       messages: replies,
       activity: { available: true, threads, truncated: false },
       attention: { available: true, approvals: [] },
-    };
-    boot.outputs = [];
-    await route.fulfill({ response, json: boot });
+    },
+  }));
+  const scope = presentation.scope;
+  inputs.push(
+    ...["waiting-a", "waiting-b"].map((id, i) =>
+      presentation.input(
+        id,
+        `TEST 首字反馈 ${i + 1}`,
+        `2026-09-22T00:00:0${i}Z`,
+      ),
+    ),
+  );
+  // This presentation fixture models a connected Runtime with directed input.
+  // The isolated service itself deliberately has no Runtime connection.
+  await page.route("**/api/platform/bootstrap", async (route) => {
+    const response = await route.fetch();
+    const bootstrap = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...bootstrap,
+        capabilities: { ...bootstrap.capabilities, directedInput: true },
+      },
+    });
   });
   await page.goto("/");
   await page
@@ -91,13 +86,7 @@ async function setup(page: Page) {
     async update(online = connected) {
       connected = online;
       generation++;
-      const response = page.waitForResponse(
-        async (r) =>
-          r.url().endsWith("/api/workspace") &&
-          (await r.json()).runtime?.model === `waiting-fixture-${generation}`,
-      );
-      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-      await response;
+      await presentation.refresh();
     },
     async stream(text: string, streaming = true) {
       await expect

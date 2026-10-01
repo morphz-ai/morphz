@@ -65,6 +65,29 @@ test("仅正文、错误或交付形成未读，后台进度、工具和空回�
   assert.equal(hasUnreadReplies({}, replyReceipts([], [output])), true);
 });
 
+test("同一批审阅的每条交付都有独立已读身份", () => {
+  const review = (reviewId: string) => ({
+    commandId: "batch-review",
+    inputId: "input-one",
+    projectId: "project-one",
+    productionId: "production-one",
+    kind: "review" as const,
+    productionTitle: "同一剧本",
+    itemKind: "episode" as const,
+    itemId: "episode-one",
+    reviewId,
+    title: "第一集",
+    revision: 1,
+    createdAt: "2026-09-28T00:00:00.000Z",
+  });
+  const first = replyReceipts([], [], [review("review-one")]);
+  const second = replyReceipts([], [], [review("review-two")]);
+  assert.notEqual(first[0]?.keys[0], second[0]?.keys[0]);
+  const seen = acknowledgeReplies({}, first);
+  assert.equal(hasUnreadReplies(seen, first), false);
+  assert.equal(hasUnreadReplies(seen, second), true);
+});
+
 test("同长度文字变化及新交付仍然提醒，不以字数或消息数量充当已读", () => {
   const seen = acknowledgeReplies(
     {},

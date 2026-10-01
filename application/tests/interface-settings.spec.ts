@@ -3,6 +3,9 @@ import { openSettings } from "./settings-helpers.js";
 import { openInput } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { platformInputState } from "./platform-input-state-fixture.js";
 
 test("外观快捷按钮保留原位置和选择行为，并与统一设置同步", async ({ page }) => {
   await page.goto("/");
@@ -66,7 +69,12 @@ test("发送快捷键可切换并持久化，换行和输入法不误提交", as
   await expect(input).toHaveValue("TEST 设置期间保留正文\n");
   await input.press("Shift+Enter");
   await expect(input).toHaveValue("TEST 设置期间保留正文\n\n");
-  const before = await (await page.request.get("/api/workspace")).json();
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await platformInputState(page, source);
+  expect(before.saved).toHaveLength(1);
+  expect(before.saved[0]?.body).toContain("TEST 默认 Enter 发送");
   await input.dispatchEvent("keydown", {
     key: "Enter",
     code: "Enter",
@@ -80,10 +88,7 @@ test("发送快捷键可切换并持久化，换行和输入法不误提交", as
     keyCode: 229,
   });
   await expect(input).toHaveValue("TEST 设置期间保留正文\n\n");
-  expect(
-    (await (await page.request.get("/api/workspace")).json()).workspace.inputs
-      .length,
-  ).toBe(before.workspace.inputs.length);
+  expect(await platformInputState(page, source)).toEqual(before);
   await page.reload();
   await expect(input).toHaveValue("TEST 设置期间保留正文\n\n");
   await input.evaluate((element) => {
@@ -94,10 +99,14 @@ test("发送快捷键可切换并持久化，换行和输入法不误提交", as
   await expect(input).toHaveValue("TEST 设置期间保留正文\n\n\n");
   await input.press("ControlOrMeta+Enter");
   await expect(input).toBeEmpty();
-  expect(
-    (await (await page.request.get("/api/workspace")).json()).workspace.inputs
-      .length,
-  ).toBe(before.workspace.inputs.length + 1);
+  const after = await platformInputState(page, source);
+  expect(after.saved).toHaveLength(before.saved.length + 1);
+  expect(after.deliveries).toEqual(before.deliveries);
+  await page.reload();
+  expect(await platformInputState(page, source)).toEqual(after);
+  await expect(
+    page.locator(".human-message").filter({ hasText: "TEST 设置期间保留正文" }),
+  ).toHaveCount(1);
 });
 
 test("阅读字号真实改变文档和消息，刷新保持且不修改正文或导航字号", async ({

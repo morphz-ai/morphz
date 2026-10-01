@@ -1,4 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=";
@@ -49,7 +51,18 @@ test.beforeEach(async ({ page }) => {
 test("粘贴多文件和图片成为当前草稿附件，不插入路径、不发送或创建内容", async ({
   page,
 }) => {
-  const before = await (await page.request.get("/api/workspace")).json();
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await source.contentCounts();
+  const submittedInputs: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/platform/messages"
+    )
+      submittedInputs.push(request.url());
+  });
   const input = page.getByLabel("AI 输入内容");
   await input.fill("保留原有文字");
   // File selection and paste use the same uploader and preview list.
@@ -99,9 +112,8 @@ test("粘贴多文件和图片成为当前草稿附件，不插入路径、不�
   await expect(
     attachments.getByRole("button", { name: /^移除附件/ }),
   ).toHaveCount(3);
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
-  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
+  expect(await source.contentCounts()).toEqual(before);
+  expect(submittedInputs).toEqual([]);
   await page.getByRole("button", { name: "移除附件 image.png" }).click();
   await expect(
     attachments.getByRole("button", { name: /^移除附件/ }),
@@ -123,6 +135,14 @@ test("普通文字和路径保持原生粘贴，不下载链接或读取文件",
 test("粘贴附件限制与文件选择一致，失败不影响原草稿或成功附件", async ({
   page,
 }) => {
+  const uploads: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/attachments"
+    )
+      uploads.push(request.url());
+  });
   const input = page.getByLabel("AI 输入内容");
   await input.fill("失败也保留");
   await pasteFiles(page, [
@@ -133,6 +153,7 @@ test("粘贴附件限制与文件选择一致，失败不影响原草稿或成�
   await expect(
     page.getByRole("button", { name: "移除附件 valid.txt" }),
   ).toBeEnabled();
+  expect(uploads).toHaveLength(1);
   await expect(input).toHaveValue("失败也保留");
   await pasteFiles(
     page,

@@ -1,16 +1,33 @@
 import { openSettings } from "./settings-helpers.js";
-import { test, expect, type Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  conversationClient,
+} from "./project-conversation-fixture.js";
+
+async function openProject(page: Page) {
+  await page.goto("/");
+  const source = await conversationClient(page);
+  const title = `TEST 侧栏悬停 ${crypto.randomUUID().slice(0, 8)}`;
+  await source.createProject(title, crypto.randomUUID(), crypto.randomUUID());
+  await page.reload();
+  await expect(
+    page.getByRole("group", { name: title + "的会话", exact: true }),
+  ).toBeVisible();
+  return title;
+}
 
 test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦点保留", async ({
   page,
 }) => {
-  await page.goto("/");
+  const title = await openProject(page);
   const project = page.getByRole("group", {
-    name: "我的项目的会话",
+    name: title + "的会话",
     exact: true,
   });
   const heading = project.locator(".sidebar-project-heading");
-  const create = project.getByLabel("新建项目对话：我的项目", { exact: true });
+  const create = project.getByLabel("新建项目对话：" + title, { exact: true });
   const away = page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true });
@@ -120,12 +137,12 @@ test("项目与会话整行呈现悬停背景，子按钮不叠色，键盘焦�
 test.describe("没有鼠标悬停的设备", () => {
   test.use({ hasTouch: true });
   test("新建会话保持可见", async ({ page }) => {
-    await page.goto("/");
+    const title = await openProject(page);
     expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(
       true,
     );
     await expect(
-      page.getByLabel("新建项目对话：我的项目", { exact: true }),
+      page.getByLabel("新建项目对话：" + title, { exact: true }),
     ).toHaveCSS("opacity", "1");
   });
 });

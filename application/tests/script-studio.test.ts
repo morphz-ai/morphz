@@ -1,1199 +1,1126 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import {
-  applyCommand,
-  commandSchema,
-  initialWorkspace,
-  localAccess,
-  stateSchema,
-  type AccessContext,
-  type Operation,
-} from "../packages/core/src/model.js";
+import { Pool, type QueryResult } from "pg";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import { scriptDocxManifest } from "./script-docx-fixture.js";
+import { localAccess } from "../packages/core/src/model.js";
 import {
   currentScriptDraft,
   emptyScriptDraft,
   scriptCandidateStale,
   scriptGenerationSchema,
-  scriptImpact,
   scriptIssues,
-  type ScriptCommand,
-  type ScriptDraft,
   type ScriptGeneration,
+  type ScriptItem,
+  type ScriptProduction,
 } from "../packages/core/src/script-studio.js";
-import { workspaceFor } from "../packages/application/src/identity.js";
 import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
+import type { HostInvocation } from "../packages/application/src/agent-tools.js";
+import type { LiveScriptDraft } from "../packages/script-studio/src/store.js";
+import {
+  createScriptProduction,
+  createScriptItem,
+  reviseScriptItem,
+  updateScriptProduction,
+  decideScriptCandidate,
+  submitScriptCandidate,
+  submitScriptReviewBatch,
+  transitionScriptWorkflow,
+  changeScriptReview,
+  recordScriptExport,
+} from "../packages/application/src/script-production-service.js";
 
-const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
+const otherHuman = {
+  principalId: "other-script-human",
+  actantId: "other-script-actant",
+};
+const postgresUrl = process.env.MORPHZ_TEST_POSTGRES_URL;
+type Backend = "sqlite" | "postgres";
+type Preparation = {
+  route: HostInvocation;
+  inputId: string;
+  generation: ScriptGeneration;
+};
 
-test("创作文稿导出不需要自我审批，不修改状态；正式交付仍检查锁稿与版本", () => {
-  const f = fixture();
-  const episode = f.create("episode", { text: "TEST 已保存的创作正文" });
-  const before = structuredClone(f.item(episode));
-  const request = {
-    action: "record-export" as const,
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    items: [{ itemId: episode, revision: 1 }],
-    template: f.production().template,
+// Real Platform/Objects/Script databases and authority. Only accepted Runtime
+// evidence and generated prose are controlled; no model runs. This adapter
+// dispatches production services, never a parallel Workspace reducer.
+async function fixture(backend: Backend) {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
+  const schemas = {
+    platform: `si_p_${suffix}`,
+    objects: `si_o_${suffix}`,
+    scriptStudio: `si_s_${suffix}`,
+    reader: `si_r_${suffix}`,
+    browser: `si_b_${suffix}`,
   };
-  assert.throws(() => f.run(request), /锁定稿/);
-  const exportId = f.run({ ...request, workingCopy: true });
-  assert.deepEqual(f.item(episode), before);
-  assert.equal(f.production().exports.at(-1)!.workingCopy, true);
-  const bytes = buildScriptDocx(f.production(), exportId);
-  const xml = Buffer.from(bytes).toString("utf8");
-  assert.match(xml, /TEST 已保存的创作正文/);
-  assert.match(xml, /创作副本，不代表已审阅/);
-  assert.doesNotMatch(xml, /本次交付/);
-  f.revise(episode, { text: "后来的正文不得改变已导出的副本" });
-  assert.deepEqual(buildScriptDocx(f.production(), exportId), bytes);
-  assert.throws(() => f.run({ ...request, workingCopy: true }), /新版本/);
-  const empty = f.create("episode");
-  assert.throws(
-    () =>
-      f.run({
-        ...request,
-        items: [{ itemId: empty, revision: 1 }],
-        workingCopy: true,
-      }),
-    /先保存/,
-  );
-  assert.equal(f.production().exports.length, 1);
-});
-
-function fixture() {
-  let state = initialWorkspace();
-  const execute = (
-    operation: Operation,
-    access = localAccess,
-    originInputId?: string,
-    commandId = randomUUID(),
-  ) => {
-    const result = applyCommand(
-      state,
-      commandSchema.parse({ commandId, operation }),
-      access,
-      "2026-09-18T10:00:00Z",
-      originInputId,
-    );
-    state = result.state;
-    return result.receipt.entityId;
+  const admin =
+    backend === "postgres" ? new Pool({ connectionString: postgresUrl }) : null;
+  const ownedSchemaOids = new Map<string, number>();
+  let host: Awaited<ReturnType<typeof agentDomainFixture>> | undefined;
+  const close = async () => {
+    try {
+      await host?.close();
+    } finally {
+      if (admin) {
+        try {
+          for (const [schema, expectedOid] of ownedSchemaOids) {
+            assert.ok(/^si_[posrb]_[a-f0-9]{16}$/.test(schema));
+            assert.ok(Object.values(schemas).includes(schema));
+            const current: QueryResult<{ oid: number }> = await admin.query<{
+              oid: number;
+            }>("SELECT oid FROM pg_namespace WHERE nspname=$1", [schema]);
+            assert.equal(
+              current.rows[0]?.oid,
+              expectedOid,
+              "cleanup refuses an absent or replaced namespace; only this fixture's fixed owned OID may be dropped",
+            );
+            await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+          }
+        } finally {
+          await admin.end();
+        }
+      }
+    }
   };
-  const run = (
-    command: ScriptCommand,
-    access = localAccess,
-    originInputId?: string,
-  ) => execute({ type: "script-command", command }, access, originInputId);
-  const productionId = run({
-    action: "create-production",
-    projectId: "first-project",
-    title: "合成剧本领域测试",
-  });
-  const production = () =>
-    state.scriptProductions.find((p) => p.id === productionId)!;
-  const item = (id: string) => production().items.find((i) => i.id === id)!;
-  const metadata = (
-    changes: Partial<ReturnType<typeof production>["brief"]> = {},
-  ) => {
-    const p = production();
-    run({
-      action: "update-production",
-      productionId,
-      expectedRevision: p.revision,
-      title: p.title,
-      brief: { ...p.brief, ...changes },
-      reviewerPrincipalIds: p.reviewerPrincipalIds,
-      template: p.template,
-    });
-  };
-  const create = (
-    kind: ReturnType<typeof item>["kind"],
-    draft: Partial<ScriptDraft> = {},
-  ) =>
-    run({
-      action: "create-item",
-      productionId,
-      kind,
-      draft: { ...emptyScriptDraft(kind), ...draft },
-    });
-  const revise = (id: string, changes: Partial<ScriptDraft>) =>
-    run({
-      action: "revise-item",
-      productionId,
-      itemId: id,
-      expectedRevision: item(id).revision,
-      draft: { ...currentScriptDraft(item(id)), ...changes },
-    });
-  const approve = (id: string, lock = false) => {
-    run({
-      action: "submit-review",
-      productionId,
-      itemId: id,
-      expectedRevision: item(id).revision,
-      expectedWorkflowRevision: item(id).workflowRevision,
-    });
-    run({
-      action: "review-decision",
-      productionId,
-      itemId: id,
-      expectedRevision: item(id).revision,
-      expectedWorkflowRevision: item(id).workflowRevision,
-      decision: "approve",
-      note: "合成测试批准",
-    });
-    if (lock)
-      run({
-        action: "lock-item",
-        productionId,
-        itemId: id,
-        expectedRevision: item(id).revision,
-        expectedWorkflowRevision: item(id).workflowRevision,
-      });
-  };
-  const generation = (
-    targetId: string,
-    references: ScriptGeneration["references"] = [],
-    changes: Partial<ScriptGeneration> = {},
-  ): ScriptGeneration => ({
-    productionId,
-    targetId,
-    baseRevision: item(targetId).revision,
-    contextRevision: production().revision,
-    purpose: "rewrite",
-    references,
-    maxCandidates: 2,
-    maxOutputCharacters: 5000,
-    maxReviewPasses: 1,
-    ...changes,
-  });
-  const input = (request?: ScriptGeneration) =>
-    execute({
-      type: "record-input",
-      projectId: "first-project",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "合成测试，不调用模型",
-      targetActantId: agent.actantId,
-      ...(request ? { scriptGeneration: request } : {}),
-    });
-  const candidate = (inputId: string, draft: ScriptDraft) =>
-    run(
-      {
-        action: "submit-candidate",
-        productionId,
-        draft,
-        explanation: "合成候选，非模型创作",
-      },
-      agent,
-      inputId,
-    );
-  return {
-    get state() {
-      return state;
-    },
-    execute,
-    run,
-    productionId,
-    production,
-    item,
-    metadata,
-    create,
-    revise,
-    approve,
-    generation,
-    input,
-    candidate,
-  };
-}
-
-test("无变更保存不改版本；改名排版保留批准、候选和历史导出，创作变更不可反悔复活旧候选", () => {
-  const f = fixture();
-  f.metadata({ modelProcessingAllowed: true });
-  const done = f.create("episode", { text: "已经审阅的第一集" });
-  const pending = f.create("episode", { text: "待改写的第二集" });
-  const generation = f.generation(pending);
-  const inputId = f.input(generation);
-  const candidateId = f.candidate(inputId, {
-    ...currentScriptDraft(f.item(pending)),
-    text: "第二集候选",
-  });
-  f.approve(done, true);
-  const exported = () =>
-    f.run({
-      action: "record-export",
-      productionId: f.productionId,
-      expectedRevision: f.production().revision,
-      items: [{ itemId: done, revision: f.item(done).revision }],
-      template: f.production().template,
-    });
-  const exportId = exported();
-  const originalBytes = buildScriptDocx(f.production(), exportId);
-  const original = structuredClone(f.production());
-  f.metadata();
-  assert.deepEqual(
-    f.production(),
-    original,
-    "same settings are a domain no-op",
-  );
-  f.run({
-    action: "update-production",
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    title: "改名",
-    brief: f.production().brief,
-    reviewerPrincipalIds: f.production().reviewerPrincipalIds,
-    template: { ...f.production().template, fontSize: 14 },
-  });
-  assert.deepEqual(
-    f.item(done).approval,
-    original.items.find((i) => i.id === done)!.approval,
-  );
-  assert.equal(f.item(done).status, "locked");
-  assert.equal(
-    scriptCandidateStale(
-      f.production(),
-      f.production().candidates.find((c) => c.id === candidateId)!,
-    ),
-    false,
-  );
-  assert.doesNotThrow(
-    () => f.input(generation),
-    "prepared generation survives presentation-only changes",
-  );
-  exported();
-  assert.deepEqual(buildScriptDocx(f.production(), exportId), originalBytes);
-  f.metadata({ style: "新风格" });
-  assert.equal(f.item(done).approval, null);
-  assert.throws(exported, /审阅有效/);
-  f.metadata({ style: original.brief.style });
-  assert.equal(
-    scriptCandidateStale(
-      f.production(),
-      f.production().candidates.find((c) => c.id === candidateId)!,
-    ),
-    true,
-  );
-  assert.throws(() => f.input(generation), /创作要求已有新版本/);
-});
-
-test("整份原作正文计入生成材料预算，引文授权只计入实际引文", () => {
-  const f = fixture();
-  f.metadata({ modelProcessingAllowed: true });
-  const artifactId = f.execute({
-    type: "create-artifact",
-    projectId: "first-project",
-    title: "合成长原作",
-    content: { kind: "document", markdown: "合成原作".repeat(31_000) },
-  });
-  const target = f.create("episode", {
-    sources: [{ artifactId, revision: 1, quote: "" }],
-  });
-  assert.throws(() => f.input(f.generation(target)), /120000/);
-  f.revise(target, {
-    sources: [{ artifactId, revision: 1, quote: "合成原作" }],
-  });
-  assert.doesNotThrow(() => f.input(f.generation(target)));
-});
-
-test("剧本领域默认空并兼容旧 Workspace；入口是可恢复的 builtin，不创建 demo", () => {
-  const initial = initialWorkspace();
-  assert.deepEqual(initial.scriptProductions, []);
-  const { scriptProductions: _omitted, ...old } = initial;
-  assert.deepEqual(stateSchema.parse(old).scriptProductions, []);
-  const f = fixture();
-  const instanceId = f.execute({
-    type: "launch-application",
-    workspaceId: "first-project",
-    applicationId: "morphz.script-studio",
-    applicationVersion: "1.0.0",
-  });
-  assert.equal(
-    f.execute({
-      type: "launch-application",
-      workspaceId: "first-project",
-      applicationId: "morphz.script-studio",
-      applicationVersion: "1.0.0",
-    }),
-    instanceId,
-  );
-  assert.equal(f.state.scriptProductions.length, 1);
-  assert.equal(f.production().items.length, 0);
-  assert.throws(
-    () =>
-      applyCommand(
-        f.state,
-        commandSchema.parse({
-          commandId: randomUUID(),
-          applicationInstanceId: instanceId,
-          operation: {
-            type: "script-command",
-            command: {
-              action: "create-production",
-              projectId: "first-project",
-              title: "沙箱不得扩大权限",
+  try {
+    if (admin)
+      for (const schema of Object.values(schemas)) {
+        await admin.query(`CREATE SCHEMA "${schema}"`);
+        const created: QueryResult<{ oid: number }> = await admin.query<{
+          oid: number;
+        }>("SELECT oid FROM pg_namespace WHERE nspname=$1", [schema]);
+        assert.equal(created.rows.length, 1);
+        assert.ok(Number.isSafeInteger(created.rows[0]!.oid));
+        ownedSchemaOids.set(schema, created.rows[0]!.oid);
+      }
+    host = await agentDomainFixture({
+      additionalHumans: [otherHuman],
+      ...(admin
+        ? {
+            storage: {
+              platform: {
+                kind: "postgres" as const,
+                connectionString: postgresUrl!,
+                schema: schemas.platform,
+              },
+              applications: {
+                connectionStrings: {
+                  objects: postgresUrl!,
+                  scriptStudio: postgresUrl!,
+                  reader: postgresUrl!,
+                  browser: postgresUrl!,
+                },
+                deploymentId: `script_invariants_${suffix}`,
+                schemas: {
+                  objects: schemas.objects,
+                  scriptStudio: schemas.scriptStudio,
+                  reader: schemas.reader,
+                  browser: schemas.browser,
+                },
+              },
             },
-          },
+          }
+        : {}),
+    });
+    const h = host;
+    const productionId = `script_${randomUUID().replaceAll("-", "")}`;
+    const shared = () => ({
+      platform: h.domains.content.platform,
+      studio: h.domains.content.studio!,
+      instanceId: h.domains.content.instanceIds.scriptStudio,
+      productionId,
+    });
+    const read = () =>
+      h.withHuman((actor) =>
+        shared().studio.readProduction({
+          credential: actor.credential,
+          productionId,
         }),
-        localAccess,
-      ),
-    /应用没有执行/,
-  );
-});
-
-test("正文 CAS、历史恢复创建新版本，旧草稿不能覆盖新稿", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "人工原稿" });
-  f.revise(id, { text: "人工新稿" });
-  assert.equal(currentScriptDraft(f.item(id)).text, "人工新稿");
-  assert.equal(f.item(id).versions[0]!.draft.text, "人工原稿");
-  assert.throws(
-    () =>
-      f.run({
-        action: "revise-item",
-        productionId: f.productionId,
-        itemId: id,
-        expectedRevision: 1,
-        draft: emptyScriptDraft("迟到覆盖"),
-      }),
-    /已有新版本/,
-  );
-  f.run({
-    action: "restore-item",
-    productionId: f.productionId,
-    itemId: id,
-    expectedRevision: 2,
-    restoreRevision: 1,
-  });
-  assert.equal(f.item(id).revision, 3);
-  assert.equal(f.item(id).versions.length, 3);
-  assert.equal(currentScriptDraft(f.item(id)).text, "人工原稿");
-});
-
-test("角色、分场父集与依赖闭包必须有效，拒绝自身和循环依赖", () => {
-  const f = fixture();
-  const character = f.create("character", { text: "角色设定" });
-  const episode = f.create("episode", {
-    text: "分集",
-    dependencies: [{ itemId: character, revision: 1 }],
-  });
-  assert.throws(() => f.create("scene", { text: "孤立分场" }), /分场必须/);
-  assert.throws(() => f.create("scene", { parentId: episode }), /同时绑定依赖/);
-  assert.throws(() => f.create("episode", { parentId: episode }), /只有分场/);
-  assert.throws(
-    () =>
-      f.create("episode", {
-        characters: [episode],
-        dependencies: [{ itemId: episode, revision: 1 }],
-      }),
-    /角色条目/,
-  );
-  assert.throws(
-    () =>
-      f.revise(character, { dependencies: [{ itemId: episode, revision: 1 }] }),
-    /循环/,
-  );
-  assert.throws(
-    () =>
-      f.revise(episode, { dependencies: [{ itemId: episode, revision: 1 }] }),
-    /自身/,
-  );
-  const scene = f.create("scene", {
-    parentId: episode,
-    text: "场景",
-    characters: [character],
-    dependencies: [
-      { itemId: episode, revision: 1 },
-      { itemId: character, revision: 1 },
-    ],
-  });
-  f.metadata({ modelProcessingAllowed: true, rightsStatement: "合成资料" });
-  assert.throws(
-    () => f.input(f.generation(scene, [{ itemId: episode, revision: 1 }])),
-    /全部依赖/,
-  );
-  assert.throws(
-    () =>
-      f.input(
-        f.generation(scene, [
-          { itemId: episode, revision: 1 },
-          { itemId: character, revision: 1 },
-          { itemId: character, revision: 1 },
-        ]),
-      ),
-    /不能重复/,
-  );
-  assert.ok(
-    f.input(
-      f.generation(scene, [
-        { itemId: episode, revision: 1 },
-        { itemId: character, revision: 1 },
-      ]),
-    ),
-  );
-});
-
-test("原作引用核对确切历史和原文；整理保留引用，伪造引文与跨权限边界被拒绝", () => {
-  const f = fixture();
-  const artifactId = f.execute({
-    type: "create-artifact",
-    projectId: "first-project",
-    title: "合成原作",
-    content: { kind: "document", markdown: "可核验的原句" },
-  });
-  const sources = [{ artifactId, revision: 1, quote: "可核验的原句" }];
-  const id = f.create("source", { text: "摘录", basis: "source", sources });
-  assert.throws(
-    () =>
-      f.create("source", { sources: [{ ...sources[0]!, quote: "伪造文字" }] }),
-    /原作引用/,
-  );
-  assert.throws(
-    () => f.create("source", { sources: [{ ...sources[0]!, revision: 999 }] }),
-    /原作引用/,
-  );
-  const other = f.execute({ type: "create-project", title: "合成另一项目" });
-  f.execute({
-    type: "organize-content",
-    target: { kind: "artifact", id: artifactId },
-    expectedRevision: 1,
-    changes: { projectId: other },
-  });
-  f.metadata({ modelProcessingAllowed: true });
-  assert.doesNotThrow(() => f.input(f.generation(id)));
-  f.state.projects.find((p) => p.id === other)!.members = [
-    localAccess.principalId,
-  ];
-  assert.throws(() => f.input(f.generation(id)), /原作版本已不可用/);
-});
-
-test("只有 Human 可确认权利，未许可不得提交生成；锁稿不得改写但可审查", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "正文" });
-  assert.throws(() => f.input(f.generation(id)), /尚未确认/);
-  const inputId = f.input();
-  const p = f.production();
-  assert.throws(
-    () =>
-      f.run(
-        {
-          action: "update-production",
-          productionId: p.id,
+      );
+    const item = async (id: string) =>
+      (await read()).items.find((i) => i.id === id)!;
+    const draft = (id: string) =>
+      h.withHuman(
+        async (actor) =>
+          (
+            await shared().studio.readItemVersion({
+              credential: actor.credential,
+              productionId,
+              itemId: id,
+            })
+          ).draft,
+      );
+    const empty = (
+      title: string,
+      changes: Partial<LiveScriptDraft> = {},
+    ): LiveScriptDraft => ({
+      ...emptyScriptDraft(title),
+      sources: [],
+      ...changes,
+    });
+    const create = async (
+      kind: ScriptItem["kind"],
+      changes: Partial<LiveScriptDraft> = {},
+      route?: HostInvocation,
+    ) => {
+      const itemId = `item_${randomUUID().replaceAll("-", "")}`;
+      const current = await read();
+      const work = (actor: Parameters<typeof createScriptItem>[0]["actor"]) =>
+        createScriptItem({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
+          itemId,
+          kind,
+          expectedActivityRevision: current.activityRevision!,
+          draft: empty(kind, changes),
+        });
+      await (route ? h.withAgent(work, route) : h.withHuman(work));
+      return itemId;
+    };
+    const revise = async (id: string, changes: Partial<LiveScriptDraft>) =>
+      h.withHuman(async (actor) =>
+        reviseScriptItem({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
+          itemId: id,
+          expectedRevision: (await item(id)).revision,
+          draft: { ...(await draft(id)), ...changes },
+        }),
+      );
+    const settings = async (
+      changes: Partial<
+        Pick<
+          ScriptProduction,
+          "title" | "brief" | "template" | "reviewerPrincipalIds"
+        >
+      > = {},
+    ) => {
+      const p = await read();
+      return h.withHuman((actor) =>
+        updateScriptProduction({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
           expectedRevision: p.revision,
           title: p.title,
-          brief: { ...p.brief, modelProcessingAllowed: true },
-          reviewerPrincipalIds: p.reviewerPrincipalIds,
+          brief: p.brief,
           template: p.template,
-        },
-        agent,
-        inputId,
-      ),
-    /人工/,
-  );
-  f.metadata({ modelProcessingAllowed: true });
-  f.approve(id, true);
-  assert.throws(() => f.input(f.generation(id)), /已锁稿/);
-  assert.ok(f.input(f.generation(id, [], { purpose: "continuity" })));
-  assert.throws(() => f.revise(id, { text: "覆盖锁稿" }), /已锁稿/);
-});
-
-test("普通 Agent 新建仅限空条目，模型许可不能绕过候选采纳", () => {
-  for (const modelProcessingAllowed of [false, true]) {
-    const f = fixture();
-    f.metadata({ modelProcessingAllowed });
-    const parentId = f.create("episode", { text: "人工分集" });
-    const characterId = f.create("character", { text: "人工角色" });
-    const inputId = f.input();
-    const create = (kind: "episode" | "scene", draft: ScriptDraft) =>
-      f.run(
-        { action: "create-item", productionId: f.productionId, kind, draft },
-        agent,
-        inputId,
-      );
-    const empty = emptyScriptDraft("TEST 空条目", 3);
-    const id = create("episode", empty);
-    assert.deepEqual(currentScriptDraft(f.item(id)), empty);
-    const scene = {
-      ...emptyScriptDraft("TEST 空分场"),
-      parentId,
-      dependencies: [{ itemId: parentId, revision: f.item(parentId).revision }],
-    };
-    assert.deepEqual(currentScriptDraft(f.item(create("scene", scene))), scene);
-    const attempts: Partial<ScriptDraft>[] = [
-      { text: "不能直接进入正式稿" },
-      { basis: "adaptation" },
-      {
-        sources: [
-          { artifactId: "unapproved-source", revision: 1, quote: "原文" },
-        ],
-      },
-      { dependencies: [{ itemId: characterId, revision: 1 }] },
-      { location: "天台" },
-      { storyTime: "天亮前" },
-      { characters: [characterId] },
-      { audienceKnowledge: "观众提前知道真相" },
-      { characterKnowledge: "角色掌握秘密" },
-      { setupPayoff: "伏笔" },
-      { productionNotes: "制作要求" },
-    ];
-    for (const changes of attempts) {
-      const before = structuredClone(f.state);
-      assert.throws(
-        () => create("episode", { ...empty, ...changes }),
-        /只能建立空条目/,
-      );
-      assert.deepEqual(f.state, before);
-    }
-    assert.throws(
-      () =>
-        create("scene", {
-          ...scene,
-          dependencies: [
-            ...scene.dependencies,
-            { itemId: characterId, revision: 1 },
-          ],
+          reviewerPrincipalIds: p.reviewerPrincipalIds,
+          ...changes,
         }),
-      /只能建立空条目/,
-    );
-    f.revise(parentId, { text: "人工新版本" });
-    assert.throws(() => create("scene", scene), /只能建立空条目/);
-  }
-});
-
-test("AI候选必须绑定真实输入；跨tool-call相同候选去重，只有人工采纳才形成正文", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "人工原稿" });
-  f.metadata({ modelProcessingAllowed: true });
-  const inputId = f.input(f.generation(id));
-  const draft = { ...currentScriptDraft(f.item(id)), text: "合成候选" };
-  assert.throws(() => f.candidate(f.input(), draft), /真实生成输入/);
-  assert.throws(
-    () =>
-      f.run({
-        action: "submit-candidate",
-        productionId: f.productionId,
-        draft,
-        explanation: "冒充",
-      }),
-    /真实生成输入/,
-  );
-  const candidateId = f.candidate(inputId, draft);
-  assert.equal(f.candidate(inputId, draft), candidateId);
-  assert.equal(f.production().candidates.length, 1);
-  assert.equal(currentScriptDraft(f.item(id)).text, "人工原稿");
-  assert.throws(
-    () =>
-      f.run(
-        {
-          action: "decide-candidate",
-          productionId: f.productionId,
-          candidateId,
-          expectedRevision: 1,
-          decision: "accept",
+      );
+    };
+    const allow = async () =>
+      settings({
+        brief: {
+          ...(await read()).brief,
+          modelProcessingAllowed: true,
+          rightsStatement: "只使用合成测试资料",
         },
-        agent,
-        inputId,
-      ),
-    /不能改写正式稿/,
-  );
-  f.run({
-    action: "decide-candidate",
-    productionId: f.productionId,
-    candidateId,
-    expectedRevision: 1,
-    decision: "accept",
-  });
-  assert.equal(currentScriptDraft(f.item(id)).text, "合成候选");
-  assert.equal(f.item(id).versions[1]!.candidateId, candidateId);
-  assert.equal(f.item(id).status, "draft");
-  assert.equal(f.production().candidates[0]!.status, "accepted");
-  assert.throws(
-    () =>
-      f.run({
-        action: "decide-candidate",
-        productionId: f.productionId,
-        candidateId,
-        expectedRevision: 1,
-        decision: "reject",
-      }),
-    /已有新版本/,
-  );
-});
-
-test("生成期间人工改稿、设定改版与上下文变化使候选过期，不覆盖新版本", () => {
-  for (const change of ["manual", "upstream", "metadata"] as const) {
-    const f = fixture();
-    const upstream = f.create("setting", { text: "设定v1" });
-    const id = f.create("episode", {
-      text: "人工原稿",
-      dependencies: [{ itemId: upstream, revision: 1 }],
+      });
+    const workflow = async (id: string) => {
+      const i = await item(id);
+      return {
+        itemId: id,
+        expectedRevision: i.revision,
+        expectedWorkflowRevision: i.workflowRevision,
+      };
+    };
+    const flow = async (
+      id: string,
+      action: "submit-review" | "review-decision" | "lock-item",
+      patch: Partial<Awaited<ReturnType<typeof workflow>>> = {},
+    ) =>
+      h.withHuman(async (actor) =>
+        transitionScriptWorkflow({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
+          ...(await workflow(id)),
+          action,
+          ...(action === "review-decision"
+            ? { decision: "approve" as const, note: "合成人工审阅" }
+            : {}),
+          ...patch,
+        }),
+      );
+    const approve = async (id: string, lock = false) => {
+      await flow(id, "submit-review");
+      await flow(id, "review-decision");
+      if (lock) await flow(id, "lock-item");
+    };
+    const generation = async (
+      id: string,
+      references: ScriptGeneration["references"] = [],
+      changes: Partial<ScriptGeneration> = {},
+    ): Promise<ScriptGeneration> => ({
+      productionId,
+      targetId: id,
+      baseRevision: (await item(id)).revision,
+      contextRevision: (await read()).revision,
+      purpose: "rewrite",
+      references,
+      maxCandidates: 2,
+      maxOutputCharacters: 8000,
+      maxReviewPasses: 0,
+      ...changes,
     });
-    f.metadata({ modelProcessingAllowed: true });
-    const inputId = f.input(
-      f.generation(id, [{ itemId: upstream, revision: 1 }]),
+    const prepare = async (request: ScriptGeneration): Promise<Preparation> => {
+      const route = h.input(h.projectId, "合成固定生成请求");
+      const inputId = (await h.readAcceptedInput(route)).input_id;
+      const prepared = await h.withAgent(
+        (actor) =>
+          shared().studio.prepareGeneration({
+            credential: actor.credential,
+            commandId: randomUUID(),
+            productionId,
+            inputId,
+            generation: request,
+          }),
+        route,
+      );
+      return { route, inputId, generation: prepared.generation };
+    };
+    const candidate = async (
+      p: Preparation,
+      changes: Partial<LiveScriptDraft> = {},
+    ) =>
+      h.withAgent(
+        async (actor) =>
+          submitScriptCandidate({
+            ...shared(),
+            actor,
+            commandId: randomUUID(),
+            inputId: p.inputId,
+            draft: {
+              ...(await draft(p.generation.targetId)),
+              text: "合成候选",
+              ...changes,
+            },
+            explanation: "不是模型质量验收",
+          }),
+        p.route,
+      );
+    const decide = async (
+      candidateId: string,
+      decision: "accept" | "reject",
+      expectedRevision = 1,
+    ) =>
+      h.withHuman((actor) =>
+        decideScriptCandidate({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
+          candidateId,
+          expectedRevision,
+          decision,
+        }),
+      );
+    const exporting = async (
+      items: { itemId: string; revision: number }[],
+      workingCopy = false,
+      template?: ScriptProduction["template"],
+    ) => {
+      const current = await read();
+      return h.withHuman((actor) =>
+        recordScriptExport({
+          ...shared(),
+          actor,
+          commandId: randomUUID(),
+          expectedRevision: current.revision,
+          items,
+          template: template ?? current.template,
+          ...(workingCopy ? { workingCopy: true } : {}),
+        }),
+      );
+    };
+    const unchanged = async (work: () => Promise<unknown>, pattern: RegExp) => {
+      const before = await read();
+      await assert.rejects(work, pattern);
+      assert.deepEqual(
+        await read(),
+        before,
+        "拒绝不得留下正文、版本、候选、意见或导出变化",
+      );
+    };
+    const batch = async (
+      p: Preparation,
+      itemId: string,
+      itemRevision: number,
+      quote: string,
+    ) =>
+      h.withAgent(
+        (actor) =>
+          submitScriptReviewBatch({
+            ...shared(),
+            actor,
+            commandId: randomUUID(),
+            inputId: p.inputId,
+            reviews: [
+              {
+                itemId,
+                itemRevision,
+                quote,
+                body: "合成迟到阻断意见",
+                severity: "blocking",
+              },
+            ],
+          }),
+        p.route,
+      );
+    await h.withHuman((actor) =>
+      createScriptProduction({
+        ...shared(),
+        actor,
+        commandId: randomUUID(),
+        projectId: h.projectId,
+        title: "TEST 真实剧本边界",
+      }),
     );
-    const draft = { ...currentScriptDraft(f.item(id)), text: "旧基础候选" };
-    if (change === "manual") f.revise(id, { text: "生成期间人工新稿" });
-    if (change === "upstream") f.revise(upstream, { text: "设定v2" });
-    if (change === "metadata") f.metadata({ style: "新制作要求" });
-    const candidateId = f.candidate(inputId, draft);
+    return {
+      host: h,
+      shared,
+      productionId,
+      read,
+      item,
+      draft,
+      empty,
+      create,
+      revise,
+      settings,
+      allow,
+      workflow,
+      flow,
+      approve,
+      generation,
+      prepare,
+      candidate,
+      decide,
+      exporting,
+      unchanged,
+      batch,
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+function domainTest(title: string, work: (f: Fixture) => Promise<void>) {
+  for (const backend of ["sqlite", "postgres"] as const)
+    test(
+      `${backend}: ${title}`,
+      { skip: backend === "postgres" && !postgresUrl },
+      async () => {
+        const f = await fixture(backend);
+        try {
+          await work(f);
+          f.host.assertNoLegacyData();
+        } finally {
+          await f.close();
+        }
+      },
+    );
+}
+
+domainTest(
+  "设置无变更不写新版本，呈现改动保留批准和候选，创作要求回退不复活旧输入",
+  async (f) => {
+    await f.allow();
+    const done = await f.create("episode", { text: "已经人工审阅的正文" });
+    const target = await f.create("episode", { text: "待改写正文" });
+    const generation = await f.generation(target);
+    const pending = await f.candidate(await f.prepare(generation));
+    await f.approve(done, true);
+    const first = await f.exporting([{ itemId: done, revision: 1 }]);
+    const original = await f.read();
+    const bytes = buildScriptDocx(
+      scriptDocxManifest(original, first.original.exportId),
+    );
+    const noop = await f.settings();
+    assert.equal(noop.original.eventId, null);
+    assert.deepEqual(await f.read(), original);
+    await f.settings({
+      title: "只改名和排版",
+      template: { ...original.template, fontSize: 14 },
+    });
+    const presented = await f.read();
+    assert.deepEqual(
+      (await f.item(done)).approval,
+      original.items.find((i) => i.id === done)!.approval,
+    );
+    assert.equal((await f.item(done)).status, "locked");
     assert.equal(
-      scriptCandidateStale(f.production(), f.production().candidates[0]!),
+      scriptCandidateStale(
+        presented,
+        presented.candidates.find(
+          (c) => c.id === pending.original.candidateId,
+        )!,
+      ),
+      false,
+    );
+    await f.prepare(generation);
+    await f.exporting([{ itemId: done, revision: 1 }]);
+    assert.deepEqual(
+      buildScriptDocx(
+        scriptDocxManifest(await f.read(), first.original.exportId),
+      ),
+      bytes,
+    );
+    await f.settings({ brief: { ...presented.brief, style: "新创作要求" } });
+    assert.equal((await f.item(done)).approval, null);
+    await f.unchanged(
+      () => f.exporting([{ itemId: done, revision: 1 }]),
+      /审阅有效/,
+    );
+    await f.settings({ brief: original.brief });
+    const reverted = await f.read();
+    assert.equal(
+      scriptCandidateStale(
+        reverted,
+        reverted.candidates.find((c) => c.id === pending.original.candidateId)!,
+      ),
       true,
     );
-    assert.throws(
-      () =>
-        f.run({
-          action: "decide-candidate",
-          productionId: f.productionId,
-          candidateId,
-          expectedRevision: 1,
-          decision: "accept",
-        }),
+    await f.unchanged(() => f.prepare(generation), /变化|版本/);
+    await f.unchanged(
+      () => f.decide(pending.original.candidateId, "accept"),
       /过期/,
     );
-    assert.notEqual(currentScriptDraft(f.item(id)).text, "旧基础候选");
-    f.run({
-      action: "decide-candidate",
-      productionId: f.productionId,
-      candidateId,
-      expectedRevision: 1,
-      decision: "reject",
-    });
-    assert.equal(f.production().candidates[0]!.status, "rejected");
-  }
-});
-
-test("可执行字数/候选/材料预算与目的边界，不把自审轮次当费用上限", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "基础稿" });
-  f.metadata({ modelProcessingAllowed: true });
-  const request = f.generation(id, [], {
-    maxCandidates: 1,
-    maxOutputCharacters: 800,
-  });
-  const inputId = f.input(request);
-  assert.throws(
-    () =>
-      f.candidate(inputId, {
-        ...currentScriptDraft(f.item(id)),
-        text: "x".repeat(801),
-      }),
-    /输出预算/,
-  );
-  f.candidate(inputId, { ...currentScriptDraft(f.item(id)), text: "候选A" });
-  assert.throws(
-    () =>
-      f.candidate(inputId, {
-        ...currentScriptDraft(f.item(id)),
-        text: "候选B",
-      }),
-    /候选数量/,
-  );
-  const reviewInput = f.input(f.generation(id, [], { purpose: "impact" }));
-  assert.throws(
-    () => f.candidate(reviewInput, currentScriptDraft(f.item(id))),
-    /审查任务不能/,
-  );
-  assert.throws(() =>
-    scriptGenerationSchema.parse({ ...request, maxCandidates: 4 }),
-  );
-  assert.throws(() =>
-    scriptGenerationSchema.parse({ ...request, maxReviewPasses: 3 }),
-  );
-  const large = f.create("source", { text: "x".repeat(70_000) });
-  const second = f.create("source", { text: "y".repeat(70_000) });
-  assert.throws(
-    () =>
-      f.input(
-        f.generation(id, [
-          { itemId: large, revision: 1 },
-          { itemId: second, revision: 1 },
-        ]),
+    assert.deepEqual(
+      buildScriptDocx(
+        scriptDocxManifest(await f.read(), first.original.exportId),
       ),
-    /120000/,
-  );
-});
+      bytes,
+    );
+  },
+);
 
-test("候选不能扩大固定材料、角色、原作引用范围", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "正文" });
-  const unrelated = f.create("setting", { text: "未授权给本次生成" });
-  f.metadata({ modelProcessingAllowed: true });
-  const inputId = f.input(f.generation(id));
-  assert.throws(
-    () =>
-      f.candidate(inputId, {
-        ...currentScriptDraft(f.item(id)),
-        dependencies: [{ itemId: unrelated, revision: 1 }],
-      }),
-    /范围外/,
-  );
-  const artifactId = f.execute({
-    type: "create-artifact",
-    projectId: "first-project",
-    title: "未固定原作",
-    content: { kind: "document", markdown: "这不是本次的材料" },
-  });
-  assert.throws(
-    () =>
-      f.candidate(inputId, {
-        ...currentScriptDraft(f.item(id)),
-        sources: [{ artifactId, revision: 1, quote: "这不是本次的材料" }],
-      }),
-    /不能超出/,
-  );
-});
-
-test("跨集依赖修改传播清除审阅有效性，不改锁定正文；刷新依赖重审才能导出", () => {
-  const f = fixture();
-  const setting = f.create("setting", { text: "角色只能白天行动" });
-  const episode1 = f.create("episode", {
-    text: "第一集",
-    order: 1,
-    dependencies: [{ itemId: setting, revision: 1 }],
-  });
-  const episode2 = f.create("episode", {
-    text: "第二集延续",
-    order: 2,
-    dependencies: [{ itemId: episode1, revision: 1 }],
-  });
-  const scene = f.create("scene", {
-    text: "第二集第一场",
-    parentId: episode2,
-    dependencies: [{ itemId: episode2, revision: 1 }],
-  });
-  f.approve(setting);
-  f.approve(episode1, true);
-  f.approve(episode2, true);
-  f.approve(scene, true);
-  const exportItems = [episode1, episode2, scene].map((itemId) => ({
-    itemId,
-    revision: 1,
-  }));
-  const exportId = f.run({
-    action: "record-export",
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    items: exportItems,
-    template: f.production().template,
-  });
-  assert.equal(f.production().exports[0]!.id, exportId);
-  f.revise(setting, { text: "改为夜间行动" });
-  assert.deepEqual(
-    new Set(scriptImpact(f.production(), [setting])),
-    new Set([episode1, episode2, scene]),
-  );
-  for (const id of [episode1, episode2, scene]) {
-    assert.equal(f.item(id).status, "locked");
-    assert.equal(f.item(id).approval, null);
-    assert.equal(f.item(id).revision, 1);
-  }
-  assert.equal(currentScriptDraft(f.item(scene)).text, "第二集第一场");
-  assert.ok(
-    scriptIssues(f.production()).some(
-      (i) => i.itemId === episode1 && i.code === "stale-dependency",
-    ),
-  );
-  assert.throws(
-    () =>
-      f.run({
-        action: "record-export",
-        productionId: f.productionId,
-        expectedRevision: f.production().revision,
-        items: exportItems,
-        template: f.production().template,
-      }),
-    /有效的锁定稿/,
-  );
-  assert.equal(f.production().exports.length, 1);
-  f.approve(setting);
-  for (const [id, dependency] of [
-    [episode1, setting],
-    [episode2, episode1],
-    [scene, episode2],
-  ]) {
-    f.run({
-      action: "unlock-item",
-      productionId: f.productionId,
-      itemId: id!,
-      expectedRevision: f.item(id!).revision,
-      expectedWorkflowRevision: f.item(id!).workflowRevision,
-      reason: "上游变更返工",
+domainTest(
+  "真实条目结构拒绝无效父集、角色、自身和循环，固定生成自动闭包并去重",
+  async (f) => {
+    const character = await f.create("character", { text: "角色设定" });
+    const episode = await f.create("episode", {
+      text: "分集",
+      dependencies: [{ itemId: character, revision: 1 }],
     });
-    f.revise(id!, {
+    await f.unchanged(
+      () => f.create("scene", { text: "孤立分场" }),
+      /只有分场|所属集/,
+    );
+    await f.unchanged(() => f.create("scene", { parentId: episode }), /依赖/);
+    await f.unchanged(
+      () => f.create("episode", { parentId: episode }),
+      /只有分场/,
+    );
+    await f.unchanged(
+      () =>
+        f.create("episode", {
+          characters: [episode],
+          dependencies: [{ itemId: episode, revision: 1 }],
+        }),
+      /角色/,
+    );
+    await f.unchanged(
+      () =>
+        f.revise(character, {
+          dependencies: [{ itemId: episode, revision: 1 }],
+        }),
+      /循环/,
+    );
+    await f.unchanged(
+      () =>
+        f.revise(episode, { dependencies: [{ itemId: episode, revision: 1 }] }),
+      /自身|循环/,
+    );
+    const scene = await f.create("scene", {
+      parentId: episode,
+      text: "有效分场",
+      characters: [character],
       dependencies: [
-        { itemId: dependency!, revision: f.item(dependency!).revision },
+        { itemId: episode, revision: 1 },
+        { itemId: character, revision: 1 },
       ],
     });
-    f.approve(id!, true);
-  }
-  assert.deepEqual(scriptIssues(f.production()), []);
-  f.run({
-    action: "record-export",
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    items: [episode1, episode2, scene].map((itemId) => ({
-      itemId,
-      revision: f.item(itemId).revision,
-    })),
-    template: f.production().template,
-  });
-  assert.equal(f.production().exports.length, 2);
-  assert.deepEqual(f.production().exports[0]!.items, exportItems);
-});
+    await f.allow();
+    const expected = [
+      { itemId: episode, revision: 1 },
+      { itemId: character, revision: 1 },
+    ].sort((a, b) => a.itemId.localeCompare(b.itemId));
+    assert.deepEqual(
+      (
+        await f.prepare(
+          await f.generation(scene, [{ itemId: episode, revision: 1 }]),
+        )
+      ).generation.references,
+      expected,
+    );
+    assert.deepEqual(
+      (await f.prepare(await f.generation(scene, [...expected, expected[0]!])))
+        .generation.references,
+      expected,
+    );
+  },
+);
 
-test("旧稿迟到审阅只保留历史意见，不撤销新稿或下游的批准锁稿", () => {
-  const f = fixture();
-  f.metadata({ modelProcessingAllowed: true, rightsStatement: "合成授权" });
-  const id = f.create("episode", { text: "旧稿中的问题" });
-  const inputId = f.input(f.generation(id, [], { purpose: "continuity" }));
-  f.revise(id, { text: "人工已经修正的新稿" });
-  f.approve(id, true);
-  const scene = f.create("scene", {
-    text: "依赖新稿的分场",
-    parentId: id,
-    dependencies: [{ itemId: id, revision: 2 }],
-  });
-  f.approve(scene, true);
-  const before = structuredClone(f.production().items);
-  f.run(
-    {
-      action: "add-review",
-      productionId: f.productionId,
-      itemId: id,
-      itemRevision: 1,
-      quote: "旧稿中的问题",
-      body: "来自旧稿的迟到意见",
-      severity: "blocking",
-    },
-    agent,
-    inputId,
-  );
-  assert.equal(f.production().reviews.length, 1);
-  assert.equal(f.production().reviews[0]!.itemRevision, 1);
-  assert.deepEqual(f.production().items, before);
-  assert.deepEqual(scriptIssues(f.production()), []);
-  f.run({
-    action: "record-export",
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    items: [
-      { itemId: id, revision: 2 },
-      { itemId: scene, revision: 1 },
-    ],
-    template: f.production().template,
-  });
-});
-
-test("上下文或其他固定材料已变化的审阅不能撤销当前批准", () => {
-  for (const change of ["context", "target"] as const) {
-    const f = fixture();
-    f.metadata({ modelProcessingAllowed: true, rightsStatement: "合成授权" });
-    const ref = f.create("setting", { text: "保持同版的设定正文" });
-    const target = f.create("episode", {
-      text: "检查时的分集",
-      dependencies: [{ itemId: ref, revision: 1 }],
+domainTest(
+  "创作副本不变更稿件，正式导出拒绝未锁稿、孤立分场、重复版本和变化模板",
+  async (f) => {
+    const episode = await f.create("episode", { text: "已保存创作正文" });
+    const selected = [{ itemId: episode, revision: 1 }];
+    await f.unchanged(() => f.exporting(selected), /锁定稿/);
+    const before = await f.item(episode);
+    const copy = await f.exporting(selected, true);
+    assert.deepEqual(await f.item(episode), before);
+    const bytes = buildScriptDocx(
+      scriptDocxManifest(await f.read(), copy.original.exportId),
+    );
+    assert.match(Buffer.from(bytes).toString("utf8"), /已保存创作正文/);
+    assert.match(Buffer.from(bytes).toString("utf8"), /创作副本，不代表已审阅/);
+    assert.doesNotMatch(Buffer.from(bytes).toString("utf8"), /本次交付/);
+    const empty = await f.create("episode");
+    await f.unchanged(
+      () => f.exporting([{ itemId: empty, revision: 1 }], true),
+      /先保存/,
+    );
+    await f.revise(episode, { text: "后来的版本" });
+    await f.unchanged(() => f.exporting(selected, true), /版本已变化/);
+    assert.deepEqual(
+      buildScriptDocx(
+        scriptDocxManifest(await f.read(), copy.original.exportId),
+      ),
+      bytes,
+    );
+    const scene = await f.create("scene", {
+      text: "分场正文",
+      parentId: episode,
+      dependencies: [{ itemId: episode, revision: 2 }],
     });
-    const inputId = f.input(
-      f.generation(target, [{ itemId: ref, revision: 1 }], {
-        purpose: "continuity",
-      }),
+    await f.approve(episode, true);
+    await f.approve(scene, true);
+    const exact = [
+      { itemId: episode, revision: 2 },
+      { itemId: scene, revision: 1 },
+    ];
+    await f.unchanged(
+      () => f.exporting([{ itemId: scene, revision: 1 }]),
+      /所属集/,
     );
-    if (change === "context") f.metadata({ style: "人工重新确定的制作要求" });
-    else f.revise(target, { text: "人工修订后的分集" });
-    f.approve(ref, true);
-    f.approve(target, true);
-    const before = structuredClone(f.production().items);
-    f.run(
-      {
-        action: "add-review",
-        productionId: f.productionId,
-        itemId: ref,
-        itemRevision: 1,
-        quote: "设定正文",
-        body: "针对旧制作上下文的意见",
-        severity: "blocking",
-      },
-      agent,
-      inputId,
-    );
-    assert.equal(f.production().reviews[0]!.historicalOnly, true);
-    assert.equal(f.production().reviews[0]!.contextRevision, 2);
-    assert.deepEqual(f.production().items, before);
-    assert.deepEqual(scriptIssues(f.production()), []);
-  }
-});
-
-test("已经生效的阻断意见不能靠另存一版绕过，仍须人工解决", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "待解决的质量问题" });
-  const reviewId = f.run({
-    action: "add-review",
-    productionId: f.productionId,
-    itemId: id,
-    itemRevision: 1,
-    quote: "质量问题",
-    body: "必须人工确认处理",
-    severity: "blocking",
-  });
-  assert.equal(f.production().reviews[0]!.historicalOnly, false);
-  f.revise(id, { text: "仅另存新稿并不代表解决" });
-  assert.equal(
-    scriptIssues(f.production()).filter((i) => i.code === "unresolved-review")
-      .length,
-    1,
-  );
-  assert.throws(() => f.approve(id), /阻断意见/);
-  // The submit succeeded before the approval was rejected. Resolution keeps
-  // this review open; retry the decision rather than submitting it twice.
-  assert.equal(f.item(id).status, "in-review");
-  assert.equal(f.item(id).approval, null);
-  f.run({
-    action: "resolve-review",
-    productionId: f.productionId,
-    reviewId,
-    expectedRevision: 1,
-    resolution: "人工核对修订后确认解决",
-  });
-  f.run({
-    action: "review-decision",
-    productionId: f.productionId,
-    itemId: id,
-    expectedRevision: f.item(id).revision,
-    expectedWorkflowRevision: f.item(id).workflowRevision,
-    decision: "approve",
-    note: "阻断意见解决后继续本轮审阅",
-  });
-  f.run({
-    action: "lock-item",
-    productionId: f.productionId,
-    itemId: id,
-    expectedRevision: f.item(id).revision,
-    expectedWorkflowRevision: f.item(id).workflowRevision,
-  });
-  assert.equal(f.item(id).status, "locked");
-});
-
-test("审阅锚定版本和原文、阻断意见与独立workflow CAS，Agent不得代批准", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "可锚定的正文" });
-  const snapshot = f.item(id);
-  f.run({
-    action: "submit-review",
-    productionId: f.productionId,
-    itemId: id,
-    expectedRevision: 1,
-    expectedWorkflowRevision: snapshot.workflowRevision,
-  });
-  assert.throws(
-    () =>
-      f.run({
-        action: "review-decision",
-        productionId: f.productionId,
-        itemId: id,
-        expectedRevision: 1,
-        expectedWorkflowRevision: snapshot.workflowRevision,
-        decision: "approve",
-        note: "迟到批准",
-      }),
-    /已有新版本/,
-  );
-  assert.throws(
-    () =>
-      f.run({
-        action: "add-review",
-        productionId: f.productionId,
-        itemId: id,
-        itemRevision: 1,
-        quote: "不存在的原文",
-        body: "意见",
-        severity: "blocking",
-      }),
-    /原文/,
-  );
-  const reviewId = f.run({
-    action: "add-review",
-    productionId: f.productionId,
-    itemId: id,
-    itemRevision: 1,
-    quote: "可锚定",
-    body: "需要人工处理",
-    severity: "blocking",
-  });
-  assert.equal(f.item(id).status, "draft");
-  assert.throws(() => f.approve(id), /阻断意见/);
-  f.run({
-    action: "resolve-review",
-    productionId: f.productionId,
-    reviewId,
-    expectedRevision: 1,
-    resolution: "核对并记录处理",
-  });
-  f.run({
-    action: "review-decision",
-    productionId: f.productionId,
-    itemId: id,
-    expectedRevision: 1,
-    expectedWorkflowRevision: f.item(id).workflowRevision,
-    decision: "approve",
-    note: "已解决",
-  });
-  const ordinaryInput = f.input();
-  assert.throws(
-    () =>
-      f.run(
-        {
-          action: "lock-item",
-          productionId: f.productionId,
-          itemId: id,
-          expectedRevision: 1,
-          expectedWorkflowRevision: f.item(id).workflowRevision,
-        },
-        agent,
-        ordinaryInput,
-      ),
-    /人工/,
-  );
-});
-
-test("项目隔离、实时成员撤销与指定审阅人保护，非审阅成员不能批准", () => {
-  const f = fixture();
-  const id = f.create("episode", { text: "私有剧本" });
-  const outsider: AccessContext = {
-    principalId: "outsider",
-    actantId: "outsider-human",
-  };
-  assert.deepEqual(workspaceFor(f.state, outsider).scriptProductions, []);
-  assert.throws(
-    () =>
-      f.run(
-        {
-          action: "create-item",
-          productionId: f.productionId,
-          kind: "episode",
-          draft: emptyScriptDraft("越权"),
-        },
-        outsider,
-      ),
-    /主体不匹配/,
-  );
-  const state = structuredClone(f.state);
-  state.principals.push({ id: outsider.principalId, name: "合成编剧" });
-  state.actants.push({
-    id: outsider.actantId,
-    principalId: outsider.principalId,
-    kind: "human",
-    name: "合成编剧",
-  });
-  state.projects
-    .find((p) => p.id === "first-project")!
-    .members.push(outsider.principalId);
-  const inReview = applyCommand(
-    state,
-    commandSchema.parse({
-      commandId: randomUUID(),
-      operation: {
-        type: "script-command",
-        command: {
-          action: "submit-review",
-          productionId: f.productionId,
-          itemId: id,
-          expectedRevision: 1,
-          expectedWorkflowRevision: 1,
-        },
-      },
-    }),
-    outsider,
-  ).state;
-  assert.throws(
-    () =>
-      applyCommand(
-        inReview,
-        commandSchema.parse({
-          commandId: randomUUID(),
-          operation: {
-            type: "script-command",
-            command: {
-              action: "review-decision",
-              productionId: f.productionId,
-              itemId: id,
-              expectedRevision: 1,
-              expectedWorkflowRevision: 2,
-              decision: "approve",
-              note: "不能自授审批权",
-            },
-          },
+    await f.unchanged(() => f.exporting([exact[0]!, exact[0]!]), /重复/);
+    await f.unchanged(
+      async () =>
+        f.exporting(exact, false, {
+          ...(await f.read()).template,
+          fontSize: 18,
         }),
-        outsider,
-      ),
-    /指定审阅人/,
-  );
-  const other = f.execute({ type: "create-project", title: "合成其他项目" });
-  f.metadata({ modelProcessingAllowed: true });
-  assert.throws(
-    () =>
-      f.execute({
-        type: "record-input",
-        projectId: other,
-        artifactId: null,
-        artifactRevision: null,
-        selection: "",
-        body: "跨项目生成",
-        targetActantId: agent.actantId,
-        scriptGeneration: f.generation(id),
-      }),
-    /跨项目/,
-  );
-});
+      /模板/,
+    );
+    await f.unchanged(
+      () => f.exporting([{ itemId: episode, revision: 999 }]),
+      /版本已变化/,
+    );
+    await f.exporting(exact);
+    assert.equal((await f.read()).exports.length, 2);
+  },
+);
 
-test("导出只接受当前有效锁稿与确切模板，分场不能脱离父集", () => {
-  const f = fixture();
-  const episode = f.create("episode", { text: "分集正文" });
-  const scene = f.create("scene", {
-    text: "分场正文",
-    parentId: episode,
-    dependencies: [{ itemId: episode, revision: 1 }],
-  });
-  const exportCommand = {
-    action: "record-export" as const,
-    productionId: f.productionId,
-    expectedRevision: f.production().revision,
-    items: [{ itemId: episode, revision: 1 }],
-    template: f.production().template,
-  };
-  assert.throws(() => f.run(exportCommand), /锁定稿/);
-  f.approve(episode, true);
-  f.approve(scene, true);
-  assert.throws(
-    () => f.run({ ...exportCommand, items: [{ itemId: scene, revision: 1 }] }),
-    /所属集/,
-  );
-  assert.throws(
-    () =>
-      f.run({
-        ...exportCommand,
-        items: [
-          { itemId: episode, revision: 1 },
-          { itemId: episode, revision: 1 },
+domainTest(
+  "普通 Agent 空条目白名单不受模型许可影响，Human许可与锁稿正式写边界保持",
+  async (f) => {
+    const parent = await f.create("episode", { text: "父集正文" });
+    const character = await f.create("character", { text: "角色" });
+    const route = f.host.input();
+    const initial = await f.read();
+    await f.unchanged(
+      () =>
+        f.host.withAgent(
+          (actor) =>
+            updateScriptProduction({
+              ...f.shared(),
+              actor,
+              commandId: randomUUID(),
+              expectedRevision: initial.revision,
+              title: initial.title,
+              brief: { ...initial.brief, modelProcessingAllowed: true },
+              reviewerPrincipalIds: initial.reviewerPrincipalIds,
+              template: initial.template,
+            }),
+          route,
+        ),
+      /人工/,
+    );
+    await f.unchanged(
+      async () => f.prepare(await f.generation(parent)),
+      /尚未获准/,
+    );
+    for (const allowed of [false, true]) {
+      if (allowed) await f.allow();
+      const empty = await f.create(
+        "episode",
+        { title: "空条目", order: 3 },
+        route,
+      );
+      assert.deepEqual(await f.draft(empty), f.empty("空条目", { order: 3 }));
+      const scene = {
+        title: "空分场",
+        parentId: parent,
+        dependencies: [
+          { itemId: parent, revision: (await f.item(parent)).revision },
         ],
+      };
+      const emptyScene = await f.create("scene", scene, route);
+      assert.deepEqual(await f.draft(emptyScene), f.empty("空分场", scene));
+      const attempts: Partial<LiveScriptDraft>[] = [
+        { text: "不能直接进入正式稿" },
+        { basis: "adaptation" },
+        {
+          sources: [
+            {
+              appId: "morphz.objects",
+              instanceId: f.host.domains.content.instanceIds.objects,
+              objectId: "not-a-fixed-source",
+              versionRef: "1",
+              quote: "原文",
+            },
+          ],
+        },
+        { dependencies: [{ itemId: character, revision: 1 }] },
+        { location: "天台" },
+        { storyTime: "天亮前" },
+        { characters: [character] },
+        { audienceKnowledge: "观众知道" },
+        { characterKnowledge: "角色知道" },
+        { setupPayoff: "伏笔" },
+        { productionNotes: "制作要求" },
+      ];
+      for (const changes of attempts)
+        await f.unchanged(
+          () => f.create("episode", changes, route),
+          /只能建立空条目/,
+        );
+      await f.unchanged(
+        () =>
+          f.create(
+            "scene",
+            {
+              ...scene,
+              dependencies: [
+                ...scene.dependencies,
+                { itemId: character, revision: 1 },
+              ],
+            },
+            route,
+          ),
+        /空分场|空条目/,
+      );
+      await f.revise(parent, { text: `父集人工新版 ${allowed}` });
+      await f.unchanged(
+        () => f.create("scene", scene, route),
+        /当前版本|依赖.*版本/,
+      );
+    }
+    const current = await f.read();
+    await f.unchanged(
+      () =>
+        f.host.withAgent(
+          (actor) =>
+            updateScriptProduction({
+              ...f.shared(),
+              actor,
+              commandId: randomUUID(),
+              expectedRevision: current.revision,
+              title: current.title,
+              brief: { ...current.brief, modelProcessingAllowed: true },
+              reviewerPrincipalIds: current.reviewerPrincipalIds,
+              template: current.template,
+            }),
+          route,
+        ),
+      /人工/,
+    );
+    const target = await f.create("episode", {
+      text: "准备后被人工锁定的稿件",
+    });
+    const unprepared = {
+      route,
+      inputId: (await f.host.readAcceptedInput(route)).input_id,
+      generation: await f.generation(target),
+    };
+    await f.unchanged(() => f.candidate(unprepared), /固定.*候选范围/);
+    const pending = await f.prepare(await f.generation(target));
+    await f.approve(target, true);
+    await f.unchanged(() => f.candidate(pending), /锁稿/);
+    await f.unchanged(() => f.revise(target, { text: "不能覆盖" }), /锁稿/);
+    // Preparing is not a write: retain current formal submission/revision gates,
+    // not the old reducer's ban on preparing a locked rewrite.
+    await f.prepare(await f.generation(target));
+    const review = await f.prepare(
+      await f.generation(target, [], { purpose: "continuity" }),
+    );
+    await f.batch(review, target, 1, "人工锁定");
+    assert.equal((await f.item(target)).status, "locked");
+  },
+);
+
+domainTest(
+  "候选三种独立过期原因拒绝采纳而允许拒绝，迟到提交不写入候选",
+  async (f) => {
+    await f.allow();
+    for (const change of ["manual", "upstream", "context"] as const) {
+      const setting = await f.create("setting", { text: "固定设定" });
+      const target = await f.create("episode", {
+        text: "原人工正文",
+        dependencies: [{ itemId: setting, revision: 1 }],
+      });
+      const prepared = await f.prepare(
+        await f.generation(target, [{ itemId: setting, revision: 1 }]),
+      );
+      const pending = await f.candidate(prepared);
+      if (change === "manual") await f.revise(target, { text: "人工新正文" });
+      else if (change === "upstream")
+        await f.revise(setting, { text: "新设定" });
+      else
+        await f.settings({
+          brief: {
+            ...(await f.read()).brief,
+            style: `创作要求 ${randomUUID()}`,
+          },
+        });
+      const current = await f.read();
+      assert.equal(
+        scriptCandidateStale(
+          current,
+          current.candidates.find(
+            (c) => c.id === pending.original.candidateId,
+          )!,
+        ),
+        true,
+      );
+      await f.unchanged(
+        () => f.decide(pending.original.candidateId, "accept"),
+        change === "upstream" ? /固定的上游版本已变化/ : /候选稿已过期/,
+      );
+      await f.unchanged(
+        () => f.candidate(prepared, { text: "迟到候选不能留下新提案" }),
+        change === "context"
+          ? /剧本创作要求或模型许可已变化/
+          : /目标或上游引用已过期/,
+      );
+      assert.equal(
+        currentScriptDraft(await f.item(target)).text,
+        change === "manual" ? "人工新正文" : "原人工正文",
+      );
+      await f.decide(pending.original.candidateId, "reject");
+      assert.equal(
+        (await f.read()).candidates.find(
+          (c) => c.id === pending.original.candidateId,
+        )!.status,
+        "rejected",
+      );
+    }
+  },
+);
+
+domainTest(
+  "候选预算按实际JSON、数量和目的执行，材料整包超120k拒绝，未固定角色和依赖不能加入",
+  async (f) => {
+    await f.allow();
+    const target = await f.create("episode", { text: "基础稿" });
+    const exactDraft = { ...(await f.draft(target)), text: "精确输出预算候选" };
+    const size = JSON.stringify(exactDraft).length;
+    const prepared = await f.prepare(
+      await f.generation(target, [], {
+        maxCandidates: 1,
+        maxOutputCharacters: size,
       }),
-    /不能重复/,
-  );
-  assert.throws(
-    () =>
-      f.run({
-        ...exportCommand,
-        template: { ...exportCommand.template, fontSize: 18 },
+    );
+    await f.unchanged(
+      () =>
+        f.candidate(prepared, { ...exactDraft, text: exactDraft.text + "多" }),
+      /输出上限/,
+    );
+    await f.candidate(prepared, exactDraft);
+    await f.unchanged(
+      () => f.candidate(prepared, { ...exactDraft, text: "另一候选" }),
+      /数量.*上限/,
+    );
+    const review = await f.prepare(
+      await f.generation(target, [], { purpose: "impact" }),
+    );
+    await f.unchanged(() => f.candidate(review), /候选范围/);
+    const large = await f.create("source", { text: "x".repeat(70_000) });
+    const second = await f.create("source", { text: "y".repeat(70_000) });
+    const largeRequest = await f.prepare(
+      await f.generation(target, [
+        { itemId: large, revision: 1 },
+        { itemId: second, revision: 1 },
+      ]),
+    );
+    await f.unchanged(
+      () =>
+        f.host.call(
+          { action: "script", script: { action: "read-workflow" } },
+          largeRequest.route,
+        ),
+      /120000/,
+    );
+    // Packet bytes and separately paged Objects read-source have distinct bounds.
+    // No retired cumulative full-source preparation limit is reintroduced.
+    const setting = await f.create("setting", { text: "未固定设定" });
+    const character = await f.create("character", { text: "未固定角色" });
+    const scope = await f.prepare(await f.generation(target));
+    await f.unchanged(
+      () =>
+        f.candidate(scope, {
+          dependencies: [{ itemId: setting, revision: 1 }],
+        }),
+      /超出本次固定资料/,
+    );
+    await f.unchanged(
+      () => f.candidate(scope, { characters: [character] }),
+      /绑定对应依赖版本/,
+    );
+    await f.unchanged(
+      () =>
+        f.candidate(scope, {
+          characters: [character],
+          dependencies: [{ itemId: character, revision: 1 }],
+        }),
+      /超出本次固定资料/,
+    );
+  },
+);
+
+domainTest(
+  "迟到固定审阅保留原版本来源，不撤销当前稿和下游批准锁稿",
+  async (f) => {
+    await f.allow();
+    for (const change of [
+      "old-item",
+      "context",
+      "target",
+      "reference",
+    ] as const) {
+      const setting = await f.create("setting", { text: "保持同版的设定正文" });
+      const target = await f.create("episode", {
+        text: "旧稿中的问题",
+        dependencies: [{ itemId: setting, revision: 1 }],
+      });
+      const prepared = await f.prepare(
+        await f.generation(target, [{ itemId: setting, revision: 1 }], {
+          purpose: "continuity",
+        }),
+      );
+      if (change === "context")
+        await f.settings({
+          brief: {
+            ...(await f.read()).brief,
+            style: `新的上下文 ${randomUUID()}`,
+          },
+        });
+      else if (change === "reference") {
+        await f.revise(setting, { text: "设定的新版本" });
+        await f.revise(target, {
+          dependencies: [{ itemId: setting, revision: 2 }],
+        });
+      } else await f.revise(target, { text: "人工已修正的新稿" });
+      await f.approve(setting, true);
+      await f.approve(target, true);
+      const scene = await f.create("scene", {
+        text: "依赖当前稿的分场",
+        parentId: target,
+        dependencies: [
+          { itemId: target, revision: (await f.item(target)).revision },
+        ],
+      });
+      await f.approve(scene, true);
+      const before = (await f.read()).items;
+      const reviewItem = change === "old-item" ? target : setting;
+      const receipt = await f.batch(
+        prepared,
+        reviewItem,
+        1,
+        change === "old-item" ? "旧稿中的问题" : "设定正文",
+      );
+      const current = await f.read();
+      const review = current.reviews.find(
+        (r) => r.id === receipt.original.reviewIds[0],
+      )!;
+      assert.equal(review.itemRevision, 1);
+      assert.equal(review.contextRevision, prepared.generation.contextRevision);
+      assert.equal(review.inputId, prepared.inputId);
+      assert.equal(review.historicalOnly, true);
+      assert.deepEqual(current.items, before);
+      // Other iterations' current locks may become invalid after a global
+      // creative change; the newly reviewed branch itself has no blockers.
+      assert.equal(
+        scriptIssues(current).some((i) =>
+          [setting, target, scene].includes(i.itemId),
+        ),
+        false,
+      );
+      await f.exporting([
+        { itemId: target, revision: (await f.item(target)).revision },
+        { itemId: scene, revision: 1 },
+      ]);
+    }
+    await f.host.reopen();
+    const restored = await f.read();
+    assert.equal(restored.reviews.length, 4);
+    assert.ok(restored.reviews.every((r) => r.historicalOnly && r.inputId));
+    assert.equal(restored.exports.length, 4);
+  },
+);
+
+domainTest(
+  "生效阻断意见不能另存绕过；独立workflow CAS和指定Human审阅权在真实域执行",
+  async (f) => {
+    const target = await f.create("episode", { text: "待解决的质量问题" });
+    const snapshot = await f.workflow(target);
+    await f.flow(target, "submit-review");
+    await f.unchanged(
+      () => f.flow(target, "review-decision", snapshot),
+      /审阅状态已变化/,
+    );
+    await f.unchanged(
+      () =>
+        f.host.withHuman((actor) =>
+          changeScriptReview({
+            ...f.shared(),
+            actor,
+            commandId: randomUUID(),
+            action: "add-review",
+            itemId: target,
+            itemRevision: 1,
+            quote: "不存在的原文",
+            body: "不允许伪造",
+            severity: "blocking",
+          }),
+        ),
+      /有效正文版本及原文/,
+    );
+    const active = await f.host.withHuman((actor) =>
+      changeScriptReview({
+        ...f.shared(),
+        actor,
+        commandId: randomUUID(),
+        action: "add-review",
+        itemId: target,
+        itemRevision: 1,
+        quote: "质量问题",
+        body: "必须人工确认处理",
+        severity: "blocking",
       }),
-    /确切模板/,
-  );
-  assert.throws(
-    () =>
-      f.run({ ...exportCommand, items: [{ itemId: episode, revision: 999 }] }),
-    /已有新版本/,
-  );
-  f.run(exportCommand);
-  assert.equal(f.production().exports.length, 1);
+    );
+    assert.equal((await f.item(target)).status, "draft");
+    assert.equal((await f.read()).reviews[0]!.historicalOnly, false);
+    await f.revise(target, { text: "另存新稿不代表已经解决" });
+    assert.equal(
+      scriptIssues(await f.read()).filter((i) => i.code === "unresolved-review")
+        .length,
+      1,
+    );
+    await f.flow(target, "submit-review");
+    await f.unchanged(() => f.flow(target, "review-decision"), /阻断|待处理/);
+    assert.equal((await f.item(target)).status, "in-review");
+    assert.equal((await f.item(target)).approval, null);
+    await f.host.withHuman((actor) =>
+      changeScriptReview({
+        ...f.shared(),
+        actor,
+        commandId: randomUUID(),
+        action: "resolve-review",
+        reviewId: active.original.reviewId,
+        expectedRevision: 1,
+        resolution: "合成人工已核对",
+      }),
+    );
+    await f.flow(target, "review-decision");
+    const route = f.host.input();
+    await f.unchanged(
+      () =>
+        f.host.withAgent(
+          async (actor) =>
+            transitionScriptWorkflow({
+              ...f.shared(),
+              actor,
+              commandId: randomUUID(),
+              ...(await f.workflow(target)),
+              action: "lock-item",
+            }),
+          route,
+        ),
+      /本人|人工/,
+    );
+    await f.flow(target, "lock-item");
+    assert.equal((await f.item(target)).status, "locked");
+    await f.host.domains.content.platform.reconcileOperatorMembers(
+      f.host.transport.identity(),
+      [
+        { ...localAccess, enabled: true, projectIds: [f.host.projectId] },
+        { ...otherHuman, enabled: true, projectIds: [f.host.projectId] },
+      ],
+    );
+    const otherTarget = await f.create("episode", {
+      text: "其他成员可以提交，但不得自行批准",
+    });
+    const withOther = <T>(
+      work: (
+        actor: Parameters<typeof transitionScriptWorkflow>[0]["actor"],
+      ) => Promise<T>,
+    ) => f.host.domains.work.authority.withSession(otherHuman, () => {}, work);
+    await withOther(async (actor) =>
+      transitionScriptWorkflow({
+        ...f.shared(),
+        actor,
+        commandId: randomUUID(),
+        ...(await f.workflow(otherTarget)),
+        action: "submit-review",
+      }),
+    );
+    await f.unchanged(
+      () =>
+        withOther(async (actor) =>
+          transitionScriptWorkflow({
+            ...f.shared(),
+            actor,
+            commandId: randomUUID(),
+            ...(await f.workflow(otherTarget)),
+            action: "review-decision",
+            decision: "approve",
+            note: "不能自授审阅权",
+          }),
+        ),
+      /指定审阅人/,
+    );
+    assert.equal((await f.item(otherTarget)).status, "in-review");
+    assert.equal((await f.item(otherTarget)).approval, null);
+  },
+);
+
+test("纯生成schema保留预算整数与目的约束，不借旧Workspace reducer验证", () => {
+  const request = {
+    productionId: "production",
+    targetId: "episode",
+    baseRevision: 1,
+    contextRevision: 1,
+    purpose: "rewrite",
+    references: [],
+    maxCandidates: 1,
+    maxOutputCharacters: 800,
+    maxReviewPasses: 0,
+  };
+  assert.doesNotThrow(() => scriptGenerationSchema.parse(request));
+  for (const patch of [
+    { maxCandidates: 4 },
+    { maxReviewPasses: 3 },
+    { maxOutputCharacters: 99 },
+    { purpose: "invented" },
+  ])
+    assert.throws(() => scriptGenerationSchema.parse({ ...request, ...patch }));
 });

@@ -21,6 +21,8 @@ type Binding = {
   rootId?: string;
   threadId?: string;
   rootsBySession?: Record<string, string[]>;
+  additionalRoot?: (rootId: string, threadId: string) => Promise<boolean>;
+  threadIds?: () => Promise<string[]>;
 } | null;
 const sessionIds = (binding: NonNullable<Binding>) => [
   ...new Set([binding.sessionId, ...(binding.legacySessionIds ?? [])]),
@@ -37,17 +39,11 @@ export class ExecutionControls {
     const data = z
       .object({ approvals: z.array(approvalSchema) })
       .parse(await this.request("/api/approvals"));
-    return data.approvals
+    const candidates = data.approvals
       .filter(
         (a) =>
           sessionIds(binding).includes(a.request.session_id) &&
           a.request.context_id === binding.contextId,
-      )
-      .filter(
-        (a) => !binding.rootId || a.request.root_turn_id === binding.rootId,
-      )
-      .filter(
-        (a) => !binding.threadId || a.request.thread_id === binding.threadId,
       )
       .filter(
         (a) =>
@@ -56,8 +52,37 @@ export class ExecutionControls {
             binding.rootsBySession[a.request.session_id]!.includes(
               a.request.root_turn_id,
             )),
-      )
+      );
+    const matches: boolean[] = [];
+    for (let offset = 0; offset < candidates.length; offset += 4)
+      matches.push(
+        ...(await Promise.all(
+          candidates.slice(offset, offset + 4).map(async (a) => {
+            const original =
+              (!binding.rootId || a.request.root_turn_id === binding.rootId) &&
+              (!binding.threadId || a.request.thread_id === binding.threadId);
+            return (
+              original ||
+              (!!binding.additionalRoot &&
+                !!a.request.root_turn_id &&
+                !!a.request.thread_id &&
+                (await binding.additionalRoot(
+                  a.request.root_turn_id,
+                  a.request.thread_id,
+                )))
+            );
+          }),
+        )),
+      );
+    return candidates
+      .filter((_, i) => matches[i])
       .map((a) => ({ ...a, fingerprint: approvalFingerprint(a) }));
+  }
+  /** The task list needs a scoped count, not every execution job and result.
+   * Reuse the same exact Session/Context/root/Thread checks as the inspector. */
+  async pendingApprovalCount(scope: ExecutionScope) {
+    const binding = this.binding(scope);
+    return binding ? (await this.approvals(binding)).length : 0;
   }
   private async job(binding: NonNullable<Binding>, jobId: string) {
     const job = jobSchema.parse(
@@ -76,7 +101,12 @@ export class ExecutionControls {
     binding: NonNullable<Binding>,
     job: z.infer<typeof jobSchema>,
   ) {
-    if (binding.threadId && binding.threadId !== job.thread_id) return false;
+    if (
+      binding.threadId &&
+      binding.threadId !== job.thread_id &&
+      !binding.additionalRoot
+    )
+      return false;
     const roots = binding.rootsBySession?.[job.session_id];
     if (!binding.rootId && !roots) return true;
     const data = z
@@ -95,13 +125,63 @@ export class ExecutionControls {
           `/api/contexts/${encodeURIComponent(binding.contextId)}/threads/${encodeURIComponent(job.thread_id)}`,
         ),
       );
-    return binding.rootId
-      ? data.snapshot.thread.root_turn_id === binding.rootId
-      : roots!.includes(data.snapshot.thread.root_turn_id);
+    const rootId = data.snapshot.thread.root_turn_id;
+    const original =
+      (!binding.threadId || binding.threadId === job.thread_id) &&
+      (binding.rootId ? rootId === binding.rootId : roots!.includes(rootId));
+    return (
+      original ||
+      (!!binding.additionalRoot &&
+        (await binding.additionalRoot(rootId, job.thread_id)))
+    );
   }
   async snapshot(scope: ExecutionScope): Promise<ExecutionSnapshot> {
     const binding = this.binding(scope);
     if (!binding) return { jobs: [], approvals: [], limit: 100 };
+    if (binding.threadIds) {
+      const threadIds = [...new Set(await binding.threadIds())];
+      let jobs: z.infer<typeof jobSchema>[] = [];
+      const approvals = await this.approvals(binding);
+      for (let offset = 0; offset < threadIds.length; offset += 4) {
+        const batch = await Promise.all(
+          threadIds.slice(offset, offset + 4).map(async (threadId) => {
+            const result = z.object({ jobs: z.array(jobSchema) }).parse(
+              await this.request(
+                "/api/execution-jobs?" +
+                  new URLSearchParams({
+                    session_id: binding.sessionId,
+                    context_id: binding.contextId,
+                    thread_id: threadId,
+                    include_terminal: "true",
+                    newest_first: "true",
+                    limit: "100",
+                  }),
+              ),
+            );
+            const scoped = result.jobs.filter(
+              (job) =>
+                job.session_id === binding.sessionId &&
+                job.context_id === binding.contextId &&
+                job.thread_id === threadId,
+            );
+            // Every selected job names this same exact immutable Thread/root;
+            // one fresh provenance proof applies to all its returned job IDs.
+            return !scoped.length ||
+              (await this.belongsToRoot(binding, scoped[0]!))
+              ? scoped
+              : [];
+          }),
+        );
+        jobs = [...jobs, ...batch.flat()]
+          .sort(
+            (a, b) =>
+              b.created_at.localeCompare(a.created_at) ||
+              b.id.localeCompare(a.id),
+          )
+          .slice(0, 100);
+      }
+      return { jobs, approvals, limit: 100 };
+    }
     const [data, approvals] = await Promise.all([
       Promise.all(
         sessionIds(binding).map((sessionId) =>

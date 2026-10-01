@@ -9,10 +9,8 @@ import {
   Plus,
   Users,
 } from "lucide-react";
-import {
-  currentScriptDraft,
-  type ScriptItem,
-} from "../../../packages/core/src/script-studio.js";
+import { type ScriptItem } from "../../../packages/core/src/script-studio.js";
+import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
 import { scopedStorage } from "./client.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 
@@ -40,18 +38,16 @@ const statuses = {
 };
 
 /** A view projection only: original IDs, kinds, order and parent links stay intact. */
-export function scriptDirectory(items: ScriptItem[]) {
+export function scriptDirectory(items: ScriptDirectoryItem[]) {
   const sorted = [...items].sort(
-    (a, b) =>
-      currentScriptDraft(a).order - currentScriptDraft(b).order ||
-      a.id.localeCompare(b.id),
+    (a, b) => a.order - b.order || a.id.localeCompare(b.id),
   );
   const episodes = sorted.filter((item) => item.kind === "episode");
   const episodeIds = new Set(episodes.map((item) => item.id));
-  const scenes = new Map<string, ScriptItem[]>();
-  const unassigned: ScriptItem[] = [];
+  const scenes = new Map<string, ScriptDirectoryItem[]>();
+  const unassigned: ScriptDirectoryItem[] = [];
   for (const item of sorted.filter((item) => item.kind === "scene")) {
-    const parent = currentScriptDraft(item).parentId;
+    const parent = item.parentId;
     if (!parent || !episodeIds.has(parent)) unassigned.push(item);
     else scenes.set(parent, [...(scenes.get(parent) ?? []), item]);
   }
@@ -81,7 +77,7 @@ export function ScriptStudioNavigation({
   onCreate,
   onNotice,
 }: {
-  items: ScriptItem[];
+  items: ScriptDirectoryItem[];
   itemId: string;
   storageScope: string;
   locationKey: string;
@@ -111,9 +107,7 @@ export function ScriptStudioNavigation({
         : selected?.kind === "source"
           ? "sources"
           : "people";
-  const selectedParent = selected
-    ? currentScriptDraft(selected).parentId
-    : null;
+  const selectedParent = selected ? selected.parentId : null;
   const choose = (id?: string) => {
     onChoose(id);
     if (compact) onClose();
@@ -166,8 +160,8 @@ export function ScriptStudioNavigation({
       <Plus />
     </button>
   );
-  const row = (item: ScriptItem, mixed = false) => {
-    const title = currentScriptDraft(item).title;
+  const row = (item: ScriptDirectoryItem, mixed = false) => {
+    const title = item.title;
     return (
       <button
         type="button"
@@ -332,7 +326,7 @@ export function ScriptStudioNavigation({
           <>
             {directory.episodes.map((episode) => {
               const scenes = directory.scenes.get(episode.id) ?? [];
-              const title = currentScriptDraft(episode).title;
+              const title = episode.title;
               return (
                 <div key={episode.id} data-script-episode={episode.id}>
                   <div

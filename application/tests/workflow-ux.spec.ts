@@ -1,6 +1,11 @@
 import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openInput, composerAction } from "./interaction-helpers.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+
+const platform = () =>
+  PlatformClient.connect(new HttpApplicationClient("http://127.0.0.1:65421"));
 
 test("系统附件选择期间失焦不卸载输入，取消和选中后均恢复", async ({ page }) => {
   await page.goto("/");
@@ -181,7 +186,11 @@ test("browser has an address field before creating an object; attachment draft p
         );
     }
   }
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  const source = await platform();
+  const beforeContent = await source.contentCounts();
+  const beforeInputs = (
+    await source.navigationRuntime()
+  ).runtime.deliveries.map((delivery) => delivery.inputId);
   await page.keyboard.press("Meta+j");
   const input = page.getByRole("textbox", { name: "AI 输入内容" });
   if (!(await input.isVisible()))
@@ -213,11 +222,12 @@ test("browser has an address field before creating an object; attachment draft p
   await expect(page.getByLabel("消息附件", { exact: true })).toContainText(
     "sample.txt",
   );
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.artifacts.length).toBe(
-    before.workspace.artifacts.length,
-  );
-  expect(after.workspace.inputs.length).toBe(before.workspace.inputs.length);
+  expect(await source.contentCounts()).toEqual(beforeContent);
+  expect(
+    (await source.navigationRuntime()).runtime.deliveries.map(
+      (delivery) => delivery.inputId,
+    ),
+  ).toEqual(beforeInputs);
   await page.getByRole("button", { name: "返回工作空间", exact: true }).click();
   await expect(page.locator(".topbar")).toBeVisible();
   await page
@@ -226,6 +236,11 @@ test("browser has an address field before creating an object; attachment draft p
 });
 
 test("浏览器仍能导航和恢复地址，不再把收藏写进内容", async ({ page }) => {
+  const source = await platform();
+  const beforeContent = await source.contentCounts();
+  const beforeInputs = (
+    await source.navigationRuntime()
+  ).runtime.deliveries.map((delivery) => delivery.inputId);
   await page.addInitScript(() => {
     let current: any = null;
     (window as any).morphzDesktop = {
@@ -274,14 +289,12 @@ test("浏览器仍能导航和恢复地址，不再把收藏写进内容", async
   await page.reload();
   await expect(address).toHaveValue("https://example.com/bookmark-test");
   await expect(bookmark).toHaveCount(0);
-  const boot = await page.request.get("/api/workspace").then((r) => r.json());
+  expect(await source.contentCounts()).toEqual(beforeContent);
   expect(
-    boot.workspace.artifacts.filter(
-      (a: any) =>
-        a.content.kind === "website" &&
-        a.content.url === "https://example.com/bookmark-test",
+    (await source.navigationRuntime()).runtime.deliveries.map(
+      (delivery) => delivery.inputId,
     ),
-  ).toHaveLength(0);
+  ).toEqual(beforeInputs);
 });
 
 test("notification settings are not list filters and dialog centers in content", async ({

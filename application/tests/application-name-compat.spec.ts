@@ -1,9 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { createAppServer } from "../apps/service/src/http.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 
 for (const legacy of [false, true])
   test(`${legacy ? "旧" : "新"}应用协议握手与恢复，加载 iframe 时宿主弹窗单击创建有效`, async ({
@@ -11,7 +13,9 @@ for (const legacy of [false, true])
   }) => {
     // Protocol fixtures must not add launcher tiles to other tests' shared
     // center: coordinate-based background checks must still hit background.
-    const store = new WorkspaceStore(":memory:");
+    const directory = mkdtempSync(join(tmpdir(), "morphz-app-compat-"));
+    const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
+    const domains = await openApplicationDomainsHost(directory, store);
     const probe = createServer();
     await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
     const port = (probe.address() as { port: number }).port;
@@ -19,6 +23,16 @@ for (const legacy of [false, true])
     const server = createAppServer(store, {
       port,
       webRoot: resolve("dist/web"),
+      bookmarkDomain: domains.browser,
+      platformWork: domains.work,
+      platformDocuments: domains.content,
+      platformScripts: domains.content,
+      platformReader: domains.reader,
+      messageAttachments: domains.messageAttachments,
+      images: domains.images,
+      uiPackages: domains.uiPackages,
+      notifications: domains.notifications,
+      platformTaskRuns: domains.taskRuns(),
     });
     await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
     const origin = `http://127.0.0.1:${port}`;
@@ -58,9 +72,8 @@ for (const legacy of [false, true])
         `iframe[title="${manifest.title}应用界面"]`,
       );
       await expect(frame.locator("#status")).toContainText("已连接");
-      await frame.locator("#note").fill("old and new retain exact state");
-      await frame.getByRole("button", { name: "保存便笺状态" }).click();
-      await expect(frame.locator("#status")).toContainText("已保存");
+      await frame.locator("#note").fill("old and new keep unsaved text local");
+      await expect(frame.locator("#status")).toContainText("尚未保存");
       for (let index = 0; index < 8; index++) {
         await page.getByRole("button", { name: "工作台", exact: true }).click();
         await page
@@ -79,22 +92,19 @@ for (const legacy of [false, true])
         await page.getByLabel("项目名称", { exact: true }).fill(title);
         await page.getByRole("button", { name: "创建", exact: true }).click();
         await expect(page.getByRole("dialog")).toHaveCount(0);
-        const snapshot = await (
-          await page.request.get(origin + "/api/workspace")
+        const projects = await (
+          await page.request.get(origin + "/api/platform/projects")
         ).json();
         expect(
-          snapshot.workspace.projects.filter(
-            (p: { title: string }) => p.title === title,
-          ),
+          projects.filter((p: { title: string }) => p.title === title),
         ).toHaveLength(1);
       }
       await page.getByRole("button", { name: "工作台", exact: true }).click();
       await page
         .getByRole("tab", { name: manifest.title, exact: true })
         .click();
-      await expect(frame.locator("#note")).toHaveValue(
-        "old and new retain exact state",
-      );
+      await expect(frame.locator("#note")).toHaveValue("");
+      await expect(frame.locator("#status")).toContainText("已连接");
       await page
         .getByRole("button", {
           name: `关闭应用 ${manifest.title}`,
@@ -107,6 +117,8 @@ for (const legacy of [false, true])
     } finally {
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
+      await domains.close();
       store.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });

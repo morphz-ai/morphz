@@ -11,6 +11,7 @@ fn enabled() -> Registry {
 fn directed_typed_input_is_bound_without_overriding_the_original_route() {
     let registry = enabled();
     assert_eq!(registry.capabilities()["directed_input"], true);
+    assert_eq!(registry.capabilities()["client_metadata"], true);
     assert_eq!(Registry::default().capabilities()["directed_input"], true);
     assert_eq!(Registry::default().capabilities()["experimental"], false);
     assert_eq!(Registry::default().capabilities()["enabled"], true);
@@ -73,6 +74,45 @@ fn fingerprints_and_wire_encoding_preserve_domain_numbers() {
     );
     let stored = serde_json::to_value(&original).unwrap();
     assert_eq!(serde_json::from_value::<Request>(stored).unwrap(), original);
+}
+#[test]
+fn client_metadata_is_durable_bounded_and_not_model_visible() {
+    let wire = r#"{"io_version":"1","client_message_id":"test","message":{"format":{"id":"test.data","version":"1"},"validation":"generic","content":{"encoding":"json","value":{"text":"visible"}}},"client_metadata":{"conversation_id":"named-one","raw_body":"private presentation marker","revision":9007199254740993123456789}}"#;
+    let input = Request::parse(wire.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(
+        input
+            .client_metadata
+            .as_ref()
+            .and_then(|value| value.get("revision")),
+        Some(&Data::Number("9007199254740993123456789".into()))
+    );
+    assert_eq!(
+        Request::parse(input.wire_data().json().as_bytes(), &Limits::default()).unwrap(),
+        input
+    );
+    let bound = enabled().bind(input.clone(), "human").unwrap();
+    let stored = serde_json::to_value(&bound).unwrap();
+    assert_eq!(
+        serde_json::from_value::<AcceptedInput>(stored).unwrap(),
+        bound
+    );
+    let projected = projection::render(
+        &bound.request.message,
+        "event-client-metadata",
+        Some(&bound.binding.input),
+        64 * 1024,
+    )
+    .to_string();
+    assert!(projected.contains("visible"));
+    assert!(!projected.contains("private presentation marker"));
+    assert_ne!(
+        input.fingerprint("human"),
+        request(r#"{"text":"visible"}"#).fingerprint("human")
+    );
+    assert!(!request("null")
+        .wire_data()
+        .json()
+        .contains("client_metadata"));
 }
 #[test]
 fn strings_remain_inert_typed_leaves_through_sexpr_round_trip() {

@@ -1,6 +1,12 @@
 import { test, expect } from "@playwright/test";
-import type { Boot } from "../apps/web/src/client.js";
-import { seedCenter } from "./center-fixtures.js";
+import { randomUUID } from "node:crypto";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 
 test("长消息历史下输入和流式续写不反复阻塞主线程", async ({ page }, info) => {
   await page.addInitScript(() => {
@@ -17,39 +23,20 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       }
     };
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    boot.workspace.inputs = Array.from({ length: 64 }, (_, i) => ({
-      id: `performance-input-${i}`,
-      projectId,
-      conversationId: projectId,
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: `TEST 性能回归问题 ${i}`,
-      author: { actantId: boot.actantId, principalId: boot.principalId },
-      targetActantId: "morphz-agent",
-      status: "recorded",
-      createdAt: new Date(Date.UTC(2026, 8, 21, 0, i)).toISOString(),
-    }));
-    boot.runtime = {
-      ...boot.runtime,
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
-      messages: boot.workspace.inputs.map((input, i) => ({
+      messages: inputs.map((input, i) => ({
         id: `performance-reply-${i}`,
-        projectId,
-        conversationId: projectId,
+        ...presentation.scope,
         inputId: input.id,
         rootId: null,
         artifactId: null,
-        kind: "reply",
+        kind: "reply" as const,
         createdAt: new Date(Date.parse(input.createdAt) + 1000).toISOString(),
         text:
           `## TEST 历史回复 ${i}\n\n` +
@@ -59,16 +46,23 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
               `段落 ${n}：**人物与场景**保持一致。这里是用于测量的合成文字，不发送模型、不写入用户中心。\n\n| 人物 | 行动 |\n| --- | --- |\n| 甲 | 等待 |\n| 乙 | 返回 |\n\n`,
           ).join(""),
       })),
-      deliveries: boot.workspace.inputs.map((input) => ({
+      deliveries: inputs.map((input) => ({
         inputId: input.id,
-        state: "completed",
+        state: "completed" as const,
         error: null,
         retryable: false,
       })),
-    };
-    boot.outputs = [];
-    await route.fulfill({ response, json: boot });
-  });
+    },
+  }));
+  inputs.push(
+    ...Array.from({ length: 64 }, (_, i) =>
+      presentation.input(
+        `performance-input-${i}`,
+        `TEST 性能回归问题 ${i}`,
+        new Date(Date.UTC(2026, 8, 21, 0, i)).toISOString(),
+      ),
+    ),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -77,7 +71,7 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
   const input = page.getByLabel("AI 输入内容");
   await expect(page.locator(".conversation-message")).toHaveCount(128);
   await input.focus();
-  const metrics = await page.evaluate(async () => {
+  const metrics = await page.evaluate(async (scope) => {
     const field = document.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="AI 输入内容"]',
     )!;
@@ -106,7 +100,6 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       await frame();
       const start = performance.now();
       for (const source of (window as any).__performanceStreams) {
-        const params = new URL(source.url, location.origin).searchParams;
         source.onmessage?.({
           data: JSON.stringify({
             connected: true,
@@ -115,8 +108,7 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
             messages: [
               {
                 id: "performance-live",
-                projectId: params.get("projectId"),
-                conversationId: params.get("conversationId"),
+                ...scope,
                 artifactId: null,
                 inputId: "performance-input-63",
                 rootId: "root",
@@ -143,7 +135,7 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       streaming,
       longTasks,
     };
-  });
+  }, presentation.scope);
   console.log("MESSAGE_PERFORMANCE", JSON.stringify(metrics));
   await info.attach("message-performance", {
     body: JSON.stringify(metrics, null, 2),
@@ -159,53 +151,54 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
   expect(metrics.streamingMedianMs).toBeLessThan(50);
 });
 
-test("缓存正文解析不缓存对象访问权限，原文不变时链接仍随快照更新", async ({
+test("缓存正文解析不缓存对象访问权限，打开原文仍核对当前目录授权", async ({
   page,
 }) => {
-  const targetId = await seedCenter(page, {
-    type: "create-artifact",
-    projectId: "first-project",
-    title: "TEST 性能链接目标",
-    content: { kind: "document", markdown: "TEST 对象正文" },
-  });
-  let visible = true,
-    revision = 0;
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    if (!visible)
-      boot.workspace.artifacts = boot.workspace.artifacts.filter(
-        (a) => a.id !== targetId,
-      );
-    boot.workspace.inputs = [];
-    boot.runtime = {
-      ...boot.runtime,
+  let denied = true;
+  let targetId = "";
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
-      model: `permission-${revision}`,
+      model: "permission-fixture",
       deliveries: [],
       messages: [
         {
           id: "permission-reply",
-          projectId,
-          conversationId: projectId,
+          ...presentation.scope,
           inputId: null,
           rootId: null,
           artifactId: null,
-          kind: "reply",
+          kind: "reply" as const,
           createdAt: "2026-09-21T00:00:00Z",
           text: `TEST 相同正文 [TEST 打开对象](artifact:${targetId})\n\n![TEST 外部图](https://invalid.example/performance.png)`,
         },
       ],
-    };
-    boot.outputs = [];
-    await route.fulfill({ response, json: boot });
-  });
+    },
+  }));
+  const created = (await presentation.client.createDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
+    projectId: presentation.spaces.deskId,
+    title: "TEST 性能链接目标",
+    markdown: "TEST 对象正文",
+  })) as { contentId: string };
+  targetId = created.contentId;
+  let reads = 0;
+  await page.route(
+    new RegExp(`/api/platform/content/${targetId}(?:\\?.*)?$`),
+    async (route) => {
+      reads++;
+      if (denied)
+        await route.fulfill({
+          status: 403,
+          json: { message: "TEST 当前访问权限已撤销" },
+        });
+      else await route.continue();
+    },
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -217,21 +210,13 @@ test("缓存正文解析不缓存对象访问权限，原文不变时链接仍�
     exact: true,
   });
   await expect(link).toBeVisible();
-  const change = async (next: boolean) => {
-    visible = next;
-    revision++;
-    const updated = page.waitForResponse(
-      async (r) =>
-        r.url().endsWith("/api/workspace") &&
-        (await r.json()).runtime?.model === `permission-${revision}`,
-    );
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await updated;
-  };
-  await change(false);
-  await expect(link).toHaveCount(0);
-  await expect(message).toContainText("TEST 打开对象（不可用）");
-  await change(true);
+  await link.click();
+  await expect(
+    page.locator(".workspace-notice").getByRole("alert"),
+  ).toContainText("TEST 当前访问权限已撤销");
+  await expect(page.locator(".object-paper")).toHaveCount(0);
+  expect(reads).toBeGreaterThan(0);
+  denied = false;
   await expect(link).toBeVisible();
   await expect(message.locator("img")).toHaveCount(0);
   await expect(

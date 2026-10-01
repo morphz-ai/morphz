@@ -10,11 +10,14 @@ const PdfAttachment = lazy(() =>
 /** Preview the same scoped resource in place; never navigate the app or create an Artifact. */
 export function AttachmentPreview({
   attachment: a,
+  source,
 }: {
   attachment: InputAttachment;
+  source?: { projectId: string; conversationId: string; inputId: string };
 }) {
   const [open, setOpen] = useState(false);
   const image = !a.mime || a.mime.startsWith("image/");
+  const url = `/api/attachments/${a.assetId}${source ? `?${new URLSearchParams(source)}` : ""}`;
   return (
     <>
       <button
@@ -24,7 +27,7 @@ export function AttachmentPreview({
         onClick={() => setOpen(true)}
       >
         {image ? (
-          <img src={`/api/attachments/${a.assetId}`} alt={a.name} />
+          <img src={url} alt={a.name} />
         ) : (
           <span className="attachment-file">
             <FileText />
@@ -32,18 +35,25 @@ export function AttachmentPreview({
           </span>
         )}
       </button>
-      {open && <Preview a={a} onClose={() => setOpen(false)} />}
+      {open && <Preview a={a} url={url} onClose={() => setOpen(false)} />}
     </>
   );
 }
-function Preview({ a, onClose }: { a: InputAttachment; onClose(): void }) {
+function Preview({
+  a,
+  url,
+  onClose,
+}: {
+  a: InputAttachment;
+  url: string;
+  onClose(): void;
+}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const imageSize = useImagePreviewSize();
   const isImage = !a.mime || a.mime.startsWith("image/");
   const [text, setText] = useState<string | null>(null),
     [error, setError] = useState("");
   useModal(dialog);
-  const url = `/api/attachments/${a.assetId}`;
   useEffect(() => {
     if (!a.mime?.startsWith("text/")) return;
     const abort = new AbortController();

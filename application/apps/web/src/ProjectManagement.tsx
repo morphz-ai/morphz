@@ -79,14 +79,13 @@ export function ProjectActionDialog({
     [busy, setBusy] = useState(false);
   useModal(dialog);
   const state: Workspace = client.boot!.workspace;
-  const count = state.artifacts.filter(
-    (a) => a.projectId === project.id,
-  ).length;
+  const count =
+    (client.taskCounts.find((entry) => entry.projectId === project.id)?.total ??
+      0) +
+    (client.contentCounts.find((entry) => entry.projectId === project.id)
+      ?.count ?? 0);
   const conversations = state.conversations.filter(
-    (c) =>
-      c.projectId === project.id &&
-      c.id !== project.id &&
-      state.inputs.some((i) => (i.conversationId ?? i.projectId) === c.id),
+    (c) => c.projectId === project.id && c.id !== project.id,
   ).length;
   async function save() {
     if (pending.current) return;

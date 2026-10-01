@@ -2,16 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { WorkspaceStore } from "../apps/service/src/store.js";
-import { RuntimeBridge } from "../apps/service/src/runtime.js";
-import { workspaceFor } from "../apps/service/src/identity.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import { Application } from "../packages/application/src/application.js";
+import { RuntimeBridge } from "../packages/application/src/runtime.js";
+import {
+  acceptedRuntimeInput,
+  runtimeTimeline,
+} from "./runtime-http-evidence.js";
 import {
   discussionId,
   localAccess,
+  type AccessContext,
   type Operation,
 } from "../packages/core/src/model.js";
 
@@ -25,288 +27,354 @@ const input = (projectId: string, conversationId?: string): Operation => ({
   body: "测试消息",
   targetActantId: "morphz-agent",
 });
-function commands(store: WorkspaceStore) {
-  return (operation: Operation, actor = localAccess) =>
-    store.execute({ commandId: randomUUID(), operation }, actor).entityId;
-}
 
-test("首条输入原子创建会话：校验失败不留空记录，重试不重复，不能越权改绑", () => {
-  const store = new WorkspaceStore(":memory:");
+test("首条 Human 输入创建会话：校验失败不留空记录，精确重试不重复，不能改绑", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
     const id = randomUUID();
     const request = {
       commandId: randomUUID(),
       operation: {
-        ...input("first-project", id),
+        ...input(f.projectId, id),
         newConversation: { title: "对话 1" },
       },
     };
-    const before = store.snapshot();
-    assert.throws(() =>
-      store.execute(
-        {
-          ...request,
-          operation: { ...request.operation, artifactId: "missing" },
-        },
-        localAccess,
-      ),
+    const list = () =>
+      f
+        .session()
+        .listPlatformConversations({ projectId: f.projectId, limit: 20 });
+    const before = await list();
+    const outboxBefore = structuredClone(f.store.runtimeState());
+    await assert.rejects(
+      f.session().platformMessage({
+        ...request,
+        operation: { ...request.operation, artifactId: "missing" },
+      }),
     );
-    assert.deepEqual(store.snapshot(), before);
-    assert.throws(() =>
-      store.execute(
-        { ...request, operation: { ...request.operation, body: " " } },
-        localAccess,
-      ),
+    assert.deepEqual(await list(), before);
+    assert.deepEqual(f.store.runtimeState(), outboxBefore);
+    await assert.rejects(
+      f.session().platformMessage({
+        ...request,
+        operation: { ...request.operation, body: " " },
+      }),
     );
-    assert.deepEqual(store.snapshot(), before);
-    assert.throws(
-      () =>
-        store.execute(request, {
-          principalId: "morphz-service",
-          actantId: "morphz-agent",
-        }),
-      /项目成员/,
+    assert.deepEqual(await list(), before);
+    assert.deepEqual(f.store.runtimeState(), outboxBefore);
+    await assert.rejects(async () =>
+      f
+        .session({ principalId: "morphz-service", actantId: "morphz-agent" })
+        .platformMessage(request),
     );
-    assert.deepEqual(store.snapshot(), before);
-    const receipt = store.execute(request, localAccess);
-    assert.deepEqual(store.execute(request, localAccess), receipt);
-    const after = store.snapshot();
-    assert.equal(after.conversations.length, before.conversations.length + 1);
-    assert.equal(after.inputs.length, before.inputs.length + 1);
-    assert.equal(after.inputs.at(-1)!.conversationId, id);
-    assert.equal(after.conversations.find((c) => c.id === id)!.title, "对话 1");
-    const project = commands(store)({
-      type: "create-project",
+    assert.deepEqual(await list(), before);
+    assert.deepEqual(f.store.runtimeState(), outboxBefore);
+    const receipt = await f.session().platformMessage(request);
+    assert.deepEqual(await f.session().platformMessage(request), receipt);
+    const after = await list();
+    assert.equal(after.length, before.length + 1);
+    assert.equal(after.find((c) => c.id === id)!.title, "对话 1");
+    const deliveries = () =>
+      (
+        f.store.runtimeState() as {
+          deliveries: {
+            inputId: string;
+            platformSource: { projectId: string; conversationId: string };
+          }[];
+        }
+      ).deliveries;
+    assert.equal(deliveries().length, 1);
+    assert.equal(deliveries()[0]!.inputId, receipt.entityId);
+    assert.equal(discussionId(deliveries()[0]!.platformSource), id);
+    const projectId = randomUUID();
+    await f.session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId,
       title: "另一个项目",
     });
-    assert.throws(
-      () =>
-        commands(store)({
-          ...input(project, id),
+    await assert.rejects(
+      f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...input(projectId, id),
           newConversation: { title: "不能改绑" },
-        } as Operation),
-      /不属于/,
+        },
+      }),
+      /不属于|已经被使用/,
     );
-    assert.throws(
-      () =>
-        commands(store)({
-          ...input("first-project", "first-project"),
+    await assert.rejects(
+      f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...input(f.projectId, f.projectId),
           newConversation: { title: "不能占用默认" },
-        } as Operation),
+        },
+      }),
       /独立/,
     );
-    assert.throws(
-      () =>
-        store.execute(
-          {
-            ...request,
-            operation: {
-              ...request.operation,
-              body: "不能用相同标识提交不同消息",
-            },
-          },
-          localAccess,
-        ),
-      /另一项/,
+    await assert.rejects(
+      f.session().platformMessage({
+        ...request,
+        operation: { ...request.operation, body: "不能用相同标识提交不同消息" },
+      }),
+      /已用于另一条输入/,
     );
-    commands(store)(input("first-project", id));
+    await f.session().platformMessage({
+      commandId: randomUUID(),
+      operation: input(f.projectId, id),
+    });
+    assert.equal((await list()).length, after.length);
+    assert.equal(deliveries().length, 2);
     assert.equal(
-      store.snapshot().conversations.length,
-      after.conversations.length + 1,
-    ); // new project default only
+      (await f.session().listPlatformConversations({ projectId, limit: 20 }))
+        .length,
+      1,
+    );
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 
-test("项目默认对话和多对话：权限、版本、归档恢复与后台接续", () => {
-  const store = new WorkspaceStore(":memory:"),
-    run = commands(store);
+test("项目默认和命名对话：真实身份权限、CAS、归档恢复与成员授权撤销", async () => {
+  const alice = { principalId: "alice", actantId: "alice-human" };
+  const f = await agentDomainFixture({ additionalHumans: [alice] });
+  const runtime = new RuntimeBridge(
+    f.transport,
+    {
+      namespace: randomUUID(),
+      url: "http://127.0.0.1:1",
+      token: "isolated-test",
+      identityMode: "trusted_gateway",
+    },
+    f.identity,
+    false,
+  );
+  await runtime.stop();
+  const binding = f.domains.bindRuntime(runtime);
+  const application = new Application(f.transport, {
+    identity: f.identity,
+    runtime,
+    platformWork: f.domains.work,
+    platformDocuments: f.domains.content,
+  });
+  const session = (access: AccessContext = localAccess) =>
+    application.session(access);
   try {
-    const p = run({ type: "create-project", title: "对话测试项目" });
+    const p = f.projectId;
     assert.ok(
-      store
-        .snapshot()
-        .conversations.some((c) => c.id === p && c.projectId === p),
+      (
+        await session().listPlatformConversations({ projectId: p, limit: 20 })
+      ).some((c) => c.id === p && c.projectId === p),
     );
-    const c = run({
-      type: "create-conversation",
-      projectId: p,
-      title: "设计讨论",
+    const c = randomUUID();
+    const first = await session().platformMessage({
+      commandId: randomUUID(),
+      operation: { ...input(p, c), newConversation: { title: "设计讨论" } },
     });
-    const first = run(input(p, c));
-    assert.equal(
-      discussionId(store.snapshot().inputs.find((i) => i.id === first)!),
-      c,
+    const firstDelivery = (
+      f.transport.runtimeState() as {
+        deliveries: {
+          inputId: string;
+          platformSource: { projectId: string; conversationId: string };
+        }[];
+      }
+    ).deliveries.find((entry) => entry.inputId === first.entityId)!;
+    assert.equal(discussionId(firstDelivery.platformSource), c);
+    const foreign = randomUUID();
+    await session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId: foreign,
+      title: "另一项目",
+    });
+    await assert.rejects(
+      session().platformMessage({
+        commandId: randomUUID(),
+        operation: input(foreign, c),
+      }),
+      /不属于/,
     );
-    assert.throws(() => run(input("first-project", c)), /不属于/);
-    assert.throws(
-      () =>
-        run({
-          type: "create-conversation",
-          projectId: "local-dialogue",
-          title: "不可创建",
-        }),
-      /项目成员/,
+    const spaces = await session().ensurePlatformSpaces();
+    await assert.rejects(
+      session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...input(spaces.dialogueId, randomUUID()),
+          newConversation: { title: "不可创建" },
+        },
+      }),
+      /只能在项目内/,
     );
-    assert.throws(
-      () =>
-        run(
-          { type: "create-conversation", projectId: p, title: "不可创建" },
-          { principalId: "morphz-service", actantId: "morphz-agent" },
-        ),
-      /项目成员/,
+    await assert.rejects(async () =>
+      session({
+        principalId: "morphz-service",
+        actantId: "morphz-agent",
+      }).platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...input(p, randomUUID()),
+          newConversation: { title: "不可创建" },
+        },
+      }),
     );
-    run({
-      type: "update-conversation",
+    const archive = {
+      commandId: randomUUID(),
       conversationId: c,
       expectedRevision: 1,
       title: "设计与实现",
       archived: true,
-    });
-    assert.throws(() => run(input(p, c)), /归档/);
-    assert.throws(
-      () =>
-        run({
-          type: "update-conversation",
-          conversationId: c,
-          expectedRevision: 1,
-          title: "旧名称",
-        }),
-      /变化/,
+    };
+    await session().updatePlatformConversation(archive);
+    assert.deepEqual(await session().updatePlatformConversation(archive), c);
+    const archived = (
+      await session().listPlatformConversations({
+        projectId: p,
+        limit: 20,
+        archived: true,
+      })
+    ).find((row) => row.id === c)!;
+    assert.ok(archived.archivedAt);
+    await assert.rejects(
+      session().platformMessage({
+        commandId: randomUUID(),
+        operation: input(p, c),
+      }),
+      /对话不可发送/,
     );
-    assert.throws(
-      () =>
-        run({
-          type: "update-conversation",
-          conversationId: p,
-          expectedRevision: 1,
-          archived: true,
-        }),
+    await assert.rejects(
+      session().updatePlatformConversation({
+        commandId: randomUUID(),
+        conversationId: c,
+        expectedRevision: 1,
+        title: "旧名称",
+      }),
+      { code: "conflict" },
+    );
+    await assert.rejects(
+      session().updatePlatformConversation({
+        commandId: randomUUID(),
+        conversationId: p,
+        expectedRevision: 1,
+        archived: true,
+      }),
       /默认对话/,
     );
-    const continuation = run(input(p, c), {
-      principalId: "morphz-service",
-      actantId: "morphz-agent",
-    });
-    assert.equal(
-      discussionId(store.snapshot().inputs.find((i) => i.id === continuation)!),
-      c,
-    );
-    run({
-      type: "update-conversation",
+    await session().updatePlatformConversation({
+      commandId: randomUUID(),
       conversationId: c,
       expectedRevision: 2,
       archived: false,
     });
-    run(input(p, c));
-    store.provisionMembers([
-      {
-        principalId: "alice",
-        actantId: "alice-human",
-        name: "Alice",
-        projectIds: [p],
-        enabled: true,
-      },
-    ]);
-    const alice = { principalId: "alice", actantId: "alice-human" };
-    assert.ok(
-      workspaceFor(store.snapshot(), alice).conversations.some(
-        (x) => x.id === c,
-      ),
+    await session().platformMessage({
+      commandId: randomUUID(),
+      operation: input(p, c),
+    });
+    await f.domains.content.platform.reconcileOperatorMembers(
+      f.transport.identity(),
+      [
+        { ...localAccess, projectIds: [p, foreign], enabled: true },
+        { ...alice, projectIds: [p], enabled: true },
+      ],
     );
     assert.ok(
-      !workspaceFor(store.snapshot(), alice).conversations.some(
-        (x) => x.id === "local-dialogue",
-      ),
+      (
+        await session(alice).listPlatformConversations({
+          projectId: p,
+          limit: 20,
+        })
+      ).some((row) => row.id === c),
     );
-    assert.throws(() => run(input("local-dialogue"), alice), /没有访问/);
-    store.provisionMembers([
-      {
-        principalId: "alice",
-        actantId: "alice-human",
-        name: "Alice",
-        projectIds: [],
-        enabled: true,
-      },
-    ]);
     assert.ok(
-      !workspaceFor(store.snapshot(), alice).conversations.some(
-        (x) => x.id === c,
-      ),
+      !(
+        await session(alice).listAccessiblePlatformConversations({ limit: 20 })
+      ).some((row) => row.id === spaces.dialogueId),
     );
-    assert.throws(
-      () =>
-        run(
-          {
-            type: "update-conversation",
-            conversationId: c,
-            expectedRevision: 3,
-            title: "无权更改",
-          },
-          alice,
-        ),
-      /没有访问/,
+    await assert.rejects(
+      session(alice).platformMessage({
+        commandId: randomUUID(),
+        operation: input(spaces.dialogueId),
+      }),
+      { code: "forbidden" },
     );
+    await f.domains.content.platform.reconcileOperatorMembers(
+      f.transport.identity(),
+      [
+        { ...localAccess, projectIds: [p, foreign], enabled: true },
+        { ...alice, projectIds: [], enabled: true },
+      ],
+    );
+    assert.ok(
+      !(
+        await session(alice).listAccessiblePlatformConversations({ limit: 20 })
+      ).some((row) => row.id === c),
+    );
+    await assert.rejects(
+      session(alice).updatePlatformConversation({
+        commandId: randomUUID(),
+        conversationId: c,
+        expectedRevision: 3,
+        title: "无权更改",
+      }),
+      { code: "forbidden" },
+    );
+    const current = (
+      await session().listPlatformConversations({ projectId: p, limit: 20 })
+    ).find((row) => row.id === c)!;
+    assert.equal(current.revision, 3);
+    assert.equal(current.title, "设计与实现");
+    assert.equal(current.archivedAt, null);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await runtime.stop();
+    await f.domains.unbindRuntime(binding.authority);
+    await f.close();
   }
 });
 
-test("v11 升级不重写历史命令或 Runtime 账本；全局对话不随工作台保存转移", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mw-conversations-")),
-    path = join(dir, "workspace.sqlite");
-  let store = new WorkspaceStore(path);
+test("个人默认对话、精确输入请求和回执冷重启保持；创建项目不改写既有路由", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
+    const spaces = await f.session().ensurePlatformSpaces();
     const request = {
       commandId: randomUUID(),
-      operation: input("local-worktable"),
+      operation: input(spaces.deskId, spaces.dialogueId),
     };
-    const receipt = store.execute(request, localAccess);
-    const old = store.snapshot();
-    const raw: any = { ...old };
-    delete raw.conversations;
-    raw.projects = raw.projects.filter((p: any) => p.kind !== "dialogue");
-    raw.inputs.forEach((i: any) => delete i.conversationId);
-    store.saveRuntimeState({ legacy: "preserve exactly" });
-    store.close();
-    const db = new DatabaseSync(path);
-    db.prepare("UPDATE workspace SET body=?").run(JSON.stringify(raw));
-    db.exec("PRAGMA user_version=11");
-    db.close();
-    store = new WorkspaceStore(path);
-    assert.deepEqual(store.execute(request, localAccess), receipt);
-    assert.deepEqual(store.snapshot().inputs, raw.inputs);
-    assert.deepEqual(store.runtimeState(), { legacy: "preserve exactly" });
-    const run = commands(store),
-      global = store.snapshot().projects.find((p) => p.kind === "dialogue")!.id;
-    run(input(global));
-    run({
-      type: "create-project",
+    const receipt = await f.session().platformMessage(request);
+    const first = structuredClone(f.store.runtimeState()) as {
+      deliveries: {
+        inputId: string;
+        platformSource: { projectId: string; conversationId: string };
+      }[];
+    };
+    assert.equal(first.deliveries[0]!.platformSource.projectId, spaces.deskId);
+    assert.equal(
+      discussionId(first.deliveries[0]!.platformSource),
+      spaces.dialogueId,
+    );
+    await f.session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId: randomUUID(),
       title: "独立项目",
     });
-    assert.equal(
-      store.snapshot().projects.find((p) => p.kind === "dialogue")!.id,
-      global,
-    );
-    assert.equal(store.snapshot().inputs[0]!.projectId, "local-worktable");
-    assert.equal(discussionId(store.snapshot().inputs[0]!), "local-worktable");
-    assert.equal(store.snapshot().inputs[1]!.projectId, global);
-    const before = store.snapshot();
-    store.close();
-    store = new WorkspaceStore(path);
-    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual(await f.session().ensurePlatformSpaces(), spaces);
+    assert.deepEqual(f.store.runtimeState(), first);
+    await f.reopen();
+    assert.deepEqual(await f.session().ensurePlatformSpaces(), spaces);
+    assert.deepEqual(f.store.runtimeState(), first);
+    assert.deepEqual(await f.session().platformMessage(request), receipt);
+    assert.deepEqual(f.store.runtimeState(), first);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
-    rmSync(dir, { recursive: true });
+    await f.close();
   }
 });
 
 test("多对话使用不同 Session 与同一授权 Context；旧路由不变，归档后迟到回复与执行仍归原对话", async () => {
-  const store = new WorkspaceStore(":memory:"),
-    run = commands(store);
   const sessions = new Map<string, { id: string; context_id: string }>();
-  const received: { id: string; session: string }[] = [];
+  const received: {
+    id: string;
+    session: string;
+    event: ReturnType<typeof acceptedRuntimeInput>;
+  }[] = [];
   const queried: string[] = [];
   let finish = false;
   const fake = createServer(async (req, res) => {
@@ -323,6 +391,8 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
       res.end(JSON.stringify(data));
     };
     if (path === "/api/status") return send(200, { model: "fixture" });
+    if (path === "/api/session-io/capabilities")
+      return send(200, { enabled: true, client_metadata: true });
     if (path === "/api/sessions" && req.method === "POST") {
       const s = { id: body.id, context_id: body.mount.context_id };
       sessions.set(s.id, s);
@@ -342,29 +412,44 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
       });
     if (path.endsWith("/messages")) {
       assert.equal(body.activation.dispatch_mode, "parallel");
-      received.push({ id: body.client_message_id, session: id });
+      received.push({
+        id: body.client_message_id,
+        session: id,
+        event: acceptedRuntimeInput(body, id, "root-" + body.client_message_id),
+      });
       return send(200, {
         accepted: true,
         event_id: "root-" + body.client_message_id,
       });
     }
+    const roots = received.filter((i) => i.session === id);
+    const replies = finish
+      ? roots.map((i, n) => ({
+          id: "reply-" + i.id,
+          sequence: n + 1,
+          timestamp: i.event.timestamp,
+          topic: "chat/reply",
+          payload: { root_turn_id: i.event.id, text: "回复 " + i.id },
+        }))
+      : [];
     if (path.endsWith("/events"))
       return send(200, {
-        events:
-          finish && !Number(url.searchParams.get("after_sequence"))
-            ? received
-                .filter((i) => i.session === id)
-                .map((i, n) => ({
-                  id: "reply-" + i.id,
-                  sequence: n + 1,
-                  timestamp: new Date().toISOString(),
-                  topic: "chat/reply",
-                  payload: {
-                    root_turn_id: "root-" + i.id,
-                    text: "回复 " + i.id,
-                  },
-                }))
-            : [],
+        events: replies.filter(
+          (event) =>
+            event.sequence > Number(url.searchParams.get("after_sequence")),
+        ),
+      });
+    if (path.endsWith("/timeline"))
+      return send(200, {
+        entries: roots.flatMap((i) =>
+          runtimeTimeline(
+            i.event,
+            replies.filter(
+              (reply) => reply.payload.root_turn_id === i.event.id,
+            ),
+          ),
+        ),
+        next_before: null,
       });
     return send(200, sessions.get(id));
   });
@@ -374,62 +459,93 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
     token: "fixture",
     url: `http://127.0.0.1:${(fake.address() as { port: number }).port}`,
   };
-  let bridge = new RuntimeBridge(store, config);
+  const f = await platformRuntimeHostFixture(config);
   try {
-    const c = run({
-      type: "create-conversation",
-      projectId: "first-project",
-      title: "另一条工作线",
-    });
-    const a = run(input("first-project")),
-      b = run(input("first-project", c));
-    bridge.enqueue(a);
-    bridge.enqueue(b);
-    await bridge.tick();
+    const c = randomUUID();
+    const a = (
+      await f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: input(f.projectId),
+      })
+    ).entityId;
+    const b = (
+      await f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...input(f.projectId, c),
+          newConversation: { title: "另一条工作线" },
+        },
+      })
+    ).entityId;
+    await f.enableDispatch();
+    await f.runtime.tick();
     assert.equal(received.length, 2);
     const original = `mw-${config.namespace.slice(0, 8)}-${createHash("sha256")
-      .update(JSON.stringify(["first-project", null]))
+      .update(JSON.stringify([f.projectId, null]))
       .digest("hex")
       .slice(0, 24)}`;
     assert.equal(received[0]!.session, original);
     assert.notEqual(received[1]!.session, original);
     assert.equal(
-      new Set([...sessions.values()].map((s) => s.context_id)).size,
+      new Set([...sessions.values()].map((value) => value.context_id)).size,
       1,
     );
-    await bridge.executions.snapshot({
-      projectId: "first-project",
+    const scope = {
+      projectId: f.projectId,
       artifactId: null,
       conversationId: c,
-    });
+    };
+    const viewer = await f.runtime.platformExecutionControls(
+      scope,
+      localAccess,
+    );
+    await viewer.snapshot();
     assert.deepEqual(queried, [received[1]!.session]);
-    run({
-      type: "update-conversation",
+    await f.session().updatePlatformConversation({
+      commandId: randomUUID(),
       conversationId: c,
       expectedRevision: 1,
       archived: true,
     });
-    await bridge.stop();
-    bridge = new RuntimeBridge(store, config);
-    bridge.enqueue(a);
-    bridge.enqueue(b);
+    await f.reopen(false);
     finish = true;
-    await bridge.tick();
+    await f.runtime.tick();
     assert.equal(received.length, 2);
-    assert.equal(
-      bridge.snapshot().messages.find((m) => m.inputId === a)?.conversationId,
-      "first-project",
+    const originalHistory = await f.runtime.platformConversationHistory(
+      { projectId: f.projectId, conversationId: f.projectId },
+      localAccess,
+    );
+    const archivedHistory = await f.runtime.platformConversationHistory(
+      { projectId: f.projectId, conversationId: c },
+      localAccess,
     );
     assert.equal(
-      bridge.snapshot().messages.find((m) => m.inputId === b)?.conversationId,
+      originalHistory.runtime.messages.find((message) => message.inputId === a)
+        ?.conversationId,
+      f.projectId,
+    );
+    assert.equal(
+      archivedHistory.runtime.messages.find((message) => message.inputId === b)
+        ?.conversationId,
       c,
     );
-    assert.ok(
-      bridge.snapshot().deliveries.every((d) => d.state === "completed"),
+    assert.equal(
+      originalHistory.runtime.messages.some((message) => message.inputId === b),
+      false,
     );
+    assert.equal(
+      archivedHistory.runtime.messages.some((message) => message.inputId === a),
+      false,
+    );
+    assert.ok(
+      (
+        f.store.runtimeState() as { deliveries: { state: string }[] }
+      ).deliveries.every((delivery) => delivery.state === "completed"),
+    );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
+    await f.close();
+    fake.closeAllConnections();
     await new Promise<void>((resolve) => fake.close(() => resolve()));
-    store.close();
   }
 });

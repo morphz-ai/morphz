@@ -1,12 +1,26 @@
+import { scriptDocxManifest } from "./script-docx-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, backup } from "node:sqlite";
-import { WorkspaceStore } from "../packages/application/src/store.js";
-import { localAccess, type Operation } from "../packages/core/src/model.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import {
+  createScriptProduction,
+  updateScriptProduction,
+  createScriptItem,
+  reviseScriptItem,
+  transitionScriptWorkflow,
+  changeScriptReview,
+  decideScriptCandidate,
+  recordScriptExport,
+  submitScriptCandidate,
+  platformScriptStudioAuthority,
+} from "../packages/application/src/script-production-service.js";
+import {
+  ScriptStudioStore,
+  type LiveScriptDraft,
+} from "../packages/script-studio/src/store.js";
 import {
   currentScriptDraft,
   emptyScriptDraft,
@@ -16,63 +30,150 @@ import {
   type ScriptDraft,
   type ScriptGeneration,
   type ScriptItem,
+  type ScriptProduction,
 } from "../packages/core/src/script-studio.js";
 import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
 
-// Persistent domain workflow only. Candidates and running deliveries are explicit
-// synthetic fixtures; no Provider, Runtime execution or customer materials are used.
+// Actual Platform and Script private databases; only accepted Runtime input
+// evidence and generated text are synthetic. No model-quality claim.
 test("持久三集/分场：候选采纳、上游返工、历史导出、在线备份恢复与回执重试", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphz-script-workflow-"));
-  const filename = join(directory, "workspace.sqlite");
-  const backupFile = join(directory, "backup.sqlite");
-  let store = new WorkspaceStore(filename);
-  let restored: WorkspaceStore | undefined;
-  const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
-  try {
-    const execute = (operation: Operation) =>
-      store.execute({ commandId: randomUUID(), operation }, localAccess)
-        .entityId;
-    const run = (command: ScriptCommand) =>
-      execute({ type: "script-command", command });
-    const productionId = run({
-      action: "create-production",
-      projectId: "first-project",
-      title: "TEST 持久三集返工（合成）",
-    });
-    const production = () =>
-      store.snapshot().scriptProductions.find((p) => p.id === productionId)!;
-    const item = (id: string) => production().items.find((i) => i.id === id)!;
-    const draft = (id: string) => currentScriptDraft(item(id));
-    const ref = (id: string) => ({ itemId: id, revision: item(id).revision });
-    const create = (
-      kind: ScriptItem["kind"],
-      title: string,
-      changes: Partial<ScriptDraft> = {},
-    ) =>
-      run({
-        action: "create-item",
+  const host = await agentDomainFixture();
+  const backupFile = join(host.directory, "script-backup.sqlite");
+  let restored: ScriptStudioStore | undefined;
+  const productionId = "production_" + randomUUID().replaceAll("-", "");
+  const shared = () => ({
+    platform: host.domains.content.platform,
+    studio: host.domains.content.studio!,
+    instanceId: host.domains.content.instanceIds.scriptStudio,
+    productionId,
+  });
+  let current!: ScriptProduction;
+  const refresh = async () => {
+    current = await host.withHuman((actor) =>
+      shared().studio.readProduction({
+        credential: actor.credential,
         productionId,
-        kind,
-        draft: { ...emptyScriptDraft(title), ...changes },
-      });
-    const workflow = (id: string) => ({
-      productionId,
-      itemId: id,
-      expectedRevision: item(id).revision,
-      expectedWorkflowRevision: item(id).workflowRevision,
+      }),
+    );
+  };
+  const live = (draft: ScriptDraft): LiveScriptDraft => ({
+    ...draft,
+    sources: [],
+  });
+  const production = () => current;
+  const item = (id: string) => production().items.find((i) => i.id === id)!;
+  const draft = (id: string) => currentScriptDraft(item(id));
+  const ref = (id: string) => ({ itemId: id, revision: item(id).revision });
+  // This adapter dispatches existing domain services; it owns no data/SQL or
+  // workflow rules. Every assertion reads the committed Script original.
+  const run = async (command: ScriptCommand): Promise<string> => {
+    const commandId = randomUUID();
+    const base = { ...shared(), commandId };
+    const id = await host.withHuman(async (actor) => {
+      switch (command.action) {
+        case "update-production":
+          return (await updateScriptProduction({ ...base, ...command, actor }))
+            .original.productionId;
+        case "create-item": {
+          const itemId = "item_" + randomUUID().replaceAll("-", "");
+          return (
+            await createScriptItem({
+              ...base,
+              actor,
+              itemId,
+              expectedActivityRevision: current.activityRevision!,
+              kind: command.kind,
+              draft: live(command.draft),
+            })
+          ).original.itemId;
+        }
+        case "revise-item":
+          return (
+            await reviseScriptItem({
+              ...base,
+              ...command,
+              actor,
+              draft: live(command.draft),
+            })
+          ).original.itemId;
+        case "submit-review":
+        case "review-decision":
+        case "lock-item":
+        case "unlock-item":
+          return (
+            await transitionScriptWorkflow({
+              ...base,
+              ...command,
+              actor,
+              ...(command.action === "unlock-item"
+                ? { note: command.reason }
+                : {}),
+            })
+          ).original.itemId;
+        case "add-review":
+        case "resolve-review":
+          return (await changeScriptReview({ ...base, ...command, actor }))
+            .original.reviewId;
+        case "decide-candidate":
+          return (await decideScriptCandidate({ ...base, ...command, actor }))
+            .original.candidateId;
+        case "record-export":
+          return (
+            await recordScriptExport({
+              ...base,
+              ...command,
+              actor,
+            })
+          ).original.exportId;
+        default:
+          throw new Error(
+            "Unexpected workflow fixture command: " + command.action,
+          );
+      }
     });
-    const approve = (id: string, lock = false) => {
-      run({ action: "submit-review", ...workflow(id) });
-      run({
-        action: "review-decision",
-        ...workflow(id),
-        decision: "approve",
-        note: "合成人工审批测试，不是合作方验收",
-      });
-      if (lock) run({ action: "lock-item", ...workflow(id) });
-    };
-    const p = production();
+    await refresh();
+    return id;
+  };
+  const create = (
+    kind: ScriptItem["kind"],
+    title: string,
+    changes: Partial<ScriptDraft> = {},
+  ) =>
     run({
+      action: "create-item",
+      productionId,
+      kind,
+      draft: { ...emptyScriptDraft(title), ...changes },
+    });
+  const workflow = (id: string) => ({
+    productionId,
+    itemId: id,
+    expectedRevision: item(id).revision,
+    expectedWorkflowRevision: item(id).workflowRevision,
+  });
+  const approve = async (id: string, lock = false) => {
+    await run({ action: "submit-review", ...workflow(id) });
+    await run({
+      action: "review-decision",
+      ...workflow(id),
+      decision: "approve",
+      note: "合成人工审批测试，不是合作方验收",
+    });
+    if (lock) await run({ action: "lock-item", ...workflow(id) });
+  };
+  try {
+    await host.withHuman((actor) =>
+      createScriptProduction({
+        ...shared(),
+        actor,
+        commandId: randomUUID(),
+        projectId: host.projectId,
+        title: "TEST 持久三集返工（合成）",
+      }),
+    );
+    await refresh();
+    const p = production();
+    await run({
       action: "update-production",
       productionId,
       expectedRevision: p.revision,
@@ -86,25 +187,29 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
       reviewerPrincipalIds: p.reviewerPrincipalIds,
       template: p.template,
     });
-    const setting = create("setting", "时间规则", {
+    const setting = await create("setting", "时间规则", {
       text: "列车只在白天运行。",
     });
-    const character = create("character", "林", { text: "林追查失踪列车。" });
-    const outline = create("outline", "全剧大纲", {
+    const character = await create("character", "林", {
+      text: "林追查失踪列车。",
+    });
+    const outline = await create("outline", "全剧大纲", {
       text: "三集依次发现车票、追查信号、解开谜团。",
       dependencies: [ref(setting), ref(character)],
     });
-    approve(setting);
-    approve(character);
-    approve(outline);
+    await approve(setting);
+    await approve(character);
+    await approve(outline);
     const episodes: string[] = [];
     const scenes: string[] = [];
     const receipts: {
-      command: { commandId: string; operation: Operation };
-      inputId: string;
-      receipt: ReturnType<WorkspaceStore["execute"]>;
+      invocation: ReturnType<typeof host.input>;
+      request: Omit<
+        Parameters<typeof submitScriptCandidate>[0],
+        "actor" | "studio" | "platform" | "instanceId"
+      >;
+      receipt: Awaited<ReturnType<typeof submitScriptCandidate>>;
     }[] = [];
-    const inputIds: string[] = [];
     const dependencies = (target: string) => {
       const refs = new Map<string, { itemId: string; revision: number }>();
       const walk = (id: string) => {
@@ -120,7 +225,7 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
     };
     for (let n = 1; n <= 3; n++) {
       const previous = episodes.at(-1);
-      const episode = create("episode", `第${n}集`, {
+      const episode = await create("episode", `第${n}集`, {
         text: `第${n}集人工基稿。`,
         order: n,
         characters: [character],
@@ -142,49 +247,53 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
         maxOutputCharacters: 5000,
         maxReviewPasses: 0,
       };
-      const inputId = execute({
-        type: "record-input",
-        projectId: "first-project",
-        artifactId: null,
-        artifactRevision: null,
-        selection: "",
-        body: `TEST 合成第${n}集固定版本请求`,
-        targetActantId: agent.actantId,
-        scriptGeneration: generation,
-      });
-      inputIds.push(inputId);
-      store.saveRuntimeState({
-        deliveries: inputIds.map((id) => ({
-          inputId: id,
-          state: "running",
-          cancelRequested: false,
-        })),
-      });
-      const candidateCommand = {
-        commandId: randomUUID(),
-        operation: {
-          type: "script-command",
-          command: {
-            action: "submit-candidate",
+      const invocation = host.input(
+        host.projectId,
+        `TEST 合成第${n}集固定版本请求`,
+      );
+      const inputId = (await host.readAcceptedInput(invocation)).input_id;
+      await host.withAgent(
+        (actor) =>
+          shared().studio.prepareGeneration({
+            credential: actor.credential,
+            commandId: randomUUID(),
             productionId,
-            draft: {
-              ...draft(episode),
-              text: `第${n}集合成候选：白天，林在站台追查第${n}张车票。`,
-            },
-            explanation: "固定合成候选，不是模型质量证据",
-          },
-        } as Operation,
+            inputId,
+            generation,
+          }),
+        invocation,
+      );
+      const request = {
+        commandId: randomUUID(),
+        productionId,
+        inputId,
+        draft: live({
+          ...draft(episode),
+          text: `第${n}集合成候选：白天，林在站台追查第${n}张车票。`,
+        }),
+        explanation: "固定合成候选，不是模型质量证据",
       };
-      const receipt = store.execute(candidateCommand, agent, inputId);
-      receipts.push({ command: candidateCommand, inputId, receipt });
+      const receipt = await host.withAgent(
+        (actor) => submitScriptCandidate({ ...shared(), ...request, actor }),
+        invocation,
+      );
+      receipts.push({ invocation, request, receipt });
+      await refresh();
       assert.equal(item(episode).revision, 1, "提交候选不能改正式稿");
       assert.equal(draft(episode).text, `第${n}集人工基稿。`);
       const candidate = production().candidates.find(
-        (c) => c.id === receipt.entityId,
+        (c) => c.id === receipt.original.candidateId,
       )!;
       assert.equal(candidate.inputId, inputId);
-      assert.deepEqual(candidate.references, generation.references);
-      run({
+      assert.deepEqual(
+        [...candidate.references].sort((a, b) =>
+          a.itemId.localeCompare(b.itemId),
+        ),
+        [...generation.references].sort((a, b) =>
+          a.itemId.localeCompare(b.itemId),
+        ),
+      );
+      await run({
         action: "decide-candidate",
         productionId,
         candidateId: candidate.id,
@@ -193,8 +302,8 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
       });
       assert.equal(item(episode).revision, 2);
       assert.equal(item(episode).versions[1]!.candidateId, candidate.id);
-      approve(episode, true);
-      const scene = create("scene", `第${n}集第一场`, {
+      await approve(episode, true);
+      const scene = await create("scene", `第${n}集第一场`, {
         text: `白天，林拿起第${n}张车票。`,
         order: 1,
         parentId: episode,
@@ -202,7 +311,7 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
         dependencies: [ref(episode), ref(character)],
       });
       // Explicit asynchronous review must be resolved by a Human before approval.
-      const reviewId = run({
+      const reviewId = await run({
         action: "add-review",
         productionId,
         itemId: scene,
@@ -217,27 +326,29 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
         ),
       );
       const review = production().reviews.find((r) => r.id === reviewId)!;
-      run({
+      await run({
         action: "resolve-review",
         productionId,
         reviewId,
         expectedRevision: review.revision,
         resolution: "合成夹具已人工核对",
       });
-      approve(scene, true);
+      await approve(scene, true);
       episodes.push(episode);
       scenes.push(scene);
     }
     const exportItems = episodes.flatMap((id, i) => [ref(id), ref(scenes[i]!)]);
     assert.deepEqual(scriptIssues(production()), []);
-    const exportId = run({
+    const exportId = await run({
       action: "record-export",
       productionId,
       expectedRevision: production().revision,
       items: exportItems,
       template: production().template,
     });
-    const originalDocx = buildScriptDocx(production(), exportId);
+    const originalDocx = buildScriptDocx(
+      scriptDocxManifest(production(), exportId),
+    );
     assert.ok(originalDocx.length > 1000);
     assert.equal(
       new DataView(originalDocx.buffer, originalDocx.byteOffset).getUint32(
@@ -247,9 +358,12 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
       0x04034b50,
     );
     const preRework = structuredClone(production());
-    const identity = store.identity();
+    const identity = host.transport.identity();
     // SQLite online backup includes committed WAL pages; never copy an open DB file.
-    const reader = new DatabaseSync(filename, { readOnly: true });
+    const reader = new DatabaseSync(
+      join(host.directory, "script-studio.sqlite"),
+      { readOnly: true },
+    );
     try {
       await backup(reader, backupFile);
     } finally {
@@ -265,7 +379,7 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
       check.close();
     }
 
-    run({
+    await run({
       action: "revise-item",
       productionId,
       itemId: setting,
@@ -287,8 +401,8 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
         "上游变化不能偷偷改锁稿正文或版本",
       );
     }
-    assert.throws(
-      () =>
+    await assert.rejects(
+      async () =>
         run({
           action: "record-export",
           productionId,
@@ -299,9 +413,12 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
       /有效的锁定稿/,
     );
     assert.equal(production().exports.length, 1);
-    assert.deepEqual(buildScriptDocx(production(), exportId), originalDocx);
-    approve(setting);
-    run({
+    assert.deepEqual(
+      buildScriptDocx(scriptDocxManifest(production(), exportId)),
+      originalDocx,
+    );
+    await approve(setting);
+    await run({
       action: "revise-item",
       productionId,
       itemId: outline,
@@ -311,16 +428,16 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
         dependencies: draft(outline).dependencies.map((r) => ref(r.itemId)),
       },
     });
-    approve(outline);
+    await approve(outline);
     for (let n = 0; n < 3; n++) {
       for (const id of [episodes[n]!, scenes[n]!]) {
-        run({
+        await run({
           action: "unlock-item",
           ...workflow(id),
           reason: "时间设定变更：逐集返工，不自动改锁稿",
         });
         const base = item(id).revision;
-        run({
+        await run({
           action: "revise-item",
           productionId,
           itemId: id,
@@ -332,75 +449,98 @@ test("持久三集/分场：候选采纳、上游返工、历史导出、在线�
           },
         });
         assert.equal(item(id).revision, base + 1);
-        approve(id, true);
+        await approve(id, true);
       }
     }
     assert.deepEqual(scriptIssues(production()), []);
-    const newExportId = run({
+    const newExportId = await run({
       action: "record-export",
       productionId,
       expectedRevision: production().revision,
       items: episodes.flatMap((id, n) => [ref(id), ref(scenes[n]!)]),
       template: production().template,
     });
-    const newDocx = buildScriptDocx(production(), newExportId);
+    const newDocx = buildScriptDocx(
+      scriptDocxManifest(production(), newExportId),
+    );
     assert.notDeepEqual(newDocx, originalDocx);
     assert.deepEqual(
-      buildScriptDocx(production(), exportId),
+      buildScriptDocx(scriptDocxManifest(production(), exportId)),
       originalDocx,
       "历史导出必须保持同一字节",
     );
     const afterRework = structuredClone(production());
-    store.saveRuntimeState({
-      deliveries: inputIds.map((inputId) => ({
-        inputId,
-        state: "completed",
-        cancelRequested: false,
-      })),
-    });
-    store.close();
-    store = new WorkspaceStore(filename);
-    assert.equal(store.identity(), identity);
+    for (const receipt of receipts)
+      host.setInputExecution("completed", false, receipt.invocation);
+    await host.reopen();
+    assert.equal(host.transport.identity(), identity);
+    await refresh();
     assert.deepEqual(production(), afterRework);
     for (const r of receipts)
       assert.deepEqual(
-        store.execute(r.command, agent, r.inputId),
+        await host.withAgent(
+          (actor) =>
+            submitScriptCandidate({ ...shared(), ...r.request, actor }),
+          r.invocation,
+        ),
         r.receipt,
         "终态后可核对原成功回执，但不得重复生成",
       );
+    await refresh();
     assert.deepEqual(production(), afterRework);
-    assert.deepEqual(buildScriptDocx(production(), newExportId), newDocx);
-    restored = new WorkspaceStore(backupFile);
-    assert.equal(restored.identity(), identity);
-    const restoredProduction = restored
-      .snapshot()
-      .scriptProductions.find((p) => p.id === productionId)!;
+    assert.deepEqual(
+      buildScriptDocx(scriptDocxManifest(production(), newExportId)),
+      newDocx,
+    );
+    const domain = shared();
+    restored = await ScriptStudioStore.sqlite(
+      backupFile,
+      platformScriptStudioAuthority(
+        domain.platform,
+        domain.instanceId,
+        () => ({
+          routeKind: "service",
+          routeRef: `embedded:${domain.instanceId}`,
+        }),
+        {
+          objects: host.domains.content.objects,
+          instanceId: host.domains.content.instanceIds.objects,
+        },
+      ),
+    );
+    const restoredProduction = await host.withHuman((actor) =>
+      restored!.readProduction({ credential: actor.credential, productionId }),
+    );
     assert.deepEqual(
       restoredProduction,
       preRework,
-      "独立恢复应精确回到备份时版本，不修改原库",
+      "独立私库恢复精确回到备份版本，不修改原库",
     );
     assert.deepEqual(
-      buildScriptDocx(restoredProduction, exportId),
+      buildScriptDocx(scriptDocxManifest(restoredProduction, exportId)),
       originalDocx,
     );
     for (const r of receipts)
       assert.deepEqual(
-        restored.execute(r.command, agent, r.inputId),
-        r.receipt,
+        await host.withAgent(
+          (actor) =>
+            restored!.submitCandidate({
+              ...r.request,
+              credential: actor.credential,
+            }),
+          r.invocation,
+        ),
+        r.receipt.original,
       );
-    assert.equal(
-      restored.snapshot().scriptProductions[0]!.candidates.length,
-      3,
-    );
+    assert.equal(restoredProduction.candidates.length, 3);
     assert.equal(
       production().exports.length,
       2,
       "恢复副本不能覆盖仍在用的原库",
     );
+    host.assertNoLegacyData();
   } finally {
-    restored?.close();
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
+    await restored?.close();
+    await host.close();
   }
 });

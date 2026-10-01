@@ -2074,6 +2074,7 @@ impl SqliteStore {
         migrate_session_projection_sequences(&pool).await?;
         migrate_session_projections(&pool).await?;
         migrate_event_causal_columns(&pool).await?;
+        migrate_session_timeline(&pool).await?;
         migrate_recall_projection(&pool).await?;
         migrate_tool_call_history(&pool).await?;
         migrate_principal_context_encounters(&pool).await?;
@@ -3419,6 +3420,20 @@ async fn migrate_event_causal_columns(
     )
     .execute(pool)
     .await?;
+    // A Session participant can page one input root's public Events without
+    // walking every Event in a long, shared Session.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_session_root \
+         ON events(session_id, root_turn_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_session_root_attempt \
+         ON events(session_id, root_turn_id, json_extract(payload, '$.attempt_id'))",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (\
          context_id TEXT NOT NULL, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, \
@@ -3427,6 +3442,79 @@ async fn migrate_event_causal_columns(
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn migrate_session_timeline(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const VERSION: &str = "20260928_02_session_message_timeline";
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS session_message_timeline (\
+           session_id TEXT NOT NULL, entry_id TEXT NOT NULL, \
+           source_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, \
+           source_sequence INTEGER NOT NULL CHECK(source_sequence > 0), \
+           root_turn_id TEXT NOT NULL, attempt_id TEXT, \
+           visible_at_micros INTEGER NOT NULL, output_visible_at_micros INTEGER, \
+           display_kind TEXT NOT NULL CHECK(display_kind IN ('input', 'reply', 'progress', 'error')), \
+           is_final INTEGER NOT NULL CHECK(is_final IN (0, 1)), \
+           PRIMARY KEY(session_id, entry_id)); \
+         CREATE INDEX IF NOT EXISTS idx_session_message_timeline_page \
+           ON session_message_timeline(session_id, visible_at_micros DESC, entry_id DESC)",
+    )
+    .execute(pool)
+    .await?;
+    if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = ?")
+        .bind(VERSION)
+        .fetch_one(pool)
+        .await?
+        != 0
+    {
+        return Ok(());
+    }
+    // Input entry IDs are the client-visible message IDs, not Event IDs.
+    // This table is a rebuildable projection; immutable Events are retained.
+    sqlx::query("DELETE FROM session_message_timeline WHERE display_kind = 'input'")
+        .execute(pool)
+        .await?;
+    let high_water = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(rowid), 0) FROM events")
+        .fetch_one(pool)
+        .await?;
+    let mut cursor = 0_i64;
+    loop {
+        let rows = sqlx::query(
+            "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload \
+             FROM events WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 500",
+        )
+        .bind(cursor)
+        .bind(high_water)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut tx = pool.begin().await?;
+        for row in rows {
+            let sequence = row.get::<i64, _>("event_sequence");
+            let event = Event {
+                id: row.get("id"),
+                sequence: u64::try_from(sequence).ok(),
+                timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                actor: row.get("actor"),
+                event_type: row.get("type"),
+                topic: row.get("topic"),
+                payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+            };
+            project_session_timeline_in_transaction(&mut tx, &event, sequence).await?;
+            cursor = sequence;
+        }
+        tx.commit().await?;
+    }
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .bind(VERSION)
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -8033,6 +8121,101 @@ async fn enqueue_event_recall_in_transaction(
     Ok(())
 }
 
+async fn project_session_timeline_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+    sequence: i64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use super::session_timeline::MutationKind;
+
+    let Some(entry) = super::session_timeline::classify(event, sequence) else {
+        return Ok(());
+    };
+    match entry.kind {
+        MutationKind::Input | MutationKind::Progress => {
+            sqlx::query(
+                "INSERT OR IGNORE INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+        }
+        MutationKind::Stream => {
+            let applied = sqlx::query(
+                "INSERT INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0) \
+                 ON CONFLICT(session_id, entry_id) DO UPDATE SET \
+                   output_visible_at_micros = COALESCE(session_message_timeline.output_visible_at_micros, excluded.output_visible_at_micros), \
+                   visible_at_micros = COALESCE(session_message_timeline.output_visible_at_micros, excluded.output_visible_at_micros), \
+                   source_event_id = CASE WHEN session_message_timeline.is_final = 0 AND excluded.source_sequence >= session_message_timeline.source_sequence \
+                     THEN excluded.source_event_id ELSE session_message_timeline.source_event_id END, \
+                   source_sequence = CASE WHEN session_message_timeline.is_final = 0 AND excluded.source_sequence >= session_message_timeline.source_sequence \
+                     THEN excluded.source_sequence ELSE session_message_timeline.source_sequence END \
+                 WHERE session_message_timeline.root_turn_id = excluded.root_turn_id \
+                   AND session_message_timeline.attempt_id = excluded.attempt_id",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+            if applied.rows_affected() != 1 {
+                return Err("Session publication attempt was reused for another input root".into());
+            }
+        }
+        MutationKind::Final => {
+            let applied = sqlx::query(
+                "INSERT INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 1) \
+                 ON CONFLICT(session_id, entry_id) DO UPDATE SET \
+                   source_event_id = CASE WHEN session_message_timeline.is_final = 0 OR excluded.source_sequence >= session_message_timeline.source_sequence \
+                     THEN excluded.source_event_id ELSE session_message_timeline.source_event_id END, \
+                   source_sequence = CASE WHEN session_message_timeline.is_final = 0 \
+                     THEN excluded.source_sequence ELSE MAX(session_message_timeline.source_sequence, excluded.source_sequence) END, \
+                   display_kind = CASE WHEN session_message_timeline.is_final = 0 OR excluded.source_sequence >= session_message_timeline.source_sequence \
+                     THEN excluded.display_kind ELSE session_message_timeline.display_kind END, \
+                   is_final = 1 \
+                 WHERE session_message_timeline.root_turn_id = excluded.root_turn_id \
+                   AND session_message_timeline.attempt_id = excluded.attempt_id",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+            if applied.rows_affected() != 1 {
+                return Err("Session publication attempt was reused for another input root".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn append_event_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
@@ -8071,6 +8254,7 @@ async fn append_event_in_transaction(
     .execute(&mut **tx)
     .await?;
     let sequence = inserted.last_insert_rowid();
+    project_session_timeline_in_transaction(tx, event, sequence).await?;
     if let Some(context_id) = context_id {
         project_attention_acknowledgement_in_transaction(
             tx,
@@ -8922,14 +9106,10 @@ async fn append_event_idempotent_in_transaction(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
+        let sequence = inserted.last_insert_rowid();
+        project_session_timeline_in_transaction(tx, event, sequence).await?;
         if let Some(context_id) = context_id {
-            let sequence = u64::try_from(
-                sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
-                    .bind(&event.id)
-                    .fetch_one(&mut **tx)
-                    .await?,
-            )
-            .map_err(|_| "Event sequence 不能为负数")?;
+            let sequence = u64::try_from(sequence).map_err(|_| "Event sequence 不能为负数")?;
             project_attention_acknowledgement_in_transaction(tx, event, context_id, sequence)
                 .await?;
             enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
@@ -26342,6 +26522,10 @@ impl EventStore for SqliteStore {
             builder.push(" AND root_turn_id = ");
             builder.push_bind(root_turn_id);
         }
+        if let Some(attempt_id) = filter.attempt_id {
+            builder.push(" AND json_extract(payload, '$.attempt_id') = ");
+            builder.push_bind(attempt_id);
+        }
         if let Some(objective_id) = filter.objective_id {
             builder.push(" AND objective_id = ");
             builder.push_bind(objective_id);
@@ -26914,6 +27098,101 @@ async fn finish_sqlite_recall_claim(
     .execute(&mut **tx)
     .await?;
     Ok(true)
+}
+
+#[async_trait::async_trait]
+impl super::SessionTimelineStore for SqliteStore {
+    async fn query_session_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = i64::try_from(limit.clamp(1, 1_000))?;
+        let statement = if before.is_some() {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.rowid AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.rowid AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = ? AND \
+               (t.visible_at_micros, t.entry_id) < (?, ?) \
+             ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT ?"
+        } else {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.rowid AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.rowid AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = ? \
+             ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT ?"
+        };
+        let mut query = sqlx::query(statement).bind(session_id);
+        if let Some(before) = before {
+            query = query.bind(before.visible_at_micros).bind(&before.entry_id);
+        }
+        let rows = query.bind(limit).fetch_all(&self.pool).await?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let micros = row.get::<i64, _>("visible_at_micros");
+            let root_event = row
+                .get::<Option<String>, _>("root_event_id")
+                .map(|id| {
+                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Event {
+                        id,
+                        sequence: row
+                            .get::<Option<i64>, _>("root_event_sequence")
+                            .and_then(|sequence| u64::try_from(sequence).ok()),
+                        timestamp: parse_time(
+                            &row.get::<Option<String>, _>("root_timestamp")
+                                .ok_or("Missing timeline root timestamp")?,
+                        ),
+                        actor: row
+                            .get::<Option<String>, _>("root_actor")
+                            .ok_or("Missing timeline root actor")?,
+                        event_type: row
+                            .get::<Option<String>, _>("root_type")
+                            .ok_or("Missing timeline root type")?,
+                        topic: row
+                            .get::<Option<String>, _>("root_topic")
+                            .ok_or("Missing timeline root topic")?,
+                        payload: serde_json::from_str(
+                            &row.get::<Option<String>, _>("root_payload")
+                                .ok_or("Missing timeline root payload")?,
+                        )?,
+                    })
+                })
+                .transpose()?;
+            items.push(super::SessionTimelineItem {
+                entry_id: row.get("entry_id"),
+                visible_at: chrono::DateTime::<Utc>::from_timestamp_micros(micros)
+                    .ok_or("Invalid Session timeline timestamp")?,
+                visible_at_micros: micros,
+                root_turn_id: row.get("root_turn_id"),
+                attempt_id: row.get("attempt_id"),
+                display_kind: row.get("display_kind"),
+                final_event: row.get::<i64, _>("is_final") != 0,
+                event: Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+                },
+                root_event,
+            });
+        }
+        items.reverse();
+        Ok(items)
+    }
 }
 
 #[async_trait::async_trait]
@@ -29993,6 +30272,91 @@ mod tests {
             "unexpected query plan: {plan}"
         );
         assert!(!plan.contains("SCAN events"), "unexpected scan: {plan}");
+    }
+
+    #[tokio::test]
+    async fn root_scoped_session_history_uses_causal_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT rowid, id, timestamp FROM events
+               WHERE session_id = ? AND root_turn_id = ?
+               ORDER BY rowid DESC LIMIT ?"#,
+        )
+        .bind("index-session")
+        .bind("index-root")
+        .bind(100_i64)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_session_root"),
+            "unexpected query plan: {plan}"
+        );
+        assert!(!plan.contains("SCAN events"), "unexpected scan: {plan}");
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT rowid, id, timestamp FROM events
+               WHERE session_id = ? AND root_turn_id = ?
+                 AND json_extract(payload, '$.attempt_id') = ?
+               ORDER BY rowid DESC LIMIT ?"#,
+        )
+        .bind("index-session")
+        .bind("index-root")
+        .bind("index-attempt")
+        .bind(100_i64)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_session_root_attempt"),
+            "unexpected attempt query plan: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_timeline_cursor_uses_ordering_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let rows = sqlx::query(
+            "EXPLAIN QUERY PLAN \
+             SELECT t.entry_id, e.payload FROM session_message_timeline t \
+             JOIN events e ON e.id = t.source_event_id \
+             WHERE t.session_id = ? AND (t.visible_at_micros, t.entry_id) < (?, ?) \
+             ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT ?",
+        )
+        .bind("session")
+        .bind(1_i64)
+        .bind("cursor")
+        .bind(100_i64)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_session_message_timeline_page"),
+            "unexpected Session timeline query plan: {plan}"
+        );
+        assert!(!plan.contains("SCAN t"), "unexpected table scan: {plan}");
     }
 
     #[tokio::test]

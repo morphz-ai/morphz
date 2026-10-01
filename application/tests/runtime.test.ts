@@ -3,15 +3,19 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import {
-  RuntimeBridge,
   settles,
   attributedDelivery,
+  sessionDeliveryAttribution,
+  terminalResultsByRoot,
 } from "../apps/service/src/runtime.js";
-import { WorkspaceStore } from "../apps/service/src/store.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import {
+  acceptedRuntimeInput,
+  runtimeTimeline,
+} from "./runtime-http-evidence.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重启恢复与凭据隔离", async () => {
-  const store = new WorkspaceStore(":memory:");
   const namespace = randomUUID(),
     token = "test-server-private-token";
   const sessions = new Map<string, { id: string; context_id: string }>();
@@ -22,6 +26,7 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
       object: { artifact_id: string; revision: number };
       root: string;
       sessionId: string;
+      event: ReturnType<typeof acceptedRuntimeInput>;
     }
   >();
   let attempts = 0;
@@ -39,6 +44,8 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
       response.end(JSON.stringify(data));
     };
     if (path === "/api/status") return send(200, { model: "test-model" });
+    if (path === "/api/session-io/capabilities")
+      return send(200, { enabled: true, client_metadata: true });
     if (path === "/api/runtime/inference")
       return send(200, {
         model: "test-model",
@@ -82,6 +89,11 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
           object: body.message.content.value.object,
           root: "root-" + body.client_message_id,
           sessionId: id,
+          event: acceptedRuntimeInput(
+            body,
+            id,
+            "root-" + body.client_message_id,
+          ),
         });
         return send(500, {
           error: "Simulated lost acknowledgement after accept",
@@ -95,32 +107,37 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
         event_id: previous.root,
       });
     }
-    if (path.endsWith("/events")) {
+    if (path.endsWith("/events") || path.endsWith("/timeline")) {
       const item = [...received.values()].find(
         (value) => value.sessionId === id,
-      )!;
+      );
+      const replies = item
+        ? [
+            {
+              id: "reply-" + item.root,
+              sequence: 2,
+              timestamp: item.event.timestamp,
+              topic: "chat/reply",
+              payload: {
+                session_id: id,
+                root_turn_id: item.root,
+                text: "真实接口返回的测试回复",
+              },
+            },
+          ]
+        : [];
+      if (path.endsWith("/timeline"))
+        return send(200, {
+          entries: item ? runtimeTimeline(item.event, replies) : [],
+          next_before: null,
+        });
       const after = Number(
         new URL(request.url!, "http://localhost").searchParams.get(
           "after_sequence",
         ),
       );
       return send(200, {
-        events:
-          after > 0
-            ? []
-            : [
-                {
-                  id: "reply-" + item.root,
-                  sequence: 1,
-                  timestamp: new Date().toISOString(),
-                  topic: "chat/reply",
-                  payload: {
-                    session_id: id,
-                    root_turn_id: item.root,
-                    text: "真实接口返回的测试回复",
-                  },
-                },
-              ],
+        events: replies.filter((event) => event.sequence > after),
       });
     }
     if (request.method === "PATCH") {
@@ -135,39 +152,34 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
     token,
     namespace,
   };
-  let bridge = new RuntimeBridge(store, config);
+  const f = await platformRuntimeHostFixture(config);
+  const scope = { projectId: f.projectId, conversationId: f.projectId };
+  const history = () =>
+    f.runtime.platformConversationHistory(scope, localAccess);
   try {
-    const artifact = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-artifact",
-          projectId: "first-project",
-          title: "对象",
-          content: { kind: "document", markdown: "版本一" },
-        },
+    const artifact = await f.session().createPlatformDocument({
+      commandId: randomUUID(),
+      projectId: f.projectId,
+      objectId: randomUUID(),
+      title: "对象",
+      markdown: "版本一",
+    });
+    const command = {
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input" as const,
+        projectId: f.projectId,
+        artifactId: artifact.contentId,
+        artifactRevision: 1,
+        selection: "",
+        body: "请解读",
+        model: "other-model",
+        reasoningEffort: "high",
+        targetActantId: "morphz-agent",
       },
-      localAccess,
-    );
-    const input = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: artifact.entityId,
-          artifactRevision: 1,
-          selection: "",
-          body: "请解读",
-          model: "other-model",
-          reasoningEffort: "high",
-          targetActantId: "morphz-agent",
-        },
-      },
-      localAccess,
-    );
-    bridge.enqueue(input.entityId);
-    assert.deepEqual(await bridge.models(), {
+    };
+    const input = await f.session().platformMessage(command);
+    assert.deepEqual(await f.runtime.models(), {
       current: "test-model",
       reasoning: {
         current: null,
@@ -178,56 +190,55 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
         { id: "other-model", label: "另一模型" },
       ],
     });
-    await bridge.validateModel("other-model");
-    await assert.rejects(() => bridge.validateModel("made-up-model"));
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "revise-artifact",
-          artifactId: artifact.entityId,
-          expectedRevision: 1,
-          title: "对象",
-          content: { kind: "document", markdown: "版本二" },
-        },
-      },
-      localAccess,
-    );
-    await bridge.tick();
-    assert.equal(bridge.snapshot().deliveries[0]!.state, "failed");
-    assert.equal(bridge.snapshot().deliveries[0]!.retryable, true);
-    await bridge.stop();
-    bridge = new RuntimeBridge(store, config);
-    bridge.enqueue(input.entityId);
-    bridge.enqueue(input.entityId);
-    await bridge.tick();
+    await f.runtime.validateModel("other-model");
+    await assert.rejects(() => f.runtime.validateModel("made-up-model"));
+    await f.session().revisePlatformDocument({
+      commandId: randomUUID(),
+      contentId: artifact.contentId,
+      expectedRevision: 1,
+      title: "对象",
+      markdown: "版本二",
+    });
+    await f.enableDispatch();
+    await f.runtime.tick();
+    const failed = await history();
+    assert.equal(failed.runtime.deliveries[0]!.state, "failed");
+    assert.equal(failed.runtime.deliveries[0]!.retryable, true);
+    await f.reopen(false);
+    assert.deepEqual(await f.session().platformMessage(command), input);
+    assert.deepEqual(await f.session().platformMessage(command), input);
+    await f.runtime.tick();
     assert.equal(received.size, 1);
     assert.equal(attempts, 2);
     assert.equal([...received.values()][0]!.text, "请解读");
     assert.deepEqual([...received.values()][0]!.object, {
-      artifact_id: artifact.entityId,
+      artifact_id: artifact.contentId,
       revision: 1,
     });
-    assert.equal(bridge.snapshot().deliveries[0]!.state, "completed");
-    assert.equal(bridge.snapshot().messages[0]!.text, "真实接口返回的测试回复");
-    assert.equal(bridge.snapshot().messages[0]!.sequence, 1);
-    assert.equal(bridge.snapshot().messages[0]!.inputId, input.entityId);
+    const accepted = await history();
+    assert.equal(accepted.runtime.deliveries[0]!.state, "completed");
+    assert.equal(accepted.runtime.messages[0]!.text, "真实接口返回的测试回复");
+    assert.equal(accepted.runtime.messages[0]!.sequence, 2);
+    assert.equal(accepted.runtime.messages[0]!.inputId, input.entityId);
     assert.equal(
-      bridge.snapshot().messages[0]!.rootId,
+      accepted.runtime.messages[0]!.rootId,
       [...received.values()][0]!.root,
     );
-    assert.ok(!JSON.stringify(bridge.snapshot()).includes(token));
-    assert.ok(!JSON.stringify(bridge.snapshot()).includes("client_message_id"));
-    await bridge.stop();
-    bridge = new RuntimeBridge(store, config);
-    bridge.enqueue(input.entityId);
-    await bridge.tick();
+    assert.ok(!JSON.stringify(accepted).includes(token));
+    assert.ok(!JSON.stringify(accepted).includes("client_message_id"));
+    await f.reopen(false);
+    assert.deepEqual(await f.session().platformMessage(command), input);
+    await f.runtime.tick();
     assert.equal(attempts, 2);
-    assert.equal(bridge.snapshot().messages.length, 1);
+    assert.deepEqual(
+      (await history()).runtime.messages,
+      accepted.runtime.messages,
+    );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
+    await f.close();
+    fake.closeAllConnections();
     await new Promise<void>((resolve) => fake.close(() => resolve()));
-    store.close();
   }
 });
 
@@ -253,6 +264,29 @@ test("并发回复通过因果 root 或 covers 对齐，不能拿另一条线程
     payload: { thread_id: "thread-b", root_turn_id: "root-b" },
   };
   const combined = { ...reply, payload: { covers: ["thread-a", "thread-b"] } };
+  const runningRoots = new Set(["root-a", "root-b"]);
+  for (const events of [
+    [thread, second, combined],
+    [combined, thread, second],
+  ]) {
+    const results = terminalResultsByRoot(events, runningRoots);
+    assert.equal(results.get("root-a"), combined);
+    assert.equal(results.get("root-b"), combined);
+    for (const root of runningRoots)
+      assert.equal(
+        results.get(root),
+        events.find((event) => settles(event, root, events)),
+      );
+  }
+  let eventPasses = 0;
+  const trackedEvents = new Proxy([thread, second, combined], {
+    get(target, key, receiver) {
+      if (key === Symbol.iterator) eventPasses++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  terminalResultsByRoot(trackedEvents, runningRoots);
+  assert.equal(eventPasses, 2, "并发投递不得逐条重扫整段事件");
   const deliveries = [
     { sessionId: "s", rootId: "root-a" },
     { sessionId: "s", rootId: "root-b" },
@@ -276,8 +310,78 @@ test("并发回复通过因果 root 或 covers 对齐，不能拿另一条线程
   );
 });
 
+test("批量历史归属与逐条因果规则一致，且不为每条消息重扫投递", () => {
+  const timestamp = "2026-09-28T00:00:00.000Z";
+  const event = (
+    id: string,
+    topic: string,
+    payload: Record<string, unknown>,
+  ) => ({
+    id,
+    sequence: Number(id.replace(/\D/g, "")) || 1,
+    timestamp,
+    topic,
+    payload,
+  });
+  const events = [
+    event("thread-1", "runtime/thread_result", {
+      thread_id: "thread-a",
+      root_turn_id: "root-a",
+    }),
+    event("thread-2", "runtime/thread_result", {
+      thread_id: "thread-b",
+      root_turn_id: "root-b",
+    }),
+    event("reply-1", "chat/reply", { root_turn_id: "root-a", text: "A" }),
+    event("reply-2", "chat/reply", { covers: ["thread-a"], text: "A" }),
+    event("reply-3", "chat/reply", {
+      defer_covers: ["thread-b"],
+      text: "B",
+    }),
+    event("reply-4", "chat/reply", {
+      covers: ["thread-a", "thread-b"],
+      text: "combined",
+    }),
+    event("reply-5", "chat/reply", {
+      root_turn_id: "unknown",
+      trigger_event_id: "root-b",
+      covers: ["thread-a"],
+      text: "B",
+    }),
+    event("reply-6", "chat/reply", {
+      root_turn_id: "duplicate",
+      text: "ambiguous",
+    }),
+    event("progress-1", "chat/progress", { covers: ["thread-a"] }),
+  ];
+  const deliveries = [
+    { sessionId: "s", rootId: "root-a" },
+    { sessionId: "s", rootId: "root-b" },
+    { sessionId: "s", rootId: "duplicate" },
+    { sessionId: "s", rootId: "duplicate" },
+    { sessionId: "other", rootId: "root-a" },
+  ];
+  let deliveryScans = 0;
+  const tracked = new Proxy(deliveries, {
+    get(target, key, receiver) {
+      if (key === Symbol.iterator) {
+        deliveryScans++;
+        return target[Symbol.iterator].bind(target);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const resolve = sessionDeliveryAttribution("s", tracked, events);
+  for (const item of events)
+    assert.equal(
+      resolve(item),
+      attributedDelivery("s", item, deliveries, events),
+      `event ${item.id}`,
+    );
+  assert.equal(deliveryScans, 1);
+});
+
 test("按输入停止：排队不发送、并发 root 隔离、丢回执后重启确认", async () => {
-  const store = new WorkspaceStore(":memory:");
   const sessions = new Map<string, string>();
   const roots = new Map<
     string,
@@ -305,6 +409,8 @@ test("按输入停止：排队不发送、并发 root 隔离、丢回执后重�
     assert.equal(req.headers.authorization, "Bearer private-test");
     assert.ok(!path.endsWith("/cancel"), "must never cancel an entire session");
     if (path === "/api/status") return send(200, { model: "fixture" });
+    if (path === "/api/session-io/capabilities")
+      return send(200, { enabled: true, client_metadata: true });
     if (path === "/api/sessions") {
       sessions.set(body.id, body.mount.context_id);
       return send(201, { id: body.id, context_id: body.mount.context_id });
@@ -351,58 +457,58 @@ test("按输入停止：排队不发送、并发 root 隔离、丢回执后重�
     token: "private-test",
     namespace: randomUUID(),
   };
-  let bridge = new RuntimeBridge(store, config);
-  const input = (body: string) =>
-    store.execute(
-      {
+  const f = await platformRuntimeHostFixture(config);
+  const input = async (body: string) =>
+    (
+      await f.session().platformMessage({
         commandId: randomUUID(),
         operation: {
           type: "record-input",
-          projectId: "first-project",
+          projectId: f.projectId,
           artifactId: null,
           artifactRevision: null,
           selection: "",
           body,
           targetActantId: "morphz-agent",
         },
-      },
-      localAccess,
+      })
     ).entityId;
+  const delivery = (id: string) =>
+    (
+      f.store.runtimeState() as {
+        deliveries: {
+          inputId: string;
+          state: string;
+          cancelRequested: boolean;
+        }[];
+      }
+    ).deliveries.find((value) => value.inputId === id)!;
   try {
-    const skipped = input("skip");
-    bridge.enqueue(skipped);
-    bridge.cancelInput(skipped);
-    await bridge.tick();
+    const skipped = await input("skip");
+    await f.session().cancelInput(skipped);
+    await f.enableDispatch();
+    await f.runtime.tick();
     assert.equal(roots.size, 0);
-    const a = input("a"),
-      b = input("b");
-    bridge.enqueue(a);
-    bridge.enqueue(b);
-    await bridge.tick();
+    await f.reopen();
+    const a = await input("a"),
+      b = await input("b");
+    await f.enableDispatch();
+    await f.runtime.tick();
     assert.equal(roots.size, 2);
     assert.equal(sessions.size, 1);
-    bridge.cancelInput(a);
-    await bridge.stop();
+    await f.session().cancelInput(a);
+    await f.runtime.stop();
     assert.equal(writes, 1);
-    assert.equal(
-      bridge.snapshot().deliveries.find((d) => d.inputId === a)
-        ?.cancelRequested,
-      true,
-    );
-    bridge = new RuntimeBridge(store, config);
-    await bridge.tick();
-    assert.equal(
-      bridge.snapshot().deliveries.find((d) => d.inputId === a)?.state,
-      "cancelled",
-    );
-    assert.equal(
-      bridge.snapshot().deliveries.find((d) => d.inputId === b)?.state,
-      "running",
-    );
+    assert.equal(delivery(a).cancelRequested, true);
+    await f.reopen(false);
+    await f.runtime.tick();
+    assert.equal(delivery(a).state, "cancelled");
+    assert.equal(delivery(b).state, "running");
     assert.equal(writes, 1);
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    await new Promise<void>((r) => fake.close(() => r()));
-    store.close();
+    await f.close();
+    fake.closeAllConnections();
+    await new Promise<void>((resolve) => fake.close(() => resolve()));
   }
 });

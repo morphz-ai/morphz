@@ -122,7 +122,12 @@ let app,
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 try {
   const env = {
-    ...process.env,
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) =>
+          !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+      ),
+    ),
     MORPHZ_APP_ENV_FILE: "",
     MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
   };
@@ -145,9 +150,10 @@ try {
         const api = window.morphzDesktop.application;
         const boot = await api.invoke({
           id: crypto.randomUUID(),
-          method: "workspace",
+          method: "platform.bootstrap",
         });
-        if (method === "workspace") return boot.value;
+        if (!boot.ok) throw new Error(boot.error.message);
+        if (method === "platform.bootstrap") return boot.value;
         const result = await api.invoke({
           id: crypto.randomUUID(),
           method,
@@ -159,6 +165,36 @@ try {
       },
       { method, params },
     );
+  const storedDeliveries = (inputIds) => {
+    const database = new DatabaseSync(join(data, "workspace.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      const query = database.prepare(
+        "SELECT body FROM runtime_deliveries WHERE key=?",
+      );
+      return inputIds.map((inputId) => {
+        const row = query.get(inputId);
+        assert.ok(row, `Missing persisted delivery ${inputId}`);
+        const delivery = JSON.parse(row.body);
+        assert.equal(delivery.inputId, inputId);
+        return delivery;
+      });
+    } finally {
+      database.close();
+    }
+  };
+  // Accepted inputs, references and live delivery state come through the
+  // existing authorized conversation, not the status-only Runtime snapshot.
+  let readingScope;
+  const readingHistory = async () => {
+    assert.ok(readingScope);
+    const history = await bridge("conversations.history", readingScope);
+    assert.equal(history.nextCursor, null, "Fixture history must not truncate");
+    return history;
+  };
+  const acceptedInputs = async () => (await readingHistory()).inputs;
+  const liveRuntime = async () => (await readingHistory()).runtime;
   const startRuntime = () => {
     const child = spawn(
       binary,
@@ -213,7 +249,7 @@ try {
   );
   assert.ok(bound.ok);
   await expect
-    .poll(async () => (await bridge("workspace")).runtime.connected, {
+    .poll(async () => (await bridge("runtime.snapshot")).connected, {
       timeout: 20000,
     })
     .toBe(true);
@@ -240,10 +276,20 @@ try {
   let reader = page.locator(".reading-app:visible");
   let text = reader.locator(".reader-text");
   await expect(text).toContainText("兼听则明");
-  const initial = await bridge("workspace");
-  const book = initial.workspace.artifacts.find(
-    (a) => a.title === "TEST 流式伴读",
-  );
+  const catalog = await bridge("content.list", {
+    appIds: ["morphz.reader"],
+    limit: 50,
+  });
+  assert.ok(catalog.length < 50, "Fixture catalog must not truncate");
+  const book = catalog.find((a) => a.title === "TEST 流式伴读");
+  assert.ok(book);
+  const bookRevision = Number(book.observedVersionRef);
+  assert.ok(Number.isSafeInteger(bookRevision) && bookRevision > 0);
+  const spaces = await bridge("spaces.ensure");
+  readingScope = {
+    projectId: book.projectId,
+    conversationId: spaces.dialogueId,
+  };
   const ask = async (question) => {
     await text.evaluate((element) => {
       const range = document.createRange();
@@ -287,16 +333,17 @@ try {
   await expect(
     page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
   ).toBeVisible({ timeout: 30000 });
-  const streaming = await bridge("workspace");
-  const input = streaming.workspace.inputs.find(
+  const streaming = await liveRuntime();
+  const input = (await acceptedInputs()).find(
     (i) => i.reading?.book.title === book.title,
   );
+  assert.ok(input);
   assert.equal(
-    streaming.runtime.deliveries.find((d) => d.inputId === input.id).state,
+    streaming.deliveries.find((d) => d.inputId === input.id).state,
     "running",
   );
   assert.equal(input.reading.chapter, "第一章");
-  assert.equal(input.selection, "");
+  assert.equal(input.selection ?? "", "");
   assert.deepEqual(
     Object.keys(input.reading).sort(),
     ["book", "location", "chapter"].sort(),
@@ -330,19 +377,17 @@ try {
   await expect
     .poll(
       async () =>
-        (await bridge("workspace")).runtime.deliveries.find(
-          (d) => d.inputId === input.id,
-        )?.state,
+        (await liveRuntime()).deliveries.find((d) => d.inputId === input.id)
+          ?.state,
       { timeout: 20000 },
     )
     .toBe("cancelled");
-  const stopped = await bridge("workspace");
   await expect(
     page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
   ).toBeVisible();
   await expect.poll(() => responses.size, { timeout: 5000 }).toBe(0);
   assert.deepEqual(
-    stopped.workspace.inputs.find((i) => i.id === input.id).reading,
+    (await acceptedInputs()).find((i) => i.id === input.id).reading,
     input.reading,
   );
   await page.reload();
@@ -350,13 +395,13 @@ try {
   await expect(
     page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
   ).toBeVisible({ timeout: 15000 });
-  const restored = await bridge("workspace");
+  const restored = await liveRuntime();
   assert.equal(
-    restored.runtime.deliveries.find((d) => d.inputId === input.id).state,
+    restored.deliveries.find((d) => d.inputId === input.id).state,
     "cancelled",
   );
   assert.deepEqual(
-    restored.workspace.inputs.find((i) => i.id === input.id).reading,
+    (await acceptedInputs()).find((i) => i.id === input.id).reading,
     input.reading,
   );
   assert.equal(calls, 1, "Reload must not replay a stopped request");
@@ -407,13 +452,13 @@ try {
     page.getByText("TEST 阅读流式前缀：先比较不同说法。", { exact: true }),
   ).toBeVisible({ timeout: 20000 });
   await expect(page.getByText("未完成的回复", { exact: true })).toBeVisible();
-  const restarted = await bridge("workspace");
+  const restarted = await liveRuntime();
   assert.equal(
-    restarted.runtime.deliveries.find((d) => d.inputId === input.id).state,
+    restarted.deliveries.find((d) => d.inputId === input.id).state,
     "cancelled",
   );
   assert.deepEqual(
-    restarted.workspace.inputs.find((i) => i.id === input.id).reading,
+    (await acceptedInputs()).find((i) => i.id === input.id).reading,
     input.reading,
   );
   assert.equal(calls, 1);
@@ -435,14 +480,12 @@ try {
   await expect
     .poll(
       async () =>
-        (await bridge("workspace")).runtime.deliveries.filter(
-          (d) => d.state === "completed",
-        ).length,
+        (await liveRuntime()).deliveries.filter((d) => d.state === "completed")
+          .length,
       { timeout: 10000 },
     )
     .toBe(1);
-  const final = await bridge("workspace");
-  const inputs = final.workspace.inputs.filter(
+  const inputs = (await acceptedInputs()).filter(
     (i) =>
       i.reading?.book.title === book.title ||
       i.textQuotes?.some((quote) => quote.source.artifactId === book.id),
@@ -458,7 +501,7 @@ try {
   const quote = inputs[1].textQuotes[0];
   assert.equal(quote.source.kind, "reading");
   assert.equal(quote.source.artifactId, book.id);
-  assert.equal(quote.source.revision, book.revision);
+  assert.equal(quote.source.revision, bookRevision);
   assert.equal(quote.text, "兼听则明，偏信则暗。");
   assert.equal(quote.comment, "简短解释这段原文，优先解答字词、主语和指代。");
   assert.equal(
@@ -471,16 +514,7 @@ try {
   );
   // Public delivery snapshots deliberately omit transport Session IDs.
   // Verify the actual persisted binding, not equality of undefined properties.
-  const database = new DatabaseSync(join(data, "workspace.sqlite"), {
-    readOnly: true,
-  });
-  const ledger = JSON.parse(
-    database.prepare("SELECT body FROM runtime_state WHERE id=1").get().body,
-  );
-  database.close();
-  const deliveries = ledger.deliveries.filter((d) =>
-    inputs.some((i) => i.id === d.inputId),
-  );
+  const deliveries = storedDeliveries(inputs.map((i) => i.id));
   assert.equal(deliveries.length, 2);
   assert.ok(
     deliveries.every(
@@ -542,7 +576,7 @@ try {
   readTarget = {
     action: "read",
     artifactId: book.id,
-    revision: 1,
+    revision: bookRevision,
     sectionId: "section-2",
     offset: 0,
     limit: 8000,
@@ -564,7 +598,7 @@ try {
   await expect(
     page.getByText("TEST 已通过工具读到第二章原文。", { exact: true }),
   ).toBeVisible({ timeout: 30000 });
-  const readInput = (await bridge("workspace")).workspace.inputs.find(
+  const readInput = (await acceptedInputs()).find(
     (i) => i.body === "TEST 请联系后文，读取第二章原文。",
   );
   assert.equal(readInput.reading.location.sectionId, "section-1");

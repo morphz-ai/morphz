@@ -1,3 +1,4 @@
+import { scriptDocxManifest } from "./script-docx-fixture.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -240,14 +241,16 @@ function unpack(data: Uint8Array): Map<string, string> {
   return entries;
 }
 function document(production = fixture()) {
-  return unpack(buildScriptDocx(production, "export-1")).get(
-    "word/document.xml",
-  )!;
+  return unpack(
+    buildScriptDocx(scriptDocxManifest(production, "export-1")),
+  ).get("word/document.xml")!;
 }
 
 test("script DOCX is a complete OPC ZIP with matching directories, UTF-8 and independent CRCs", () => {
   assert.equal(crc32(new TextEncoder().encode("123456789")), 0xcbf43926);
-  const parts = unpack(buildScriptDocx(fixture(), "export-1"));
+  const parts = unpack(
+    buildScriptDocx(scriptDocxManifest(fixture(), "export-1")),
+  );
   assert.deepEqual(
     [...parts.keys()],
     [
@@ -335,7 +338,9 @@ test("script DOCX uses only pinned template options for notes, continuity, headi
     fontSize: 18,
     sceneHeading: "拍摄场",
   };
-  const parts = unpack(buildScriptDocx(production, record.id));
+  const parts = unpack(
+    buildScriptDocx(scriptDocxManifest(production, record.id)),
+  );
   const xml = parts.get("word/document.xml")!;
   assert.match(xml, /制片用稿/);
   assert.match(xml, /拍摄场 · 场景A/);
@@ -380,10 +385,13 @@ test("script DOCX sorts by episode/order/stable ID and ignores storage/reference
     positions,
     [...positions].sort((a, b) => a - b),
   );
-  const before = buildScriptDocx(production, "export-1");
+  const before = buildScriptDocx(scriptDocxManifest(production, "export-1"));
   production.items.reverse();
   production.exports[0]!.items.reverse();
-  assert.deepEqual(buildScriptDocx(production, "export-1"), before);
+  assert.deepEqual(
+    buildScriptDocx(scriptDocxManifest(production, "export-1")),
+    before,
+  );
 });
 
 test("script DOCX delivers readable names and keeps identifiers only in the provenance appendix", () => {
@@ -466,7 +474,7 @@ function currentDraftForTest(item: ScriptItem) {
 
 test("script DOCX historical receipt is byte-identical after later edits, unlocks, metadata and template changes", () => {
   const production = fixture();
-  const before = buildScriptDocx(production, "export-1");
+  const before = buildScriptDocx(scriptDocxManifest(production, "export-1"));
   production.revision = 2;
   production.title = "后来的剧名";
   production.brief.style = "后来的风格";
@@ -497,7 +505,10 @@ test("script DOCX historical receipt is byte-identical after later edits, unlock
     id: "export-later",
     contextRevision: 2,
   });
-  assert.deepEqual(buildScriptDocx(production, "export-1"), before);
+  assert.deepEqual(
+    buildScriptDocx(scriptDocxManifest(production, "export-1")),
+    before,
+  );
 });
 
 test("script DOCX dependencies not selected for printing stay references, with their historical versions validated", () => {
@@ -509,7 +520,7 @@ test("script DOCX dependencies not selected for printing stay references, with t
   assert.match(document(production), /hero v1/);
   production.items.find((i) => i.id === "hero")!.versions = [];
   assert.throws(
-    () => buildScriptDocx(production, "export-1"),
+    () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
     /依赖的历史版本缺失/,
   );
 });
@@ -591,7 +602,11 @@ test("script DOCX fails closed for missing/duplicate export, metadata, items and
   for (const [label, mutate, error] of cases) {
     const production = fixture();
     mutate(production);
-    assert.throws(() => buildScriptDocx(production, "export-1"), error, label);
+    assert.throws(
+      () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
+      error,
+      label,
+    );
   }
 });
 
@@ -685,7 +700,11 @@ test("script DOCX rejects orphan scenes, mismatched dependency revisions and inv
   for (const [label, mutate, error] of cases) {
     const production = fixture();
     mutate(production);
-    assert.throws(() => buildScriptDocx(production, "export-1"), error, label);
+    assert.throws(
+      () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
+      error,
+      label,
+    );
   }
 });
 
@@ -695,9 +714,12 @@ test("script DOCX has deterministic archive bytes in different local timezones a
   const timezone = process.env.TZ;
   try {
     process.env.TZ = "America/Los_Angeles";
-    const west = buildScriptDocx(production, "export-1");
+    const west = buildScriptDocx(scriptDocxManifest(production, "export-1"));
     process.env.TZ = "Asia/Shanghai";
-    assert.deepEqual(buildScriptDocx(production, "export-1"), west);
+    assert.deepEqual(
+      buildScriptDocx(scriptDocxManifest(production, "export-1")),
+      west,
+    );
   } finally {
     if (timezone === undefined) delete process.env.TZ;
     else process.env.TZ = timezone;
@@ -715,7 +737,10 @@ test("script DOCX rejects excessive source and XML expansion before creating a Z
     itemId: i.id,
     revision: 1,
   }));
-  assert.throws(() => buildScriptDocx(production, "export-1"), /原文过大/);
+  assert.throws(
+    () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
+    /原文过大/,
+  );
   production.items = Array.from({ length: 3 }, (_, n) =>
     item(`lines-${n}`, "outline", { text: "\n".repeat(100_000) }),
   );
@@ -724,7 +749,7 @@ test("script DOCX rejects excessive source and XML expansion before creating a Z
     revision: 1,
   }));
   assert.throws(
-    () => buildScriptDocx(production, "export-1"),
+    () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
     /排版后内容过大/,
   );
   production.exports[0]!.items = Array.from(
@@ -732,7 +757,7 @@ test("script DOCX rejects excessive source and XML expansion before creating a Z
     (_, n) => ({ itemId: `overflow-${n}`, revision: 1 }),
   );
   assert.throws(
-    () => buildScriptDocx(production, "export-1"),
+    () => buildScriptDocx(scriptDocxManifest(production, "export-1")),
     /导出条目数量过多/,
   );
 });

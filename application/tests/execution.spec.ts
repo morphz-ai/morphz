@@ -1,9 +1,23 @@
 import { test, expect } from "@playwright/test";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import {
   openInput,
   composerAction,
   openExecutionPanel,
 } from "./interaction-helpers.js";
+
+test.beforeEach(async ({ page }) => {
+  await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model: "test-model",
+    },
+  }));
+});
 
 test("剧本操作记录直接显示查询、新建剧本和具体分集，返回结果保持可核对", async ({
   page,
@@ -133,19 +147,6 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     updated_at: "2026-09-08T00:00:00Z",
     cancel_requested_at: null as string | null,
   };
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-        headers: { ...route.request().headers(), "if-none-match": "" },
-      }),
-      body = await response.json();
-    body.runtime = {
-      ...body.runtime,
-      configured: true,
-      connected: true,
-      model: "test-model",
-    };
-    await route.fulfill({ response, json: body });
-  });
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [job], approvals, limit: 100 } }),
   );

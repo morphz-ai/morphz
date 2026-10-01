@@ -10,26 +10,159 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
-import { seedCenter } from "../center-fixtures.js";
 import { openInput } from "../interaction-helpers.js";
 import {
   assertDialogControlMetrics,
   assertSingleFieldDialog,
 } from "../dialog-control-helpers.js";
-import { WorkspaceStore } from "../../packages/application/src/store.js";
+import { agentDomainFixture } from "../agent-domain-fixture.js";
 import {
   currentScriptDraft,
   type ScriptProduction,
   type ScriptCommand,
 } from "../../packages/core/src/script-studio.js";
-import type { Boot } from "../../apps/web/src/client.js";
+import { PlatformClient } from "../../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../../packages/core/src/http-application-client.js";
+import { readSavedInputs } from "../../apps/web/src/local-saved-inputs.js";
+import { observeScriptSnapshotReads } from "../script-browser-read-proof.js";
 
-const snapshot = async (page: Page): Promise<Boot> =>
-  (await page.request.get("/api/workspace")).json();
-const command = (page: Page, command: ScriptCommand) =>
-  seedCenter(page, { type: "script-command", command });
-const production = async (page: Page, id: string) =>
-  (await snapshot(page)).workspace.scriptProductions.find((p) => p.id === id)!;
+const platform = (page: Page) =>
+  PlatformClient.connect(new HttpApplicationClient(new URL(page.url()).origin));
+
+const browserSnapshotReads = new WeakMap<
+  Page,
+  ReturnType<typeof observeScriptSnapshotReads>
+>();
+test.beforeEach(async ({ page }) => {
+  browserSnapshotReads.set(page, observeScriptSnapshotReads(page));
+});
+test.afterEach(async ({ page }) => {
+  expect(
+    browserSnapshotReads.get(page),
+    "原剧本UI始终通过分页/精确版本端口，不读取整稿",
+  ).toEqual({ requests: [], responses: [] });
+});
+
+/** Inspect the actual domain records. This is a test-only read model, not a
+ * persisted Workspace or an API fallback. No Runtime is configured here, so
+ * questions saved by the UI remain local unsent inputs, never fake messages. */
+async function state(page: Page) {
+  const client = await platform(page);
+  const [projects, conversations, applicationInstances] = await Promise.all([
+    client.allProjects(),
+    client.allNavigationConversations(),
+    client.appViews(),
+  ]);
+  let result = await client.content({ limit: 100 });
+  const entries = [...result.items];
+  while (result.nextCursor) {
+    result = await client.content({ limit: 100, before: result.nextCursor });
+    entries.push(...result.items);
+  }
+  const scriptProductions = await Promise.all(
+    entries
+      .filter((entry) => entry.appId === "morphz.script-studio")
+      .map((entry) => client.readScriptSnapshot(entry.id)),
+  );
+  const values = await page.evaluate(() =>
+    Object.fromEntries(
+      Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)!]),
+    ),
+  );
+  const keys = Object.keys(values);
+  const storage = {
+    length: keys.length,
+    key: (index: number) => keys[index] ?? null,
+    getItem: (key: string) => values[key] ?? null,
+  } as Storage;
+  const scope = `${client.boot.centerId}:${client.boot.principalId}:${client.boot.actantId}`;
+  const inputs = readSavedInputs(storage, scope).map((input) => ({
+    ...input.operation,
+    id: input.commandId,
+  }));
+  return {
+    projects,
+    conversations,
+    applicationInstances,
+    scriptProductions,
+    inputs,
+    artifacts: entries.filter((entry) => entry.appId === "morphz.objects"),
+  };
+}
+
+async function production(page: Page, id: string) {
+  const client = await platform(page);
+  const entry = await client.resolveContent({
+    appId: "morphz.script-studio",
+    appObjectId: id,
+  });
+  return client.readScriptSnapshot(entry.id);
+}
+
+/** Use the same typed operations as the UI, not the retired generic command. */
+async function command(page: Page, input: ScriptCommand): Promise<string> {
+  const client = await platform(page);
+  const commandId = randomUUID();
+  if (input.action === "create-production") {
+    const productionId = randomUUID();
+    await client.createScript({
+      commandId,
+      productionId,
+      projectId: input.projectId,
+      title: input.title,
+    });
+    return productionId;
+  }
+  const entry = await client.resolveContent({
+    appId: "morphz.script-studio",
+    appObjectId: input.productionId,
+  });
+  if (input.action === "revise-item") {
+    const sources = await Promise.all(
+      input.draft.sources.map(async (source) => {
+        const sourceEntry = (await client.contentByIds([source.artifactId]))[0];
+        expect(sourceEntry, "资料引用必须定位真实授权原件").toBeDefined();
+        return {
+          appId: sourceEntry!.appId,
+          instanceId: sourceEntry!.instanceId,
+          objectId: sourceEntry!.appObjectId,
+          versionRef: String(source.revision),
+          quote: source.quote,
+        };
+      }),
+    );
+    await client.reviseScriptItem({
+      commandId,
+      contentId: entry.id,
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+      draft: { ...input.draft, sources },
+    });
+  } else if (input.action === "submit-review") {
+    await client.transitionScriptWorkflow({
+      commandId,
+      contentId: entry.id,
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+      expectedWorkflowRevision: input.expectedWorkflowRevision,
+      action: input.action,
+    });
+  } else if (input.action === "add-review") {
+    await client.changeScriptReview({
+      commandId,
+      contentId: entry.id,
+      action: input.action,
+      itemId: input.itemId,
+      itemRevision: input.itemRevision,
+      quote: input.quote,
+      body: input.body,
+      severity: input.severity,
+    });
+  } else {
+    throw new Error(`Use a typed domain operation for ${input.action}`);
+  }
+  return input.productionId;
+}
 const button = (page: Page, name: string) =>
   page.getByRole("button", { name, exact: true });
 const editor = (page: Page) => page.getByLabel("剧本正文", { exact: true });
@@ -103,11 +236,14 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
   await button(page, "全部剧本").click();
   await expect(page.getByRole("combobox", { name: "当前剧本" })).toHaveCount(0);
   await expect(openScript(page, p.title)).toBeFocused();
-  const inputCount = (await snapshot(page)).workspace.inputs.length;
-  const otherProject = await seedCenter(page, {
-    type: "create-project",
-    title: "TEST 其他项目 " + randomUUID().slice(0, 6),
-  });
+  const inputCount = (await state(page)).inputs.length;
+  const otherProject = await (
+    await platform(page)
+  ).createProject(
+    "TEST 其他项目 " + randomUUID().slice(0, 6),
+    randomUUID(),
+    randomUUID(),
+  );
   const hiddenTitle = "TEST 不属于当前项目 " + randomUUID().slice(0, 6);
   await command(page, {
     action: "create-production",
@@ -153,7 +289,43 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
   await expect(search).toHaveValue(p.title);
   await clickStudioAction(page, "构思新剧");
   await expect(page.getByLabel("AI 输入内容", { exact: true })).toBeFocused();
-  expect((await snapshot(page)).workspace.inputs.length).toBe(inputCount);
+  expect((await state(page)).inputs.length).toBe(inputCount);
+});
+
+test("目录迟到加载不抢走用户已移到查找框的焦点", async ({ page }) => {
+  const p = await setup(page);
+  await createItem(page, "迟到目录回归第一集");
+  let release!: () => void;
+  let requested!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const seen = new Promise<void>((resolve) => {
+    requested = resolve;
+  });
+  let held = false;
+  await page.route("**/api/platform/content?**", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (!held && query.get("appIds")?.includes("morphz.script-studio")) {
+      held = true;
+      requested();
+      await delayed;
+    }
+    await route.continue();
+  });
+  try {
+    await button(page, "全部剧本").click();
+    await seen;
+    const search = page.getByLabel("查找剧本", { exact: true });
+    await expect(search).toBeFocused();
+    await search.click();
+    release();
+    await expect(openScript(page, p.title)).toBeVisible();
+    await expect(search).toBeFocused();
+  } finally {
+    release();
+    await page.unroute("**/api/platform/content?**");
+  }
 });
 
 test("剧本归属：只整理选中内容，多部剧本可加入一个项目，目录和应用共用原对象", async ({
@@ -169,13 +341,17 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
     projectId: p.projectId,
     title: secondTitle,
   });
-  const doc = await seedCenter(page, {
-    type: "create-artifact",
+  const document = (await (
+    await platform(page)
+  ).createDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
     projectId: p.projectId,
     title: "TEST 不应被一起移动的文档",
-    content: { kind: "document", markdown: "保持原文" },
-  });
-  const before = (await snapshot(page)).workspace;
+    markdown: "保持原文",
+  })) as { contentId: string };
+  const doc = document.contentId;
+  const before = await state(page);
   await button(page, "设置项目").click();
   const dialog = page.getByRole("dialog", { name: "设置项目", exact: true });
   await expect(dialog).toContainText(p.title);
@@ -183,7 +359,7 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await dialog.getByLabel("新项目名称").fill("TEST 取消不应创建");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  expect((await snapshot(page)).workspace.projects).toEqual(before.projects);
+  expect((await state(page)).projects).toEqual(before.projects);
   await button(page, "设置项目").click();
   await dialog.getByLabel("目标项目").selectOption("new");
   const projectTitle = "TEST 多剧本项目 " + randomUUID().slice(0, 6);
@@ -191,7 +367,7 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.locator(".script-project")).toHaveText(projectTitle);
-  const after = (await snapshot(page)).workspace;
+  const after = await state(page);
   const projectId = after.projects.find(
     (value) => value.title === projectTitle,
   )!.id;
@@ -239,7 +415,7 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await expect(page.getByLabel("当前剧本", { exact: true })).toContainText(
     p.title,
   );
-  const final = (await snapshot(page)).workspace;
+  const final = await state(page);
   expect(
     final.scriptProductions
       .filter((value) => value.projectId === projectId)
@@ -259,13 +435,15 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
 });
 async function setup(page: Page) {
   await page.goto("/");
-  const boot = await snapshot(page);
+  const client = await platform(page);
   // This suite must never submit a real model request.
-  expect(boot.runtime.configured).toBe(false);
+  expect(client.boot.capabilities.runtime).toBe(false);
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
+  const exit = button(page, "返回工作空间");
+  if (await exit.isVisible()) await exit.click();
   await button(page, "应用启动台").click();
   await page
     .getByRole("region", { name: "应用", exact: true })
@@ -284,7 +462,7 @@ async function setup(page: Page) {
   await expect(page.getByLabel("当前剧本", { exact: true })).toContainText(
     title,
   );
-  const p = (await snapshot(page)).workspace.scriptProductions.find(
+  const p = (await state(page)).scriptProductions.find(
     (p) => p.title === title,
   )!;
   expect(p.items).toEqual([]);
@@ -369,61 +547,82 @@ async function approveAndLock(page: Page) {
   await page.getByRole("tab", { name: "正文", exact: true }).click();
   await expect(editor(page)).toHaveAttribute("readonly", "");
 }
-/** Explicitly synthetic model output: only the isolated E2E database is opened.
- * It goes through the real command and origin-input rules, not a production bypass.
- * No Runtime or model is started. The temporary delivery ledger is restored. */
+/** Explicitly synthetic Runtime evidence and model output. UI inputs here are
+ * saved, not sent. Pin that exact input through the real Script Studio admission
+ * operation, then submit through AgentTools and RuntimePlatformAuthority.
+ * No legacy workspace, fake production delivery ledger or model is used. */
 async function syntheticCandidate(
   page: Page,
   p: ScriptProduction,
   inputId: string,
   text: string,
 ) {
-  const boot = await snapshot(page);
+  const boot = (await platform(page)).boot;
   const { directory } = JSON.parse(
     readFileSync("node_modules/.cache/morphz-e2e-center.json", "utf8"),
   );
   if (!isAbsolute(directory) || !basename(directory).startsWith("morphz-e2e-"))
     throw new Error("Isolated center required");
-  const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
+  const input = (await state(page)).inputs.find((i) => i.id === inputId)!;
+  expect(input.scriptGeneration).toBeDefined();
+  const host = await agentDomainFixture({
+    existingCenter: { directory, projectId: p.projectId },
+  });
   try {
-    expect(store.identity()).toBe(boot.centerId);
-    const input = store.snapshot().inputs.find((i) => i.id === inputId)!;
+    expect(host.transport.identity()).toBe(boot.centerId);
     const target = p.items.find(
       (i) => i.id === input.scriptGeneration!.targetId,
     )!;
-    const previous = store.runtimeState();
-    const runtime = (previous ?? {}) as Record<string, unknown> & {
-      deliveries?: unknown[];
-    };
-    store.saveRuntimeState({
-      ...runtime,
-      deliveries: [
-        ...(runtime.deliveries ?? []),
-        { inputId, state: "running" },
-      ],
-    });
-    try {
-      store.execute(
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "script-command",
-            command: {
-              action: "submit-candidate",
-              productionId: p.id,
-              draft: { ...currentScriptDraft(target), text },
-              explanation: "TEST 模拟候选；非真实模型生成。",
-            },
-          },
-        },
-        { principalId: "morphz-service", actantId: "morphz-agent" },
+    await host.withHuman((actor) =>
+      host.domains.content.studio!.prepareGeneration({
+        credential: actor.credential,
+        commandId: inputId,
+        productionId: p.id,
         inputId,
-      );
-    } finally {
-      store.saveRuntimeState(previous);
-    }
+        generation: input.scriptGeneration!,
+      }),
+    );
+    const invocation = host.input(
+      p.projectId,
+      input.body,
+      input.selection,
+      undefined,
+      {
+        inputId,
+        scriptGeneration: input.scriptGeneration,
+      },
+    );
+    const result = await host.call<{
+      ok: boolean;
+      inputId: string;
+      candidateId: string;
+    }>(
+      {
+        action: "script",
+        script: {
+          action: "submit-workflow",
+          payload: { ...currentScriptDraft(target), text, sources: [] },
+          explanation: "TEST 模拟候选；非真实模型生成。",
+          checks: [0, 1].map(() => ({
+            performed: false,
+            revise: false,
+            blocked: false,
+            notes: "未执行",
+          })),
+        },
+      },
+      invocation,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.inputId).toBe(inputId);
+    expect(
+      (await production(page, p.id)).candidates.some(
+        (candidate) => candidate.id === result.candidateId,
+      ),
+    ).toBe(true);
+    host.assertNoLegacyData();
   } finally {
-    store.close();
+    await host.close();
   }
 }
 
@@ -434,7 +633,7 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
   await permitModel(page);
   await createItem(page, "请求准备回归");
   await saveText(page, "TEST 原创正文");
-  const before = (await snapshot(page)).workspace.inputs;
+  const before = (await state(page)).inputs;
   await clickStudioAction(page, "构思新剧");
   const input = page.getByLabel("AI 输入内容", { exact: true });
   await input.fill("TEST 已有草稿，不可合并或覆盖");
@@ -478,12 +677,12 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
     "请求准备回归",
   );
   await expect(button(page, "移除输入意图")).toHaveCount(0);
-  expect((await snapshot(page)).workspace.inputs).toEqual(before);
+  expect((await state(page)).inputs).toEqual(before);
   await button(page, "保存输入").click();
   await expect
-    .poll(async () => (await snapshot(page)).workspace.inputs.length)
+    .poll(async () => (await state(page)).inputs.length)
     .toBe(before.length + 1);
-  const submitted = (await snapshot(page)).workspace.inputs.at(-1)!;
+  const submitted = (await state(page)).inputs.at(-1)!;
   expect(submitted.scriptGeneration).toMatchObject({
     productionId: p.id,
     maxOutputCharacters: 1000,
@@ -496,7 +695,7 @@ test("错误只在发起位置显示，标签方向键及成功操作焦点完�
   await page.getByRole("tab", { name: /^审阅/ }).click();
   await button(page, "提交审阅").click();
   await expect(page.getByRole("alert")).toHaveCount(1);
-  await expect(page.getByRole("alert")).toContainText("请先填写正文");
+  await expect(page.getByRole("alert")).toContainText("已保存正文");
   await page.getByRole("tab", { name: "正文", exact: true }).click();
   await saveText(page, "TEST 待审正文");
   const edit = page.getByRole("tab", { name: "正文", exact: true });
@@ -687,9 +886,12 @@ test("批准弹窗固定打开时的版本，后台重新提交新稿不能被�
   await button(page, "批准此版本").click();
   await expect(dialog).toContainText(`本次决定：v${changed.revision}`);
   await dialog.getByRole("button", { name: "确认", exact: true }).click();
-  expect((await production(page, p.id)).items[0]!.approval?.revision).toBe(
-    changed.revision,
-  );
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(
+      async () => (await production(page, p.id)).items[0]!.approval?.revision,
+    )
+    .toBe(changed.revision);
 });
 
 test("日常创作直接导出已保存正文，不要求审阅、不包含未保存修改", async ({
@@ -782,7 +984,7 @@ test("创作目录按集场组织：上下文新增、折叠、键盘和刷新�
   const p = await setup(page);
   const nav = page.getByRole("navigation", { name: "剧本目录", exact: true });
   const group = (key: string) => nav.locator(`[data-script-group="${key}"]`);
-  const before = (await snapshot(page)).workspace;
+  const before = await state(page);
   await expect(
     nav.locator(".script-overview-link, .script-nav-disclosure"),
   ).toHaveText(["概览", "全剧大纲", "分集剧本", "设定与角色", "参考资料"]);
@@ -970,7 +1172,7 @@ test("创作目录按集场组织：上下文新增、折叠、键盘和刷新�
   await page.screenshot({
     path: testInfo.outputPath("script-writing-narrow.png"),
   });
-  const after = (await snapshot(page)).workspace;
+  const after = await state(page);
   expect(after.inputs).toEqual(before.inputs);
   expect(after.conversations).toEqual(before.conversations);
   expect(after.scriptProductions.find((value) => value.id === p.id)).toEqual(
@@ -1000,6 +1202,9 @@ test("真实空态创建、编辑草稿刷新与后台改版 CAS 不覆盖", asy
   });
   await expect(page.locator(".script-editor .script-warning")).toContainText(
     "中心已有",
+    // Background updates arrive on the existing five-second refresh, unlike
+    // this external domain command, which does not refresh the UI directly.
+    { timeout: 12000 },
   );
   await expect(editor(page)).toHaveValue("本机尚未提交的修改");
   await button(page, "保存文稿").click();
@@ -1025,7 +1230,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
   page,
 }) => {
   const p = await setup(page);
-  const before = (await snapshot(page)).workspace;
+  const before = await state(page);
   const input = page.getByLabel("AI 输入内容", { exact: true });
   const intent = page.locator(".composer-meta .composer-intent");
   for (let i = 0; i < 3; i++) {
@@ -1063,7 +1268,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
       await page.locator(".composer-meta .context-chip").textContent(),
     ).toBe(scope);
   }
-  const prepared = (await snapshot(page)).workspace;
+  const prepared = await state(page);
   expect(prepared.inputs).toEqual(before.inputs);
   expect(prepared.conversations).toEqual(before.conversations);
   expect(prepared.scriptProductions).toEqual(before.scriptProductions);
@@ -1079,12 +1284,12 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
   await expect(input).toHaveValue(body);
   await expect(intent).toContainText("构思新剧");
   await expect(attachment).toContainText("构思素材.txt");
-  expect((await snapshot(page)).workspace.inputs).toEqual(before.inputs);
+  expect((await state(page)).inputs).toEqual(before.inputs);
   await button(page, "保存输入").click();
   await expect
-    .poll(async () => (await snapshot(page)).workspace.inputs.length)
+    .poll(async () => (await state(page)).inputs.length)
     .toBe(before.inputs.length + 1);
-  const saved = (await snapshot(page)).workspace;
+  const saved = await state(page);
   const recorded = saved.inputs.find(
     (i) => !before.inputs.some((old) => old.id === i.id),
   )!;
@@ -1107,7 +1312,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await createItem(page, "第一集 车站");
   await saveText(page, "车站。林舟拿起信封。\n他决定返回故乡。");
   const first = (await production(page, p.id)).items[0]!;
-  const before = (await snapshot(page)).workspace;
+  const before = await state(page);
   await button(page, "生成候选").click();
   await page.getByLabel("最多候选数", { exact: true }).fill("2");
   await page
@@ -1117,10 +1322,8 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await expect(page.getByTestId("script-input-reference")).toContainText(
     "第一集 车站",
   );
-  expect((await snapshot(page)).workspace.inputs).toEqual(before.inputs);
-  expect((await snapshot(page)).workspace.conversations).toEqual(
-    before.conversations,
-  );
+  expect((await state(page)).inputs).toEqual(before.inputs);
+  expect((await state(page)).conversations).toEqual(before.conversations);
   const preparedText = await page.getByLabel("AI 输入内容").inputValue();
   await clickStudioAction(page, "构思新剧");
   await expect(page.locator(".workspace-notice")).toContainText(
@@ -1139,12 +1342,12 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await expect(page.getByTestId("script-input-reference")).toContainText(
     "第一集 车站",
   );
-  expect((await snapshot(page)).workspace.inputs).toEqual(before.inputs);
+  expect((await state(page)).inputs).toEqual(before.inputs);
   await button(page, "保存输入").click();
   await expect
-    .poll(async () => (await snapshot(page)).workspace.inputs.length)
+    .poll(async () => (await state(page)).inputs.length)
     .toBe(before.inputs.length + 1);
-  const input = (await snapshot(page)).workspace.inputs.find(
+  const input = (await state(page)).inputs.find(
     (i) => !before.inputs.some((old) => old.id === i.id),
   )!;
   expect(input.scriptGeneration).toMatchObject({
@@ -1371,9 +1574,7 @@ test("分场目录及父集依赖持久化、窄窗模态键盘与焦点", async
   ).toBeVisible();
 });
 
-test("迟到历史意见不计当前阻断，缺少新字段的旧意见仍待处理", async ({
-  page,
-}) => {
+test("迟到历史意见不计当前阻断，原有未解决意见仍待处理", async ({ page }) => {
   const p = await setup(page);
   await createItem(page, "第一集 · 意见版本边界");
   await saveText(page, "站台。林舟停下脚步。");
@@ -1406,23 +1607,6 @@ test("迟到历史意见不计当前阻断，缺少新字段的旧意见仍待�
     current.reviews.find((r) => r.body === "TEST 迟到的历史阻断")!
       .historicalOnly,
   ).toBe(true);
-  // Response-only compatibility fixture: legacy stored reviews predate these
-  // optional fields. It must not infer history merely from an old item revision.
-  // No production database or Runtime is used or changed by this simulation.
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch();
-    if (response.status() === 304) {
-      await route.fulfill({ response });
-      return;
-    }
-    const boot: Boot = await response.json();
-    const legacy = boot.workspace.scriptProductions
-      .find((v) => v.id === p.id)!
-      .reviews.find((r) => r.id === activeReview.id)!;
-    delete legacy.historicalOnly;
-    delete legacy.contextRevision;
-    await route.fulfill({ response, json: boot });
-  });
   await page.reload();
   await page.getByRole("tab", { name: "审阅 1 条意见", exact: true }).click();
   const historical = page
@@ -1552,7 +1736,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   page,
 }, testInfo) => {
   await setup(page);
-  const before = (await snapshot(page)).workspace.scriptProductions.length;
+  const before = (await state(page)).scriptProductions.length;
   const trigger = button(page, "剧本选项");
   await trigger.click();
   await button(page, "手动新建剧本").click();
@@ -1584,7 +1768,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
     const request = route.request();
     if (
       request.method() === "POST" &&
-      request.postData()?.includes('"create-production"')
+      new URL(request.url()).pathname === "/api/platform/scripts"
     ) {
       await route.fulfill({ status: 503, json: { message: failure } });
     } else {
@@ -1618,9 +1802,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
-  expect((await snapshot(page)).workspace.scriptProductions.length).toBe(
-    before,
-  );
+  expect((await state(page)).scriptProductions.length).toBe(before);
   await page.unroute("**/api/**");
   await page.setViewportSize({ width: 1440, height: 960 });
   await trigger.click();
@@ -1631,9 +1813,7 @@ test("剧本共用弹窗：紧凑几何、长错误保留、窄窗与键盘操�
   await expect(page.getByLabel("当前剧本", { exact: true })).toContainText(
     title,
   );
-  expect((await snapshot(page)).workspace.scriptProductions.length).toBe(
-    before + 1,
-  );
+  expect((await state(page)).scriptProductions.length).toBe(before + 1);
 });
 
 test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢复", async ({}, testInfo) => {
@@ -1645,7 +1825,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     Object.entries(process.env).filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === "string" &&
-        !/^(MORPHZ_APP_|MORPHZ_WORK_|DOUBAO_|ELECTRON_RUN_AS_NODE$)/.test(
+        !/^(MORPHZ_APP_|MORPHZWORK_|MORPHZ_WORK_|DOUBAO_|ELECTRON_RUN_AS_NODE$)/.test(
           entry[0],
         ),
     ),
@@ -1653,11 +1833,23 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
   env.MORPHZ_APP_EMBEDDED_FIXTURE = fixture;
   env.MORPHZ_APP_ENV_FILE = "";
   const desktop = await _electron.launch({
-    args: ["tests/fixtures/embedded-desktop-entry.cjs"],
+    args: ["tests/fixtures/production-desktop-entry.cjs"],
     env,
   });
   try {
-    const page = await desktop.firstWindow();
+    // Production preference recovery can open a hidden reader briefly. Its
+    // legacy origin is not the real application or an HTTP fallback.
+    await expect
+      .poll(
+        () => desktop.windows().some((page) => page.url() === "morphz://app/"),
+        {
+          timeout: 20000,
+        },
+      )
+      .toBe(true);
+    const page = desktop
+      .windows()
+      .find((page) => page.url() === "morphz://app/")!;
     await expect(page.locator(".app")).toBeVisible();
     await desktop.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]!;
@@ -2074,6 +2266,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await expect(editor(page)).toHaveValue(dirtyText);
     await button(page, "保存文稿").click();
     await expect(button(page, "保存文稿")).toBeDisabled();
+    await expect(page.locator(".script-edit-status")).toContainText("已保存 v");
     await page.reload();
     await expect(editor(page)).toHaveValue(dirtyText);
     // Native mouse clicks disable the submit control during a command. A

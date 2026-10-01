@@ -1,197 +1,151 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { WorkspaceStore } from "../apps/service/src/store.js";
-import { RuntimeBridge } from "../apps/service/src/runtime.js";
+import { WorkspaceStore } from "../packages/application/src/store.js";
 import { localAccess, type Operation } from "../packages/core/src/model.js";
 import {
-  applicationManifestSchema,
+  objectsApplication,
+  readerApplication,
   scriptStudioApplication,
 } from "../packages/core/src/applications.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
-test("剧本工作室正式入口固定编剧 Harness，重建投递桥不重写已排队输入", () => {
-  const store = new WorkspaceStore(":memory:");
-  const config = {
-    namespace: randomUUID(),
-    url: "http://127.0.0.1:12345",
-    token: "test-only",
-  };
-  const bridge = new RuntimeBridge(store, config);
-  const execute = (operation: Operation) =>
-    store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
+type Ledger = {
+  sessions: Record<string, unknown>;
+  deliveries: {
+    inputId: string;
+    sessionId: string;
+    state: string;
+    request: {
+      client_message_id: string;
+      activation: {
+        harness?: { id: string; version: string };
+        dispatch_mode: string;
+      };
+    };
+  }[];
+};
+const message = (
+  projectId: string,
+  application?: { id: string; version: string },
+  artifactId: string | null = null,
+  conversationId = projectId,
+): {
+  commandId: string;
+  operation: Extract<Operation, { type: "record-input" }>;
+} => ({
+  commandId: randomUUID(),
+  operation: {
+    type: "record-input" as const,
+    projectId,
+    conversationId,
+    artifactId,
+    artifactRevision: artifactId ? 1 : null,
+    selection: "",
+    body: "工作输入",
+    targetActantId: "morphz-agent",
+    ...(application
+      ? { application: { id: application.id, version: application.version } }
+      : {}),
+  },
+});
+
+test("Runtime 投递存储只有连接／关系投递，不创建旧工作空间业务", () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
   try {
-    const harness = { id: "morphz.script-studio", version: "1.4.0" };
-    assert.deepEqual(scriptStudioApplication.harness, harness);
-    const applicationInstanceId = execute({
-      type: "launch-application",
-      workspaceId: "local-worktable",
-      applicationId: scriptStudioApplication.id,
-      applicationVersion: scriptStudioApplication.version,
+    store.saveRuntimeState({ deliveries: [{ inputId: "input-1" }] });
+    store.saveRuntimeState({ deliveries: [{ inputId: "input-1" }] });
+    assert.deepEqual(store.runtimeState(), {
+      deliveries: [{ inputId: "input-1" }],
     });
-    const inputId = execute({
-      type: "record-input",
-      projectId: "local-worktable",
-      applicationInstanceId,
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "TEST 只讨论创作要求，不生成正文。",
-      targetActantId: "morphz-agent",
-    });
-    const saved = store
-      .snapshot()
-      .inputs.find((input) => input.id === inputId)!;
-    assert.deepEqual(saved.application?.harness, harness);
-    assert.equal(saved.application?.id, scriptStudioApplication.id);
-    bridge.enqueue(inputId);
-    type Ledger = {
-      deliveries: {
-        inputId: string;
-        request: {
-          client_message_id: string;
-          activation: {
-            harness: { id: string; version: string };
-            dispatch_mode: string;
-          };
-        };
-      }[];
-    };
-    const before = store.runtimeState() as Ledger;
-    assert.equal(before.deliveries.length, 1);
-    assert.equal(before.deliveries[0]!.inputId, inputId);
-    assert.equal(before.deliveries[0]!.request.client_message_id, inputId);
-    assert.deepEqual(before.deliveries[0]!.request.activation.harness, harness);
-    assert.equal(
-      before.deliveries[0]!.request.activation.dispatch_mode,
-      "parallel",
-    );
-    const restarted = new RuntimeBridge(store, config);
-    restarted.enqueue(inputId);
-    assert.deepEqual(
-      (store.runtimeState() as Ledger).deliveries,
-      before.deliveries,
-    );
-    assert.deepEqual(
-      store.snapshot().inputs.find((input) => input.id === inputId),
-      saved,
-    );
-    // Model a persisted pre-upgrade outbox: it must not be retargeted by a
-    // newer builtin binding, even if enqueue is called again after restart.
-    before.deliveries[0]!.request.activation.harness = {
-      id: "morphz.script-studio",
-      version: "1.0.0",
-    };
-    store.saveRuntimeState(before);
-    const legacyBridge = new RuntimeBridge(store, config);
-    legacyBridge.enqueue(inputId);
-    assert.deepEqual(
-      (store.runtimeState() as Ledger).deliveries,
-      before.deliveries,
-    );
+    assert.equal(Reflect.has(store, "snapshot"), false);
+    assert.equal(Reflect.has(store, "execute"), false);
   } finally {
     store.close();
   }
 });
 
-test("同空间跨应用与对象共用 Session，各输入固定 Harness，并行调度；保存项目后路由不变", () => {
-  const store = new WorkspaceStore(":memory:");
-  const config = {
-    namespace: randomUUID(),
-    url: "http://127.0.0.1:12345",
-    token: "test-only",
-  };
-  const bridge = new RuntimeBridge(store, config);
-  const run = (operation: Operation) =>
-    store.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
-  const input = (
-    projectId: string,
-    applicationInstanceId?: string,
-    artifactId: string | null = null,
-  ) => {
-    const id = run({
-      type: "record-input",
-      projectId,
-      applicationInstanceId,
-      artifactId,
-      artifactRevision: artifactId ? 1 : null,
-      selection: "",
-      body: "工作输入",
-      targetActantId: "morphz-agent",
-    });
-    bridge.enqueue(id);
-    return id;
-  };
+test("剧本工作室正式入口固定编剧 Harness，冷重开不重写已排队输入", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
-    const ids: string[] = [];
-    for (const name of ["writing", "editing"]) {
-      const manifest = applicationManifestSchema.parse({
-        format: "morphz-app/v1",
-        id: `test.${name}`,
-        version: "1.0.0",
-        title: name,
-        description: "Fixture",
-        icon: "document",
-        permissions: ["input.compose"],
-        harness: { id: name, version: "1.2.3" },
-        ui: { type: "sandbox", html: "<p>Fixture</p>" },
-      });
-      run({ type: "install-application", manifest });
-      const app = run({
-        type: "launch-application",
-        workspaceId: "local-worktable",
-        applicationId: manifest.id,
-        applicationVersion: manifest.version,
-      });
-      const artifactId = run({
-        type: "create-artifact",
-        projectId: "local-worktable",
-        title: name,
-        content: { kind: "document", markdown: name },
-      });
-      ids.push(input("local-worktable", app, artifactId));
-    }
-    input("first-project");
-    input("local-inbox");
-    type Ledger = {
-      sessions: Record<
-        string,
-        {
-          id: string;
-          projectId: string;
-          artifactId: string | null;
-          scope: string;
-        }
-      >;
-      deliveries: {
-        inputId: string;
-        sessionId: string;
-        request: {
-          activation: {
-            harness?: { id: string; version: string };
-            dispatch_mode: string;
-          };
-        };
-      }[];
-    };
-    const before = store.runtimeState() as Ledger;
-    assert.equal(Object.keys(before.sessions).length, 3);
+    const harness = { id: "morphz.script-studio", version: "1.4.0" };
+    assert.deepEqual(scriptStudioApplication.harness, harness);
+    const command = message(f.projectId, scriptStudioApplication);
+    const receipt = await f.session().platformMessage(command);
+    const before = f.store.runtimeState() as Ledger;
+    assert.equal(before.deliveries.length, 1);
+    assert.equal(before.deliveries[0]!.inputId, receipt.entityId);
     assert.equal(
-      before.deliveries[0]!.sessionId,
-      before.deliveries[1]!.sessionId,
+      before.deliveries[0]!.request.client_message_id,
+      receipt.entityId,
     );
-    assert.notEqual(
-      before.deliveries[0]!.sessionId,
-      before.deliveries[2]!.sessionId,
+    assert.deepEqual(before.deliveries[0]!.request.activation.harness, harness);
+    assert.equal(
+      before.deliveries[0]!.request.activation.dispatch_mode,
+      "parallel",
     );
-    assert.notEqual(
-      before.deliveries[2]!.sessionId,
-      before.deliveries[3]!.sessionId,
-    );
+    await f.reopen();
+    assert.deepEqual(await f.session().platformMessage(command), receipt);
     assert.deepEqual(
-      before.deliveries.slice(0, 2).map((d) => d.request.activation.harness),
+      (f.store.runtimeState() as Ledger).deliveries,
+      before.deliveries,
+    );
+    // Immutable requests for an existing Runtime protocol are retained, not
+    // rebuilt from today's builtin manifest. This is protocol compatibility,
+    // not an alternate Workspace or old business-authority write path.
+    before.deliveries[0]!.request.activation.harness = {
+      id: "morphz.script-studio",
+      version: "1.0.0",
+    };
+    before.deliveries[0]!.state = "failed";
+    f.store.saveRuntimeState(before);
+    await f.reopen();
+    await f.runtime.retryPlatformInput(receipt.entityId);
+    before.deliveries[0]!.state = "queued";
+    assert.deepEqual(
+      (f.store.runtimeState() as Ledger).deliveries,
+      before.deliveries,
+    );
+    f.assertNoLegacyData();
+  } finally {
+    await f.close();
+  }
+});
+
+test("默认对话跨项目／应用共享 Session，每个输入固定 Harness；命名 Session 独立", async () => {
+  const f = await platformRuntimeHostFixture();
+  try {
+    const { dialogueId } = await f.session().ensurePlatformSpaces();
+    const original = await f.session().createPlatformDocument({
+      commandId: randomUUID(),
+      projectId: f.projectId,
+      title: "原件",
+      markdown: "正文",
+      objectId: randomUUID(),
+    });
+    const commands = [
+      message(f.projectId, objectsApplication, original.contentId, dialogueId),
+      message(f.projectId, scriptStudioApplication, null, dialogueId),
+      message(f.projectId, readerApplication, null, dialogueId),
+    ];
+    for (const command of commands) await f.session().platformMessage(command);
+    const secondProjectId = "second-project";
+    await f.session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId: secondProjectId,
+      title: "另一项目",
+    });
+    const another = message(secondProjectId, undefined, null, dialogueId);
+    await f.session().platformMessage(another);
+    const before = f.store.runtimeState() as Ledger;
+    assert.equal(Object.keys(before.sessions).length, 1);
+    assert.equal(new Set(before.deliveries.map((d) => d.sessionId)).size, 1);
+    assert.deepEqual(
+      before.deliveries.slice(0, 3).map((d) => d.request.activation.harness),
       [
-        { id: "writing", version: "1.2.3" },
-        { id: "editing", version: "1.2.3" },
+        objectsApplication.harness ?? undefined,
+        scriptStudioApplication.harness,
+        readerApplication.harness ?? undefined,
       ],
     );
     assert.ok(
@@ -199,28 +153,28 @@ test("同空间跨应用与对象共用 Session，各输入固定 Harness，并�
         (d) => d.request.activation.dispatch_mode === "parallel",
       ),
     );
-    run({
-      type: "create-project",
-      title: "独立项目不改变交流或在途执行",
-    });
-    const restarted = new RuntimeBridge(store, config);
-    const third = run({
-      type: "record-input",
-      projectId: "local-worktable",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "继续原来的工作",
-      targetActantId: "morphz-agent",
-    });
-    restarted.enqueue(third);
-    const after = store.runtimeState() as Ledger;
+    await f.reopen();
+    const continued = await f
+      .session()
+      .platformMessage(message(f.projectId, undefined, null, dialogueId));
+    const namedId = randomUUID();
+    const named = message(f.projectId);
+    named.operation.conversationId = namedId;
+    named.operation.newConversation = { title: "独立工作线" };
+    const namedReceipt = await f.session(localAccess).platformMessage(named);
+    const after = f.store.runtimeState() as Ledger;
     assert.equal(
-      after.deliveries.at(-1)!.sessionId,
+      after.deliveries.find((d) => d.inputId === continued.entityId)!.sessionId,
+      before.deliveries[0]!.sessionId,
+    );
+    assert.notEqual(
+      after.deliveries.find((d) => d.inputId === namedReceipt.entityId)!
+        .sessionId,
       before.deliveries[0]!.sessionId,
     );
     assert.deepEqual(after.deliveries.slice(0, 4), before.deliveries);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });

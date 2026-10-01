@@ -1,16 +1,26 @@
 import { createHash } from "node:crypto";
-import { assertProjectWritable } from "../../core/src/projects.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { workInputRequest } from "./session-io.js";
+import { scriptGenerationSchema } from "../../core/src/script-studio.js";
+import { readingInputSchema } from "../../core/src/reader.js";
+import { textQuotesSchema } from "../../core/src/text-quotes.js";
+import { isoTimeAtMicros, isoTimeMicros } from "./iso-time.js";
+import {
+  directoryGrantSchema,
+  localFileReferenceSchema,
+} from "../../core/src/local-files.js";
 import {
   continuationTarget,
   ContinuationConflict,
   SupplementUnconfirmed,
 } from "./continuation.js";
-import type { InputContinuation } from "../../core/src/continuation.js";
+import {
+  continuationSchema,
+  type InputContinuation,
+} from "../../core/src/continuation.js";
 import {
   modelOptionSchema,
   reasoningEffortSchema,
@@ -21,21 +31,21 @@ import {
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import {
   DomainError,
+  browserReferenceSchema,
+  inputApplicationSchema,
+  inputAttachmentSchema,
   discussionId,
-  checkConversation,
-  inConversation,
   type AccessContext,
+  type RecordedInput,
 } from "../../../packages/core/src/model.js";
-import {
-  checkProject,
-  localAccess,
-  getArtifact,
-} from "../../../packages/core/src/model.js";
+import { localAccess } from "../../../packages/core/src/model.js";
 import { ExecutionControls, approvalFingerprint } from "./execution.js";
-import { Collaboration } from "./collaboration.js";
 import {
   approvalSchema,
+  jobSchema,
+  type ExecutionControl,
   type ExecutionScope,
+  type ExecutionSnapshot,
   type ExecutionAttention,
 } from "../../../packages/core/src/execution.js";
 import {
@@ -46,12 +56,33 @@ import {
 import type { WorkspaceStore } from "./store.js";
 import type { HostInvocation, ToolScope } from "./agent-tools.js";
 import type { IdentityCenter } from "./identity.js";
-import type { BrowserBroker } from "./browser.js";
+import type { MessageAttachmentService } from "./message-attachment-service.js";
 import { ConversationFeed } from "./conversation-feed.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { inspectRuntimeConnection } from "./runtime-connection.js";
 import { RuntimeModelSettings } from "./model-settings.js";
 import { harnessReadinessError } from "../../core/src/applications.js";
+import {
+  runtimeHttpInputEvidenceReader,
+  resolveRuntimeInvocationEvidence,
+  type RuntimeInputEvidenceReader,
+  type TaskSourceEvidenceReader,
+} from "./runtime-input-evidence.js";
+import { RuntimeTaskRunStatusReader } from "./runtime-task-run-status.js";
+import { matchesTaskSourceRequest, type TaskSourceEvent, type TaskSourceDestination, type TaskSourceReceipt } from "../../platform/src/task-run-source.js";
+import {
+  taskRunAdmissionSchema,
+  taskRunRuntimeReceiptSchema,
+  type TaskRunAdmission,
+  type TaskRunRuntimeReceipt,
+} from "../../platform/src/task-run-admission.js";
+import {
+  PlatformStorageError,
+  type PendingTaskRunStop,
+  type PendingTaskRunScheduleControl,
+  type TaskRunStopObservation,
+  type TaskRunLink,
+} from "../../platform/src/store.js";
 
 const configSchema = z
   .object({
@@ -91,6 +122,50 @@ const eventSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 type RuntimeEvent = z.infer<typeof eventSchema>;
+const sessionTimelineItemSchema = z.object({
+  entry_id: z.string(),
+  visible_at: z.iso.datetime({ offset: true }),
+  visible_at_micros: z.number().int().safe(),
+  root_turn_id: z.string(),
+  attempt_id: z.string().nullable(),
+  display_kind: z.enum(["input", "reply", "progress", "error"]),
+  final_event: z.boolean(),
+  event: eventSchema,
+  root_event: eventSchema.nullable(),
+});
+const sessionTimelinePageSchema = z.object({
+  entries: z.array(sessionTimelineItemSchema),
+  next_before: z
+    .object({
+      visible_at_micros: z.number().int().safe(),
+      entry_id: z.string(),
+    })
+    .nullable(),
+});
+type SessionTimelineItem = z.infer<typeof sessionTimelineItemSchema>;
+
+/** JavaScript Date discards sub-millisecond precision. Preserve the Runtime's
+ * exact six-digit ordering key when a UI history cursor comes back. */
+function historyTimeMicros(value: string) {
+  const micros = isoTimeMicros(value);
+  if (micros === null)
+    throw new DomainError("invalid", "对话历史游标时间无效。");
+  return micros;
+}
+function historyCursorAtMicros(micros: number, id: string) {
+  const createdAt = isoTimeAtMicros(micros);
+  if (!createdAt)
+    throw new DomainError("invalid", "对话历史游标超出时间范围。");
+  return { createdAt, id };
+}
+/** The Ledger has already materialized each immutable Event from its own
+ * row. Validate the shape without asking Zod to retain a second copy of the
+ * entire Session history in the live bridge. */
+const storedEventHistorySchema = z.custom<RuntimeEvent[]>(
+  (value) =>
+    Array.isArray(value) &&
+    value.every((event) => eventSchema.safeParse(event).success),
+);
 /** A combined reply without a unique causal input must not be assigned by array order. */
 export function attributedDelivery<
   T extends { sessionId: string; rootId: string | null },
@@ -111,10 +186,198 @@ export function attributedDelivery<
   const covered = scoped.filter((d) => settles(event, d.rootId!, events));
   return covered.length === 1 ? covered[0] : undefined;
 }
+
+/** Resolve a whole Session's Event projection without rescanning every
+ * delivery and thread result for each message. This preserves the single-
+ * event attribution rule: an ambiguous root or combined reply has no owner.
+ */
+export function sessionDeliveryAttribution<
+  T extends { sessionId: string; rootId: string | null },
+>(sessionId: string, deliveries: T[], events: RuntimeEvent[]) {
+  const byRoot = new Map<string, T[]>();
+  for (const delivery of deliveries) {
+    if (delivery.sessionId !== sessionId || !delivery.rootId) continue;
+    const owners = byRoot.get(delivery.rootId) ?? [];
+    owners.push(delivery);
+    byRoot.set(delivery.rootId, owners);
+  }
+  const byThread = new Map<string, Set<T>>();
+  for (const event of events) {
+    if (event.topic !== "runtime/thread_result") continue;
+    const root = payloadString(event, "root_turn_id");
+    const thread = payloadString(event, "thread_id");
+    if (!root || !thread) continue;
+    const owners = byRoot.get(root);
+    if (!owners) continue;
+    const covered = byThread.get(thread) ?? new Set<T>();
+    for (const owner of owners) covered.add(owner);
+    byThread.set(thread, covered);
+  }
+  return (event: RuntimeEvent): T | undefined => {
+    for (const key of ["root_turn_id", "trigger_event_id", "source_turn_id"]) {
+      const root = payloadString(event, key);
+      const owners = root ? byRoot.get(root) : undefined;
+      if (owners?.length) return owners.length === 1 ? owners[0] : undefined;
+    }
+    if (!terminal.has(event.topic)) return undefined;
+    let owner: T | undefined;
+    for (const thread of [
+      event.payload.covers,
+      event.payload.defer_covers,
+    ].flatMap((value) => (Array.isArray(value) ? value : []))) {
+      const covered =
+        typeof thread === "string" ? byThread.get(thread) : undefined;
+      if (!covered) continue;
+      for (const candidate of covered) {
+        if (owner && owner !== candidate) return undefined;
+        owner = candidate;
+      }
+    }
+    return owner;
+  };
+}
 const sessionSchema = z.object({
   id: z.string(),
   context_id: z.string(),
 });
+const platformInputSourceSchema = z.object({
+  projectId: z.string(),
+  conversationId: z.string(),
+  targetActantId: z.string(),
+  author: z.object({ principalId: z.string(), actantId: z.string() }),
+  createdAt: z.iso.datetime(),
+  // The Runtime request also contains quoted source text. Keep the Human's
+  // own words separate so message history never presents the entire prompt
+  // as text the Human typed.
+  body: z.string().optional(),
+  attachments: z.array(inputAttachmentSchema).optional(),
+  artifactId: z.string().optional(),
+  artifactRevision: z.number().int().positive().optional(),
+  selection: z.string().optional(),
+  reading: readingInputSchema.optional(),
+  continuation: continuationSchema.optional(),
+  application: inputApplicationSchema.optional(),
+  browser: browserReferenceSchema.optional(),
+  textQuotes: textQuotesSchema.optional(),
+  localFile: localFileReferenceSchema.optional(),
+  directories: z.array(directoryGrantSchema).max(8).optional(),
+  scriptGeneration: scriptGenerationSchema.optional(),
+  sharedDefault: z.boolean(),
+  firstInputId: z.string().optional(),
+  newConversationTitle: z.string().optional(),
+});
+type PlatformInputSource = z.infer<typeof platformInputSourceSchema>;
+/** Runtime persists JSON leaves as tagged Data so number lexemes survive a
+ * JSONB backend. This decoder is only for a bounded, Runtime-accepted root;
+ * the decoded client metadata is never an authorization decision by itself. */
+function storedDataValue(
+  raw: unknown,
+  budget: { nodes: number },
+  depth = 0,
+): unknown {
+  if (++budget.nodes > 32_768 || depth > 32)
+    throw new Error("Runtime 消息来源超过结构边界。");
+  const node = z
+    .object({ type: z.string(), value: z.unknown().optional() })
+    .parse(raw);
+  switch (node.type) {
+    case "null":
+      return null;
+    case "boolean":
+      return z.boolean().parse(node.value);
+    case "string":
+      return z.string().parse(node.value);
+    case "number": {
+      const lexeme = z.string().parse(node.value);
+      const number = Number(lexeme);
+      if (!Number.isSafeInteger(number))
+        throw new Error("Runtime 消息来源包含不安全的数字。");
+      return number;
+    }
+    case "array":
+      return z
+        .array(z.unknown())
+        .parse(node.value)
+        .map((item) => storedDataValue(item, budget, depth + 1));
+    case "object":
+      return Object.fromEntries(
+        Object.entries(z.record(z.string(), z.unknown()).parse(node.value)).map(
+          ([key, item]) => [key, storedDataValue(item, budget, depth + 1)],
+        ),
+      );
+    default:
+      throw new Error("Runtime 消息来源的数据类型无效。");
+  }
+}
+
+function platformSourceFromRuntimeRoot(
+  event: RuntimeEvent,
+  sessionId: string,
+  inputId: string,
+  // A trusted gateway can map each Human to a Runtime principal. A local
+  // single-user Runtime authenticates with its own default principal instead;
+  // Platform still rechecks the source against the current reader grant.
+  principalId: (id: string) => string | null,
+): PlatformInputSource | null {
+  if (
+    !["chat/user_message", "chat/steering"].includes(event.topic) ||
+    payloadString(event, "session_id") !== sessionId ||
+    payloadString(event, "client_message_id") !== inputId
+  )
+    return null;
+  const accepted = z
+    .object({
+      request: z.object({
+        client_message_id: z.literal(inputId),
+        client_metadata: z.unknown(),
+        message: z.object({
+          content: z.object({
+            encoding: z.literal("json"),
+            value: z.unknown(),
+          }),
+        }),
+      }),
+    })
+    .safeParse(event.payload.session_io);
+  if (!accepted.success) return null;
+  try {
+    const budget = { nodes: 0 };
+    const metadata = z
+      .object({
+        kind: z.literal("morphz.platform-input"),
+        version: z.literal(1),
+        source: platformInputSourceSchema,
+      })
+      .parse(storedDataValue(accepted.data.request.client_metadata, budget));
+    const visible = z
+      .object({
+        input_id: z.literal(inputId),
+        workspace_id: z.literal(metadata.source.projectId),
+        author_actant_id: z.literal(metadata.source.author.actantId),
+      })
+      .parse(
+        storedDataValue(accepted.data.request.message.content.value, budget),
+      );
+    const expectedPrincipal = principalId(metadata.source.author.principalId);
+    if (
+      !visible ||
+      (expectedPrincipal !== null &&
+        payloadString(event, "principal_id") !== expectedPrincipal)
+    )
+      return null;
+    return metadata.source;
+  } catch {
+    return null;
+  }
+}
+type PlatformReadGrant = {
+  personalDefault: boolean;
+  projectIds: string[];
+};
+type PlatformInputTarget = Omit<
+  PlatformInputSource,
+  "sharedDefault" | "createdAt" | "body"
+> & { phase: "prepare" | "dispatch" | "receipt" };
 const storedSchema = z.object({
   identityMode: z.literal("trusted_gateway").optional(),
   namespace: z.string(),
@@ -138,13 +401,14 @@ const storedSchema = z.object({
       conversationId: z.string().optional(),
       artifactId: z.string().nullable(),
       cursor: z.number(),
-      events: z.array(eventSchema),
+      events: storedEventHistorySchema,
       runtimePrincipalId: z.string().nullable().default(null),
       turnControl: z.boolean().default(false),
       schedules: z.boolean().default(false),
       hasWork: z.boolean().default(false),
       scope: z.enum(["object", "workspace"]).default("object"),
       sharedDefault: z.boolean().default(false),
+      platform: z.boolean().default(false),
     }),
   ),
   deliveries: z.array(
@@ -152,23 +416,99 @@ const storedSchema = z.object({
       sessionId: z.string(),
       rootId: z.string().nullable(),
       acceptedEventId: z.string().optional(),
+      // Missing on older records means the POST boundary cannot be proven.
+      // A known false value proves a failed delivery stopped before POST.
+      runtimePostAttempted: z.boolean().optional(),
       request: z.record(z.string(), z.unknown()),
       resourceUploads: z
         .array(
-          z.object({
-            stageId: z.string(),
-            name: z.string(),
-            mediaType: z.string(),
-            dataBase64: z.string(),
-            sha256: z.string(),
-            ready: z.boolean(),
-          }),
+          z
+            .object({
+              stageId: z.string(),
+              name: z.string(),
+              mediaType: z.string(),
+              dataBase64: z.string().optional(),
+              assetId: z
+                .string()
+                .regex(/^[a-f0-9]{64}$/)
+                .optional(),
+              sha256: z.string(),
+              ready: z.boolean(),
+            })
+            .refine((upload) => !!upload.dataBase64 !== !!upload.assetId),
         )
         .optional(),
       cancelRequested: z.boolean().default(false),
+      platformSource: platformInputSourceSchema.optional(),
+      platformHeld: z.boolean().default(false),
+      /** Compact local projections of this Host's Runtime Events. The Event
+       * history itself belongs to Runtime and is fetched on demand. */
+      causalThreadIds: z.array(z.string()).default([]),
+      lastActivityAt: z.string().optional(),
     }),
   ),
 });
+type StoredDelivery = z.infer<typeof storedSchema>["deliveries"][number];
+const platformPlainRequestSchema = z.object({
+  message: z.object({
+    content: z.object({ value: z.object({ text: z.string() }).passthrough() }),
+  }),
+});
+function platformInputBody(delivery: StoredDelivery): string {
+  return (
+    delivery.platformSource?.body ??
+    platformPlainRequestSchema.parse(delivery.request).message.content.value
+      .text
+  );
+}
+export type PlatformConversationHistory = {
+  inputs: Array<{
+    id: string;
+    projectId: string;
+    conversationId: string;
+    author: AccessContext;
+    targetActantId: string;
+    body: string;
+    attachments?: RecordedInput["attachments"];
+    artifactId?: string;
+    artifactRevision?: number;
+    selection?: string;
+    reading?: RecordedInput["reading"];
+    continuation?: RecordedInput["continuation"];
+    application?: RecordedInput["application"];
+    browser?: RecordedInput["browser"];
+    textQuotes?: RecordedInput["textQuotes"];
+    localFile?: RecordedInput["localFile"];
+    directories?: RecordedInput["directories"];
+    createdAt: string;
+  }>;
+  runtime: ConversationRuntime;
+  nextCursor: { createdAt: string; id: string } | null;
+};
+type HistoryEntry =
+  | {
+      kind: "input";
+      id: string;
+      createdAt: string;
+      value: PlatformConversationHistory["inputs"][number];
+    }
+  | {
+      kind: "message";
+      id: string;
+      createdAt: string;
+      value: ConversationRuntime["messages"][number];
+    };
+
+function historyOrder(
+  left: { createdAt: string; id: string },
+  right: { createdAt: string; id: string },
+) {
+  return (
+    historyTimeMicros(left.createdAt) - historyTimeMicros(right.createdAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 class UpstreamError extends Error {
   constructor(
     public status: number,
@@ -179,6 +519,18 @@ class UpstreamError extends Error {
         ? "Morphz 登录凭据已失效，请重新连接。"
         : (detail ?? `Morphz 请求失败（HTTP ${status}），可重试发送。`),
     );
+  }
+}
+/** An IO POST explicitly rejected admission; unlike a transport failure this
+ * can release its uncertain-send marker after exact Runtime reconciliation. */
+export class TaskSourceRejectedError extends Error {
+  constructor(cause: unknown) { super("Runtime 未接收这次来源投递。", { cause }); }
+}
+/** Only a failure at the HTTP transport boundary, never a parsed Runtime
+ * protocol error or a Platform authorization failure. */
+class RuntimeTransportError extends Error {
+  constructor(cause: unknown) {
+    super("无法连接 Morphz Runtime，请检查连接后重试。", { cause });
   }
 }
 const terminal = new Set([
@@ -217,174 +569,301 @@ export function settles(
       covers.includes(payloadString(e, "thread_id")),
   );
 }
+
+/** Reconcile all running roots with one causal pass. A combined terminal may
+ * settle several roots without being attributable to one message input. */
+export function terminalResultsByRoot(
+  events: RuntimeEvent[],
+  runningRoots: ReadonlySet<string>,
+): Map<string, RuntimeEvent> {
+  const rootsByThread = new Map<string, Set<string>>();
+  for (const event of events) {
+    if (event.topic !== "runtime/thread_result") continue;
+    const root = payloadString(event, "root_turn_id");
+    const thread = payloadString(event, "thread_id");
+    if (!root || !thread || !runningRoots.has(root)) continue;
+    const roots = rootsByThread.get(thread) ?? new Set<string>();
+    roots.add(root);
+    rootsByThread.set(thread, roots);
+  }
+  const first = new Map<string, RuntimeEvent>();
+  for (const event of events) {
+    if (!terminal.has(event.topic)) continue;
+    const roots = new Set<string>();
+    for (const key of ["root_turn_id", "trigger_event_id", "source_turn_id"]) {
+      const root = payloadString(event, key);
+      if (root && runningRoots.has(root)) roots.add(root);
+    }
+    for (const thread of [
+      event.payload.covers,
+      event.payload.defer_covers,
+    ].flatMap((value) => (Array.isArray(value) ? value : []))) {
+      if (typeof thread !== "string") continue;
+      for (const root of rootsByThread.get(thread) ?? []) roots.add(root);
+    }
+    for (const root of roots) if (!first.has(root)) first.set(root, event);
+  }
+  return first;
+}
+function causalThreadEvents(deliveries: StoredDelivery[]): RuntimeEvent[] {
+  return deliveries.flatMap((delivery) =>
+    delivery.rootId
+      ? delivery.causalThreadIds.map((threadId) => ({
+          id: `causal:${delivery.inputId}:${threadId}`,
+          sequence: 0,
+          timestamp: "1970-01-01T00:00:00.000Z",
+          topic: "runtime/thread_result",
+          payload: { root_turn_id: delivery.rootId, thread_id: threadId },
+        }))
+      : [],
+  );
+}
 export class RuntimeBridge {
   private loadedHarnesses: { id: string; version: string }[] | null = null;
   private feeds = new Set<ConversationFeed>();
-  private publish<
-    T extends {
-      id: string;
-      createdAt: string;
-      kind: string;
-      publicationKey?: string;
-    },
-  >(message: T): T {
-    if (
-      !message.publicationKey ||
-      message.kind === "tool" ||
-      message.kind === "progress"
-    )
-      return message;
-    const key = message.publicationKey;
-    let saved = this.state.publications[key];
-    if (!saved) {
-      // Persist only presentation identity/time, not transient model content.
-      saved = { id: `publication:${key}`, createdAt: message.createdAt };
-      this.state.publications[key] = saved;
-      this.save();
-    }
-    return { ...message, ...saved };
-  }
-  observeConversation(
+  /** Stream the same Platform-authorized history exposed by
+   * platformConversationHistory. A revoked project is removed from the next
+   * publication even when other projects share its Runtime Session.
+   */
+  async observePlatformConversation(
     scope: { projectId: string; conversationId: string },
     access: AccessContext,
     changed: (value: ConversationStream) => void,
     failed: () => void,
-  ) {
-    const authorize = () => {
-      const workspace = this.store.snapshot();
-      checkProject(workspace, scope.projectId, access);
-      if (this.identity && !this.identity.allows(access))
-        throw new Error("身份已失效");
-      checkConversation(
-        workspace,
-        scope.projectId,
-        scope.conversationId,
-        access,
-      );
+  ): Promise<() => void> {
+    const authorizeRead = this.authorizePlatformRead;
+    if (!authorizeRead)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    let grant = await authorizeRead(scope, access);
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    // Capture the durable Event head before the baseline. The WebSocket is
+    // subscribed before catching up from this cursor, so no accepted frame is
+    // lost while the Platform read awaits authorization.
+    let initialCursor = 0;
+    try {
+      const head = z
+        .object({ latest_sequence: z.number().int().nullable() })
+        .parse(
+          await this.request(
+            "/api/sessions/" +
+              encodeURIComponent(sessionId) +
+              "/events?limit=1",
+            "GET",
+            undefined,
+            access,
+            undefined,
+          ),
+        );
+      initialCursor = head.latest_sequence ?? 0;
+    } catch (error) {
+      if (!(error instanceof UpstreamError && error.status === 404))
+        throw error;
+    }
+    const baseline = (await this.platformConversationHistory(scope, access))
+      .runtime.messages;
+    type RootRoute = { inputId: string; source: PlatformInputSource };
+    const roots = new Map<string, Promise<RootRoute | null>>();
+    // Baseline and live feed each retain at most 100 messages. Root provenance
+    // is a disposable lookup cache, not another growing Session history.
+    const cacheRoot = (rootId: string, route: Promise<RootRoute | null>) => {
+      roots.delete(rootId);
+      roots.set(rootId, route);
+      while (roots.size > 200) roots.delete(roots.keys().next().value!);
     };
-    authorize();
-    const feed = new ConversationFeed({
-      authorize,
-      failed,
-      changed: (value) => {
-        // A synchronous publication batch has one fresh authorization snapshot.
-        // Reading/parsing the whole workspace for every message stalls Desktop's
-        // main process as history grows. Never retain this across async batches.
-        const workspace = this.store.snapshot();
-        const inputs = new Map(
-          workspace.inputs.map((input) => [input.id, input]),
-        );
-        const projects = new Set(
-          workspace.projects
-            .filter((project) => project.members.includes(access.principalId))
-            .map((project) => project.id),
-        );
-        const deliveries = new Map<string, typeof this.state.deliveries>();
-        for (const delivery of this.state.deliveries) {
-          const session = this.state.sessions[delivery.sessionId];
-          if (
-            delivery.rootId &&
-            session &&
-            inConversation(
-              workspace,
-              scope.conversationId,
-              session,
-              !this.teamIdentity,
-            )
-          ) {
-            const matches = deliveries.get(delivery.rootId) ?? [];
-            matches.push(delivery);
-            deliveries.set(delivery.rootId, matches);
-          }
-        }
-        changed({
-          ...value,
-          messages: value.messages
-            .map((raw) => {
-              const message = this.publish(raw);
-              // The WS may beat the POST receipt. Reconcile by the captured root,
-              // never by the currently selected conversation or newest input.
-              const matches = message.rootId
-                ? (deliveries.get(message.rootId) ?? [])
-                : [];
-              const input =
-                matches.length === 1
-                  ? inputs.get(matches[0]!.inputId)
-                  : undefined;
-              return input
-                ? {
-                    ...message,
-                    inputId: input.id,
-                    projectId: input.projectId,
-                    conversationId: discussionId(input),
-                    artifactId: input.artifactId,
-                  }
-                : message;
-            })
-            .filter((m) => projects.has(m.projectId)),
+    const parseRoot = (event: RuntimeEvent): RootRoute | null => {
+      const inputId = payloadString(event, "client_message_id");
+      if (!inputId) return null;
+      const source = platformSourceFromRuntimeRoot(
+        event,
+        sessionId,
+        inputId,
+        (id) => (this.teamIdentity ? this.principalId(id) : null),
+      );
+      return source ? { inputId, source } : null;
+    };
+    const rootRoute = (rootId: string): Promise<RootRoute | null> => {
+      const cached = roots.get(rootId);
+      if (cached) {
+        cacheRoot(rootId, cached);
+        return cached;
+      }
+      const lookup = this.request(
+        "/api/sessions/" +
+          encodeURIComponent(sessionId) +
+          "/events/" +
+          encodeURIComponent(rootId),
+        "GET",
+        undefined,
+        access,
+        undefined,
+      )
+        .then((raw) => {
+          const event = z.object({ event: eventSchema }).parse(raw).event;
+          return event.id === rootId ? parseRoot(event) : null;
+        })
+        .catch((error: unknown) => {
+          if (error instanceof UpstreamError && error.status === 404)
+            return null;
+          throw error;
+        })
+        .then((route) => {
+          // A delayed miss must not erase a newer root Event from the feed.
+          if (!route && roots.get(rootId) === lookup) roots.delete(rootId);
+          return route;
         });
+      cacheRoot(rootId, lookup);
+      return lookup;
+    };
+    const publicationTimes = new Map<string, string>();
+    for (const message of baseline)
+      if (message.publicationKey)
+        publicationTimes.set(message.publicationKey, message.createdAt);
+    let pendingAuthorization = Promise.resolve();
+    const authorize = () => {
+      pendingAuthorization = pendingAuthorization.then(async () => {
+        grant = await authorizeRead(scope, access);
+      });
+      return pendingAuthorization;
+    };
+    let closed = false;
+    let feed: ConversationFeed | undefined;
+    let pendingPublication = Promise.resolve();
+    const publish = (value: ConversationStream) => {
+      pendingPublication = pendingPublication
+        .then(async () => {
+          await authorize();
+          if (closed) return;
+          const candidates = await Promise.all(
+            [...baseline, ...value.messages].map(async (raw) => {
+              if (!raw.rootId) return null;
+              const route = await rootRoute(raw.rootId);
+              return route ? { raw, route } : null;
+            }),
+          );
+          await authorize();
+          if (closed) return;
+          const visible = candidates.flatMap((candidate) => {
+            if (!candidate) return [];
+            const { raw, route } = candidate;
+            const source = route.source;
+            if (
+              source.sharedDefault !== grant.personalDefault ||
+              !this.platformSourceReadable(source, scope, access, grant)
+            )
+              return [];
+            const publicationKey = raw.publicationKey;
+            if (
+              publicationKey &&
+              raw.id.startsWith("stream:") &&
+              (!publicationTimes.has(publicationKey) ||
+                historyTimeMicros(raw.createdAt) <
+                  historyTimeMicros(publicationTimes.get(publicationKey)!))
+            )
+              publicationTimes.set(publicationKey, raw.createdAt);
+            const finalPublication =
+              publicationKey &&
+              !raw.id.startsWith("stream:") &&
+              !raw.id.startsWith("tool:") &&
+              raw.kind !== "progress";
+            return [
+              {
+                ...raw,
+                id: finalPublication
+                  ? "publication:" + publicationKey
+                  : raw.id.startsWith("stream:") && publicationKey
+                    ? "stream:" + publicationKey
+                    : raw.id,
+                createdAt:
+                  publicationKey && publicationTimes.has(publicationKey)
+                    ? publicationTimes.get(publicationKey)!
+                    : raw.createdAt,
+                projectId: source.projectId,
+                conversationId: source.conversationId,
+                artifactId: null,
+                inputId: route.inputId,
+                rootId: raw.rootId!,
+              },
+            ];
+          });
+          const finals = new Set(
+            visible
+              .filter(
+                (message) =>
+                  message.publicationKey &&
+                  message.id === "publication:" + message.publicationKey,
+              )
+              .map((message) => message.publicationKey),
+          );
+          const deduplicated = new Map(
+            visible
+              .filter(
+                (message) =>
+                  !message.id.startsWith("stream:") ||
+                  !message.publicationKey ||
+                  !finals.has(message.publicationKey),
+              )
+              .map((message) => [message.id, message] as const),
+          );
+          changed({
+            connected: value.connected,
+            messages: [...deduplicated.values()].sort(historyOrder),
+          });
+        })
+        .catch(() => feed?.close());
+    };
+    feed = new ConversationFeed({
+      authorize,
+      failed: () => {
+        if (closed) return;
+        closed = true;
+        if (feed) this.feeds.delete(feed);
+        failed();
       },
+      changed: publish,
       url: this.config.url,
-      sessions: () => {
-        const workspace = this.store.snapshot();
-        const projects = new Set(
-          workspace.projects
-            .filter((project) => project.members.includes(access.principalId))
-            .map((project) => project.id),
-        );
-        return Object.values(this.state.sessions)
-          .filter(
-            (s) =>
-              projects.has(s.projectId) &&
-              inConversation(
-                workspace,
-                scope.conversationId,
-                s,
-                !this.teamIdentity,
-              ),
-          )
-          .map((s) => s.id);
-      },
+      initialCursor: () => initialCursor,
+      messageLimit: 100,
+      sessions: () => [sessionId],
       headers: () => ({
-        Authorization: `Bearer ${this.config.token}`,
+        Authorization: "Bearer " + this.config.token,
         ...(this.teamIdentity
           ? { "X-Morphz-Principal": this.principalId(access.principalId) }
           : {}),
       }),
-      request: (path) => this.request(path, "GET", undefined, access),
-      route: (id, event) => {
-        const session = this.state.sessions[id]!;
-        const delivery = attributedDelivery(
-          id,
-          { ...event, sequence: event.sequence ?? 0 },
-          this.state.deliveries,
-          session.events,
-        );
-        const input = this.store
-          .snapshot()
-          .inputs.find((i) => i.id === delivery?.inputId);
-        return {
-          projectId: input?.projectId ?? session.projectId,
-          conversationId: input ? discussionId(input) : discussionId(session),
-          artifactId: input?.artifactId ?? session.artifactId,
-          inputId: delivery?.inputId ?? null,
-          rootId:
-            delivery?.rootId ??
-            (typeof event.payload.root_turn_id === "string"
-              ? event.payload.root_turn_id
-              : null),
-        };
+      request: (path) =>
+        this.request(path, "GET", undefined, access, undefined),
+      onEvent: (id, raw) => {
+        if (
+          id !== sessionId ||
+          !["chat/user_message", "chat/steering"].includes(raw.topic)
+        )
+          return;
+        const event = { ...raw, sequence: raw.sequence ?? 0 };
+        const route = parseRoot(event);
+        cacheRoot(event.id, Promise.resolve(route));
       },
+      route: (_id, event) => ({
+        projectId: scope.projectId,
+        conversationId: scope.conversationId,
+        artifactId: null,
+        inputId: null,
+        rootId:
+          ["root_turn_id", "trigger_event_id", "source_turn_id"]
+            .map((key) => event.payload[key])
+            .find((value): value is string => typeof value === "string") ??
+          null,
+      }),
     });
     this.feeds.add(feed);
     return () => {
-      this.feeds.delete(feed);
-      feed.close();
+      closed = true;
+      this.feeds.delete(feed!);
+      feed?.close();
     };
-  }
-  private browser?: BrowserBroker;
-  attachBrowser(browser: BrowserBroker) {
-    this.browser = browser;
   }
   private caller = new AsyncLocalStorage<AccessContext>();
   get teamIdentity() {
@@ -409,6 +888,734 @@ export class RuntimeBridge {
         .digest("hex")
     );
   }
+  /** Read Runtime-owned evidence through the configured, authenticated bridge.
+   * A model or browser cannot choose the Runtime origin or credentials.
+   */
+  inputEvidenceReader(): RuntimeInputEvidenceReader {
+    return runtimeHttpInputEvidenceReader((path) =>
+      this.request(path, "GET", undefined, {
+        principalId: "morphz-service",
+        actantId: "morphz-agent",
+      }),
+    );
+  }
+  /** The Platform link is authorized before this reader is called. Runtime
+   * still checks the actual Session principal on every status read. */
+  taskRunStatusReader(): RuntimeTaskRunStatusReader {
+    return new RuntimeTaskRunStatusReader((path, access) =>
+      this.request(path, "GET", undefined, access, undefined),
+    );
+  }
+  /** A project retirement may inspect only durable, attributed deliveries.
+   * Legacy active work has no trustworthy Platform project provenance and
+   * therefore blocks retirement rather than being guessed into a project. */
+  async assertProjectInputsSettled(projectId: string): Promise<void> {
+    const deliveries = [...this.state.deliveries];
+    if (
+      deliveries.some(
+        (delivery) =>
+          !delivery.platformSource &&
+          ["queued", "sending", "running"].includes(delivery.state),
+      )
+    )
+      throw new DomainError(
+        "conflict",
+        "仍有来源未确认的旧输入，不能归档或删除项目。",
+      );
+    const selected = deliveries.filter(
+      (delivery) => delivery.platformSource?.projectId === projectId,
+    );
+    if (
+      selected.some((delivery) =>
+        ["queued", "sending", "running"].includes(delivery.state),
+      )
+    )
+      throw new DomainError("conflict", "项目仍有正在处理的消息。");
+    for (let offset = 0; offset < selected.length; offset += 16) {
+      await Promise.all(
+        selected.slice(offset, offset + 16).map(async (delivery) => {
+          if (!delivery.rootId) {
+            if (
+              delivery.acceptedEventId ||
+              delivery.runtimePostAttempted !== false
+            )
+              throw new DomainError(
+                "conflict",
+                "消息发送结果尚未确认，不能归档或删除项目。",
+              );
+            return;
+          }
+          const source = delivery.platformSource!;
+          const path = `/api/sessions/${encodeURIComponent(delivery.sessionId)}/turns/${encodeURIComponent(delivery.rootId)}/thread`;
+          let raw: unknown;
+          try {
+            raw = await this.request(
+              path,
+              "GET",
+              undefined,
+              source.author,
+              undefined,
+            );
+          } catch {
+            throw new DomainError(
+              "conflict",
+              "暂时无法确认项目消息的 Runtime 状态。",
+            );
+          }
+          const thread = z
+            .object({
+              session_id: z.literal(delivery.sessionId),
+              root_turn_id: z.literal(delivery.rootId),
+              lifecycle: z.enum(["open", "completed", "failed", "cancelled"]),
+            })
+            .safeParse(raw);
+          if (!thread.success || thread.data.lifecycle === "open")
+            throw new DomainError(
+              "conflict",
+              "项目消息仍在执行或 Runtime 状态不明确。",
+            );
+        }),
+      );
+    }
+  }
+  /** Deliver one already-committed Platform admission. Runtime owns the
+   * Schedule and its Thread; the POST is safe to repeat after an uncertain
+   * acknowledgement because the immutable request carries one stable ID. */
+  async deliverTaskRun(
+    rawAdmission: TaskRunAdmission,
+    access: AccessContext,
+  ): Promise<TaskRunRuntimeReceipt> {
+    const admission = taskRunAdmissionSchema.parse(rawAdmission);
+    if (
+      access.principalId !== admission.principalId ||
+      access.actantId !== admission.humanActantId
+    )
+      throw new DomainError("forbidden", "事项执行的发起身份不一致。");
+    const base = `/api/sessions/${encodeURIComponent(admission.sessionId)}`;
+    const session = sessionSchema.parse(
+      await this.request(
+        base,
+        "GET",
+        undefined,
+        { principalId: "morphz-service", actantId: "morphz-agent" },
+        undefined,
+      ),
+    );
+    if (
+      session.id !== admission.sessionId ||
+      session.context_id !== this.contextId(admission.projectId)
+    )
+      throw new DomainError(
+        "conflict",
+        "事项执行的 Runtime 会话与原项目不一致。",
+      );
+    // The trusted Host has already rechecked the persisted Human and Platform
+    // project. The gateway must bind that same Human to this Session before
+    // Runtime can attribute the scheduled root to them.
+    if (this.teamIdentity)
+      await this.request(
+        `${base}/principal`,
+        "POST",
+        undefined,
+        access,
+        undefined,
+      );
+    const schedule = z
+      .object({
+        id: z.string(),
+        thread_id: z.string(),
+        source_turn_id: z.string(),
+        revision: z.number().int().positive(),
+        status: z.enum([
+          "queued",
+          "paused",
+          "dispatched",
+          "completed",
+          "cancelled",
+        ]),
+        not_before: z.string().nullable(),
+        interval_seconds: z.number().int().positive().nullable(),
+      })
+      .parse(
+        await this.request(
+          `${base}/schedules`,
+          "POST",
+          admission.request,
+          access,
+          undefined,
+        ),
+      );
+    if (
+      schedule.id !== admission.request.id ||
+      schedule.source_turn_id !== `client-schedule-${admission.request.id}`
+    )
+      throw new DomainError("conflict", "Runtime 返回了另一项执行安排。");
+    const thread = z
+      .object({
+        thread_id: z.string(),
+        session_id: z.string(),
+        root_turn_id: z.string(),
+        lifecycle: z.enum(["open", "completed", "failed", "cancelled"]),
+      })
+      .parse(
+        await this.request(
+          `${base}/turns/${encodeURIComponent(schedule.source_turn_id)}/thread`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    return taskRunRuntimeReceiptSchema.parse({
+      schedule: {
+        id: schedule.id,
+        thread_id: schedule.thread_id,
+        revision: schedule.revision,
+        status: schedule.status,
+        not_before: schedule.not_before,
+        interval_seconds: schedule.interval_seconds,
+      },
+      thread,
+    });
+  }
+  /** Resolve the actual Runtime route; the Platform observation is never a
+   * substitute for current Schedule / Thread control and generation. */
+  async inspectTaskSourceDestination(
+    admission: TaskRunAdmission,
+    ref: TaskRunLink["runtime"],
+    access: AccessContext,
+  ): Promise<TaskSourceDestination | null> {
+    const current = await this.taskRunStatusReader().inspect(ref, access);
+    if (
+      !["dispatched", "completed"].includes(current.schedule.status) ||
+      (current.schedule.notBefore !== null &&
+        Date.parse(current.schedule.notBefore) > Date.now())
+    )
+      return null;
+    const session = sessionSchema.parse(
+      await this.request(
+        `/api/sessions/${encodeURIComponent(admission.sessionId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      ),
+    );
+    if (session.context_id !== this.contextId(admission.projectId))
+      throw new DomainError("conflict", "来源关注的 Session 已不属于原项目。");
+    const detail = z
+      .object({
+        snapshot: z.object({
+          thread: z.object({
+            id: z.literal(ref.threadId),
+            session_id: z.literal(admission.sessionId),
+            context_id: z.literal(session.context_id),
+            root_turn_id: z.literal(`client-schedule-${admission.request.id}`),
+            initiating_principal_id: z.string().min(1),
+            target_id: z.string().min(1).nullable(),
+            generation: z.number().int().positive().safe(),
+            lifecycle: z.enum(["open", "completed", "failed", "cancelled"]),
+            control_state: z.string(),
+          }),
+        }),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${encodeURIComponent(session.context_id)}/threads/${encodeURIComponent(ref.threadId)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    const thread = detail.snapshot.thread;
+    if (
+      this.teamIdentity &&
+      thread.initiating_principal_id !== this.principalId(admission.principalId)
+    )
+      throw new DomainError("forbidden", "来源执行的实际发起身份不一致。");
+    if (thread.lifecycle === "cancelled" || thread.control_state !== "active")
+      return null;
+    return thread.lifecycle === "open"
+      ? {
+          kind: "thread",
+          threadId: ref.threadId,
+          generation: thread.generation,
+          principalId: thread.initiating_principal_id,
+        }
+      : {
+          kind: "follow-up",
+          principalId: thread.initiating_principal_id,
+          targetId: thread.target_id,
+        };
+  }
+
+  /** Exact lookup precedes retries and cancellation. A connector observation
+   * is typed data, not an input manufactured on behalf of a Human. */
+  async reconcileTaskSourceEvent(
+    event: TaskSourceEvent,
+    access: AccessContext,
+  ): Promise<TaskSourceReceipt | null> {
+    let raw: unknown;
+    try {
+      raw = await this.request(
+        `/api/sessions/${encodeURIComponent(event.admission.sessionId)}/messages/by-client-id/${encodeURIComponent(event.eventId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      );
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
+    }
+    const root = z
+      .object({
+        event: z.object({
+          id: z.string(),
+          actor: z.literal("Session-Client"),
+          type: z.literal("session_message"),
+          topic: z.enum(["chat/user_message", "chat/steering"]),
+          payload: z.record(z.string(), z.unknown()),
+        }),
+      })
+      .parse(raw).event;
+    const payload = root.payload;
+    const accepted = z
+      .object({ request: z.unknown() })
+      .parse(payload.session_io);
+    if (
+      payload.session_id !== event.admission.sessionId ||
+      payload.client_message_id !== event.eventId ||
+      payload.principal_id !== event.destination.principalId ||
+      (this.teamIdentity &&
+        payload.principal_id !==
+          this.principalId(event.admission.principalId)) ||
+      !matchesTaskSourceRequest(event, accepted.request)
+    )
+      throw new DomainError(
+        "forbidden",
+        "Runtime 来源事件与原冻结请求不一致。",
+      );
+    const rootId =
+      typeof payload.root_turn_id === "string" ? payload.root_turn_id : root.id;
+    if (event.destination.kind === "thread") {
+      if (
+        root.topic !== "chat/steering" ||
+        payload.thread_id !== event.destination.threadId ||
+        payload.thread_generation !== event.destination.generation ||
+        rootId !== `client-schedule-${event.admission.request.id}`
+      )
+        throw new DomainError("conflict", "来源事件被投递到另一执行。");
+      return { eventId: root.id, rootId, threadId: event.destination.threadId };
+    }
+    if (root.topic !== "chat/user_message" || rootId !== root.id)
+      throw new DomainError("conflict", "来源接续没有自己的确切执行根。");
+    let threadId: string | null = null;
+    try {
+      threadId = z
+        .object({
+          thread_id: z.string(),
+          session_id: z.literal(event.admission.sessionId),
+          root_turn_id: z.literal(rootId),
+        })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(event.admission.sessionId)}/turns/${encodeURIComponent(rootId)}/thread`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+          ),
+        ).thread_id;
+    } catch (error) {
+      if (!(error instanceof UpstreamError && error.status === 404))
+        throw error;
+    }
+    return { eventId: root.id, rootId, threadId };
+  }
+
+  async deliverTaskSource(
+    event: TaskSourceEvent,
+    admission: TaskRunAdmission,
+    access: AccessContext,
+  ): Promise<TaskSourceReceipt> {
+    if (
+      JSON.stringify(event.admission) !== JSON.stringify(admission) ||
+      access.principalId !== admission.principalId ||
+      access.actantId !== admission.humanActantId
+    )
+      throw new DomainError("forbidden", "来源投递与原事项准入身份不一致。");
+    const earlier = await this.reconcileTaskSourceEvent(event, access);
+    if (earlier) return earlier;
+    try {
+      z.object({ accepted: z.literal(true), event_id: z.string() }).parse(
+        await this.request(
+          `/api/sessions/${encodeURIComponent(admission.sessionId)}/io/messages`,
+          "POST",
+          event.request,
+          access,
+          undefined,
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof UpstreamError &&
+        [400, 401, 403, 404, 409, 422].includes(error.status)
+      ) {
+        const accepted = await this.reconcileTaskSourceEvent(event, access);
+        if (accepted) return accepted;
+        throw new TaskSourceRejectedError(error);
+      }
+      throw error;
+    }
+    const confirmed = await this.reconcileTaskSourceEvent(event, access);
+    if (!confirmed)
+      throw new DomainError(
+        "conflict",
+        "Runtime 尚未确认来源事件，请按原标识重试。",
+      );
+    return confirmed;
+  }
+
+  async stopTaskSource(
+    event: TaskSourceEvent,
+    access: AccessContext,
+  ): Promise<TaskSourceReceipt | null> {
+    const accepted = await this.reconcileTaskSourceEvent(event, access);
+    if (!accepted || event.destination.kind === "thread") return accepted;
+    const path = `/api/sessions/${encodeURIComponent(event.admission.sessionId)}/turns/${encodeURIComponent(accepted.rootId)}/thread`;
+    const schema = z.object({
+      thread_id: z.string(),
+      session_id: z.literal(event.admission.sessionId),
+      root_turn_id: z.literal(accepted.rootId),
+      revision: z.number().int().positive(),
+      lifecycle: z.enum(["open", "completed", "failed", "cancelled"]),
+    });
+    let thread = schema.parse(
+      await this.request(path, "GET", undefined, access, undefined),
+    );
+    if (thread.lifecycle === "open") {
+      const session = sessionSchema.parse(
+        await this.request(
+          `/api/sessions/${encodeURIComponent(event.admission.sessionId)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+      await this.request(
+        `/api/contexts/${encodeURIComponent(session.context_id)}/threads/${encodeURIComponent(thread.thread_id)}`,
+        "POST",
+        {
+          action: "cancel",
+          expected_revision: thread.revision,
+          reason: "用户停止原事项及来源接续",
+        },
+        access,
+        undefined,
+      );
+      thread = schema.parse(
+        await this.request(path, "GET", undefined, access, undefined),
+      );
+    }
+    if (thread.lifecycle === "open")
+      throw new DomainError("conflict", "Runtime 尚未确认来源接续停止。");
+    return accepted;
+  }
+
+  /** Retry-safe stop of the exact Platform-admitted Thread and any future
+   * Schedule wake. A partial Runtime acknowledgement is resolved by reading
+   * both objects again before confirming Platform's durable intent. */
+  async stopPlatformTaskRun(
+    pending: PendingTaskRunStop,
+    rawAdmission: TaskRunAdmission,
+    access: AccessContext,
+  ): Promise<TaskRunStopObservation> {
+    const admission = taskRunAdmissionSchema.parse(rawAdmission);
+    if (
+      pending.taskId !== admission.taskId ||
+      pending.runNumber !== admission.runNumber ||
+      pending.runtime.sessionId !== admission.sessionId ||
+      pending.runtime.scheduleId !== admission.request.id ||
+      access.principalId !== admission.principalId ||
+      access.actantId !== admission.humanActantId
+    )
+      throw new DomainError("conflict", "停止请求与原执行授权不一致。");
+    const base = `/api/sessions/${encodeURIComponent(admission.sessionId)}`;
+    const session = sessionSchema.parse(
+      await this.request(
+        base,
+        "GET",
+        undefined,
+        { principalId: "morphz-service", actantId: "morphz-agent" },
+        undefined,
+      ),
+    );
+    if (
+      session.id !== admission.sessionId ||
+      session.context_id !== this.contextId(admission.projectId)
+    )
+      throw new DomainError("conflict", "执行会话已不属于原项目。");
+    let status = await this.taskRunStatusReader().inspect(
+      pending.runtime,
+      access,
+    );
+    if (status.thread.lifecycle === "open") {
+      await this.request(
+        `/api/contexts/${encodeURIComponent(session.context_id)}/threads/${encodeURIComponent(pending.runtime.threadId)}`,
+        "POST",
+        {
+          action: "cancel",
+          expected_revision: status.thread.revision,
+          reason: "用户停止 Morphz 事项执行",
+        },
+        access,
+        undefined,
+      );
+      status = await this.taskRunStatusReader().inspect(
+        pending.runtime,
+        access,
+      );
+    }
+    if (["queued", "paused"].includes(status.schedule.status)) {
+      await this.request(
+        `${base}/schedules/${encodeURIComponent(pending.runtime.scheduleId)}`,
+        "POST",
+        { action: "cancel", expected_revision: status.schedule.revision },
+        access,
+        undefined,
+      );
+      status = await this.taskRunStatusReader().inspect(
+        pending.runtime,
+        access,
+      );
+    }
+    if (
+      status.thread.lifecycle === "open" ||
+      ["queued", "paused"].includes(status.schedule.status)
+    )
+      throw new DomainError("conflict", "Runtime 尚未确认执行停止。");
+    if (
+      status.schedule.status === "dispatched" &&
+      status.schedule.intervalSeconds !== null
+    )
+      throw new DomainError(
+        "conflict",
+        "周期安排仍可能再次触发，不能确认已停止。",
+      );
+    return status;
+  }
+  async controlPlatformTaskRunSchedule(
+    pending: PendingTaskRunScheduleControl,
+    rawAdmission: TaskRunAdmission,
+    access: AccessContext,
+  ): Promise<{ observation: TaskRunStopObservation; error: string }> {
+    const admission = taskRunAdmissionSchema.parse(rawAdmission);
+    if (
+      pending.taskId !== admission.taskId ||
+      pending.runNumber !== admission.runNumber ||
+      pending.runtime.sessionId !== admission.sessionId ||
+      pending.runtime.scheduleId !== admission.request.id ||
+      access.principalId !== admission.principalId ||
+      access.actantId !== admission.humanActantId
+    )
+      throw new DomainError("conflict", "执行控制与原执行授权不一致。");
+    const base = `/api/sessions/${encodeURIComponent(admission.sessionId)}`;
+    const session = sessionSchema.parse(
+      await this.request(
+        base,
+        "GET",
+        undefined,
+        { principalId: "morphz-service", actantId: "morphz-agent" },
+        undefined,
+      ),
+    );
+    if (
+      session.id !== admission.sessionId ||
+      session.context_id !== this.contextId(admission.projectId)
+    )
+      throw new DomainError("conflict", "执行会话已不属于原项目。");
+    let observation = await this.taskRunStatusReader().inspect(
+      pending.runtime,
+      access,
+    );
+    const desired = pending.action === "pause" ? "paused" : "queued";
+    // A one-shot Schedule can have ended while its explicitly requested
+    // source watch remains active. Only the watch bridge is controlled here;
+    // a completed Thread is never reported as Runtime-paused or resumed.
+    if (
+      admission.watchSourceIds.length &&
+      observation.schedule.intervalSeconds === null &&
+      ["dispatched", "completed"].includes(observation.schedule.status)
+    )
+      return { observation, error: "" };
+    if (observation.schedule.status === desired)
+      return { observation, error: "" };
+    const allowed = pending.action === "pause" ? "queued" : "paused";
+    if (observation.schedule.status !== allowed)
+      return {
+        observation,
+        error: "安排已经派发或结束，无法再暂停／恢复；请查看实际执行状态。",
+      };
+    await this.request(
+      `${base}/schedules/${encodeURIComponent(pending.runtime.scheduleId)}`,
+      "POST",
+      {
+        action: pending.action,
+        expected_revision: observation.schedule.revision,
+      },
+      access,
+      undefined,
+    );
+    observation = await this.taskRunStatusReader().inspect(
+      pending.runtime,
+      access,
+    );
+    if (observation.schedule.status !== desired)
+      throw new DomainError("conflict", "Runtime 尚未确认安排控制。");
+    return { observation, error: "" };
+  }
+  /** Build the existing execution viewer against a Platform-authorized run,
+   * not against the removed workspace artifact/session binding. */
+  async platformTaskExecutionControls(
+    projectId: string,
+    ref: TaskRunLink["runtime"],
+    access: AccessContext,
+    sourceForExecution?: (
+      eventId: string,
+    ) => Promise<Awaited<ReturnType<TaskSourceEvidenceReader>> | null>,
+    sourceEventsForExecution?: (afterEventId?: string) => Promise<
+      Array<{
+        event: TaskSourceEvent;
+        receipt: TaskSourceReceipt | null;
+        discarded: boolean;
+      }>
+    >,
+  ): Promise<ExecutionControls> {
+    const session = sessionSchema.parse(
+      await this.request(
+        `/api/sessions/${encodeURIComponent(ref.sessionId)}`,
+        "GET",
+        undefined,
+        { principalId: "morphz-service", actantId: "morphz-agent" },
+        undefined,
+      ),
+    );
+    if (
+      session.id !== ref.sessionId ||
+      session.context_id !== this.contextId(projectId)
+    )
+      throw new DomainError("conflict", "执行会话与事项项目不一致。");
+    const additionalRoot = sourceForExecution
+      ? async (rootId: string, threadId: string) => {
+          const reader = this.inputEvidenceReader();
+          const thread = z
+            .object({
+              snapshot: z.object({
+                thread: z.object({
+                  id: z.string(),
+                  session_id: z.string(),
+                  context_id: z.string(),
+                  root_turn_id: z.string(),
+                  initiating_principal_id: z.string().nullable(),
+                  agent_id: z.string(),
+                }),
+              }),
+            })
+            .parse(await reader.readThread(ref.sessionId, threadId))
+            .snapshot.thread;
+          if (
+            thread.id !== threadId ||
+            thread.session_id !== ref.sessionId ||
+            thread.context_id !== session.context_id ||
+            thread.root_turn_id !== rootId ||
+            !thread.initiating_principal_id
+          )
+            return false;
+          try {
+            const evidence = await resolveRuntimeInvocationEvidence(
+              {
+                session_id: ref.sessionId,
+                context_id: session.context_id,
+                thread_id: threadId,
+                principal_id: thread.initiating_principal_id,
+                agent_id: thread.agent_id,
+                job_id: "execution-inspector",
+                tool_call_id: "execution-inspector",
+                target_id: "execution-inspector",
+              },
+              reader,
+              undefined,
+              async (sourceSession, sourceId) => {
+                const source =
+                  sourceSession === ref.sessionId
+                    ? await sourceForExecution(sourceId)
+                    : null;
+                if (!source)
+                  throw new Error("Runtime 执行未绑定到可验证的原始应用输入。");
+                return source;
+              },
+            );
+            return (
+              evidence.kind === "task-run" &&
+              evidence.scheduleId === ref.scheduleId &&
+              evidence.admission.projectId === projectId
+            );
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === "Runtime 执行未绑定到可验证的原始应用输入。"
+            )
+              return false;
+            throw error;
+          }
+        }
+      : undefined;
+    const threadIds = sourceEventsForExecution
+      ? async () => {
+          const ids = new Set([ref.threadId]);
+          let afterEventId: string | undefined;
+          for (;;) {
+            const page = await sourceEventsForExecution(afterEventId);
+            for (let offset = 0; offset < page.length; offset += 4) {
+              const receipts = await Promise.all(
+                page
+                  .slice(offset, offset + 4)
+                  .map(async (item) =>
+                    item.discarded ||
+                    item.event.destination.kind !== "follow-up"
+                      ? null
+                      : item.receipt?.threadId
+                        ? item.receipt
+                        : await this.reconcileTaskSourceEvent(
+                            item.event,
+                            access,
+                          ),
+                  ),
+              );
+              for (const receipt of receipts)
+                if (receipt?.threadId) ids.add(receipt.threadId);
+            }
+            if (page.length < 100) break;
+            afterEventId = page.at(-1)!.event.eventId;
+          }
+          return [...ids];
+        }
+      : undefined;
+    return new ExecutionControls(
+      (path, method, body) => this.request(path, method, body, access),
+      () => ({
+        sessionId: ref.sessionId,
+        contextId: session.context_id,
+        rootId: `client-schedule-${ref.scheduleId}`,
+        threadId: ref.threadId,
+        additionalRoot,
+        threadIds,
+      }),
+    );
+  }
   private contextId(projectId: string) {
     return (
       `mw-context-${this.config.namespace}` +
@@ -418,14 +1625,23 @@ export class RuntimeBridge {
         : "")
     );
   }
-  readonly executions: ExecutionControls;
   readonly modelSettings = new RuntimeModelSettings(() => this.config);
-  readonly collaboration: Collaboration;
   private state: z.infer<typeof storedSchema>;
+  private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
   private attention: ExecutionAttention = { available: false, approvals: [] };
   private busy = false;
+  private busyCompletion: Promise<void> | null = null;
   private stopped = false;
+  private authorizePlatformInput?: (
+    source: PlatformInputTarget,
+  ) => Promise<{ sharedDefault: boolean }>;
+  private authorizePlatformRead?: (
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+  ) => Promise<PlatformReadGrant>;
+  private messageAttachments?: MessageAttachmentService;
+  private platformAgentScope?: (route: HostInvocation) => Promise<ToolScope>;
   private timer?: ReturnType<typeof setInterval>;
   constructor(
     private store: WorkspaceStore,
@@ -435,65 +1651,7 @@ export class RuntimeBridge {
   ) {
     if (this.teamIdentity && !identity)
       throw new Error("可信网关适配需要应用身份配置。");
-    this.collaboration = new Collaboration(store, {
-      session: async (projectId, artifactId) => {
-        const workspace = this.store.snapshot();
-        const original = workspace.artifacts.find(
-          (a) => a.id === artifactId,
-        )?.originConversationId;
-        const conversation = workspace.conversations.find(
-          (c) => c.id === original,
-        );
-        const owner = workspace.projects.find(
-          (p) => p.id === conversation?.projectId,
-        );
-        const origin =
-          conversation?.projectId === projectId || owner?.kind === "dialogue"
-            ? original
-            : undefined;
-        const id = this.objectSession(
-          projectId,
-          artifactId,
-          origin ?? projectId,
-        );
-        await this.ensureSession(id);
-        if (!this.state.sessions[id]!.schedules)
-          throw new Error("Runtime 未提供持久安排接口。");
-        this.state.sessions[id]!.hasWork = true;
-        this.save();
-        return id;
-      },
-      request: (path, method, body) => this.request(path, method, body),
-      enqueue: (id) => this.enqueue(id),
-      approvalCount: (threadId, access) =>
-        this.snapshot(access).attention?.approvals.filter(
-          (a) => a.scope.threadId === threadId,
-        ).length ?? 0,
-      conversation: (id) =>
-        this.state.sessions[id]
-          ? discussionId(this.state.sessions[id]!)
-          : undefined,
-    });
-    this.executions = new ExecutionControls(
-      async (path, method, body) => {
-        try {
-          return await this.request(path, method, body);
-        } catch (error) {
-          if (error instanceof UpstreamError)
-            throw new DomainError(
-              error.status === 409 || error.status === 404
-                ? "conflict"
-                : "invalid",
-              error.status === 409 || error.status === 404
-                ? "执行状态已变化，或 Runtime 不支持此操作。请刷新后查看。"
-                : "Runtime 未确认操作，请核对最新状态，不要重复批准。",
-            );
-          throw error;
-        }
-      },
-      (scope) => this.executionBinding(scope),
-    );
-    const saved = store.runtimeState();
+    const saved = store.runtimeBridgeState();
     this.state = saved
       ? storedSchema.parse(saved)
       : {
@@ -509,6 +1667,7 @@ export class RuntimeBridge {
           sessions: {},
           deliveries: [],
         };
+    if (saved) store.adoptValidatedRuntimeEvents(saved, this.state);
     if (
       this.state.namespace !== config.namespace ||
       this.state.endpoint !== config.url ||
@@ -518,116 +1677,255 @@ export class RuntimeBridge {
         "Runtime 连接与已保存的对话不匹配，请勿覆盖已有连接配置。",
       );
     this.state.connected = false;
-    for (const delivery of this.state.deliveries)
-      if (delivery.state === "sending") delivery.state = "queued";
+    for (const delivery of this.state.deliveries) {
+      if (this.dirtyDeliveries.has(delivery.inputId))
+        throw new Error(`Runtime 投递标识重复：${delivery.inputId}`);
+      // Validate/recover every retained row once, including parsed defaults.
+      // Subsequent commits contain only mutations explicitly marked below.
+      this.markDeliveryDirty(delivery);
+      if (
+        delivery.state === "sending" &&
+        !!delivery.platformSource &&
+        this.state.sessions[delivery.sessionId]?.platform
+      )
+        delivery.state = "queued";
+    }
     if (persistOnConstruction) this.save();
   }
-  private save() {
-    this.store.saveRuntimeState(this.state);
+  private markDeliveryDirty(delivery: StoredDelivery) {
+    this.dirtyDeliveries.set(delivery.inputId, delivery);
+  }
+  private save(delivery?: StoredDelivery) {
+    if (delivery) this.markDeliveryDirty(delivery);
+    this.store.saveRuntimeBridgeState(this.state, this.dirtyDeliveries);
+    // Keep the dirty set if SQLite fails; a later save retries the same queue
+    // records together with their Event and connection cursors.
+    this.dirtyDeliveries.clear();
+  }
+  bindPlatformInputAuthority(
+    authorize?: (
+      source: PlatformInputTarget,
+    ) => Promise<{ sharedDefault: boolean }>,
+  ) {
+    this.authorizePlatformInput = authorize;
+  }
+  bindPlatformReadAuthority(
+    authorize?: (
+      scope: { projectId: string; conversationId: string },
+      access: AccessContext,
+    ) => Promise<PlatformReadGrant>,
+  ) {
+    this.authorizePlatformRead = authorize;
+  }
+  bindMessageAttachments(service?: MessageAttachmentService) {
+    this.messageAttachments = service;
+  }
+  bindPlatformAgentScope(
+    resolve?: (route: HostInvocation) => Promise<ToolScope>,
+  ) {
+    this.platformAgentScope = resolve;
   }
   get supportsDirectedInput() {
     return this.state.connected && this.state.directedInput;
   }
-  private executionBinding(scope: ExecutionScope) {
-    const workspace = this.store.snapshot();
-    checkProject(workspace, scope.projectId, this.actor());
-    if (scope.conversationId)
-      checkConversation(
-        workspace,
-        scope.projectId,
-        scope.conversationId,
-        this.actor(),
+  get isConnected() {
+    return this.state.connected;
+  }
+  /** The execution inspector follows the same Platform read grant as message
+   * history. Runtime owns jobs; the persisted input roots determine which of
+   * those jobs this reader may see or control. */
+  async platformExecutionControls(
+    scope: ExecutionScope,
+    access: AccessContext,
+  ) {
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    const conversation = {
+      projectId: scope.projectId,
+      conversationId: scope.conversationId ?? scope.projectId,
+    };
+    const readable = async () => {
+      const grant = await authorize(conversation, access);
+      const deliveries = this.platformReadDeliveries(
+        conversation,
+        access,
+        grant,
       );
-    if (
-      scope.artifactId &&
-      getArtifact(workspace, scope.artifactId).projectId !== scope.projectId
-    )
-      throw new DomainError("forbidden", "对象不属于这个项目。");
-    if (scope.threadId) {
-      const thread = this.state.threadBindings[scope.threadId];
-      if (
-        !thread ||
-        thread.projectId !== scope.projectId ||
-        (scope.conversationId && thread.conversationId !== scope.conversationId)
-      )
-        throw new DomainError("not_found", "执行分支已变化，请刷新后查看。");
-      if (scope.inputId && thread.inputId !== scope.inputId)
-        throw new DomainError("forbidden", "分支不属于选中的输入。");
-      return {
-        sessionId: thread.sessionId,
-        contextId: this.contextId(thread.projectId),
-        rootId: thread.rootId,
-        threadId: thread.id,
-      };
-    }
-    if (scope.inputId) {
-      const input = workspace.inputs.find(
-        (i) =>
-          i.id === scope.inputId &&
-          i.projectId === scope.projectId &&
-          (!scope.conversationId || discussionId(i) === scope.conversationId),
-      );
-      if (!input) throw new DomainError("forbidden", "执行不属于这条输入。");
-      const delivery = this.state.deliveries.find(
-        (d) => d.inputId === input.id,
-      );
-      if (!delivery?.rootId) return null;
-      return {
-        sessionId: delivery.sessionId,
-        contextId: this.contextId(scope.projectId),
-        rootId: delivery.rootId,
-      };
-    }
-    const sessions = Object.values(this.state.sessions).filter(
-      (s) =>
-        workspace.projects.some(
-          (p) =>
-            p.id === s.projectId &&
-            p.members.includes(this.actor().principalId),
-        ) &&
-        inConversation(workspace, discussionId(scope), s, !this.teamIdentity),
-    );
-    const session =
-      sessions.find((s) => s.scope === "workspace") ??
-      sessions.find((s) => s.artifactId === scope.artifactId) ??
-      sessions[0];
-    return session
-      ? {
-          sessionId: session.id,
-          contextId: this.contextId(scope.projectId),
-          legacySessionIds: sessions
-            .filter((s) => s.id !== session.id)
-            .map((s) => s.id),
-          rootsBySession: Object.fromEntries(
-            sessions
-              .filter((s) => s.sharedDefault)
-              .map((s) => [
-                s.id,
-                this.state.deliveries
-                  .filter(
-                    (d) =>
-                      d.sessionId === s.id &&
-                      d.rootId &&
-                      workspace.inputs.some(
-                        (i) =>
-                          i.id === d.inputId &&
-                          workspace.projects.some(
-                            (p) =>
-                              p.id === i.projectId &&
-                              p.members.includes(this.actor().principalId),
-                          ),
-                      ),
-                  )
-                  .map((d) => d.rootId!),
-              ]),
-          ),
+      const selected = deliveries.filter((delivery) => {
+        const source = delivery.platformSource!;
+        if (scope.inputId && delivery.inputId !== scope.inputId) return false;
+        if (scope.inputId && source.projectId !== scope.projectId) return false;
+        if (scope.artifactId && source.artifactId !== scope.artifactId)
+          return false;
+        if (scope.threadId) {
+          const thread = this.state.threadBindings[scope.threadId];
+          if (
+            !thread ||
+            thread.sessionId !== delivery.sessionId ||
+            thread.rootId !== delivery.rootId ||
+            thread.inputId !== delivery.inputId
+          )
+            return false;
         }
-      : null;
+        return true;
+      });
+      if ((scope.inputId || scope.threadId) && selected.length !== 1)
+        throw new DomainError("forbidden", "执行不属于当前工作对话。");
+      return selected.filter((delivery) => !!delivery.rootId);
+    };
+    const deliveries = await readable();
+    const grouped = new Map<
+      string,
+      { sessionId: string; contextId: string; roots: Set<string> }
+    >();
+    for (const delivery of deliveries) {
+      const session = this.state.sessions[delivery.sessionId];
+      if (!session?.platform)
+        throw new DomainError("conflict", "执行会话已变化，请刷新后查看。");
+      const contextId = this.contextId(session.projectId);
+      const key = `${delivery.sessionId}\u0000${contextId}`;
+      const entry = grouped.get(key) ?? {
+        sessionId: delivery.sessionId,
+        contextId,
+        roots: new Set<string>(),
+      };
+      entry.roots.add(delivery.rootId!);
+      grouped.set(key, entry);
+    }
+    const request = async (path: string, method?: string, body?: unknown) => {
+      try {
+        return await this.request(path, method, body, access, undefined);
+      } catch (error) {
+        if (error instanceof UpstreamError)
+          throw new DomainError(
+            error.status === 409 || error.status === 404
+              ? "conflict"
+              : "invalid",
+            error.status === 409 || error.status === 404
+              ? "执行状态已变化，或 Runtime 不支持此操作。请刷新后查看。"
+              : "Runtime 未确认操作，请核对最新状态，不要重复批准。",
+          );
+        throw error;
+      }
+    };
+    const controls = [...grouped.values()].map((entry) => ({
+      ...entry,
+      viewer: new ExecutionControls(request, () => ({
+        sessionId: entry.sessionId,
+        contextId: entry.contextId,
+        ...(scope.inputId || scope.threadId
+          ? { rootId: [...entry.roots][0] }
+          : { rootsBySession: { [entry.sessionId]: [...entry.roots] } }),
+        ...(scope.threadId ? { threadId: scope.threadId } : {}),
+      })),
+    }));
+    const recheck = async () => {
+      const current = await readable();
+      const keys = new Set(
+        current.map(
+          (delivery) => `${delivery.sessionId}\u0000${delivery.rootId}`,
+        ),
+      );
+      if (
+        deliveries.some(
+          (delivery) =>
+            !keys.has(`${delivery.sessionId}\u0000${delivery.rootId}`),
+        )
+      )
+        throw new DomainError("forbidden", "当前对话的读取权限已变化。");
+    };
+    const snapshot = async (): Promise<ExecutionSnapshot> => {
+      const views = await Promise.all(
+        controls.map((entry) => entry.viewer.snapshot(scope)),
+      );
+      await recheck();
+      return {
+        jobs: [
+          ...new Map(
+            views.flatMap((view) => view.jobs).map((job) => [job.id, job]),
+          ).values(),
+        ]
+          .sort(
+            (a, b) =>
+              b.created_at.localeCompare(a.created_at) ||
+              b.id.localeCompare(a.id),
+          )
+          .slice(0, 100),
+        approvals: [
+          ...new Map(
+            views
+              .flatMap((view) => view.approvals)
+              .map((approval) => [approval.request.approval_id, approval]),
+          ).values(),
+        ]
+          .sort((a, b) => b.requested_at.localeCompare(a.requested_at))
+          .slice(0, 100),
+        limit: 100,
+      };
+    };
+    const viewerFor = async (target: {
+      jobId?: string;
+      approvalId?: string;
+    }) => {
+      await recheck();
+      const owner = target.jobId
+        ? jobSchema.parse(
+            await request(
+              `/api/execution-jobs/${encodeURIComponent(target.jobId)}`,
+            ),
+          )
+        : z
+            .object({ approvals: z.array(approvalSchema) })
+            .parse(await request("/api/approvals"))
+            .approvals.filter(
+              (approval) => approval.request.approval_id === target.approvalId,
+            )
+            .map((approval) => approval.request)[0];
+      if (!owner)
+        throw new DomainError("not_found", "执行不属于当前工作对话。");
+      const matches = controls.filter(
+        (entry) =>
+          entry.sessionId === owner.session_id &&
+          entry.contextId === owner.context_id,
+      );
+      if (matches.length !== 1)
+        throw new DomainError("not_found", "执行不属于当前工作对话。");
+      return matches[0]!.viewer;
+    };
+    return {
+      snapshot,
+      result: async (jobId: string) => {
+        const result = await (await viewerFor({ jobId })).result(scope, jobId);
+        await recheck();
+        return result;
+      },
+      control: async (control: ExecutionControl) => {
+        const action = control.action;
+        const viewer =
+          action.type === "cancel-thread"
+            ? controls.length === 1 && scope.threadId === action.threadId
+              ? controls[0]!.viewer
+              : null
+            : await viewerFor(
+                action.type === "cancel-job"
+                  ? { jobId: action.jobId }
+                  : { approvalId: action.approvalId },
+              );
+        if (!viewer)
+          throw new DomainError("forbidden", "执行不属于当前工作对话。");
+        await recheck();
+        const result = await viewer.control(control);
+        await recheck();
+        return result;
+      },
+    };
   }
   toolScope(route: HostInvocation): ToolScope | Promise<ToolScope> {
     const session = this.state.sessions[route.session_id];
     if (
       !session ||
+      !session.platform ||
       route.context_id !== this.contextId(session.projectId) ||
       !session.runtimePrincipalId ||
       (!this.teamIdentity && route.principal_id !== session.runtimePrincipalId)
@@ -636,163 +1934,47 @@ export class RuntimeBridge {
         "forbidden",
         "工具调用未绑定到已授权的 Morphz 会话。",
       );
-    if (
-      this.teamIdentity &&
-      !this.store
-        .snapshot()
-        .projects.find((p) => p.id === session.projectId)
-        ?.members.some((p) => this.principalId(p) === route.principal_id)
-    )
-      throw new DomainError("forbidden", "调用者已不属于当前项目。");
-    if (
-      this.teamIdentity &&
-      route.principal_id !== this.principalId("morphz-service") &&
-      !this.store.snapshot().actants.some(
-        (a) =>
-          a.kind === "human" &&
-          this.principalId(a.principalId) === route.principal_id &&
-          this.identity!.allows({
-            principalId: a.principalId,
-            actantId: a.id,
-          }),
-      )
-    )
-      throw new DomainError("forbidden", "调用身份已撤销。");
-    if (session.sharedDefault) return this.sharedToolScope(route);
-    // Older named/scheduled routes retain their project-scoped authority when
-    // no input binding exists. Never guess a delivery association for them.
-    return this.sharedToolScope(route).catch(() => ({
-      projectId: session.projectId,
-      conversationId: discussionId(session),
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    }));
+    if (!this.platformAgentScope)
+      throw new DomainError("forbidden", "Platform Agent 来源校验不可用。");
+    return this.platformAgentScope(route);
   }
-  private async sharedToolScope(route: HostInvocation): Promise<ToolScope> {
-    const events = new Map<string, RuntimeEvent>();
-    let before: number | undefined;
-    let exhausted = false;
-    let pages = 0;
-    const findEvent = async (id: string) => {
-      while (!events.has(id) && !exhausted && pages++ < 10) {
-        const data = z
-          .object({ events: z.array(eventSchema) })
-          .parse(
-            await this.request(
-              `/api/sessions/${encodeURIComponent(route.session_id)}/events?limit=1000${before === undefined ? "" : `&before_sequence=${before}`}`,
-            ),
-          );
-        for (const event of data.events) events.set(event.id, event);
-        const next = Math.min(...data.events.map((e) => e.sequence));
-        exhausted =
-          data.events.length < 1000 || (before !== undefined && next >= before);
-        before = next;
-      }
-      return events.get(id);
-    };
-    const threadSchema = z.object({
-      snapshot: z.object({
-        thread: z.object({
-          id: z.string(),
-          session_id: z.literal(route.session_id),
-          context_id: z.literal(route.context_id),
-          root_turn_id: z.string(),
-          initiating_principal_id: z.literal(route.principal_id),
-          agent_id: z.literal(route.agent_id),
-          executor_kind: z.string(),
-          executor_id: z.string().nullable(),
-        }),
-      }),
+  /** Read the exact submitted Platform input after resolving the Runtime
+   * invocation root. Neither model arguments nor the selected UI page can
+   * substitute another input here.
+   */
+  async platformToolInput(route: HostInvocation) {
+    const scope = await this.toolScope(route);
+    if (!scope.platform || !scope.inputId)
+      throw new DomainError("forbidden", "执行未绑定到 Platform 原始输入。");
+    const delivery = this.state.deliveries.find(
+      (item) =>
+        item.inputId === scope.inputId &&
+        item.sessionId === route.session_id &&
+        item.platformSource?.projectId === scope.projectId,
+    );
+    if (!delivery) throw new DomainError("not_found", "原始输入不可用。");
+    return structuredClone({
+      ...platformPlainRequestSchema.parse(delivery.request).message.content
+        .value,
+      conversation_id: delivery.platformSource!.conversationId,
     });
-    const visited = new Set<string>();
-    let threadId = route.thread_id;
-    let root: string | undefined;
-    // A Yao infer is a child execution, not a new human input. Follow only
-    // Runtime-authored, same-identity Plan lineage; model captures and supplied
-    // input IDs cannot grant authority. Bound traversal fails closed on cycles.
-    for (let depth = 0; depth < 32 && !visited.has(threadId); depth++) {
-      visited.add(threadId);
-      const {
-        snapshot: { thread },
-      } = threadSchema.parse(
-        await this.request(
-          `/api/contexts/${encodeURIComponent(route.context_id)}/threads/${encodeURIComponent(threadId)}`,
-        ),
-      );
-      if (thread.id !== threadId) break;
-      if (thread.executor_kind !== "plan_infer") {
-        root = thread.root_turn_id;
-        break;
-      }
-      const event = await findEvent(thread.root_turn_id);
-      if (
-        !event ||
-        event.actor !== "Runtime-Yao" ||
-        event.type !== "infer_request" ||
-        event.topic !== "chat/infer_request" ||
-        !thread.executor_id ||
-        payloadString(event, "plan_execution_id") !== thread.executor_id ||
-        payloadString(event, "root_turn_id") !== thread.root_turn_id ||
-        payloadString(event, "session_id") !== route.session_id ||
-        payloadString(event, "context_id") !== route.context_id ||
-        payloadString(event, "principal_id") !== route.principal_id ||
-        payloadString(event, "agent_id") !== route.agent_id
-      )
-        break;
-      const parent = payloadString(event, "parent_thread_id");
-      if (!parent) break;
-      threadId = parent;
-    }
-    if (!root)
+  }
+  /** Check this Host's already-owned delivery. Runtime still owns the actual
+   * execution; no other Host recovers or takes over this local outbox. Saved
+   * domain receipts do not use this gate because replay is not a new write. */
+  async assertPlatformInputActive(inputId: string) {
+    const delivery = this.state.deliveries.find(
+      (item) => item.inputId === inputId && !!item.platformSource,
+    );
+    if (
+      !delivery ||
+      !["sending", "running"].includes(delivery.state) ||
+      delivery.cancelRequested
+    )
       throw new DomainError(
         "forbidden",
-        "无法验证执行与原始输入的关联，未操作任何对象。",
+        "本次输入未获准继续读取或写入，停止后的迟到结果不能写入。",
       );
-    let delivery = this.state.deliveries.find(
-      (d) => d.sessionId === route.session_id && d.rootId === root,
-    );
-    // A tool can arrive before the message POST receipt. Only the Runtime-owned
-    // input event can join that root to our immutable client_message_id.
-    if (!delivery) {
-      const event = await findEvent(root);
-      const clientId =
-        event && payloadString(event, "session_id") === route.session_id
-          ? payloadString(event, "client_message_id")
-          : undefined;
-      delivery = clientId
-        ? this.state.deliveries.find(
-            (d) =>
-              d.sessionId === route.session_id &&
-              d.inputId === clientId &&
-              d.request.client_message_id === clientId &&
-              (!d.rootId || d.rootId === root),
-          )
-        : undefined;
-      if (delivery) {
-        delivery.rootId = root;
-        this.save();
-      }
-    }
-    const input = this.store
-      .snapshot()
-      .inputs.find((i) => i.id === delivery?.inputId);
-    if (!input)
-      throw new DomainError(
-        "forbidden",
-        "执行尚未绑定到原始输入，未操作任何对象。",
-      );
-    checkConversation(
-      this.store.snapshot(),
-      input.projectId,
-      discussionId(input),
-      input.author,
-    );
-    return {
-      projectId: input.projectId,
-      crossProject: !this.teamIdentity,
-      conversationId: discussionId(input),
-      inputId: input.id,
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    };
   }
   async publicUnderstanding(
     route: HostInvocation,
@@ -852,12 +2034,44 @@ export class RuntimeBridge {
       mindVersion: frame.updated_version,
     };
   }
+  private async runtimeFetch(
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      throw new RuntimeTransportError(error);
+    }
+  }
+
+  private runtimeReadUnavailable(error: unknown): boolean {
+    if (
+      !(error instanceof RuntimeTransportError) &&
+      !(
+        error instanceof UpstreamError &&
+        (error.status === 401 ||
+          error.status === 403 ||
+          (error.status >= 500 && error.status <= 599))
+      )
+    )
+      return false;
+    // Platform has independently authorized the current reader before these
+    // calls. Runtime transport/credential failure is not a failure of that
+    // data store and cannot grant access or restore accepted message history.
+    this.state.connected = false;
+    this.state.error =
+      error instanceof Error ? error.message : "Runtime 不可用。";
+    return true;
+  }
+
   private async request(
     path: string,
     method = "GET",
     body?: unknown,
     access = this.actor(),
     binary?: { bytes: Buffer; offset: number },
+    responseType: "json" | "bytes" = "json",
   ): Promise<unknown> {
     if (
       this.teamIdentity &&
@@ -867,7 +2081,6 @@ export class RuntimeBridge {
       throw new DomainError("forbidden", "Runtime 调用身份已撤销。");
     const id = /^\/api\/sessions\/([^/?]+)/.exec(path)?.[1],
       session = id ? this.state.sessions[id] : undefined;
-    if (session) checkProject(this.store.snapshot(), session.projectId, access);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.config.token}`,
       "Content-Type": binary ? "application/octet-stream" : "application/json",
@@ -883,7 +2096,7 @@ export class RuntimeBridge {
       session?.runtimePrincipalId &&
       access.principalId !== "morphz-service"
     ) {
-      const claim = await fetch(
+      const claim = await this.runtimeFetch(
         `${this.config.url}/api/sessions/${id}/principal`,
         {
           method: "POST",
@@ -894,7 +2107,7 @@ export class RuntimeBridge {
       );
       if (!claim.ok) throw new UpstreamError(claim.status);
     }
-    const response = await fetch(this.config.url + path, {
+    const response = await this.runtimeFetch(this.config.url + path, {
       method,
       headers,
       body: binary
@@ -902,7 +2115,7 @@ export class RuntimeBridge {
         : body === undefined
           ? undefined
           : JSON.stringify(body),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(responseType === "bytes" ? 30000 : 8000),
       redirect: "error",
     });
     if (!response.ok) {
@@ -949,6 +2162,35 @@ export class RuntimeBridge {
           );
       }
       throw new UpstreamError(response.status);
+    }
+    if (responseType === "bytes") {
+      const limit = 20 * 1024 * 1024;
+      if (Number(response.headers.get("content-length")) > limit) {
+        await response.body?.cancel();
+        throw new Error("Runtime 消息附件超过大小限制。");
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("Runtime 消息附件没有字节内容。");
+      const chunks: Buffer[] = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > limit) throw new Error("Runtime 消息附件超过大小限制。");
+          chunks.push(Buffer.from(value));
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+      return {
+        mime: response.headers.get("content-type")?.split(";")[0] ?? "",
+        bytes: Buffer.concat(chunks, size),
+      };
     }
     return response.json();
   }
@@ -1068,135 +2310,1003 @@ export class RuntimeBridge {
         "所选模型不支持此推理强度，请重新选择；草稿已保留。",
       );
   }
-  snapshot(access?: AccessContext): ConversationRuntime {
-    const workspace = this.store.snapshot();
-    const inputs = workspace.inputs;
-    const projects = access
-      ? new Set(
-          workspace.projects
-            .filter((p) => p.members.includes(access.principalId))
-            .map((p) => p.id),
-        )
-      : null;
+  private deliveryView(
+    delivery: StoredDelivery,
+  ): ConversationRuntime["deliveries"][number] {
+    const {
+      inputId,
+      state,
+      error,
+      rootId,
+      sessionId,
+      cancelRequested,
+      supplement,
+      rejection,
+    } = delivery;
     return {
-      attention: {
-        available: this.state.connected && this.attention.available,
-        approvals: this.attention.approvals.filter(
-          (a) => !projects || projects.has(a.scope.projectId),
-        ),
-      },
-      ...(this.state.activity
+      inputId,
+      state,
+      error,
+      ...(supplement ? { supplement } : {}),
+      ...(rejection ? { rejection } : {}),
+      retryable: state === "failed" && !rootId && !rejection,
+      cancelRequested,
+      cancellable:
+        !supplement &&
+        !cancelRequested &&
+        (state === "queued" ||
+          (state === "running" &&
+            !!this.state.sessions[sessionId]?.turnControl)),
+    };
+  }
+
+  private platformReadDeliveries(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    grant: PlatformReadGrant,
+  ) {
+    const readableProjects = new Set(grant.projectIds);
+    return this.state.deliveries.filter((delivery) => {
+      const source = delivery.platformSource;
+      return (
+        !!source &&
+        this.platformSourceReadable(
+          source,
+          scope,
+          access,
+          grant,
+          readableProjects,
+        )
+      );
+    });
+  }
+
+  private platformSourceReadable(
+    source: PlatformInputSource,
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    grant: PlatformReadGrant,
+    readableProjects: ReadonlySet<string> = new Set(grant.projectIds),
+  ) {
+    if (!readableProjects.has(source.projectId)) return false;
+    if (!grant.personalDefault)
+      return (
+        source.projectId === scope.projectId &&
+        source.conversationId === scope.conversationId
+      );
+    if (source.author.principalId !== access.principalId) return false;
+    return (
+      source.conversationId === scope.conversationId ||
+      (!this.teamIdentity && source.conversationId === source.projectId)
+    );
+  }
+
+  /** A durable public-output fact is the only safe source for an incomplete
+   * stream quote. Live deltas alone are not persisted and cannot be cited. */
+  private async platformPublicOutput(
+    sessionId: string,
+    rootId: string,
+    attemptId: string,
+    access: AccessContext,
+  ): Promise<{ createdAt: string; text: string } | null> {
+    if (!attemptId || attemptId.length > 256) return null;
+    let response: unknown;
+    try {
+      response = await this.request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(`model_public_output_${attemptId}`)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      );
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
+    }
+    const { event } = z.object({ event: eventSchema }).parse(response);
+    const createdAt = payloadString(event, "first_visible_at");
+    const text = payloadString(event, "text");
+    if (
+      event.topic !== "runtime/model_public_output" ||
+      payloadString(event, "attempt_id") !== attemptId ||
+      payloadString(event, "root_turn_id") !== rootId ||
+      !createdAt ||
+      !Number.isFinite(Date.parse(createdAt)) ||
+      !text
+    )
+      return null;
+    return { createdAt, text };
+  }
+
+  /** A streamed reply has a stable publication ID, not the random ID of its
+   * final Event. Resolve that ID within its causal input root; the Runtime
+   * query is indexed and each transfer is bounded even for long Sessions. */
+  private async platformPublicationEvent(
+    sessionId: string,
+    rootId: string,
+    attemptId: string,
+    access: AccessContext,
+  ): Promise<{ event: RuntimeEvent; createdAt: string } | null> {
+    if (!attemptId || attemptId.length > 256) return null;
+    const pageSize = 100;
+    let beforeSequence: number | undefined;
+    for (;;) {
+      const query = new URLSearchParams({
+        root_turn_id: rootId,
+        attempt_id: attemptId,
+        limit: String(pageSize),
+        ...(beforeSequence !== undefined
+          ? { before_sequence: String(beforeSequence) }
+          : {}),
+      });
+      const response = await this.request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/events?${query}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      );
+      const { events } = z
+        .object({ events: z.array(eventSchema).max(pageSize) })
+        .parse(response);
+      const event = events.findLast(
+        (candidate) =>
+          [
+            "chat/reply",
+            "chat/outbound_message",
+            "chat/runtime_error",
+            "session/io_state",
+            "runtime/response_protocol_fused",
+          ].includes(candidate.topic) &&
+          payloadString(candidate, "attempt_id") === attemptId &&
+          ["root_turn_id", "trigger_event_id", "source_turn_id"].some(
+            (key) => payloadString(candidate, key) === rootId,
+          ) &&
+          !!(
+            payloadString(candidate, "text") ??
+            payloadString(candidate, "error") ??
+            payloadString(candidate, "message")
+          ),
+      );
+      if (event) {
+        const output = await this.platformPublicOutput(
+          sessionId,
+          rootId,
+          attemptId,
+          access,
+        );
+        return { event, createdAt: output?.createdAt ?? event.timestamp };
+      }
+      if (events.length < pageSize) return null;
+      const first = events[0]?.sequence;
+      if (
+        first === undefined ||
+        first <= 0 ||
+        (beforeSequence !== undefined && first >= beforeSequence)
+      )
+        throw new Error("Runtime 消息分页游标未前进。");
+      beforeSequence = first;
+    }
+  }
+
+  /** A second Host can cite an accepted input without opening the sending
+   * Host's private delivery database. Runtime proves the immutable root and
+   * Platform rechecks current membership after both exact Event reads. */
+  private async remotePlatformMessageSource(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    messageId: string,
+    inputId: string,
+    authorize: NonNullable<typeof this.authorizePlatformRead>,
+  ) {
+    const grant = await authorize(scope, access);
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    const readEvent = async (path: string) => {
+      try {
+        const response = await this.request(
+          path,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        );
+        return z.object({ event: eventSchema }).parse(response).event;
+      } catch (error) {
+        if (error instanceof UpstreamError && error.status === 404) return null;
+        throw error;
+      }
+    };
+    const root = await readEvent(
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages/by-client-id/${encodeURIComponent(inputId)}`,
+    );
+    if (!root) return null;
+    const source = platformSourceFromRuntimeRoot(
+      root,
+      sessionId,
+      inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      source.body === undefined ||
+      source.sharedDefault !== grant.personalDefault ||
+      !this.platformSourceReadable(source, scope, access, grant)
+    )
+      return null;
+    let createdAt = source.createdAt;
+    let text = source.body;
+    if (messageId !== inputId) {
+      const streamAttemptId = messageId.startsWith("stream:")
+        ? messageId.slice("stream:".length)
+        : null;
+      if (streamAttemptId) {
+        const snapshot = await this.platformPublicOutput(
+          sessionId,
+          root.id,
+          streamAttemptId,
+          access,
+        );
+        if (!snapshot) return null;
+        createdAt = snapshot.createdAt;
+        text = snapshot.text;
+      } else {
+        const attemptId = messageId.startsWith("publication:")
+          ? messageId.slice("publication:".length)
+          : null;
+        const publication = attemptId
+          ? await this.platformPublicationEvent(
+              sessionId,
+              root.id,
+              attemptId,
+              access,
+            )
+          : null;
+        const event =
+          publication?.event ??
+          (attemptId
+            ? null
+            : await readEvent(
+                `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(messageId)}`,
+              ));
+        if (!event) return null;
+        const kind = [
+          "chat/reply",
+          "chat/outbound_message",
+          "chat/progress",
+          "chat/runtime_error",
+          "session/io_state",
+          "runtime/response_protocol_fused",
+        ].includes(event.topic);
+        const directRoot = [
+          "root_turn_id",
+          "trigger_event_id",
+          "source_turn_id",
+        ].some((key) => payloadString(event, key) === root.id);
+        const published =
+          payloadString(event, "text") ??
+          payloadString(event, "error") ??
+          payloadString(event, "message");
+        if (!kind || !directRoot || !published) return null;
+        createdAt = publication?.createdAt ?? event.timestamp;
+        text = published;
+      }
+    }
+    if (
+      !this.platformSourceReadable(
+        source,
+        scope,
+        access,
+        await authorize(scope, access),
+      )
+    )
+      return null;
+    return {
+      id: messageId,
+      inputId,
+      projectId: source.projectId,
+      conversationId: source.conversationId,
+      createdAt,
+      text,
+    };
+  }
+
+  /** Verify one quoted message at its owning Runtime Event, rather than
+   * rebuilding an unbounded conversation history for every new input.
+   * Platform grants and Runtime Session access are both rechecked.
+   */
+  async platformMessageSource(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    messageId: string,
+    inputId: string,
+  ): Promise<{
+    id: string;
+    inputId: string;
+    projectId: string;
+    conversationId: string;
+    createdAt: string;
+    text: string;
+  } | null> {
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    // Only an input that has not reached Runtime can live in this Host's
+    // private outbox. Once accepted, every Host resolves the same immutable
+    // Runtime root and rechecks the current Platform grant.
+    if (messageId === inputId) {
+      const grant = await authorize(scope, access);
+      const pending = this.platformReadDeliveries(scope, access, grant).filter(
+        (item) => item.inputId === inputId && !item.rootId,
+      );
+      if (pending.length === 1) {
+        const source = pending[0]!.platformSource!;
+        if (
+          source.projectId === scope.projectId &&
+          source.conversationId === scope.conversationId
+        ) {
+          const current = await authorize(scope, access);
+          if (
+            this.platformReadDeliveries(scope, access, current).includes(
+              pending[0]!,
+            )
+          )
+            return {
+              id: inputId,
+              inputId,
+              projectId: source.projectId,
+              conversationId: source.conversationId,
+              createdAt: source.createdAt,
+              text: platformInputBody(pending[0]!),
+            };
+        }
+      }
+    }
+    return this.remotePlatformMessageSource(
+      scope,
+      access,
+      messageId,
+      inputId,
+      authorize,
+    );
+  }
+
+  /** A message attachment is readable by a current conversation participant,
+   * not by anyone who happens to know its content hash. Drafts are handled by
+   * the uploader's own Store grant before this lookup is used.
+   */
+  async platformAttachmentOwner(assetId: string, access: AccessContext) {
+    const authorize = this.authorizePlatformRead;
+    if (!authorize) return null;
+    const candidates = this.state.deliveries.filter((delivery) =>
+      delivery.platformSource?.attachments?.some((a) => a.assetId === assetId),
+    );
+    for (const delivery of candidates) {
+      const source = delivery.platformSource!;
+      const scope = {
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+      };
+      try {
+        const grant = await authorize(scope, access);
+        if (
+          this.platformReadDeliveries(scope, access, grant).includes(delivery)
+        )
+          return source.author.principalId;
+      } catch (error) {
+        if (!(
+          error instanceof DomainError || error instanceof PlatformStorageError
+        ))
+          throw error;
+      }
+    }
+    return null;
+  }
+
+  /** Read an accepted message attachment from its Runtime-owned Event. The
+   * sender Host's private outbox and draft Store are never cross-Host inputs. */
+  async platformAcceptedAttachment(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    inputId: string,
+    assetId: string,
+  ): Promise<{ mime: string; bytes: Buffer } | null> {
+    if (
+      !/^[a-zA-Z0-9_-]{1,200}$/.test(inputId) ||
+      !/^[a-f0-9]{64}$/.test(assetId)
+    )
+      throw new DomainError("invalid", "消息附件来源无效。");
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    const grant = await authorize(scope, access);
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    let response: unknown;
+    try {
+      response = await this.request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages/by-client-id/${encodeURIComponent(inputId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      );
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
+    }
+    const root = z.object({ event: eventSchema }).parse(response).event;
+    const source = platformSourceFromRuntimeRoot(
+      root,
+      sessionId,
+      inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      source.sharedDefault !== grant.personalDefault ||
+      !this.platformSourceReadable(source, scope, access, grant)
+    )
+      return null;
+    const declaration = source.attachments?.find(
+      (item) => item.assetId === assetId,
+    );
+    if (!declaration) return null;
+    const stored = z
+      .array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          media_type: z.string(),
+          size_bytes: z
+            .number()
+            .int()
+            .positive()
+            .max(20 * 1024 * 1024),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        }),
+      )
+      .safeParse(root.payload.attachments);
+    if (!stored.success) return null;
+    const attachment = stored.data.find(
+      (item) =>
+        item.name === declaration.name &&
+        (!declaration.mime || item.media_type === declaration.mime) &&
+        item.id === `attachment_${item.sha256}` &&
+        createHash("sha256")
+          .update(`${item.media_type}\0${item.sha256}`)
+          .digest("hex") === assetId,
+    );
+    if (!attachment) return null;
+    const value = (await this.request(
+      `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(root.id)}/attachments/${encodeURIComponent(attachment.id)}`,
+      "GET",
+      undefined,
+      access,
+      undefined,
+      "bytes",
+    )) as { mime: string; bytes: Buffer };
+    if (
+      value.mime !== attachment.media_type ||
+      value.bytes.byteLength !== attachment.size_bytes ||
+      createHash("sha256").update(value.bytes).digest("hex") !==
+        attachment.sha256
+    )
+      throw new Error("Runtime 消息附件的类型、大小或摘要不匹配。");
+    const current = await authorize(scope, access);
+    if (
+      current.personalDefault !== source.sharedDefault ||
+      !this.platformSourceReadable(source, scope, access, current)
+    )
+      throw new DomainError("forbidden", "消息附件授权已变化。");
+    return value;
+  }
+
+  /** Platform checks the current reader. An exact input root attributes each
+   * event; a personal default conversation retains authorized cross-project
+   * history instead of filtering one Session by the selected project.
+   */
+  private platformTimelineEntry(
+    item: SessionTimelineItem,
+    sessionId: string,
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    grant: PlatformReadGrant,
+  ): HistoryEntry | null {
+    const root = item.display_kind === "input" ? item.event : item.root_event;
+    if (!root || root.id !== item.root_turn_id) return null;
+    const inputId = payloadString(root, "client_message_id");
+    if (!inputId) return null;
+    const source = platformSourceFromRuntimeRoot(
+      root,
+      sessionId,
+      inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      source.body === undefined ||
+      source.sharedDefault !== grant.personalDefault ||
+      !this.platformSourceReadable(source, scope, access, grant)
+    )
+      return null;
+    if (item.display_kind === "input") {
+      if (item.entry_id !== inputId) return null;
+      const input: PlatformConversationHistory["inputs"][number] = {
+        id: inputId,
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        author: source.author,
+        targetActantId: source.targetActantId,
+        body: source.body,
+        ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+        ...(source.artifactRevision
+          ? { artifactRevision: source.artifactRevision }
+          : {}),
+        ...(source.selection ? { selection: source.selection } : {}),
+        ...(source.reading ? { reading: source.reading } : {}),
+        ...(source.continuation ? { continuation: source.continuation } : {}),
+        ...(source.application ? { application: source.application } : {}),
+        ...(source.browser ? { browser: source.browser } : {}),
+        ...(source.textQuotes?.length ? { textQuotes: source.textQuotes } : {}),
+        ...(source.attachments?.length
+          ? { attachments: source.attachments }
+          : {}),
+        ...(source.localFile ? { localFile: source.localFile } : {}),
+        ...(source.directories?.length
+          ? { directories: source.directories }
+          : {}),
+        createdAt: source.createdAt,
+      };
+      return {
+        kind: "input",
+        id: item.entry_id,
+        createdAt: item.visible_at,
+        value: input,
+      };
+    }
+    const text =
+      payloadString(item.event, "text") ??
+      payloadString(item.event, "error") ??
+      payloadString(item.event, "message");
+    if (!text) return null;
+    // Runtime persists already-public model words as a non-final progress
+    // timeline entry, independently from execution completion. They are a
+    // visible reply, including after cancellation/restart, not inspector-only
+    // progress. Preserve the same stream identity and completeness as the
+    // existing live projection so the original exchange can render them.
+    const publicOutput = item.event.topic === "runtime/model_public_output";
+    const message: ConversationRuntime["messages"][number] = {
+      id:
+        !item.final_event && item.attempt_id
+          ? "stream:" + item.attempt_id
+          : item.entry_id,
+      projectId: source.projectId,
+      conversationId: source.conversationId,
+      artifactId: null,
+      inputId,
+      rootId: root.id,
+      ...(item.attempt_id ? { publicationKey: item.attempt_id } : {}),
+      ...(publicOutput
         ? {
-            activity: {
-              ...this.state.activity,
-              threads: this.state.activity.threads
-                .filter((t) => !projects || projects.has(t.projectId))
-                .map((t) => {
-                  const owner = inputs.find((i) => i.id === t.inputId)?.author;
-                  return !access ||
-                    (owner?.principalId === access.principalId &&
-                      owner.actantId === access.actantId)
-                    ? t
-                    : { ...t, continuation: undefined };
-                }),
-            },
+            incomplete: item.event.payload.complete !== true,
+            truncated: item.event.payload.truncated === true,
           }
         : {}),
+      ...(item.event.sequence === undefined
+        ? {}
+        : { sequence: item.event.sequence }),
+      text,
+      createdAt: item.visible_at,
+      kind: publicOutput ? "reply" : item.display_kind,
+    };
+    return {
+      kind: "message",
+      id: item.entry_id,
+      createdAt: item.visible_at,
+      value: message,
+    };
+  }
+
+  /** Runtime owns accepted Session history; the local outbox contributes only
+   * unaccepted inputs. Every immutable root is checked against the current
+   * Platform grant before either the input or its output reaches a client. */
+  async platformConversationHistory(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    page: {
+      before?: { createdAt: string; id: string };
+      limit?: number;
+    } = {},
+  ): Promise<PlatformConversationHistory> {
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    const grant = await authorize(scope, access);
+    const readableProjects = new Set(grant.projectIds);
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
+    const accepted: HistoryEntry[] = [];
+    let before = page.before
+      ? {
+          visible_at_micros: historyTimeMicros(page.before.createdAt),
+          entry_id: page.before.id,
+        }
+      : null;
+    // The Runtime page is bounded, but filtering an authorized shared Session
+    // could otherwise make this Host traverse its entire history in one HTTP
+    // request. Carry the raw Runtime position across sparse visible pages.
+    let scanBoundary: { createdAt: string; id: string } | null = null;
+    for (
+      let scanPage = 0;
+      scanPage < 8 && accepted.length <= limit;
+      scanPage++
+    ) {
+      const params = new URLSearchParams({ limit: "100" });
+      if (before) {
+        params.set("before_time_micros", String(before.visible_at_micros));
+        params.set("before_entry_id", before.entry_id);
+      }
+      let raw: unknown;
+      try {
+        raw = await this.request(
+          "/api/sessions/" +
+            encodeURIComponent(sessionId) +
+            "/timeline?" +
+            params,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        );
+      } catch (error) {
+        if (error instanceof UpstreamError && error.status === 404) break;
+        if (this.runtimeReadUnavailable(error)) {
+          // Do not present an incomplete scan or cached accepted history as a
+          // fresh Runtime read. The local portion below retains only exact
+          // not-yet-accepted inputs authorized for this reader.
+          accepted.length = 0;
+          scanBoundary = null;
+          break;
+        }
+        throw error;
+      }
+      const batch = sessionTimelinePageSchema.parse(raw);
+      for (const item of [...batch.entries].reverse()) {
+        const mapped = this.platformTimelineEntry(
+          item,
+          sessionId,
+          scope,
+          access,
+          grant,
+        );
+        if (mapped) accepted.push(mapped);
+        if (accepted.length > limit) break;
+      }
+      if (accepted.length > limit || !batch.next_before) break;
+      if (
+        before &&
+        batch.next_before.visible_at_micros === before.visible_at_micros &&
+        batch.next_before.entry_id === before.entry_id
+      )
+        throw new Error("Runtime 对话历史游标未前进。");
+      before = batch.next_before;
+      if (scanPage === 7)
+        scanBoundary = historyCursorAtMicros(
+          before.visible_at_micros,
+          before.entry_id,
+        );
+    }
+    const local = this.platformReadDeliveries(scope, access, grant).filter(
+      (delivery) => delivery.sessionId === sessionId,
+    );
+    const pending: HistoryEntry[] = local.flatMap((delivery) => {
+      const source = delivery.platformSource;
+      if (!source || delivery.rootId) return [];
+      const input: PlatformConversationHistory["inputs"][number] = {
+        id: delivery.inputId,
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        author: source.author,
+        targetActantId: source.targetActantId,
+        body: platformInputBody(delivery),
+        ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+        ...(source.artifactRevision
+          ? { artifactRevision: source.artifactRevision }
+          : {}),
+        ...(source.selection ? { selection: source.selection } : {}),
+        ...(source.reading ? { reading: source.reading } : {}),
+        ...(source.continuation ? { continuation: source.continuation } : {}),
+        ...(source.application ? { application: source.application } : {}),
+        ...(source.browser ? { browser: source.browser } : {}),
+        ...(source.textQuotes?.length ? { textQuotes: source.textQuotes } : {}),
+        ...(source.attachments?.length
+          ? { attachments: source.attachments }
+          : {}),
+        ...(source.localFile ? { localFile: source.localFile } : {}),
+        ...(source.directories?.length
+          ? { directories: source.directories }
+          : {}),
+        createdAt: source.createdAt,
+      };
+      const entry: HistoryEntry = {
+        kind: "input",
+        id: input.id,
+        createdAt: input.createdAt,
+        value: input,
+      };
+      return (page.before && historyOrder(entry, page.before) >= 0) ||
+        (scanBoundary && historyOrder(entry, scanBoundary) < 0)
+        ? []
+        : [entry];
+    });
+    const byId = new Map<string, HistoryEntry>();
+    for (const entry of [...pending, ...accepted])
+      byId.set(entry.kind + ":" + entry.id, entry);
+    const descending = [...byId.values()].sort((a, b) => historyOrder(b, a));
+    const hasEarlier = descending.length > limit;
+    const pageItems = descending.slice(0, limit).reverse();
+    const visibleInputs = new Set(
+      pageItems.filter((item) => item.kind === "input").map((item) => item.id),
+    );
+    const oldest = pageItems[0];
+    return {
+      inputs: pageItems.flatMap((item) =>
+        item.kind === "input" ? [item.value] : [],
+      ),
+      nextCursor:
+        hasEarlier && oldest
+          ? historyCursorAtMicros(
+              historyTimeMicros(oldest.createdAt),
+              oldest.id,
+            )
+          : scanBoundary,
+      runtime: {
+        attention: {
+          available: this.state.connected && this.attention.available,
+          approvals: this.attention.approvals.filter(
+            (approval) =>
+              readableProjects.has(approval.scope.projectId) &&
+              !!approval.scope.inputId &&
+              visibleInputs.has(approval.scope.inputId),
+          ),
+        },
+        ...(this.state.activity
+          ? {
+              activity: {
+                ...this.state.activity,
+                threads: this.platformActivityThreads(
+                  readableProjects,
+                  visibleInputs,
+                  access,
+                ),
+              },
+            }
+          : {}),
+        configured: true,
+        connected: this.state.connected,
+        harnesses: this.state.connected ? this.loadedHarnesses : null,
+        model: this.state.model,
+        error: this.state.error,
+        deliveries: local
+          .filter((delivery) => visibleInputs.has(delivery.inputId))
+          .map((delivery) => this.deliveryView(delivery)),
+        messages: pageItems.flatMap((item) =>
+          item.kind === "message" ? [item.value] : [],
+        ),
+      },
+    };
+  }
+
+  /** A scoped cache token for the selected Runtime Session. Another Host's
+   * accepted input must invalidate this Host's history cache without copying
+   * the message or its delivery queue into Platform. */
+  async platformConversationHead(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+  ): Promise<{ sessionId: string; latestSequence: number }> {
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    const grant = await authorize(scope, access);
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    try {
+      const page = z
+        .object({ latest_sequence: z.number().int().nonnegative().nullable() })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+          ),
+        );
+      return { sessionId, latestSequence: page.latest_sequence ?? 0 };
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404)
+        return { sessionId, latestSequence: 0 };
+      if (this.runtimeReadUnavailable(error))
+        return { sessionId, latestSequence: 0 };
+      throw error;
+    }
+  }
+
+  /** Status-only chrome for Platform clients. Message, delivery and execution
+   * history must come from a scoped Platform-authorized conversation read;
+   * the old Workspace is not a message or project authority here. */
+  platformStatus(): ConversationRuntime {
+    return {
       configured: true,
       connected: this.state.connected,
       harnesses: this.state.connected ? this.loadedHarnesses : null,
       model: this.state.model,
       error: this.state.error,
-      deliveries: this.state.deliveries
-        .filter(
-          (d) =>
-            !projects ||
-            projects.has(
-              inputs.find((i) => i.id === d.inputId)?.projectId ??
-                this.state.sessions[d.sessionId]?.projectId ??
-                "",
-            ),
-        )
-        .map(
-          ({
-            inputId,
-            state,
-            error,
-            rootId,
-            sessionId,
-            cancelRequested,
-            supplement,
-            rejection,
-          }) => ({
-            inputId,
-            state,
-            error,
-            ...(supplement ? { supplement } : {}),
-            ...(rejection ? { rejection } : {}),
-            retryable: state === "failed" && !rootId && !rejection,
-            cancelRequested,
-            cancellable:
-              !supplement &&
-              !cancelRequested &&
-              (state === "queued" ||
-                (state === "running" &&
-                  !!this.state.sessions[sessionId]?.turnControl)),
-          }),
-        ),
-      messages: Object.values(this.state.sessions)
-        .filter((s) => !projects || projects.has(s.projectId))
-        .flatMap((session) =>
-          session.events.flatMap((event) => {
-            const delivery = attributedDelivery(
-              session.id,
-              event,
-              this.state.deliveries,
-              session.events,
-            );
-            const input = inputs.find((i) => i.id === delivery?.inputId);
-            const kind = ["chat/reply", "chat/outbound_message"].includes(
-              event.topic,
-            )
-              ? "reply"
-              : event.topic === "chat/progress"
-                ? "progress"
-                : [
-                      "chat/runtime_error",
-                      "session/io_state",
-                      "runtime/response_protocol_fused",
-                    ].includes(event.topic)
-                  ? "error"
-                  : null;
-            const text =
-              payloadString(event, "text") ??
-              payloadString(event, "error") ??
-              payloadString(event, "message");
-            return kind && text
-              ? [
-                  this.publish({
-                    id: event.id,
-                    sequence: event.sequence,
-                    projectId: input?.projectId ?? session.projectId,
-                    conversationId: input
-                      ? discussionId(input)
-                      : discussionId(session),
-                    artifactId: input?.artifactId ?? session.artifactId,
-                    inputId: input?.id ?? null,
-                    rootId: delivery?.rootId ?? null,
-                    text,
-                    createdAt: event.timestamp,
-                    kind: kind as "reply" | "progress" | "error",
-                    ...(payloadString(event, "attempt_id")
-                      ? { publicationKey: payloadString(event, "attempt_id") }
-                      : {}),
-                  }),
-                ]
-              : [];
-          }),
-        )
-        .filter((m) => !projects || projects.has(m.projectId))
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      deliveries: [],
+      messages: [],
     };
+  }
+
+  /** Seeing another participant's execution does not grant its steering
+   * capability. Both history and navigation must expose controls only to the
+   * exact Human/Actant that submitted the immutable initiating input. */
+  private platformActivityThreads(
+    projects: ReadonlySet<string>,
+    inputs: ReadonlySet<string>,
+    access: AccessContext,
+  ) {
+    const continuable = new Set(
+      this.state.deliveries.flatMap((delivery) => {
+        const author = delivery.platformSource?.author;
+        return author?.principalId === access.principalId &&
+          author.actantId === access.actantId
+          ? [delivery.inputId]
+          : [];
+      }),
+    );
+    return (this.state.activity?.threads ?? [])
+      .filter(
+        (thread) =>
+          projects.has(thread.projectId) &&
+          !!thread.inputId &&
+          inputs.has(thread.inputId),
+      )
+      .map((thread) => {
+        if (thread.inputId && continuable.has(thread.inputId)) return thread;
+        const { continuation: _continuation, ...readOnly } = thread;
+        return readOnly;
+      });
+  }
+
+  /** Compact, authorization-scoped navigation state. Runtime remains the
+   * source of message/activity time; Platform supplies current project grants.
+   * No message body or history is copied into the global workspace refresh. */
+  platformNavigationSnapshot(
+    access: AccessContext,
+    projectIds: readonly string[],
+  ): {
+    runtime: ConversationRuntime;
+    activityByProject: Record<string, string>;
+    historyVersion: string;
+  } {
+    const readable = new Set(projectIds);
+    const activityByProject: Record<string, string> = {};
+    const touch = (projectId: string, createdAt: string) => {
+      if (
+        !activityByProject[projectId] ||
+        activityByProject[projectId] < createdAt
+      )
+        activityByProject[projectId] = createdAt;
+    };
+    const deliveriesBySession = new Map<string, StoredDelivery[]>();
+    const allowedInputIds = new Set<string>();
+    for (const delivery of this.state.deliveries) {
+      const source = delivery.platformSource;
+      if (!source) continue;
+      if (!readable.has(source.projectId)) continue;
+      if (
+        !this.teamIdentity &&
+        source.author.principalId !== access.principalId
+      )
+        continue;
+      allowedInputIds.add(delivery.inputId);
+      touch(source.projectId, source.createdAt);
+      if (delivery.lastActivityAt)
+        touch(source.projectId, delivery.lastActivityAt);
+      const session = deliveriesBySession.get(delivery.sessionId) ?? [];
+      session.push(delivery);
+      deliveriesBySession.set(delivery.sessionId, session);
+    }
+    // An opaque, authorization-scoped invalidation token. The navigation
+    // response never carries message bodies; the Client can reuse its current
+    // conversation history only while these durable roots/cursors and grants
+    // are identical. A shared default Session may contain several projects.
+    const historyVersion = createHash("sha256")
+      .update(
+        JSON.stringify({
+          principalId: access.principalId,
+          projects: [...readable].sort(),
+          sessions: [...deliveriesBySession.entries()]
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([sessionId, deliveries]) => ({
+              sessionId,
+              cursor: this.state.sessions[sessionId]?.cursor ?? 0,
+              deliveries: deliveries.map((delivery) => [
+                delivery.inputId,
+                delivery.state,
+                delivery.rootId,
+                delivery.acceptedEventId ?? null,
+                delivery.error,
+                delivery.cancelRequested,
+                delivery.platformHeld,
+              ]),
+            })),
+        }),
+      )
+      .digest("hex");
+    return {
+      activityByProject,
+      historyVersion,
+      runtime: {
+        ...this.platformStatus(),
+        attention: {
+          available: this.state.connected && this.attention.available,
+          approvals: this.attention.approvals.filter(
+            (approval) =>
+              readable.has(approval.scope.projectId) &&
+              !!approval.scope.inputId &&
+              allowedInputIds.has(approval.scope.inputId),
+          ),
+        },
+        ...(this.state.activity
+          ? {
+              activity: {
+                ...this.state.activity,
+                threads: this.platformActivityThreads(
+                  readable,
+                  allowedInputIds,
+                  access,
+                ),
+              },
+            }
+          : {}),
+        deliveries: [...deliveriesBySession.values()]
+          .flat()
+          .filter((delivery) =>
+            ["queued", "sending", "running"].includes(delivery.state),
+          )
+          .map((delivery) => this.deliveryView(delivery)),
+      },
+    };
+  }
+
+  /** Historical Session identities remain readable by the Runtime. Only
+   * Platform-authorized deliveries are current Host work. */
+  private activeSessions() {
+    return Object.values(this.state.sessions).filter(
+      (session) => session.platform,
+    );
+  }
+  private activeDeliveries() {
+    return this.state.deliveries.filter(
+      (delivery) =>
+        !!delivery.platformSource &&
+        this.state.sessions[delivery.sessionId]?.platform,
+    );
   }
   private async refreshActivity() {
     const activity: z.infer<typeof activitySchema> = {
@@ -1204,8 +3314,11 @@ export class RuntimeBridge {
       truncated: false,
       threads: [],
     };
-    const sessions = Object.values(this.state.sessions),
-      workspace = this.store.snapshot();
+    const sessions = this.activeSessions();
+    const sessionsById = new Map(
+      sessions.map((session) => [session.id, session]),
+    );
+    const deliveries = this.activeDeliveries();
     try {
       for (const contextId of new Set(
         sessions.map((s) => this.contextId(s.projectId)),
@@ -1239,42 +3352,40 @@ export class RuntimeBridge {
         activity.truncated ||= view.threads.length >= 200;
         for (const value of view.threads) {
           const t = value.thread,
-            session = sessions.find((s) => s.id === t.session_id);
+            session = sessionsById.get(t.session_id);
           if (
             !session ||
             t.context_id !== contextId ||
             (t.lifecycle !== "open" && value.phase === "idle")
           )
             continue;
-          const delivery = this.state.deliveries.find(
+          const delivery = deliveries.find(
             (d) => d.sessionId === t.session_id && d.rootId === t.root_turn_id,
           );
-          const input = workspace.inputs.find(
-            (i) => i.id === delivery?.inputId,
-          );
+          const source = delivery?.platformSource;
           // A shared transport is not authority to guess an unknown work project.
-          if (session.sharedDefault && !input) {
+          if (session.sharedDefault && !source) {
             activity.truncated = true;
             continue;
           }
           activity.threads.push({
             id: t.id,
             kind: t.kind,
-            projectId: input?.projectId ?? session.projectId,
-            conversationId: input ? discussionId(input) : discussionId(session),
-            inputId: input?.id ?? null,
+            projectId: source?.projectId ?? session.projectId,
+            conversationId: source?.conversationId ?? discussionId(session),
+            inputId: source ? delivery!.inputId : null,
             rootId: t.root_turn_id,
             sessionId: t.session_id,
             title:
               (t.kind === "dialogue_turn" ? "主执行" : value.intent?.trim()) ||
-              input?.body ||
+              (delivery?.platformSource ? platformInputBody(delivery) : "") ||
               "后台执行",
             phase: value.phase,
             lifecycle: t.lifecycle,
             revision: t.revision,
             updatedAt: t.updated_at,
-            ...(input && this.state.directedInput
-              ? { continuation: continuationTarget(t, input.id, t.id) }
+            ...(source && delivery && this.state.directedInput
+              ? { continuation: continuationTarget(t, delivery.inputId, t.id) }
               : {}),
           });
         }
@@ -1296,11 +3407,15 @@ export class RuntimeBridge {
       const data = z
         .object({ approvals: z.array(approvalSchema) })
         .parse(await this.request("/api/approvals"));
-      const workspace = this.store.snapshot();
+      const sessions = this.activeSessions();
+      const sessionsById = new Map(
+        sessions.map((session) => [session.id, session]),
+      );
+      const deliveries = this.activeDeliveries();
       const approvals: ExecutionAttention["approvals"] = [];
       for (const approval of data.approvals) {
         const request = approval.request;
-        const session = this.state.sessions[request.session_id];
+        const session = sessionsById.get(request.session_id);
         if (
           !session ||
           request.context_id !== this.contextId(session.projectId)
@@ -1317,21 +3432,21 @@ export class RuntimeBridge {
           continue;
         const root = request.root_turn_id ?? thread?.rootId;
         const delivery = root
-          ? this.state.deliveries.find(
+          ? deliveries.find(
               (d) => d.sessionId === session.id && d.rootId === root,
             )
           : undefined;
-        const input = workspace.inputs.find((i) => i.id === delivery?.inputId);
+        const source = delivery?.platformSource;
         // Shared default Sessions span work projects. Never infer ownership from
         // the selected page or transport session when the receipt is missing.
-        if (session.sharedDefault && !input) continue;
-        const projectId = input?.projectId ?? session.projectId;
+        if (session.sharedDefault && !source) continue;
+        const projectId = source?.projectId ?? session.projectId;
         approvals.push({
           scope: {
             projectId,
-            conversationId: input ? discussionId(input) : discussionId(session),
-            artifactId: input?.artifactId ?? session.artifactId,
-            ...(input ? { inputId: input.id } : {}),
+            conversationId: source?.conversationId ?? discussionId(session),
+            artifactId: source?.artifactId ?? session.artifactId,
+            ...(source ? { inputId: delivery!.inputId } : {}),
             ...(thread ? { threadId: thread.id } : {}),
           },
           approval: { ...approval, fingerprint: approvalFingerprint(approval) },
@@ -1342,16 +3457,12 @@ export class RuntimeBridge {
       this.attention = { ...this.attention, available: false };
     }
   }
-  private objectSession(
+  private objectSessionId(
     projectId: string,
-    _artifactId: string | null,
-    conversationId = projectId,
-    sharedDefault = false,
+    conversationId: string,
+    sharedDefault: boolean,
   ) {
-    // The conversation owns the transport; each delivery retains its work project.
     if (sharedDefault) projectId = conversationId;
-    // Reuse the original project-level route when possible. Object routes remain
-    // in the ledger and are still polled; no in-flight delivery is rewritten.
     const key = createHash("sha256")
       .update(
         JSON.stringify(
@@ -1364,7 +3475,23 @@ export class RuntimeBridge {
       )
       .digest("hex")
       .slice(0, 24);
-    const sessionId = `mw-${this.config.namespace.slice(0, 8)}-${key}`;
+    return `mw-${this.config.namespace.slice(0, 8)}-${key}`;
+  }
+  private objectSession(
+    projectId: string,
+    _artifactId: string | null,
+    conversationId = projectId,
+    sharedDefault = false,
+  ) {
+    // The conversation owns the transport; each delivery retains its work project.
+    const sessionId = this.objectSessionId(
+      projectId,
+      conversationId,
+      sharedDefault,
+    );
+    if (sharedDefault) projectId = conversationId;
+    // Reuse the original project-level route when possible. Object routes remain
+    // in the ledger and are still polled; no in-flight delivery is rewritten.
     this.state.sessions[sessionId] ??= {
       id: sessionId,
       projectId,
@@ -1372,6 +3499,7 @@ export class RuntimeBridge {
       artifactId: null,
       scope: "workspace",
       sharedDefault,
+      platform: false,
       cursor: 0,
       events: [],
       runtimePrincipalId: null,
@@ -1383,33 +3511,87 @@ export class RuntimeBridge {
     if (sharedDefault) this.state.sessions[sessionId]!.sharedDefault = true;
     return sessionId;
   }
-  async validateContinuation(target: InputContinuation) {
-    const workspace = this.store.snapshot(),
-      input = workspace.inputs.find((i) => i.id === target.inputId),
-      actor = this.actor();
+  /** Host-only execution Session for a Platform task's authorized project.
+   * It is separate from chat navigation, but uses the same Agent/Context and
+   * one stable identity for every task run in this project. */
+  async preparePlatformTaskSession(projectId: string) {
+    const key = createHash("sha256")
+      .update(JSON.stringify(["platform-task-run", projectId]))
+      .digest("hex")
+      .slice(0, 24);
+    const id = `mw-${this.config.namespace.slice(0, 8)}-${key}`;
+    const existing = this.state.sessions[id];
     if (
-      !input ||
-      input.continuation?.mode === "supplement" ||
-      input.author.principalId !== actor.principalId ||
-      input.author.actantId !== actor.actantId
+      existing &&
+      (existing.projectId !== projectId ||
+        !existing.platform ||
+        existing.sharedDefault)
     )
-      throw new DomainError("forbidden", "不能补充其他身份的执行。");
-    assertProjectWritable(checkProject(workspace, input.projectId, actor));
-    if (
-      checkConversation(workspace, input.projectId, discussionId(input), actor)
-        .archivedAt
-    )
-      throw new DomainError("conflict", "此对话已归档，请先恢复；草稿已保留。");
-    const delivery = this.state.deliveries.find(
-      (d) => d.inputId === input.id && d.rootId && !d.supplement,
+      throw new DomainError("conflict", "事项执行会话绑定已变化。");
+    this.state.sessions[id] ??= {
+      id,
+      projectId,
+      conversationId: projectId,
+      artifactId: null,
+      scope: "workspace",
+      sharedDefault: false,
+      platform: true,
+      cursor: 0,
+      events: [],
+      runtimePrincipalId: null,
+      turnControl: false,
+      schedules: false,
+      hasWork: false,
+    };
+    await this.ensureSession(id);
+    if (!this.state.sessions[id]!.schedules)
+      throw new DomainError("invalid", "Runtime 未提供持久安排接口。");
+    this.state.sessions[id]!.hasWork = true;
+    this.save();
+    return id;
+  }
+  /** A supplement stays on the original Runtime execution. The Platform
+   * delivery, not a Client-selected project or legacy workspace input,
+   * determines its sender, conversation, Session and root. */
+  async validatePlatformContinuation(
+    target: InputContinuation,
+    projectId: string,
+    conversationId: string,
+  ) {
+    if (target.mode !== "supplement")
+      throw new DomainError("invalid", "此入口只接受运行中的工作补充。");
+    const actor = this.actor();
+    const original = this.state.deliveries.find(
+      (delivery) =>
+        delivery.inputId === target.inputId &&
+        !!delivery.rootId &&
+        !!delivery.platformSource &&
+        !delivery.supplement,
     );
-    if (!delivery)
-      throw new DomainError(
-        "conflict",
-        "原工作尚未绑定到实际执行，未发送补充。",
-      );
-    // A follow-up is an explicit new request. It need not revive a closed generation.
-    if (target.mode === "follow-up") return;
+    const source = original?.platformSource;
+    if (
+      !original ||
+      !source ||
+      source.author.principalId !== actor.principalId ||
+      source.author.actantId !== actor.actantId ||
+      source.projectId !== projectId ||
+      source.conversationId !== conversationId
+    )
+      throw new DomainError("forbidden", "补充目标不属于当前对话或发起者。");
+    const authorize = this.authorizePlatformInput;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 消息授权尚未接入。");
+    const route = await authorize({ ...source, phase: "dispatch" });
+    if (route.sharedDefault !== source.sharedDefault)
+      throw new DomainError("conflict", "原对话归属已变化，未发送补充。");
+    await this.validateContinuationThread(target, original, source.projectId);
+    return original;
+  }
+  private async validateContinuationThread(
+    target: InputContinuation,
+    delivery: StoredDelivery,
+    projectId: string,
+  ) {
     if (!this.supportsDirectedInput)
       throw new DomainError(
         "invalid",
@@ -1418,7 +3600,7 @@ export class RuntimeBridge {
     let detail: unknown;
     try {
       detail = await this.request(
-        `/api/contexts/${this.contextId(input.projectId)}/threads/${target.threadId}`,
+        `/api/contexts/${this.contextId(projectId)}/threads/${target.threadId}`,
       );
     } catch (e) {
       if (e instanceof UpstreamError && e.status === 404)
@@ -1441,18 +3623,18 @@ export class RuntimeBridge {
       })
       .parse(detail).snapshot.thread;
     const expectedPrincipal = this.teamIdentity
-      ? this.principalId(actor.principalId)
+      ? this.principalId(this.actor().principalId)
       : this.state.sessions[delivery.sessionId]?.runtimePrincipalId;
     if (
       thread.id !== target.threadId ||
       thread.session_id !== delivery.sessionId ||
-      thread.context_id !== this.contextId(input.projectId) ||
+      thread.context_id !== this.contextId(projectId) ||
       thread.root_turn_id !== delivery.rootId ||
       !expectedPrincipal ||
       thread.initiating_principal_id !== expectedPrincipal
     )
       throw new DomainError("forbidden", "补充目标不属于原请求，未发送。");
-    const current = continuationTarget(thread, input.id, thread.id);
+    const current = continuationTarget(thread, delivery.inputId, thread.id);
     if (!current) throw new ContinuationConflict("closed");
     if (
       current.generation !== target.generation ||
@@ -1484,131 +3666,177 @@ export class RuntimeBridge {
     }
     throw new SupplementUnconfirmed();
   }
-  enqueue(inputId: string) {
-    const workspace = this.store.snapshot();
-    const input = workspace.inputs.find((item) => item.id === inputId);
-    if (!input) throw new DomainError("invalid", "输入不存在。");
-    assertProjectWritable(
-      checkProject(workspace, input.projectId, this.actor()),
-    );
-    const conversation = checkConversation(
-      workspace,
-      input.projectId,
-      discussionId(input),
-      this.actor(),
-    );
+  /** New Platform-scoped plain input. The immutable Runtime request is the
+   * durable outbox entry; no project, conversation or input is written into
+   * the legacy Workspace snapshot.
+   */
+  async enqueuePlatformInput(
+    input: RecordedInput,
+    newConversation?: { title: string },
+  ) {
+    const actor = this.actor();
     if (
-      input.continuation &&
-      (input.author.principalId !== this.actor().principalId ||
-        input.author.actantId !== this.actor().actantId)
+      input.author.principalId !== actor.principalId ||
+      input.author.actantId !== actor.actantId ||
+      (!input.body.trim() &&
+        !input.textQuotes?.length &&
+        !input.attachments?.length &&
+        !input.localFile &&
+        !input.directories?.length) ||
+      !!input.artifactId !== !!input.artifactRevision ||
+      (!input.artifactId && (input.selection || input.reading)) ||
+      (input.continuation &&
+        (input.continuation.mode !== "supplement" ||
+          !!newConversation ||
+          !!input.application ||
+          !!input.browser ||
+          !!input.reading ||
+          !!input.scriptGeneration ||
+          !!input.localFile ||
+          !!input.directories?.length ||
+          !!input.selection ||
+          !!input.model ||
+          !!input.reasoningEffort))
     )
-      throw new DomainError("forbidden", "不能代替其他人投递补充。");
-    const previous = this.state.deliveries.find(
-      (item) => item.inputId === inputId,
-    );
-    if (previous) {
-      // Never create a new client_message_id when the acceptance is unknown.
-      if (
-        previous.state === "failed" &&
-        !previous.rootId &&
-        !previous.acceptedEventId &&
-        !previous.rejection
-      ) {
-        previous.state = "queued";
-        previous.error = null;
-        this.save();
-      }
-      return;
-    }
-    const originalDelivery =
-      input.continuation?.mode === "supplement"
-        ? this.state.deliveries.find(
-            (d) =>
-              d.inputId === input.continuation!.inputId &&
-              d.rootId &&
-              !d.supplement,
-          )
-        : undefined;
-    if (
-      input.continuation &&
-      (input.author.principalId !== this.actor().principalId ||
-        input.author.actantId !== this.actor().actantId)
-    )
-      throw new DomainError("forbidden", "不能代替其他人投递补充。");
-    if (input.continuation?.mode === "supplement" && !originalDelivery)
-      throw new DomainError(
-        "conflict",
-        "原工作尚未绑定到实际执行，未发送补充。",
-      );
-    const sessionId =
-      originalDelivery?.sessionId ??
-      this.objectSession(
-        input.projectId,
-        input.artifactId,
-        discussionId(input),
-        !this.teamIdentity &&
-          workspace.projects.some(
-            (p) =>
-              p.id === conversation.projectId &&
-              p.kind === "dialogue" &&
-              p.id === conversation.id,
-          ),
-      );
-    const artifact = workspace.artifacts.find(
-      (item) => item.id === input.artifactId,
-    );
-    const version = artifact?.versions.find(
-      (item) => item.revision === input.artifactRevision,
-    );
-    if (input.artifactId && !version)
-      throw new DomainError("invalid", "关联的对象版本不存在，未发送。");
-    const attachments: {
+      throw new DomainError("invalid", "这条输入需要使用已接入的应用来源。");
+    const authorize = this.authorizePlatformInput;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 消息授权尚未接入。");
+    let previous = this.state.deliveries.find((d) => d.inputId === input.id);
+    const target: PlatformInputTarget = {
+      projectId: input.projectId,
+      conversationId: discussionId(input),
+      targetActantId: input.targetActantId,
+      author: input.author,
+      ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+      ...(input.artifactRevision
+        ? { artifactRevision: input.artifactRevision }
+        : {}),
+      ...(input.selection ? { selection: input.selection } : {}),
+      ...(input.reading ? { reading: input.reading } : {}),
+      ...(input.continuation ? { continuation: input.continuation } : {}),
+      ...(input.application ? { application: input.application } : {}),
+      ...(input.browser ? { browser: input.browser } : {}),
+      ...(input.localFile ? { localFile: input.localFile } : {}),
+      ...(input.directories?.length ? { directories: input.directories } : {}),
+      ...(newConversation
+        ? {
+            firstInputId: input.id,
+            newConversationTitle: newConversation.title,
+          }
+        : {}),
+      // An accepted command retry reads its immutable receipt. It cannot
+      // acquire a new file grant or cause another dispatch. Identity and
+      // project/conversation authority are still checked by the Host.
+      phase:
+        previous?.rootId || previous?.acceptedEventId ? "receipt" : "prepare",
+    };
+    const route = await authorize(target);
+    if (input.attachments?.length && !this.messageAttachments)
+      throw new DomainError("invalid", "消息附件 Store 不可用，未发送。");
+    const resourceUploads = [] as Array<{
+      stageId: string;
       name: string;
-      media_type: string;
-      data_base64: string;
-    }[] = [];
-    if (version) {
-      const content = version.content;
-      if (content.kind === "image") {
-        const asset = this.store.asset(content.assetId);
-        if (!asset) throw new DomainError("invalid", "图片已不可用，未发送。");
-        attachments.push({
-          name: version.title,
-          media_type: asset.mime,
-          data_base64: Buffer.from(asset.bytes).toString("base64"),
-        });
-      }
-    }
-    const typed = workInputRequest(
-      // Attachments are immutable uploaded resources, not library artifacts.
-      input,
-      input.model ||
-        (version?.content.kind === "task" ? version.content.model : null),
-      input.continuation
-        ? workspace.inputs.find((i) => i.id === input.continuation!.inputId)
-        : undefined,
-    );
-    for (const attachment of input.attachments ?? []) {
-      const asset = this.store.asset(attachment.assetId);
-      if (!asset)
-        throw new DomainError("invalid", "附件已不可用，输入已保留。");
-      attachments.push({
+      mediaType: string;
+      assetId: string;
+      sha256: string;
+      ready: boolean;
+    }>;
+    for (const [index, attachment] of (input.attachments ?? []).entries()) {
+      const value = await this.messageAttachments!.readForDispatch(
+        input.author,
+        attachment,
+      );
+      resourceUploads.push({
+        stageId: `work-${createHash("sha256").update(`${input.id}:${index}`).digest("hex")}`,
         name: attachment.name,
-        media_type: asset.mime,
-        data_base64: Buffer.from(asset.bytes).toString("base64"),
+        mediaType: value.mime,
+        assetId: attachment.assetId,
+        sha256: createHash("sha256").update(value.bytes).digest("hex"),
+        ready: false,
       });
     }
-    const resourceUploads = attachments.map((attachment, index) => ({
-      stageId: `work-${createHash("sha256").update(`${input.id}:${index}`).digest("hex")}`,
-      name: attachment.name,
-      mediaType: attachment.media_type,
-      dataBase64: attachment.data_base64,
-      sha256: createHash("sha256")
-        .update(Buffer.from(attachment.data_base64, "base64"))
-        .digest("hex"),
-      ready: false,
-    }));
-    const request = resourceUploads.length
+    const platformSource: PlatformInputSource = {
+      projectId: target.projectId,
+      conversationId: target.conversationId,
+      targetActantId: target.targetActantId,
+      author: target.author,
+      ...(target.firstInputId ? { firstInputId: target.firstInputId } : {}),
+      ...(target.newConversationTitle
+        ? { newConversationTitle: target.newConversationTitle }
+        : {}),
+      createdAt: input.createdAt,
+      body: input.body,
+      ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+      ...(input.artifactRevision
+        ? { artifactRevision: input.artifactRevision }
+        : {}),
+      ...(input.selection ? { selection: input.selection } : {}),
+      ...(input.reading ? { reading: input.reading } : {}),
+      ...(input.continuation ? { continuation: input.continuation } : {}),
+      ...(input.application ? { application: input.application } : {}),
+      ...(input.browser ? { browser: input.browser } : {}),
+      ...(input.textQuotes?.length
+        ? { textQuotes: textQuotesSchema.parse(input.textQuotes) }
+        : {}),
+      ...(input.attachments?.length
+        ? {
+            attachments: input.attachments.map((attachment) =>
+              inputAttachmentSchema.parse(attachment),
+            ),
+          }
+        : {}),
+      ...(input.localFile ? { localFile: input.localFile } : {}),
+      ...(input.directories?.length ? { directories: input.directories } : {}),
+      ...(input.scriptGeneration
+        ? {
+            scriptGeneration: scriptGenerationSchema.parse(
+              input.scriptGeneration,
+            ),
+          }
+        : {}),
+      sharedDefault: route.sharedDefault,
+    };
+    let model = input.model;
+    if (
+      !model &&
+      !previous &&
+      input.continuation?.mode !== "supplement" &&
+      !this.teamIdentity
+    ) {
+      // Freeze the local Runtime default before the durable outbox write.
+      // Omitting it would inherit an existing Session's older model. Gateway
+      // clients have no operator access to this setting; their Runtime owns it.
+      const current = z
+        .object({ model: z.string().trim().min(1).max(256) })
+        .safeParse(await this.request("/api/status"));
+      if (!current.success)
+        throw new DomainError(
+          "invalid",
+          "无法确认默认模型，请检查模型设置后重试；草稿已保留。",
+        );
+      model = current.data.model;
+    }
+    // Authorization, uploads and the default read can await another admission
+    // of this command. The first durable envelope still wins that race.
+    previous ??= this.state.deliveries.find((d) => d.inputId === input.id);
+    if (previous && !input.model && input.continuation?.mode !== "supplement")
+      // A retry belongs to its admitted request. Missing aliases stay missing
+      // on retained requests, even when today's Runtime default has changed.
+      model = z
+        .object({ model_alias: z.string().optional() })
+        .parse(previous.request.activation ?? {}).model_alias;
+    const typed = {
+      ...workInputRequest(input, model),
+      client_metadata: {
+        kind: "morphz.platform-input",
+        version: 1,
+        // Admission time is part of the original display identity. Reusing an
+        // input command must not replace it with the time of a later retry.
+        source: previous?.platformSource ?? platformSource,
+      },
+    };
+    const candidate = resourceUploads.length
       ? {
           ...typed,
           message: {
@@ -1625,23 +3853,210 @@ export class RuntimeBridge {
           },
         }
       : typed;
+    // An admitted request is immutable. A pre-upgrade queued delivery must
+    // retry its original envelope, not acquire metadata under the same ID.
+    const request =
+      previous && !("client_metadata" in previous.request)
+        ? (({ client_metadata: _metadata, ...originalShape }) => originalShape)(
+            candidate,
+          )
+        : candidate;
+    if (previous) {
+      if (
+        previous.platformSource?.projectId !== platformSource.projectId ||
+        previous.platformSource.conversationId !==
+          platformSource.conversationId ||
+        previous.platformSource.targetActantId !==
+          platformSource.targetActantId ||
+        previous.platformSource.author.principalId !==
+          platformSource.author.principalId ||
+        previous.platformSource.author.actantId !==
+          platformSource.author.actantId ||
+        previous.platformSource.firstInputId !== platformSource.firstInputId ||
+        previous.platformSource.newConversationTitle !==
+          platformSource.newConversationTitle ||
+        previous.platformSource.body !== platformSource.body ||
+        previous.platformSource.artifactId !== platformSource.artifactId ||
+        previous.platformSource.artifactRevision !==
+          platformSource.artifactRevision ||
+        previous.platformSource.selection !== platformSource.selection ||
+        JSON.stringify(previous.platformSource.reading) !==
+          JSON.stringify(platformSource.reading) ||
+        JSON.stringify(previous.platformSource.continuation) !==
+          JSON.stringify(platformSource.continuation) ||
+        JSON.stringify(previous.platformSource.application) !==
+          JSON.stringify(platformSource.application) ||
+        JSON.stringify(previous.platformSource.browser) !==
+          JSON.stringify(platformSource.browser) ||
+        JSON.stringify(previous.platformSource.attachments) !==
+          JSON.stringify(platformSource.attachments) ||
+        JSON.stringify(previous.platformSource.localFile) !==
+          JSON.stringify(platformSource.localFile) ||
+        JSON.stringify(previous.platformSource.directories) !==
+          JSON.stringify(platformSource.directories) ||
+        JSON.stringify(previous.platformSource.scriptGeneration) !==
+          JSON.stringify(platformSource.scriptGeneration) ||
+        previous.platformSource.sharedDefault !==
+          platformSource.sharedDefault ||
+        JSON.stringify(previous.request) !== JSON.stringify(request)
+      )
+        throw new DomainError("conflict", "操作标识已用于另一条输入。");
+      if (
+        previous.state === "failed" &&
+        !previous.rootId &&
+        !previous.acceptedEventId &&
+        !previous.rejection
+      ) {
+        previous.state = "queued";
+        previous.error = null;
+        this.save(previous);
+      }
+      return input.id;
+    }
+    const originalDelivery = input.continuation
+      ? await this.validatePlatformContinuation(
+          input.continuation,
+          target.projectId,
+          target.conversationId,
+        )
+      : undefined;
+    if (
+      originalDelivery &&
+      (originalDelivery.platformSource?.targetActantId !==
+        input.targetActantId ||
+        (originalDelivery.platformSource.artifactId ?? null) !==
+          (input.artifactId ?? null) ||
+        (originalDelivery.platformSource.artifactRevision ?? null) !==
+          (input.artifactRevision ?? null))
+    )
+      throw new DomainError("forbidden", "补充不能更换原工作的对象或接收者。");
+    const sessionId =
+      originalDelivery?.sessionId ??
+      this.objectSession(
+        input.projectId,
+        null,
+        target.conversationId,
+        route.sharedDefault,
+      );
+    this.state.sessions[sessionId]!.platform = true;
     this.state.deliveries.push({
-      inputId,
+      inputId: input.id,
       sessionId,
       rootId: null,
+      runtimePostAttempted: false,
       state: "queued",
       error: null,
       retryable: false,
       cancelRequested: false,
+      causalThreadIds: [],
+      request,
       ...(input.continuation?.mode === "supplement"
         ? { supplement: "pending" as const }
         : {}),
-      // Bytes remain in the private outbox, never in a domain JSON message.
-      // Existing saved deliveries are not regenerated during this upgrade.
-      request,
       ...(resourceUploads.length ? { resourceUploads } : {}),
+      platformSource,
+      platformHeld: !!newConversation,
     });
-    this.save();
+    this.save(this.state.deliveries.at(-1)!);
+    if (!newConversation) void this.tick();
+    return input.id;
+  }
+  async releasePlatformInput(inputId: string) {
+    const actor = this.actor();
+    const delivery = this.state.deliveries.find(
+      (item) => item.inputId === inputId,
+    );
+    const source = delivery?.platformSource;
+    if (
+      !source ||
+      source.firstInputId !== inputId ||
+      source.author.principalId !== actor.principalId ||
+      source.author.actantId !== actor.actantId
+    )
+      throw new DomainError("forbidden", "首条消息不属于当前用户。");
+    const authorize = this.authorizePlatformInput;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 消息授权尚未接入。");
+    const route = await authorize({ ...source, phase: "dispatch" });
+    if (route.sharedDefault !== source.sharedDefault)
+      throw new DomainError("conflict", "对话归属已变化，未发送。");
+    if (delivery.platformHeld) {
+      delivery.platformHeld = false;
+      this.save(delivery);
+      void this.tick();
+    }
+  }
+  /** Retry only an unaccepted Platform input owned by this Human. The saved
+   * Runtime request keeps its original input and client-message identities. */
+  async retryPlatformInput(inputId: string) {
+    const actor = this.actor();
+    const delivery = this.state.deliveries.find(
+      (item) => item.inputId === inputId,
+    );
+    const source = delivery?.platformSource;
+    if (
+      !source ||
+      source.author.principalId !== actor.principalId ||
+      source.author.actantId !== actor.actantId
+    )
+      throw new DomainError("forbidden", "这条消息不属于当前用户。");
+    const authorize = this.authorizePlatformInput;
+    if (!authorize)
+      throw new DomainError("invalid", "Platform 消息授权尚未接入。");
+    const route = await authorize({ ...source, phase: "dispatch" });
+    if (route.sharedDefault !== source.sharedDefault)
+      throw new DomainError("conflict", "对话归属已变化，未发送。");
+    if (delivery.platformHeld) {
+      // The first input may have been admitted before its conversation was
+      // committed. Dispatch authorization above verifies that commit now.
+      if (
+        delivery.state !== "queued" &&
+        !(
+          delivery.state === "failed" &&
+          !delivery.rootId &&
+          !delivery.acceptedEventId &&
+          !delivery.rejection
+        )
+      )
+        throw new DomainError("conflict", "这条消息的送达状态尚未确认。");
+      delivery.state = "queued";
+      delivery.error = null;
+      delivery.platformHeld = false;
+      this.save(delivery);
+      void this.tick();
+      return;
+    }
+    if (
+      delivery.state !== "failed" ||
+      delivery.rootId ||
+      delivery.acceptedEventId ||
+      delivery.rejection
+    )
+      throw new DomainError(
+        "conflict",
+        "这条消息已发送或送达状态尚未确认，不能重复投递。",
+      );
+    delivery.state = "queued";
+    delivery.error = null;
+    this.save(delivery);
+    void this.tick();
+  }
+  platformInputFingerprint(inputId: string) {
+    const actor = this.actor();
+    const delivery = this.state.deliveries.find(
+      (item) => item.inputId === inputId,
+    );
+    const source = delivery?.platformSource;
+    if (
+      !source ||
+      source.firstInputId !== inputId ||
+      source.author.principalId !== actor.principalId ||
+      source.author.actantId !== actor.actantId
+    )
+      throw new DomainError("forbidden", "首条消息不属于当前用户。");
+    return createHash("sha256")
+      .update(JSON.stringify(delivery.request))
+      .digest("hex");
   }
   private async ensureSession(id: string) {
     const contextId = this.contextId(this.state.sessions[id]!.projectId);
@@ -1732,12 +4147,28 @@ export class RuntimeBridge {
     this.timer = setInterval(() => void this.tick(), 1200);
     this.timer.unref();
   }
-  cancelInput(inputId: string) {
-    const workspace = this.store.snapshot(),
-      input = workspace.inputs.find((i) => i.id === inputId);
-    if (!input) throw new DomainError("not_found", "输入不存在。");
-    checkProject(workspace, input.projectId, this.actor());
+  async cancelPlatformInput(inputId: string, access: AccessContext) {
     const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
+    const source = delivery?.platformSource;
+    if (!delivery || !source)
+      throw new DomainError("not_found", "输入不存在。");
+    if (
+      source.author.principalId !== access.principalId ||
+      source.author.actantId !== access.actantId
+    )
+      throw new DomainError("forbidden", "只能停止自己发送的消息。");
+    const authorize = this.authorizePlatformRead;
+    if (!authorize) throw new DomainError("forbidden", "当前对话授权不可用。");
+    const scope = {
+      projectId: source.projectId,
+      conversationId: source.conversationId,
+    };
+    const grant = await authorize(scope, access);
+    if (!this.platformReadDeliveries(scope, access, grant).includes(delivery))
+      throw new DomainError("forbidden", "这条消息已不可访问。");
+    this.requestInputCancellation(delivery);
+  }
+  private requestInputCancellation(delivery: StoredDelivery | undefined) {
     if (
       !delivery ||
       ["completed", "failed", "cancelled"].includes(delivery.state)
@@ -1746,7 +4177,7 @@ export class RuntimeBridge {
     if (delivery.state === "queued") {
       delivery.state = "cancelled";
       delivery.error = null;
-      this.save();
+      this.save(delivery);
       return;
     }
     if (delivery.state === "sending" || !delivery.rootId)
@@ -1761,11 +4192,11 @@ export class RuntimeBridge {
       );
     delivery.cancelRequested = true;
     delivery.error = null;
-    this.save();
+    this.save(delivery);
     void this.tick();
   }
   private async processCancellations() {
-    for (const delivery of this.state.deliveries) {
+    for (const delivery of this.activeDeliveries()) {
       if (
         !delivery.cancelRequested ||
         delivery.state !== "running" ||
@@ -1780,13 +4211,24 @@ export class RuntimeBridge {
         lifecycle: z.enum(["open", "completed", "failed", "cancelled"]),
       });
       const path = `/api/sessions/${encodeURIComponent(delivery.sessionId)}/turns/${encodeURIComponent(delivery.rootId)}/thread`;
+      const source = delivery.platformSource;
+      if (!source) continue;
+      const access = source.author;
       try {
-        let view = viewSchema.parse(await this.request(path));
+        let view = viewSchema.parse(
+          await this.request(path, "GET", undefined, access, undefined),
+        );
         if (view.lifecycle === "open")
           view = viewSchema.parse(
-            await this.request(path, "POST", {
-              expected_revision: view.revision,
-            }),
+            await this.request(
+              path,
+              "POST",
+              {
+                expected_revision: view.revision,
+              },
+              access,
+              undefined,
+            ),
           );
         if (view.lifecycle !== "open") {
           delivery.state = view.lifecycle;
@@ -1799,7 +4241,7 @@ export class RuntimeBridge {
       } catch {
         delivery.error = "停止尚未被 Runtime 确认，正在核对同一次处理的状态。";
       }
-      this.save();
+      this.save(delivery);
     }
   }
   async stop() {
@@ -1807,7 +4249,7 @@ export class RuntimeBridge {
     clearInterval(this.timer);
     for (const feed of this.feeds) feed.close();
     this.feeds.clear();
-    while (this.busy) await new Promise((resolve) => setTimeout(resolve, 20));
+    await this.busyCompletion;
   }
   async tick() {
     return this.as(
@@ -1818,8 +4260,16 @@ export class RuntimeBridge {
     );
   }
   private async tickAsService() {
-    if (this.busy || this.stopped) return;
+    if (this.stopped) return;
+    // Enqueue wakes the loop immediately. A caller that then explicitly awaits
+    // tick must await that same in-flight pass, not observe a false success
+    // while its message is still queued.
+    if (this.busy) return this.busyCompletion ?? undefined;
     this.busy = true;
+    let complete!: () => void;
+    this.busyCompletion = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
     try {
       const status = this.teamIdentity
         ? (await this.request("/api/sessions"), { model: "Runtime 默认模型" })
@@ -1830,11 +4280,14 @@ export class RuntimeBridge {
       this.state.connected = true;
       this.state.model = status.model;
       this.state.error = "";
+      let clientMetadataCapability:
+        "supported" | "unsupported" | "unavailable" = "unavailable";
       try {
         const io = z
           .object({
             enabled: z.boolean(),
             directed_input: z.boolean().default(false),
+            client_metadata: z.boolean().default(false),
             harnesses: z
               .array(z.object({ id: z.string(), version: z.string() }))
               .optional(),
@@ -1847,6 +4300,8 @@ export class RuntimeBridge {
               .default([]),
           })
           .parse(await this.request("/api/session-io/capabilities"));
+        clientMetadataCapability =
+          io.enabled && io.client_metadata ? "supported" : "unsupported";
         this.loadedHarnesses = io.enabled ? (io.harnesses ?? null) : null;
         this.state.directedInput =
           io.enabled &&
@@ -1856,18 +4311,111 @@ export class RuntimeBridge {
               f.definition.id === "morphz.application.input" &&
               f.definition.version === "4",
           );
-      } catch {
+      } catch (error) {
+        // A missing endpoint is an older Runtime contract. A timeout or 5xx
+        // is not evidence of that: keep the original queued input for retry.
+        if (
+          error instanceof UpstreamError &&
+          [404, 405, 501].includes(error.status)
+        )
+          clientMetadataCapability = "unsupported";
         this.state.directedInput = false;
         this.loadedHarnesses = null;
       }
-      for (const delivery of this.state.deliveries.filter(
-        (item) => item.state === "queued",
+      for (const delivery of this.activeDeliveries().filter(
+        (item) => item.state === "queued" && item.platformHeld,
+      )) {
+        const source = delivery.platformSource;
+        const authorize = this.authorizePlatformInput;
+        if (!source?.firstInputId || !authorize) continue;
+        try {
+          const route = await authorize({ ...source, phase: "dispatch" });
+          if (route.sharedDefault !== source.sharedDefault)
+            throw new DomainError("conflict", "对话归属已变化，未发送。");
+          delivery.platformHeld = false;
+          this.save(delivery);
+        } catch (error) {
+          if (
+            (error instanceof DomainError ||
+              error instanceof PlatformStorageError) &&
+            error.code === "conflict"
+          )
+            continue;
+          delivery.state = "failed";
+          delivery.error =
+            error instanceof Error ? error.message : "首条消息未能确认。";
+          this.save(delivery);
+        }
+      }
+      for (const delivery of this.activeDeliveries().filter(
+        (item) => item.state === "queued" && !item.platformHeld,
       )) {
         if (this.stopped) break;
         if (delivery.state !== "queued") continue;
+        if (
+          "client_metadata" in delivery.request &&
+          clientMetadataCapability === "unavailable"
+        ) {
+          this.state.error =
+            "暂时无法确认 Runtime 的消息能力，正在重试；原消息已保留。";
+          continue;
+        }
         delivery.state = "sending";
-        this.save();
+        this.save(delivery);
         try {
+          if (delivery.platformSource) {
+            const authorize = this.authorizePlatformInput;
+            if (!authorize)
+              throw new DomainError(
+                "forbidden",
+                "Platform 消息授权不可用，未发送。",
+              );
+            const source = delivery.platformSource;
+            const current = await authorize({
+              projectId: source.projectId,
+              conversationId: source.conversationId,
+              targetActantId: source.targetActantId,
+              author: source.author,
+              ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+              ...(source.artifactRevision
+                ? { artifactRevision: source.artifactRevision }
+                : {}),
+              ...(source.selection ? { selection: source.selection } : {}),
+              ...(source.reading ? { reading: source.reading } : {}),
+              ...(source.continuation
+                ? { continuation: source.continuation }
+                : {}),
+              ...(source.application
+                ? { application: source.application }
+                : {}),
+              ...(source.browser ? { browser: source.browser } : {}),
+              ...(source.localFile ? { localFile: source.localFile } : {}),
+              ...(source.directories?.length
+                ? { directories: source.directories }
+                : {}),
+              ...(source.firstInputId
+                ? { firstInputId: source.firstInputId }
+                : {}),
+              ...(source.newConversationTitle
+                ? { newConversationTitle: source.newConversationTitle }
+                : {}),
+              phase: "dispatch",
+            });
+            const { sharedDefault } = source;
+            if (current.sharedDefault !== sharedDefault)
+              throw new DomainError("conflict", "对话归属已变化，未发送。");
+            // After a lost HTTP receipt, Runtime must resolve the same
+            // immutable client_message_id even if its thread has since ended.
+            // A fresh submission is still fenced by the current generation.
+            if (source.continuation && !delivery.runtimePostAttempted)
+              await this.as(source.author, () =>
+                this.validatePlatformContinuation(
+                  source.continuation!,
+                  source.projectId,
+                  source.conversationId,
+                ),
+              );
+          }
           const activation = delivery.request.activation as
             { harness?: { id: string; version: string } } | undefined;
           if (activation?.harness) {
@@ -1877,13 +4425,18 @@ export class RuntimeBridge {
             );
             if (issue) throw new UpstreamError(422, issue);
           }
+          if ("client_metadata" in delivery.request) {
+            if (clientMetadataCapability !== "supported")
+              throw new DomainError(
+                "invalid",
+                "Morphz 服务版本过旧，暂时无法发送。更新后可重试，消息已保留。",
+              );
+          }
           await this.ensureSession(delivery.sessionId);
           // Establish observers before the model can emit its first text chunk.
           await Promise.all([...this.feeds].map((feed) => feed.sync()));
-          const input = this.store
-            .snapshot()
-            .inputs.find((i) => i.id === delivery.inputId);
-          if (!input) throw new Error("原始输入不可用。");
+          if (!delivery.platformSource) throw new Error("原始输入不可用。");
+          const author = delivery.platformSource.author;
           if (delivery.resourceUploads?.some((upload) => !upload.ready)) {
             const capabilities = z
               .object({ enabled: z.boolean(), resources: z.boolean() })
@@ -1895,8 +4448,30 @@ export class RuntimeBridge {
               );
             for (const upload of delivery.resourceUploads) {
               if (upload.ready) continue;
-              const access = this.teamIdentity ? input.author : this.actor();
-              const bytes = Buffer.from(upload.dataBase64, "base64");
+              const access = this.teamIdentity ? author : this.actor();
+              let bytes: Buffer;
+              if (upload.assetId) {
+                if (!this.messageAttachments)
+                  throw new Error("消息附件 Store 不可用，未发送。");
+                const resource = await this.messageAttachments.readForDispatch(
+                  author,
+                  {
+                    assetId: upload.assetId,
+                    name: upload.name,
+                    mime: upload.mediaType as NonNullable<
+                      RecordedInput["attachments"]
+                    >[number]["mime"],
+                  },
+                );
+                bytes = Buffer.from(resource.bytes);
+              } else {
+                bytes = Buffer.from(upload.dataBase64!, "base64");
+              }
+              if (
+                createHash("sha256").update(bytes).digest("hex") !==
+                upload.sha256
+              )
+                throw new Error("消息附件字节已变化，未发送。");
               const stagePath = `/api/sessions/${delivery.sessionId}/attachment-stages`;
               let stage = z
                 .object({
@@ -1950,9 +4525,11 @@ export class RuntimeBridge {
               )
                 throw new Error("附件完整性尚未确认，未发送。");
               upload.ready = true;
-              this.save();
+              this.save(delivery);
             }
           }
+          delivery.runtimePostAttempted = true;
+          this.save(delivery);
           const receipt = z
             .object({ accepted: z.literal(true), event_id: z.string() })
             .parse(
@@ -1960,10 +4537,10 @@ export class RuntimeBridge {
                 `/api/sessions/${delivery.sessionId}/${delivery.request.io_version === "1" ? "io/messages" : "messages"}`,
                 "POST",
                 delivery.request,
-                this.teamIdentity ? input.author : undefined,
+                this.teamIdentity ? author : undefined,
               ),
             );
-          if (input.continuation?.mode === "supplement") {
+          if (delivery.platformSource.continuation?.mode === "supplement") {
             // This receipt identifies the steering event, NOT a new execution root.
             delivery.acceptedEventId = receipt.event_id;
             delivery.supplement = "delivered";
@@ -1981,22 +4558,30 @@ export class RuntimeBridge {
               [400, 403, 404, 409, 422].includes(error.status)
                 ? "rejected"
                 : "unknown";
+            if (error instanceof ContinuationConflict) {
+              delivery.supplement = "rejected";
+              delivery.rejection = error.reason;
+            } else if (error instanceof DomainError) {
+              delivery.supplement = "rejected";
+              delivery.rejection =
+                error.code === "forbidden" ? "forbidden" : "invalid";
+            }
             if (
               error instanceof UpstreamError &&
               [400, 403, 404, 409, 422].includes(error.status)
             ) {
               delivery.rejection =
                 error.status === 403 ? "forbidden" : "invalid";
-              const target = this.store
-                .snapshot()
-                .inputs.find((i) => i.id === delivery.inputId)?.continuation;
-              if (target) {
+              const source = delivery.platformSource;
+              const target = source?.continuation;
+              if (source && target) {
                 try {
-                  await this.as(
-                    this.store
-                      .snapshot()
-                      .inputs.find((i) => i.id === delivery.inputId)!.author,
-                    () => this.validateContinuation(target),
+                  await this.as(source.author, () =>
+                    this.validatePlatformContinuation(
+                      target,
+                      source.projectId,
+                      source.conversationId,
+                    ),
                   );
                 } catch (e) {
                   if (e instanceof ContinuationConflict)
@@ -2012,19 +4597,20 @@ export class RuntimeBridge {
                 ? new ContinuationConflict("changed").message
                 : error instanceof UpstreamError
                   ? error.message
-                  : "发送结果未确认。重试将核对同一个请求，不会重复执行。";
+                  : error instanceof DomainError ||
+                      error instanceof PlatformStorageError
+                    ? error.message
+                    : "发送结果未确认。重试将核对同一个请求，不会重复执行。";
         }
-        this.save();
+        this.save(delivery);
       }
       await this.processCancellations();
-      await this.collaboration.reconcile();
-      for (const session of Object.values(this.state.sessions)) {
+      const currentDeliveries = this.activeDeliveries();
+      for (const session of this.activeSessions()) {
         if (this.stopped) break;
         if (
           !session.hasWork &&
-          !this.state.deliveries.some(
-            (d) => d.sessionId === session.id && d.rootId,
-          )
+          !currentDeliveries.some((d) => d.sessionId === session.id && d.rootId)
         )
           continue;
         // Durable cursor resumes after restart; do not filter out causal thread-result joins.
@@ -2054,13 +4640,71 @@ export class RuntimeBridge {
           }
           if (data.events.length < 1000) break;
         }
-        for (const delivery of this.state.deliveries.filter(
+        const scopedDeliveries = currentDeliveries.filter(
+          (delivery) => delivery.sessionId === session.id && delivery.rootId,
+        );
+        for (const event of session.events) {
+          if (event.topic !== "runtime/thread_result") continue;
+          const root = payloadString(event, "root_turn_id");
+          const thread = payloadString(event, "thread_id");
+          if (!root || !thread) continue;
+          for (const delivery of scopedDeliveries)
+            if (
+              delivery.rootId === root &&
+              !delivery.causalThreadIds.includes(thread)
+            ) {
+              delivery.causalThreadIds.push(thread);
+              this.markDeliveryDirty(delivery);
+            }
+        }
+        const causalEvents = [
+          ...causalThreadEvents(scopedDeliveries),
+          ...session.events,
+        ];
+        const attribute = sessionDeliveryAttribution(
+          session.id,
+          scopedDeliveries,
+          causalEvents,
+        );
+        for (const event of session.events) {
+          if (
+            ![
+              "chat/reply",
+              "chat/outbound_message",
+              "chat/progress",
+              "chat/runtime_error",
+              "session/io_state",
+              "runtime/response_protocol_fused",
+            ].includes(event.topic) ||
+            !(
+              payloadString(event, "text") ??
+              payloadString(event, "error") ??
+              payloadString(event, "message")
+            )
+          )
+            continue;
+          const delivery = attribute(event);
+          if (
+            delivery?.platformSource &&
+            (!delivery.lastActivityAt ||
+              delivery.lastActivityAt < event.timestamp)
+          ) {
+            delivery.lastActivityAt = event.timestamp;
+            this.markDeliveryDirty(delivery);
+          }
+        }
+        const running = currentDeliveries.filter(
           (d) =>
             d.sessionId === session.id && d.rootId && d.state === "running",
-        )) {
-          const result = session.events.find((e) =>
-            settles(e, delivery.rootId!, session.events),
-          );
+        );
+        const results = running.length
+          ? terminalResultsByRoot(
+              causalEvents,
+              new Set(running.map((delivery) => delivery.rootId!)),
+            )
+          : new Map<string, RuntimeEvent>();
+        for (const delivery of running) {
+          const result = results.get(delivery.rootId!);
           if (!result) continue;
           delivery.cancelRequested = false;
           delivery.state =
@@ -2078,25 +4722,11 @@ export class RuntimeBridge {
               ? (payloadString(result, "error") ??
                 "Morphz 执行失败，请查看错误信息。")
               : null;
+          this.markDeliveryDirty(delivery);
         }
       }
       await this.refreshActivity();
       await this.refreshAttention();
-      this.browser?.drain(
-        (projectId, sessionId) =>
-          !this.state.deliveries.some(
-            (d) =>
-              ["queued", "sending", "running"].includes(d.state) &&
-              (sessionId
-                ? d.sessionId === sessionId
-                : this.state.sessions[d.sessionId]?.projectId === projectId),
-          ),
-        (id) => this.enqueue(id),
-        (id) =>
-          id && this.state.sessions[id]
-            ? discussionId(this.state.sessions[id]!)
-            : undefined,
-      );
     } catch (error) {
       this.state.connected = false;
       this.state.error =
@@ -2104,8 +4734,13 @@ export class RuntimeBridge {
           ? error.message
           : "暂时无法连接 Morphz，正在重连；消息和执行状态已保留。";
     } finally {
-      this.save();
-      this.busy = false;
+      try {
+        this.save();
+      } finally {
+        this.busy = false;
+        this.busyCompletion = null;
+        complete();
+      }
     }
   }
 }

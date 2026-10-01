@@ -582,6 +582,9 @@ async fn claim_parallel_message_fast_path(
     let encounter_id = format!("principal_encounter_{}", event.id);
     let thread_id = stable_thread_id(&event.id);
     let signal_id = stable_thread_signal_id(&event.id);
+    // Use the shared Event classifier even though this statement only admits
+    // inputs. The sequence is supplied by event_insert inside the same CTE.
+    let timeline = crate::memory::session_timeline::classify(event, 0);
     let mut connection = store.acquire_observed("claim_message").await?;
     let statement_started = std::time::Instant::now();
     let row = sqlx::query(
@@ -627,7 +630,7 @@ async fn claim_parallel_message_fast_path(
                (id, timestamp, actor, type, topic, context_id, session_id,
                 thread_id, activation_id, root_turn_id, objective_id, payload)
              SELECT $4, $9, $10, $11, $12, $7, $1,
-                    NULL, NULL, NULL, NULL,
+                    $18, $19, $20, $21,
                     $13::jsonb || COALESCE(
                       (SELECT jsonb_build_object(
                          'principal_first_seen_in_context', true,
@@ -637,6 +640,18 @@ async fn claim_parallel_message_fast_path(
                     )
              FROM request_insert
              RETURNING sequence, payload
+           ),
+           timeline_insert AS (
+             INSERT INTO session_message_timeline
+               (session_id, entry_id, source_event_id, source_sequence,
+                root_turn_id, attempt_id, visible_at_micros,
+                output_visible_at_micros, display_kind, is_final)
+             SELECT $1, $22, $4, event_insert.sequence, $23, $24, $25,
+                    NULL, 'input', TRUE
+             FROM event_insert
+             WHERE $22::text IS NOT NULL
+             ON CONFLICT(session_id, entry_id) DO NOTHING
+             RETURNING entry_id
            ),
            recall_insert AS (
              INSERT INTO recall_projection_outbox
@@ -710,6 +725,7 @@ async fn claim_parallel_message_fast_path(
                   ) AS existing_fingerprint,
                   (SELECT COUNT(*) FROM recall_insert) AS recall_rows,
                   (SELECT COUNT(*) FROM projection_insert) AS projection_rows,
+                  (SELECT COUNT(*) FROM timeline_insert) AS timeline_rows,
                   (SELECT COUNT(*) FROM session_touch) AS touched_sessions
            FROM authority"#,
     )
@@ -730,6 +746,18 @@ async fn claim_parallel_message_fast_path(
     .bind(requested_target_id)
     .bind(&signal_id)
     .bind(event_session_id)
+    .bind(crate::memory::causal_payload_string(event, "thread_id"))
+    .bind(crate::memory::causal_payload_string(event, "activation_id"))
+    .bind(crate::memory::causal_payload_string(event, "root_turn_id"))
+    .bind(crate::memory::causal_payload_string(event, "objective_id"))
+    .bind(timeline.as_ref().map(|entry| entry.entry_id.as_str()))
+    .bind(timeline.as_ref().map(|entry| entry.root_turn_id.as_str()))
+    .bind(
+        timeline
+            .as_ref()
+            .and_then(|entry| entry.attempt_id.as_deref()),
+    )
+    .bind(timeline.as_ref().map(|entry| entry.visible_at_micros))
     .fetch_optional(&mut *connection)
     .await;
     store.observability.record_storage_statement(
@@ -856,6 +884,7 @@ async fn claim_ordered_message_fast_path(
     let replacement_thread_id = stable_thread_id(&event.id);
     let signal_id = stable_thread_signal_id(&event.id);
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
+    let timeline = crate::memory::session_timeline::classify(event, 0);
     let statement_started = std::time::Instant::now();
     let row = sqlx::query(
         r#"WITH
@@ -1110,7 +1139,7 @@ async fn claim_ordered_message_fast_path(
                (id, timestamp, actor, type, topic, context_id, session_id,
                 thread_id, activation_id, root_turn_id, objective_id, payload)
              SELECT $3, $9, $10, $11, $12, $6, $1,
-                    NULL, NULL, NULL, NULL,
+                    $19, $20, $21, $22,
                     $13::jsonb
                     || CASE
                          WHEN $17 = 'follow_up'
@@ -1129,6 +1158,18 @@ async fn claim_ordered_message_fast_path(
                     )
              FROM request_insert
              RETURNING sequence, payload
+           ),
+           timeline_insert AS (
+             INSERT INTO session_message_timeline
+               (session_id, entry_id, source_event_id, source_sequence,
+                root_turn_id, attempt_id, visible_at_micros,
+                output_visible_at_micros, display_kind, is_final)
+             SELECT $1, $23, $3, event_insert.sequence, $24, $25, $26,
+                    NULL, 'input', TRUE
+             FROM event_insert
+             WHERE $23::text IS NOT NULL
+             ON CONFLICT(session_id, entry_id) DO NOTHING
+             RETURNING entry_id
            ),
            cancelled_activations AS (
              UPDATE thread_activations activation
@@ -1302,6 +1343,7 @@ async fn claim_ordered_message_fast_path(
                AND (SELECT COUNT(*) FROM activation_link_insert) >= 0
                AND (SELECT COUNT(*) FROM recall_insert) >= 0
                AND (SELECT COUNT(*) FROM projection_insert) >= 0
+               AND (SELECT COUNT(*) FROM timeline_insert) >= 0
              RETURNING session.id
            )
            SELECT (SELECT context_id FROM authority) AS authority_context_id,
@@ -1344,6 +1386,14 @@ async fn claim_ordered_message_fast_path(
     .bind(&signal_id)
     .bind(dispatch_mode.as_str())
     .bind(batch_limit)
+    .bind(crate::memory::causal_payload_string(event, "thread_id"))
+    .bind(crate::memory::causal_payload_string(event, "activation_id"))
+    .bind(crate::memory::causal_payload_string(event, "root_turn_id"))
+    .bind(crate::memory::causal_payload_string(event, "objective_id"))
+    .bind(timeline.as_ref().map(|entry| entry.entry_id.as_str()))
+    .bind(timeline.as_ref().map(|entry| entry.root_turn_id.as_str()))
+    .bind(timeline.as_ref().and_then(|entry| entry.attempt_id.as_deref()))
+    .bind(timeline.as_ref().map(|entry| entry.visible_at_micros))
     .fetch_one(&mut *connection)
     .await;
     store.observability.record_storage_statement(

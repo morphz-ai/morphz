@@ -25,7 +25,7 @@ const officeRelns =
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 type ExportRecord = ScriptProduction["exports"][number];
-type PinnedItem = {
+export type ScriptDocxItemVersion = {
   id: string;
   kind: ScriptItem["kind"];
   revision: number;
@@ -105,31 +105,42 @@ class DocumentXml {
   }
 }
 
-function byOrder(a: PinnedItem, b: PinnedItem) {
+function byOrder(a: ScriptDocxItemVersion, b: ScriptDocxItemVersion) {
   // localeCompare would make byte identity depend on the host's ICU/locale.
   return (
     a.draft.order - b.draft.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   );
 }
 
-function pinnedItems(production: ScriptProduction, record: ExportRecord) {
+export type ScriptDocxManifest = {
+  productionId: string;
+  record: ExportRecord;
+  metadata: ScriptProduction["metadataHistory"][number];
+  versions: ScriptDocxItemVersion[];
+};
+
+function pinnedItems(manifest: ScriptDocxManifest, record: ExportRecord) {
   if (!record.items.length || record.items.length > scriptDocxLimits.items)
     invalid("导出条目数量无效。");
-  const selected = new Map<string, PinnedItem>();
-  const all = new Map<string, ScriptItem>();
-  for (const item of production.items) {
-    if (all.has(item.id)) invalid(`条目 ID 重复：${item.id}`);
-    all.set(item.id, item);
+  const selected = new Map<string, ScriptDocxItemVersion>();
+  const all = new Map<string, ScriptDocxItemVersion>();
+  const kinds = new Map<string, ScriptItem["kind"]>();
+  for (const item of manifest.versions) {
+    const key = `${item.id}:${item.revision}`;
+    if (all.has(key))
+      invalid(`历史版本缺失或不唯一：${item.id} v${item.revision}`);
+    if (kinds.has(item.id) && kinds.get(item.id) !== item.kind)
+      invalid(`条目类型不一致：${item.id}`);
+    kinds.set(item.id, item.kind);
+    all.set(key, item);
   }
   let characters = 0;
   for (const ref of record.items) {
     if (selected.has(ref.itemId)) invalid(`导出引用重复：${ref.itemId}`);
-    const item = all.get(ref.itemId);
-    if (!item) invalid(`历史条目不存在：${ref.itemId}`);
-    const versions = item.versions.filter((v) => v.revision === ref.revision);
-    if (versions.length !== 1)
-      invalid(`历史版本缺失或不唯一：${ref.itemId} v${ref.revision}`);
-    const draft = scriptDraftSchema.parse(versions[0]!.draft);
+    const item = all.get(`${ref.itemId}:${ref.revision}`);
+    if (!item)
+      invalid(`历史条目不存在或历史版本缺失：${ref.itemId} v${ref.revision}`);
+    const draft = scriptDraftSchema.parse(item.draft);
     for (const value of Object.values(draft))
       if (typeof value === "string") characters += value.length;
     for (const source of draft.sources)
@@ -153,12 +164,8 @@ function pinnedItems(production: ScriptProduction, record: ExportRecord) {
       if (dependencies.has(ref.itemId) || ref.itemId === item.id)
         invalid(`依赖引用重复或引用自身：${item.id}`);
       dependencies.set(ref.itemId, ref.revision);
-      const historical = all.get(ref.itemId);
-      if (
-        !historical ||
-        historical.versions.filter((v) => v.revision === ref.revision)
-          .length !== 1
-      )
+      const historical = all.get(`${ref.itemId}:${ref.revision}`);
+      if (!historical)
         invalid(
           `依赖的历史版本缺失或不唯一：${item.id} → ${ref.itemId} v${ref.revision}`,
         );
@@ -171,8 +178,7 @@ function pinnedItems(production: ScriptProduction, record: ExportRecord) {
     for (const characterId of draft.characters) {
       if (!dependencies.has(characterId))
         invalid(`出场角色缺少版本引用：${item.id}`);
-      const character = all.get(characterId);
-      if (!character || character.kind !== "character")
+      if (kinds.get(characterId) !== "character")
         invalid(`出场角色引用类型不符：${item.id}`);
     }
     if (item.kind === "scene") {
@@ -314,25 +320,28 @@ function zip(parts: Array<[string, string]>, createdAt: string): Uint8Array {
  * unlocking/editing later must not silently rewrite a historical delivery.
  * No Node APIs, network, clock, randomness, external links or executable content.
  */
-export function buildScriptDocx(
-  production: ScriptProduction,
-  exportId: string,
-): Uint8Array {
-  const matches = production.exports.filter((record) => record.id === exportId);
-  if (matches.length !== 1) invalid("导出记录不存在或不唯一。");
-  if (matches[0]!.items.length > scriptDocxLimits.items)
+export function buildScriptDocx(manifest: ScriptDocxManifest): Uint8Array {
+  if (manifest.record.items.length > scriptDocxLimits.items)
     invalid("导出条目数量过多。");
-  const record = scriptProductionSchema.shape.exports.element.parse(matches[0]);
-  const metadataVersions = production.metadataHistory.filter(
-    (m) => m.revision === record.contextRevision,
+  const record = scriptProductionSchema.shape.exports.element.parse(
+    manifest.record,
   );
-  if (metadataVersions.length !== 1) invalid("项目历史版本缺失或不唯一。");
+  if (record.items.length > scriptDocxLimits.items)
+    invalid("导出条目数量过多。");
   const metadata = scriptProductionSchema.shape.metadataHistory.element.parse(
-    metadataVersions[0],
+    manifest.metadata,
   );
-  const productionId = scriptProductionSchema.shape.id.parse(production.id);
+  if (metadata.revision !== record.contextRevision)
+    invalid("项目历史版本缺失或不唯一。");
+  const productionId = scriptProductionSchema.shape.id.parse(
+    manifest.productionId,
+  );
   const brief = scriptBriefSchema.parse(metadata.brief);
-  const items = pinnedItems(production, record);
+  const items = pinnedItems(manifest, record);
+  const versionTitle = (id: string, revision: number) =>
+    manifest.versions.find(
+      (value) => value.id === id && value.revision === revision,
+    )!.draft.title;
   const { template } = record;
   const document = new DocumentXml();
   document.add(`${declaration}<w:document xmlns:w="${wns}"><w:body>`);
@@ -354,7 +363,7 @@ export function buildScriptDocx(
   document.field("制作约束", brief.constraints);
   document.field("素材权利说明", brief.rightsStatement);
 
-  const renderItem = (item: PinnedItem, pageBreak = false) => {
+  const renderItem = (item: ScriptDocxItemVersion, pageBreak = false) => {
     const { draft } = item;
     const label =
       item.kind === "scene"
@@ -377,15 +386,11 @@ export function buildScriptDocx(
     document.field(
       "出场角色",
       draft.characters
-        .map(
-          (id) =>
-            production.items
-              .find((i) => i.id === id)!
-              .versions.find(
-                (v) =>
-                  v.revision ===
-                  draft.dependencies.find((r) => r.itemId === id)!.revision,
-              )!.draft.title,
+        .map((id) =>
+          versionTitle(
+            id,
+            draft.dependencies.find((r) => r.itemId === id)!.revision,
+          ),
         )
         .join("、"),
     );
@@ -436,9 +441,7 @@ export function buildScriptDocx(
     document.paragraph(`${item.draft.title} · v${item.revision}`, "Heading2");
     document.field("文稿来源", `${item.id} v${item.revision}`);
     for (const ref of item.draft.dependencies) {
-      const title = production.items
-        .find((i) => i.id === ref.itemId)!
-        .versions.find((v) => v.revision === ref.revision)!.draft.title;
+      const title = versionTitle(ref.itemId, ref.revision);
       document.field("依赖版本", `${title} · ${ref.itemId} v${ref.revision}`);
     }
     for (const source of item.draft.sources) {

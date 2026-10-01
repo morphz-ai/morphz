@@ -1503,6 +1503,26 @@ kbd {
 .conversation-messages {
   padding-top: 5px;
 }
+.conversation-load-older {
+  display: block;
+  margin: 4px auto 12px;
+  padding: 5px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.conversation-load-older:hover,
+.conversation-load-older:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.conversation-load-error {
+  color: light-dark(#a72a32, #f8a9ad);
+  font-size: 12px;
+  text-align: center;
+}
 .message {
   margin-bottom: 25px;
   overflow-wrap: anywhere;
@@ -2632,38 +2652,6 @@ kbd {
   white-space: pre-wrap;
   line-height: 1.75;
   user-select: text;
-}
-.source-connections {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px;
-  margin: 18px 0;
-}
-.source-connections h3 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 14px;
-}
-.source-connections > p {
-  font-size: 12px;
-  line-height: 1.7;
-}
-.source-connections article {
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-  margin-top: 12px;
-}
-.source-connections article small {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  margin: 5px 0 9px;
-}
-.source-connections article p {
-  font-size: 12px;
-  color: var(--muted);
 }
 /* Real collaboration controls share the object surface rather than a second app. */
 .task-run-panel {

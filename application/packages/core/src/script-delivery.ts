@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Workspace } from "./model.js";
 import type { ScriptCommand } from "./script-studio.js";
+import { scriptItemKinds } from "./script-studio.js";
 
 export const scriptLocationSchema = z
   .object({
@@ -12,15 +13,51 @@ export const scriptLocationSchema = z
   })
   .strict();
 export type ScriptLocation = z.infer<typeof scriptLocationSchema>;
-export const scriptOutputSchema = scriptLocationSchema.extend({
-  commandId: z.string(),
-  inputId: z.string(),
-  projectId: z.string(),
-  kind: z.enum(["production", "item", "candidate", "review"]),
-  title: z.string(),
-  createdAt: z.string(),
-});
+export const scriptOutputSchema = scriptLocationSchema
+  .extend({
+    commandId: z.string(),
+    inputId: z.string(),
+    projectId: z.string(),
+    kind: z.enum(["production", "item", "candidate", "review"]),
+    title: z.string(),
+    createdAt: z.string(),
+    // A delivery card is a live, authorized projection of its owning app.
+    // Its original title/version stay pinned; decisions and production name
+    // are current metadata, not a reason to load the whole manuscript.
+    productionTitle: z.string(),
+    itemKind: z.enum(scriptItemKinds).optional(),
+    isEmpty: z.boolean().optional(),
+    candidateStatus: z.enum(["pending", "accepted", "rejected"]).optional(),
+  })
+  .superRefine((output, context) => {
+    if (output.kind !== "production" && !output.itemKind)
+      context.addIssue({
+        code: "custom",
+        path: ["itemKind"],
+        message: "剧本结果缺少条目类型。",
+      });
+    if (output.kind === "item" && output.isEmpty === undefined)
+      context.addIssue({
+        code: "custom",
+        path: ["isEmpty"],
+        message: "剧本条目缺少交付版本状态。",
+      });
+    if (output.kind === "candidate" && !output.candidateStatus)
+      context.addIssue({
+        code: "custom",
+        path: ["candidateStatus"],
+        message: "剧本候选缺少当前决定。",
+      });
+  });
 export type ScriptOutput = z.infer<typeof scriptOutputSchema>;
+
+/** One command can commit several reviews. Keep each delivered review stable
+ * across history pages and read-state updates without inventing a command. */
+export function scriptOutputKey(
+  output: Pick<ScriptOutput, "commandId" | "reviewId">,
+) {
+  return `output:${output.commandId}${output.reviewId ? `:review:${output.reviewId}` : ""}`;
+}
 
 /** Run inside the command transaction. The command plus saved domain record
  * identifies the exact delivery, including when replaying its durable receipt. */
@@ -51,6 +88,7 @@ export function scriptDelivery(
     inputId,
     projectId: production.projectId,
     productionId,
+    productionTitle: production.title,
   };
   if (command.action === "create-production" && production.id === commandId)
     return {
@@ -68,6 +106,8 @@ export function scriptDelivery(
         ...base,
         kind: "item",
         itemId: item.id,
+        itemKind: item.kind,
+        isEmpty: !version.draft.text.trim(),
         title: version.draft.title,
         revision: 1,
         createdAt: version.createdAt,
@@ -77,12 +117,15 @@ export function scriptDelivery(
     const candidate = production.candidates.find(
       (c) => c.id === commandId && c.inputId === inputId,
     );
-    if (candidate)
+    const item = production.items.find((i) => i.id === candidate?.targetId);
+    if (candidate && item)
       return {
         ...base,
         kind: "candidate",
         itemId: candidate.targetId,
         candidateId: candidate.id,
+        itemKind: item.kind,
+        candidateStatus: candidate.status,
         title: candidate.draft.title,
         revision: candidate.baseRevision,
         createdAt: candidate.createdAt,
@@ -94,12 +137,13 @@ export function scriptDelivery(
     );
     const item = production.items.find((i) => i.id === review?.itemId),
       version = item?.versions.find((v) => v.revision === review?.itemRevision);
-    if (review && version)
+    if (review && item && version)
       return {
         ...base,
         kind: "review",
         itemId: review.itemId,
         reviewId: review.id,
+        itemKind: item.kind,
         title: version.draft.title,
         revision: review.itemRevision,
         createdAt: review.createdAt,

@@ -39,7 +39,7 @@ async function selectRegion(page: Page) {
   await page.mouse.up();
 }
 
-test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失败恢复，关窗不复活", async () => {
+test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失败恢复，关窗不复活", async ({}, testInfo) => {
   test.skip(process.platform !== "darwin", "原生截图后端当前仅接入 macOS");
   test.setTimeout(45000);
   const fixture = await mkdtemp(join(tmpdir(), "morphz-embedded-electron-"));
@@ -54,6 +54,38 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
   );
   delete env.ELECTRON_RUN_AS_NODE;
   let app: ElectronApplication | undefined;
+  let page: Page | undefined;
+  let rendererEvents: unknown;
+  const snapshots: unknown[] = [];
+  const diagnosticErrors: string[] = [];
+  const recordState = async (stage: string) => {
+    try {
+      const native = await app!.evaluate(({ BrowserWindow }) => ({
+        at: Date.now(),
+        windows: BrowserWindow.getAllWindows().map((window) => ({
+          id: window.id,
+          url: window.webContents.getURL(),
+          visible: window.isVisible(),
+          focused: window.isFocused(),
+        })),
+      }));
+      const renderer = await page!.evaluate(() => ({
+        at: Date.now(),
+        focused: document.hasFocus(),
+        activeElement: document.activeElement?.outerHTML,
+        capturing: document
+          .querySelector(".capture-dialog")
+          ?.getAttribute("data-capturing"),
+        alerts: Array.from(
+          document.querySelectorAll(".capture-dialog [role='alert']"),
+          (element) => element.textContent,
+        ),
+      }));
+      snapshots.push({ stage, native, renderer });
+    } catch (error) {
+      diagnosticErrors.push(`${stage}: ${String(error)}`);
+    }
+  };
   try {
     app = await _electron.launch({
       args: ["tests/fixtures/capture-desktop-entry.cjs"],
@@ -62,7 +94,78 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     await expect
       .poll(() => app!.windows().some((page) => page.url() === "morphz://app/"))
       .toBe(true);
-    const page = app.windows().find((page) => page.url() === "morphz://app/")!;
+    page = app.windows().find((page) => page.url() === "morphz://app/")!;
+    // Observe native focus and the existing renderer error presentation only.
+    // Do not wrap capture.select, change focus, or repair the tested gesture.
+    await app.evaluate(({ app, BrowserWindow }) => {
+      const events: unknown[] = [];
+      (globalThis as any).__captureWindowDiagnostic = events;
+      const observe = (window: InstanceType<typeof BrowserWindow>) => {
+        const record = (type: string, detail?: unknown) => {
+          events.push({
+            at: Date.now(),
+            type,
+            id: window.id,
+            url: window.isDestroyed() ? null : window.webContents.getURL(),
+            visible: window.isDestroyed() ? null : window.isVisible(),
+            focused: window.isDestroyed() ? null : window.isFocused(),
+            detail,
+          });
+        };
+        for (const type of ["focus", "blur", "show", "hide", "closed"])
+          window.on(type as "focus", () => record(type));
+        window.webContents.on("before-input-event", (_event, input) => {
+          if (input.key === "Escape" || input.key === "Alt")
+            record("key", input);
+        });
+        record("observed");
+      };
+      BrowserWindow.getAllWindows().forEach(observe);
+      app.on("browser-window-created", (_event, window) => observe(window));
+    });
+    await page.evaluate(() => {
+      const events: unknown[] = [];
+      (window as any).__captureWindowDiagnostic = events;
+      const record = (type: string, detail?: unknown) => {
+        events.push({
+          at: Date.now(),
+          type,
+          focused: document.hasFocus(),
+          activeElement: document.activeElement?.outerHTML,
+          detail,
+        });
+      };
+      for (const type of ["focus", "blur", "focusin", "focusout"])
+        window.addEventListener(type, () => record(type), { capture: true });
+      for (const type of ["keydown", "keyup"])
+        window.addEventListener(
+          type,
+          (event) => {
+            const key = event as KeyboardEvent;
+            if (key.key === "Escape" || key.key === "Alt")
+              record(type, { key: key.key, alt: key.altKey });
+          },
+          { capture: true },
+        );
+      let previousAlerts = "";
+      new MutationObserver(() => {
+        const alerts = Array.from(
+          document.querySelectorAll(".capture-dialog [role='alert']"),
+          (element) => element.textContent,
+        );
+        const current = JSON.stringify(alerts);
+        if (current !== previousAlerts) {
+          previousAlerts = current;
+          // CaptureDialog presents the actual capture.select rejection message.
+          record("capture-select-alerts", alerts);
+        }
+      }).observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+      record("observed");
+    });
     await app.evaluate(({ app, BrowserWindow }) => {
       app.focus({ steal: true });
       BrowserWindow.getAllWindows()
@@ -142,11 +245,14 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     expect(await mainVisible(app)).toBe(false);
     await cancelledPicker.keyboard.press("Escape").catch((error) => {
       // Escape destroys the native picker on keydown, before Playwright sends keyup.
+      diagnosticErrors.push(`picker Escape: ${String(error)}`);
       if (!cancelledPicker.isClosed()) throw error;
     });
+    await recordState("after-picker-cancel");
     await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
     expect(await mainVisible(app)).toBe(true);
     expect(await reads()).toHaveLength(2);
+    await recordState("after-cancel-preview-restored");
 
     await app.evaluate(() => {
       (globalThis as any).__captureWindowFixture.fail = true;
@@ -162,6 +268,10 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
 
     await trigger.click({ modifiers: ["Alt"] });
     await picker(app);
+    await recordState("before-intentional-main-close");
+    rendererEvents = await page
+      .evaluate(() => (window as any).__captureWindowDiagnostic)
+      .catch((error) => ({ error: String(error) }));
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()
         .find((window) => window.webContents.getURL() === "morphz://app/")!
@@ -169,6 +279,27 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     });
     await expect.poll(() => app!.windows().length).toBe(0);
   } finally {
+    if (app && page) {
+      if (!page.isClosed()) await recordState("before-fixture-cleanup");
+      const nativeEvents = await app
+        .evaluate(() => (globalThis as any).__captureWindowDiagnostic)
+        .catch((error) => ({ error: String(error) }));
+      if (!page.isClosed()) {
+        rendererEvents = await page
+          .evaluate(() => (window as any).__captureWindowDiagnostic)
+          .catch((error) => ({ error: String(error) }));
+      }
+      await testInfo.attach("capture-window-focus-diagnostic", {
+        body: Buffer.from(
+          JSON.stringify(
+            { snapshots, nativeEvents, rendererEvents, diagnosticErrors },
+            null,
+            2,
+          ),
+        ),
+        contentType: "application/json",
+      });
+    }
     await app?.close();
     await rm(fixture, { recursive: true, force: true });
   }

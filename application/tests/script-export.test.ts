@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
+import {
+  buildScriptDocx,
+  type ScriptDocxManifest,
+} from "../packages/core/src/script-studio-docx.js";
+import { scriptDocxManifest } from "./script-docx-fixture.js";
 import {
   defaultScriptExportTemplate,
   emptyScriptBrief,
   emptyScriptDraft,
   scriptProductionSchema,
 } from "../packages/core/src/script-studio.js";
+import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 
 const require = createRequire(import.meta.url);
 const fs: typeof import("node:fs") = require("node:fs");
@@ -21,11 +27,152 @@ const {
 const request = {
   centerId: "center",
   principalId: "human",
+  contentId: "content",
   productionId: "production",
   exportId: "export",
 };
 const content = new Uint8Array([0x50, 0x4b, 3, 4, 12, 34, 56]);
 const event = { source: "trusted-main" };
+
+test("正式 Desktop 从剧本私库读取导出记录并保存 Word，不读取旧工作区剧本", async () => {
+  const directory = fs.mkdtempSync(
+    join(tmpdir(), "morphz-script-export-domain-"),
+  );
+  const oldEnv = process.env.MORPHZ_APP_ENV_FILE;
+  process.env.MORPHZ_APP_ENV_FILE = "";
+  let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
+  try {
+    host = await openEmbeddedApplication(directory, join(directory, "profile"));
+    const connection = host.connection;
+    const boot = (await connection.call("platform.bootstrap")) as {
+      centerId: string;
+      principalId: string;
+      csrfToken: string;
+    };
+    const call = (
+      method: Parameters<typeof connection.call>[0],
+      input: unknown,
+    ) => connection.call(method, input, { identityGeneration: boot.csrfToken });
+    const projectId = randomUUID();
+    const productionId = randomUUID();
+    const itemId = randomUUID();
+    await call("projects.create", {
+      commandId: randomUUID(),
+      projectId,
+      title: "Word 正式链路验收",
+    });
+    const created = (await call("scripts.create", {
+      commandId: randomUUID(),
+      productionId,
+      projectId,
+      title: "TEST 私库剧本",
+    })) as { contentId: string };
+    await call("scripts.item.create", {
+      commandId: randomUUID(),
+      contentId: created.contentId,
+      itemId,
+      expectedActivityRevision: 1,
+      kind: "episode",
+      draft: { ...emptyScriptDraft("第一集"), text: "TEST 正式导出正文" },
+    });
+    const production = scriptProductionSchema.parse(
+      await call("scripts.snapshot", {
+        contentId: created.contentId,
+      }),
+    );
+    const exportReceipt = (await call("scripts.export.record", {
+      commandId: randomUUID(),
+      contentId: created.contentId,
+      expectedRevision: production.revision,
+      items: [{ itemId, revision: 1 }],
+      template: production.template,
+      workingCopy: true,
+    })) as { exportId: string };
+    const destination = join(directory, "saved.docx");
+    const window = { isDestroyed: () => false, isFocused: () => true };
+    const saver = createScriptExportSaver({
+      connection,
+      requireMain: (received: unknown) => assert.equal(received, event),
+      getWindow: () => window,
+      dialog: {
+        showSaveDialog: async () => ({
+          canceled: false,
+          filePath: destination,
+        }),
+      },
+      buildDocx: buildScriptDocx,
+    });
+    const saved = await saver.save(event, {
+      centerId: boot.centerId,
+      principalId: boot.principalId,
+      contentId: created.contentId,
+      productionId,
+      exportId: exportReceipt.exportId,
+    });
+    assert.equal(saved.status, "saved");
+    const current = scriptProductionSchema.parse(
+      await call("scripts.snapshot", {
+        contentId: created.contentId,
+      }),
+    );
+    assert.deepEqual(
+      fs.readFileSync(destination),
+      Buffer.from(
+        buildScriptDocx(scriptDocxManifest(current, exportReceipt.exportId)),
+      ),
+    );
+    const retiredWorkspace = await connection.invoke({
+      id: randomUUID(),
+      method: "workspace",
+    });
+    assert.equal(retiredWorkspace.ok, false);
+    if (!retiredWorkspace.ok) assert.equal(retiredWorkspace.error.status, 400);
+    const transport = new DatabaseSync(join(directory, "workspace.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      assert.deepEqual(
+        transport
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets')",
+          )
+          .all(),
+        [],
+      );
+    } finally {
+      transport.close();
+    }
+    let dialogOpened = false;
+    const denied = createScriptExportSaver({
+      connection,
+      requireMain: (received: unknown) => assert.equal(received, event),
+      getWindow: () => window,
+      dialog: {
+        showSaveDialog: async () => {
+          dialogOpened = true;
+          return { canceled: true };
+        },
+      },
+      buildDocx: buildScriptDocx,
+    });
+    await assert.rejects(
+      denied.save(event, {
+        centerId: boot.centerId,
+        principalId: boot.principalId,
+        contentId: created.contentId,
+        productionId: randomUUID(),
+        exportId: exportReceipt.exportId,
+      }),
+      /无权读取/,
+    );
+    assert.equal(dialogOpened, false);
+  } finally {
+    await host?.close();
+    if (oldEnv === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
+    else process.env.MORPHZ_APP_ENV_FILE = oldEnv;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 function setup(t: TestContext) {
   const directory = fs.mkdtempSync(join(tmpdir(), "morphz-script-save-unit-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -40,18 +187,19 @@ function setup(t: TestContext) {
       centerId: "center",
       principalId: "human",
       csrfToken: "synthetic-test-identity-marker",
-      workspace: {
-        projects: [{ id: "project" }],
-        scriptProductions: [
-          {
-            id: "production",
-            projectId: "project",
-            title: "TEST 剧本",
-            exports: [{ id: "export" }],
-          },
-        ],
-      },
     },
+    production: {
+      id: "production",
+      projectId: "project",
+      title: "TEST 剧本",
+      exports: [{ id: "export" }],
+    } as null | {
+      id: string;
+      projectId: string;
+      title: string;
+      exports: { id: string }[];
+    },
+    allowed: true,
   };
   const window = {
     isDestroyed: () => state.destroyed,
@@ -62,8 +210,7 @@ function setup(t: TestContext) {
     canceled: boolean;
     filePath?: string;
   }> = async () => ({ canceled: false, filePath: destination });
-  let build: (production: unknown, exportId: string) => Uint8Array = () =>
-    content;
+  let build: (manifest: ScriptDocxManifest) => Uint8Array = () => content;
   let onRead: (count: number) => void = () => {};
   const saver = createScriptExportSaver({
     requireMain(value: unknown) {
@@ -72,10 +219,59 @@ function setup(t: TestContext) {
     },
     getWindow: () => currentWindow,
     connection: {
-      async call(method: string) {
-        assert.equal(method, "workspace");
-        onRead(++state.reads);
-        return structuredClone(state.boot);
+      async call(
+        method: string,
+        params?: unknown,
+        options?: { identityGeneration?: string },
+      ) {
+        if (method === "platform.bootstrap") return structuredClone(state.boot);
+        assert.equal(options?.identityGeneration, state.boot.csrfToken);
+        if (!state.allowed || !state.production)
+          throw new Error("无权读取此剧本的导出记录。");
+        const production = state.production as typeof state.production &
+          Partial<ReturnType<typeof scriptProductionSchema.parse>>;
+        const input = params as {
+          contentId: string;
+          kind?: string;
+          objectId?: string;
+          revision?: number;
+          itemId?: string;
+        };
+        assert.equal(input.contentId, request.contentId);
+        if (method === "scripts.editor.head")
+          return { id: production.id, title: production.title };
+        if (method === "scripts.editor.detail" && input.kind === "export") {
+          onRead(++state.reads);
+          if (!state.allowed || !state.production)
+            throw new Error("无权读取此剧本的导出记录。");
+          const record = state.production.exports.find(
+            (record) => record.id === input.objectId,
+          );
+          if (!record) throw new Error("无权读取此剧本的导出记录。");
+          return structuredClone({ contextRevision: 1, items: [], ...record });
+        }
+        if (method === "scripts.editor.detail" && input.kind === "context")
+          return structuredClone(
+            production.metadataHistory?.find(
+              (value) => value.revision === input.revision,
+            ) ?? { revision: 1 },
+          );
+        if (method === "scripts.item") {
+          const item = production.items?.find(
+            (value) => value.id === input.itemId,
+          );
+          const version = item?.versions.find(
+            (value) => value.revision === input.revision,
+          );
+          assert.ok(item && version);
+          return {
+            ...version,
+            productionId: production.id,
+            itemId: item.id,
+            kind: item.kind,
+          };
+        }
+        assert.fail(`Unexpected script save port: ${method}`);
       },
     },
     dialog: {
@@ -92,8 +288,7 @@ function setup(t: TestContext) {
         return select();
       },
     },
-    buildDocx: (production: unknown, exportId: string) =>
-      build(production, exportId),
+    buildDocx: (manifest: ScriptDocxManifest) => build(manifest),
   });
   return {
     directory,
@@ -206,12 +401,12 @@ test("native save reconstructs genuine OOXML from a frozen domain receipt", asyn
       },
     ],
   });
-  f.state.boot.workspace.scriptProductions = [production];
-  f.build((value, id) => buildScriptDocx(value as typeof production, id));
+  f.state.production = production;
+  f.build((value) => buildScriptDocx(value));
   await f.saver.save(event, request);
   assert.deepEqual(
     fs.readFileSync(f.destination),
-    Buffer.from(buildScriptDocx(production, "export")),
+    Buffer.from(buildScriptDocx(scriptDocxManifest(production, "export"))),
   );
 });
 
@@ -257,13 +452,13 @@ test("missing identity, project access, production or receipt fails before any s
       f.state.boot.principalId = "other";
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.projects = [];
+      f.state.allowed = false;
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.scriptProductions = [];
+      f.state.production = null;
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.scriptProductions[0]!.exports = [];
+      f.state.production!.exports = [];
     },
   ]) {
     const f = setup(t);
@@ -286,13 +481,13 @@ test("dialog rechecks identity, auth generation marker, access, receipt and orig
       f.state.boot.csrfToken = "changed-test-marker";
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.projects = [];
+      f.state.allowed = false;
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.scriptProductions = [];
+      f.state.production = null;
     },
     (f: ReturnType<typeof setup>) => {
-      f.state.boot.workspace.scriptProductions[0]!.exports = [];
+      f.state.production!.exports = [];
     },
     (f: ReturnType<typeof setup>) => {
       f.state.trusted = false;
@@ -325,7 +520,7 @@ test("second permission check prevents publishing a temporary file after revoked
   const f = setup(t);
   fs.writeFileSync(f.destination, "untouched existing file");
   f.onRead((count) => {
-    if (count === 3) f.state.boot.workspace.projects = [];
+    if (count === 3) f.state.allowed = false;
   });
   await assert.rejects(f.saver.save(event, request), /无权/);
   assert.equal(

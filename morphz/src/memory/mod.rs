@@ -1,10 +1,12 @@
 mod activation_approval_wait;
 mod objective_approval_wait;
+mod session_timeline;
 pub(crate) use activation_approval_wait::plan_approval_frontier;
 pub(crate) use objective_approval_wait::binding_event as approval_checkpoint_objective_binding;
 pub use objective_approval_wait::{
     ApprovalOwnershipContended, ObjectiveActivationAdmission, ObjectiveApprovalWait,
 };
+pub use session_timeline::{SessionTimelineCursor, SessionTimelineItem};
 pub mod lexical;
 pub mod postgres;
 #[cfg(feature = "remote-store")]
@@ -5680,6 +5682,9 @@ pub struct QueryFilter {
     pub thread_id: Option<String>,
     pub activation_id: Option<String>,
     pub root_turn_id: Option<String>,
+    /// Exact physical attempt within one causal root. Both SQL backends index
+    /// this immutable payload field; no second message body is stored.
+    pub attempt_id: Option<String>,
     pub objective_id: Option<String>,
     pub top_k: Option<usize>, // Limits the number of most relevant Events returned.
     /// Return the newest N events, while preserving chronological order in the
@@ -5801,6 +5806,20 @@ pub trait EventStore: Send + Sync {
         records.truncate(limit);
         Ok(records)
     }
+}
+
+/// Bounded, rebuildable Session presentation read. The immutable Event Store
+/// remains the source of truth; this index contains no copied message body or
+/// Platform project membership. Callers must authorize the Session and then
+/// check each returned input root against their own domain permissions.
+#[async_trait::async_trait]
+pub trait SessionTimelineStore: Send + Sync {
+    async fn query_session_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
@@ -8549,6 +8568,7 @@ pub struct StoragePoolMetricsSnapshot {
 
 pub trait RuntimeStore:
     EventStore
+    + SessionTimelineStore
     + TimerStore
     + ExecutionTargetStore
     + ExecutionTargetAuthorizationStore

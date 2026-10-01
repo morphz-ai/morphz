@@ -3,7 +3,10 @@ import type {
   ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
-import type { ScriptOutput } from "../../../packages/core/src/script-delivery.js";
+import {
+  scriptOutputKey,
+  type ScriptOutput,
+} from "../../../packages/core/src/script-delivery.js";
 import {
   inConversation,
   type Workspace,
@@ -19,14 +22,16 @@ export function focusedInputs(
   outputs: ArtifactOutput[],
   focus: ConversationFocus,
 ) {
-  if (focus.artifactId)
-    return inputs.filter(
-      (i) =>
-        i.artifactId === focus.artifactId ||
-        outputs.some(
-          (o) => o.inputId === i.id && o.artifactId === focus.artifactId,
-        ),
+  if (focus.artifactId) {
+    const outputInputIds = new Set(
+      outputs
+        .filter((output) => output.artifactId === focus.artifactId)
+        .map((output) => output.inputId),
     );
+    return inputs.filter(
+      (i) => i.artifactId === focus.artifactId || outputInputIds.has(i.id),
+    );
+  }
   if (focus.applicationId)
     return inputs.filter(
       (i) => i.application?.instanceId === focus.applicationId,
@@ -102,7 +107,7 @@ export function replyReceipts(
       version: `${o.artifactId}:${o.revision}`,
     })),
     ...scriptOutputs.map((o) => ({
-      keys: [`output:${o.commandId}`],
+      keys: [scriptOutputKey(o)],
       version: `${o.productionId}:${o.itemId ?? ""}:${o.candidateId ?? o.reviewId ?? ""}:${o.revision ?? ""}`,
     })),
   ];

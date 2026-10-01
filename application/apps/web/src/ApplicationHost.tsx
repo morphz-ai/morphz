@@ -28,6 +28,7 @@ import {
   scriptStudioApplication,
   readerApplication,
   type ApplicationManifest,
+  type ApplicationCatalogEntry,
   type ApplicationInstance,
 } from "../../../packages/core/src/applications.js";
 import {
@@ -36,7 +37,10 @@ import {
   spaceKind,
 } from "../../../packages/core/src/model.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
-import { contentEntries } from "../../../packages/core/src/content.js";
+import {
+  catalogContentEntries,
+  listingKind,
+} from "./catalog-content-entries.js";
 import {
   recentContent,
   contentVisitTime,
@@ -55,7 +59,7 @@ import { Reader, type ReadingCompose } from "./Reader.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 
-export function AppIcon({ app }: { app: ApplicationManifest }) {
+export function AppIcon({ app }: { app: ApplicationCatalogEntry }) {
   const Icon = {
     layers: Layers2,
     document: FileText,
@@ -78,7 +82,6 @@ export function ApplicationHost({
   scriptLocation,
   onScriptNavigate,
   onOpenScript,
-  onContentVisit,
   onScriptLibrary,
   globalLibrary = false,
   recentContentVisits = [],
@@ -130,8 +133,7 @@ export function ApplicationHost({
     view: "library" | "editor",
   ) => void;
   globalLibrary?: boolean;
-  onOpenScript: (id: string) => void;
-  onContentVisit: (id: string) => void;
+  onOpenScript: (id: string, itemId?: string) => void;
   onScriptLibrary: () => void;
   recentContentVisits?: ContentVisit[];
   children: ReactNode;
@@ -159,19 +161,25 @@ export function ApplicationHost({
   const active = instances.find((i) => i.id === activeId);
   const recent = recentContent(
     recentContentVisits,
-    contentEntries(state),
+    catalogContentEntries(state, client.contentCatalog),
     spaceKind(space) === "project" ? workspaceId : null,
   );
-  const applications = [
+  const builtins = [
     readerApplication,
     browserApplication,
     scriptStudioApplication,
+  ];
+  const builtinIds = new Set(builtins.map((app) => `${app.id}@${app.version}`));
+  const applications = [
+    ...builtins,
     ...state.applications.filter(
       (a) =>
-        a.installedBy === client.boot!.principalId ||
-        instances.some(
-          (i) => i.applicationId === a.id && i.applicationVersion === a.version,
-        ),
+        !builtinIds.has(`${a.id}@${a.version}`) &&
+        (a.installedBy === client.boot!.principalId ||
+          instances.some(
+            (i) =>
+              i.applicationId === a.id && i.applicationVersion === a.version,
+          )),
     ),
   ];
   const [busy, setBusy] = useState(false),
@@ -215,7 +223,7 @@ export function ApplicationHost({
     observer.observe(element);
     return () => observer.disconnect();
   }, [activeId, instanceIds, enabled, toolbarTarget]);
-  async function launch(app: ApplicationManifest, contents = false) {
+  async function launch(app: ApplicationCatalogEntry, contents = false) {
     if (launching.current) return;
     launching.current = true;
     setBusy(true);
@@ -362,17 +370,27 @@ export function ApplicationHost({
                     <button
                       type="button"
                       onClick={() =>
-                        entry.kind === "script"
-                          ? onOpenScript(entry.value.id)
+                        listingKind(entry) === "script"
+                          ? onOpenScript(
+                              entry.kind === "catalog"
+                                ? entry.value.appObjectId
+                                : entry.value.id,
+                            )
                           : onOpen(entry.value.id)
                       }
                       aria-label={`继续打开：${entry.value.title}`}
-                      title={`${entry.value.title} · ${entry.kind === "script" ? "剧本" : kindLabel[entry.value.content.kind]} · ${contentVisitTime(openedAt)} 打开`}
+                      title={`${entry.value.title} · ${listingKind(entry) === "script" ? "剧本" : (kindLabel[listingKind(entry) as keyof typeof kindLabel] ?? "内容")} · ${contentVisitTime(openedAt)} 打开`}
                     >
-                      {entry.kind === "script" ? (
+                      {listingKind(entry) === "script" ? (
                         <Film />
                       ) : (
-                        <ObjectIcon kind={entry.value.content.kind} />
+                        <ObjectIcon
+                          kind={
+                            listingKind(entry) as Parameters<
+                              typeof ObjectIcon
+                            >[0]["kind"]
+                          }
+                        />
                       )}
                       <span className="workspace-recent-text">
                         <span className="workspace-recent-title">
@@ -380,9 +398,11 @@ export function ApplicationHost({
                         </span>
                         <span className="workspace-recent-meta">
                           <span>
-                            {entry.kind === "script"
+                            {listingKind(entry) === "script"
                               ? "剧本"
-                              : kindLabel[entry.value.content.kind]}
+                              : (kindLabel[
+                                  listingKind(entry) as keyof typeof kindLabel
+                                ] ?? "内容")}
                           </span>
                           <time dateTime={new Date(openedAt).toISOString()}>
                             {contentVisitTime(openedAt)}
@@ -506,7 +526,6 @@ export function ApplicationHost({
                 onConceive={() => onComposeIntent("script")}
                 globalLibrary={globalLibrary}
                 onOpenScript={onOpenScript}
-                onContentVisit={onContentVisit}
                 onLibrary={onScriptLibrary}
                 onNotice={onNotice}
               />
@@ -668,7 +687,7 @@ function SandboxApplication({
 }: {
   client: WorkspaceClient;
   instance: ApplicationInstance;
-  manifest: ApplicationManifest;
+  manifest: ApplicationCatalogEntry;
   active: boolean;
   onOpen: (id: string) => void;
   onCompose: (
@@ -729,14 +748,28 @@ function SandboxApplication({
           frame.current?.closest<HTMLElement>(".app")?.dataset.accent ?? "cyan",
       },
       artifacts: manifest.permissions.includes("artifacts.read")
-        ? state.artifacts
-            .filter((a) => a.projectId === instance.workspaceId)
-            .map((a) => ({
-              id: a.id,
-              title: a.title,
-              kind: a.content.kind,
-              revision: a.revision,
-            }))
+        ? [
+            ...state.artifacts
+              .filter((a) => a.projectId === instance.workspaceId)
+              .map((a) => ({
+                id: a.id,
+                title: a.title,
+                kind: a.content.kind,
+                revision: a.revision,
+              })),
+            ...client.contentCatalog
+              .filter(
+                (entry) =>
+                  entry.projectId === instance.workspaceId &&
+                  !state.artifacts.some((a) => a.id === entry.id),
+              )
+              .map((entry) => ({
+                id: entry.id,
+                title: entry.title,
+                kind: entry.kind,
+                revision: Number(entry.observedVersionRef) || 1,
+              })),
+          ]
         : [],
     };
   }
@@ -798,14 +831,12 @@ function SandboxApplication({
         )
           throw new Error("应用当前未激活。");
         const request = applicationMessageSchema.parse(event.data.request);
-        const state = client.boot.workspace;
-        const artifact = (artifactId: string) => {
+        const artifact = async (artifactId: string, revision?: number) => {
           if (!manifest.permissions.includes("artifacts.read"))
             throw new Error("应用没有读取权限。");
-          const value = state.artifacts.find(
-            (a) => a.id === artifactId && a.projectId === instance.workspaceId,
-          );
-          if (!value) throw new Error("对象不在这个工作空间中。");
+          const value = await client.resolveArtifact(artifactId, revision);
+          if (!value || value.projectId !== instance.workspaceId)
+            throw new Error("对象不在这个工作空间中。");
           return value;
         };
         let result: unknown = null;
@@ -814,7 +845,7 @@ function SandboxApplication({
             if (!manifest.permissions.includes("input.compose"))
               throw new Error("应用没有输入权限。");
             const a = request.artifactId
-              ? artifact(request.artifactId)
+              ? await artifact(request.artifactId, request.revision)
               : undefined;
             const revision = request.revision ?? a?.revision;
             const version = a?.versions.find((v) => v.revision === revision);
@@ -884,7 +915,7 @@ function SandboxApplication({
             );
             break;
           case "readArtifact": {
-            const a = artifact(request.artifactId),
+            const a = await artifact(request.artifactId, request.revision),
               version = a.versions.find(
                 (v) => v.revision === (request.revision ?? a.revision),
               );
@@ -893,22 +924,65 @@ function SandboxApplication({
             break;
           }
           case "openArtifact":
-            artifact(request.artifactId);
+            await artifact(request.artifactId);
             onOpen(request.artifactId);
             break;
           case "compose":
             if (!manifest.permissions.includes("input.compose"))
               throw new Error("应用没有输入权限。");
-            if (request.artifactId) artifact(request.artifactId);
+            if (request.artifactId) await artifact(request.artifactId);
             onCompose(request.text, request.artifactId);
             break;
           case "command":
-            result = await client.execute(
-              operationSchema.parse(request.operation),
-              false,
-              instance.id,
-              requestId,
-            );
+            if (!manifest.permissions.includes("artifacts.write"))
+              throw new Error("应用没有写入权限。");
+            {
+              const operation = operationSchema.parse(request.operation);
+              if (
+                ![
+                  "create-artifact",
+                  "revise-artifact",
+                  "annotate",
+                  "link-artifacts",
+                ].includes(operation.type)
+              )
+                throw new Error("应用没有执行此操作的权限。");
+              const inWorkspace = async (artifactId: string) => {
+                const value = await client.resolveArtifact(artifactId);
+                if (!value || value.projectId !== instance.workspaceId)
+                  throw new Error("应用不能操作其他工作空间。");
+                return value;
+              };
+              if (operation.type === "create-artifact") {
+                if (operation.projectId !== instance.workspaceId)
+                  throw new Error("应用不能操作其他工作空间。");
+                if (
+                  operation.content.kind === "task" &&
+                  operation.content.runRequested > 0
+                )
+                  throw new Error("应用不能直接启动事项执行。");
+              } else if (operation.type === "revise-artifact") {
+                const existing = await inWorkspace(operation.artifactId);
+                if (
+                  operation.content.kind === "task" &&
+                  (operation.content.runRequested > 0 ||
+                    (existing.content.kind === "task" &&
+                      existing.content.runRequested > 0))
+                )
+                  throw new Error("应用不能直接更改事项执行。");
+              } else if (operation.type === "annotate") {
+                await inWorkspace(operation.artifactId);
+              } else if (operation.type === "link-artifacts") {
+                await inWorkspace(operation.fromId);
+                await inWorkspace(operation.toId);
+              }
+              result = await client.execute(
+                operation,
+                false,
+                instance.id,
+                requestId,
+              );
+            }
             break;
         }
         if (frame.current?.contentWindow === source)
@@ -964,7 +1038,7 @@ function SandboxApplication({
       title={`${manifest.title}应用界面`}
       sandbox="allow-scripts"
       allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'"
-      src={`/api/application-view/${encodeURIComponent(instance.id)}`}
+      src={`/api/application-view/${encodeURIComponent(`${manifest.id}@${manifest.version}`)}`}
       onLoad={surfaceLoaded}
       onError={() => onNotice("应用界面未能加载，已保存的内容仍保留。")}
     />

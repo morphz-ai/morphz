@@ -86,7 +86,7 @@
 
 名称统一后，新包使用 `morphz-app/v1` 与下列 `morphz-app:*` 消息。已安装的 `morphz-work-app/v1` 包继续使用其原 `morphz-work:*` 消息；宿主按包声明选择协议，不改写旧 HTML，不静默覆盖同 ID/版本。更新示例包必须使用新版本。
 
-宿主向指定 iframe 发 `morphz-app:init`，包括专属 `channel` 和 `context`：工作空间、应用实例、视图状态及修订号、活动状态、主题，以及权限范围内的对象目录。没有 Principal 凭据、中心令牌或其他空间的对象内容。
+宿主向指定 iframe 发 `morphz-app:init`，包括专属 `channel` 和 `context`：工作空间、应用实例、视图状态及修订号、活动状态、主题，以及当前界面已加载的对象摘要。这个摘要不是完整目录；旧 UI 包协议没有分页目录能力，也不能作为新存储模型下第三方应用接入完成的依据。第三方领域接入须按[存储模型](./35-application-storage-model.md)另行设计和验收。没有 Principal 凭据、中心令牌或其他空间的对象内容。
 
 应用请求：
 
@@ -107,7 +107,7 @@ parent.postMessage(
 | 方法           | 作用                                               |
 | -------------- | -------------------------------------------------- |
 | `ready`        | 获取当前工作上下文并确认连接                       |
-| `saveState`    | 带 expectedRevision 保存应用视图状态；冲突不能覆盖 |
+| `saveState`    | 带 expectedRevision 保存窗口导航位置；冲突不能覆盖，不能保存正文或草稿 |
 | `readArtifact` | 读取本空间对象的指定版本                           |
 | `openArtifact` | 在宿主中打开本空间对象                             |
 | `compose`      | 将文字放入当前 AI 输入框，由用户检查后发送         |

@@ -43,6 +43,7 @@ export const bookmarkOperations = [
   z.object({ type: z.literal("bookmark-remove"), ...version }).strict(),
   z.object({ type: z.literal("bookmark-restore"), ...version }).strict(),
 ] as const;
+export type BookmarkOperation = z.infer<(typeof bookmarkOperations)[number]>;
 
 const agentVersion = { bookmarkId: id, revision: z.number().int().positive() };
 // The shared command validates/normalizes URLs; the advertised tool schema is JSON Schema.

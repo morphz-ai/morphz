@@ -1,6 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openInput, composerAction } from "./interaction-helpers.js";
-import type { Boot } from "../apps/web/src/client.js";
+import {
+  PlatformClient,
+  type PlatformHistory,
+} from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  platformInputState,
+  platformContentState,
+} from "./platform-input-state-fixture.js";
 
 const handle = (page: Page) =>
   page.getByRole("separator", { name: "调整消息区高度", exact: true });
@@ -49,9 +59,13 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   const input = page.getByLabel("AI 输入内容");
   await input.fill("TEST 高度调整草稿，不发送");
   await input.evaluate((el) => (el.dataset.resizeMount = "original"));
-  const beforeWorkspace = await page.request
-    .get("/api/workspace")
-    .then((r) => r.json());
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const beforeWorkspace = {
+    inputs: await platformInputState(page, source),
+    content: await platformContentState(source),
+  };
   const canvas = page.locator(".primary-panel > main");
   const canvasBox = await canvas.boundingBox();
   const dockBox = await page.locator(".composer-floating-tools").boundingBox();
@@ -99,15 +113,10 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   );
   await expect(input).toHaveAttribute("data-resize-mount", "original");
   await expect(input).toHaveValue("TEST 高度调整草稿，不发送");
-  const afterWorkspace = await page.request
-    .get("/api/workspace")
-    .then((r) => r.json());
-  expect(afterWorkspace.workspace.inputs).toEqual(
-    beforeWorkspace.workspace.inputs,
-  );
-  expect(afterWorkspace.workspace.artifacts).toEqual(
-    beforeWorkspace.workspace.artifacts,
-  );
+  expect({
+    inputs: await platformInputState(page, source),
+    content: await platformContentState(source),
+  }).toEqual(beforeWorkspace);
   expect(errors).toEqual([]);
   await page.screenshot({ path: "test-results/exchange-resize-recent.png" });
 });
@@ -288,36 +297,30 @@ test("原生松手落在命中层且中间移动被合并时，仍按最终位�
 test("长记录调整高度不替换消息节点，阅读旧回复不被拉到底部，最新位置继续跟随", async ({
   page,
 }) => {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    // This fixture owns a synthetic 30-reply timeline, not content left by
-    // earlier end-to-end scenarios in the shared isolated server.
-    boot.workspace.inputs = [];
-    boot.outputs = [];
-    boot.scriptOutputs = [];
-    boot.runtime.deliveries = [];
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "desk",
-    )!.id;
-    const conversationId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    boot.runtime.messages = Array.from({ length: 30 }, (_, index) => ({
+  // Only Runtime message presentation is synthetic. Navigation and app views
+  // still come from the actual Platform, not a fabricated workspace snapshot.
+  const timeline: PlatformHistory["runtime"]["messages"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      messages: timeline,
+    },
+  }));
+  timeline.push(
+    ...Array.from({ length: 30 }, (_, index) => ({
       id: `resize-message-${index}`,
-      projectId,
-      conversationId,
+      ...fixture.scope,
       artifactId: null,
       kind: "reply" as const,
       createdAt: new Date(Date.UTC(2026, 8, 21, 0, index)).toISOString(),
       text:
         `## TEST 伸缩记录 ${index}\n\n` +
         "这是用于检查消息阅读位置的测试文本。\n\n".repeat(10),
-    }));
-    await route.fulfill({ response, json: boot });
-  });
+    })),
+  );
   await page.reload();
   await openInput(page);
   await resizeTo(page, 300);

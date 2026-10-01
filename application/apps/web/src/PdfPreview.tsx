@@ -4,7 +4,13 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 GlobalWorkerOptions.workerSrc = workerUrl;
 
 /** First-page preview of the existing authorized asset; no import or indexing. */
-export default function PdfPreview({ assetId }: { assetId: string }) {
+export default function PdfPreview({
+  assetId,
+  url,
+}: {
+  assetId: string;
+  url?: string;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -12,7 +18,7 @@ export default function PdfPreview({ assetId }: { assetId: string }) {
     let stopped = false,
       render: RenderTask | undefined;
     const task = getDocument({
-      url: `/api/assets/${assetId}`,
+      url: url ?? `/api/assets/${assetId}`,
       cMapUrl: "/pdfjs/cmaps/",
       cMapPacked: true,
       standardFontDataUrl: "/pdfjs/standard_fonts/",
@@ -45,7 +51,7 @@ export default function PdfPreview({ assetId }: { assetId: string }) {
       render?.cancel();
       void task.destroy();
     };
-  }, [assetId]);
+  }, [assetId, url]);
   return error ? (
     <span>预览暂不可用，仍可打开阅读</span>
   ) : (

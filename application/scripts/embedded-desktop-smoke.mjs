@@ -2,11 +2,20 @@ import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 const fixture = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
+const isolatedEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([key]) =>
+      !key.startsWith("MORPHZ_APP_") &&
+      !key.startsWith("MORPHZWORK_") &&
+      key !== "DOUBAO_API_KEY",
+  ),
+);
 const env = {
-  ...process.env,
+  ...isolatedEnv,
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
   MORPHZ_APP_ENV_FILE: "",
 };
@@ -14,11 +23,7 @@ delete env.ELECTRON_RUN_AS_NODE;
 let app;
 try {
   app = await _electron.launch({
-    args: [
-      process.argv.includes("--production")
-        ? "tests/fixtures/production-desktop-entry.cjs"
-        : "tests/fixtures/embedded-desktop-entry.cjs",
-    ],
+    args: ["tests/fixtures/production-desktop-entry.cjs"],
     env,
   });
   // Preference recovery may briefly create a hidden, inert reader window.
@@ -40,22 +45,23 @@ try {
     const bridge = window.morphzDesktop.application;
     const boot = await bridge.invoke({
       id: crypto.randomUUID(),
-      method: "workspace",
+      method: "platform.bootstrap",
     });
     if (!boot.ok) throw new Error(JSON.stringify(boot));
     const command = {
       commandId: crypto.randomUUID(),
-      operation: { type: "create-project", title: "内嵌 Electron 隔离验收" },
+      projectId: crypto.randomUUID(),
+      title: "内嵌 Electron 隔离验收",
     };
     const first = await bridge.invoke({
       id: crypto.randomUUID(),
-      method: "command",
+      method: "projects.create",
       identityGeneration: boot.value.csrfToken,
       params: command,
     });
     const duplicate = await bridge.invoke({
       id: crypto.randomUUID(),
-      method: "command",
+      method: "projects.create",
       identityGeneration: boot.value.csrfToken,
       params: command,
     });
@@ -64,24 +70,38 @@ try {
       method: "sql",
       params: "select",
     });
+    const retired = await Promise.all(
+      ["workspace", "command"].map((method) =>
+        bridge.invoke({
+          id: crypto.randomUUID(),
+          method,
+          identityGeneration: boot.value.csrfToken,
+          params: command,
+        }),
+      ),
+    );
     const noHTTP = await fetch("/api/workspace");
     localStorage.setItem("fixture-recovery", "retained");
     return {
       centerId: boot.value.centerId,
       principalId: boot.value.principalId,
+      projectId: command.projectId,
       first,
       duplicate,
       forbidden,
+      retired,
       noHTTP: noHTTP.status,
       secure: isSecureContext,
     };
   });
   assert.ok(state.secure);
   assert.equal(state.first.ok, true);
+  assert.equal(state.first.value, state.projectId);
   assert.deepEqual(state.first, state.duplicate);
   assert.equal(state.forbidden.ok, false);
+  assert.ok(state.retired.every((reply) => !reply.ok));
   assert.equal(state.noHTTP, 404);
-  if (process.argv.includes("--production")) {
+  {
     const recovery = await app.evaluate(
       async ({ BrowserWindow, session }, path) => {
         const { collectLegacyPreferences, restorePreferences, emptyPage } =
@@ -155,17 +175,17 @@ try {
   await page
     .getByRole("button", { name: "内嵌 Electron 隔离验收", exact: true })
     .click();
-  // Retained pre-migration PDF compatibility; no new UI import entry.
+  // Explicit Reader import saves an original and registers its Platform reference.
   const imported = await page.evaluate(
     async ({ projectId, data }) => {
       const bridge = window.morphzDesktop.application;
       const boot = await bridge.invoke({
         id: crypto.randomUUID(),
-        method: "workspace",
+        method: "platform.bootstrap",
       });
       return bridge.invoke({
         id: crypto.randomUUID(),
-        method: "pdf.import",
+        method: "reader.import",
         identityGeneration: boot.value.csrfToken,
         params: {
           commandId: crypto.randomUUID(),
@@ -176,7 +196,7 @@ try {
       });
     },
     {
-      projectId: state.first.value.entityId,
+      projectId: state.projectId,
       data: [...readFileSync("tests/fixtures/reader.pdf")],
     },
   );
@@ -196,7 +216,7 @@ try {
       .locator(".pdf-page canvas")
       .evaluate((canvas) => canvas.width > 300),
   );
-  if (process.argv.includes("--production")) {
+  {
     const source = join(fixture, "embedded-native-source.md");
     writeFileSync(source, "Embedded source revision one");
     await app.evaluate(({ dialog }, path) => {
@@ -205,7 +225,25 @@ try {
         filePaths: [path],
       });
     }, source);
-    const projectId = state.first.value.entityId;
+    const projectId = state.projectId;
+    const contentIds = async () =>
+      page.evaluate(async (projectId) => {
+        const bridge = window.morphzDesktop.application;
+        const boot = await bridge.invoke({
+          id: crypto.randomUUID(),
+          method: "platform.bootstrap",
+        });
+        if (!boot.ok) throw new Error(JSON.stringify(boot));
+        const result = await bridge.invoke({
+          id: crypto.randomUUID(),
+          method: "content.list",
+          identityGeneration: boot.value.csrfToken,
+          params: { projectId, limit: 100 },
+        });
+        if (!result.ok) throw new Error(JSON.stringify(result));
+        return result.value.map((item) => item.id).sort();
+      }, projectId);
+    const beforeFileRead = await contentIds();
     const grant = await page.evaluate(
       (projectId) => window.morphzDesktop.files.choose(projectId, "file"),
       projectId,
@@ -218,18 +256,9 @@ try {
       { projectId, grantId: grant.reference.grantId },
     );
     assert.equal(refreshed.text, "Embedded source revision two");
-    const sourceState = await page.evaluate(async () => {
-      const result = await window.morphzDesktop.application.invoke({
-        id: crypto.randomUUID(),
-        method: "workspace",
-      });
-      return result.value.workspace.artifacts.filter(
-        (item) => item.source?.mode === "linked",
-      ).length;
-    });
-    assert.equal(
-      sourceState,
-      0,
+    assert.deepEqual(
+      await contentIds(),
+      beforeFileRead,
       "Original file is not imported or synchronized",
     );
     await page.evaluate(
@@ -307,26 +336,27 @@ try {
     const bridge = window.morphzDesktop.application;
     const boot = await bridge.invoke({
       id: crypto.randomUUID(),
-      method: "workspace",
+      method: "platform.bootstrap",
     });
     if (!boot.ok) throw new Error(JSON.stringify(boot));
-    const command = async (operation) => {
+    const call = async (method, params) => {
       const reply = await bridge.invoke({
         id: crypto.randomUUID(),
-        method: "command",
+        method,
         identityGeneration: boot.value.csrfToken,
-        params: { commandId: crypto.randomUUID(), operation },
+        params,
       });
       if (!reply.ok) throw new Error(JSON.stringify(reply));
       return reply.value;
     };
-    await command({ type: "install-application", manifest });
-    await command({
-      type: "launch-application",
-      workspaceId: boot.value.workspace.projects.find((p) => p.kind === "desk")
-        .id,
-      applicationId: manifest.id,
-      applicationVersion: manifest.version,
+    await call("apps.install", { commandId: crypto.randomUUID(), manifest });
+    const spaces = await call("spaces.ensure");
+    await call("app-views.launch", {
+      commandId: crypto.randomUUID(),
+      projectId: spaces.deskId,
+      appId: manifest.id,
+      packageVersion: manifest.version,
+      state: {},
     });
   }, manifest);
   await page
@@ -372,7 +402,7 @@ try {
   const restored = await page.evaluate(async () => {
     const reply = await window.morphzDesktop.application.invoke({
       id: crypto.randomUUID(),
-      method: "workspace",
+      method: "platform.bootstrap",
     });
     return { reply, storage: localStorage.getItem("fixture-recovery") };
   });
@@ -380,7 +410,7 @@ try {
   assert.equal(restored.reply.value.centerId, state.centerId);
   assert.equal(restored.storage, "retained");
   assert.deepEqual(errors, []);
-  if (process.argv.includes("--production") && process.platform === "darwin") {
+  if (process.platform === "darwin") {
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0].close(),
     );
@@ -400,8 +430,27 @@ try {
       "retained",
     );
   }
+  const transport = new DatabaseSync(
+    join(fixture, "data", "workspace.sqlite"),
+    {
+      readOnly: true,
+    },
+  );
+  try {
+    assert.deepEqual(
+      transport
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets','artifact_outputs','script_outputs','publication_sections')",
+        )
+        .all(),
+      [],
+      "The real embedded entry must not recreate retired business or BLOB tables",
+    );
+  } finally {
+    transport.close();
+  }
   console.log(
-    "Embedded Electron: bundled morphz:// UI, secure preload, direct SQLite, idempotent receipt, retained PDF compatibility/render, native in-place file read without sync, isolated native browser, sandbox iframe, reload storage and close/activate lifecycle passed; no TCP listener.",
+    "Embedded Electron: real bundled morphz:// entry, secure preload, Platform project/idempotent receipt, Reader original/PDF render, native in-place file read without import, isolated native browser, sandbox iframe, reload storage and close/activate lifecycle passed; no application TCP listener or legacy business tables. Isolated fixture, not original-window acceptance.",
   );
 } finally {
   await app?.close();

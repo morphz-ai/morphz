@@ -37,7 +37,8 @@ export function CaptureDialog({
     [error, setError] = useState(""),
     [title, setTitle] = useState("现场截图");
   const created = useRef<string | null>(null);
-  const uploaded = useRef<string | null>(null);
+  const contentUpload = useRef<string | null>(null);
+  const attachmentUpload = useRef<string | null>(null);
   const [preview, setPreview] = useState("");
   const imageSize = useImagePreviewSize();
   useEffect(() => {
@@ -98,7 +99,8 @@ export function CaptureDialog({
       if (request === epoch.current && next) {
         setPicture(next);
         created.current = null;
-        uploaded.current = null;
+        contentUpload.current = null;
+        attachmentUpload.current = null;
       }
     } catch (e) {
       if (request === epoch.current)
@@ -114,20 +116,29 @@ export function CaptureDialog({
     setSaving(true);
     setError("");
     try {
-      if (!uploaded.current) {
+      const attachmentName = title.trim() ? title.trim() + ".png" : "截图.png";
+      const upload =
+        asAttachment && onAttach ? attachmentUpload : contentUpload;
+      if (!upload.current) {
         const bytes = Uint8Array.from(atob(picture.data), (c) =>
           c.charCodeAt(0),
         );
-        const { assetId } = await client.upload(
-          new File([bytes], "selection.png", { type: picture.mime }),
+        const file = new File(
+          [bytes],
+          asAttachment && onAttach ? attachmentName : "selection.png",
+          { type: picture.mime },
         );
-        uploaded.current = assetId;
+        const { assetId } =
+          asAttachment && onAttach
+            ? await client.uploadAttachment(file)
+            : await client.upload(file);
+        upload.current = assetId;
       }
       if (asAttachment && onAttach) {
         onAttach({
-          assetId: uploaded.current,
+          assetId: upload.current,
           mime: "image/png",
-          name: title.trim() ? title.trim() + ".png" : "截图.png",
+          name: attachmentName,
         });
         return;
       }
@@ -138,7 +149,7 @@ export function CaptureDialog({
           title: title.trim(),
           content: {
             kind: "image",
-            assetId: uploaded.current,
+            assetId: upload.current,
             alt: artifactId
               ? `围绕对象 ${artifactId} v${artifactRevision} 手动选择的截图`
               : "手动选择的现场截图",

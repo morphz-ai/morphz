@@ -56,11 +56,19 @@ export function TaskSummary({
       : value.execution === "waiting"
         ? Clock3
         : CircleDashed;
-  const results = state.artifacts.filter((a) => value.resultIds.includes(a.id));
+  const results = value.resultIds.flatMap((id) => {
+    const found =
+      state.artifacts.find((a) => a.id === id) ??
+      client?.contentCatalog.find((entry) => entry.id === id);
+    return found ? [found] : [];
+  });
   const relatedNames = (ids: string[]) =>
     ids
       .map(
-        (id) => state.artifacts.find((a) => a.id === id)?.title ?? "不可用对象",
+        (id) =>
+          state.artifacts.find((a) => a.id === id)?.title ??
+          client?.contentCatalog.find((entry) => entry.id === id)?.title ??
+          "不可用对象",
       )
       .join("、");
   return (

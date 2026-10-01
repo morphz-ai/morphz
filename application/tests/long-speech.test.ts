@@ -10,12 +10,11 @@ import {
 import { ReadAloud } from "../apps/web/src/read-aloud.js";
 import { SpeechQueue } from "../apps/web/src/speech-queue.js";
 import { documentTextIssue } from "../packages/core/src/sources.js";
-import { WorkspaceStore } from "../apps/service/src/store.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import { randomUUID } from "node:crypto";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-test("百万字小说完整分段，章节对齐，不丢字、不拆分代理对，完整对象可保存", () => {
+test("百万字小说完整分段，章节对齐，不丢字、不拆分代理对，真实 Objects 原件可保存", async () => {
   const text =
     "第一章 起点\n" +
     "新的故事🦋继续。".repeat(120000) +
@@ -31,30 +30,23 @@ test("百万字小说完整分段，章节对齐，不丢字、不拆分代理�
   const chapters = readingChapters(text, chunks);
   assert.equal(chapters.length, 2);
   assert.ok(text.slice(chunks[chapters[1]!.chunk]!.start).startsWith("第二章"));
-  const store = new WorkspaceStore(":memory:");
+  const f = await platformRuntimeHostFixture();
   try {
-    const receipt = store.execute(
-      {
+    const request = {
         commandId: randomUUID(),
-        operation: {
-          type: "import-document",
-          projectId: "first-project",
-          relativePath: "novel.txt",
-          text,
-        },
-      },
-      localAccess,
-    );
-    const document = store
-      .snapshot()
-      .artifacts.find((a) => a.id === receipt.entityId)!;
-    assert.equal(document.content.kind, "document");
-    assert.equal(
-      document.content.kind === "document" && document.content.markdown,
-      text,
-    );
+        objectId: randomUUID(),
+        projectId: f.projectId,
+        relativePath: "novel.txt",
+        text,
+    };
+    const receipt = await f.session().importPlatformDocument(request);
+    assert.deepEqual(await f.session().importPlatformDocument(request), receipt);
+    assert.equal((await f.session().readPlatformDocument({contentId: receipt.contentId})).markdown, text);
+    await f.reopen();
+    assert.equal((await f.session().readPlatformDocument({contentId: receipt.contentId})).markdown, text);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 

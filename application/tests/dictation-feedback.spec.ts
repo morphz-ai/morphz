@@ -1,5 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openTranscription, openInput } from "./interaction-helpers.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { platformInputState } from "./platform-input-state-fixture.js";
 
 async function syntheticMicrophone(page: Page) {
   await page.addInitScript(() => {
@@ -88,7 +91,10 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("保留已有草稿");
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await platformInputState(page, source);
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
   await page
     .getByRole("button", { name: "允许并开始听写", exact: true })
@@ -149,8 +155,7 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
   }
   await voice.getByRole("button", { name: "关闭听写", exact: true }).click();
   await expect(input).toHaveValue("保留已有草稿\n合成识别结果\n合成识别结果");
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs.length).toBe(before.workspace.inputs.length);
+  expect(await platformInputState(page, source)).toEqual(before);
   expect(uploads).toBe(4);
 });
 

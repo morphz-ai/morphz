@@ -6,7 +6,20 @@ test("通知角标固定高度、数字居中、零隐藏、大数封顶且不�
 }) => {
   let unread = 1;
   await page.route("**/api/notifications", (route) =>
-    route.fulfill({ json: { mode: "all", unread, items: [] } }),
+    route.fulfill({
+      json: {
+        mode: "all",
+        revision: 0,
+        unread,
+        items: Array.from({ length: unread }, (_, index) => ({
+          id: index.toString(16).padStart(64, "0"),
+          artifactId: `task-${index}`,
+          title: `TEST 未读事项 ${index}`,
+          reason: "需要你参与的事项",
+          read: false,
+        })),
+      },
+    }),
   );
   await page.goto("/");
   for (const appearance of ["亮色", "暗色"]) {

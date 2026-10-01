@@ -9,7 +9,7 @@ function rendererURL(center, hot, packaged) {
 
 // Developer-only transition to Vite. Never copy credentials or another identity.
 const readPreferences = `(async () => {
-  const response = await fetch('/api/workspace');
+  const response = await fetch('/api/platform/bootstrap');
   if (!response.ok) return null;
   const boot = await response.json();
   if (typeof boot.centerId !== 'string' || typeof boot.principalId !== 'string') return null;

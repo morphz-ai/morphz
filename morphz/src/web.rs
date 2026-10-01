@@ -14,7 +14,8 @@ use crate::memory::{
     CapabilityLeaseRestriction, ContextUpdate, DelegationFilter, DelegationStatus,
     ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession,
     ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation,
-    SessionMountKind, SessionStatus, SessionUpdate, ThreadControlAction, ThreadMutation,
+    SessionMountKind, SessionStatus, SessionTimelineCursor, SessionUpdate, ThreadControlAction,
+    ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::provider::auth::{
@@ -684,8 +685,19 @@ struct EventQuery {
     principal_id: Option<String>,
     after_sequence: Option<u64>,
     before_sequence: Option<u64>,
+    root_turn_id: Option<String>,
+    attempt_id: Option<String>,
     #[serde(default)]
     conversation_only: bool,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct SessionTimelineHttpQuery {
+    token: Option<String>,
+    principal_id: Option<String>,
+    before_time_micros: Option<i64>,
+    before_entry_id: Option<String>,
     limit: Option<usize>,
 }
 
@@ -1461,6 +1473,22 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/events",
                 get(handle_get_session_events),
+            )
+            .route(
+                "/api/sessions/:session_id/timeline",
+                get(handle_get_session_timeline),
+            )
+            .route(
+                "/api/sessions/:session_id/events/:event_id",
+                get(handle_get_session_event),
+            )
+            .route(
+                "/api/sessions/:session_id/messages/by-client-id/:client_message_id",
+                get(handle_get_session_message_by_client_id),
+            )
+            .route(
+                "/api/sessions/:session_id/threads/:thread_id",
+                get(handle_get_session_thread),
             )
             .route(
                 "/api/sessions/:session_id/observation-snapshot",
@@ -8081,7 +8109,7 @@ async fn handle_get_session_events(
             "after_sequence and before_sequence cannot be used together",
         );
     }
-    let filter = match (SessionEventsQuery {
+    let mut filter = match (SessionEventsQuery {
         session_id,
         after_sequence: query.after_sequence,
         before_sequence: query.before_sequence,
@@ -8093,6 +8121,21 @@ async fn handle_get_session_events(
         Ok(filter) => filter,
         Err(error) => return sdk_error_response(error),
     };
+    if let Some(root_turn_id) = query.root_turn_id {
+        if root_turn_id.is_empty() || root_turn_id.len() > 512 {
+            return error_response(StatusCode::BAD_REQUEST, "Invalid root Turn ID");
+        }
+        filter.root_turn_id = Some(root_turn_id);
+    }
+    if let Some(attempt_id) = query.attempt_id {
+        if attempt_id.is_empty() || attempt_id.len() > 256 || filter.root_turn_id.is_none() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "An attempt ID requires a valid root Turn ID",
+            );
+        }
+        filter.attempt_id = Some(attempt_id);
+    }
     match state.runtime.query_events(filter).await {
         Ok(events) => {
             let next_before_sequence = (events.len() == limit)
@@ -8106,6 +8149,192 @@ async fn handle_get_session_events(
             }))
             .into_response()
         }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// The Runtime owns chronological Session presentation, while the calling
+/// product remains responsible for input-root-level domain authorization.
+async fn handle_get_session_timeline(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<SessionTimelineHttpQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    let before = match (query.before_time_micros, query.before_entry_id) {
+        (None, None) => None,
+        (Some(visible_at_micros), Some(entry_id))
+            if !entry_id.is_empty() && entry_id.len() <= 256 =>
+        {
+            Some(SessionTimelineCursor {
+                visible_at_micros,
+                entry_id,
+            })
+        }
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "A timeline cursor requires a valid time and entry ID",
+            )
+        }
+    };
+    let limit = query.limit.unwrap_or(100).clamp(1, 100);
+    match state
+        .runtime
+        .query_session_timeline(&session_id, before.as_ref(), limit + 1)
+        .await
+    {
+        Ok(mut entries) => {
+            let has_earlier = entries.len() > limit;
+            if has_earlier {
+                entries.remove(0);
+            }
+            let next_before =
+                has_earlier
+                    .then(|| entries.first())
+                    .flatten()
+                    .map(|entry| SessionTimelineCursor {
+                        visible_at_micros: entry.visible_at_micros,
+                        entry_id: entry.entry_id.clone(),
+                    });
+            Json(json!({ "entries": entries, "next_before": next_before })).into_response()
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_event(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, event_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    match state
+        .runtime
+        .query_events(crate::memory::QueryFilter {
+            event_id: Some(event_id),
+            session_id: Some(session_id),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(events) => match events.into_iter().next() {
+            Some(event) => Json(json!({ "event": event })).into_response(),
+            None => error_response(StatusCode::NOT_FOUND, "Session event not found"),
+        },
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// Resolve an accepted input without scanning Session history. Authorization
+/// is identical to exact Event reads; a client-supplied message ID is only a
+/// lookup key and never grants access to the Event or its presentation data.
+async fn handle_get_session_message_by_client_id(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, client_message_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    if client_message_id.is_empty() || client_message_id.len() > 128 {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid client message ID");
+    }
+    match state
+        .runtime
+        .session_message_event(&session_id, &client_message_id)
+        .await
+    {
+        Ok(Some(event)) => Json(json!({ "event": event })).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Session message not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// Minimal Thread provenance for a member of this Session. The broader
+/// Context Thread detail remains an Operator-only inspection endpoint.
+async fn handle_get_session_thread(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let session = match authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .runtime
+        .session_thread_by_id(&session_id, &thread_id)
+        .await
+    {
+        Ok(Some(thread)) if thread.context_id == session.context_id => Json(json!({
+            "snapshot": {
+                "thread": {
+                    "id": thread.id,
+                    "session_id": thread.session_id,
+                    "context_id": thread.context_id,
+                    "root_turn_id": thread.root_turn_id,
+                    "initiating_principal_id": thread.initiating_principal_id,
+                    "agent_id": thread.agent_id,
+                    "executor_kind": thread.executor_kind,
+                    "executor_id": thread.executor_id,
+                }
+            }
+        }))
+        .into_response(),
+        Ok(Some(_)) | Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -8170,10 +8399,15 @@ async fn handle_get_session_event_attachment(
         .get("media_type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("application/octet-stream");
-    if !media_type.starts_with("image/") {
+    if !media_type.starts_with("image/")
+        && !matches!(
+            media_type,
+            "application/pdf" | "text/plain" | "text/markdown"
+        )
+    {
         return error_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "attachment is not a previewable image",
+            "attachment media type is not previewable",
         );
     }
     let loaded = match crate::model_input::read_stored_attachment(
@@ -9447,6 +9681,8 @@ fn fold_active_model_attempts(
 
 #[cfg(test)]
 mod tests {
+    mod multi_target_physical;
+
     use super::*;
     use crate::config::AppConfig;
     use crate::llm::{
@@ -11065,6 +11301,82 @@ mod tests {
         .into_response();
         assert_eq!(own.status(), StatusCode::OK);
 
+        let service_member = handle_bind_session_principal(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            gateway_headers(Some("morphz-service")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(service_member.status(), StatusCode::OK);
+
+        // A gateway participant can verify exact Thread provenance without
+        // gaining the Operator-only aggregate, and a different Principal
+        // cannot read it through a guessed Thread ID.
+        {
+            use crate::memory::sqlite::SqliteStore;
+            use crate::memory::{NewThread, ThreadKind};
+            let session = runtime
+                .get_session("gateway-session-a")
+                .await
+                .unwrap()
+                .unwrap();
+            let store = SqliteStore::new(runtime.sqlite_database_path().unwrap())
+                .await
+                .unwrap();
+            store
+                .ensure_thread(NewThread {
+                    model_alias: None,
+                    reasoning_effort: None,
+                    id: "gateway-provenance-thread".into(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: Some("site-user-1".into()),
+                    root_turn_id: "gateway-provenance-root".into(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "plan_infer".into(),
+                    executor_id: Some("plan-test".into()),
+                    target_id: None,
+                    supervision: crate::memory::ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+            for (headers, expected) in [
+                (gateway_headers(Some("site-user-1")), StatusCode::OK),
+                (gateway_headers(Some("morphz-service")), StatusCode::OK),
+                (gateway_headers(Some("site-user-2")), StatusCode::FORBIDDEN),
+                (dashboard_headers(), StatusCode::OK),
+                (HeaderMap::new(), StatusCode::UNAUTHORIZED),
+            ] {
+                let response = handle_get_session_thread(
+                    State(Arc::clone(&state)),
+                    Path((session.id.clone(), "gateway-provenance-thread".into())),
+                    headers,
+                    Query(AuthQuery::default()),
+                )
+                .await;
+                assert_eq!(response.status(), expected);
+                if expected == StatusCode::OK {
+                    let body = axum::body::to_bytes(response.into_body(), 16_384)
+                        .await
+                        .unwrap();
+                    let value: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        value["snapshot"]["thread"]["root_turn_id"],
+                        "gateway-provenance-root"
+                    );
+                    assert_eq!(
+                        value["snapshot"]["thread"]["initiating_principal_id"],
+                        "site-user-1"
+                    );
+                    assert_eq!(value["snapshot"]["thread"]["executor_id"], "plan-test");
+                    assert_eq!(value["snapshot"]["thread"].as_object().unwrap().len(), 8);
+                }
+            }
+        }
+
         let objective_created = handle_create_objective(
             State(Arc::clone(&state)),
             gateway_headers(Some("site-user-1")),
@@ -11155,6 +11467,18 @@ mod tests {
         .await
         .into_response();
         assert_eq!(external_principal.status(), StatusCode::CREATED);
+
+        let cross_session_thread = handle_get_session_thread(
+            State(Arc::clone(&state)),
+            Path((
+                "gateway-session-wechat".into(),
+                "gateway-provenance-thread".into(),
+            )),
+            gateway_headers(Some("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(cross_session_thread.status(), StatusCode::NOT_FOUND);
 
         // The Dashboard Operator sees the complete catalog through its
         // administrative authorization. It must not need to impersonate or be
@@ -11316,6 +11640,20 @@ mod tests {
             ))
             .await
             .unwrap();
+        runtime
+            .publish(Event::new(
+                "operator-other-session".to_string(),
+                "test".to_string(),
+                "test".to_string(),
+                "chat/progress".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!("context-test")),
+                    ("session_id".to_string(), json!("gateway-session-wechat")),
+                    ("text".to_string(), json!("Another session")),
+                ]),
+            ))
+            .await
+            .unwrap();
         for (headers, token, principal_id, expected) in [
             (dashboard_headers(), None, None, StatusCode::OK),
             (
@@ -11347,10 +11685,10 @@ mod tests {
             let response = handle_get_session_events(
                 State(Arc::clone(&state)),
                 Path("gateway-session-a".to_string()),
-                headers,
+                headers.clone(),
                 Query(EventQuery {
-                    token,
-                    principal_id,
+                    token: token.clone(),
+                    principal_id: principal_id.clone(),
                     conversation_only: true,
                     ..Default::default()
                 }),
@@ -11369,6 +11707,50 @@ mod tests {
                     .iter()
                     .any(|event| event["id"] == "operator-read-progress"));
             }
+            let timeline = handle_get_session_timeline(
+                State(Arc::clone(&state)),
+                Path("gateway-session-a".to_string()),
+                headers.clone(),
+                Query(SessionTimelineHttpQuery {
+                    token: token.clone(),
+                    principal_id: principal_id.clone(),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            assert_eq!(timeline.status(), expected);
+            let exact = handle_get_session_event(
+                State(Arc::clone(&state)),
+                Path((
+                    "gateway-session-a".to_string(),
+                    "operator-read-progress".to_string(),
+                )),
+                headers,
+                Query(AuthQuery {
+                    token,
+                    principal_id,
+                    ..Default::default()
+                }),
+            )
+            .await;
+            assert_eq!(exact.status(), expected);
+            if expected == StatusCode::OK {
+                let body = axum::body::to_bytes(exact.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["event"]["id"], "operator-read-progress");
+            }
+        }
+        for event_id in ["operator-other-session", "missing-event"] {
+            let response = handle_get_session_event(
+                State(Arc::clone(&state)),
+                Path(("gateway-session-a".to_string(), event_id.to_string())),
+                gateway_headers(Some("site-user-1")),
+                Query(AuthQuery::default()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
         let operator_session = handle_get_session(
             State(Arc::clone(&state)),
@@ -15347,6 +15729,28 @@ account = "xai-account"
                 .unwrap(),
             bytes
         );
+        let preview = handle_get_session_event_attachment(
+            State(Arc::clone(&state)),
+            Path((
+                "attachment-stage-session".to_string(),
+                user_events[0].id.clone(),
+                attachment["id"].as_str().unwrap().to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        assert_eq!(
+            preview.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/pdf"
+        );
+        assert_eq!(
+            axum::body::to_bytes(preview.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            bytes.as_slice(),
+        );
         let consumed = runtime
             .message_attachment_stages()
             .inspect(
@@ -17029,6 +17433,8 @@ account = "xai-account"
                 principal_id: None,
                 after_sequence: None,
                 before_sequence: None,
+                root_turn_id: None,
+                attempt_id: None,
                 conversation_only: true,
                 limit: Some(2),
             }),
@@ -17060,6 +17466,8 @@ account = "xai-account"
                 principal_id: None,
                 after_sequence: None,
                 before_sequence: Some(cursor),
+                root_turn_id: None,
+                attempt_id: None,
                 conversation_only: true,
                 limit: Some(2),
             }),
@@ -17080,6 +17488,209 @@ account = "xai-account"
                 .collect::<Vec<_>>(),
             vec!["dialogue-page-2", "dialogue-page-3"]
         );
+    }
+
+    #[tokio::test]
+    async fn session_timeline_http_pages_by_first_visible_time_and_validates_cursor() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "timeline-http-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Timeline Pagination".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for ordinal in 1..=3 {
+            let id = format!("timeline-http-input-{ordinal}");
+            let mut event = Event::new(
+                id.clone(),
+                "Timeline-Test".to_string(),
+                "session_message".to_string(),
+                "chat/user_message".to_string(),
+                serde_json::Map::from_iter([
+                    (
+                        "context_id".to_string(),
+                        json!(runtime.identity().context_id),
+                    ),
+                    ("session_id".to_string(), json!("timeline-http-session")),
+                    ("root_turn_id".to_string(), json!(id)),
+                    (
+                        "client_message_id".to_string(),
+                        json!(format!("client-{ordinal}")),
+                    ),
+                    ("text".to_string(), json!(format!("message {ordinal}"))),
+                ]),
+            );
+            event.timestamp = chrono::Utc::now() - chrono::Duration::minutes(5)
+                + chrono::Duration::seconds(ordinal);
+            runtime.publish(event).await.unwrap();
+        }
+        let latest = handle_get_session_timeline(
+            State(Arc::clone(&state)),
+            Path("timeline-http-session".to_string()),
+            HeaderMap::new(),
+            Query(SessionTimelineHttpQuery {
+                limit: Some(2),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(latest.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(latest.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let latest: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(latest["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(latest["entries"][0]["entry_id"], "client-2");
+        assert_eq!(latest["entries"][1]["entry_id"], "client-3");
+        let older = handle_get_session_timeline(
+            State(Arc::clone(&state)),
+            Path("timeline-http-session".to_string()),
+            HeaderMap::new(),
+            Query(SessionTimelineHttpQuery {
+                before_time_micros: latest["next_before"]["visible_at_micros"].as_i64(),
+                before_entry_id: latest["next_before"]["entry_id"]
+                    .as_str()
+                    .map(str::to_string),
+                limit: Some(2),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(older.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(older.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let older: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(older["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(older["entries"][0]["entry_id"], "client-1");
+        assert!(older["next_before"].is_null());
+        let malformed = handle_get_session_timeline(
+            State(state),
+            Path("timeline-http-session".to_string()),
+            HeaderMap::new(),
+            Query(SessionTimelineHttpQuery {
+                before_time_micros: Some(1),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn session_events_http_filters_one_root_without_scanning_other_dialogue() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "root-page-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Root-scoped Events".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for (ordinal, root) in ["root-a", "root-b", "root-a"].iter().enumerate() {
+            runtime
+                .publish(Event::new(
+                    format!("root-page-{ordinal}"),
+                    "Root-Page-Test".to_string(),
+                    "test".to_string(),
+                    "chat/reply".to_string(),
+                    serde_json::Map::from_iter([
+                        (
+                            "context_id".to_string(),
+                            json!(runtime.identity().context_id),
+                        ),
+                        ("session_id".to_string(), json!("root-page-session")),
+                        ("root_turn_id".to_string(), json!(root)),
+                        (
+                            "attempt_id".to_string(),
+                            json!(format!("attempt-{ordinal}")),
+                        ),
+                        ("text".to_string(), json!(format!("reply {ordinal}"))),
+                    ]),
+                ))
+                .await
+                .unwrap();
+        }
+        let page = handle_get_session_events(
+            State(Arc::clone(&state)),
+            Path("root-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                root_turn_id: Some("root-a".to_string()),
+                conversation_only: true,
+                limit: Some(2),
+                ..Default::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(page.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["root-page-0", "root-page-2"]
+        );
+        let exact_attempt = handle_get_session_events(
+            State(Arc::clone(&state)),
+            Path("root-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                root_turn_id: Some("root-a".to_string()),
+                attempt_id: Some("attempt-0".to_string()),
+                limit: Some(10),
+                ..Default::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(exact_attempt.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(exact_attempt.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let exact_attempt: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(exact_attempt["events"].as_array().unwrap().len(), 1);
+        assert_eq!(exact_attempt["events"][0]["id"], "root-page-0");
+        let unscoped_attempt = handle_get_session_events(
+            State(Arc::clone(&state)),
+            Path("root-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                attempt_id: Some("attempt-0".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(unscoped_attempt.status(), StatusCode::BAD_REQUEST);
+        let rejected = handle_get_session_events(
+            State(state),
+            Path("root-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                root_turn_id: Some("x".repeat(513)),
+                ..Default::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -17170,6 +17781,8 @@ account = "xai-account"
                 principal_id: None,
                 after_sequence: None,
                 before_sequence: None,
+                root_turn_id: None,
+                attempt_id: None,
                 conversation_only: true,
                 limit: Some(10),
             }),

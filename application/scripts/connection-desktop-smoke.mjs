@@ -23,6 +23,16 @@ const runtime = createServer((req, res) => {
     res.destroy();
     return;
   }
+  // This diagnostic-only Runtime fixture has no accepted Session. The current
+  // authorized history ports require a real not-found response, not a status
+  // object pretending to be a Session timeline or an Event page.
+  if (req.url.startsWith("/api/sessions/")) {
+    res.writeHead(404);
+    res.end(
+      JSON.stringify({ error: "Session not found in diagnostic fixture" }),
+    );
+    return;
+  }
   res.end(
     JSON.stringify(
       req.url === "/api/runtime/inference"
@@ -34,7 +44,12 @@ const runtime = createServer((req, res) => {
 await new Promise((resolve) => runtime.listen(0, "127.0.0.1", resolve));
 const endpoint = `http://127.0.0.1:${runtime.address().port}`;
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
   MORPHZ_APP_ENV_FILE: "",
 };
@@ -55,16 +70,40 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   const input = page.getByLabel("AI 输入内容");
   await input.fill("TEST 连接恢复草稿，未发送");
-  const snapshot = async () =>
+  const businessState = async () =>
     page.evaluate(async () => {
-      const result = await window.morphzDesktop.application.invoke({
+      const api = window.morphzDesktop.application;
+      const result = await api.invoke({
         id: crypto.randomUUID(),
-        method: "workspace",
+        method: "platform.bootstrap",
       });
       if (!result.ok) throw Error(result.error.message);
-      return result.value;
+      const boot = result.value;
+      const call = async (method, params) => {
+        const reply = await api.invoke({
+          id: crypto.randomUUID(),
+          method,
+          params,
+          identityGeneration: boot.csrfToken,
+        });
+        if (!reply.ok) throw Error(reply.error.message);
+        return reply.value;
+      };
+      await call("spaces.ensure");
+      const lists = {
+        projects: await call("projects.list", { status: "all", limit: 100 }),
+        tasks: await call("tasks.list", { owner: "all", limit: 100 }),
+        conversations: await call("conversations.navigation", { limit: 100 }),
+        content: await call("content.list", { limit: 100 }),
+      };
+      // This isolated fixture is deliberately small. Never mistake a truncated
+      // page for the complete business state the connection controls preserve.
+      for (const [kind, list] of Object.entries(lists))
+        if (!Array.isArray(list) || list.length >= 100)
+          throw Error(`Unexpected paginated fixture ${kind}`);
+      return { centerId: boot.centerId, principalId: boot.principalId, lists };
     });
-  const before = await snapshot();
+  const before = await businessState();
   const trigger = page
     .locator(".sidebar-bottom")
     .getByRole("button", { name: "设置", exact: true });
@@ -91,13 +130,16 @@ try {
     token,
   );
   healthy = false;
-  await dialog.getByRole("button", { name: "检查连接", exact: true }).click();
+  const checkConnection = dialog.getByRole("button", {
+    name: /^(检查连接|重新连接)$/,
+  });
+  await checkConnection.click();
   await expect(dialog).toContainText("无法连接智能体");
   await expect(
     dialog.getByRole("button", { name: "设置模型", exact: true }),
   ).toHaveCount(0);
   healthy = true;
-  await dialog.getByRole("button", { name: "检查连接", exact: true }).click();
+  await checkConnection.click();
   await expect(dialog).toContainText("尚未配置");
   await expect(dialog).not.toContainText("无法连接智能体");
   mkdirSync("test-results", { recursive: true });
@@ -166,13 +208,10 @@ try {
   await page.screenshot({
     path: "test-results/profile-status-desktop-200.png",
   });
-  const after = await snapshot();
+  const after = await businessState();
   assert.equal(after.centerId, before.centerId);
   assert.equal(after.principalId, before.principalId);
-  assert.deepEqual(
-    { ...after.workspace, revision: before.workspace.revision },
-    before.workspace,
-  );
+  assert.deepEqual(after.lists, before.lists);
   assert.ok(methods.every((m) => m === "GET"));
   assert.equal(
     await page.evaluate(() =>

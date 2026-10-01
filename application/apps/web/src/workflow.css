@@ -404,58 +404,6 @@
 .interactive-empty button {
   text-decoration: underline;
 }
-.app .source-connections > article {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0;
-  margin: 0;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
-}
-.source-connections > article > div:first-child {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.source-connections > article > p {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-.app .source-actions {
-  gap: 4px;
-}
-.app .source-connections button {
-  min-height: 32px;
-  padding: 5px 8px;
-  gap: 5px;
-}
-.source-connections .error-banner button {
-  margin-left: 8px;
-}
-.source-empty {
-  padding: 12px 0;
-  color: var(--muted);
-}
-.source-explanation {
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 12px;
-}
-.source-explanation summary {
-  cursor: pointer;
-  padding: 4px 0;
-}
-.source-explanation p {
-  margin: 6px 0;
-  line-height: 1.7;
-}
-@media (max-width: 760px) {
-  .app .source-connections > article {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 .app.application-immersive {
   grid-template-columns: minmax(0, 1fr);
   --workspace-offset: 0px;

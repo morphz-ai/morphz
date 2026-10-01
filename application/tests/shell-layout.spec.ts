@@ -2,6 +2,9 @@ import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { openLibrary } from "./application-helpers.js";
+import { randomUUID } from "node:crypto";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
 test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({ page }) => {
   await page.goto("/");
@@ -102,24 +105,16 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   expect(before.y).toBe(actions.y + actions.height);
   expect(before.height).toBeLessThan(110);
 
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find(
-    (p: { title: string }) => p.title === "紧凑工作空间验收",
-  ).id;
-  const invoke = async (operation: unknown) => {
-    const response = await page.request.post("/api/commands", {
-      headers: {
-        "X-Morphz-Token": boot.csrfToken,
-        Origin: "http://127.0.0.1:65421",
-      },
-      data: { commandId: crypto.randomUUID(), operation },
-    });
-    expect(response.ok()).toBeTruthy();
-    return response.json();
-  };
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const projectId = (await source.allProjects()).find(
+    (project) => project.title === "紧凑工作空间验收",
+  )!.id;
   for (let i = 0; i < 25; i++) {
-    await invoke({
-      type: "import-document",
+    await source.importDocument({
+      commandId: randomUUID(),
+      objectId: randomUUID(),
       projectId,
       relativePath: `资料-${i}.md`,
       text: `第 ${i} 份本地测试资料。`,
@@ -161,12 +156,13 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
       id: `test.compact-${i}`,
       title: `多标签工作便笺 ${i}`,
     };
-    await invoke({ type: "install-application", manifest: app });
-    await invoke({
-      type: "launch-application",
-      workspaceId: projectId,
-      applicationId: app.id,
-      applicationVersion: app.version,
+    await source.installUiPackage(randomUUID(), app);
+    await source.launchAppView({
+      commandId: randomUUID(),
+      projectId,
+      appId: app.id,
+      packageVersion: app.version,
+      state: {},
     });
   }
   await page.reload();

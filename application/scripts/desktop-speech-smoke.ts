@@ -4,14 +4,12 @@ import { _electron, expect } from "@playwright/test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
-import { WorkspaceStore } from "../apps/service/src/store.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { SpeechService } from "../apps/service/src/speech.js";
 import { loadServiceEnvironment } from "../apps/service/src/environment.js";
 import { readSpeechWav } from "../packages/core/src/audio.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { openSmokeDomainHost } from "./smoke-domain-host.js";
 
 const input = process.argv
   .find((arg) => arg.startsWith("--synthetic-wav="))
@@ -33,25 +31,14 @@ assert.ok(
   "A server-side Doubao Plan credential is required",
 );
 const directory = mkdtempSync(join(tmpdir(), "morphz-native-speech-"));
-const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
-const artifactId = store.execute(
-  {
-    commandId: randomUUID(),
-    operation: {
-      type: "create-artifact",
-      projectId: "first-project",
-      title: "桌面语音验收",
-      content: {
-        kind: "document",
-        markdown: "你好，这是一段合成语音，用于测试语音输入。".repeat(
-          longReading ? 18 : 1,
-        ),
-      },
-    },
-  },
-  localAccess,
-).entityId;
-const server = createAppServer(store, {
+const host = await openSmokeDomainHost(directory);
+const document = await host.createDocument(
+  "桌面语音验收",
+  "你好，这是一段合成语音，用于测试语音输入。".repeat(longReading ? 18 : 1),
+);
+const artifactId = document.contentId;
+const server = createAppServer(host.store, {
+  ...host.options,
   port: 65423,
   webRoot: resolve("dist/web"),
   speech,
@@ -154,7 +141,11 @@ try {
       true,
     );
     await reader.getByRole("button", { name: "关闭", exact: true }).click();
-    assert.equal(store.snapshot().artifacts[0]!.revision, 1);
+    assert.equal(
+      (await host.session.readPlatformDocument({ contentId: artifactId }))
+        .headRevision,
+      1,
+    );
     console.log(
       "PASS: real Doubao TTS -> native audio playback progressed -> explicit stop; object unchanged.",
     );
@@ -195,7 +186,7 @@ try {
   });
   const transcript = await recorder.getByLabel("语音识别文字").inputValue();
   stage = "annotation";
-  assert.equal(store.snapshot().inputs.length, 0);
+  host.assertNoAgentDelivery();
   await recorder
     .getByRole("button", { name: "放入输入框", exact: true })
     .click();
@@ -204,8 +195,12 @@ try {
   await ui.getByRole("button", { name: "保存为批注", exact: true }).click();
   await expect(ui.locator(".annotation")).toContainText(transcript);
   await expect(ui.locator(".annotation")).toContainText("v1");
-  assert.equal(store.snapshot().annotations[0]!.artifactId, artifactId);
-  assert.equal(store.snapshot().inputs.length, 0);
+  const annotations = await host.session.listPlatformObjectAnnotations({
+    contentId: artifactId,
+  });
+  assert.equal(annotations[0]!.annotation.artifactId, artifactId);
+  assert.equal(annotations[0]!.annotation.body, transcript);
+  host.assertNoAgentDelivery();
   await ui.screenshot({
     path: join(directory, "desktop-voice-annotation.png"),
   });
@@ -250,6 +245,6 @@ try {
   if (app) await app.close();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  store.close();
+  await host.close();
   console.log("Native speech fixture:", directory);
 }

@@ -304,6 +304,10 @@ pub struct Request {
     pub io_version: String,
     pub client_message_id: String,
     pub message: Message,
+    /// Client-owned presentation data persisted with the accepted input, but
+    /// never projected into the model's typed message or execution authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_metadata: Option<Data>,
     #[serde(default)]
     pub activation: Activation,
     #[serde(default)]
@@ -314,12 +318,23 @@ impl Request {
         let mut wire = Data::from_value(&json!(self));
         if let Data::Object(fields) = &mut wire {
             fields.insert("message".into(), self.message.wire_data());
+            if let Some(metadata) = &self.client_metadata {
+                fields.insert("client_metadata".into(), metadata.clone());
+            }
         }
         wire
     }
     pub fn parse(bytes: &[u8], limits: &Limits) -> IoResult<Self> {
         let mut tree = Data::parse(bytes, limits)?;
         if let Data::Object(root) = &mut tree {
+            if let Some(metadata) = root.get("client_metadata").cloned() {
+                // Data uses tagged storage representation, while the wire
+                // field is ordinary bounded JSON, just like message content.
+                root.insert(
+                    "client_metadata".into(),
+                    Data::from_value(&serde_json::to_value(metadata).expect("data serialization")),
+                );
+            }
             if let Some(Data::Object(message)) = root.get_mut("message") {
                 if let Some(Data::Object(content)) = message.get_mut("content") {
                     match content.get("encoding").and_then(Data::string) {
@@ -477,7 +492,7 @@ impl Registry {
     pub fn capabilities(&self) -> Value {
         json!({"experimental":false,"enabled":true,"io_versions":["1"],
             "stream_versions":["1"],"encodings":["json","utf8","resource"],"resources":true,"generic_json":self.allow_generic,
-            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":true,
+            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":true,"client_metadata":true,
             "activation_modes":["evaluate"],"schema_keywords":schema::KEYWORDS,"schema_numeric_constants":"int64-or-uint64-only","limits":self.limits,
             "formats":self.definitions.values().map(|definition| json!({"definition":definition,"schema_hash":definition.schema.as_ref().map(hash),"contract_hash":definition.contract.as_ref().map(hash)})).collect::<Vec<_>>()})
     }

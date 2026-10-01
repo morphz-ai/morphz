@@ -1,132 +1,121 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { WorkspaceStore } from "../apps/service/src/store.js";
-import {
-  initialWorkspace,
-  localAccess,
-  type Workspace,
-} from "../packages/core/src/model.js";
+import { localAccess } from "../packages/core/src/model.js";
 import { documentImportIssue } from "../packages/core/src/sources.js";
-import {
-  readArtifact,
-  searchArtifacts,
-} from "../packages/core/src/retrieval.js";
+import { searchDomainFixture } from "./search-domain-fixture.js";
 
-const importCommand = (
-  text = "这是可检索的资料。共享上下文保持来源可追溯。",
-) => ({
-  commandId: randomUUID(),
-  operation: {
-    type: "import-document",
-    projectId: "first-project",
-    relativePath: "docs/notes.md",
-    text,
-  },
-});
-
-test("资料导入：来源、幂等、修订和引用原文保持一致", () => {
-  const store = new WorkspaceStore(":memory:");
+test("实际资料导入：来源、幂等、修订和历史原文保持一致", async () => {
+  const f = await searchDomainFixture();
   try {
-    const command = importCommand();
-    const receipt = store.execute(command, localAccess);
-    assert.deepEqual(store.execute(command, localAccess), receipt);
-    const state = store.snapshot(),
-      artifact = state.artifacts[0]!;
-    assert.equal(state.artifacts.length, 1);
-    assert.equal(artifact.source?.relativePath, "docs/notes.md");
-    assert.equal(artifact.source?.mode, "copy");
-    const results = searchArtifacts(
-      state,
-      { query: "共享上下文" },
-      localAccess,
-    );
-    assert.equal(results.total, 0, "外部资料不进入 Agent 成果索引");
+    const text = "这是可检索的资料。共享上下文保持来源可追溯。";
+    const commandId = randomUUID(),
+      objectId = randomUUID();
+    const receipt = await f.import(text, "docs/notes.md", commandId, objectId);
     assert.deepEqual(
-      readArtifact(state, artifact.id, localAccess).content,
-      artifact.content,
-    );
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "revise-artifact",
-          artifactId: artifact.id,
-          expectedRevision: 1,
-          title: "编辑后的文章",
-          content: { kind: "document", markdown: "完全不同的新内容" },
-        },
-      },
-      localAccess,
+      await f.import(text, "docs/notes.md", commandId, objectId),
+      receipt,
     );
     assert.equal(
-      searchArtifacts(store.snapshot(), { query: "共享上下文" }, localAccess)
-        .total,
-      0,
-    );
-    const previous = readArtifact(
-      store.snapshot(),
-      artifact.id,
-      localAccess,
+      (await f.session().listPlatformContent({ projectId: f.projectId }))
+        .length,
       1,
     );
+    const original = await f.readOriginal(objectId);
+    assert.equal(original.source?.relativePath, "docs/notes.md");
+    assert.equal(original.source?.mode, "copy");
     assert.equal(
-      previous.content.kind === "document" && previous.content.markdown,
-      command.operation.text,
+      (await f.search({ query: "共享上下文" })).total,
+      0,
+      "导入正文不进入 Agent 成果索引",
     );
-    assert.equal(store.snapshot().artifacts[0]!.source?.importedRevision, 1);
+    assert.equal(original.content.kind, "document");
+    assert.equal(
+      original.content.kind === "document" && original.content.markdown,
+      text,
+    );
+    await f
+      .session()
+      .revisePlatformDocument({
+        commandId: randomUUID(),
+        contentId: receipt.contentId,
+        expectedRevision: 1,
+        title: "编辑后的文章",
+        markdown: "完全不同的新内容",
+      });
+    assert.equal((await f.search({ query: "共享上下文" })).total, 0);
+    assert.equal(
+      (
+        await f
+          .session()
+          .readPlatformDocument({ contentId: receipt.contentId, revision: 1 })
+      ).markdown,
+      text,
+    );
+    assert.equal((await f.readOriginal(objectId)).source?.importedRevision, 1);
+    await f.reopen();
+    assert.equal(
+      (
+        await f
+          .session()
+          .readPlatformDocument({ contentId: receipt.contentId, revision: 1 })
+      ).markdown,
+      text,
+    );
+    assert.equal(
+      (await f.session().readPlatformDocument({ contentId: receipt.contentId }))
+        .revision,
+      2,
+    );
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 
-test("未授权结果、计数、正文和历史版本均不可读取；Actor 不得伪造", () => {
-  const store = new WorkspaceStore(":memory:");
+test("未授权结果、计数、正文和历史版本均不可读取；Actor 不得伪造", async () => {
+  const f = await searchDomainFixture();
   try {
-    store.execute(importCommand("私有资料 needle"), localAccess);
-    const state = store.snapshot();
-    state.principals.push({ id: "guest", name: "访客" });
-    state.actants.push({
-      id: "guest-human",
-      name: "访客",
-      kind: "human",
-      principalId: "guest",
-    });
+    const receipt = await f.createAgent("私有资料", "私有 needle 原文");
     const guest = { principalId: "guest", actantId: "guest-human" };
-    assert.equal(searchArtifacts(state, { query: "needle" }, guest).total, 0);
-    assert.throws(
-      () =>
-        searchArtifacts(
-          state,
-          { query: "needle", projectId: "first-project" },
-          guest,
-        ),
-      /没有访问/,
+    await assert.rejects(
+      f.search({ query: "needle" }, guest),
+      (error: any) => error.code === "forbidden",
     );
-    assert.throws(
-      () => readArtifact(state, state.artifacts[0]!.id, guest, 1),
-      /没有访问/,
+    await assert.rejects(
+      f.search({ query: "needle", projectId: f.projectId }, guest),
+      (error: any) => error.code === "forbidden",
     );
-    assert.throws(
-      () =>
-        searchArtifacts(
-          state,
-          { query: "needle" },
-          { principalId: "local-owner", actantId: "guest-human" },
-        ),
-      /主体不匹配/,
+    await assert.rejects(
+      f
+        .session(guest)
+        .readPlatformDocument({ contentId: receipt.contentId, revision: 1 }),
+      (error: any) => error.code === "forbidden",
     );
+    await assert.rejects(
+      f.search(
+        { query: "needle" },
+        { ...localAccess, actantId: "guest-human" },
+      ),
+      (error: any) => error.code === "forbidden",
+    );
+    assert.equal((await f.search({ query: "needle" })).total, 1);
+    assert.equal(
+      (
+        await f
+          .session()
+          .readPlatformDocument({ contentId: receipt.contentId, revision: 1 })
+      ).markdown,
+      "私有 needle 原文",
+    );
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 
-test("导入拒绝隐藏文件、越界路径、凭据、二进制、私钥和超限文本", () => {
-  for (const path of [
+test("正式导入拒绝隐藏文件、越界路径、凭据、二进制、私钥和超限文本", async () => {
+  const paths = [
     ".env",
     "docs/.env.md",
     "a/../secret.md",
@@ -139,101 +128,44 @@ test("导入拒绝隐藏文件、越界路径、凭据、二进制、私钥和�
     ".git/a.md",
     "a.sqlite",
     "a.md\0.txt",
-  ])
-    assert.ok(documentImportIssue(path), path);
+  ];
+  for (const path of paths) assert.ok(documentImportIssue(path), path);
   assert.equal(documentImportIssue("文档/设计说明.md"), null);
-  const store = new WorkspaceStore(":memory:");
+  const f = await searchDomainFixture();
   try {
     for (const text of [
       "hello\0world",
       "-----BEGIN RSA PRIVATE KEY-----",
       "中".repeat(2000001),
     ])
-      assert.throws(() => store.execute(importCommand(text), localAccess));
-    const command = importCommand();
-    assert.throws(() =>
-      store.execute(
-        {
-          ...command,
-          operation: { ...command.operation, relativePath: "../a.md" },
-        },
-        localAccess,
-      ),
+      await assert.rejects(async () => f.import(text));
+    for (const path of paths)
+      await assert.rejects(async () => f.import("不能保存", path));
+    assert.deepEqual(
+      await f.session().listPlatformContent({ projectId: f.projectId }),
+      [],
     );
-    assert.equal(store.snapshot().artifacts.length, 0);
-  } finally {
-    store.close();
-  }
-});
-
-test("旧数据库无来源字段可升级，保留原对象，旧版本不能重新打开新库", () => {
-  const directory = mkdtempSync(
-    join(tmpdir(), "morphz-application-migration-"),
-  );
-  const path = join(directory, "workspace.sqlite");
-  try {
-    const store = new WorkspaceStore(path);
-    store.execute(importCommand(), localAccess);
-    store.close();
-    const legacy = new DatabaseSync(path);
-    const state = JSON.parse(
-      (
-        legacy.prepare("SELECT body FROM workspace WHERE id=1").get() as {
-          body: string;
-        }
-      ).body,
-    );
-    delete state.artifacts[0].source;
-    legacy.prepare("UPDATE workspace SET body=?").run(JSON.stringify(state));
-    legacy.exec("PRAGMA user_version=1");
-    legacy.close();
-    const migrated = new WorkspaceStore(path);
-    assert.equal(migrated.snapshot().artifacts.length, 1);
-    assert.equal(migrated.snapshot().artifacts[0]!.source, null);
-    migrated.close();
-    const db = new DatabaseSync(path);
     assert.equal(
-      (db.prepare("PRAGMA user_version").get() as { user_version: number })
-        .user_version,
-      16,
+      (
+        await f.host.withHuman((actor) =>
+          f.host.domains.content.platform.listContent(actor),
+        )
+      ).length,
+      0,
     );
-    db.close();
+    f.assertNoLegacyData();
   } finally {
-    rmSync(directory, { recursive: true });
+    await f.close();
   }
 });
 
-test("搜索分页稳定，支持中英文和字面符号，不执行查询语法", () => {
-  const state: Workspace = initialWorkspace();
-  const store = new WorkspaceStore(":memory:");
+test("实际索引分页稳定，支持中英文和字面符号，不执行查询语法", async () => {
+  const f = await searchDomainFixture();
   try {
     for (let i = 0; i < 23; i++)
-      store.execute(
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "create-artifact",
-            projectId: "first-project",
-            title: "Agent 成果",
-            content: {
-              kind: "document",
-              markdown: 'PrefixCache 与引用 %_"OR*',
-            },
-          },
-        },
-        { principalId: "morphz-service", actantId: "morphz-agent" },
-      );
-    Object.assign(state, store.snapshot());
-    const first = searchArtifacts(
-      state,
-      { query: "prefixcache", limit: 20 },
-      localAccess,
-    );
-    const second = searchArtifacts(
-      state,
-      { query: "prefixcache", offset: 20 },
-      localAccess,
-    );
+      await f.createAgent("Agent 成果", 'PrefixCache 与引用 %_"OR*');
+    const first = await f.search({ query: "prefixcache", limit: 20 });
+    const second = await f.search({ query: "prefixcache", offset: 20 });
     assert.equal(first.total, 23);
     assert.equal(first.hits.length, 20);
     assert.equal(second.hits.length, 3);
@@ -241,15 +173,17 @@ test("搜索分页稳定，支持中英文和字面符号，不执行查询语�
       new Set([...first.hits, ...second.hits].map((h) => h.artifactId)).size,
       23,
     );
-    assert.equal(
-      searchArtifacts(state, { query: '%_"OR*' }, localAccess).total,
-      23,
-    );
-    assert.throws(() => searchArtifacts(state, { query: "" }, localAccess));
-    assert.throws(() =>
-      searchArtifacts(state, { query: "a", limit: 1000000 }, localAccess),
-    );
+    assert.equal((await f.search({ query: '%_"OR*' })).total, 23);
+    await assert.rejects(async () => f.search({ query: "" }));
+    await assert.rejects(async () => f.search({ query: "a", limit: 1000000 }));
+    await f.reopen();
+    assert.equal((await f.search({ query: "prefixcache" })).total, 23);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
+
+// Whole-workspace source-field migrations were an unreleased development
+// model, not a supported data format. Exact original/history persistence is
+// covered above; future/corrupt authority refusal is in storage.test.ts.

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
-import { WorkspaceStore } from "../packages/application/src/store.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import type { RecordedInput } from "../packages/core/src/model.js";
 import { workInputRequest } from "../packages/application/src/session-io.js";
 import { receivedWorkflowText } from "../scripts/script-studio-quality-evidence.js";
 
@@ -144,43 +144,55 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   assert.ok(source.includes("不把结构通过、模型自评或来源方法论称为专业认证"));
 });
 
-test("新输入绑定 1.4.0；历史输入及未知回执重试使用原 Harness，不替换版本", () => {
-  const store = new WorkspaceStore(":memory:");
+test("新输入绑定 1.4.0；历史请求和回执重试保留原 Harness 版本", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
-    const instanceId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "launch-application",
-          workspaceId: "first-project",
-          applicationId: scriptStudioApplication.id,
-          applicationVersion: scriptStudioApplication.version,
+    const command = {
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input" as const,
+        projectId: f.projectId,
+        artifactId: null,
+        artifactRevision: null,
+        selection: "",
+        body: "合成编剧版本测试",
+        targetActantId: "morphz-agent",
+        application: {
+          id: scriptStudioApplication.id,
+          version: scriptStudioApplication.version,
         },
       },
-      localAccess,
-    ).entityId;
-    const inputId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: null,
-          artifactRevision: null,
-          selection: "",
-          body: "合成编剧版本测试",
-          targetActantId: "morphz-agent",
-          applicationInstanceId: instanceId,
-        },
-      },
-      localAccess,
-    ).entityId;
-    const input = store.snapshot().inputs.find((i) => i.id === inputId)!;
+    };
+    const receipt = await f.session().platformMessage(command);
+    const ledger = f.store.runtimeState() as {
+      deliveries: {
+        inputId: string;
+        platformSource: Omit<
+          RecordedInput,
+          "id" | "artifactId" | "artifactRevision" | "selection"
+        >;
+        request: ReturnType<typeof workInputRequest>;
+      }[];
+    };
+    const delivery = ledger.deliveries.find(
+      (entry) => entry.inputId === receipt.entityId,
+    )!;
+    assert.deepEqual(
+      delivery.request.activation.harness,
+      scriptStudioApplication.harness,
+    );
+    const input: RecordedInput = {
+      ...delivery.platformSource,
+      id: delivery.inputId,
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+    };
     assert.deepEqual(
       workInputRequest(input).activation.harness,
       scriptStudioApplication.harness,
     );
-    // Explicit historical fixture, not a rewrite of a live input.
+    // Explicit immutable Runtime protocol fixtures, not old business storage.
     for (const version of [
       "1.0.0",
       "1.1.0",
@@ -201,11 +213,12 @@ test("新输入绑定 1.4.0；历史输入及未知回执重试使用原 Harness
       assert.deepEqual(workInputRequest(historical), request);
       assert.equal(JSON.stringify(historical), frozen);
     }
-    assert.deepEqual(
-      store.snapshot().inputs.find((i) => i.id === inputId),
-      input,
-    );
+    const before = structuredClone(f.store.runtimeState());
+    await f.reopen();
+    assert.deepEqual(await f.session().platformMessage(command), receipt);
+    assert.deepEqual(f.store.runtimeState(), before);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });

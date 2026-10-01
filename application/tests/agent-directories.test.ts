@@ -15,20 +15,24 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { LocalFiles } from "../packages/application/src/local-files.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
-import { Application } from "../packages/application/src/application.js";
-import { AgentTools } from "../packages/application/src/agent-tools.js";
 import { localAccess } from "../packages/core/src/model.js";
 import { workInputRequest } from "../packages/application/src/session-io.js";
 import type { DirectoryRequest } from "../packages/core/src/local-files.js";
+import {
+  assertNoLocalBusinessData,
+  localInputFixture,
+} from "./platform-local-input-fixture.js";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "morphz-directory-test-"));
   const root = join(dir, "repo");
   mkdirSync(root);
   writeFileSync(join(root, "main.ts"), "export const value = 1;\n");
-  const store = new WorkspaceStore(":memory:");
+  const store = new WorkspaceStore(join(dir, "transport.sqlite"), {
+    mode: "transport",
+  });
   const config = join(dir, "grants.json");
-  const files = new LocalFiles(config, store);
+  const files = new LocalFiles(config, store.identity());
   const ref = files.authorizeDirectory(
     root,
     "first-project",
@@ -80,12 +84,15 @@ test("目录权限独立于附件/打开文件，按身份、工作空间和对�
         localAccess,
       ),
     );
-    assert.equal(f.store.snapshot().inputs.length, 0);
-    assert.equal(f.store.snapshot().artifacts.length, 0);
-    assert.equal(f.store.search({ query: "value" }, localAccess).total, 0);
+    assertNoLocalBusinessData(f.dir);
+    assert.deepEqual(
+      (f.store.runtimeState() as { deliveries?: unknown[] } | null)
+        ?.deliveries ?? [],
+      [],
+    );
     assert.doesNotMatch(readFileSync(f.config, "utf8"), /export const/);
     assert.deepEqual(
-      new LocalFiles(f.config, f.store).directories(
+      new LocalFiles(f.config, f.store.identity()).directories(
         "first-project",
         "first-project",
         localAccess,
@@ -127,7 +134,7 @@ test("目录工具原位读写、版本冲突、幂等重试、路径和链接�
     const key = randomUUID();
     const receipt = await invoke(args, key);
     assert.equal(readFileSync(join(f.root, "main.ts"), "utf8"), args.text);
-    const reopened = new LocalFiles(f.config, f.store);
+    const reopened = new LocalFiles(f.config, f.store.identity());
     assert.deepEqual(await invoke(args, key, reopened), receipt);
     writeFileSync(join(f.root, "main.ts"), "human edit\n");
     assert.deepEqual(
@@ -165,7 +172,7 @@ test("目录工具原位读写、版本冲突、幂等重试、路径和链接�
     for (const path of ["linked/new.ts", "linked.ts", "hard.ts"])
       await assert.rejects(invoke({ ...create, path }));
     assert.equal(readFileSync(join(f.dir, "outside.ts"), "utf8"), "outside");
-    assert.equal(f.store.snapshot().artifacts.length, 0);
+    assertNoLocalBusinessData(f.dir);
     f.files.revoke(f.ref.grantId, "first-project", localAccess);
     await assert.rejects(
       invoke({ operation: "read", path: "main.ts" }),
@@ -180,10 +187,10 @@ test("目录工具原位读写、版本冲突、幂等重试、路径和链接�
 
 test("持久输入固定目录授权，Agent 不可利用另一会话或旧输入获取新增权限", async () => {
   const f = fixture();
+  let inputFixture: Awaited<ReturnType<typeof localInputFixture>> | undefined;
   try {
-    const app = new Application(f.store, { localFiles: f.files }).session(
-      localAccess,
-    );
+    inputFixture = await localInputFixture(f.dir, f.store, f.files);
+    const app = inputFixture.app;
     const operation = {
       type: "record-input" as const,
       projectId: "first-project",
@@ -196,24 +203,11 @@ test("持久输入固定目录授权，Agent 不可利用另一会话或旧输�
       directories: [f.ref],
     };
     const command = { commandId: randomUUID(), operation };
-    const receipt = await app.command(command);
-    const input = f.store
-      .snapshot()
-      .inputs.find((i) => i.id === receipt.entityId)!;
+    const receipt = await inputFixture.send(command);
+    const input = inputFixture.input(receipt.entityId);
     assert.equal(workInputRequest(input).message.format.version, "3");
     let activeInput = input.id;
-    const agent = new AgentTools(
-      f.store,
-      "token",
-      () => ({
-        projectId: "first-project",
-        inputId: activeInput,
-        access: { principalId: "morphz-service", actantId: "morphz-agent" },
-      }),
-      undefined,
-      undefined,
-      f.files,
-    );
+    const agent = inputFixture.tools(() => activeInput);
     const envelope = {
       protocol: 1,
       tool: "host_morphz",
@@ -228,10 +222,10 @@ test("持久输入固定目录授权，Agent 不可利用另一会话或旧输�
         target_id: "target",
       },
       arguments: {
-        action: "directory",
+        action: "directory" as const,
         directory: {
           grantId: f.ref.grantId,
-          operation: "read",
+          operation: "read" as const,
           path: "main.ts",
         },
       },
@@ -240,24 +234,24 @@ test("持久输入固定目录授权，Agent 不可利用另一会话或旧输�
       ((await agent.call(envelope)) as { text: string }).text,
       /value = 1/,
     );
-    const noDirectories = await app.command({
+    const noDirectories = await inputFixture.send({
       commandId: randomUUID(),
       operation: { ...operation, directories: undefined },
     });
     activeInput = noDirectories.entityId;
     await assert.rejects(
       Promise.resolve().then(() => agent.call(envelope)),
-      /没有获准/,
+      /本次输入没有此目录的读写授权/,
     );
     await assert.rejects(
-      app.command({
+      app.platformMessage({
         commandId: randomUUID(),
         operation: { ...operation, conversationId: "other" },
       }),
       /对话/,
     );
     activeInput = input.id;
-    app.directories(
+    await app.directories(
       {
         projectId: "first-project",
         conversationId: "first-project",
@@ -269,13 +263,28 @@ test("持久输入固定目录授权，Agent 不可利用另一会话或旧输�
       Promise.resolve().then(() => agent.call(envelope)),
       /未获授权/,
     );
-    assert.deepEqual(await app.command(command), receipt);
+    assert.deepEqual(await app.platformMessage(command), receipt);
+    await assert.rejects(
+      app.platformMessage({
+        ...command,
+        operation: { ...operation, body: "another request" },
+      }),
+      /操作标识已用于另一条输入/,
+    );
+    await assert.rejects(
+      app.platformMessage({
+        commandId: randomUUID(),
+        operation,
+      }),
+      /未获授权/,
+    );
     renameSync(f.root, f.root + "-moved");
     assert.equal(
       f.files.directories("first-project", "first-project", localAccess).length,
       0,
     );
   } finally {
+    await inputFixture?.close();
     f.store.close();
     rmSync(f.dir, { recursive: true, force: true });
   }

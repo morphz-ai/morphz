@@ -8,10 +8,11 @@ import type { SpeechDuplex, SpeechProvider } from "./speech.js";
 type Entry = {
   owner: string;
   scope: string;
-  check: () => void;
+  check: () => void | Promise<void>;
   state: SpeechStreamState;
   duplex: SpeechDuplex;
   ready: Promise<void>;
+  output: Promise<void>;
   sequence: number;
   lastFrame?: Uint8Array;
   lastAudio: number;
@@ -59,17 +60,36 @@ export class SpeechStreams {
   async call(
     command: SpeechStreamCommand,
     principal: string,
-    check: () => void,
+    check: () => void | Promise<void>,
     signal: AbortSignal,
   ): Promise<SpeechStreamState> {
     signal.throwIfAborted();
-    check();
+    const matchingEntry = () => {
+      const current = this.entries.get(command.id);
+      return current?.owner === principal && current.scope === scopeKey(command)
+        ? current
+        : undefined;
+    };
+    const abortInitial = () => {
+      const current = matchingEntry();
+      if (current) this.cancel(current);
+    };
+    signal.addEventListener("abort", abortInitial, { once: true });
+    try {
+      await check();
+      signal.throwIfAborted();
+    } catch (error) {
+      abortInitial();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abortInitial);
+    }
     let entry = this.entries.get(command.id);
     if (entry) {
       if (entry.owner !== principal || entry.scope !== scopeKey(command))
         throw new DomainError("forbidden", "不能操作其他身份或输入区的听写。");
       try {
-        entry.check();
+        await entry.check();
       } catch (error) {
         this.cancel(entry);
         throw error;
@@ -88,6 +108,7 @@ export class SpeechStreams {
         scope: scopeKey(command),
         check,
         state: { id: command.id, revision: 0, text: "", status: "listening" },
+        output: Promise.resolve(),
         sequence: 0,
         lastAudio: Date.now(),
         wake: new Set(),
@@ -96,17 +117,23 @@ export class SpeechStreams {
         principal,
         (text, final) => {
           if (terminal(current)) return;
-          try {
-            current.check();
-          } catch {
-            this.cancel(current);
-            return;
-          }
-          if (text !== current.state.text || final)
-            this.update(current, {
-              text,
-              ...(final ? { status: "complete" as const } : {}),
-            });
+          current.output = current.output
+            .then(async () => {
+              if (terminal(current)) return;
+              try {
+                await current.check();
+              } catch {
+                this.cancel(current);
+                return;
+              }
+              if (terminal(current)) return;
+              if (text !== current.state.text || final)
+                this.update(current, {
+                  text,
+                  ...(final ? { status: "complete" as const } : {}),
+                });
+            })
+            .catch(() => this.cancel(current));
         },
         (error) => {
           if (!terminal(current))
@@ -116,17 +143,17 @@ export class SpeechStreams {
       current.ready = current.duplex.ready;
       current.timer = setInterval(() => {
         if (terminal(current)) return;
-        try {
-          current.check();
-        } catch {
-          this.cancel(current);
-          return;
-        }
-        if (Date.now() - current.lastAudio > 15000)
-          this.update(current, {
-            status: "error",
-            error: "语音采集中断，已识别文字保留；请重新开始。",
-          });
+        void Promise.resolve()
+          .then(() => current.check())
+          .then(() => {
+            if (terminal(current)) return;
+            if (Date.now() - current.lastAudio > 15000)
+              this.update(current, {
+                status: "error",
+                error: "语音采集中断，已识别文字保留；请重新开始。",
+              });
+          })
+          .catch(() => this.cancel(current));
       }, 1000);
       current.timer.unref();
       this.entries.set(command.id, current);
@@ -188,9 +215,11 @@ export class SpeechStreams {
           current.wake.add(done);
         });
       }
+      await current.output;
       signal.throwIfAborted();
-      current.check();
-      check();
+      await current.check();
+      await check();
+      signal.throwIfAborted();
       return { ...current.state };
     } catch (error) {
       this.cancel(current);

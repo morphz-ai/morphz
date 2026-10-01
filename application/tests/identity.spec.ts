@@ -1,28 +1,26 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { IdentityCenter } from "../apps/service/src/identity.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { openInput } from "./interaction-helpers.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 
 test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销清空界面", async ({
   page,
 }) => {
-  const store = new WorkspaceStore(":memory:"),
+  const directory = mkdtempSync(join(tmpdir(), "morphz-identity-ui-"));
+  const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
+      mode: "transport",
+    }),
     members = [
       { principalId: "alpha", actantId: "alpha-human" },
       { principalId: "beta", actantId: "beta-human" },
     ];
-  store.provisionMembers(
-    members.map((m, i) => ({
-      ...m,
-      name: `测试成员${i + 1}`,
-      projectIds: ["first-project"],
-      enabled: true,
-    })),
-  );
   const tokens = ["a".repeat(64), "b".repeat(64)],
     config = {
       version: 1,
@@ -32,8 +30,19 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
         loginTokenHash: createHash("sha256").update(tokens[i]!).digest("hex"),
       })),
     };
-  const identity = new IdentityCenter(store, config),
+  const identity = new IdentityCenter(
+      store,
+      config,
+      Date.now,
+      members.map((member, i) => ({
+        ...member,
+        name: `测试成员${i + 1}`,
+        projectIds: [],
+        enabled: true,
+      })),
+    ),
     probe = createServer();
+  const domains = await openApplicationDomainsHost(directory, store, identity);
   await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((r) => probe.close(() => r()));
@@ -41,11 +50,21 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     port,
     webRoot: resolve("dist/web"),
     identity,
+    platformWork: domains.work,
+    platformDocuments: domains.content,
+    platformScripts: domains.content,
+    platformReader: domains.reader,
+    bookmarkDomain: domains.browser,
+    messageAttachments: domains.messageAttachments,
+    images: domains.images,
+    uiPackages: domains.uiPackages,
+    notifications: domains.notifications,
+    platformTaskRuns: domains.taskRuns(),
   });
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   try {
     const unauthenticated = await page.request.get(
-      `http://127.0.0.1:${port}/api/workspace`,
+      `http://127.0.0.1:${port}/api/platform/bootstrap`,
     );
     expect(unauthenticated.status()).toBe(401);
     expect((await unauthenticated.json()).message).toBe("请登录后继续操作。");
@@ -84,15 +103,18 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     expect(storage).not.toContain(tokens[0]);
     expect(storage).not.toContain(tokens[1]);
     config.members[0]!.enabled = false;
-    identity.replaceConfiguration(config);
+    await identity.replaceConfiguration(config);
     await expect(
       page.getByRole("heading", { name: "登录 Morphz" }),
     ).toBeVisible({ timeout: 5000 });
     await expect(page.locator(".app")).toHaveCount(0);
     await page.screenshot({ path: "test-results/identity-connection.png" });
   } finally {
+    server.closeStreams();
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
+    await domains.close();
     store.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

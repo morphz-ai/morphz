@@ -9,209 +9,295 @@ This bundle covers locked production npm dependencies and the Electron package u
 
 | Package | Declared license | Included texts |
 |---|---|---|
-| `@napi-rs/canvas 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L075 |
-| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L075 |
-| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L070 |
-| `@protobufjs/aspromise 1.1.2` | `BSD-3-Clause` | L027 |
-| `@protobufjs/base64 1.1.2` | `BSD-3-Clause` | L027 |
-| `@protobufjs/codegen 2.0.5` | `BSD-3-Clause` | L027 |
-| `@protobufjs/eventemitter 1.1.1` | `BSD-3-Clause` | L027 |
-| `@protobufjs/fetch 1.1.1` | `BSD-3-Clause` | L027 |
-| `@protobufjs/float 1.0.2` | `BSD-3-Clause` | L027 |
-| `@protobufjs/path 1.1.2` | `BSD-3-Clause` | L027 |
-| `@protobufjs/pool 1.1.0` | `BSD-3-Clause` | L027 |
-| `@protobufjs/utf8 1.1.2` | `BSD-3-Clause` | L027 |
-| `@techstark/opencv-js 4.10.0-release.1` | `Apache-2.0` | L012 |
-| `@types/debug 4.1.13` | `MIT` | L096 |
-| `@types/estree 1.0.9` | `MIT` | L096 |
-| `@types/estree-jsx 1.0.5` | `MIT` | L096 |
-| `@types/hast 3.0.5` | `MIT` | L096 |
-| `@types/mdast 4.0.4` | `MIT` | L096 |
-| `@types/ms 2.1.0` | `MIT` | L096 |
-| `@types/node 24.13.3` | `MIT` | L096 |
-| `@types/react 19.2.18` | `MIT` | L096 |
-| `@types/unist 2.0.11` | `MIT` | L096 |
-| `@types/unist 3.0.3` | `MIT` | L096 |
-| `@ungap/structured-clone 1.4.0` | `ISC` | L011 |
-| `@xmldom/xmldom 0.8.15` | `MIT` | L031 |
-| `@xmldom/xmldom 0.9.12` | `MIT` | L031 |
-| `argparse 1.0.10` | `MIT` | L032 |
-| `argparse 2.0.1` | `Python-2.0` | L044 |
-| `bail 2.0.2` | `MIT` | L065 |
-| `base64-js 1.5.1` | `MIT` | L067 |
-| `bluebird 3.4.7` | `MIT` | L076 |
-| `ccount 2.0.1` | `MIT` | L065 |
-| `character-entities 2.0.2` | `MIT` | L065 |
-| `character-entities-html4 2.1.0` | `MIT` | L065 |
-| `character-entities-legacy 3.0.0` | `MIT` | L065 |
-| `character-reference-invalid 2.0.1` | `MIT` | L065 |
-| `clipper-lib 6.4.2` | `BSL` | L016, L045 |
-| `comma-separated-tokens 2.0.3` | `MIT` | L072 |
-| `core-util-is 1.0.3` | `MIT` | L046 |
-| `csstype 3.2.3` | `MIT` | L033 |
-| `dayjs 1.11.23` | `MIT` | L006 |
-| `debug 4.4.3` | `MIT` | L073 |
-| `decode-named-character-reference 1.3.0` | `MIT` | L086 |
-| `deepmerge 4.3.1` | `MIT` | L059 |
-| `dequal 2.0.3` | `MIT` | L069 |
-| `devlop 1.1.0` | `MIT` | L009 |
-| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L090 |
-| `dom-serializer 3.1.1` | `MIT` | L052 |
-| `domelementtype 3.0.0` | `BSD-2-Clause` | L002 |
-| `domhandler 6.0.1` | `BSD-2-Clause` | L002 |
-| `domutils 4.0.2` | `BSD-2-Clause` | L002 |
-| `duck 0.1.12` | `BSD` | L050 |
-| `electron 44.2.0` | `MIT` | L018 |
-| `entities 8.1.0` | `BSD-2-Clause` | L002 |
-| `escape-string-regexp 4.0.0` | `MIT` | L005 |
-| `escape-string-regexp 5.0.0` | `MIT` | L005 |
-| `estree-util-is-identifier-name 3.0.0` | `MIT` | L003 |
-| `extend 3.0.2` | `MIT` | L058 |
-| `flatbuffers 25.9.23` | `Apache-2.0` | L012 |
-| `get-east-asian-width 1.6.0` | `MIT` | L005 |
-| `guid-typescript 1.0.9` | `ISC` | L040 |
-| `hast-util-to-html 9.0.5` | `MIT` | L086 |
-| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L086 |
-| `hast-util-whitespace 3.0.0` | `MIT` | L072 |
-| `html-url-attributes 3.0.1` | `MIT` | L015 |
-| `html-void-elements 3.0.0` | `MIT` | L072 |
-| `htmlparser2 12.0.0` | `MIT` | L043 |
-| `immediate 3.0.6` | `MIT` | L089 |
-| `inherits 2.0.4` | `ISC` | L019 |
-| `inline-style-parser 0.2.7` | `MIT` | L053 |
-| `is-alphabetical 2.0.1` | `MIT` | L072 |
-| `is-alphanumerical 2.0.1` | `MIT` | L072 |
-| `is-decimal 2.0.1` | `MIT` | L072 |
-| `is-hexadecimal 2.0.1` | `MIT` | L072 |
-| `is-plain-obj 4.1.0` | `MIT` | L005 |
-| `is-plain-object 5.1.0` | `MIT` | L004 |
-| `isarray 1.0.0` | `MIT` | L078 |
-| `js-yaml 4.3.2` | `MIT` | L062 |
-| `jszip 3.10.2` | `(MIT OR GPL-3.0-or-later)` | L030 |
-| `launder 1.7.1` | `MIT` | L078 |
-| `lie 3.3.0` | `MIT` | L001 |
-| `long 5.3.2` | `Apache-2.0` | L012 |
-| `longest-streak 3.1.0` | `MIT` | L024 |
-| `lop 0.4.2` | `BSD-2-Clause` | L050 |
-| `lucide-react 1.42.0` | `ISC` | L087 |
-| `mammoth 1.12.3` | `BSD-2-Clause` | L050 |
-| `markdown-table 3.0.4` | `MIT` | L086 |
-| `mdast-util-find-and-replace 3.0.2` | `MIT` | L086 |
-| `mdast-util-from-markdown 2.0.3` | `MIT` | L086 |
-| `mdast-util-gfm 3.1.0` | `MIT` | L086 |
-| `mdast-util-gfm-autolink-literal 2.0.1` | `MIT` | L003 |
-| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L086 |
-| `mdast-util-gfm-strikethrough 2.0.0` | `MIT` | L003 |
-| `mdast-util-gfm-table 2.0.0` | `MIT` | L003 |
-| `mdast-util-gfm-task-list-item 2.0.0` | `MIT` | L003 |
-| `mdast-util-mdx-expression 2.0.1` | `MIT` | L003 |
-| `mdast-util-mdx-jsx 3.2.0` | `MIT` | L003 |
-| `mdast-util-mdxjs-esm 2.0.1` | `MIT` | L003 |
-| `mdast-util-phrasing 4.1.0` | `MIT` | L079 |
-| `mdast-util-to-hast 13.2.1` | `MIT` | L072 |
-| `mdast-util-to-markdown 2.1.2` | `MIT` | L086 |
-| `mdast-util-to-markdown-cjk-friendly 1.0.0` | `MIT` | L057 |
-| `mdast-util-to-string 4.0.0` | `MIT` | L065 |
-| `micromark 4.0.2` | `MIT` | L086 |
-| `micromark-core-commonmark 2.0.3` | `MIT` | L086 |
-| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L064 |
-| `micromark-extension-cjk-friendly-util 3.0.1` | `MIT` | L023 |
-| `micromark-extension-gfm 3.0.0` | `MIT` | L003 |
-| `micromark-extension-gfm-autolink-literal 2.1.0` | `MIT` | L003 |
-| `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L028 |
-| `micromark-extension-gfm-strikethrough 2.1.0` | `MIT` | L003 |
-| `micromark-extension-gfm-table 2.1.1` | `MIT` | L086 |
-| `micromark-extension-gfm-tagfilter 2.0.0` | `MIT` | L003 |
-| `micromark-extension-gfm-task-list-item 2.1.0` | `MIT` | L003 |
-| `micromark-factory-destination 2.0.1` | `MIT` | L086 |
-| `micromark-factory-label 2.0.1` | `MIT` | L086 |
-| `micromark-factory-space 2.0.1` | `MIT` | L086 |
-| `micromark-factory-title 2.0.1` | `MIT` | L086 |
-| `micromark-factory-whitespace 2.0.1` | `MIT` | L086 |
-| `micromark-util-character 2.1.1` | `MIT` | L086 |
-| `micromark-util-chunked 2.0.1` | `MIT` | L086 |
-| `micromark-util-classify-character 2.0.1` | `MIT` | L086 |
-| `micromark-util-combine-extensions 2.0.1` | `MIT` | L086 |
-| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L086 |
-| `micromark-util-decode-string 2.0.1` | `MIT` | L086 |
-| `micromark-util-encode 2.0.1` | `MIT` | L086 |
-| `micromark-util-html-tag-name 2.0.1` | `MIT` | L086 |
-| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L086 |
-| `micromark-util-resolve-all 2.0.1` | `MIT` | L086 |
-| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L086 |
-| `micromark-util-subtokenize 2.1.0` | `MIT` | L086 |
-| `micromark-util-symbol 2.0.1` | `MIT` | L086 |
-| `micromark-util-types 2.0.2` | `MIT` | L086 |
-| `ms 2.1.3` | `MIT` | L083 |
-| `nanoid 3.3.18` | `MIT` | L017 |
-| `onnxruntime-common 1.30.0` | `MIT` | L084 |
-| `onnxruntime-web 1.30.0` | `MIT` | L061, L084 |
-| `option 0.2.4` | `BSD-2-Clause` | L050 |
-| `pako 1.0.11` | `(MIT AND Zlib)` | L051 |
-| `parse-entities 4.0.2` | `MIT` | L066 |
-| `parse-srcset 1.0.2` | `MIT` | L047 |
-| `parse5 8.0.1` | `MIT` | L014 |
-| `path-is-absolute 1.0.1` | `MIT` | L013 |
-| `pdfjs-dist 6.3.289` | `Apache-2.0` | L007, L008, L020, L022, L025, L029, L037, L049, L054, L071, L082 |
-| `pend 1.2.0` | `MIT` | L048 |
-| `picocolors 1.1.1` | `ISC` | L093 |
-| `platform 1.3.6` | `MIT` | L036 |
-| `postcss 8.5.28` | `MIT` | L056 |
-| `process-nextick-args 2.0.1` | `MIT` | L088 |
-| `property-information 7.2.0` | `MIT` | L066 |
-| `protobufjs 7.6.6` | `BSD-3-Clause` | L038 |
-| `react 19.2.8` | `MIT` | L068 |
-| `react-dom 19.2.8` | `MIT` | L068 |
-| `react-markdown 10.1.0` | `MIT` | L060 |
-| `readable-stream 2.3.8` | `MIT` | L026 |
-| `remark-cjk-friendly 2.3.1` | `MIT` | L057 |
-| `remark-gfm 4.0.1` | `MIT` | L086 |
-| `remark-parse 11.0.0` | `MIT` | L092 |
-| `remark-rehype 11.1.2` | `MIT` | L086 |
-| `remark-stringify 11.0.0` | `MIT` | L092 |
-| `safe-buffer 5.1.2` | `MIT` | L077 |
-| `sanitize-html 2.17.7` | `MIT` | L041 |
-| `scheduler 0.27.0` | `MIT` | L068 |
-| `setimmediate 1.0.5` | `MIT` | L085 |
-| `source-map-js 1.2.1` | `BSD-3-Clause` | L035 |
-| `space-separated-tokens 2.0.2` | `MIT` | L072 |
-| `sprintf-js 1.0.3` | `BSD-3-Clause` | L042 |
-| `string_decoder 1.1.1` | `MIT` | L026 |
-| `stringify-entities 4.0.4` | `MIT` | L024 |
-| `style-to-js 1.1.21` | `MIT` | L063 |
-| `style-to-object 1.0.14` | `MIT` | L010 |
-| `trim-lines 3.0.1` | `MIT` | L024 |
-| `trough 2.2.0` | `MIT` | L080 |
-| `underscore 1.13.8` | `MIT` | L021 |
-| `undici-types 7.18.2` | `MIT` | L094 |
-| `unified 11.0.5` | `MIT` | L081 |
-| `unist-util-is 6.0.1` | `MIT` | L055 |
-| `unist-util-position 5.0.0` | `MIT` | L065 |
-| `unist-util-stringify-position 4.0.0` | `MIT` | L072 |
-| `unist-util-visit 5.1.0` | `MIT` | L065 |
-| `unist-util-visit-parents 6.0.2` | `MIT` | L072 |
-| `util-deprecate 1.0.2` | `MIT` | L095 |
-| `vfile 6.0.3` | `MIT` | L081 |
-| `vfile-message 4.0.3` | `MIT` | L086 |
-| `ws 8.21.3` | `MIT` | L039 |
-| `xmlbuilder 10.1.1` | `MIT` | L034 |
-| `yauzl 3.4.0` | `MIT` | L074 |
-| `zod 4.5.4` | `MIT` | L091 |
-| `zwitch 2.0.4` | `MIT` | L072 |
+| `@aws-sdk/checksums 3.1001.1` | `Apache-2.0` | L021 |
+| `@aws-sdk/client-s3 3.1141.0` | `Apache-2.0` | L085 |
+| `@aws-sdk/core 3.978.1` | `Apache-2.0` | L101 |
+| `@aws-sdk/credential-provider-env 3.972.72` | `Apache-2.0` | L085 |
+| `@aws-sdk/credential-provider-http 3.972.74` | `Apache-2.0` | L080 |
+| `@aws-sdk/credential-provider-ini 3.973.17` | `Apache-2.0` | L085 |
+| `@aws-sdk/credential-provider-login 3.972.79` | `Apache-2.0` | L080 |
+| `@aws-sdk/credential-provider-node 3.972.84` | `Apache-2.0` | L085 |
+| `@aws-sdk/credential-provider-process 3.972.72` | `Apache-2.0` | L021 |
+| `@aws-sdk/credential-provider-sso 3.973.16` | `Apache-2.0` | L021 |
+| `@aws-sdk/credential-provider-web-identity 3.972.78` | `Apache-2.0` | L021 |
+| `@aws-sdk/middleware-sdk-s3 3.972.77` | `Apache-2.0` | L021 |
+| `@aws-sdk/nested-clients 3.997.46` | `Apache-2.0` | L080 |
+| `@aws-sdk/signature-v4-multi-region 3.996.47` | `Apache-2.0` | L021 |
+| `@aws-sdk/token-providers 3.1138.0` | `Apache-2.0` | L085 |
+| `@aws-sdk/types 3.974.6` | `Apache-2.0` | L085 |
+| `@aws-sdk/xml-builder 3.972.41` | `Apache-2.0` | L085 |
+| `@aws/lambda-invoke-store 0.3.0` | `Apache-2.0` | L049 |
+| `@napi-rs/canvas 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L089 |
+| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L089 |
+| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L083 |
+| `@protobufjs/aspromise 1.1.2` | `BSD-3-Clause` | L032 |
+| `@protobufjs/base64 1.1.2` | `BSD-3-Clause` | L032 |
+| `@protobufjs/codegen 2.0.5` | `BSD-3-Clause` | L032 |
+| `@protobufjs/eventemitter 1.1.1` | `BSD-3-Clause` | L032 |
+| `@protobufjs/fetch 1.1.1` | `BSD-3-Clause` | L032 |
+| `@protobufjs/float 1.0.2` | `BSD-3-Clause` | L032 |
+| `@protobufjs/path 1.1.2` | `BSD-3-Clause` | L032 |
+| `@protobufjs/pool 1.1.0` | `BSD-3-Clause` | L032 |
+| `@protobufjs/utf8 1.1.2` | `BSD-3-Clause` | L032 |
+| `@smithy/core 3.35.0` | `Apache-2.0` | L021 |
+| `@smithy/credential-provider-imds 4.5.2` | `Apache-2.0` | L085 |
+| `@smithy/fetch-http-handler 5.8.0` | `Apache-2.0` | L085 |
+| `@smithy/node-http-handler 4.12.1` | `Apache-2.0` | L085 |
+| `@smithy/signature-v4 5.7.4` | `Apache-2.0` | L085 |
+| `@smithy/types 4.19.0` | `Apache-2.0` | L021 |
+| `@techstark/opencv-js 4.10.0-release.1` | `Apache-2.0` | L016 |
+| `@types/debug 4.1.13` | `MIT` | L111 |
+| `@types/estree 1.0.9` | `MIT` | L111 |
+| `@types/estree-jsx 1.0.5` | `MIT` | L111 |
+| `@types/hast 3.0.5` | `MIT` | L111 |
+| `@types/mdast 4.0.4` | `MIT` | L111 |
+| `@types/ms 2.1.0` | `MIT` | L111 |
+| `@types/node 24.13.3` | `MIT` | L111 |
+| `@types/react 19.2.18` | `MIT` | L111 |
+| `@types/unist 2.0.11` | `MIT` | L111 |
+| `@types/unist 3.0.3` | `MIT` | L111 |
+| `@ungap/structured-clone 1.4.0` | `ISC` | L015 |
+| `@xmldom/xmldom 0.8.15` | `MIT` | L037 |
+| `@xmldom/xmldom 0.9.12` | `MIT` | L037 |
+| `argparse 1.0.10` | `MIT` | L038 |
+| `argparse 2.0.1` | `Python-2.0` | L054 |
+| `bail 2.0.2` | `MIT` | L077 |
+| `base64-js 1.5.1` | `MIT` | L079 |
+| `bluebird 3.4.7` | `MIT` | L090 |
+| `bowser 2.14.1` | `MIT` | L001 |
+| `ccount 2.0.1` | `MIT` | L077 |
+| `character-entities 2.0.2` | `MIT` | L077 |
+| `character-entities-html4 2.1.0` | `MIT` | L077 |
+| `character-entities-legacy 3.0.0` | `MIT` | L077 |
+| `character-reference-invalid 2.0.1` | `MIT` | L077 |
+| `clipper-lib 6.4.2` | `BSL` | L020, L055 |
+| `comma-separated-tokens 2.0.3` | `MIT` | L086 |
+| `core-util-is 1.0.3` | `MIT` | L056 |
+| `csstype 3.2.3` | `MIT` | L039 |
+| `dayjs 1.11.23` | `MIT` | L008 |
+| `debug 4.4.3` | `MIT` | L087 |
+| `decode-named-character-reference 1.3.0` | `MIT` | L100 |
+| `deepmerge 4.3.1` | `MIT` | L071 |
+| `dequal 2.0.3` | `MIT` | L082 |
+| `devlop 1.1.0` | `MIT` | L011 |
+| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L105 |
+| `dom-serializer 3.1.1` | `MIT` | L062 |
+| `domelementtype 3.0.0` | `BSD-2-Clause` | L003 |
+| `domhandler 6.0.1` | `BSD-2-Clause` | L003 |
+| `domutils 4.0.2` | `BSD-2-Clause` | L003 |
+| `duck 0.1.12` | `BSD` | L060 |
+| `electron 44.2.0` | `MIT` | L023 |
+| `entities 8.1.0` | `BSD-2-Clause` | L003 |
+| `escape-string-regexp 4.0.0` | `MIT` | L007 |
+| `escape-string-regexp 5.0.0` | `MIT` | L007 |
+| `estree-util-is-identifier-name 3.0.0` | `MIT` | L005 |
+| `extend 3.0.2` | `MIT` | L070 |
+| `flatbuffers 25.9.23` | `Apache-2.0` | L016 |
+| `get-east-asian-width 1.6.0` | `MIT` | L007 |
+| `guid-typescript 1.0.9` | `ISC` | L050 |
+| `hast-util-to-html 9.0.5` | `MIT` | L100 |
+| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L100 |
+| `hast-util-whitespace 3.0.0` | `MIT` | L086 |
+| `html-url-attributes 3.0.1` | `MIT` | L019 |
+| `html-void-elements 3.0.0` | `MIT` | L086 |
+| `htmlparser2 12.0.0` | `MIT` | L053 |
+| `immediate 3.0.6` | `MIT` | L104 |
+| `inherits 2.0.4` | `ISC` | L024 |
+| `inline-style-parser 0.2.7` | `MIT` | L063 |
+| `is-alphabetical 2.0.1` | `MIT` | L086 |
+| `is-alphanumerical 2.0.1` | `MIT` | L086 |
+| `is-decimal 2.0.1` | `MIT` | L086 |
+| `is-hexadecimal 2.0.1` | `MIT` | L086 |
+| `is-plain-obj 4.1.0` | `MIT` | L007 |
+| `is-plain-object 5.1.0` | `MIT` | L006 |
+| `isarray 1.0.0` | `MIT` | L092 |
+| `js-yaml 4.3.2` | `MIT` | L074 |
+| `jszip 3.10.2` | `(MIT OR GPL-3.0-or-later)` | L036 |
+| `launder 1.7.1` | `MIT` | L092 |
+| `lie 3.3.0` | `MIT` | L002 |
+| `long 5.3.2` | `Apache-2.0` | L016 |
+| `longest-streak 3.1.0` | `MIT` | L029 |
+| `lop 0.4.2` | `BSD-2-Clause` | L060 |
+| `lucide-react 1.42.0` | `ISC` | L102 |
+| `mammoth 1.12.3` | `BSD-2-Clause` | L060 |
+| `markdown-table 3.0.4` | `MIT` | L100 |
+| `mdast-util-find-and-replace 3.0.2` | `MIT` | L100 |
+| `mdast-util-from-markdown 2.0.3` | `MIT` | L100 |
+| `mdast-util-gfm 3.1.0` | `MIT` | L100 |
+| `mdast-util-gfm-autolink-literal 2.0.1` | `MIT` | L005 |
+| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L100 |
+| `mdast-util-gfm-strikethrough 2.0.0` | `MIT` | L005 |
+| `mdast-util-gfm-table 2.0.0` | `MIT` | L005 |
+| `mdast-util-gfm-task-list-item 2.0.0` | `MIT` | L005 |
+| `mdast-util-mdx-expression 2.0.1` | `MIT` | L005 |
+| `mdast-util-mdx-jsx 3.2.0` | `MIT` | L005 |
+| `mdast-util-mdxjs-esm 2.0.1` | `MIT` | L005 |
+| `mdast-util-phrasing 4.1.0` | `MIT` | L093 |
+| `mdast-util-to-hast 13.2.1` | `MIT` | L086 |
+| `mdast-util-to-markdown 2.1.2` | `MIT` | L100 |
+| `mdast-util-to-markdown-cjk-friendly 1.0.0` | `MIT` | L067 |
+| `mdast-util-to-string 4.0.0` | `MIT` | L077 |
+| `micromark 4.0.2` | `MIT` | L100 |
+| `micromark-core-commonmark 2.0.3` | `MIT` | L100 |
+| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L076 |
+| `micromark-extension-cjk-friendly-util 3.0.1` | `MIT` | L028 |
+| `micromark-extension-gfm 3.0.0` | `MIT` | L005 |
+| `micromark-extension-gfm-autolink-literal 2.1.0` | `MIT` | L005 |
+| `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L033 |
+| `micromark-extension-gfm-strikethrough 2.1.0` | `MIT` | L005 |
+| `micromark-extension-gfm-table 2.1.1` | `MIT` | L100 |
+| `micromark-extension-gfm-tagfilter 2.0.0` | `MIT` | L005 |
+| `micromark-extension-gfm-task-list-item 2.1.0` | `MIT` | L005 |
+| `micromark-factory-destination 2.0.1` | `MIT` | L100 |
+| `micromark-factory-label 2.0.1` | `MIT` | L100 |
+| `micromark-factory-space 2.0.1` | `MIT` | L100 |
+| `micromark-factory-title 2.0.1` | `MIT` | L100 |
+| `micromark-factory-whitespace 2.0.1` | `MIT` | L100 |
+| `micromark-util-character 2.1.1` | `MIT` | L100 |
+| `micromark-util-chunked 2.0.1` | `MIT` | L100 |
+| `micromark-util-classify-character 2.0.1` | `MIT` | L100 |
+| `micromark-util-combine-extensions 2.0.1` | `MIT` | L100 |
+| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L100 |
+| `micromark-util-decode-string 2.0.1` | `MIT` | L100 |
+| `micromark-util-encode 2.0.1` | `MIT` | L100 |
+| `micromark-util-html-tag-name 2.0.1` | `MIT` | L100 |
+| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L100 |
+| `micromark-util-resolve-all 2.0.1` | `MIT` | L100 |
+| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L100 |
+| `micromark-util-subtokenize 2.1.0` | `MIT` | L100 |
+| `micromark-util-symbol 2.0.1` | `MIT` | L100 |
+| `micromark-util-types 2.0.2` | `MIT` | L100 |
+| `ms 2.1.3` | `MIT` | L097 |
+| `nanoid 3.3.18` | `MIT` | L022 |
+| `onnxruntime-common 1.30.0` | `MIT` | L098 |
+| `onnxruntime-web 1.30.0` | `MIT` | L073, L098 |
+| `option 0.2.4` | `BSD-2-Clause` | L060 |
+| `pako 1.0.11` | `(MIT AND Zlib)` | L061 |
+| `parse-entities 4.0.2` | `MIT` | L078 |
+| `parse-srcset 1.0.2` | `MIT` | L057 |
+| `parse5 8.0.1` | `MIT` | L018 |
+| `path-is-absolute 1.0.1` | `MIT` | L017 |
+| `pdfjs-dist 6.3.289` | `Apache-2.0` | L009, L010, L025, L027, L030, L034, L044, L059, L064, L084, L096 |
+| `pend 1.2.0` | `MIT` | L058 |
+| `pg 8.23.0` | `MIT` | L068 |
+| `pg-cloudflare 1.4.0` | `MIT` | L068 |
+| `pg-connection-string 2.14.0` | `MIT` | L014 |
+| `pg-int8 1.0.1` | `ISC` | L012 |
+| `pg-pool 3.14.0` | `MIT` | L041 |
+| `pg-protocol 1.16.0` | `MIT` | L068 |
+| `pg-types 2.2.0` | `MIT` | L092 |
+| `pgpass 1.0.5` | `MIT` | L092 |
+| `picocolors 1.1.1` | `ISC` | L108 |
+| `platform 1.3.6` | `MIT` | L043 |
+| `postcss 8.5.28` | `MIT` | L066 |
+| `postgres-array 2.0.0` | `MIT` | L045 |
+| `postgres-bytea 1.0.1` | `MIT` | L045 |
+| `postgres-date 1.0.7` | `MIT` | L045 |
+| `postgres-interval 1.2.0` | `MIT` | L045 |
+| `process-nextick-args 2.0.1` | `MIT` | L103 |
+| `property-information 7.2.0` | `MIT` | L078 |
+| `protobufjs 7.6.6` | `BSD-3-Clause` | L046 |
+| `react 19.2.8` | `MIT` | L081 |
+| `react-dom 19.2.8` | `MIT` | L081 |
+| `react-markdown 10.1.0` | `MIT` | L072 |
+| `readable-stream 2.3.8` | `MIT` | L031 |
+| `remark-cjk-friendly 2.3.1` | `MIT` | L067 |
+| `remark-gfm 4.0.1` | `MIT` | L100 |
+| `remark-parse 11.0.0` | `MIT` | L107 |
+| `remark-rehype 11.1.2` | `MIT` | L100 |
+| `remark-stringify 11.0.0` | `MIT` | L107 |
+| `safe-buffer 5.1.2` | `MIT` | L091 |
+| `sanitize-html 2.17.7` | `MIT` | L051 |
+| `scheduler 0.27.0` | `MIT` | L081 |
+| `setimmediate 1.0.5` | `MIT` | L099 |
+| `source-map-js 1.2.1` | `BSD-3-Clause` | L042 |
+| `space-separated-tokens 2.0.2` | `MIT` | L086 |
+| `split2 4.2.0` | `ISC` | L069 |
+| `sprintf-js 1.0.3` | `BSD-3-Clause` | L052 |
+| `string_decoder 1.1.1` | `MIT` | L031 |
+| `stringify-entities 4.0.4` | `MIT` | L029 |
+| `style-to-js 1.1.21` | `MIT` | L075 |
+| `style-to-object 1.0.14` | `MIT` | L013 |
+| `trim-lines 3.0.1` | `MIT` | L029 |
+| `trough 2.2.0` | `MIT` | L094 |
+| `tslib 2.8.1` | `0BSD` | L004, L047 |
+| `underscore 1.13.8` | `MIT` | L026 |
+| `undici-types 7.18.2` | `MIT` | L109 |
+| `unified 11.0.5` | `MIT` | L095 |
+| `unist-util-is 6.0.1` | `MIT` | L065 |
+| `unist-util-position 5.0.0` | `MIT` | L077 |
+| `unist-util-stringify-position 4.0.0` | `MIT` | L086 |
+| `unist-util-visit 5.1.0` | `MIT` | L077 |
+| `unist-util-visit-parents 6.0.2` | `MIT` | L086 |
+| `util-deprecate 1.0.2` | `MIT` | L110 |
+| `vfile 6.0.3` | `MIT` | L095 |
+| `vfile-message 4.0.3` | `MIT` | L100 |
+| `ws 8.21.3` | `MIT` | L048 |
+| `xmlbuilder 10.1.1` | `MIT` | L040 |
+| `xtend 4.0.2` | `MIT` | L035 |
+| `yauzl 3.4.0` | `MIT` | L088 |
+| `zod 4.5.4` | `MIT` | L106 |
+| `zwitch 2.0.4` | `MIT` | L086 |
 
 ## License texts
 
 ### L001
+
+Applies to: `bowser 2.14.1`
+
+~~~~text
+Copyright 2015, Dustin Diaz (the "Original Author")
+All rights reserved.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+Distributions of all or part of the Software intended to be used
+by the recipients as they would use the unmodified Software,
+containing modifications that substantially alter, remove, or
+disable functionality of the Software, outside of the documented
+configuration mechanisms provided by the Software, shall be
+modified such that the Original Author's bug reporting email
+addresses and urls are either replaced with the contact information
+of the parties responsible for the changes, or removed entirely.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+
+Except where noted, this license applies to any and all software
+programs and associated documentation files created by the
+Original Author, when distributed with the Software.
+~~~~
+
+### L002
 
 Applies to: `lie 3.3.0`
 
@@ -225,7 +311,7 @@ The above copyright notice and this permission notice shall be included in all c
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
 ~~~~
 
-### L002
+### L003
 
 Applies to: `domelementtype 3.0.0`, `domhandler 6.0.1`, `domutils 4.0.2`, `entities 8.1.0`
 
@@ -243,7 +329,26 @@ THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRE
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L003
+### L004
+
+Applies to: `tslib 2.8.1`
+
+~~~~text
+Copyright (c) Microsoft Corporation.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+~~~~
+
+### L005
 
 Applies to: `estree-util-is-identifier-name 3.0.0`, `mdast-util-gfm-autolink-literal 2.0.1`, `mdast-util-gfm-strikethrough 2.0.0`, `mdast-util-gfm-table 2.0.0`, `mdast-util-gfm-task-list-item 2.0.0`, `mdast-util-mdx-expression 2.0.1`, `mdast-util-mdx-jsx 3.2.0`, `mdast-util-mdxjs-esm 2.0.1`, `micromark-extension-gfm 3.0.0`, `micromark-extension-gfm-autolink-literal 2.1.0`, `micromark-extension-gfm-strikethrough 2.1.0`, `micromark-extension-gfm-tagfilter 2.0.0`, `micromark-extension-gfm-task-list-item 2.1.0`
 
@@ -272,7 +377,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L004
+### L006
 
 Applies to: `is-plain-object 5.1.0`
 
@@ -300,7 +405,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L005
+### L007
 
 Applies to: `escape-string-regexp 4.0.0`, `escape-string-regexp 5.0.0`, `get-east-asian-width 1.6.0`, `is-plain-obj 4.1.0`
 
@@ -316,7 +421,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L006
+### L008
 
 Applies to: `dayjs 1.11.23`
 
@@ -344,7 +449,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L007
+### L009
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -372,7 +477,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L008
+### L010
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -398,7 +503,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L009
+### L011
 
 Applies to: `devlop 1.1.0`
 
@@ -427,7 +532,27 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L010
+### L012
+
+Applies to: `pg-int8 1.0.1`
+
+~~~~text
+Copyright © 2017, Charmander <~@charmander.me>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED “AS IS” AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+~~~~
+
+### L013
 
 Applies to: `style-to-object 1.0.14`
 
@@ -456,7 +581,35 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L011
+### L014
+
+Applies to: `pg-connection-string 2.14.0`
+
+~~~~text
+The MIT License (MIT)
+
+Copyright (c) 2014 Iced Development
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L015
 
 Applies to: `@ungap/structured-clone 1.4.0`
 
@@ -478,7 +631,7 @@ OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L012
+### L016
 
 Applies to: `@techstark/opencv-js 4.10.0-release.1`, `flatbuffers 25.9.23`, `long 5.3.2`
 
@@ -686,7 +839,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L013
+### L017
 
 Applies to: `path-is-absolute 1.0.1`
 
@@ -714,7 +867,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L014
+### L018
 
 Applies to: `parse5 8.0.1`
 
@@ -740,7 +893,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L015
+### L019
 
 Applies to: `html-url-attributes 3.0.1`
 
@@ -768,7 +921,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L016
+### L020
 
 Applies to: `clipper-lib 6.4.2`
 
@@ -819,7 +972,215 @@ Tom Wu
 tjw@cs.Stanford.EDU
 ~~~~
 
-### L017
+### L021
+
+Applies to: `@aws-sdk/checksums 3.1001.1`, `@aws-sdk/credential-provider-process 3.972.72`, `@aws-sdk/credential-provider-sso 3.973.16`, `@aws-sdk/credential-provider-web-identity 3.972.78`, `@aws-sdk/middleware-sdk-s3 3.972.77`, `@aws-sdk/signature-v4-multi-region 3.996.47`, `@smithy/core 3.35.0`, `@smithy/types 4.19.0`
+
+~~~~text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "{}"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+~~~~
+
+### L022
 
 Applies to: `nanoid 3.3.18`
 
@@ -846,7 +1207,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L018
+### L023
 
 Applies to: `electron 44.2.0`
 
@@ -874,7 +1235,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L019
+### L024
 
 Applies to: `inherits 2.0.4`
 
@@ -896,7 +1257,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L020
+### L025
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -930,7 +1291,7 @@ Applies to: `pdfjs-dist 6.3.289`
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L021
+### L026
 
 Applies to: `underscore 1.13.8`
 
@@ -959,7 +1320,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L022
+### L027
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -1082,7 +1443,7 @@ For more information, please see
 http://creativecommons.org/publicdomain/zero/1.0/
 ~~~~
 
-### L023
+### L028
 
 Applies to: `micromark-extension-cjk-friendly-util 3.0.1`
 
@@ -1117,7 +1478,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L024
+### L029
 
 Applies to: `longest-streak 3.1.0`, `stringify-entities 4.0.4`, `trim-lines 3.0.1`
 
@@ -1146,7 +1507,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L025
+### L030
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -1329,7 +1690,7 @@ Apache License
    END OF TERMS AND CONDITIONS
 ~~~~
 
-### L026
+### L031
 
 Applies to: `readable-stream 2.3.8`, `string_decoder 1.1.1`
 
@@ -1383,7 +1744,7 @@ IN THE SOFTWARE.
 """
 ~~~~
 
-### L027
+### L032
 
 Applies to: `@protobufjs/aspromise 1.1.2`, `@protobufjs/base64 1.1.2`, `@protobufjs/codegen 2.0.5`, `@protobufjs/eventemitter 1.1.1`, `@protobufjs/fetch 1.1.1`, `@protobufjs/float 1.0.2`, `@protobufjs/path 1.1.2`, `@protobufjs/pool 1.1.0`, `@protobufjs/utf8 1.1.2`
 
@@ -1416,7 +1777,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L028
+### L033
 
 Applies to: `micromark-extension-gfm-footnote 2.1.0`
 
@@ -1445,7 +1806,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L029
+### L034
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -1474,7 +1835,34 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L030
+### L035
+
+Applies to: `xtend 4.0.2`
+
+~~~~text
+The MIT License (MIT)
+Copyright (c) 2012-2014 Raynos.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+~~~~
+
+### L036
 
 Applies to: `jszip 3.10.2`
 
@@ -2132,7 +2520,7 @@ copy of the Program in return for a fee.
                      END OF TERMS AND CONDITIONS
 ~~~~
 
-### L031
+### L037
 
 Applies to: `@xmldom/xmldom 0.8.15`, `@xmldom/xmldom 0.9.12`
 
@@ -2147,7 +2535,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L032
+### L038
 
 Applies to: `argparse 1.0.10`
 
@@ -2175,7 +2563,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L033
+### L039
 
 Applies to: `csstype 3.2.3`
 
@@ -2201,7 +2589,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L034
+### L040
 
 Applies to: `xmlbuilder 10.1.1`
 
@@ -2229,7 +2617,35 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L035
+### L041
+
+Applies to: `pg-pool 3.14.0`
+
+~~~~text
+MIT License
+
+Copyright (c) 2017 Brian M. Carlson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L042
 
 Applies to: `source-map-js 1.2.1`
 
@@ -2263,7 +2679,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L036
+### L043
 
 Applies to: `platform 1.3.6`
 
@@ -2291,7 +2707,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L037
+### L044
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2337,7 +2753,35 @@ Applies to: `pdfjs-dist 6.3.289`
  */
 ~~~~
 
-### L038
+### L045
+
+Applies to: `postgres-array 2.0.0`, `postgres-bytea 1.0.1`, `postgres-date 1.0.7`, `postgres-interval 1.2.0`
+
+~~~~text
+The MIT License (MIT)
+
+Copyright (c) Ben Drucker <bvdrucker@gmail.com> (bendrucker.me)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+~~~~
+
+### L046
 
 Applies to: `protobufjs 7.6.6`
 
@@ -2383,7 +2827,28 @@ standalone and requires a support library to be linked with it. This
 support library is itself covered by the above license.
 ~~~~
 
-### L039
+### L047
+
+Applies to: `tslib 2.8.1`
+
+~~~~text
+/******************************************************************************
+Copyright (c) Microsoft Corporation.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+***************************************************************************** */
+~~~~
+
+### L048
 
 Applies to: `ws 8.21.3`
 
@@ -2410,7 +2875,188 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L040
+### L049
+
+Applies to: `@aws/lambda-invoke-store 0.3.0`
+
+~~~~text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+~~~~
+
+### L050
 
 Applies to: `guid-typescript 1.0.9`
 
@@ -2442,7 +3088,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L041
+### L051
 
 Applies to: `sanitize-html 2.17.7`
 
@@ -2456,7 +3102,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L042
+### L052
 
 Applies to: `sprintf-js 1.0.3`
 
@@ -2487,7 +3133,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L043
+### L053
 
 Applies to: `htmlparser2 12.0.0`
 
@@ -2512,7 +3158,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ~~~~
 
-### L044
+### L054
 
 Applies to: `argparse 2.0.1`
 
@@ -2773,7 +3419,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L045
+### L055
 
 Applies to: `clipper-lib 6.4.2`
 
@@ -2803,7 +3449,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L046
+### L056
 
 Applies to: `core-util-is 1.0.3`
 
@@ -2829,7 +3475,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ~~~~
 
-### L047
+### L057
 
 Applies to: `parse-srcset 1.0.2`
 
@@ -2857,7 +3503,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L048
+### L058
 
 Applies to: `pend 1.2.0`
 
@@ -2887,7 +3533,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L049
+### L059
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2930,7 +3576,7 @@ Applies to: `pdfjs-dist 6.3.289`
 %%Copyright: -----------------------------------------------------------
 ~~~~
 
-### L050
+### L060
 
 Applies to: `duck 0.1.12`, `lop 0.4.2`, `mammoth 1.12.3`, `option 0.2.4`
 
@@ -2959,7 +3605,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L051
+### L061
 
 Applies to: `pako 1.0.11`
 
@@ -2987,7 +3633,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L052
+### L062
 
 Applies to: `dom-serializer 3.1.1`
 
@@ -3001,7 +3647,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L053
+### L063
 
 Applies to: `inline-style-parser 0.2.7`
 
@@ -3017,7 +3663,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L054
+### L064
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -3220,7 +3866,7 @@ Applies to: `pdfjs-dist 6.3.289`
    limitations under the License.
 ~~~~
 
-### L055
+### L065
 
 Applies to: `unist-util-is 6.0.1`
 
@@ -3249,7 +3895,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L056
+### L066
 
 Applies to: `postcss 8.5.28`
 
@@ -3276,7 +3922,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L057
+### L067
 
 Applies to: `mdast-util-to-markdown-cjk-friendly 1.0.0`, `remark-cjk-friendly 2.3.1`
 
@@ -3311,7 +3957,55 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L058
+### L068
+
+Applies to: `pg 8.23.0`, `pg-cloudflare 1.4.0`, `pg-protocol 1.16.0`
+
+~~~~text
+MIT License
+
+Copyright (c) 2010 - 2021 Brian Carlson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L069
+
+Applies to: `split2 4.2.0`
+
+~~~~text
+Copyright (c) 2014-2018, Matteo Collina <hello@matteocollina.com>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+~~~~
+
+### L070
 
 Applies to: `extend 3.0.2`
 
@@ -3340,7 +4034,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L059
+### L071
 
 Applies to: `deepmerge 4.3.1`
 
@@ -3368,7 +4062,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L060
+### L072
 
 Applies to: `react-markdown 10.1.0`
 
@@ -3396,7 +4090,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L061
+### L073
 
 Applies to: `onnxruntime-web 1.30.0`
 
@@ -9772,7 +10466,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L062
+### L074
 
 Applies to: `js-yaml 4.3.2`
 
@@ -9800,7 +10494,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L063
+### L075
 
 Applies to: `style-to-js 1.1.21`
 
@@ -9829,7 +10523,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L064
+### L076
 
 Applies to: `micromark-extension-cjk-friendly 2.0.1`
 
@@ -9864,7 +10558,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L065
+### L077
 
 Applies to: `bail 2.0.2`, `ccount 2.0.1`, `character-entities 2.0.2`, `character-entities-html4 2.1.0`, `character-entities-legacy 3.0.0`, `character-reference-invalid 2.0.1`, `mdast-util-to-string 4.0.0`, `unist-util-position 5.0.0`, `unist-util-visit 5.1.0`
 
@@ -9893,7 +10587,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L066
+### L078
 
 Applies to: `parse-entities 4.0.2`, `property-information 7.2.0`
 
@@ -9922,7 +10616,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L067
+### L079
 
 Applies to: `base64-js 1.5.1`
 
@@ -9950,7 +10644,215 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L068
+### L080
+
+Applies to: `@aws-sdk/credential-provider-http 3.972.74`, `@aws-sdk/credential-provider-login 3.972.79`, `@aws-sdk/nested-clients 3.997.46`
+
+~~~~text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!) The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+~~~~
+
+### L081
 
 Applies to: `react 19.2.8`, `react-dom 19.2.8`, `scheduler 0.27.0`
 
@@ -9978,7 +10880,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L069
+### L082
 
 Applies to: `dequal 2.0.3`
 
@@ -10006,7 +10908,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L070
+### L083
 
 Applies to: `@paddleocr/paddleocr-js 0.4.2`
 
@@ -10214,7 +11116,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L071
+### L084
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -10584,7 +11486,215 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 ~~~~
 
-### L072
+### L085
+
+Applies to: `@aws-sdk/client-s3 3.1141.0`, `@aws-sdk/credential-provider-env 3.972.72`, `@aws-sdk/credential-provider-ini 3.973.17`, `@aws-sdk/credential-provider-node 3.972.84`, `@aws-sdk/token-providers 3.1138.0`, `@aws-sdk/types 3.974.6`, `@aws-sdk/xml-builder 3.972.41`, `@smithy/credential-provider-imds 4.5.2`, `@smithy/fetch-http-handler 5.8.0`, `@smithy/node-http-handler 4.12.1`, `@smithy/signature-v4 5.7.4`
+
+~~~~text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "{}"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2018-2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+~~~~
+
+### L086
 
 Applies to: `comma-separated-tokens 2.0.3`, `hast-util-whitespace 3.0.0`, `html-void-elements 3.0.0`, `is-alphabetical 2.0.1`, `is-alphanumerical 2.0.1`, `is-decimal 2.0.1`, `is-hexadecimal 2.0.1`, `mdast-util-to-hast 13.2.1`, `space-separated-tokens 2.0.2`, `unist-util-stringify-position 4.0.0`, `unist-util-visit-parents 6.0.2`, `zwitch 2.0.4`
 
@@ -10613,7 +11723,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L073
+### L087
 
 Applies to: `debug 4.4.3`
 
@@ -10639,7 +11749,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L074
+### L088
 
 Applies to: `yauzl 3.4.0`
 
@@ -10667,7 +11777,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L075
+### L089
 
 Applies to: `@napi-rs/canvas 1.0.8`, `@napi-rs/canvas-android-arm64 1.0.8`, `@napi-rs/canvas-darwin-arm64 1.0.8`, `@napi-rs/canvas-darwin-x64 1.0.8`, `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8`, `@napi-rs/canvas-linux-arm64-gnu 1.0.8`, `@napi-rs/canvas-linux-arm64-musl 1.0.8`, `@napi-rs/canvas-linux-riscv64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-musl 1.0.8`, `@napi-rs/canvas-win32-arm64-msvc 1.0.8`, `@napi-rs/canvas-win32-x64-msvc 1.0.8`
 
@@ -10695,7 +11805,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L076
+### L090
 
 Applies to: `bluebird 3.4.7`
 
@@ -10723,7 +11833,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L077
+### L091
 
 Applies to: `safe-buffer 5.1.2`
 
@@ -10751,9 +11861,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L078
+### L092
 
-Applies to: `isarray 1.0.0`, `launder 1.7.1`
+Applies to: `isarray 1.0.0`, `launder 1.7.1`, `pg-types 2.2.0`, `pgpass 1.0.5`
 
 ~~~~text
 MIT License
@@ -10779,7 +11889,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L079
+### L093
 
 Applies to: `mdast-util-phrasing 4.1.0`
 
@@ -10809,7 +11919,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L080
+### L094
 
 Applies to: `trough 2.2.0`
 
@@ -10837,7 +11947,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L081
+### L095
 
 Applies to: `unified 11.0.5`, `vfile 6.0.3`
 
@@ -10865,7 +11975,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L082
+### L096
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -10885,7 +11995,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L083
+### L097
 
 Applies to: `ms 2.1.3`
 
@@ -10913,7 +12023,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L084
+### L098
 
 Applies to: `onnxruntime-common 1.30.0`, `onnxruntime-web 1.30.0`
 
@@ -10941,7 +12051,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L085
+### L099
 
 Applies to: `setimmediate 1.0.5`
 
@@ -10968,7 +12078,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L086
+### L100
 
 Applies to: `decode-named-character-reference 1.3.0`, `hast-util-to-html 9.0.5`, `hast-util-to-jsx-runtime 2.3.6`, `markdown-table 3.0.4`, `mdast-util-find-and-replace 3.0.2`, `mdast-util-from-markdown 2.0.3`, `mdast-util-gfm 3.1.0`, `mdast-util-gfm-footnote 2.1.0`, `mdast-util-to-markdown 2.1.2`, `micromark 4.0.2`, `micromark-core-commonmark 2.0.3`, `micromark-extension-gfm-table 2.1.1`, `micromark-factory-destination 2.0.1`, `micromark-factory-label 2.0.1`, `micromark-factory-space 2.0.1`, `micromark-factory-title 2.0.1`, `micromark-factory-whitespace 2.0.1`, `micromark-util-character 2.1.1`, `micromark-util-chunked 2.0.1`, `micromark-util-classify-character 2.0.1`, `micromark-util-combine-extensions 2.0.1`, `micromark-util-decode-numeric-character-reference 2.0.2`, `micromark-util-decode-string 2.0.1`, `micromark-util-encode 2.0.1`, `micromark-util-html-tag-name 2.0.1`, `micromark-util-normalize-identifier 2.0.1`, `micromark-util-resolve-all 2.0.1`, `micromark-util-sanitize-uri 2.0.1`, `micromark-util-subtokenize 2.1.0`, `micromark-util-symbol 2.0.1`, `micromark-util-types 2.0.2`, `remark-gfm 4.0.1`, `remark-rehype 11.1.2`, `vfile-message 4.0.3`
 
@@ -10997,7 +12107,215 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L087
+### L101
+
+Applies to: `@aws-sdk/core 3.978.1`
+
+~~~~text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+~~~~
+
+### L102
 
 Applies to: `lucide-react 1.42.0`
 
@@ -11047,7 +12365,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L088
+### L103
 
 Applies to: `process-nextick-args 2.0.1`
 
@@ -11073,7 +12391,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.**
 ~~~~
 
-### L089
+### L104
 
 Applies to: `immediate 3.0.6`
 
@@ -11100,7 +12418,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L090
+### L105
 
 Applies to: `dingbat-to-unicode 1.0.2`
 
@@ -11129,7 +12447,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L091
+### L106
 
 Applies to: `zod 4.5.4`
 
@@ -11157,7 +12475,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L092
+### L107
 
 Applies to: `remark-parse 11.0.0`, `remark-stringify 11.0.0`
 
@@ -11185,7 +12503,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L093
+### L108
 
 Applies to: `picocolors 1.1.1`
 
@@ -11207,7 +12525,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L094
+### L109
 
 Applies to: `undici-types 7.18.2`
 
@@ -11235,7 +12553,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L095
+### L110
 
 Applies to: `util-deprecate 1.0.2`
 
@@ -11266,7 +12584,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L096
+### L111
 
 Applies to: `@types/debug 4.1.13`, `@types/estree 1.0.9`, `@types/estree-jsx 1.0.5`, `@types/hast 3.0.5`, `@types/mdast 4.0.4`, `@types/ms 2.1.0`, `@types/node 24.13.3`, `@types/react 19.2.18`, `@types/unist 2.0.11`, `@types/unist 3.0.3`
 

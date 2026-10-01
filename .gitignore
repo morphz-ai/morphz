@@ -24,7 +24,7 @@ models/
 
 # Log files
 *.log
-task-*
+/task-*
 .system_generated/
 .morphz/*
 !.morphz/config.toml

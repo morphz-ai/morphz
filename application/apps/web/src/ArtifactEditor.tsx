@@ -39,6 +39,7 @@ import { TaskRunPanel } from "./TaskRunPanel.js";
 import { TaskSummary } from "./TaskSummary.js";
 import { BrowserHost } from "./BrowserHost.js";
 import { InteractiveArtifact } from "./InteractiveArtifact.js";
+import type { PlatformContent } from "./platform-client.js";
 import { interactiveDraftSchema } from "../../../packages/core/src/interactive.js";
 import { ReadAloudDialog } from "./SpeechDialog.js";
 import { contentText } from "../../../packages/core/src/retrieval.js";
@@ -302,7 +303,13 @@ export function ArtifactEditor({
               className="icon-button"
               aria-label="回到当前版本"
               title="结束版本查看，回到当前版本"
-              onClick={() => setHistory(null)}
+              onClick={() => {
+                setHistory(null);
+                // The head may have changed on another Host while a historical
+                // version was open. An explicit return must resolve the current
+                // original, not merely reveal this renderer's cached head.
+                onOpen(artifact.id);
+              }}
             >
               <X />
             </button>
@@ -510,6 +517,7 @@ export function ArtifactEditor({
             >
               <SafeMarkdown
                 state={state}
+                catalog={client.contentCatalog}
                 onOpen={onOpen}
                 documentTitle={shown.title}
               >
@@ -687,6 +695,7 @@ export function ArtifactEditor({
             value={draft.content}
             editable
             state={state}
+            catalog={client.contentCatalog}
             projectId={artifact.projectId}
             onChange={content}
           />
@@ -721,8 +730,12 @@ export function ArtifactEditor({
               key={ref.artifactId + ref.revision}
               onClick={() => onOpen(ref.artifactId, ref.revision)}
             >
-              {state.artifacts.find((a) => a.id === ref.artifactId)?.title} · v
-              {ref.revision}
+              {state.artifacts.find((a) => a.id === ref.artifactId)?.title ??
+                client.contentCatalog.find(
+                  (entry) => entry.id === ref.artifactId,
+                )?.title ??
+                "内容已不可用"}{" "}
+              · v{ref.revision}
             </button>
           ))}
         </section>
@@ -740,12 +753,14 @@ export function TaskFields({
   value,
   editable,
   state,
+  catalog = [],
   projectId,
   onChange,
 }: {
   value: TaskContent;
   editable: boolean;
   state: Workspace;
+  catalog?: readonly PlatformContent[];
   projectId: string;
   onChange: (c: TaskContent) => void;
 }) {
@@ -776,6 +791,7 @@ export function TaskFields({
               reasoningEffort: null,
               assignment: "proposed",
               runRequested: 0,
+              notBefore: null,
               everySeconds: null,
             })
           }
@@ -950,15 +966,20 @@ export function TaskFields({
                 })
               }
             >
-              {state.artifacts
-                .filter(
+              {[
+                ...state.artifacts.filter(
                   (a) => a.projectId === projectId && a.content.kind !== "task",
-                )
-                .map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.title}
-                  </option>
-                ))}
+                ),
+                ...catalog.filter(
+                  (entry) =>
+                    entry.projectId === projectId &&
+                    !state.artifacts.some((a) => a.id === entry.id),
+                ),
+              ].map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.title}
+                </option>
+              ))}
             </select>
           </label>
         </>

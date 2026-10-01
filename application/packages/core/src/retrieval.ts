@@ -18,8 +18,33 @@ export const searchSchema = z
     projectId: id.optional(),
     limit: z.number().int().min(1).max(50).default(20),
     offset: z.number().int().min(0).max(10000).default(0),
+    includeTitles: z.boolean().default(true),
+    kind: z.string().min(1).max(80).optional(),
+    kinds: z.array(z.string().min(1).max(80)).min(1).max(16).optional(),
+    appIds: z
+      .array(z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/))
+      .min(1)
+      .max(16)
+      .optional(),
+    sort: z.enum(["updated", "created", "title"]).optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => value.kind === undefined || value.kinds === undefined, {
+    message: "内容类型筛选不能同时使用 kind 和 kinds。",
+  })
+  .refine(
+    (value) => !value.kinds || new Set(value.kinds).size === value.kinds.length,
+    {
+      message: "内容类型筛选不能重复。",
+    },
+  )
+  .refine(
+    (value) =>
+      !value.appIds || new Set(value.appIds).size === value.appIds.length,
+    {
+      message: "应用筛选不能重复。",
+    },
+  );
 export type SearchRequest = z.input<typeof searchSchema>;
 export type SearchHit = {
   artifactId: string;
@@ -31,6 +56,7 @@ export type SearchHit = {
   excerpt: string;
   matchedIn: "title" | "content";
   quote: string;
+  createdAt: string;
   updatedAt: string;
   source: Artifact["source"];
   page?: number;
@@ -196,6 +222,7 @@ export function searchArtifacts(
       revision: artifact.revision,
       ...searchExcerpt(text, excerptTerms),
       matchedIn: inTitle ? "title" : "content",
+      createdAt: artifact.createdAt,
       updatedAt: artifact.updatedAt,
       source: artifact.source,
       ...(pdfPage !== undefined ? { page: pdfPage + 1 } : {}),

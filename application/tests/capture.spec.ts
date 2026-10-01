@@ -240,8 +240,15 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
     });
   });
   let uploads = 0;
+  let contentUploads = 0;
+  let sentMessages = 0;
   page.on("request", (r) => {
-    if (r.url().endsWith("/api/assets") && r.method() === "POST") uploads++;
+    if (r.url().endsWith("/api/attachments") && r.method() === "POST")
+      uploads++;
+    if (r.url().endsWith("/api/assets") && r.method() === "POST")
+      contentUploads++;
+    if (r.url().endsWith("/api/platform/messages") && r.method() === "POST")
+      sentMessages++;
   });
   await page.goto("/");
   await openLibrary(page);
@@ -255,7 +262,9 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   const beforeBounds = await paper.boundingBox();
   const canvas = page.locator(".primary-panel > main");
   const canvasBefore = (await canvas.boundingBox())!;
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  const beforeContentCounts = await page.request
+    .get("/api/platform/content/counts")
+    .then((r) => r.json());
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
   const select = dialog.locator(".capture-start");
@@ -335,9 +344,13 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   ).toBeVisible();
   await expect(input).toHaveValue("已有草稿，不发送");
   expect(uploads).toBe(1);
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
-  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
+  expect(contentUploads).toBe(0);
+  expect(sentMessages).toBe(0);
+  expect(
+    await page.request
+      .get("/api/platform/content/counts")
+      .then((r) => r.json()),
+  ).toEqual(beforeContentCounts);
   const attachment = page
     .getByLabel("消息附件", { exact: true })
     .getByRole("button", { name: "预览附件 保留的截图.png", exact: true });
@@ -540,15 +553,78 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
   ).toBeVisible();
   expect(uploads).toBe(1);
   await expect(page.locator(".artifact-image")).toBeVisible();
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const artifact = boot.workspace.artifacts.find(
-    (a: { title: string }) => a.title === "手动选择的测试图",
+  const entries = await (
+    await page.request.get(
+      `/api/platform/content?query=${encodeURIComponent("手动选择的测试图")}&limit=50`,
+    )
+  ).json();
+  const artifact = entries.find(
+    (entry: { title: string }) => entry.title === "手动选择的测试图",
   );
-  expect(artifact.content.alt).toContain("v1");
+  expect(artifact).toBeTruthy();
+  const original = await (
+    await page.request.get(`/api/platform/objects/${artifact.id}`)
+  ).json();
+  expect(original.content.alt).toContain("v1");
+  const relations = await (
+    await page.request.get(`/api/platform/work/${artifact.id}/relations`)
+  ).json();
   expect(
-    boot.workspace.relations.some(
+    relations.some(
       (r: { fromId: string; type: string }) =>
         r.fromId === artifact.id && r.type === "references",
     ),
   ).toBe(true);
+});
+
+test("保存到内容失败后改为添加到消息，附件仍从自己的 Store 读取", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Reflect.set(window, "morphzDesktop", {
+      capture: {
+        select: async () => ({
+          mime: "image/png",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aKp8AAAAASUVORK5CYII=",
+        }),
+        cancel: async () => {},
+      },
+    });
+  });
+  let contentUploads = 0;
+  let attachmentUploads = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (request.url().endsWith("/api/assets")) contentUploads++;
+    if (request.url().endsWith("/api/attachments")) attachmentUploads++;
+  });
+  await page.route("**/api/platform/images", (route) =>
+    route.fulfill({ status: 503, json: { message: "测试：内容暂时不可保存" } }),
+  );
+  await page.goto("/");
+  await openLibrary(page);
+  await openInput(page);
+  await page.getByRole("button", { name: "截图输入", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
+  await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
+  await dialog.getByLabel("截图标题").fill("截图跨存储重试");
+  await dialog.getByRole("button", { name: "保存到内容" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("暂时不可保存");
+  expect(contentUploads).toBe(1);
+  expect(attachmentUploads).toBe(0);
+
+  await dialog.getByRole("button", { name: "添加到消息" }).click();
+  const attachmentName = "截图跨存储重试.png";
+  const attachment = page.getByRole("button", {
+    name: `预览附件 ${attachmentName}`,
+  });
+  await expect(attachment).toBeVisible();
+  expect(contentUploads).toBe(1);
+  expect(attachmentUploads).toBe(1);
+  await attachment.click();
+  await expect(
+    page
+      .getByRole("dialog", { name: `附件预览：${attachmentName}` })
+      .getByAltText(attachmentName),
+  ).toBeVisible();
 });

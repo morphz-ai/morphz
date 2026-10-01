@@ -17,7 +17,16 @@ export const publicationSchema = z
   .object({
     kind: z.literal("publication"),
     assetId: hash,
-    format: z.enum(["epub", "docx", "doc", "rtf", "html", "markdown", "text"]),
+    format: z.enum([
+      "epub",
+      "pdf",
+      "docx",
+      "doc",
+      "rtf",
+      "html",
+      "markdown",
+      "text",
+    ]),
     author: z.string().max(1000),
     language: z.string().max(80),
     edition: z.string().max(500),
@@ -164,6 +173,36 @@ export const readingMarkSchema = z
   })
   .strict();
 export type ReadingMark = z.infer<typeof readingMarkSchema>;
+/** All pages remain bound to one exact original and the authenticated owner.
+ * A visible range uses absolute offsets in the exact native/OCR section. */
+export const readerMarksReadSchema = z
+  .object({
+    artifactId: id,
+    revision: z.number().int().positive(),
+    deleted: z.boolean().default(false),
+    sectionId: id.optional(),
+    start: z.number().int().nonnegative().optional(),
+    end: z.number().int().nonnegative().optional(),
+    after: z.string().min(1).max(4096).optional(),
+    offset: z.number().int().nonnegative().default(0),
+    limit: z.number().int().min(1).max(50).default(50),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      (value.start === undefined) !== (value.end === undefined) ||
+      (value.start !== undefined &&
+        (!value.sectionId || value.end! < value.start)) ||
+      (value.after !== undefined && value.offset !== 0)
+    )
+      ctx.addIssue({ code: "custom", message: "标注读取范围无效。" });
+  });
+export type ReaderMarksRead = z.input<typeof readerMarksReadSchema>;
+export type ReadingMarksPage = {
+  marks: ReadingMark[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
 export const readingStateSchema = z
   .object({
     ownerPrincipalId: id,
@@ -259,12 +298,21 @@ export const readerToolSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("marks"),
       artifactId: id,
+      revision: z.number().int().positive().optional(),
       deleted: z.boolean().default(false),
       offset: z.number().int().nonnegative().default(0),
       limit: z.number().int().min(1).max(50).default(20),
+      after: z.string().min(1).max(4096).optional(),
+      sectionId: id.optional(),
+      start: z.number().int().nonnegative().optional(),
+      end: z.number().int().nonnegative().optional(),
     })
     .strict(),
-  ...readerCommandSchema.options,
+  readerCommandSchema.options[0],
+  readerCommandSchema.options[1].extend(binding),
+  readerCommandSchema.options[2].extend(binding),
+  readerCommandSchema.options[3].extend(binding),
+  readerCommandSchema.options[4],
 ]);
 
 export function readable(content: { kind: string; understanding?: unknown }) {

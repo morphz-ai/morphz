@@ -5,6 +5,7 @@ import { AttachmentPreview } from "./AttachmentPreview.js";
 import { restoreInputToolFocus } from "./input-tool-focus.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
+import { messageAttachmentSizeIssue } from "../../../packages/core/src/message-attachment-policy.js";
 
 /** Resources belong to the draft, not the content catalogue. */
 export function MessageAttachments({
@@ -68,6 +69,8 @@ export function MessageAttachments({
     try {
       for (const value of files) {
         try {
+          const sizeIssue = messageAttachmentSizeIssue(value);
+          if (sizeIssue) throw new Error(sizeIssue);
           const { assetId, mime } = await client.uploadAttachment(value);
           added.push({ assetId, mime, name: value.name.slice(0, 180) });
         } catch (error) {

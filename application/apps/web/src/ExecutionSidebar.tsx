@@ -452,7 +452,11 @@ export function ExecutionSidebar({
                       onClick={() => onOpen(o.artifactId, o.revision)}
                     >
                       {state.artifacts.find((a) => a.id === o.artifactId)
-                        ?.title ?? "打开成果"}{" "}
+                        ?.title ??
+                        client.contentCatalog.find(
+                          (entry) => entry.id === o.artifactId,
+                        )?.title ??
+                        "打开成果"}{" "}
                       · v{o.revision}
                     </button>
                   ))}

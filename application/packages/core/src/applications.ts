@@ -47,10 +47,46 @@ export const applicationManifestSchema = z
   .strict();
 export type ApplicationManifest = z.infer<typeof applicationManifestSchema>;
 
+/** The relational installation record excludes executable UI bytes. The
+ * exact HTML is read from the referenced immutable Store version on demand.
+ */
+export const uiPackageHeaderSchema = applicationManifestSchema
+  .omit({ ui: true })
+  .extend({
+    ui: z
+      .object({
+        type: z.literal("sandbox"),
+        presentation: z.enum(["workspace", "immersive"]).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+export type UiPackageHeader = z.infer<typeof uiPackageHeaderSchema>;
+
+/** The launcher can contain bundled manifests and installed package headers.
+ * Installed executable bytes are never part of the workspace catalog.
+ */
+export const applicationCatalogEntrySchema = z.union([
+  applicationManifestSchema,
+  uiPackageHeaderSchema,
+]);
+export type ApplicationCatalogEntry = z.infer<
+  typeof applicationCatalogEntrySchema
+>;
+
+export function uiPackageHeader(
+  manifest: ApplicationManifest,
+): UiPackageHeader {
+  if (manifest.ui.type !== "sandbox")
+    throw new Error("只有独立界面包可以进入安装记录。");
+  const { html: _html, ...ui } = manifest.ui;
+  return uiPackageHeaderSchema.parse({ ...manifest, ui });
+}
+
 /** Presentation-only correction for the bundled example's old launcher copy.
  * Installed HTML, protocol, permissions, versions and saved instances stay intact.
  */
-export function applicationDescription(app: ApplicationManifest) {
+export function applicationDescription(app: ApplicationCatalogEntry) {
   return app.id === "example.scratchpad" &&
     app.description === "宿主协议示例：独立界面、状态恢复、保存对象与协作输入。"
     ? "记下想法，保存为文档，或交给 Morphz 继续整理。"
@@ -62,6 +98,52 @@ export const applicationStateSchema = z
     (value) => new TextEncoder().encode(JSON.stringify(value)).length <= 65536,
     "应用视图状态超过 64 KiB；正文请保存为对象。",
   );
+const locationId = z.string().max(200);
+const scriptTargetViewSchema = z
+  .object({
+    productionId: locationId,
+    itemId: locationId.optional(),
+    revision: z.number().int().positive().optional(),
+    candidateId: locationId.optional(),
+    reviewId: locationId.optional(),
+  })
+  .strict();
+const builtinViewStateSchema = z
+  .object({
+    artifactId: locationId.nullable().optional(),
+    url: z.string().max(4096).optional(),
+    view: z.enum(["library", "editor"]).optional(),
+    productionId: locationId.optional(),
+    itemId: locationId.optional(),
+    scriptTarget: scriptTargetViewSchema.nullable().optional(),
+    navigationId: locationId.optional(),
+  })
+  .strict();
+const nonScriptBuiltinViewStateSchema = builtinViewStateSchema.omit({
+  productionId: true,
+  itemId: true,
+  scriptTarget: true,
+});
+const externalViewStateSchema = z
+  .object({
+    artifactId: locationId.nullable().optional(),
+    view: z.string().max(100).optional(),
+  })
+  .strict();
+
+/** Platform persists window navigation, never an application's own content.
+ * External Apps can keep a small shell location, not drafts or documents.
+ */
+export function parseApplicationViewState(appId: string, value: unknown) {
+  const bounded = applicationStateSchema.parse(value);
+  const schema =
+    appId === "morphz.script-studio"
+      ? builtinViewStateSchema
+      : appId.startsWith("morphz.")
+        ? nonScriptBuiltinViewStateSchema
+        : externalViewStateSchema;
+  return schema.parse(bounded);
+}
 export const applicationInstanceSchema = z
   .object({
     id: z.string(),

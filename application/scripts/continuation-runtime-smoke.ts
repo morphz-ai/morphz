@@ -15,7 +15,8 @@ import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
-import type { Receipt } from "../packages/core/src/model.js";
+import { localAccess, type Receipt } from "../packages/core/src/model.js";
+import { DatabaseSync } from "node:sqlite";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary));
@@ -150,17 +151,31 @@ try {
     stream.on("data", (c) => {
       logs = (logs + c.toString()).slice(-12000);
     });
-  const bridge = host.connection.application.options.runtime!,
-    store = host.connection.application.store;
-  await wait(() => bridge.snapshot().connected, "connection");
+  let bridge = host.connection.application.options.runtime!;
+  const store = host.connection.application.store;
+  await wait(() => bridge.platformStatus().connected, "connection");
   const binding = await fetch(
     `http://127.0.0.1:${runtimePort}/api/agents/default-agent/provider-accounts/stub`,
     { method: "PUT", headers: { Authorization: `Bearer ${token}` } },
   );
   assert.ok(binding.ok, "Bind only the isolated fixture's synthetic account");
-  let boot = (await host.connection.call("workspace")) as any;
+  let boot = (await host.connection.call("platform.bootstrap")) as {
+    csrfToken: string;
+  };
+  await host.connection.call(
+    "projects.create",
+    {
+      commandId: randomUUID(),
+      projectId: "first-project",
+      title: "定向补充验收",
+    },
+    { identityGeneration: boot.csrfToken },
+  );
+  const scope = { projectId: "first-project", conversationId: "first-project" };
+  const history = async () =>
+    (await bridge.platformConversationHistory(scope, localAccess)).runtime;
   const message = async (command: unknown) =>
-    host!.connection.call("message", command, {
+    host!.connection.call("platform.message", command, {
       identityGeneration: boot.csrfToken,
     }) as Promise<Receipt>;
   const ordinary = (body: string) => ({
@@ -168,7 +183,7 @@ try {
     operation: {
       type: "record-input",
       projectId: "first-project",
-      conversationId: "local-dialogue",
+      conversationId: scope.conversationId,
       artifactId: null,
       artifactRevision: null,
       selection: "",
@@ -180,15 +195,15 @@ try {
     b = await message(ordinary("TEST_DIRECTED_B：整理资料 B。"));
   await wait(() => providerCalls >= 2, "two parallel model calls");
   await wait(
-    () =>
-      !!bridge
-        .snapshot()
-        .activity?.threads.find((t) => t.inputId === a.entityId)?.continuation,
+    async () =>
+      !!(await history()).activity?.threads.find(
+        (t) => t.inputId === a.entityId,
+      )?.continuation,
     "target binding",
   );
-  const target = bridge
-    .snapshot()
-    .activity!.threads.find((t) => t.inputId === a.entityId)!.continuation!;
+  const target = (await history()).activity!.threads.find(
+    (t) => t.inputId === a.entityId,
+  )!.continuation!;
   const command = {
     ...ordinary("TEST_SUPPLEMENT_A_ONLY：报告 A 使用人民币，资料 B 不变。"),
     operation: {
@@ -199,44 +214,41 @@ try {
   };
   const receipt = await message(command);
   assert.equal(
-    bridge.snapshot().deliveries.find((d) => d.inputId === receipt.entityId)!
+    (await history()).deliveries.find((d) => d.inputId === receipt.entityId)!
       .supplement,
     "delivered",
   );
   assert.equal(
-    bridge.snapshot().deliveries.find((d) => d.inputId === b.entityId)!.state,
+    (await history()).deliveries.find((d) => d.inputId === b.entityId)!.state,
     "running",
   );
   blocked = false;
   for (const r of release.splice(0)) r();
   await wait(
-    () =>
-      bridge
-        .snapshot()
-        .messages.some(
-          (m) =>
-            m.inputId === a.entityId &&
-            m.kind === "reply" &&
-            m.text.includes("采用补充"),
-        ),
+    async () =>
+      (await history()).messages.some(
+        (m) =>
+          m.inputId === a.entityId &&
+          m.kind === "reply" &&
+          m.text.includes("采用补充"),
+      ),
     "original root adopts supplement",
   );
   await wait(
-    () =>
-      bridge
-        .snapshot()
-        .messages.some((m) => m.inputId === b.entityId && m.kind === "reply"),
+    async () =>
+      (await history()).messages.some(
+        (m) => m.inputId === b.entityId && m.kind === "reply",
+      ),
     "parallel original reply",
   );
   assert.ok(
-    bridge
-      .snapshot()
-      .messages.filter((m) => m.inputId === b.entityId)
+    (await history()).messages
+      .filter((m) => m.inputId === b.entityId)
       .every((m) => !m.text.includes("采用补充")),
     "B must not adopt A's directed input",
   );
   assert.ok(
-    bridge.snapshot().messages.every((m) => m.inputId !== receipt.entityId),
+    (await history()).messages.every((m) => m.inputId !== receipt.entityId),
     "Supplement receipt is not a new response root",
   );
   const ledger = store.runtimeState() as any,
@@ -252,11 +264,37 @@ try {
     workDirectory,
     join(directory, "profile"),
   );
-  boot = await host.connection.call("workspace");
+  boot = (await host.connection.call("platform.bootstrap")) as {
+    csrfToken: string;
+  };
+  bridge = host.connection.application.options.runtime!;
   assert.equal(host.connection.application.store.identity(), center);
   assert.deepEqual(await message(command), receipt);
   await delay(2200);
   assert.equal(providerCalls, before);
+  assert.ok(
+    (await history()).messages.some(
+      (m) =>
+        m.inputId === a.entityId &&
+        m.kind === "reply" &&
+        m.text.includes("采用补充"),
+    ),
+  );
+  const database = new DatabaseSync(join(workDirectory, "workspace.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets')",
+        )
+        .all(),
+      [],
+    );
+  } finally {
+    database.close();
+  }
   passed = true;
   console.log(
     "PASS: real Runtime + embedded IPC: two parallel roots, explicit supplement adopted only by A, B unchanged, original reply attribution, no new supplement execution, reopen retry does not replay. Synthetic provider; isolated data.",

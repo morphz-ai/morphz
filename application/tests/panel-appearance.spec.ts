@@ -1,8 +1,11 @@
 import { openSettings } from "./settings-helpers.js";
-import { seedCenter } from "./center-fixtures.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { libraryDestination } from "./artifact-fixtures.js";
+import {
+  isolatedCenterDirectory,
+  seedAgentOriginal,
+} from "./platform-agent-original-fixture.js";
 
 test("搜索与通知在四主题亮暗模式下保持中性色层次和可见键盘焦点", async ({
   page,
@@ -10,19 +13,11 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
   await page.goto("/");
   await openLibrary(page);
   const project = await libraryDestination(page);
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: project.id,
-      title: "整理品牌与产品资料",
-      content: {
-        kind: "document",
-        markdown:
-          "整理产品资料，核对文档、设计方案和本周工作安排。人和 Agent 围绕同一份内容协作。",
-      },
-    },
-    true,
+  await seedAgentOriginal(
+    isolatedCenterDirectory(),
+    project.id,
+    "整理品牌与产品资料",
+    "整理产品资料，核对文档、设计方案和本周工作安排。人和 Agent 围绕同一份内容协作。",
   );
   await page
     .locator(".artifact-card")

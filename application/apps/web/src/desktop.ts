@@ -5,15 +5,6 @@ export type DesktopAppearanceState = {
   reducedTransparency: boolean;
   highContrast: boolean;
 };
-export type SourceView = {
-  id: string;
-  label: string;
-  projectId: string;
-  enabled: boolean;
-  count: number;
-  error: string;
-  lastSync: string | null;
-};
 export type BrowserView = {
   pageId: string;
   surface: { partition: string; src: string };
@@ -42,7 +33,11 @@ declare global {
         cancel(id: string): void;
         subscribe(
           id: string,
-          scope: { projectId: string; conversationId: string },
+          scope: {
+            projectId: string;
+            conversationId: string;
+            kind?: "platform";
+          },
           generation: string,
         ): Promise<void>;
         unsubscribe(id: string): void;
@@ -58,6 +53,7 @@ declare global {
         save(request: {
           centerId: string;
           principalId: string;
+          contentId: string;
           productionId: string;
           exportId: string;
         }): Promise<
@@ -158,17 +154,6 @@ declare global {
           },
         ): Promise<{ found: boolean }>;
         close(pageId: string): Promise<void>;
-      };
-      sources: {
-        list(): Promise<SourceView[]>;
-        choose(
-          projectId: string,
-          kind: "file" | "directory",
-        ): Promise<SourceView[]>;
-        control(
-          id: string,
-          action: "resume" | "pause" | "remove" | "refresh",
-        ): Promise<SourceView[]>;
       };
     };
   }

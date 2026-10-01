@@ -5,13 +5,13 @@ import { assertDialogControlMetrics } from "./dialog-control-helpers.js";
 import type { ModelSettingsSnapshot } from "../packages/core/src/model-settings.js";
 
 test.afterEach(async ({ page }) => {
-  // Workspace polling may still be resolving the overridden capability at
+  // Platform polling may still be resolving the overridden capability at
   // teardown. Finish handlers before Playwright disposes their response body.
   await page.unrouteAll({ behavior: "wait" });
 });
 
 async function prepare(page: Page) {
-  await page.route("**/api/workspace", async (route) => {
+  await page.route("**/api/platform/bootstrap", async (route) => {
     const { "if-none-match": _etag, ...headers } = route.request().headers();
     const response = await route.fetch({ headers });
     const boot = await response.json();

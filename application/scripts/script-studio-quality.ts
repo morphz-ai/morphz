@@ -17,20 +17,15 @@ import { z } from "zod";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { receivedWorkflowText } from "./script-studio-quality-evidence.js";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
-import {
-  localAccess,
-  type Operation,
-  type Receipt,
-} from "../packages/core/src/model.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { localAccess, type Receipt } from "../packages/core/src/model.js";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import {
   emptyScriptDraft,
-  currentScriptDraft,
   scriptBriefSchema,
-  type ScriptCommand,
-  type ScriptDraft,
   type ScriptGeneration,
 } from "../packages/core/src/script-studio.js";
+import type { LiveScriptDraft } from "../packages/script-studio/src/store.js";
 
 const model = process.env.MORPHZ_SCRIPT_QUALITY_MODEL;
 const baseUrl = process.env.MORPHZ_SCRIPT_QUALITY_BASE_URL;
@@ -126,13 +121,13 @@ console.log(
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function waitUntil(
-  check: () => boolean,
+  check: () => boolean | Promise<boolean>,
   label: string,
   timeout = 60_000,
 ) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
-    if (check()) return;
+    if (await check()) return;
     if (runtime && (runtime.exitCode !== null || runtime.signalCode !== null))
       throw new Error(`Isolated Runtime exited during ${label}`);
     await delay(500);
@@ -178,14 +173,7 @@ try {
     MORPHZ_SCRIPT_QUALITY_KEY: key,
   };
   const binary = runtimeBinaryPath();
-  for (const file of [
-    "legacy/script-studio-1.2.1.hns",
-    "legacy/script-studio-1.2.0.hns",
-    "legacy/script-studio-1.1.1.hns",
-    "legacy/script-studio-1.0.0.hns",
-    "legacy/script-studio-1.1.0.hns",
-    "script-studio.hns",
-  ]) {
+  for (const file of ["script-studio.hns"]) {
     const installed = spawnSync(
       binary,
       [
@@ -229,7 +217,8 @@ try {
       runtimeLogs = (runtimeLogs + chunk.toString()).slice(-40_000);
     });
   await waitUntil(
-    () => host!.connection.application.options.runtime!.snapshot().connected,
+    () =>
+      host!.connection.application.options.runtime!.platformStatus().connected,
     "Runtime connection",
   );
   const bound = await fetch(
@@ -237,37 +226,44 @@ try {
     { method: "PUT", headers: { Authorization: `Bearer ${runtimeToken}` } },
   );
   assert.ok(bound.ok, `Test-only account binding failed: ${bound.status}`);
-  const boot = (await host.connection.call("workspace")) as {
-    csrfToken: string;
-  };
-  const execute = (operation: Operation) =>
-    host!.connection.application.store.execute(
-      { commandId: randomUUID(), operation },
-      localAccess,
-    ).entityId;
-  const run = (command: ScriptCommand) =>
-    execute({ type: "script-command", command });
+  const client = await PlatformClient.connect(host.connection);
+  const persistedDeliveries = () =>
+    host!.connection.application.store.runtimeState() as {
+      deliveries: Array<{
+        inputId: string;
+        state: string;
+        error: string | null;
+        platformSource?: {
+          projectId: string;
+          conversationId: string;
+          application?: { harness?: unknown };
+        };
+      }>;
+    };
   for (const fixture of fixtures) {
     const startedAt = new Date().toISOString();
-    // Independent project gives each case an independent Session and no earlier test answers.
-    const projectId = execute({
-      type: "create-project",
-      title: `TEST 编剧质量 ${fixture.title}`,
-    });
-    const productionId = run({
-      action: "create-production",
+    // The first input also creates an explicit named conversation below;
+    // projects alone share the personal default Session.
+    const projectId = randomUUID();
+    await client.createProject(
+      `TEST 编剧质量 ${fixture.title}`,
+      randomUUID(),
+      projectId,
+    );
+    const productionId = randomUUID();
+    const created = (await client.createScript({
+      commandId: randomUUID(),
+      productionId,
       projectId,
       title: `TEST ${fixture.title}`,
-    });
-    const production = () =>
-      host!.connection.application.store
-        .snapshot()
-        .scriptProductions.find((p) => p.id === productionId)!;
-    const p = production();
-    run({
-      action: "update-production",
-      productionId,
-      expectedRevision: p.revision,
+    })) as { contentId: string };
+    const contentId = created.contentId;
+    const production = () => client.readScriptSnapshot(contentId);
+    const p = await production();
+    await client.updateScript({
+      commandId: randomUUID(),
+      contentId,
+      expectedRevision: (await client.readScript(contentId)).metadataRevision,
       title: p.title,
       brief: {
         ...fixture.brief,
@@ -278,14 +274,18 @@ try {
       reviewerPrincipalIds: p.reviewerPrincipalIds,
       template: p.template,
     });
-    const create = (
+    const create = async (
       kind: "episode" | "scene" | "outline" | "setting",
       text: string,
-      patch: Partial<ScriptDraft> = {},
-    ) =>
-      run({
-        action: "create-item",
-        productionId,
+      patch: Partial<LiveScriptDraft> = {},
+    ) => {
+      const itemId = randomUUID();
+      await client.createScriptItem({
+        commandId: randomUUID(),
+        contentId,
+        itemId,
+        expectedActivityRevision: (await client.readScript(contentId))
+          .activityRevision,
         kind,
         draft: {
           ...emptyScriptDraft(`${fixture.title} · ${kind}`),
@@ -293,58 +293,75 @@ try {
           ...patch,
         },
       });
+      return itemId;
+    };
     const references: ScriptGeneration["references"] = [];
-    const dependencies: ScriptDraft["dependencies"] = [];
-    const parentId = fixture.parent ? create("episode", fixture.parent) : null;
+    const dependencies: LiveScriptDraft["dependencies"] = [];
+    const parentId = fixture.parent
+      ? await create("episode", fixture.parent)
+      : null;
     if (parentId) {
       references.push({ itemId: parentId, revision: 1 });
       dependencies.push({ itemId: parentId, revision: 1 });
     }
     if (fixture.setting) {
-      const itemId = create("setting", fixture.setting);
+      const itemId = await create("setting", fixture.setting);
       references.push({ itemId, revision: 1 });
       dependencies.push({ itemId, revision: 1 });
     }
-    const sources: ScriptDraft["sources"] = [];
+    const sources: LiveScriptDraft["sources"] = [];
     if (fixture.source) {
-      const artifactId = execute({
-        type: "create-artifact",
+      const source = (await client.createDocument({
+        commandId: randomUUID(),
+        objectId: randomUUID(),
         projectId,
         title: "TEST 合成原作",
-        content: { kind: "document", markdown: fixture.source },
+        markdown: fixture.source,
+      })) as { contentId: string; objectId: string; versionRef: string };
+      const entry = (
+        await client.content({ contentIds: [source.contentId], limit: 1 })
+      ).items[0]!;
+      sources.push({
+        appId: entry.appId,
+        instanceId: entry.instanceId,
+        objectId: source.objectId,
+        versionRef: source.versionRef,
+        quote: "",
       });
-      sources.push({ artifactId, revision: 1, quote: "" });
     }
-    const targetId = create(fixture.kind, fixture.text, {
+    const targetId = await create(fixture.kind, fixture.text, {
       parentId,
       dependencies,
       sources,
       basis: fixture.brief.mode === "adaptation" ? "adaptation" : "original",
     });
     if (fixture.downstream) {
-      const itemId = create("episode", fixture.downstream, {
+      const itemId = await create("episode", fixture.downstream, {
         dependencies: [{ itemId: targetId, revision: 1 }],
       });
       references.push({ itemId, revision: 1 });
     }
     if (fixture.hiddenDownstream)
-      create("episode", fixture.hiddenDownstream, {
+      await create("episode", fixture.hiddenDownstream, {
         dependencies: [{ itemId: targetId, revision: 1 }],
       });
-    const originals = structuredClone(production().items);
-    const artifactCount =
-      host.connection.application.store.snapshot().artifacts.length;
-    const applicationInstanceId = execute({
-      type: "launch-application",
-      workspaceId: projectId,
-      applicationId: scriptStudioApplication.id,
-      applicationVersion: scriptStudioApplication.version,
-    });
+    const originals = structuredClone((await production()).items);
+    const artifactCount = (await client.content({ projectId, limit: 100 }))
+      .items.length;
+    const applicationInstanceId = (
+      await client.launchAppView({
+        commandId: randomUUID(),
+        projectId,
+        appId: scriptStudioApplication.id,
+        packageVersion: scriptStudioApplication.version,
+        state: {},
+      })
+    ).id;
     const generation: ScriptGeneration = {
       productionId,
       targetId,
       baseRevision: 1,
-      contextRevision: production().revision,
+      contextRevision: (await production()).revision,
       purpose: fixture.purpose,
       references,
       maxCandidates: 1,
@@ -353,22 +370,28 @@ try {
     };
     const body = `TEST 专业编剧质量验收（合成素材）。${fixture.request}\n使用本次固定的剧本请求与资料版本，将成果提交为候选或带引用的审阅意见。不得覆盖正式稿、代替人工批准或创建无关对象。`;
     const receipt = (await host.connection.call(
-      "message",
+      "platform.message",
       {
         commandId: randomUUID(),
         operation: {
           type: "record-input",
           projectId,
+          conversationId: randomUUID(),
+          newConversation: { title: `TEST 质量验收 ${fixture.key}` },
           artifactId: null,
           artifactRevision: null,
           selection: "",
           body,
           targetActantId: "morphz-agent",
           applicationInstanceId,
+          application: {
+            id: scriptStudioApplication.id,
+            version: scriptStudioApplication.version,
+          },
           scriptGeneration: generation,
         },
       },
-      { identityGeneration: boot.csrfToken },
+      { identityGeneration: client.boot.csrfToken },
     )) as Receipt;
     console.log(
       JSON.stringify({
@@ -379,9 +402,9 @@ try {
     );
     await waitUntil(
       () => {
-        const d = host!.connection.application.options
-          .runtime!.snapshot()
-          .deliveries.find((d) => d.inputId === receipt.entityId);
+        const d = persistedDeliveries().deliveries.find(
+          (d) => d.inputId === receipt.entityId,
+        );
         if (d?.state === "failed")
           throw new Error(`${fixture.key}: ${d.error ?? "delivery failed"}`);
         return d?.state === "completed";
@@ -389,11 +412,15 @@ try {
       `${fixture.key} model completion`,
       10 * 60_000,
     );
-    const state = host.connection.application.store.snapshot();
-    const input = state.inputs.find((i) => i.id === receipt.entityId)!;
-    const delivery = host.connection.application.options
-      .runtime!.snapshot()
-      .deliveries.find((d) => d.inputId === input.id)!;
+    const delivery = persistedDeliveries().deliveries.find(
+      (d) => d.inputId === receipt.entityId,
+    )!;
+    const source = delivery.platformSource;
+    assert.ok(
+      source,
+      "Original immutable Platform input must be retained in the transport ledger",
+    );
+    const input = { id: delivery.inputId, ...source };
     const db = new DatabaseSync(join(runtimeDirectory, "runtime.sqlite"), {
       readOnly: true,
     });
@@ -430,7 +457,7 @@ try {
       .all(startedAt)
       .map((row) => JSON.parse(String(row.payload)));
     db.close();
-    const end = production();
+    const end = await production();
     const candidates = end.candidates.filter((c) => c.inputId === input.id);
     const reviews = end.reviews.filter((r) => r.inputId === input.id);
     const mechanical: Record<string, boolean> = {
@@ -459,7 +486,9 @@ try {
       noAutomaticApproval: end.items.every(
         (i) => i.approval === null && i.status === "draft",
       ),
-      noUnrelatedArtifacts: state.artifacts.length === artifactCount,
+      noUnrelatedArtifacts:
+        (await client.content({ projectId, limit: 100 })).items.length ===
+        artifactCount,
       appropriateResult:
         fixture.purpose === "draft" || fixture.purpose === "rewrite"
           ? candidates.length === 1 &&
@@ -532,15 +561,18 @@ try {
       harness: input.application?.harness,
       input,
       generation,
-      brief: production().brief,
+      brief: (await production()).brief,
       materials: originals,
       sourceText: fixture.source ?? null,
       productionId,
       targetId,
       delivery,
-      messages: host.connection.application.options
-        .runtime!.snapshot()
-        .messages.filter((m) => m.inputId === input.id),
+      messages: (
+        await host.connection.application.options.runtime!.platformConversationHistory(
+          { projectId, conversationId: input.conversationId },
+          localAccess,
+        )
+      ).messages.filter((m) => m.inputId === input.id),
       candidates,
       reviews,
       jobs,

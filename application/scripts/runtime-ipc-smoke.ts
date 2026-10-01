@@ -15,10 +15,15 @@ import { join, dirname } from "node:path";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
-import { localAccess, type Receipt } from "../packages/core/src/model.js";
-import { readingReference } from "../packages/core/src/reader.js";
-import { parsePublication } from "../packages/application/src/reader-import.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import type { Receipt } from "../packages/core/src/model.js";
+import {
+  readingReference,
+  type ReadingSection,
+} from "../packages/core/src/reader.js";
 import { readingInputFormat } from "../packages/application/src/session-io.js";
 
 const binary = runtimeBinaryPath();
@@ -121,6 +126,24 @@ let manifest: { tools: { token: string; ipc_path: string }[] } | undefined;
 let logs = "",
   passed = false;
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const assertNoLegacyWorkspace = () => {
+  const database = new DatabaseSync(join(workDirectory, "workspace.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace', 'commands', 'assets')",
+        )
+        .all(),
+      [],
+      "The real Host transport database must not create a workspace snapshot or file BLOB table",
+    );
+  } finally {
+    database.close();
+  }
+};
 const waitUntil = async (
   check: () => boolean | Promise<boolean>,
   label: string,
@@ -176,7 +199,7 @@ try {
       logs = (logs + c.toString()).slice(-12000);
     });
   await waitUntil(
-    () => host!.connection.application.options.runtime!.snapshot().connected,
+    () => host!.connection.application.options.runtime!.isConnected,
     "Runtime connection",
   );
   const binding = await fetch(
@@ -188,8 +211,16 @@ try {
     `http://127.0.0.1:${runtimePort}/api/session-io/capabilities`,
     { headers: { Authorization: `Bearer ${runtimeToken}` } },
   ).then((response) => response.json());
-  assert.equal(capabilities.experimental, false, "Session IO is a stable Runtime capability");
-  assert.equal(capabilities.enabled, true, "Default Runtime builds enable Session IO");
+  assert.equal(
+    capabilities.experimental,
+    false,
+    "Session IO is a stable Runtime capability",
+  );
+  assert.equal(
+    capabilities.enabled,
+    true,
+    "Default Runtime builds enable Session IO",
+  );
   assert.ok(
     capabilities.formats.some(
       (format: any) =>
@@ -198,33 +229,50 @@ try {
     ),
     "The running Runtime, not merely the manifest on disk, must load reading v6",
   );
-  const boot = (await host.connection.call("workspace")) as any;
-  const store = host.connection.application.store;
-  const bookBytes = Buffer.from("# TEST 原文\n\n兼听则明，偏信则暗。\n"),
-    parsedBook = await parsePublication("TEST 伴读.md", bookBytes),
-    bookContent = store.addPublication(bookBytes, parsedBook, localAccess);
-  const book = store.execute(
-    {
-      commandId: randomUUID(),
-      operation: {
-        type: "import-publication",
-        projectId: "first-project",
-        relativePath: "TEST 伴读.md",
-        title: parsedBook.title,
-        content: bookContent,
+  let client = await PlatformClient.connect(host.connection);
+  const { deskId: projectId, dialogueId: conversationId } =
+    await client.ensurePersonalSpaces();
+  const bookBytes = Buffer.from("# TEST 原文\n\n兼听则明，偏信则暗。\n");
+  const imported = z
+    .object({
+      entityId: z.string(),
+      bookId: z.string(),
+      revision: z.literal(1),
+    })
+    .parse(
+      await host.connection.call(
+        "reader.import",
+        {
+          commandId: randomUUID(),
+          projectId,
+          relativePath: "TEST 伴读.md",
+          data: bookBytes,
+        },
+        { identityGeneration: client.boot.csrfToken },
+      ),
+    );
+  const book = z
+    .object({
+      bookId: z.string(),
+      sections: z.array(z.object({ id: z.string() })).length(1),
+    })
+    .parse(await client.readReaderBook(imported.entityId, 1));
+  assert.equal(book.bookId, imported.bookId);
+  const readSection = () =>
+    host!.connection.call(
+      "reader.read",
+      {
+        artifactId: imported.entityId,
+        revision: 1,
+        sectionId: book.sections[0]!.id,
       },
-    },
-    localAccess,
-  );
-  const section = store.readerSection(
-      book.entityId,
-      1,
-      bookContent.sections[0]!.id,
-      localAccess,
-    ),
+      { identityGeneration: client.boot.csrfToken },
+    ) as Promise<ReadingSection>;
+  const section = await readSection(),
     quoteStart = section.text.indexOf("兼听");
+  assert.ok(quoteStart >= 0, "Reader must return the imported original");
   const reading = readingReference(section, {
-    sourceId: bookContent.assetId,
+    sourceId: section.sourceId,
     sectionId: section.id,
     start: quoteStart,
     end: quoteStart + "兼听则明，偏信则暗。".length,
@@ -233,8 +281,9 @@ try {
     commandId: randomUUID(),
     operation: {
       type: "record-input",
-      projectId: "first-project",
-      artifactId: book.entityId,
+      projectId,
+      conversationId,
+      artifactId: imported.entityId,
       artifactRevision: 1,
       selection: reading.quote,
       reading,
@@ -242,48 +291,76 @@ try {
       targetActantId: "morphz-agent",
     },
   };
-  const receipt = (await host.connection.call("message", command, {
-    identityGeneration: boot.csrfToken,
+  const receipt = (await host.connection.call("platform.message", command, {
+    identityGeneration: client.boot.csrfToken,
   })) as Receipt;
-  await waitUntil(() => {
-    const delivery = host!.connection.application.options
-      .runtime!.snapshot()
-      .deliveries.find((d) => d.inputId === receipt.entityId);
+  await waitUntil(async () => {
+    const history = await client.history(projectId, conversationId);
+    const delivery = history.runtime.deliveries.find(
+      (d) => d.inputId === receipt.entityId,
+    );
     if (delivery?.state === "failed")
       throw new Error(delivery.error ?? "delivery failed");
     return delivery?.state === "completed";
   }, "IPC object delivery");
-  const artifact = store
-    .snapshot()
-    .artifacts.find((a) => a.title === "IPC 联合验收交付");
+  const history = await client.history(projectId, conversationId);
+  assert.deepEqual(
+    history.inputs.find((input) => input.id === receipt.entityId)?.reading,
+    reading,
+    "Accepted Runtime history must retain the original book/version quote",
+  );
+  const artifact = (
+    await client.content({ projectId, query: "IPC 联合验收交付", limit: 50 })
+  ).items.find((a) => a.title === "IPC 联合验收交付");
   assert.ok(
     artifact,
     "The actual Runtime physical tool must persist the object",
   );
-  assert.equal(artifact.createdBy.actantId, "morphz-agent");
-  assert.equal(artifact.projectId, "first-project");
+  const documentSchema = z.object({
+    contentId: z.string(),
+    projectId: z.string(),
+    revision: z.literal(1),
+    title: z.string(),
+    markdown: z.string(),
+    author: z.object({ principalId: z.string(), actantId: z.string() }),
+  });
+  const document = documentSchema.parse(
+    await client.readDocument(artifact.id, 1),
+  );
+  assert.equal(document.author.actantId, "morphz-agent");
+  assert.equal(document.projectId, projectId);
+  assert.equal(
+    document.markdown,
+    "由真实 Runtime 执行，经本地进程通信写入 SQLite。",
+  );
   assert.ok(
-    store
-      .artifactOutputs(localAccess)
-      .some(
-        (output) =>
-          output.artifactId === artifact.id &&
-          output.inputId === receipt.entityId,
-      ),
+    (await client.contentDeliveries([receipt.entityId])).some(
+      (output) =>
+        output.contentId === artifact.id &&
+        output.inputId === receipt.entityId &&
+        output.sourceProjectId === projectId &&
+        output.projectId === projectId &&
+        output.versionRef === "1",
+    ),
     "Delivery must carry the actual input provenance",
   );
+  assertNoLegacyWorkspace();
   const count = providerCalls,
-    centerId = store.identity();
+    centerId = client.boot.centerId;
   await host.close();
   host = await openEmbeddedApplication(
     workDirectory,
     join(directory, "profile"),
   );
-  const reopened = (await host.connection.call("workspace")) as any;
-  assert.equal(reopened.centerId, centerId);
+  client = await PlatformClient.connect(host.connection);
+  assert.equal(client.boot.centerId, centerId);
+  await waitUntil(
+    () => host!.connection.application.options.runtime!.isConnected,
+    "Reopened Runtime connection",
+  );
   assert.deepEqual(
-    await host.connection.call("message", command, {
-      identityGeneration: reopened.csrfToken,
+    await host.connection.call("platform.message", command, {
+      identityGeneration: client.boot.csrfToken,
     }),
     receipt,
   );
@@ -293,15 +370,17 @@ try {
     count,
     "Reopening and retrying the same command must not replay accepted input",
   );
-  assert.equal(
-    host.connection.application.store
-      .snapshot()
-      .artifacts.filter((a) => a.id === artifact.id).length,
-    1,
+  assert.equal((await client.contentByIds([artifact.id])).length, 1);
+  assert.deepEqual(
+    documentSchema.parse(await client.readDocument(artifact.id, 1)),
+    document,
+    "The exact Agent-authored application version must survive Host reopen",
   );
+  assert.deepEqual(await readSection(), section);
+  assertNoLegacyWorkspace();
   passed = true;
   console.log(
-    "PASS: reading v6 registered in real Runtime → immutable quote admission → physical tool → private Unix callback → Agent-authored SQLite object + exact input receipt; embedded-host reopen and command retry preserve data without model replay. No application TCP listener.",
+    "PASS: real Runtime reading v6 → Reader original + immutable quote → Platform input → private Unix callback → Objects version + exact Platform delivery receipt; Host reopen preserves originals and retry does not replay the model. No legacy workspace tables or application TCP listener.",
   );
 } catch (error) {
   console.error(

@@ -7,13 +7,13 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import {
   AgentTools,
+  workToolDefinition,
   hostIdempotentRequests,
   prepareHostTools,
   type HostInvocation,
 } from "../apps/service/src/agent-tools.js";
-import { WorkspaceStore } from "../apps/service/src/store.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
 import { createAppServer } from "../apps/service/src/http.js";
-import { localAccess, orderedTasks } from "../packages/core/src/model.js";
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
 const route: HostInvocation = {
   job_id: "job-1",
@@ -31,364 +31,507 @@ const envelope = (args: unknown, job = randomUUID()) => ({
   invocation: { ...route, job_id: job },
   arguments: args,
 });
-const scope = (invocation: HostInvocation) => {
-  assert.equal(invocation.session_id, route.session_id);
-  assert.equal(invocation.principal_id, route.principal_id);
-  return { projectId: "first-project", access: agent };
-};
 
-test("Agent 直接读取、排序和安排同一事项；幂等回执、Human 排序冲突、跨项目与代确认保护", () => {
-  const store = new WorkspaceStore(":memory:"),
-    tools = new AgentTools(store, "token", scope);
-  try {
-    const task = {
-      kind: "task",
-      description: "合成测试",
-      assigneeId: "local-human",
-      model: null,
-      dueDate: null,
-      assignment: "proposed",
-      execution: "planned",
-      delivery: "none",
-      resultIds: [],
-    };
-    const a = (
-      tools.call(envelope({ action: "create-task", title: "A", task })) as {
-        artifactId: string;
-      }
-    ).artifactId;
-    const b = (
-      tools.call(envelope({ action: "create-task", title: "B", task })) as {
-        artifactId: string;
-      }
-    ).artifactId;
-    const list = tools.call(envelope({ action: "list-tasks" })) as {
-      orderRevision: number;
-      tasks: { artifactId: string }[];
-    };
-    const requested = list.tasks.map((a) => a.artifactId).reverse();
-    const reorder = envelope({
-      action: "reorder-tasks",
-      taskIds: requested,
-      orderRevision: list.orderRevision,
-    });
-    const receipt = tools.call(reorder);
-    assert.deepEqual(tools.call(reorder), receipt);
-    assert.deepEqual(
-      (receipt as { tasks: { artifactId: string }[] }).tasks.map(
-        (t) => t.artifactId,
+test("新工具契约只公布已接入领域的操作，不再诱导 Agent 调用旧事项或工作区接口", () => {
+  const schema = workToolDefinition.parameters as unknown as {
+    properties: Record<string, { enum?: string[] }>;
+  };
+  const actions = schema.properties.action!.enum!;
+  for (const retired of [
+    "create-task",
+    "revise-task",
+    "list-tasks",
+    "start-task",
+    "finish-task",
+    "list-applications",
+    "launch-application",
+    "create-website",
+  ])
+    assert.equal(actions.includes(retired), false);
+  assert.ok(actions.includes("work-task"));
+  assert.ok(actions.includes("operations"));
+  assert.ok(actions.includes("applications"));
+  for (const field of [
+    "task",
+    "taskIds",
+    "changes",
+    "control",
+    "applicationId",
+    "applicationVersion",
+    "scriptTarget",
+    "sources",
+  ])
+    assert.equal(schema.properties[field], undefined);
+  assert.doesNotMatch(
+    workToolDefinition.description,
+    /create-task \(|revise-task \(|set runRequested=1|list-applications returns|launch-application\(/,
+  );
+});
+test("Platform-sourced tools read bound input, and missing domain or unverified scope cannot restore legacy writes", async () => {
+  const tools = new AgentTools({
+    token: "token",
+    resolveScope: () => ({
+      projectId: "first-project",
+      platform: true,
+      inputId: "platform-input",
+      access: agent,
+    }),
+    platformInput: async (invocation) => {
+      assert.equal(invocation.session_id, route.session_id);
+      return { text: "来自 Runtime 持久输入", input_id: "platform-input" };
+    },
+  });
+  assert.deepEqual(await tools.call(envelope({ action: "read-input" })), {
+    ok: true,
+    input: { text: "来自 Runtime 持久输入", input_id: "platform-input" },
+  });
+  assert.throws(
+    () =>
+      tools.call(
+        envelope({
+          action: "create-document",
+          title: "不得写入旧库",
+          markdown: "内容",
+        }),
       ),
-      requested,
-    );
-    assert.deepEqual(
-      orderedTasks(store.snapshot()).map((a) => a.id),
-      requested,
-    );
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "reorder-tasks",
-          taskIds: [a, b],
-          expectedOrderRevision: 1,
-        },
-      },
-      localAccess,
-    );
-    assert.throws(
-      () =>
-        tools.call(
-          envelope({
-            action: "reorder-tasks",
-            taskIds: [b, a],
-            orderRevision: 1,
-          }),
-        ),
-      /顺序已变化/,
-    );
-    tools.call(
-      envelope({
-        action: "arrange-task",
-        artifactId: a,
-        revision: 1,
-        changes: { dueDate: "2026-09-18", assigneeId: "morphz-agent" },
+    /不会写入旧工作区/,
+  );
+  const unverified = new AgentTools({
+    token: "token",
+    resolveScope: () => ({ projectId: "first-project", access: agent }),
+  });
+  assert.throws(
+    () => unverified.call(envelope({ action: "list" })),
+    /未通过 Platform 授权/,
+  );
+});
+
+test("Agent 在真实 Platform 排序和安排事项；幂等、Human 版本冲突与代确认保护", async () => {
+  const fixture = await agentDomainFixture();
+  const task = (request: unknown) => ({
+    action: "work-task",
+    workTask: request,
+  });
+  try {
+    const a = await fixture.call<{ task: { taskId: string } }>(
+      task({
+        action: "create",
+        title: "A",
+        description: "合成测试",
+        assignee: "me",
       }),
     );
-    const status = tools.call(
-      envelope({ action: "task-status", artifactId: a }),
-    ) as {
-      runRequested: number;
-      revision: number;
-      assigneeName: string;
-      projectTitle: string;
-      dueDate: string;
-      display: { state: string; label: string };
-    };
-    assert.equal(status.runRequested, 0);
-    assert.equal(status.revision, 2);
-    assert.equal(status.assigneeName, "Morphz");
-    assert.ok(status.projectTitle);
-    assert.equal(status.dueDate, "2026-09-18");
-    assert.equal(status.display.label, "待开始");
-    assert.throws(
-      () =>
-        tools.call(
-          envelope({
-            action: "arrange-task",
-            artifactId: a,
-            revision: 2,
-            changes: { projectId: "local-inbox" },
-          }),
-        ),
-      /跨项目/,
+    const b = await fixture.call<{ task: { taskId: string } }>(
+      task({
+        action: "create",
+        title: "B",
+        description: "合成测试",
+        assignee: "me",
+      }),
     );
-    assert.throws(
-      () =>
-        tools.call(
-          envelope({
-            action: "finish-task",
-            artifactId: b,
-            revision: 1,
-            resultIds: [a],
-          }),
-        ),
-      /Human/,
+    const list = () =>
+      fixture.call<{ items: { id: string }[] }>(task({ action: "list" }));
+    assert.deepEqual(
+      (await list()).items.map((entry) => entry.id),
+      [a.task.taskId, b.task.taskId],
     );
-    assert.equal(store.snapshot().taskResponses.length, 0);
+    const order = await fixture.call<{ order: { revision: number } }>(
+      task({ action: "order" }),
+    );
+    const reorder = fixture.envelope(
+      task({
+        action: "reorder",
+        taskId: b.task.taskId,
+        beforeTaskId: a.task.taskId,
+        orderRevision: order.order.revision,
+      }),
+    );
+    const receipt = await fixture.tools.call(reorder);
+    assert.deepEqual(await fixture.tools.call(reorder), receipt);
+    assert.deepEqual(
+      (await list()).items.map((entry) => entry.id),
+      [b.task.taskId, a.task.taskId],
+    );
+    const humanOrder = await fixture.withHuman((actor) =>
+      fixture.domains.work.service.taskOrder(actor, {
+        projectId: fixture.projectId,
+      }),
+    );
+    await fixture.withHuman((actor) =>
+      fixture.domains.work.service.reorderTask(actor, {
+        commandId: randomUUID(),
+        projectId: fixture.projectId,
+        taskId: a.task.taskId,
+        beforeTaskId: b.task.taskId,
+        expectedOrderRevision: humanOrder.revision,
+      }),
+    );
+    await assert.rejects(
+      fixture.call(
+        task({
+          action: "reorder",
+          taskId: b.task.taskId,
+          beforeTaskId: a.task.taskId,
+          orderRevision: humanOrder.revision,
+        }),
+      ),
+      /顺序|修订|版本/,
+    );
+    const changed = await fixture.call<{
+      task: {
+        taskId: string;
+        revision: number;
+        runRequested: number;
+        dueDate: string;
+        assigneeId: string;
+        projectId: string;
+        execution: string;
+      };
+    }>(
+      task({
+        action: "revise",
+        taskId: a.task.taskId,
+        revision: 1,
+        dueDate: "2026-09-18",
+        assignee: "agent",
+      }),
+    );
+    assert.equal(changed.task.revision, 2);
+    assert.equal(changed.task.runRequested, 0);
+    assert.equal(changed.task.assigneeId, fixture.agentAccess.actantId);
+    assert.equal(changed.task.projectId, fixture.projectId);
+    assert.equal(changed.task.dueDate, "2026-09-18");
+    assert.equal(changed.task.execution, "planned");
+    await assert.rejects(
+      fixture.call(
+        task({
+          action: "revise",
+          taskId: a.task.taskId,
+          revision: 2,
+          projectId: "ungranted-project",
+        }),
+      ),
+      /权限|项目|不存在/,
+    );
+    await assert.rejects(
+      fixture.withAgent((actor) =>
+        fixture.domains.work.service.respondTask(actor, {
+          commandId: randomUUID(),
+          taskId: b.task.taskId,
+          expectedRevision: 1,
+          body: "代 Human 接受任务",
+        }),
+      ),
+      /只有当前负责人/,
+    );
+    const responses = await fixture.withHuman((actor) =>
+      fixture.domains.work.service.listTaskResponses(actor, {
+        taskId: b.task.taskId,
+      }),
+    );
+    assert.deepEqual(responses, []);
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });
 
-test("公开当前理解由已提交帧生成，保留来源和版本，Human 只能提出纠正", async () => {
-  const store = new WorkspaceStore(":memory:");
-  let revision = 1;
-  const tools = new AgentTools(
-    store,
-    "token",
-    scope,
-    async (_route, _scope, requested) => {
-      assert.equal(requested, revision);
+test("公开当前理解从已提交 Runtime 帧发布到 Platform；来源、修订和 Human 纠正边界保留", async () => {
+  let frameRevision = 1;
+  const fixture = await agentDomainFixture({
+    readUnderstanding: async (_route, scope, requested) => {
+      assert.equal(requested, frameRevision);
       return {
-        body: "# 目标\n只使用合成资料。",
-        frameId: "mw-public-first-project",
-        frameRevision: revision,
-        mindVersion: revision + 10,
+        body: `# 理解 ${frameRevision}`,
+        frameId: `mw-public-${scope.projectId}`,
+        frameRevision,
+        mindVersion: frameRevision,
       };
     },
-  );
+  });
   try {
-    const call = envelope({
+    const source = await fixture.call<{ contentId: string }>({
+      action: "create-document",
+      title: "依据",
+      markdown: "已确认事实",
+    });
+    const sources = [{ contentId: source.contentId, versionRef: "1" }];
+    const publication = fixture.envelope({
       action: "publish-understanding",
       frameRevision: 1,
+      contentSources: sources,
     });
-    const first = (await tools.call(call)) as { artifactId: string };
-    assert.deepEqual(await tools.call(call), first);
-    const a = store.snapshot().artifacts[0]!;
-    assert.equal(a.content.kind, "document");
-    assert.throws(
-      () =>
-        store.execute(
-          {
-            commandId: randomUUID(),
-            operation: {
-              type: "revise-artifact",
-              artifactId: a.id,
-              expectedRevision: 1,
-              title: a.title,
-              content: { kind: "document", markdown: "冒充更新" },
-            },
-          },
-          localAccess,
-        ),
-      /纠正/,
+    const first = (await fixture.tools.call(publication)) as {
+      understanding: { revision: number; body: string; sources: unknown };
+    };
+    assert.deepEqual(await fixture.tools.call(publication), first);
+    assert.equal(first.understanding.revision, 1);
+    assert.equal(first.understanding.body, "# 理解 1");
+    assert.deepEqual(first.understanding.sources, [
+      { ...sources[0], title: "依据", appId: "morphz.objects" },
+    ]);
+    await assert.rejects(
+      fixture.withHuman((actor) =>
+        fixture.domains.content.platform.publishProjectUnderstanding(actor, {
+          commandId: randomUUID(),
+          projectId: fixture.projectId,
+          expectedRevision: 1,
+          frameId: `mw-public-${fixture.projectId}`,
+          frameRevision: 2,
+          mindVersion: 2,
+          body: "冒充事务",
+          sources: [],
+        }),
+      ),
+      /Agent|智能体/,
     );
-    assert.throws(
-      () =>
-        tools.call(
-          envelope({
-            action: "revise-document",
-            artifactId: a.id,
-            revision: 1,
-            title: a.title,
-            markdown: "冒充事务",
-          }),
-        ),
-      /publish-understanding/,
-    );
-    revision = 2;
-    await tools.call(
-      envelope({
-        action: "publish-understanding",
-        artifactId: a.id,
+    await assert.rejects(
+      fixture.call({
+        action: "revise-document",
+        artifactId: fixture.projectId,
         revision: 1,
-        frameRevision: 2,
+        title: "当前理解",
+        markdown: "冒充文档",
       }),
+      /内容|不存在/,
     );
-    assert.equal(store.snapshot().artifacts[0]!.revision, 2);
+    frameRevision = 2;
+    const second = await fixture.call<{ understanding: { revision: number } }>({
+      action: "publish-understanding",
+      revision: 1,
+      frameRevision: 2,
+      contentSources: sources,
+    });
+    assert.equal(second.understanding.revision, 2);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      1,
+    );
+    assert.equal(
+      (
+        await fixture.call<{ total: number }>({
+          action: "search",
+          query: "理解",
+        })
+      ).total,
+      0,
+    );
+    await fixture.reopen();
+    const restored = await fixture.call<{
+      understanding: { revision: number; body: string };
+    }>({
+      action: "read-understanding",
+    });
+    assert.equal(restored.understanding.revision, 2);
+    assert.equal(restored.understanding.body, "# 理解 2");
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });
 
-test("Agent 对象操作：创建幂等、批注后修订、旧版本与同项目关联", () => {
-  const store = new WorkspaceStore(":memory:"),
-    tools = new AgentTools(store, "test-token", scope);
+test("Agent 与 Human 操作同一 Objects 原件；批注、不可变版本、冲突、关联和重开幂等", async () => {
+  const fixture = await agentDomainFixture();
   try {
-    const create = envelope({
+    const create = fixture.envelope({
       action: "create-document",
       title: "测试文章",
       markdown: "第一段原文",
     });
-    const created = tools.call(create) as { artifactId: string };
-    assert.deepEqual(tools.call(create), created);
-    assert.equal(store.snapshot().artifacts.length, 1);
-    assert.deepEqual(store.snapshot().artifacts[0]!.createdBy, agent);
-    assert.throws(
-      () =>
-        tools.call({
+    const created = (await fixture.tools.call(create)) as {
+      contentId: string;
+      versionRef: string;
+    };
+    assert.deepEqual(await fixture.tools.call(create), created);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      1,
+    );
+    const original = await fixture.call<{ objectId: string; text: string }>({
+      action: "read",
+      artifactId: created.contentId,
+    });
+    const version = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.readObject({
+        credential: actor.credential,
+        objectId: original.objectId,
+      }),
+    );
+    assert.deepEqual(version.author, {
+      principalId: "local-owner",
+      actantId: fixture.agentAccess.actantId,
+    });
+    await assert.rejects(
+      Promise.resolve().then(() =>
+        fixture.tools.call({
           ...create,
           arguments: { ...(create.arguments as object), markdown: "不是重试" },
         }),
-      /操作标识/,
+      ),
+      /命令|操作标识|重试/,
     );
-    store.execute(
-      {
+    await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.annotateObject({
+        credential: actor.credential,
         commandId: randomUUID(),
-        operation: {
-          type: "annotate",
-          artifactId: created.artifactId,
-          artifactRevision: 1,
-          quote: "原文",
-          body: "请保留结论，补充细节",
-        },
-      },
-      localAccess,
+        objectId: original.objectId,
+        revision: 1,
+        quote: "原文",
+        body: "请保留结论，补充细节",
+      }),
     );
-    const read = tools.call(
-      envelope({ action: "read", artifactId: created.artifactId }),
-    ) as { text: string; annotations: unknown[] };
-    assert.equal(read.annotations.length, 1);
-    assert.equal(read.text, "第一段原文");
-    const revise = envelope({
+    const annotations = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.listObjectAnnotations({
+        credential: actor.credential,
+        objectId: original.objectId,
+      }),
+    );
+    assert.equal(annotations.length, 1);
+    assert.equal(annotations[0]!.annotation.body, "请保留结论，补充细节");
+    assert.equal(original.text, "第一段原文");
+    const revise = fixture.envelope({
       action: "revise-document",
-      artifactId: created.artifactId,
+      artifactId: created.contentId,
       revision: 1,
       title: "测试文章",
       markdown: "第一段原文，补充细节",
     });
-    const revised = tools.call(revise);
-    assert.deepEqual(tools.call(revise), revised);
-    assert.throws(() => tools.call(envelope(revise.arguments)), /已有新版本/);
+    const revised = await fixture.tools.call(revise);
+    assert.deepEqual(await fixture.tools.call(revise), revised);
+    await assert.rejects(fixture.call(revise.arguments), /新版本|版本|修订/);
     assert.equal(
       (
-        tools.call(
-          envelope({
-            action: "read",
-            artifactId: created.artifactId,
-            revision: 1,
-          }),
-        ) as { text: string }
+        await fixture.call<{ text: string }>({
+          action: "read",
+          artifactId: created.contentId,
+          revision: 1,
+        })
       ).text,
       "第一段原文",
     );
     assert.equal(
       (
-        tools.call(envelope({ action: "search", query: "细节" })) as {
-          total: number;
-        }
+        await fixture.call<{ total: number }>({
+          action: "search",
+          query: "细节",
+        })
       ).total,
       1,
     );
-    const other = tools.call(
-      envelope({
-        action: "create-document",
-        title: "来源",
-        markdown: "授权来源",
-      }),
-    ) as { artifactId: string };
-    tools.call(
-      envelope({
-        action: "link",
-        artifactId: created.artifactId,
-        toId: other.artifactId,
-        relation: "references",
+    const other = await fixture.call<{ contentId: string }>({
+      action: "create-document",
+      title: "来源",
+      markdown: "授权来源",
+    });
+    const relation = fixture.envelope({
+      action: "link",
+      artifactId: created.contentId,
+      toId: other.contentId,
+      relation: "references",
+    });
+    const linked = await fixture.tools.call(relation);
+    assert.deepEqual(await fixture.tools.call(relation), linked);
+    assert.equal(
+      (
+        await fixture.call<{ relations: unknown[] }>({
+          action: "relations",
+          artifactId: created.contentId,
+        })
+      ).relations.length,
+      1,
+    );
+    await fixture.reopen();
+    assert.deepEqual(await fixture.tools.call(create), created);
+    assert.deepEqual(await fixture.tools.call(revise), revised);
+    const versions = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.listObjectVersions({
+        credential: actor.credential,
+        objectId: original.objectId,
       }),
     );
-    assert.equal(store.snapshot().relations.length, 1);
+    assert.equal(versions.versions.length, 2);
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });
 
-test("Agent 参数不能扩大项目范围或冒充身份；读取分页绑定版本", () => {
-  const store = new WorkspaceStore(":memory:"),
-    tools = new AgentTools(store, "secret", scope);
+test("真实 Runtime 来源固定项目；模型不能冒充身份或扩大范围，读取分页绑定版本", async () => {
+  const fixture = await agentDomainFixture();
   try {
-    const project = store.execute(
-      {
+    const otherProjectId = "other-test-project";
+    await fixture.withHuman((actor) =>
+      fixture.domains.work.service.createProject(actor, {
         commandId: randomUUID(),
-        operation: { type: "create-project", title: "另一项目" },
-      },
-      localAccess,
+        projectId: otherProjectId,
+        title: "另一项目",
+      }),
     );
-    const other = store.execute(
+    const other = await fixture.call<{ contentId: string }>(
       {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-artifact",
-          projectId: project.entityId,
-          title: "隐私标题",
-          content: { kind: "document", markdown: "另一项目内容" },
-        },
+        action: "create-document",
+        title: "隐私标题",
+        markdown: "另一项目内容",
       },
-      localAccess,
+      fixture.input(otherProjectId),
     );
-    assert.throws(
-      () =>
-        tools.call(envelope({ action: "read", artifactId: other.entityId })),
-      /不属于/,
+    await assert.rejects(
+      fixture.call({ action: "read", artifactId: other.contentId }),
+      /范围|项目/,
     );
-    assert.equal(
-      (tools.call(envelope({ action: "list" })) as { total: number }).total,
-      0,
+    assert.deepEqual(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items,
+      [],
     );
     assert.equal(
       (
-        tools.call(envelope({ action: "search", query: "隐私" })) as {
-          total: number;
-        }
+        await fixture.call<{ total: number }>({
+          action: "search",
+          query: "隐私",
+        })
       ).total,
       0,
     );
     for (const injection of [
-      { projectId: project.entityId },
+      { projectId: otherProjectId },
       { principalId: "local-owner" },
       { commandId: randomUUID() },
     ])
       assert.throws(() =>
-        tools.call(envelope({ action: "list", ...injection })),
+        fixture.tools.call(fixture.envelope({ action: "list", ...injection })),
       );
-    const created = tools.call(
-      envelope({
-        action: "create-document",
-        title: "长文",
-        markdown: "0123456789",
-      }),
-    ) as { artifactId: string };
-    const read = tools.call(
-      envelope({
-        action: "read",
-        artifactId: created.artifactId,
-        offset: 2,
-        limit: 4,
-      }),
-    ) as { text: string; hasMore: boolean; revision: number };
+    await assert.rejects(
+      Promise.resolve().then(() =>
+        fixture.tools.call({
+          ...fixture.envelope({ action: "list" }),
+          invocation: { ...fixture.route, principal_id: "forged-principal" },
+        }),
+      ),
+      /Runtime 执行/,
+    );
+    const created = await fixture.call<{ contentId: string }>({
+      action: "create-document",
+      title: "长文",
+      markdown: "0123456789",
+    });
+    const read = await fixture.call<{
+      text: string;
+      hasMore: boolean;
+      revision: number;
+    }>({
+      action: "read",
+      artifactId: created.contentId,
+      offset: 2,
+      limit: 4,
+    });
     assert.equal(read.text, "2345");
     assert.equal(read.hasMore, true);
     assert.equal(read.revision, 1);
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });
 
@@ -403,6 +546,10 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.equal(lstatSync(first.path).mode & 0o077, 0);
   const data = JSON.parse(readFileSync(first.path, "utf8"));
   for (const tool of data.tools) {
+    assert.ok(
+      Buffer.byteLength(tool.definition.description, "utf8") <= 16000,
+      `${tool.definition.name} exceeds Runtime's actual description budget`,
+    );
     assert.deepEqual(tool.idempotent_requests, hostIdempotentRequests);
     assert.ok(lstatSync(first.path).size < 262144);
     assert.equal(
@@ -457,59 +604,66 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   ]);
 });
 
-test("Host HTTP 不接受 UI 令牌、浏览器来源或缺少服务凭据的调用", async () => {
+test("Host HTTP rejects UI credentials, browser origins and missing service credentials", async () => {
   const listener = createServer();
-  await new Promise<void>((r) => listener.listen(0, "127.0.0.1", r));
+  await new Promise<void>((resolve) =>
+    listener.listen(0, "127.0.0.1", resolve),
+  );
   const port = (listener.address() as { port: number }).port;
-  await new Promise<void>((r) => listener.close(() => r()));
-  const store = new WorkspaceStore(":memory:"),
-    token = "test-host-private-token";
-  const server = createAppServer(store, {
+  await new Promise<void>((resolve) => listener.close(() => resolve()));
+  const fixture = await agentDomainFixture();
+  const server = createAppServer(fixture.transport, {
     port,
     webRoot: "/nonexistent",
-    agentTools: new AgentTools(store, token, scope),
+    agentTools: fixture.tools,
+    platformWork: fixture.domains.work,
   });
-  await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+  await new Promise<void>((resolve) =>
+    server.listen(port, "127.0.0.1", resolve),
+  );
   const origin = `http://127.0.0.1:${port}`;
   try {
-    const snapshot = (await (
-      await fetch(origin + "/api/workspace")
+    const boot = (await (
+      await fetch(origin + "/api/platform/bootstrap")
     ).json()) as { csrfToken: string };
-    assert.ok(!JSON.stringify(snapshot).includes(token));
+    assert.ok(boot.csrfToken);
+    assert.ok(!JSON.stringify(boot).includes("test-host-token"));
     const post = (headers: Record<string, string>, args = { action: "list" }) =>
       fetch(origin + "/api/host-tools/call", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify(envelope(args)),
+        body: JSON.stringify(fixture.envelope(args)),
       });
     assert.equal((await post({})).status, 403);
     assert.equal(
-      (await post({ "X-Morphz-Token": snapshot.csrfToken })).status,
+      (await post({ "X-Morphz-Token": boot.csrfToken })).status,
       403,
     );
     assert.equal(
-      (await post({ Authorization: `Bearer ${token}`, Origin: origin })).status,
+      (await post({ Authorization: "Bearer test-host-token", Origin: origin }))
+        .status,
       403,
     );
     assert.equal(
       (
         await post({
-          Authorization: `Bearer ${token}`,
+          Authorization: "Bearer test-host-token",
           "Sec-Fetch-Site": "same-origin",
         })
       ).status,
       403,
     );
-    const accepted = await post({ Authorization: `Bearer ${token}` });
+    const accepted = await post({ Authorization: "Bearer test-host-token" });
     assert.equal(accepted.status, 200);
     assert.equal(((await accepted.json()) as { ok: boolean }).ok, true);
     const invalid = await post(
-      { Authorization: `Bearer ${token}` },
+      { Authorization: "Bearer test-host-token" },
       { action: "create-document" },
     );
     assert.equal(((await invalid.json()) as { code: string }).code, "invalid");
+    fixture.assertNoLegacyData();
   } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-    store.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await fixture.close();
   }
 });

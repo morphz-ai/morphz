@@ -1,4 +1,5 @@
 import { _electron, expect } from "@playwright/test";
+import { platformRead, hostDeliveryAudit } from "./desktop-domain-audit.mjs";
 import { createServer } from "vite";
 import { spawn } from "node:child_process";
 import {
@@ -100,9 +101,9 @@ try {
     .toBe(true);
   await page.getByLabel("AI 输入内容").waitFor();
   assert.equal(new URL(page.url()).origin, "http://127.0.0.1:65419");
-  const web = await (await fetch(center + "/api/workspace")).json();
+  const web = await platformRead(center, "/api/platform/bootstrap");
   const identity = await page.evaluate(async () => {
-    const boot = await (await fetch("/api/workspace")).json();
+    const boot = await (await fetch("/api/platform/bootstrap")).json();
     window.__hmrSentinel = crypto.randomUUID();
     return {
       id: boot.centerId,
@@ -148,16 +149,27 @@ try {
   // Exercise actual native IPC and a CSRF-protected write through the unchanged center.
   assert.ok(
     Array.isArray(
-      await page.evaluate(() => window.morphzDesktop.sources.list()),
+      await page.evaluate(async () => {
+        const invoke = window.morphzDesktop.application.invoke;
+        const boot = await invoke({
+          id: crypto.randomUUID(),
+          method: "platform.bootstrap",
+        });
+        if (!boot.ok) throw Error(JSON.stringify(boot));
+        const projects = await invoke({
+          id: crypto.randomUUID(),
+          method: "projects.list",
+          params: { status: "active", limit: 100 },
+          identityGeneration: boot.value.csrfToken,
+        });
+        if (!projects.ok) throw Error(JSON.stringify(projects));
+        return projects.value;
+      }),
     ),
   );
-  await page
-    .getByRole("button", { name: "查看本空间内容", exact: true })
-    .click();
-  await page
-    .locator(".library-authoring-options")
-    .getByRole("button", { name: "手动写文档", exact: true })
-    .click();
+  await page.getByRole("button", { name: "查看全部内容", exact: true }).click();
+  await page.getByLabel("其他内容创作", { exact: true }).click();
+  await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page
     .getByLabel("新对象标题", { exact: true })
     .fill("热更新后的真实保存");
@@ -172,11 +184,7 @@ try {
   await app.close();
   app = undefined;
   assert.equal((await fetch(center + "/api/health")).ok, true);
-  assert.equal(
-    (await (await fetch(center + "/api/workspace")).json()).workspace.inputs
-      .length,
-    0,
-  );
+  assert.equal(hostDeliveryAudit(join(dir, "data")).inputs.length, 0);
   console.log(
     "Electron HMR passed: CSS + React updates, no reload, draft/window identity preserved, native IPC, CSRF-protected document saved, original center alive, no model input.",
   );

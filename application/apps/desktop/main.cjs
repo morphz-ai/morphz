@@ -66,7 +66,6 @@ const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   let window;
-  let sources;
   let browser;
   let appearance;
   let host;
@@ -293,7 +292,7 @@ else {
       });
       if (!hot && connection.mode === "local") {
         try {
-          const identity = await application.call("workspace");
+          const identity = await application.call("platform.bootstrap");
           preferences = await collectLegacyPreferences(
             BrowserWindow,
             appSession,
@@ -388,15 +387,6 @@ else {
           throw new Error("只能打开不含登录凭据的 HTTP 或 HTTPS 链接。");
         await shell.openExternal(parsed.href);
       });
-      const { DesktopSources } =
-        await import("../../dist/service/apps/service/src/desktop-sources.js");
-      sources = new DesktopSources(
-        join(app.getPath("userData"), "source-grants.json"),
-        application,
-      );
-      // Old imported versions remain in the center, but opening work no longer
-      // runs a background copy/synchronization pipeline.
-      await sources.suspendAll();
       ipcMain.handle(
         "directories:choose",
         async (event, projectId, conversationId) => {
@@ -410,11 +400,12 @@ else {
             )
           )
             throw new Error("目录授权范围无效。");
-          const before = await application.call("workspace");
-          const project = before.workspace.projects.find(
-            (p) => p.id === projectId,
+          const before = await application.call("platform.bootstrap");
+          await application.call(
+            "directories.scope",
+            { projectId, conversationId },
+            { identityGeneration: before.csrfToken },
           );
-          if (!project) throw new Error("无权访问此工作空间。");
           const result = await dialog.showOpenDialog(window, {
             title: "授权 Agent 读写目录",
             buttonLabel: "允许读写",
@@ -423,12 +414,17 @@ else {
           });
           requireMain(event);
           if (result.canceled || !result.filePaths[0]) return null;
-          const current = await application.call("workspace");
+          const current = await application.call("platform.bootstrap");
           if (
             current.csrfToken !== before.csrfToken ||
             current.principalId !== before.principalId
           )
             throw new Error("身份已切换，请重新授权目录。");
+          await application.call(
+            "directories.scope",
+            { projectId, conversationId },
+            { identityGeneration: current.csrfToken },
+          );
           return host.localFiles.authorizeDirectory(
             result.filePaths[0],
             projectId,
@@ -446,9 +442,14 @@ else {
           !["file", "directory"].includes(kind)
         )
           throw new Error("本机文件打开参数无效。");
-        const before = await application.call("workspace");
-        if (!before.workspace.projects.some((p) => p.id === projectId))
-          throw new Error("无权访问此项目。");
+        const before = await application.call("platform.bootstrap");
+        const project = await application.call(
+          "projects.get",
+          { projectId },
+          { identityGeneration: before.csrfToken },
+        );
+        if (project.deletedAt)
+          throw new Error("项目已删除，不能打开本机文件。");
         const result = await dialog.showOpenDialog(window, {
           title:
             kind === "directory"
@@ -458,12 +459,19 @@ else {
         });
         requireMain(event);
         if (result.canceled || !result.filePaths[0]) return null;
-        const current = await application.call("workspace");
+        const current = await application.call("platform.bootstrap");
         if (
           current.csrfToken !== before.csrfToken ||
           current.principalId !== before.principalId
         )
           throw new Error("身份已切换，请重新打开文件。");
+        const currentProject = await application.call(
+          "projects.get",
+          { projectId },
+          { identityGeneration: current.csrfToken },
+        );
+        if (currentProject.deletedAt)
+          throw new Error("项目已删除，不能打开本机文件。");
         return host.localFiles.select(result.filePaths[0], projectId, {
           principalId: current.principalId,
           actantId: current.actantId,
@@ -473,33 +481,11 @@ else {
         ipcMain.handle("files:" + action, async (event, request) => {
           requireMain(event);
           if (!host) throw new Error("本机文件访问仅在本机桌面应用可用。");
-          const boot = await application.call("workspace");
+          const boot = await application.call("platform.bootstrap");
           return application.call("local-files." + action, request, {
             identityGeneration: boot.csrfToken,
           });
         });
-      ipcMain.handle("sources:list", (event) => {
-        requireMain(event);
-        return sources.list();
-      });
-      ipcMain.handle("sources:choose", async (event) => {
-        requireMain(event);
-        throw new Error(
-          "目录导入与自动同步已停用。文件请通过消息附件提供，工作目录请明确授权 Agent 读写。",
-        );
-      });
-      ipcMain.handle("sources:control", async (event, id, action) => {
-        requireMain(event);
-        if (action === "resume" || action === "refresh")
-          throw new Error("自动同步已停用，已有内容和批注仍然保留。");
-        if (
-          typeof id !== "string" ||
-          !/^[a-f0-9-]{36}$/.test(id) ||
-          !["resume", "pause", "remove", "refresh"].includes(action)
-        )
-          throw new Error("来源操作参数无效。");
-        return sources.control(id, action);
-      });
       Menu.setApplicationMenu(
         Menu.buildFromTemplate([
           ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
@@ -511,7 +497,6 @@ else {
       return createWindow();
     })
     .catch(async (error) => {
-      await sources?.stop();
       if (host) await host.close();
       else application?.close();
       dialog.showErrorBox(
@@ -521,7 +506,7 @@ else {
       app.quit();
     });
   const reopenMainWindow = () => {
-    if (!sources) return;
+    if (!application) return;
     // Activating an auxiliary picker must not bring the hidden app into the shot.
     if (capture.hiddenWindow) return;
     if (!window || window.isDestroyed()) void createWindow();
@@ -536,13 +521,12 @@ else {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  let closingSources = false;
+  let closingApplication = false;
   app.on("before-quit", (event) => {
-    if ((sources || application) && !closingSources) {
+    if (application && !closingApplication) {
       event.preventDefault();
-      closingSources = true;
+      closingApplication = true;
       void (async () => {
-        await sources?.stop();
         if (host) await host.close();
         else application?.close();
       })().finally(() => {

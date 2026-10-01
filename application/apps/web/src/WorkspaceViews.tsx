@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { scopedStorage } from "./client.js";
 import {
-  projectActivity,
+  projectDirectoryMetrics,
   projectStatus,
   type ProjectStatus,
   type Project,
 } from "../../../packages/core/src/projects.js";
 import { ProjectMenu, type ProjectAction } from "./ProjectManagement.js";
 import { ComposerOptions } from "./ComposerOptions.js";
-import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import { createPortal } from "react-dom";
 import {
   ArrowUpRight,
@@ -18,35 +17,29 @@ import {
   Clock3,
   SlidersHorizontal,
 } from "lucide-react";
-import {
-  spaceKind,
-  type Workspace,
-  type Artifact,
-} from "../../../packages/core/src/model.js";
-import { contentEntries } from "../../../packages/core/src/content.js";
+import { spaceKind, type Workspace } from "../../../packages/core/src/model.js";
+import type { PlatformContentCount } from "./platform-client.js";
 const dateLabel = (value: string) =>
   new Date(value).toLocaleDateString("zh-CN", {
     month: "short",
     day: "numeric",
   });
-const pending = (a: Artifact) =>
-  a.content.kind === "task" &&
-  !["completed", "cancelled"].includes(a.content.execution);
-
 export function ProjectDirectory({
   state,
   onOpen,
   onCreate,
   toolbarTarget,
   onManage,
-  messages,
+  metrics,
+  contentCounts,
 }: {
   state: Workspace;
+  contentCounts: PlatformContentCount[];
   onOpen: (id: string) => void;
   onCreate: () => void;
   toolbarTarget: HTMLElement | null;
   onManage: (project: Project, action: ProjectAction) => void;
-  messages: ConversationRuntime["messages"];
+  metrics: ReturnType<typeof projectDirectoryMetrics>;
 }) {
   const [storage] = useState(() => scopedStorage());
   const [saved] = useState(() =>
@@ -101,12 +94,12 @@ export function ProjectDirectory({
       <option value="name">名称</option>
     </select>
   );
-  const updated = (id: string) =>
-    projectActivity(
-      state,
-      state.projects.find((p) => p.id === id)!,
-      messages,
-    );
+  const countsByProject = useMemo(
+    () =>
+      new Map(contentCounts.map(({ projectId, count }) => [projectId, count])),
+    [contentCounts],
+  );
+  const updated = (id: string) => metrics.get(id)!.activityAt;
   const projects = state.projects
     .filter(
       (p) =>
@@ -183,9 +176,8 @@ export function ProjectDirectory({
       )}
       <div className="project-grid">
         {projects.map((p) => {
-          const objects = state.artifacts.filter((a) => a.projectId === p.id);
           const latest = updated(p.id);
-          const todo = objects.filter(pending).length;
+          const todo = metrics.get(p.id)!.pendingTasks;
           return (
             <article key={p.id} className="project-card">
               <ProjectMenu project={p} onAction={onManage} />
@@ -202,12 +194,7 @@ export function ProjectDirectory({
                 </span>
                 <h2>{p.title}</h2>
                 <p>
-                  {
-                    contentEntries(state).filter(
-                      (e) => e.value.projectId === p.id,
-                    ).length
-                  }{" "}
-                  项内容
+                  {countsByProject.get(p.id) ?? 0} 项内容
                   {todo ? " · " + todo + " 项待推进" : ""}
                 </p>
                 <span className="project-card-bottom">

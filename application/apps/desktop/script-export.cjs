@@ -14,7 +14,13 @@ function createScriptExportSaver({
   let generation = 0;
   let pending = false;
   function validateRequest(value) {
-    const keys = ["centerId", "principalId", "productionId", "exportId"];
+    const keys = [
+      "centerId",
+      "principalId",
+      "contentId",
+      "productionId",
+      "exportId",
+    ];
     if (
       !value ||
       typeof value !== "object" ||
@@ -31,22 +37,104 @@ function createScriptExportSaver({
       Object.fromEntries(keys.map((key) => [key, value[key]])),
     );
   }
-  function authorized(boot, request) {
+  function authorized(boot, head, request) {
     if (
       boot?.centerId !== request.centerId ||
       boot?.principalId !== request.principalId
     )
       throw new Error("身份或工作空间已变化，未保存文件。");
-    const production = boot.workspace?.scriptProductions?.find(
-      (p) => p.id === request.productionId,
+    if (head?.id !== request.productionId)
+      throw new Error("无权读取此剧本的导出记录。");
+    return head;
+  }
+  async function readAuthorized(request) {
+    const boot = await connection.call("platform.bootstrap");
+    const call = (method, params) =>
+      connection.call(method, params, { identityGeneration: boot.csrfToken });
+    const head = authorized(
+      boot,
+      await call("scripts.editor.head", { contentId: request.contentId }),
+      request,
     );
+    const record = await call("scripts.editor.detail", {
+      contentId: request.contentId,
+      kind: "export",
+      objectId: request.exportId,
+    });
     if (
-      !production ||
-      !boot.workspace.projects.some((p) => p.id === production.projectId) ||
-      !production.exports.some((record) => record.id === request.exportId)
+      record?.id !== request.exportId ||
+      !Array.isArray(record.items) ||
+      record.items.length > 5000
     )
       throw new Error("无权读取此剧本的导出记录。");
-    return production;
+    const metadata = await call("scripts.editor.detail", {
+      contentId: request.contentId,
+      kind: "context",
+      revision: record.contextRevision,
+    });
+    if (metadata?.revision !== record.contextRevision)
+      throw new Error("导出规范的历史版本不一致。");
+    const versions = [];
+    let materialCharacters = 0;
+    async function read(itemId, revision) {
+      if (
+        versions.some(
+          (value) => value.id === itemId && value.revision === revision,
+        )
+      )
+        return;
+      const value = await call("scripts.item", {
+        contentId: request.contentId,
+        itemId,
+        revision,
+      });
+      if (
+        value.productionId !== request.productionId ||
+        value.itemId !== itemId ||
+        value.revision !== revision
+      )
+        throw new Error("导出文稿的历史版本不一致。");
+      const sources = [];
+      for (const source of value.draft.sources) {
+        const entry = await call("content.resolve", {
+          appId: source.appId,
+          appObjectId: source.objectId,
+        });
+        const sourceRevision = Number(source.versionRef);
+        if (
+          entry.instanceId !== source.instanceId ||
+          entry.availability !== "available" ||
+          !/^[1-9][0-9]*$/.test(source.versionRef) ||
+          !Number.isSafeInteger(sourceRevision) ||
+          sourceRevision < 1
+        )
+          throw new Error("导出引用来源已变化，请核对原件。");
+        sources.push({
+          artifactId: entry.id,
+          revision: sourceRevision,
+          quote: source.quote,
+        });
+      }
+      const draft = { ...value.draft, sources };
+      materialCharacters += JSON.stringify(draft).length;
+      if (materialCharacters > 4_000_000)
+        throw new Error("原文过大，请拆分为较少集数导出。");
+      versions.push({ id: itemId, kind: value.kind, revision, draft });
+    }
+    for (const ref of record.items) await read(ref.itemId, ref.revision);
+    for (const version of [...versions])
+      for (const ref of version.draft.dependencies)
+        await read(ref.itemId, ref.revision);
+    authorized(
+      boot,
+      await call("scripts.editor.head", { contentId: request.contentId }),
+      request,
+    );
+    return {
+      boot,
+      title: head.title,
+      manifest: { productionId: head.id, record, metadata, versions },
+    };
   }
   function destinationState(path) {
     try {
@@ -86,10 +174,9 @@ function createScriptExportSaver({
           throw new Error("原工作窗口已变化，未保存文件。");
       };
       try {
-        const before = await connection.call("workspace");
+        const before = await readAuthorized(request);
         checkOrigin();
-        const production = authorized(before, request);
-        const bytes = buildDocx(production, request.exportId);
+        const bytes = buildDocx(before.manifest);
         if (
           !(bytes instanceof Uint8Array) ||
           bytes.length > 32 * 1024 * 1024 ||
@@ -102,9 +189,8 @@ function createScriptExportSaver({
           throw new Error("Word 导出内容无效或超出大小限制。");
         const digest = createHash("sha256").update(bytes).digest("hex");
         const name =
-          production.title
-            .replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
-            .slice(0, 80) || "剧本";
+          before.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").slice(0, 80) ||
+          "剧本";
         const selected = await dialog.showSaveDialog(window, {
           title: "保存剧本 Word",
           buttonLabel: "保存 Word",
@@ -121,15 +207,14 @@ function createScriptExportSaver({
         const parent = fs.realpathSync(dirname(path));
         const original = destinationState(path);
         const recheck = async () => {
-          const current = await connection.call("workspace");
+          const current = await readAuthorized(request);
           checkOrigin();
-          const permitted = authorized(current, request);
-          if (current.csrfToken !== before.csrfToken)
+          if (current.boot.csrfToken !== before.boot.csrfToken)
             throw new Error("登录身份已变化，请重新发起保存。");
           // A corrupt or replaced export receipt must not silently change the file.
           if (
             createHash("sha256")
-              .update(buildDocx(permitted, request.exportId))
+              .update(buildDocx(current.manifest))
               .digest("hex") !== digest
           )
             throw new Error("导出记录已变化，请重新核对。");

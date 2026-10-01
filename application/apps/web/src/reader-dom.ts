@@ -104,6 +104,72 @@ export function readerMarksAtPoint<
     );
 }
 
+/** Freeze the actual clicked glyph as source offsets before layout changes.
+ * Each split is hit-tested against real text rectangles, never a nearest
+ * caret, quote search, or the whole range of a possibly very long mark. */
+export function readerSourceSpanAtPoint(
+  root: HTMLElement,
+  source: string,
+  x: number,
+  y: number,
+) {
+  const text = root.textContent ?? "";
+  const offsets = readerOffsets(text, source);
+  if (!offsets || !text.length) return null;
+  const contains = (start: number, end: number) => {
+    const range = readerRange(root, start, end);
+    return (
+      !!range &&
+      [...range.getClientRects()].some(
+        (rect) =>
+          rect.width > 0 &&
+          rect.height > 0 &&
+          x >= rect.left &&
+          x <= rect.right &&
+          y >= rect.top &&
+          y <= rect.bottom,
+      )
+    );
+  };
+  let start = 0,
+    end = text.length;
+  if (!contains(start, end)) return null;
+  while (end - start > 1) {
+    const middle = Math.floor((start + end) / 2);
+    if (contains(start, middle)) end = middle;
+    else start = middle;
+  }
+  if (!contains(start, end)) return null;
+  // A Range may address half of a surrogate pair; keep its source glyph whole.
+  if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start]!)) start--;
+  if (end < text.length && /[\uDC00-\uDFFF]/.test(text[end]!)) end++;
+  const from = offsets.domToSource[start]!;
+  const glyph = text.slice(start, end);
+  const to = from + glyph.length;
+  // The next boundary may have skipped source paragraph whitespace. It is
+  // not part of the clicked glyph and must not acquire unrelated mark IDs.
+  return source.slice(from, to) === glyph ? { start: from, end: to } : null;
+}
+
+/** Only current, authorized marks overlapping the exact clicked source glyph.
+ * Empty/currently removed results never recover an old selected mark object. */
+export function readerMarksAtSourceSpan<
+  T extends { location: { start: number; end: number } },
+>(marks: T[], span: { start: number; end: number }): T[] {
+  if (span.end <= span.start) return [];
+  return marks
+    .filter(
+      (mark) =>
+        mark.location.start < span.end &&
+        mark.location.end > span.start &&
+        mark.location.end > mark.location.start,
+    )
+    .sort(
+      (a, b) =>
+        a.location.end - a.location.start - (b.location.end - b.location.start),
+    );
+}
+
 /** Source offsets for the reading viewport, not the overlaid conversation.
  * Inspect text geometry: scroll percentages and saved progress can be stale,
  * and identical sentences must remain distinguishable. Never copy the chapter.
@@ -112,6 +178,7 @@ export function readerViewport(
   root: HTMLElement,
   source: string,
   view: HTMLElement,
+  scope: "context" | "visible" = "context",
 ) {
   if (!source.length) return { start: 0, end: 0 };
   const offsets = readerOffsets(root.textContent ?? "", source);
@@ -159,6 +226,9 @@ export function readerViewport(
   const from = offsets.domToSource[start] ?? 0;
   return {
     start: from,
-    end: Math.min(offsets.domToSource[end] ?? from, from + 3200),
+    end:
+      scope === "visible"
+        ? (offsets.domToSource[end] ?? from)
+        : Math.min(offsets.domToSource[end] ?? from, from + 3200),
   };
 }

@@ -587,6 +587,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260928_02_session_message_timeline",
+                    store.migrate_session_timeline(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260730_01_context_token_budget",
                     store.migrate_context_token_budget(),
                 )
@@ -2161,6 +2167,10 @@ impl PostgresStore {
              ON events(context_id, session_id, topic, thread_id, timestamp, sequence)",
             "CREATE INDEX IF NOT EXISTS idx_pg_events_context_thread_time \
              ON events(context_id, thread_id, timestamp, sequence)",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_session_root_sequence \
+             ON events(session_id, root_turn_id, sequence DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_session_root_attempt_sequence \
+             ON events(session_id, root_turn_id, (payload->>'attempt_id'), sequence DESC)",
             "CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (\
              context_id TEXT NOT NULL, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, \
              topic TEXT NOT NULL, completed_at TEXT NOT NULL, \
@@ -2175,6 +2185,71 @@ impl PostgresStore {
              ON events(context_id, session_id, topic text_pattern_ops, timestamp, sequence)",
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_session_timeline(&self) -> Result<(), StoreError> {
+        for statement in [
+            "CREATE TABLE IF NOT EXISTS session_message_timeline (\
+             session_id TEXT NOT NULL, entry_id TEXT NOT NULL, \
+             source_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE, \
+             source_sequence BIGINT NOT NULL CHECK(source_sequence > 0), \
+             root_turn_id TEXT NOT NULL, attempt_id TEXT, \
+             visible_at_micros BIGINT NOT NULL, output_visible_at_micros BIGINT, \
+             display_kind TEXT NOT NULL CHECK(display_kind IN ('input', 'reply', 'progress', 'error')), \
+             is_final BOOLEAN NOT NULL, PRIMARY KEY(session_id, entry_id))",
+            "CREATE INDEX IF NOT EXISTS idx_pg_session_message_timeline_page \
+             ON session_message_timeline(session_id, visible_at_micros DESC, entry_id DESC)",
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        // Only the derived input identity changed. Keep every immutable Event
+        // and rebuild its client-visible index key from that source.
+        sqlx::query("DELETE FROM session_message_timeline WHERE display_kind = 'input'")
+            .execute(&self.pool)
+            .await?;
+        // Existing immutable Events are the only backfill source. Bound each
+        // batch and make every projection write idempotent, so interruption or
+        // a second Host never needs to replay model work or duplicate text.
+        let high_water =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(sequence), 0) FROM events")
+                .fetch_one(&self.pool)
+                .await?;
+        let mut cursor = 0_i64;
+        loop {
+            let rows = sqlx::query(
+                "SELECT sequence, id, timestamp, actor, type, topic, payload \
+                 FROM events WHERE sequence > $1 AND sequence <= $2 \
+                 ORDER BY sequence LIMIT 500",
+            )
+            .bind(cursor)
+            .bind(high_water)
+            .fetch_all(&self.pool)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut tx = self.pool.begin().await?;
+            for row in rows {
+                let sequence = row.get::<i64, _>("sequence");
+                let payload = row.get::<JsonValue, _>("payload");
+                let event = Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(sequence).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: payload
+                        .as_object()
+                        .cloned()
+                        .ok_or("Event payload must be a JSON object")?,
+                };
+                project_session_timeline_in_tx(&mut tx, &event, sequence).await?;
+                cursor = sequence;
+            }
+            tx.commit().await?;
         }
         Ok(())
     }
@@ -4845,6 +4920,101 @@ struct EventAppendInTx {
     sequence: i64,
 }
 
+async fn project_session_timeline_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+    sequence: i64,
+) -> Result<(), StoreError> {
+    use super::session_timeline::MutationKind;
+
+    let Some(entry) = super::session_timeline::classify(event, sequence) else {
+        return Ok(());
+    };
+    match entry.kind {
+        MutationKind::Input | MutationKind::Progress => {
+            sqlx::query(
+                "INSERT INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, TRUE) \
+                 ON CONFLICT(session_id, entry_id) DO NOTHING",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+        }
+        MutationKind::Stream => {
+            let applied = sqlx::query(
+                "INSERT INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, FALSE) \
+                 ON CONFLICT(session_id, entry_id) DO UPDATE SET \
+                   output_visible_at_micros = COALESCE(session_message_timeline.output_visible_at_micros, EXCLUDED.output_visible_at_micros), \
+                   visible_at_micros = COALESCE(session_message_timeline.output_visible_at_micros, EXCLUDED.output_visible_at_micros), \
+                   source_event_id = CASE WHEN NOT session_message_timeline.is_final AND EXCLUDED.source_sequence >= session_message_timeline.source_sequence \
+                     THEN EXCLUDED.source_event_id ELSE session_message_timeline.source_event_id END, \
+                   source_sequence = CASE WHEN NOT session_message_timeline.is_final AND EXCLUDED.source_sequence >= session_message_timeline.source_sequence \
+                     THEN EXCLUDED.source_sequence ELSE session_message_timeline.source_sequence END \
+                 WHERE session_message_timeline.root_turn_id = EXCLUDED.root_turn_id \
+                   AND session_message_timeline.attempt_id = EXCLUDED.attempt_id",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+            if applied.rows_affected() != 1 {
+                return Err("Session publication attempt was reused for another input root".into());
+            }
+        }
+        MutationKind::Final => {
+            let applied = sqlx::query(
+                "INSERT INTO session_message_timeline \
+                 (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, TRUE) \
+                 ON CONFLICT(session_id, entry_id) DO UPDATE SET \
+                   source_event_id = CASE WHEN NOT session_message_timeline.is_final OR EXCLUDED.source_sequence >= session_message_timeline.source_sequence \
+                     THEN EXCLUDED.source_event_id ELSE session_message_timeline.source_event_id END, \
+                   source_sequence = CASE WHEN NOT session_message_timeline.is_final \
+                     THEN EXCLUDED.source_sequence ELSE GREATEST(session_message_timeline.source_sequence, EXCLUDED.source_sequence) END, \
+                   display_kind = CASE WHEN NOT session_message_timeline.is_final OR EXCLUDED.source_sequence >= session_message_timeline.source_sequence \
+                     THEN EXCLUDED.display_kind ELSE session_message_timeline.display_kind END, \
+                   is_final = TRUE \
+                 WHERE session_message_timeline.root_turn_id = EXCLUDED.root_turn_id \
+                   AND session_message_timeline.attempt_id = EXCLUDED.attempt_id",
+            )
+            .bind(&entry.session_id)
+            .bind(&entry.entry_id)
+            .bind(&entry.source_event_id)
+            .bind(entry.source_sequence)
+            .bind(&entry.root_turn_id)
+            .bind(&entry.attempt_id)
+            .bind(entry.visible_at_micros)
+            .bind(entry.display_kind)
+            .execute(&mut **tx)
+            .await?;
+            if applied.rows_affected() != 1 {
+                return Err("Session publication attempt was reused for another input root".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn append_event_with_sequence_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     event: &Event,
@@ -4885,6 +5055,7 @@ async fn append_event_with_sequence_in_tx(
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(sequence) = inserted_sequence {
+        project_session_timeline_in_tx(tx, event, sequence).await?;
         if let Some(context_id) = context_id {
             project_attention_acknowledgement_in_tx(
                 tx,
@@ -5423,6 +5594,11 @@ impl EventStore for PostgresStore {
         if let Some(root_turn_id) = filter.root_turn_id {
             builder.push(" AND root_turn_id = ").push_bind(root_turn_id);
         }
+        if let Some(attempt_id) = filter.attempt_id {
+            builder
+                .push(" AND payload->>'attempt_id' = ")
+                .push_bind(attempt_id);
+        }
         if let Some(objective_id) = filter.objective_id {
             builder.push(" AND objective_id = ").push_bind(objective_id);
         }
@@ -5892,6 +6068,108 @@ async fn finish_pg_recall_claim(
     .execute(&mut **tx)
     .await?;
     Ok(true)
+}
+
+#[async_trait::async_trait]
+impl super::SessionTimelineStore for PostgresStore {
+    async fn query_session_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = i64::try_from(limit.clamp(1, 1_000))?;
+        let statement = if before.is_some() {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.sequence AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = $1 AND \
+               (t.visible_at_micros, t.entry_id) < ($2, $3) \
+             ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT $4"
+        } else {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.sequence AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = $1 \
+             ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT $2"
+        };
+        let mut query = sqlx::query(statement).bind(session_id);
+        if let Some(before) = before {
+            query = query.bind(before.visible_at_micros).bind(&before.entry_id);
+        }
+        let rows = query.bind(limit).fetch_all(&self.pool).await?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let micros = row.get::<i64, _>("visible_at_micros");
+            let payload = row.get::<JsonValue, _>("payload");
+            let root_event = row
+                .get::<Option<String>, _>("root_event_id")
+                .map(|id| {
+                    let payload = row
+                        .get::<Option<JsonValue>, _>("root_payload")
+                        .ok_or("Missing timeline root payload")?;
+                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Event {
+                        id,
+                        sequence: row
+                            .get::<Option<i64>, _>("root_event_sequence")
+                            .and_then(|sequence| u64::try_from(sequence).ok()),
+                        timestamp: parse_time(
+                            &row.get::<Option<String>, _>("root_timestamp")
+                                .ok_or("Missing timeline root timestamp")?,
+                        )?,
+                        actor: row
+                            .get::<Option<String>, _>("root_actor")
+                            .ok_or("Missing timeline root actor")?,
+                        event_type: row
+                            .get::<Option<String>, _>("root_type")
+                            .ok_or("Missing timeline root type")?,
+                        topic: row
+                            .get::<Option<String>, _>("root_topic")
+                            .ok_or("Missing timeline root topic")?,
+                        payload: payload
+                            .as_object()
+                            .cloned()
+                            .ok_or("Timeline root payload must be a JSON object")?,
+                    })
+                })
+                .transpose()?;
+            items.push(super::SessionTimelineItem {
+                entry_id: row.get("entry_id"),
+                visible_at: DateTime::<Utc>::from_timestamp_micros(micros)
+                    .ok_or("Invalid Session timeline timestamp")?,
+                visible_at_micros: micros,
+                root_turn_id: row.get("root_turn_id"),
+                attempt_id: row.get("attempt_id"),
+                display_kind: row.get("display_kind"),
+                final_event: row.get("is_final"),
+                event: Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: payload
+                        .as_object()
+                        .cloned()
+                        .ok_or("Event payload must be a JSON object")?,
+                },
+                root_event,
+            });
+        }
+        items.reverse();
+        Ok(items)
+    }
 }
 
 #[async_trait::async_trait]

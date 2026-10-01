@@ -44,12 +44,15 @@ import {
 } from "../../../packages/core/src/reader.js";
 import type { Artifact } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
+import { RequestError } from "./application-transport.js";
+import { useContentDirectory } from "./useContentDirectory.js";
 import {
   readerOffsets,
   readerRange,
   readerSelection,
   readerViewport,
-  readerMarksAtPoint,
+  readerSourceSpanAtPoint,
+  readerMarksAtSourceSpan,
 } from "./reader-dom.js";
 import type { ReadingContextChange, ReadingFocus } from "./ReadingContext.js";
 import { useModal } from "./useModal.js";
@@ -108,32 +111,31 @@ export function Reader(props: ReaderProps) {
   const file = useRef<HTMLInputElement>(null);
   const state = client.boot!.workspace,
     artifact = state.artifacts.find((a) => a.id === artifactId);
-  const books = state.artifacts.filter(
-    (a) => readable(a.content) && (globalLibrary || a.projectId === projectId),
+  const directory = useContentDirectory(
+    client,
+    {
+      ...(!globalLibrary ? { projectId } : {}),
+      appIds: ["morphz.objects", "morphz.reader"],
+      kinds: ["document", "pdf", "publication"],
+      ...(query.trim() ? { query: query.trim() } : {}),
+      sort: "updated",
+    },
+    !(artifact && readable(artifact.content)),
   );
-  const owner = client.boot!.principalId;
+  const loadedBooks = new Map(
+    state.artifacts
+      .filter((a) => readable(a.content))
+      .map((book) => [book.id, book]),
+  );
+  const books = directory.items.map(
+    (entry) => loadedBooks.get(entry.id) ?? entry,
+  );
   useEffect(() => {
     const input = file.current;
     const cancel = () => onNativeDialog?.(false);
     input?.addEventListener("cancel", cancel);
     return () => input?.removeEventListener("cancel", cancel);
   }, [artifactId]);
-  const matches = books
-    .filter((a) =>
-      `${a.title} ${a.content.kind === "publication" ? a.content.author : ""}`
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase()),
-    )
-    .sort((a, b) => {
-      const progress = (id: string) =>
-        state.readingStates.find(
-          (p) => p.ownerPrincipalId === owner && p.artifactId === id,
-        )?.updatedAt ?? "";
-      return (
-        progress(b.id).localeCompare(progress(a.id)) ||
-        b.updatedAt.localeCompare(a.updatedAt)
-      );
-    });
   if (artifact && readable(artifact.content))
     return (
       <ReadingBook
@@ -154,12 +156,14 @@ export function Reader(props: ReaderProps) {
           <input
             type="search"
             aria-label="查找读物"
-            placeholder="书名或作者"
+            placeholder="按书名查找"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
-        <span className="reader-library-count">{matches.length} 份读物</span>
+        <span className="reader-library-count">
+          {directory.count ?? books.length} 份读物
+        </span>
         <button
           className="primary"
           aria-label={importing ? "正在导入读物" : "导入读物"}
@@ -173,25 +177,32 @@ export function Reader(props: ReaderProps) {
           {importing ? "正在导入…" : "导入"}
         </button>
       </header>
-      {!books.length && (
-        <div className="reader-empty">
-          <BookOpen />
-          <h3>暂无读物</h3>
-          <p>EPUB · PDF · Markdown · Word · TXT · HTML · RTF</p>
-        </div>
+      {directory.error && (
+        <p className="reader-empty" role="alert">
+          {directory.error} <button onClick={directory.retry}>重试</button>
+        </p>
       )}
-      {!!books.length && !matches.length && (
-        <p className="reader-empty">没有找到相关读物。</p>
-      )}
+      {!books.length &&
+        !directory.busy &&
+        !directory.error &&
+        !query.trim() && (
+          <div className="reader-empty">
+            <BookOpen />
+            <h3>暂无读物</h3>
+            <p>EPUB · PDF · Markdown · Word · TXT · HTML · RTF</p>
+          </div>
+        )}
+      {!books.length &&
+        !directory.busy &&
+        !directory.error &&
+        !!query.trim() && <p className="reader-empty">没有找到相关读物。</p>}
       <ul className="reader-books">
-        {matches.map((a) => {
-          const p = state.readingStates.find(
-            (p) => p.ownerPrincipalId === owner && p.artifactId === a.id,
-          );
+        {books.map((a) => {
           const label =
-            a.content.kind === "publication"
+            "content" in a && a.content.kind === "publication"
               ? {
                   epub: "EPUB",
+                  pdf: "PDF",
                   docx: "DOCX",
                   doc: "DOC",
                   rtf: "RTF",
@@ -199,9 +210,13 @@ export function Reader(props: ReaderProps) {
                   markdown: "Markdown",
                   text: "TXT",
                 }[a.content.format]
-              : a.content.kind === "pdf"
+              : ("content" in a ? a.content.kind : a.kind) === "pdf"
                 ? "PDF"
-                : "Markdown";
+                : "content" in a
+                  ? "Markdown"
+                  : a.kind === "publication"
+                    ? "读物"
+                    : "Markdown";
           return (
             <li key={a.id}>
               <button
@@ -214,16 +229,19 @@ export function Reader(props: ReaderProps) {
                 <span className="reader-book-info">
                   <strong>{a.title}</strong>
                   <small>
-                    {a.content.kind === "publication" && a.content.author
+                    {"content" in a &&
+                    a.content.kind === "publication" &&
+                    a.content.author
                       ? `${a.content.author} · `
                       : ""}
                     {label}
                   </small>
-                  <small>
-                    {p ? "继续阅读" : "开始阅读"}
-                    {globalLibrary &&
-                      ` · ${state.projects.find((p) => p.id === a.projectId)?.title ?? "未归项目"}`}
-                  </small>
+                  {globalLibrary && (
+                    <small>
+                      {state.projects.find((p) => p.id === a.projectId)
+                        ?.title ?? "未归项目"}
+                    </small>
+                  )}
                 </span>
                 <ArrowUpRight />
               </button>
@@ -231,6 +249,16 @@ export function Reader(props: ReaderProps) {
           );
         })}
       </ul>
+      {directory.nextCursor && (
+        <button
+          type="button"
+          className="outline content-load-more"
+          disabled={directory.busy}
+          onClick={() => void directory.loadMore()}
+        >
+          继续加载
+        </button>
+      )}
       <details className="reader-privacy">
         <summary>文件与阅读数据</summary>
         <p>文件保存到当前工作中心；连接远程中心时，文件会上传至该中心。</p>
@@ -274,21 +302,49 @@ function ReadingBook({
   const version = artifact.versions.find(
     (v) => v.revision === (revision ?? artifact.revision),
   )!;
+  const isPdf =
+    version.content.kind === "pdf" ||
+    (version.content.kind === "publication" &&
+      version.content.format === "pdf");
+  const pdfAssetId =
+    version.content.kind === "pdf" || version.content.kind === "publication"
+      ? version.content.assetId
+      : "";
+  const pdfUrl =
+    version.content.kind === "publication" && version.content.format === "pdf"
+      ? `/api/reader/original?artifactId=${encodeURIComponent(artifact.id)}&revision=${version.revision}`
+      : undefined;
   const owner = client.boot!.principalId;
   const centerId = client.boot!.centerId;
-  const saved = client.boot!.workspace.readingStates.find(
-    (p) => p.artifactId === artifact.id && p.ownerPrincipalId === owner,
+  const [visibleMarks, setVisibleMarks] = useState<ReadingMark[]>([]);
+  const [visibleMarksReady, setVisibleMarksReady] = useState(false);
+  const pendingMarkPoint = useRef<{
+    section: ReadingSection;
+    x: number;
+    y: number;
+    scrollTop: number;
+    location: ReadingLocation;
+  } | null>(null);
+  const [marks, setMarks] = useState<ReadingMark[]>([]);
+  const sidebarRows = useRef(marks);
+  sidebarRows.current = marks;
+  const [marksLoading, setMarksLoading] = useState(false);
+  const [marksError, setMarksError] = useState("");
+  const [marksRefresh, setMarksRefresh] = useState(0);
+  const markReadGeneration = useRef(0);
+  const marksPanel = useRef<HTMLElement>(null);
+  const [visibleRange, setVisibleRange] = useState<ReadingLocation | null>(
+    null,
   );
-  const [preferences, setPreferences] = useState(
-    () => saved?.preferences ?? readingPreferencesSchema.parse({}),
+  const [readerReady, setReaderReady] = useState(false);
+  const [preferences, setPreferences] = useState(() =>
+    readingPreferencesSchema.parse({}),
   );
   const [sections, setSections] = useState<
     Array<{ id: string; title: string; characters: number }>
   >([]);
   const [sectionId, setSectionId] = useState(() =>
-    target?.artifactId === artifact.id
-      ? target.location.sectionId
-      : (saved?.location.sectionId ?? ""),
+    target?.artifactId === artifact.id ? target.location.sectionId : "",
   );
   const [section, setSection] = useState<ReadingSection | null>(null),
     [error, setError] = useState("");
@@ -296,7 +352,13 @@ function ReadingBook({
     null,
   );
   const [selected, setSelected] = useState<
-      (ReadingLocation & { x: number; y: number; markIds?: string[] }) | null
+      | (ReadingLocation & {
+          x: number;
+          y: number;
+          markIds?: string[];
+          hitLocation?: ReadingLocation;
+        })
+      | null
     >(null),
     [note, setNote] = useState<ReadingLocation | null>(null),
     [busy, setBusy] = useState(false);
@@ -305,6 +367,21 @@ function ReadingBook({
     [removed, setRemoved] = useState<ReadingMark | null>(null);
   const currentSelection = useRef(selected);
   currentSelection.current = selected;
+  useEffect(() => {
+    const cancel = () => {
+      pendingMarkPoint.current = null;
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancel();
+    };
+    document.addEventListener("pointerdown", cancel, true);
+    document.addEventListener("keydown", key);
+    return () => {
+      cancel();
+      document.removeEventListener("pointerdown", cancel, true);
+      document.removeEventListener("keydown", key);
+    };
+  }, [section, active]);
   const [retry, setRetry] = useState(0);
   const [ocrLine, setOcrLine] = useState(0);
   const [feedback, setFeedback] = useState("");
@@ -317,31 +394,37 @@ function ReadingBook({
   const article = useRef<HTMLDivElement>(null),
     viewport = useRef<HTMLDivElement>(null);
   const restoredSection = useRef<ReadingSection | null>(null);
+  const citationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const loadedAttempt = useRef<number | null>(null);
   const jump = useRef<ReadingLocation | null>(
-    target?.artifactId === artifact.id
-      ? target.location
-      : (saved?.location ?? null),
+    target?.artifactId === artifact.id ? target.location : null,
   );
   const anchorJump = useRef<string | null>(null);
   const latest = useRef({ section, preferences, active });
   latest.current = { section, preferences, active };
-  const progress = useRef<ReadingLocation | null>(saved?.location ?? null),
+  const progress = useRef<ReadingLocation | null>(null),
     progressQueue = useRef(Promise.resolve());
+  const positionRevision = useRef(0);
+  const savedPosition = useRef<{
+    location: ReadingLocation;
+    preferences: ReadingPreferences;
+  } | null>(null);
+  const hydrated = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingPosition = useRef<ReadingLocation | null>(null);
-  const marks = client.boot!.workspace.readingMarks.filter(
-    (m) =>
-      m.artifactId === artifact.id &&
-      m.ownerPrincipalId === owner &&
-      !m.deletedAt,
-  );
-  const sourceMarks = marks.filter(
+  const sourceMarks = visibleMarks.filter(
     (m) =>
       section &&
       m.location.sourceId === section.sourceId &&
       m.location.sectionId === section.id,
   );
+  const textSelection = selected && !selected.markIds ? selected : null;
+  const focusedMarkRange =
+    textSelection ??
+    selected?.hitLocation ??
+    pendingMarkPoint.current?.location;
   const signature = JSON.stringify(sourceMarks.map((m) => [m.id, m.revision]));
   const selectedMarks = selected
     ? sourceMarks.filter((m) =>
@@ -459,6 +542,38 @@ function ReadingBook({
   useEffect(() => {
     if (!active) return;
     const abort = new AbortController();
+    void progressQueue.current
+      .then(() =>
+        client.readingState(artifact.id, version.revision, abort.signal),
+      )
+      .then((state) => {
+        if (abort.signal.aborted) return;
+        positionRevision.current = state.position?.revision ?? 0;
+        savedPosition.current = state.position
+          ? {
+              location: state.position.location,
+              preferences: state.position.preferences,
+            }
+          : null;
+        if (!hydrated.current && state.position) {
+          setPreferences(state.position.preferences);
+          progress.current = state.position.location;
+          if (!target || target.artifactId !== artifact.id) {
+            jump.current = state.position.location;
+            setSectionId(state.position.location.sectionId);
+          }
+        }
+        hydrated.current = true;
+        setReaderReady(true);
+      })
+      .catch((e) => {
+        if (!abort.signal.aborted) setError(e.message);
+      });
+    return () => abort.abort();
+  }, [artifact.id, version.revision, active, retry]);
+  useEffect(() => {
+    if (!active || !readerReady) return;
+    const abort = new AbortController();
     void client
       .readingContents(artifact.id, version.revision, abort.signal)
       .then((rows) => {
@@ -473,9 +588,9 @@ function ReadingBook({
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [artifact.id, version.revision, active, retry]);
+  }, [artifact.id, version.revision, active, retry, readerReady]);
   useEffect(() => {
-    if (!active || !sectionId) return;
+    if (!active || !readerReady || !sectionId) return;
     // Switching applications only hides this reader. Reuse the loaded page so
     // returning does not clear its DOM, selection or scroll position.
     if (
@@ -498,7 +613,196 @@ function ReadingBook({
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [artifact.id, version.revision, sectionId, active, retry]);
+  }, [artifact.id, version.revision, sectionId, active, retry, readerReady]);
+  useLayoutEffect(() => {
+    const root = article.current,
+      view = viewport.current;
+    if (!active || !section || !root || !view) {
+      setVisibleRange(null);
+      return;
+    }
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (!root.getClientRects().length || !view.clientHeight) return;
+        const range = readerViewport(root, section.text, view, "visible");
+        if (!range) return; // Hidden or not-yet-rendered text grants no fallback.
+        const next = {
+          sourceId: section.sourceId,
+          sectionId: section.id,
+          ...range,
+        };
+        setVisibleRange((old) =>
+          JSON.stringify(old) === JSON.stringify(next) ? old : next,
+        );
+      });
+    };
+    const sizes = new ResizeObserver(measure),
+      changes = new MutationObserver(measure);
+    sizes.observe(root);
+    sizes.observe(view);
+    changes.observe(root, { childList: true, subtree: true });
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      sizes.disconnect();
+      changes.disconnect();
+    };
+  }, [section, active]);
+  useEffect(() => {
+    if (
+      !active ||
+      !section ||
+      !visibleRange ||
+      visibleRange.sourceId !== section.sourceId ||
+      visibleRange.sectionId !== section.id
+    )
+      return;
+    const abort = new AbortController(),
+      generation = markReadGeneration.current;
+    setVisibleMarksReady(false);
+    const live = () =>
+      !abort.signal.aborted && markReadGeneration.current === generation;
+    const read = async () => {
+      const collected = new Map<string, ReadingMark>();
+      const ranges = [visibleRange];
+      // A real text selection can extend beyond the scrolled viewport. Read
+      // exactly that additional span, not the gap or the rest of the chapter,
+      // so selecting an existing long highlight still offers its edit actions.
+      if (
+        focusedMarkRange &&
+        focusedMarkRange.sourceId === section.sourceId &&
+        focusedMarkRange.sectionId === section.id &&
+        (focusedMarkRange.start < visibleRange.start ||
+          focusedMarkRange.end > visibleRange.end)
+      )
+        ranges.push(focusedMarkRange);
+      for (const range of ranges) {
+        let after: string | undefined;
+        do {
+          const page = await client.readingMarks(
+            {
+              artifactId: artifact.id,
+              revision: version.revision,
+              sectionId: range.sectionId,
+              start: range.start,
+              end: range.end,
+              ...(after ? { after } : {}),
+              limit: 50,
+            },
+            abort.signal,
+          );
+          if (!live()) return;
+          for (const mark of page.marks) collected.set(mark.id, mark);
+          after = page.nextCursor ?? undefined;
+        } while (after);
+      }
+      // Fetch dense ranges in bounded pages, then paint once. Repainting every
+      // growing prefix would repeatedly traverse the same DOM ranges.
+      if (live()) {
+        setVisibleMarks([...collected.values()]);
+        setVisibleMarksReady(true);
+      }
+    };
+    // Scrolling already measures the exact visible span below. Coalesce
+    // successive ranges instead of dispatching a query for every wheel frame.
+    const delay = setTimeout(() => {
+      void read().catch((e) => {
+        if (live()) {
+          setVisibleMarks([]);
+          pendingMarkPoint.current = null;
+          onNotice(e.message);
+        }
+      });
+    }, 80);
+    return () => {
+      clearTimeout(delay);
+      abort.abort();
+    };
+  }, [
+    artifact.id,
+    version.revision,
+    section,
+    visibleRange,
+    focusedMarkRange?.sourceId,
+    focusedMarkRange?.sectionId,
+    focusedMarkRange?.start,
+    focusedMarkRange?.end,
+    active,
+    marksRefresh,
+  ]);
+  useEffect(() => {
+    const view = marksPanel.current;
+    if (panel !== "marks" || !active || !view) return;
+    const abort = new AbortController(),
+      generation = markReadGeneration.current;
+    const live = () =>
+      !abort.signal.aborted && markReadGeneration.current === generation;
+    const targetCount = Math.max(50, sidebarRows.current.length);
+    let after: string | undefined,
+      done = false,
+      pending = false,
+      initial = true,
+      frame = 0;
+    const collected = new Map<string, ReadingMark>();
+    const check = () => {
+      if (
+        view.clientHeight &&
+        view.scrollTop + view.clientHeight >= view.scrollHeight - 120
+      )
+        void load();
+    };
+    const load = async () => {
+      if (!live() || pending || done) return;
+      pending = true;
+      setMarksLoading(true);
+      setMarksError("");
+      try {
+        do {
+          const page = await client.readingMarks(
+            {
+              artifactId: artifact.id,
+              revision: version.revision,
+              ...(after ? { after } : {}),
+              limit: 50,
+            },
+            abort.signal,
+          );
+          if (!live()) return;
+          for (const mark of page.marks) collected.set(mark.id, mark);
+          after = page.nextCursor ?? undefined;
+          done = !after;
+          // Refresh exactly the already displayed prefix before replacing it.
+          // Repaint/undo must not shrink a two-page list back to page one.
+        } while (initial && collected.size < targetCount && !done);
+        initial = false;
+        setMarks([...collected.values()]);
+        frame = requestAnimationFrame(check);
+      } catch (e) {
+        if (live()) setMarksError((e as Error).message);
+      } finally {
+        pending = false;
+        if (live()) setMarksLoading(false);
+      }
+    };
+    const sizes = new ResizeObserver(check);
+    sizes.observe(view);
+    view.addEventListener("scroll", check, { passive: true });
+    void load();
+    return () => {
+      abort.abort();
+      cancelAnimationFrame(frame);
+      sizes.disconnect();
+      view.removeEventListener("scroll", check);
+    };
+  }, [artifact.id, version.revision, panel, active, marksRefresh]);
+  function refreshMarks() {
+    markReadGeneration.current++;
+    pendingMarkPoint.current = null;
+    setVisibleMarksReady(false);
+    setMarksRefresh((value) => value + 1);
+  }
   useEffect(() => {
     if (
       !active ||
@@ -522,30 +826,65 @@ function ReadingBook({
       .catch(() => {})
       .then(async () => {
         const snapshot = client.getSnapshot();
-        if (snapshot?.principalId !== owner || snapshot.centerId !== centerId)
-          return;
-        const previous = snapshot.workspace.readingStates.find(
-          (p) => p.artifactId === artifact.id && p.ownerPrincipalId === owner,
-        );
         if (
-          previous?.artifactRevision === version.revision &&
-          JSON.stringify(previous.location) === JSON.stringify(location) &&
-          JSON.stringify(previous.preferences) === JSON.stringify(prefs)
+          !snapshot ||
+          snapshot.principalId !== owner ||
+          snapshot.centerId !== centerId
         )
           return;
-        await client.execute({
-          type: "reader-command",
-          command: {
+        const previous = savedPosition.current;
+        if (
+          JSON.stringify(previous?.location) === JSON.stringify(location) &&
+          JSON.stringify(previous?.preferences) === JSON.stringify(prefs)
+        )
+          return;
+        const receipt = await client.readerCommand(
+          artifact.id,
+          version.revision,
+          {
             action: "save-position",
             artifactId: artifact.id,
             artifactRevision: version.revision,
             location,
             preferences: prefs,
-            expectedRevision: previous?.revision ?? 0,
+            expectedRevision: positionRevision.current,
           },
-        });
+        );
+        positionRevision.current = receipt.revision;
+        savedPosition.current = { location, preferences: prefs };
       })
-      .catch((e) => onNotice(`阅读进度未保存：${e.message}`));
+      .catch(async (error) => {
+        // Another mounted view of this book may have committed the same
+        // position first. Confirm the authoritative state before reporting a
+        // failed save; a different position remains a real revision conflict.
+        if (
+          !(error instanceof RequestError) ||
+          error.code === "conflict" ||
+          error.status === 408 ||
+          error.status >= 500
+        ) {
+          try {
+            const current = (
+              await client.readingState(artifact.id, version.revision)
+            ).position;
+            if (
+              current &&
+              JSON.stringify(current.location) === JSON.stringify(location) &&
+              JSON.stringify(current.preferences) === JSON.stringify(prefs)
+            ) {
+              positionRevision.current = current.revision;
+              savedPosition.current = {
+                location: current.location,
+                preferences: current.preferences,
+              };
+              return;
+            }
+          } catch {
+            // Preserve the original write error if verification is unavailable.
+          }
+        }
+        onNotice(`阅读进度未保存：${(error as Error).message}`);
+      });
   }
   function flushPosition() {
     clearTimeout(timer.current);
@@ -559,13 +898,22 @@ function ReadingBook({
   useLayoutEffect(() => {
     if (!active) flushPosition();
   }, [active]);
+  useEffect(
+    () => () => {
+      clearTimeout(citationTimer.current);
+      citationTimer.current = undefined;
+      (
+        CSS as unknown as { highlights?: Map<string, unknown> }
+      ).highlights?.delete(`${markClass}-citation`);
+    },
+    [section, active],
+  );
   useEffect(() => {
     if (!section || !article.current || !viewport.current || !active) return;
     const root = article.current,
       view = viewport.current;
     // Updating a highlight must not scroll the reader back to the start.
     let restored = restoredSection.current === section;
-    let citationTimer: ReturnType<typeof setTimeout> | undefined;
     const paint = () => {
       const offsets = readerOffsets(root.textContent ?? "", section.text);
       if (!offsets) return;
@@ -639,10 +987,11 @@ function ReadingBook({
             );
             if (cited) {
               registry.set(`${markClass}-citation`, new Highlight(cited));
-              citationTimer = setTimeout(
-                () => registry.delete(`${markClass}-citation`),
-                1800,
-              );
+              clearTimeout(citationTimer.current);
+              citationTimer.current = setTimeout(() => {
+                registry.delete(`${markClass}-citation`);
+                citationTimer.current = undefined;
+              }, 1800);
             }
           }
         } else view.scrollTop = 0;
@@ -666,7 +1015,6 @@ function ReadingBook({
     observer.observe(root, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
-      clearTimeout(citationTimer);
       const h = (CSS as unknown as { highlights?: Map<string, unknown> })
         .highlights;
       for (const c of [
@@ -678,12 +1026,50 @@ function ReadingBook({
         "note-green",
         "note-blue",
         "note-pink",
-        "citation",
       ])
         h?.delete(`${markClass}-${c}`);
     };
   }, [section, signature, active]);
+  useEffect(() => {
+    const pending = pendingMarkPoint.current;
+    if (pending && visibleMarksReady) {
+      pendingMarkPoint.current = null;
+      if (
+        active &&
+        pending.section === section &&
+        pending.scrollTop === viewport.current?.scrollTop
+      )
+        openMarks(pending.x, pending.y, pending.location);
+    }
+    const selection = currentSelection.current,
+      root = article.current;
+    if (
+      !active ||
+      !section ||
+      !root ||
+      !visibleMarksReady ||
+      !selection?.hitLocation ||
+      selection.sourceId !== section.sourceId ||
+      selection.sectionId !== section.id
+    )
+      return;
+    const markIds = readerMarksAtSourceSpan(
+      sourceMarks,
+      selection.hitLocation,
+    ).map((mark) => mark.id);
+    // Reconcile only a complete current read against the source glyph. Old
+    // viewport pixels change meaning on reflow; they are not mark identity.
+    if (JSON.stringify(markIds) !== JSON.stringify(selection.markIds))
+      setSelected((current) =>
+        current !== selection
+          ? current
+          : markIds.length
+            ? { ...current, markIds }
+            : null,
+      );
+  }, [section, signature, active, visibleMarksReady]);
   function capture() {
+    pendingMarkPoint.current = null;
     if (!section || !article.current || !active) return;
     try {
       const selection = readerSelection(article.current, section.text);
@@ -705,16 +1091,34 @@ function ReadingBook({
       onNotice((e as Error).message);
     }
   }
-  function openMarks(x: number, y: number) {
+  function openMarks(x: number, y: number, location?: ReadingLocation) {
     if (!section || !article.current) return false;
-    const hits = readerMarksAtPoint(
-      article.current,
-      section.text,
-      sourceMarks,
-      x,
-      y,
-    );
-    if (!hits.length) return false;
+    const span =
+      location ?? readerSourceSpanAtPoint(article.current, section.text, x, y);
+    if (!span) return false;
+    const hitLocation = {
+      sourceId: section.sourceId,
+      sectionId: section.id,
+      start: span.start,
+      end: span.end,
+    };
+    const hits = readerMarksAtSourceSpan(sourceMarks, hitLocation);
+    if (!hits.length) {
+      // The original text can render before its authorized annotation page.
+      // Preserve this first click only until that exact visible read finishes;
+      // never turn it into a selection or manufacture a mark from the write.
+      pendingMarkPoint.current = visibleMarksReady
+        ? null
+        : {
+            section,
+            x,
+            y,
+            scrollTop: viewport.current?.scrollTop ?? 0,
+            location: hitLocation,
+          };
+      return false;
+    }
+    pendingMarkPoint.current = null;
     selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
     setSelectionMenuOpen(true);
     setSelected({
@@ -722,11 +1126,13 @@ function ReadingBook({
       x,
       y: y + 16,
       markIds: hits.map((m) => m.id),
+      hitLocation,
     });
     return true;
   }
   function changeSection(id: string, location?: ReadingLocation) {
     flushPosition();
+    pendingMarkPoint.current = null;
     setSelected(null);
     jump.current =
       location ??
@@ -746,19 +1152,17 @@ function ReadingBook({
     if (!section) return;
     setBusy(true);
     try {
-      await client.execute({
-        type: "reader-command",
-        command: {
-          action: "mark-add",
-          artifactId: artifact.id,
-          artifactRevision: version.revision,
-          location,
-          quote: section.text.slice(location.start, location.end),
-          kind,
-          note: body,
-          color: "yellow",
-        },
+      await client.readerCommand(artifact.id, version.revision, {
+        action: "mark-add",
+        artifactId: artifact.id,
+        artifactRevision: version.revision,
+        location,
+        quote: section.text.slice(location.start, location.end),
+        kind,
+        note: body,
+        color: "yellow",
       });
+      refreshMarks();
       if (currentSelection.current === selected) {
         setSelected(null);
         window.getSelection()?.removeAllRanges();
@@ -811,21 +1215,38 @@ function ReadingBook({
   ) {
     setBusy(true);
     try {
-      await client.execute({
-        type: "reader-command",
-        command:
-          action === "mark-update"
-            ? {
-                action,
-                markId: mark.id,
-                expectedRevision: mark.revision,
-                note: body,
-                color,
-              }
-            : { action, markId: mark.id, expectedRevision: mark.revision },
-      });
+      const receipt = await client.readerCommand(
+        artifact.id,
+        version.revision,
+        action === "mark-update"
+          ? {
+              action,
+              markId: mark.id,
+              expectedRevision: mark.revision,
+              note: body,
+              color,
+            }
+          : { action, markId: mark.id, expectedRevision: mark.revision },
+      );
+      refreshMarks();
+      const apply = (rows: ReadingMark[]) =>
+        action === "mark-remove"
+          ? rows.filter((row) => row.id !== mark.id)
+          : rows.map((row) =>
+              row.id === mark.id
+                ? {
+                    ...row,
+                    revision: receipt.revision,
+                    note: body,
+                    color,
+                    deletedAt: null,
+                  }
+                : row,
+            );
+      setVisibleMarks(apply);
+      setMarks(apply);
       if (action === "mark-remove")
-        setRemoved({ ...mark, revision: mark.revision + 1 });
+        setRemoved({ ...mark, revision: receipt.revision });
       else setRemoved(null);
       setEditing(null);
       if (
@@ -967,6 +1388,7 @@ function ReadingBook({
       <div className="reader-layout">
         {panel && (
           <aside
+            ref={marksPanel}
             className="reader-panel"
             aria-label={
               panel === "contents"
@@ -1040,7 +1462,15 @@ function ReadingBook({
                   <Bookmark />
                   保存当前位置
                 </button>
-                {!marks.length && <p>暂无书签或标注</p>}
+                {!marks.length && !marksLoading && !marksError && (
+                  <p>暂无书签或标注</p>
+                )}
+                {marksError && (
+                  <p role="alert">
+                    {marksError}{" "}
+                    <button onClick={refreshMarks}>重试读取</button>
+                  </p>
+                )}
                 {marks.map((m) => (
                   <div key={m.id} className="reader-mark">
                     <button
@@ -1101,11 +1531,12 @@ function ReadingBook({
                     </div>
                   </div>
                 ))}
+                {marksLoading && <p role="status">正在读取标注…</p>}
               </div>
             )}
             {panel === "settings" && (
               <div className="reader-settings">
-                {(version.content.kind !== "pdf" || section?.ocr) && (
+                {(!isPdf || section?.ocr) && (
                   <>
                     <label>
                       字号 <span>{preferences.fontSize}</span>
@@ -1142,9 +1573,7 @@ function ReadingBook({
                   </>
                 )}
                 <label>
-                  {version.content.kind === "pdf" && !section?.ocr
-                    ? "背景"
-                    : "主题"}
+                  {isPdf && !section?.ocr ? "背景" : "主题"}
                   <select
                     aria-label="阅读主题"
                     value={preferences.theme}
@@ -1187,6 +1616,11 @@ function ReadingBook({
             }
           }}
           onScroll={() => {
+            if (
+              pendingMarkPoint.current?.scrollTop !==
+              viewport.current?.scrollTop
+            )
+              pendingMarkPoint.current = null;
             // Scroll events can arrive after mouseup from the previous frame.
             // Only navigation after this selection invalidates its context.
             setSelected((current) =>
@@ -1206,8 +1640,17 @@ function ReadingBook({
               article.current,
               section.text,
               viewport.current!,
+              "visible",
             );
             if (!position) return;
+            const range = {
+              sourceId: section.sourceId,
+              sectionId: section.id,
+              ...position,
+            };
+            setVisibleRange((old) =>
+              JSON.stringify(old) === JSON.stringify(range) ? old : range,
+            );
             const location = {
               sourceId: section.sourceId,
               sectionId: section.id,
@@ -1230,7 +1673,7 @@ function ReadingBook({
             </p>
           ) : (
             <>
-              {version.content.kind === "pdf" && (
+              {isPdf && (
                 <ReaderOcrControls
                   key={readingBaseSection(section.id)}
                   client={client}
@@ -1243,14 +1686,15 @@ function ReadingBook({
                 />
               )}
               <div className={section.ocr ? "reader-ocr-compare" : undefined}>
-                {section.ocr && version.content.kind === "pdf" && (
+                {section.ocr && isPdf && (
                   <aside
                     className="reader-ocr-original"
                     aria-label="OCR 原页对照"
                   >
                     <Suspense fallback={<p>正在打开原页…</p>}>
                       <ReaderPdf
-                        assetId={version.content.assetId}
+                        assetId={pdfAssetId}
+                        url={pdfUrl}
                         page={readingPage(section.id)}
                         ocr={section.ocr}
                         line={ocrLine}
@@ -1275,7 +1719,7 @@ function ReadingBook({
                       end: 0,
                     },
                   })}
-                  className={`reader-text ${version.content.kind === "pdf" ? "reader-pdf" : ""}`}
+                  className={`reader-text ${isPdf ? "reader-pdf" : ""}`}
                   style={
                     {
                       fontSize: preferences.fontSize,
@@ -1320,10 +1764,11 @@ function ReadingBook({
                     if (openMarks(e.clientX, e.clientY)) e.preventDefault();
                   }}
                 >
-                  {version.content.kind === "pdf" && !section.ocr ? (
+                  {isPdf && !section.ocr ? (
                     <Suspense fallback={<p role="status">正在打开 PDF…</p>}>
                       <ReaderPdf
-                        assetId={version.content.assetId}
+                        assetId={pdfAssetId}
+                        url={pdfUrl}
                         page={readingPage(section.id)}
                       />
                     </Suspense>
@@ -1332,7 +1777,7 @@ function ReadingBook({
                   )}
                 </div>
               </div>
-              {version.content.kind === "pdf" && !section.text.trim() && (
+              {isPdf && !section.text.trim() && (
                 <p className="reader-scan-notice">
                   这一页没有可选文字；可展开“扫描文字识别”，在本机识别后选择文字提问或标注。
                 </p>
@@ -1343,14 +1788,14 @@ function ReadingBook({
                   onClick={() => changeSection(sections[index - 1]!.id)}
                 >
                   <ChevronLeft />
-                  上一{version.content.kind === "pdf" ? "页" : "章"}
+                  上一{isPdf ? "页" : "章"}
                 </button>
                 <span>{section.title}</span>
                 <button
                   disabled={index < 0 || index >= sections.length - 1}
                   onClick={() => changeSection(sections[index + 1]!.id)}
                 >
-                  下一{version.content.kind === "pdf" ? "页" : "章"}
+                  下一{isPdf ? "页" : "章"}
                   <ChevronRight />
                 </button>
               </footer>

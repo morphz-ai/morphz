@@ -3,9 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
-import { WorkspaceStore } from "../apps/service/src/store.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { SpeechService } from "../apps/service/src/speech.js";
+import { openSmokeDomainHost } from "./smoke-domain-host.js";
 
 // Interactive acceptance: real OS dialogs, devices and screenshot selection.
 // Never transmits microphone audio or loads personal provider credentials.
@@ -31,8 +31,9 @@ const result = {
   capture: "not-run",
   noProviderCalls: true,
 };
-const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
-const server = createAppServer(store, {
+const host = await openSmokeDomainHost(directory);
+const server = createAppServer(host.store, {
+  ...host.options,
   port: 65421,
   webRoot: resolve("dist/web"),
   speech: new NoNetworkSpeech(undefined),
@@ -118,7 +119,7 @@ try {
       ),
       ["ended", "ended"],
     );
-    assert.equal(store.snapshot().inputs.length, 0);
+    host.assertNoAgentDelivery();
     console.log(
       "PASS native microphone: real getUserMedia/AudioWorklet, stop, restart, close; all tracks ended; no provider/Agent input.",
     );
@@ -140,8 +141,8 @@ try {
       }
     });
     assert.equal(cancelled, null);
-    assert.equal(store.snapshot().artifacts.length, 0);
-    assert.equal(store.snapshot().inputs.length, 0);
+    assert.deepEqual(await host.session.listPlatformContent({}), []);
+    host.assertNoAgentDelivery();
     result.captureCancellation = "passed";
     console.log(
       "PASS native screenshot cancellation: no image object or Agent input; next selection must still work.",
@@ -154,8 +155,8 @@ try {
     await expect(capture.getByAltText("待确认的截图")).toBeVisible({
       timeout: 120000,
     });
-    assert.equal(store.snapshot().artifacts.length, 0);
-    assert.equal(store.snapshot().inputs.length, 0);
+    assert.deepEqual(await host.session.listPlatformContent({}), []);
+    host.assertNoAgentDelivery();
     await capture
       .getByRole("textbox", { name: "截图标题" })
       .fill("原生截图验收（合成界面）");
@@ -163,9 +164,14 @@ try {
       .getByRole("button", { name: "保存到内容", exact: true })
       .click();
     await expect(capture).not.toBeVisible();
-    assert.equal(store.snapshot().artifacts.length, 1);
-    assert.equal(store.snapshot().artifacts[0]!.content.kind, "image");
-    assert.equal(store.snapshot().inputs.length, 0);
+    const content = await host.session.listPlatformContent({});
+    assert.equal(content.length, 1);
+    assert.equal(content[0]!.kind, "image");
+    const image = await host.session.readPlatformObject({
+      contentId: content[0]!.id,
+    });
+    assert.equal(image.content.kind, "image");
+    host.assertNoAgentDelivery();
     mkdirSync("test-results", { recursive: true });
     await ui.screenshot({ path: "test-results/desktop-native-capture.png" });
     console.log(
@@ -182,6 +188,6 @@ try {
   if (app) await app.close();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  store.close();
+  await host.close();
   console.log("Native input fixture:", directory);
 }

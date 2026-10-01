@@ -93,7 +93,7 @@ macOS 已解锁，先前的锁屏阻碍已经解除。继续使用同一应用�
 
 - 业务实现已移到 `packages/application/src`；旧路径保持兼容导出。`Application` / `ApplicationSession` 不依赖 HTTP 或 Electron，`LocalApplicationConnection` 持有宿主身份、校验调用白名单、代次和取消，保留命令幂等语义。
 - UI 调用已通过逻辑接口适配器。Web 继续使用原 HTTP 接口；桌面预加载桥仅在宿主显式传入 `--morphz-application-bridge` 时启用，避免破坏尚未切换的旧入口。来源接入与桌面浏览器支持直接业务调用。
-- 候选 HTTP 适配器在 `apps/service/src/http-candidate.ts`，隔离回归通过；正式 `apps/service/src/http.ts` 尚未替换。整个路由替换被自动安全审查拦截，正在等待用户针对入口切换的确认，不应通过重命名或间接导入绕过。
+- 当时另有候选 HTTP 适配器，隔离回归通过；正式入口尚未替换。用户后来已批准并完成入口切换，未被引用的候选适配器及其测试替换脚本已清理；本条只保留当时的进度记录。
 - `apps/desktop/application-host.ts` 提供内嵌 SQLite 生命周期与只读 `morphz://app` 资源；`application-bridge.cjs` 校验每次主框架调用及迟到响应。`remote-host.ts` 是单独远端适配器，不打开或复制本机数据库；实际 HTTP 集成验证了主进程私有身份、幂等回执、二进制文件、流式订阅和成员撤销。资源读取在流消费时限制大小；切换身份会取消旧操作，迟到响应不能覆盖新身份，关闭后不再接受调用。原生远端连接的完整用户界面验收仍待入口切换后完成。
 - `tests/fixtures/embedded-desktop-entry.cjs` 是隔离测试入口，不是正常桌面入口。真实 Electron 隔离测试已通过：内置页面、secure context、无 Node 的预加载桥、直接 SQLite 写入、幂等回执与重载后本地存储；PDF 经界面选择导入后可显示真实画布、中文文字层和第二页；应用子框架不能访问主页面、Node、桌面桥或网络，越权写入被拒绝。测试中禁止应用 TCP 监听。当前用户窗口仍未切换，`apps/desktop/main.cjs` 的架构接线替换同样等待安全审查要求的用户确认。
 - 本地工具模块使用私有 Unix socket 与长度限定 JSON 帧，维护单独 `host-tools-desktop.json`，不覆盖旧 HTTP 清单。应用端验证了认证和真实 AgentTools 幂等写入；兼容 Session-IO Runtime 工作树已增加 `ipc_path` 可选传输并通过 6 项测试。`scripts/runtime-ipc-smoke.ts` 使用新编译的真实 Runtime、合成测试模型和全新数据库，已验证真实持久工具调用经 Unix socket 创建 Agent 文档并保留实际输入来源回执；重新打开应用和重试同一命令不会重复调用模型或复制对象。应用模块的 TCP 监听在此测试中被禁止。尚未替换用户运行中的 Runtime 二进制。当前本地回调支持 macOS/Linux；Windows 的本地回调明确拒绝，未声称已验证命名管道。

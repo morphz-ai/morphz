@@ -1,11 +1,21 @@
 import { test, expect, type Page } from "@playwright/test";
-import type { Boot } from "../apps/web/src/client.js";
+import { randomUUID } from "node:crypto";
+import {
+  PlatformClient,
+  type PlatformHistory,
+} from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
-import { seedCenter } from "./center-fixtures.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import {
   LiveConversationProjection,
   type StreamEvent,
 } from "../packages/core/src/live-conversation.js";
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 
 type Reply = {
   id: string;
@@ -34,56 +44,36 @@ async function setup(page: Page, artifactId: string | null = null) {
       }
     };
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "desk",
-    )!.id;
-    const conversationId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    boot.workspace.inputs = [
-      {
-        id: "unread-input",
-        projectId,
-        conversationId,
-        artifactId,
-        artifactRevision: null,
-        selection: "",
-        body: "TEST 未读验收输入",
-        author: { actantId: boot.actantId, principalId: boot.principalId },
-        targetActantId: "morphz-agent",
-        status: "recorded",
-        createdAt: "2026-09-20T00:00:00Z",
-      },
-    ];
-    boot.workspace.inputs.push({
-      ...boot.workspace.inputs[0]!,
-      id: "other-input",
-      artifactId: null,
-    });
-    boot.runtime = {
-      ...boot.runtime,
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
       model: `read-fixture-${generation}`,
       deliveries: [],
       messages: messages.map((m, index) => ({
         ...m,
-        projectId,
-        conversationId,
+        ...presentation.scope,
         inputId: m.inputId ?? "unread-input",
         rootId: null,
         artifactId: null,
         createdAt: `2026-09-20T00:00:${String(index + 1).padStart(2, "0")}Z`,
       })),
-    };
-    boot.outputs = [];
-    await route.fulfill({ response, json: boot });
-  });
+    },
+  }));
+  inputs.push(
+    {
+      ...presentation.input(
+        "unread-input",
+        "TEST 未读验收输入",
+        "2026-09-20T00:00:00Z",
+      ),
+      ...(artifactId ? { artifactId, artifactRevision: 1 } : {}),
+    },
+    presentation.input("other-input", "TEST 其他输入", "2026-09-20T00:00:00Z"),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -97,16 +87,11 @@ async function setup(page: Page, artifactId: string | null = null) {
   ).toBeVisible();
   return {
     input,
+    scope: presentation.scope,
     async update(next: Reply[]) {
       messages = next;
       generation++;
-      const response = page.waitForResponse(
-        async (r) =>
-          r.url().endsWith("/api/workspace") &&
-          (await r.json()).runtime?.model === `read-fixture-${generation}`,
-      );
-      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-      await response;
+      await presentation.refresh();
       await page.evaluate(
         () =>
           new Promise<void>((resolve) =>
@@ -183,9 +168,8 @@ test("已经看见的流式回复转为正式回执不重复提示，收起后�
   const fixture = await setup(page);
   const emit = async (id: string, text: string, streaming: boolean) =>
     page.evaluate(
-      ({ id, text, streaming }) => {
+      ({ id, text, streaming, scope }) => {
         for (const source of (window as any).__readStreams) {
-          const params = new URL(source.url, location.origin).searchParams;
           source.onmessage?.({
             data: JSON.stringify({
               connected: true,
@@ -198,8 +182,7 @@ test("已经看见的流式回复转为正式回执不重复提示，收起后�
                   streaming,
                   kind: "reply",
                   publicationKey: "read-attempt",
-                  projectId: params.get("projectId"),
-                  conversationId: params.get("conversationId"),
+                  ...scope,
                   artifactId: null,
                   inputId: "unread-input",
                   rootId: null,
@@ -210,7 +193,7 @@ test("已经看见的流式回复转为正式回执不重复提示，收起后�
           });
         }
       },
-      { id, text, streaming },
+      { id, text, streaming, scope: fixture.scope },
     );
   await emit("stream:read-attempt", "TEST 已经看见的流式正文", true);
   await expect(
@@ -250,30 +233,31 @@ test("原生历史错误重放：早期错误不覆盖已读终态，刷新与�
     await expect
       .poll(() => page.evaluate(() => (window as any).__readStreams.size))
       .toBeGreaterThan(0);
-    await page.evaluate((reply) => {
-      for (const source of (window as any).__readStreams) {
-        const params = new URL(source.url, location.origin).searchParams;
-        source.onmessage?.({
-          data: JSON.stringify({
-            connected: true,
-            reset: true,
-            removed: [],
-            messages: [
-              {
-                ...reply,
-                publicationKey: "failed-attempt",
-                projectId: params.get("projectId"),
-                conversationId: params.get("conversationId"),
-                inputId: "unread-input",
-                rootId: null,
-                artifactId: null,
-                createdAt: "2026-09-20T00:02:00Z",
-              },
-            ],
-          }),
-        });
-      }
-    }, reply);
+    await page.evaluate(
+      ({ reply, scope }) => {
+        for (const source of (window as any).__readStreams) {
+          source.onmessage?.({
+            data: JSON.stringify({
+              connected: true,
+              reset: true,
+              removed: [],
+              messages: [
+                {
+                  ...reply,
+                  publicationKey: "failed-attempt",
+                  ...scope,
+                  inputId: "unread-input",
+                  rootId: null,
+                  artifactId: null,
+                  createdAt: "2026-09-20T00:02:00Z",
+                },
+              ],
+            }),
+          });
+        }
+      },
+      { reply, scope: fixture.scope },
+    );
   };
   await emit({ ...final, sequence: 470, text: "TEST 早期底层错误" });
   await expect(badge(page)).toHaveCount(0);
@@ -295,11 +279,10 @@ test("原生历史错误重放：早期错误不覆盖已读终态，刷新与�
 test("回复不闪退：内部 infer 不进入主消息，工具切换、断线和最终回执保留正文与节点", async ({
   page,
 }) => {
-  await setup(page);
+  const fixture = await setup(page);
   let sequence = 0;
   const projection = new LiveConversationProjection((event) => ({
-    projectId: "desk",
-    conversationId: "conversation",
+    ...fixture.scope,
     artifactId: null,
     inputId: event.payload.root_turn_id === "user-root" ? "unread-input" : null,
     rootId: String(event.payload.root_turn_id),
@@ -312,28 +295,29 @@ test("回复不闪退：内部 infer 不进入主消息，工具切换、断线�
       topic,
       payload,
     });
-    await page.evaluate((messages) => {
-      for (const source of (window as any).__readStreams) {
-        const params = new URL(source.url, location.origin).searchParams;
-        source.onmessage?.({
-          data: JSON.stringify({
-            reset: true,
-            removed: [],
-            connected: true,
-            messages: messages.map((m) => ({
-              ...m,
-              // Same first-visible publication identity as RuntimeBridge.
-              id:
-                m.kind !== "tool" && m.kind !== "progress" && m.publicationKey
-                  ? `publication:${m.publicationKey}`
-                  : m.id,
-              projectId: params.get("projectId"),
-              conversationId: params.get("conversationId"),
-            })),
-          }),
-        });
-      }
-    }, projection.snapshot());
+    await page.evaluate(
+      ({ messages, scope }) => {
+        for (const source of (window as any).__readStreams) {
+          source.onmessage?.({
+            data: JSON.stringify({
+              reset: true,
+              removed: [],
+              connected: true,
+              messages: messages.map((m) => ({
+                ...m,
+                // Same first-visible publication identity as RuntimeBridge.
+                id:
+                  m.kind !== "tool" && m.kind !== "progress" && m.publicationKey
+                    ? `publication:${m.publicationKey}`
+                    : m.id,
+                ...scope,
+              })),
+            }),
+          });
+        }
+      },
+      { messages: projection.snapshot(), scope: fixture.scope },
+    );
   };
   const child = {
     attempt_id: "child",
@@ -452,15 +436,19 @@ test("只打开旧消息阅读位置不清除新回复，返回最新后才清�
 test("当前对象的提示与展开的局部交流一致，不用别处回复制造空提示", async ({
   page,
 }) => {
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
+  const client = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const spaces = await client.ensurePersonalSpaces();
   const title = "TEST 未读范围验收文档";
-  const artifactId = await seedCenter(page, {
-    type: "create-artifact",
-    projectId,
+  const created = (await client.createDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
+    projectId: spaces.deskId,
     title,
-    content: { kind: "document", markdown: "TEST 保留原文。" },
-  });
+    markdown: "TEST 保留原文。",
+  })) as { contentId: string };
+  const artifactId = created.contentId;
   const fixture = await setup(page, artifactId);
   await page
     .getByRole("button", { name: /^查看(?:全部|项目)内容$/, exact: true })

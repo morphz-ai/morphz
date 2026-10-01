@@ -5,6 +5,23 @@ import type {
   ScriptProduction,
 } from "./script-studio.js";
 
+/** An exact, already authorized version title projection. */
+export type ScriptVersionTitle = (
+  itemId: string,
+  revision?: number,
+) => string | undefined;
+function versionTitle(
+  production: ScriptProduction | ScriptVersionTitle,
+  id: string,
+  revision?: number,
+) {
+  if (typeof production === "function") return production(id, revision);
+  const item = production.items.find((value) => value.id === id);
+  return item?.versions.find(
+    (value) => value.revision === (revision ?? item.revision),
+  )?.draft.title;
+}
+
 /** Display only: identifiers and immutable audit records remain unchanged. */
 export function scriptAuthorName(
   author: { actantId: string; principalId: string },
@@ -48,18 +65,13 @@ export const scriptFieldLabels: Record<keyof ScriptDraft, string> = {
 };
 
 export function scriptFieldValue(
-  production: ScriptProduction,
+  production: ScriptProduction | ScriptVersionTitle,
   draft: ScriptDraft,
   key: keyof ScriptDraft,
 ) {
   const title = (id: string) => {
     const ref = draft.dependencies.find((r) => r.itemId === id);
-    const item = production.items.find((i) => i.id === id);
-    return (
-      item?.versions.find(
-        (v) => v.revision === (ref?.revision ?? item.revision),
-      )?.draft.title || "已不可用的文稿"
-    );
+    return versionTitle(production, id, ref?.revision) || "已不可用的文稿";
   };
   if (key === "basis")
     return { original: "原创", source: "原作事实", adaptation: "改编设定" }[
@@ -88,27 +100,23 @@ export function scriptFieldValue(
 }
 
 export function scriptEventNote(
-  production: ScriptProduction,
+  production: ScriptProduction | ScriptVersionTitle,
   event: ScriptItem["events"][number],
 ) {
   // Only translate machine-authored invalidation text, never rewrite a human's note.
   if (event.action !== "invalidate") return event.note;
   const match = /^上游 (.+) 更新至 v(\d+)$/.exec(event.note);
   if (!match) return event.note;
-  const title = production.items
-    .find((i) => i.id === match[1])
-    ?.versions.find((v) => v.revision === Number(match[2]))?.draft.title;
+  const title = versionTitle(production, match[1]!, Number(match[2]));
   return `上游「${title || "已不可用的文稿"}」更新至 v${match[2]}`;
 }
 
 export function scriptExportContents(
-  production: ScriptProduction,
+  production: ScriptProduction | ScriptVersionTitle,
   record: ScriptProduction["exports"][number],
 ) {
   return record.items.map((ref) => {
-    const title = production.items
-      .find((i) => i.id === ref.itemId)
-      ?.versions.find((v) => v.revision === ref.revision)?.draft.title;
+    const title = versionTitle(production, ref.itemId, ref.revision);
     return `${title || "历史文稿不可用"} · v${ref.revision}`;
   });
 }

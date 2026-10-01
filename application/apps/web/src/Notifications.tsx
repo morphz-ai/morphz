@@ -5,7 +5,7 @@ import { z } from "zod";
 import { RequestError, scopedStorage, type WorkspaceClient } from "./client.js";
 const schema = z.object({
   mode: z.enum(["all", "off"]),
-  needsReview: z.boolean().default(false),
+  revision: z.number().int().nonnegative(),
   unread: z.number(),
   items: z.array(
     z.object({
@@ -14,7 +14,6 @@ const schema = z.object({
       title: z.string(),
       reason: z.string(),
       read: z.boolean(),
-      readAliases: z.array(z.string()).default([]),
     }),
   ),
 });
@@ -22,6 +21,15 @@ const notificationModes = [
   { value: "all", label: "全部提醒" },
   { value: "off", label: "不提示" },
 ] as const;
+const pendingReadSchema = z.object({
+  action: z.literal("read"),
+  ids: z
+    .array(z.string().regex(/^[a-f0-9]{64}$/))
+    .min(1)
+    .max(200),
+  commandId: z.uuid(),
+  expectedRevision: z.number().int().nonnegative(),
+});
 
 export function NotificationPreferences({
   client,
@@ -35,6 +43,11 @@ export function NotificationPreferences({
   const [busy, setBusy] = useState(false);
   const alive = useRef(false),
     pending = useRef(false),
+    pendingChoice = useRef<{
+      mode: "all" | "off";
+      commandId: string;
+      expectedRevision: number;
+    } | null>(null),
     current = useRef(client);
   current.current = client;
   async function load() {
@@ -55,19 +68,33 @@ export function NotificationPreferences({
     };
   }, [onBusy]);
   async function change(mode: "all" | "off") {
-    if (pending.current) return;
+    if (pending.current || !view) return;
     pending.current = true;
     setBusy(true);
     onBusy(true);
     setError("");
+    const command =
+      pendingChoice.current?.mode === mode
+        ? pendingChoice.current
+        : {
+            mode,
+            commandId: crypto.randomUUID(),
+            expectedRevision: view.revision,
+          };
+    pendingChoice.current = command;
     try {
       const next = schema.parse(
-        await current.current.notifications({ action: "settings", mode }),
+        await current.current.notifications({ action: "settings", ...command }),
       );
+      pendingChoice.current = null;
       window.dispatchEvent(new Event("morphz:notifications-changed"));
       if (alive.current) setView(next);
-    } catch {
-      if (alive.current) setError("通知设置未保存，请重试。");
+    } catch (reason) {
+      if (reason instanceof RequestError && reason.status === 409) {
+        pendingChoice.current = null;
+        await load();
+        if (alive.current) setError("通知设置已变化，请重新选择。");
+      } else if (alive.current) setError("通知设置未确认保存，请重试。");
     } finally {
       pending.current = false;
       if (alive.current) {
@@ -90,11 +117,6 @@ export function NotificationPreferences({
         ) : (
           <p role="status">正在读取通知设置…</p>
         ))}
-      {view?.needsReview && (
-        <p className="notification-review" role="status">
-          旧提醒范围已停用，请重新选择。
-        </p>
-      )}
       {view && (
         <fieldset
           className="notification-preferences"
@@ -109,7 +131,7 @@ export function NotificationPreferences({
                   type="radio"
                   name="notification-mode"
                   value={mode.value}
-                  checked={!view.needsReview && view.mode === mode.value}
+                  checked={view.mode === mode.value}
                   aria-disabled={busy}
                   onClick={(event) => {
                     if (busy) event.preventDefault();
@@ -142,7 +164,7 @@ export function Notifications({
 }) {
   const [view, setView] = useState<z.infer<typeof schema>>({
       mode: "all",
-      needsReview: false,
+      revision: 0,
       unread: 0,
       items: [],
     }),
@@ -160,12 +182,19 @@ export function Notifications({
         .parse(storage.readLocal("notification-reads", [])),
     ),
   );
+  const pendingBatch = useRef(
+    pendingReadSchema
+      .nullable()
+      .catch(null)
+      .parse(storage.readLocal("notification-read-batch", null)),
+  );
   function rememberReads() {
     try {
       storage.writeLocal(
         "notification-reads",
         [...pendingReads.current].slice(-200),
       );
+      storage.writeLocal("notification-read-batch", pendingBatch.current);
     } catch {
       /* Reading a task never depends on local receipt persistence. */
     }
@@ -182,46 +211,62 @@ export function Notifications({
       if (refreshing) return;
       refreshing = true;
       const version = generation.current;
-      if (pendingReads.current.size) {
-        const ids = [...pendingReads.current];
-        try {
-          await current.current.notifications({
-            action: "read",
-            ids,
-          });
-          for (const id of ids) pendingReads.current.delete(id);
-          rememberReads();
-        } catch {
-          /* Retain pending acknowledgments for the next connected refresh. */
-        }
-      }
-      return current.current
-        .notifications()
-        .then((v) => {
-          if (alive && version === generation.current) {
-            const next = schema.parse(v);
-            const visible = new Map(
-              next.items.flatMap((i) =>
-                [i.id, ...i.readAliases].map((id) => [id, i.id] as const),
-              ),
-            );
-            for (const id of [...pendingReads.current]) {
-              pendingReads.current.delete(id);
-              const canonical = visible.get(id);
-              if (canonical) pendingReads.current.add(canonical);
-            }
+      try {
+        let next = schema.parse(await current.current.notifications());
+        if (pendingReads.current.size) {
+          if (!pendingBatch.current) {
+            pendingBatch.current = {
+              action: "read",
+              ids: [...pendingReads.current].slice(0, 200),
+              commandId: crypto.randomUUID(),
+              expectedRevision: next.revision,
+            };
             rememberReads();
-            setView(next);
-            setLoadError("");
           }
-        })
-        .catch(() => {
-          if (alive && version === generation.current)
-            setLoadError("暂时无法同步通知。");
-        })
-        .finally(() => {
-          refreshing = false;
-        });
+          try {
+            const batch = pendingBatch.current;
+            next = schema.parse(await current.current.notifications(batch));
+            for (const id of batch.ids) pendingReads.current.delete(id);
+            pendingBatch.current = null;
+            rememberReads();
+          } catch (reason) {
+            if (
+              reason instanceof RequestError &&
+              [403, 409].includes(reason.status)
+            ) {
+              if (reason.status === 403) {
+                const visible = new Set(next.items.map((item) => item.id));
+                for (const id of pendingReads.current)
+                  if (!visible.has(id)) pendingReads.current.delete(id);
+              }
+              pendingBatch.current = null;
+              rememberReads();
+            }
+            // An unknown outcome keeps the same command ID for the next poll.
+          }
+        }
+        if (alive && version === generation.current) {
+          const pending = pendingReads.current;
+          const items = next.items.map((item) => ({
+            ...item,
+            read: item.read || pending.has(item.id),
+          }));
+          setView({
+            ...next,
+            items,
+            unread:
+              next.mode === "all"
+                ? items.filter((item) => !item.read).length
+                : 0,
+          });
+          setLoadError("");
+        }
+      } catch {
+        if (alive && version === generation.current)
+          setLoadError("暂时无法同步通知。");
+      } finally {
+        refreshing = false;
+      }
     };
     refresh();
     const timer = setInterval(refresh, 3000);
@@ -247,14 +292,14 @@ export function Notifications({
       <button
         ref={trigger}
         className="icon-button notification-trigger"
-        aria-label={`通知${view.needsReview ? "，提醒范围待确认" : view.unread ? `，${view.unread} 项未读` : ""}`}
-        title={view.needsReview ? "提醒范围待确认" : "通知"}
+        aria-label={`通知${view.unread ? `，${view.unread} 项未读` : ""}`}
+        title="通知"
         onClick={() => setOpen(true)}
       >
         <Bell size={17} />
-        {(view.needsReview || view.unread > 0) && (
+        {view.unread > 0 && (
           <span className="notification-badge" aria-hidden="true">
-            {view.needsReview ? "!" : view.unread > 99 ? "99+" : view.unread}
+            {view.unread > 99 ? "99+" : view.unread}
           </span>
         )}
       </button>
@@ -284,14 +329,6 @@ export function Notifications({
               <X />
             </button>
           </header>
-          {view.needsReview && (
-            <p className="notification-review" role="status">
-              旧提醒范围已停用，请重新选择。
-              <button className="secondary-action" onClick={settings}>
-                设置提醒范围
-              </button>
-            </p>
-          )}
           {(error || loadError) && <p role="alert">{error || loadError}</p>}
           <div className="notification-list">
             {view.items.map((i) => (
@@ -309,16 +346,12 @@ export function Notifications({
                     rememberReads();
                     setOpen(false);
                     onOpen(i.artifactId);
-                    void current.current
-                      .notifications({ action: "read", ids: [i.id] })
-                      .then(() => {
-                        pendingReads.current.delete(i.id);
-                        rememberReads();
-                      })
-                      .catch(() => setError("事项已打开，已读状态待同步。"));
+                    window.dispatchEvent(
+                      new Event("morphz:notifications-changed"),
+                    );
                   } catch (e) {
                     setError(
-                      e instanceof RequestError && [401, 403].includes(e.status)
+                      e instanceof RequestError && [401, 403, 404].includes(e.status)
                         ? "请重新登录或检查事项权限。"
                         : "暂时无法确认事项权限，请重试。",
                     );

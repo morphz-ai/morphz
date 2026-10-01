@@ -64,6 +64,59 @@ jobs:
           path: application/test-results/
           if-no-files-found: ignore
 
+  storage-postgres:
+    name: Application storage (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: application
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: morphz
+          POSTGRES_PASSWORD: morphz
+          POSTGRES_DB: morphz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U morphz -d morphz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      s3:
+        image: localstack/localstack:4.4.0
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+        ports:
+          - 4566:4566
+    env:
+      MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
+      MORPHZ_TEST_S3_ENDPOINT: http://127.0.0.1:4566
+      MORPHZ_TEST_S3_ACCESS_KEY: test
+      MORPHZ_TEST_S3_SECRET_KEY: test
+      MORPHZ_TEST_PG_DUMP: /usr/lib/postgresql/16/bin/pg_dump
+      MORPHZ_TEST_PG_RESTORE: /usr/lib/postgresql/16/bin/pg_restore
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
+      - run: npm run build
+      - name: Run SQLite, PostgreSQL and cloud byte-store conformance without skips
+        run: |
+          set -o pipefail
+          ./node_modules/.bin/tsx --test --test-reporter=tap tests/*.test.ts | tee "$RUNNER_TEMP/application-storage-tests.tap"
+          grep -q '^# skipped 0$' "$RUNNER_TEMP/application-storage-tests.tap"
+
   desktop:
     name: Embedded Desktop (macOS)
     runs-on: macos-latest
@@ -86,6 +139,8 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run test:embedded
+      - run: npm run test:platform-embedded-desktop
+      - run: npm run test:platform-desktop
       - run: npm run test:draft-restart
       - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
       # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
@@ -140,6 +195,8 @@ jobs:
       - run: npm --prefix application run test:runtime-ipc
       - run: npm --prefix application run test:continuation-runtime
       - run: npm --prefix application run test:runtime-identity
+      - run: npm --prefix application run test:platform-task-runtime
+      - run: npm --prefix application run test:platform-message-runtime
       - name: Check and format the official Yao Harness offline
         run: |
           target/debug/morphz harness check application/harnesses/script-studio.hns --tool-schema=application/harnesses/script-studio.tools.json --format=json

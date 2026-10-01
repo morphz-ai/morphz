@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";
-import { localAccess, commandSchema } from "../packages/core/src/model.js";
+import { commandSchema } from "../packages/core/src/model.js";
 import { workInputRequest } from "../apps/service/src/session-io.js";
 import { modelLabel } from "../packages/core/src/inference.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
 test("模型来源只公开名称；强度按模型能力校验，默认不伪造限制", async () => {
   const server = createServer((request, response) => {
@@ -80,7 +81,7 @@ test("模型来源只公开名称；强度按模型能力校验，默认不伪�
     );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const store = new WorkspaceStore(":memory:");
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
   const bridge = new RuntimeBridge(store, {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
     token: "test",
@@ -119,12 +120,32 @@ test("模型来源只公开名称；强度按模型能力校验，默认不伪�
   }
 });
 
-test("推理强度独立于正文持久化，每次输入固定；默认和旧输入不额外绑定", () => {
-  const store = new WorkspaceStore(":memory:");
+test("推理强度独立于正文持久化，每次输入固定；默认和旧输入不额外绑定", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(
+      JSON.stringify({
+        model: "primary",
+        model_options: [
+          {
+            id: "primary",
+            label: "主用",
+            supported_reasoning_efforts: ["high"],
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const fixture = await platformRuntimeHostFixture({
+    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+    token: "test",
+    namespace: randomUUID(),
+  });
   try {
     const operation = {
       type: "record-input" as const,
-      projectId: "first-project",
+      projectId: fixture.projectId,
       artifactId: null,
       artifactRevision: null,
       selection: "",
@@ -139,26 +160,35 @@ test("推理强度独立于正文持久化，每次输入固定；默认和旧�
       false,
     );
     for (const reasoningEffort of ["high", undefined] as const) {
-      const receipt = store.execute(
-        {
-          commandId: randomUUID(),
-          operation: {
-            ...operation,
-            ...(reasoningEffort ? { reasoningEffort } : {}),
-          },
+      const receipt = await fixture.session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          ...operation,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
         },
-        localAccess,
-      );
-      const input = store
-        .snapshot()
-        .inputs.find((i) => i.id === receipt.entityId)!;
-      assert.equal(input.reasoningEffort, reasoningEffort);
-      const request = workInputRequest(input);
+      });
+      const ledger = fixture.store.runtimeState() as {
+        deliveries: {
+          inputId: string;
+          request: ReturnType<typeof workInputRequest>;
+          platformSource: { body: string };
+        }[];
+      };
+      const delivery = ledger.deliveries.find(
+        (entry) => entry.inputId === receipt.entityId,
+      )!;
+      assert.equal(delivery.platformSource.body, operation.body);
+      const request = delivery.request;
       assert.equal(request.activation.reasoning_effort, reasoningEffort);
       assert.equal("reasoning_effort" in request.activation, !!reasoningEffort);
       assert.equal("reasoningEffort" in request.message.content.value, false);
     }
+    const before = fixture.store.runtimeState();
+    await fixture.reopen();
+    assert.deepEqual(fixture.store.runtimeState(), before);
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

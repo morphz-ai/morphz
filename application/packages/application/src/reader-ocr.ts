@@ -8,15 +8,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  bookmarkOwner,
-  checkProject,
-  DomainError,
-  getArtifact,
-  type AccessContext,
-} from "../../core/src/model.js";
-import { assertProjectWritable } from "../../core/src/projects.js";
-import { readArtifact } from "../../core/src/retrieval.js";
+import { DomainError } from "../../core/src/model.js";
 import {
   ocrEngine,
   ocrResultSchema,
@@ -25,7 +17,8 @@ import {
   type ReaderOcrStatus,
   type ReaderOcrRequest,
 } from "../../core/src/reader-ocr.js";
-import type { WorkspaceStore } from "./store.js";
+import type { PlatformActor } from "../../platform/src/store.js";
+import type { ReaderService } from "./reader-service.js";
 
 const origin =
   "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
@@ -61,15 +54,20 @@ export class ReaderOcr {
   private installed: boolean | undefined;
   private running = false;
   constructor(
-    private store: WorkspaceStore,
     private directory: string,
     private engine?: ReadingOcrEngine,
     private fetcher: typeof fetch = fetch,
+    private modelSource?: () => Promise<Uint8Array[]>,
   ) {}
   private modelPath(model: (typeof readingOcrModels)[number]) {
     return join(this.directory, `${model.sha256}.tar`);
   }
   private async cached() {
+    if (this.modelSource) {
+      const models = await this.modelSource();
+      this.installed = true;
+      return models;
+    }
     const models: Uint8Array[] = [];
     for (const model of readingOcrModels) {
       try {
@@ -146,44 +144,33 @@ export class ReaderOcr {
     this.installed = true;
     return models;
   }
-  private authorize(
-    request: ReaderOcrRequest,
-    access: AccessContext,
-    inputId?: string,
-  ) {
-    const state = this.store.snapshot(),
-      owner = bookmarkOwner(state, access, inputId),
-      artifact = getArtifact(state, request.artifactId);
-    const project = checkProject(state, artifact.projectId, access),
-      input = state.inputs.find((i) => i.id === inputId);
-    if (
-      !project.members.includes(owner) ||
-      (inputId && input?.projectId !== project.id)
-    )
-      throw new DomainError(
-        "forbidden",
-        "OCR 不能越出发起用户和实际输入的授权范围。",
-      );
-    const version = readArtifact(state, artifact.id, access, request.revision);
-    if (
-      version.content.kind !== "pdf" ||
-      version.content.pages[request.page - 1] === undefined
-    )
-      throw new DomainError("invalid", "请选择存在的 PDF 页面。");
-    return { owner, artifact, project, assetId: version.content.assetId };
-  }
-  async call(
+
+  /** Formal Reader path. OCR work is ephemeral; only immutable results are
+   * persisted in Reader's own domain, never in the legacy Workspace. */
+  async callPlatform(
     raw: unknown,
-    access: AccessContext,
-    inputId?: string,
+    actor: PlatformActor,
+    reader: ReaderService,
+    reauthorize: <T>(
+      operation: (current: PlatformActor) => Promise<T>,
+    ) => Promise<T>,
   ): Promise<ReaderOcrStatus> {
-    const request = readerOcrRequestSchema.parse(raw),
-      allowed = this.authorize(request, access, inputId);
+    const request = readerOcrRequestSchema.parse(raw);
+    const context = await reader.ocrContext(
+      actor,
+      request.artifactId,
+      request.revision,
+      request.page,
+      request.operation === "start" || request.operation === "correct",
+    );
     this.installed ??= !!(await this.cached());
     const base = {
       available: !!this.engine,
       installed: this.installed,
-      downloadBytes: readingOcrModels.reduce((s, m) => s + m.size, 0),
+      downloadBytes: readingOcrModels.reduce(
+        (sum, model) => sum + model.size,
+        0,
+      ),
     };
     const binding = JSON.stringify([
       request.artifactId,
@@ -191,38 +178,34 @@ export class ReaderOcr {
       request.page,
     ]);
     if (request.operation === "correct") {
-      assertProjectWritable(allowed.project);
-      const source = this.store.readerSection(
+      const source = await reader.readOcr(
+        actor,
         request.artifactId,
         request.revision,
+        request.page,
         request.sectionId,
-        access,
       );
-      if (
-        !source.ocr ||
-        !request.sectionId.startsWith(`page-${request.page}-ocr-`) ||
-        !source.ocr.items[request.line]
-      )
+      if (!source.items[request.line])
         throw new DomainError("invalid", "识别文字位置不存在。");
-      const result = structuredClone(source.ocr);
+      const result = structuredClone(source);
       result.items[request.line]!.correction = request.text;
       result.parent = request.sectionId;
       return {
         ...base,
         state: "complete",
-        sectionId: this.store.saveReadingOcr(
+        sectionId: await reader.saveOcr(
+          actor,
           request.artifactId,
           request.revision,
           request.page,
           result,
-          access,
         ),
       };
     }
     const previous = request.jobId ? this.jobs.get(request.jobId) : undefined;
     if (
       previous &&
-      (previous.owner !== allowed.owner || previous.binding !== binding)
+      (previous.owner !== context.owner || previous.binding !== binding)
     )
       throw new DomainError("forbidden", "OCR 任务不属于当前读物或身份。");
     if (request.operation === "cancel") {
@@ -238,7 +221,7 @@ export class ReaderOcr {
       JSON.stringify(previous.request) !== JSON.stringify(request)
     )
       throw new DomainError("conflict", "重试标识已用于不同的 OCR 请求。");
-    if (request.operation !== "start" || previous) {
+    if (request.operation !== "start" || previous)
       return {
         ...base,
         state: previous?.state ?? "idle",
@@ -247,43 +230,39 @@ export class ReaderOcr {
           previous?.sectionId ??
           (request.jobId
             ? undefined
-            : this.store.latestReadingOcr(
+            : ((await reader.latestOcr(
+                actor,
                 request.artifactId,
                 request.revision,
                 request.page,
-                access,
-              )),
+              )) ?? undefined)),
         message: previous?.message,
       };
-    }
-    assertProjectWritable(allowed.project);
     if (!this.engine)
       throw new DomainError(
         "invalid",
         "当前连接未提供本地 OCR 引擎，请在本机 Morphz Desktop 中使用。",
       );
-    if (inputId && request.download)
+    if (context.inputId && request.download)
       throw new DomainError(
         "forbidden",
         "下载模型需要用户在阅读器明确确认；Agent 不能代替确认。",
       );
-    const saved = this.store.latestReadingOcr(
+    const saved = await reader.latestOcr(
+      actor,
       request.artifactId,
       request.revision,
       request.page,
-      access,
     );
     if (saved && !request.force) {
-      const prior = this.store.readerSection(
+      const prior = await reader.readOcr(
+        actor,
         request.artifactId,
         request.revision,
+        request.page,
         saved,
-        access,
       );
-      if (
-        prior.ocr?.layout === request.layout &&
-        prior.ocr.engine === ocrEngine
-      )
+      if (prior.layout === request.layout && prior.engine === ocrEngine)
         return { ...base, state: "complete", sectionId: saved };
     }
     if (this.running)
@@ -296,10 +275,9 @@ export class ReaderOcr {
         "invalid",
         "请先在阅读器确认下载约 31 MB 的本地 OCR 模型；不会上传书籍。",
       );
-    // Keep only bounded task statuses. Persisted source versions remain in SQLite.
     if (this.jobs.size >= 128) this.jobs.delete(this.jobs.keys().next().value!);
     const job: Job = {
-      owner: allowed.owner,
+      owner: context.owner,
       binding,
       request,
       state: "loading",
@@ -311,40 +289,53 @@ export class ReaderOcr {
       try {
         const models = await this.models(request.download, job.abort.signal);
         job.abort.signal.throwIfAborted();
-        this.authorize(request, access, inputId);
-        const pdf = this.store.asset(allowed.assetId);
-        if (!pdf) throw new DomainError("not_found", "PDF 原文件不存在。");
+        await reauthorize((current) =>
+          reader.ocrContext(
+            current,
+            request.artifactId,
+            request.revision,
+            request.page,
+            true,
+          ),
+        );
+        const pdf = await reauthorize((current) =>
+          reader.ocrPdfBytes(
+            current,
+            request.artifactId,
+            request.revision,
+            request.page,
+          ),
+        );
         job.state = "recognizing";
         const result = ocrResultSchema.parse(
           await this.engine!(
-            { pdf: pdf.bytes, page: request.page, models },
+            { pdf, page: request.page, models },
             job.abort.signal,
           ),
         );
         job.abort.signal.throwIfAborted();
-        assertProjectWritable(this.authorize(request, access, inputId).project);
-        job.sectionId = this.store.saveReadingOcr(
-          request.artifactId,
-          request.revision,
-          request.page,
-          {
-            ...orderOcr(result, request.layout),
-            engine: ocrEngine,
-            layout: request.layout,
-          },
-          access,
+        job.sectionId = await reauthorize((current) =>
+          reader.saveOcr(
+            current,
+            request.artifactId,
+            request.revision,
+            request.page,
+            {
+              ...orderOcr(result, request.layout),
+              engine: ocrEngine,
+              layout: request.layout,
+            },
+          ),
         );
         job.state = "complete";
-      } catch (e) {
+      } catch (error) {
         job.state = job.abort.signal.aborted ? "cancelled" : "failed";
         job.message = job.abort.signal.aborted
           ? "已取消，原页与已有标注未改动。"
-          : e instanceof DomainError
-            ? e.message
+          : error instanceof DomainError
+            ? error.message
             : "本地 OCR 未完成，请重试或继续阅读原页；未上传文档。";
       } finally {
-        // Cancellation must finish tearing down its isolated engine before
-        // another page starts, even though the UI already says cancelled.
         this.running = false;
       }
     })();

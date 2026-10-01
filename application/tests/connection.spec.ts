@@ -33,7 +33,7 @@ test("未配置可进入设置；焦点、取消、Esc 和草稿恢复正常，�
   let checks = 0,
     writes = 0;
   page.on("request", (req) => {
-    if (req.method() === "POST" && req.url().includes("/api/commands"))
+    if (req.method() === "POST" && req.url().endsWith("/api/platform/messages"))
       writes++;
   });
   await page.route("**/api/connection/check", (route) => {

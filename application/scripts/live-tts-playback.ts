@@ -4,13 +4,13 @@ import { _electron, expect } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
-import { WorkspaceStore } from "../apps/service/src/store.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { SpeechService } from "../apps/service/src/speech.js";
 import { readSpeechWav } from "../packages/core/src/audio.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { openSmokeDomainHost } from "./smoke-domain-host.js";
 
 const center = process.argv
   .find((arg) => arg.startsWith("--live-center="))
@@ -22,11 +22,12 @@ assert.ok(
 const origin = new URL(center);
 assert.equal(origin.protocol, "http:");
 assert.equal(origin.hostname, "127.0.0.1");
-const boot = await fetch(origin + "api/workspace").then((r) => r.json());
-const project = boot.workspace.projects.find(
-  (p: { kind: string }) => p.kind === "desk",
+const client = await PlatformClient.connect(
+  new HttpApplicationClient(origin.origin),
 );
-assert.ok(project);
+const boot = client.boot;
+const spaces = await client.ensurePersonalSpaces();
+const project = { id: spaces.deskId };
 const directory = mkdtempSync(join(tmpdir(), "morphz-live-tts-playback-"));
 let waveform:
   { bytes: number; seconds: number; rms: number; peak: number } | undefined;
@@ -77,21 +78,14 @@ class CenterSpeech extends SpeechService {
     return wav;
   }
 }
-const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
-store.execute(
-  {
-    commandId: randomUUID(),
-    operation: {
-      type: "create-artifact",
-      projectId: "first-project",
-      title: "短句真实朗读验收",
-      content: { kind: "document", markdown: "你好，这是桌面朗读测试。" },
-    },
-  },
-  localAccess,
+const host = await openSmokeDomainHost(directory);
+const document = await host.createDocument(
+  "短句真实朗读验收",
+  "你好，这是桌面朗读测试。",
 );
 const port = 65437;
-const server = createAppServer(store, {
+const server = createAppServer(host.store, {
+  ...host.options,
   port,
   webRoot: resolve("dist/web"),
   speech: new CenterSpeech(undefined),
@@ -165,8 +159,12 @@ try {
   assert.equal(playback.error, null);
   await ui.screenshot({ path: join(directory, "live-playback.png") });
   await reader.getByRole("button", { name: "关闭朗读", exact: true }).click();
-  assert.equal(store.snapshot().artifacts[0]!.revision, 1);
-  assert.equal(store.snapshot().inputs.length, 0);
+  assert.equal(
+    (await host.session.readPlatformDocument({ contentId: document.contentId }))
+      .headRevision,
+    1,
+  );
+  host.assertNoAgentDelivery();
   assert.equal(calls, 1);
   console.log(
     JSON.stringify(
@@ -206,5 +204,5 @@ try {
 } finally {
   await app?.close();
   await new Promise<void>((done) => server.close(() => done()));
-  store.close();
+  await host.close();
 }

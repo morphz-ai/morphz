@@ -2,7 +2,17 @@ import { composerAction, openInput } from "./interaction-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { libraryDestination } from "./artifact-fixtures.js";
-import { seedCenter } from "./center-fixtures.js";
+import { randomUUID } from "node:crypto";
+import {
+  disconnectedRuntime,
+  type ConversationRuntime,
+} from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  isolatedCenterDirectory,
+  seedAgentOriginal,
+} from "./platform-agent-original-fixture.js";
 
 test("搜索无关闭按钮，外部点击关闭且不误触背后的页面", async ({ page }) => {
   await page.goto("/");
@@ -67,15 +77,11 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   await page.goto("/");
   await openLibrary(page);
   const project = await libraryDestination(page);
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: project.id,
-      title: "快速打开验证",
-      content: { kind: "document", markdown: "搜索需要保持输入的连续性。" },
-    },
-    true,
+  await seedAgentOriginal(
+    isolatedCenterDirectory(),
+    project.id,
+    "快速打开验证",
+    "搜索需要保持输入的连续性。",
   );
   await page
     .locator(".artifact-card")
@@ -176,6 +182,18 @@ test("文档在主画布创作；退出、切换工作空间和刷新保留各�
 test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置并保留应用", async ({
   page,
 }) => {
+  const inputs: PlatformHistory["inputs"] = [];
+  let messages: ConversationRuntime["messages"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model: "test-model",
+      messages,
+    },
+  }));
   await page.goto("/");
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
   await page.getByLabel("项目名称", { exact: true }).fill("交流阅读验证");
@@ -184,34 +202,24 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
     page.getByRole("heading", { name: "交流阅读验证", exact: true }),
   ).toBeVisible();
   await openLibrary(page);
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find(
-    (p: { title: string }) => p.title === "交流阅读验证",
-  ).id;
+  const projectId = (await presentation.client.allProjects()).find(
+    (project) => project.title === "交流阅读验证",
+  )!.id;
   const ids: string[] = [];
+  const start = Date.now() - 20_000;
   for (let i = 0; i < 16; i++) {
-    const response = await page.request.post("/api/commands", {
-      headers: {
-        "X-Morphz-Token": boot.csrfToken,
-        Origin: "http://127.0.0.1:65421",
-      },
-      data: {
-        commandId: crypto.randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId,
-          artifactId: null,
-          artifactRevision: null,
-          selection: "",
-          body: `第 ${i} 项工作：用于阅读与滚动验证。`,
-          targetActantId: "morphz-agent",
-        },
-      },
+    const id = randomUUID();
+    inputs.push({
+      ...presentation.input(
+        id,
+        `第 ${i} 项工作：用于阅读与滚动验证。`,
+        new Date(start + i * 1000).toISOString(),
+      ),
+      projectId,
     });
-    expect(response.ok()).toBeTruthy();
-    ids.push((await response.json()).entityId);
+    ids.push(id);
   }
-  let messages = [
+  messages = [
     {
       id: "reply-first",
       projectId,
@@ -223,25 +231,6 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
       kind: "reply",
     },
   ];
-  await page.route("**/api/workspace", async (route) => {
-    const headers = { ...route.request().headers() };
-    delete headers["if-none-match"];
-    const response = await route.fetch({ headers }),
-      data = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...data,
-        runtime: {
-          ...data.runtime,
-          configured: true,
-          connected: true,
-          model: "test-model",
-          messages,
-        },
-      },
-    });
-  });
   await page.reload();
   // Focus restores the recent exchange; reload may already retain that state.
   // Do not wait for a "show" action after the history is visibly open.
@@ -281,6 +270,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
       kind: "reply",
     },
   ];
+  await presentation.refresh();
   await expect(
     page.getByRole("button", { name: "有新内容 · 返回最新" }),
   ).toBeVisible({ timeout: 10000 });
@@ -299,6 +289,7 @@ test("阅读旧交流不被新回复拉走；收起后有提示，恢复位置�
       kind: "reply",
     },
   ];
+  await presentation.refresh();
   await expect(page.locator(".composer-unread")).toBeVisible({
     timeout: 10000,
   });

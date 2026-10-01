@@ -27,11 +27,7 @@ import {
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import {
-  checkProject,
-  DomainError,
-  type AccessContext,
-} from "../../core/src/model.js";
+import { DomainError, type AccessContext } from "../../core/src/model.js";
 import {
   localFileReferenceSchema,
   type LocalFileReference,
@@ -41,7 +37,6 @@ import {
   type DirectoryGrant,
   type DirectoryRequest,
 } from "../../core/src/local-files.js";
-import type { WorkspaceStore } from "./store.js";
 import { extractPdf } from "./pdf.js";
 
 const grantSchema = z
@@ -94,7 +89,7 @@ export class LocalFiles {
   private saved: z.infer<typeof savedSchema>;
   constructor(
     private file: string,
-    private store: WorkspaceStore,
+    centerId: string,
   ) {
     try {
       const stat = lstatSync(file);
@@ -106,11 +101,11 @@ export class LocalFiles {
       )
         throw new Error("本地文件引用记录权限无效。");
       this.saved = savedSchema.parse(JSON.parse(readFileSync(file, "utf8")));
-      if (this.saved.centerId !== store.identity())
+      if (this.saved.centerId !== centerId)
         throw new Error("文件引用不属于当前工作空间。");
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      this.saved = { version: 1, centerId: store.identity(), grants: [] };
+      this.saved = { version: 1, centerId, grants: [] };
     }
   }
   private save() {
@@ -128,7 +123,6 @@ export class LocalFiles {
     access: AccessContext,
     conversationId?: string,
   ): LocalFileView {
-    checkProject(this.store.snapshot(), projectId, access);
     if (!isAbsolute(path) || lstatSync(path).isSymbolicLink())
       throw new Error("请直接选择原文件或目录。");
     const root = realpathSync(path),
@@ -212,7 +206,6 @@ export class LocalFiles {
     conversationId: string,
     access: AccessContext,
   ) {
-    checkProject(this.store.snapshot(), projectId, access);
     return this.saved.grants
       .filter(
         (g) =>
@@ -231,16 +224,6 @@ export class LocalFiles {
   ) {
     if (!/^[a-zA-Z0-9_-]{1,100}$/.test(conversationId))
       throw new Error("对话范围无效。");
-    const existing = this.store
-      .snapshot()
-      .conversations.find((c) => c.id === conversationId);
-    // The shared default conversation may span workspaces. Named conversations cannot.
-    if (
-      existing &&
-      existing.id !== existing.projectId &&
-      existing.projectId !== projectId
-    )
-      throw new Error("对话不属于此工作空间。");
     if (this.directories(projectId, conversationId, access).length >= 8)
       throw new Error("此对话最多授权 8 个目录，请先撤销不再使用的目录。");
     const view = this.select(path, projectId, access, conversationId);
@@ -446,7 +429,6 @@ export class LocalFiles {
     return result;
   }
   private grant(id: string, projectId: string, access: AccessContext) {
-    checkProject(this.store.snapshot(), projectId, access);
     const grant = this.saved.grants.find(
       (g) =>
         g.id === id &&
@@ -625,7 +607,6 @@ export class LocalFiles {
     return view;
   }
   revoke(id: string, projectId: string, access: AccessContext) {
-    checkProject(this.store.snapshot(), projectId, access);
     if (
       !this.saved.grants.some(
         (g) =>

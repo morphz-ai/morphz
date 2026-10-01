@@ -56,11 +56,11 @@ use crate::memory::{
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
     RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
     SessionContextSharing, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention,
+    SessionTimelineCursor, SessionTimelineItem, SessionUpdate, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -6836,6 +6836,48 @@ impl MorphzRuntime {
         self.inner.store.query(filter).await
     }
 
+    /// Read one bounded page of the Runtime-owned Session message timeline.
+    /// The caller must authorize the Session; a domain embedding multiple
+    /// projects in one Session must separately authorize every input root.
+    pub async fn query_session_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<SessionTimelineItem>, RuntimeError> {
+        self.inner
+            .store
+            .query_session_timeline(session_id, before, limit)
+            .await
+    }
+
+    /// Resolve an accepted input by the same Session/client ID used at
+    /// ingress. The delivery store's indexed claim is authoritative; callers
+    /// must authorize the Session before exposing the returned Event.
+    pub async fn session_message_event(
+        &self,
+        session_id: &str,
+        client_message_id: &str,
+    ) -> Result<Option<Event>, RuntimeError> {
+        let Some(event_id) = self
+            .inner
+            .store
+            .message_event_id(session_id, client_message_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .query_events(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                event_id: Some(event_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == event_id))
+    }
+
     /// Commit an immutable, versioned verifier fact after proving every
     /// declared Evidence reference exists in the same Context.
     pub async fn commit_trajectory_verifier_result(
@@ -9178,6 +9220,18 @@ impl MorphzRuntime {
         Ok(thread.filter(|thread| thread.session_id == session_id))
     }
 
+    /// Exact, Session-scoped provenance read. The HTTP adapter must authorize
+    /// the Session before calling this; unlike `thread_detail` it does not
+    /// load the Scheduler aggregate or model-attempt history.
+    pub async fn session_thread_by_id(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<crate::memory::ThreadRecord>, RuntimeError> {
+        let thread = self.inner.store.get_thread(thread_id).await?;
+        Ok(thread.filter(|thread| thread.session_id == session_id))
+    }
+
     pub async fn thread_detail(
         &self,
         context_id: &str,
@@ -10801,6 +10855,11 @@ impl SessionHandle {
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
             ("coordination_mode".to_string(), json!(coordination_mode)),
         ]);
+        if input_destination.is_none() {
+            // An ordinary input begins its own Turn. Directed steering joins
+            // existing work and must not advertise itself as that Turn's root.
+            payload.insert("root_turn_id".to_string(), json!(event_id));
+        }
         if let Some(destination) = input_destination {
             payload.insert(
                 "input_destination".into(),
@@ -12690,6 +12749,19 @@ mod tests {
             )
             .await
             .unwrap();
+        let directed_events = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                topic: Some("chat/steering".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let directed = directed_events
+            .iter()
+            .find(|event| event.id == correction.event_id)
+            .unwrap();
+        assert_eq!(directed.payload["root_turn_id"], original.event_id);
         if late_commit {
             commit_release.notify_one();
         } else {
@@ -18828,7 +18900,7 @@ mod tests {
             .unwrap();
         runtime.bind_default_principal(session.id()).await.unwrap();
         let mut replies = runtime.subscribe("chat/reply", 4);
-        session
+        let receipt = session
             .send_as_principal(
                 "choose a suitable harness",
                 "User-Test",
@@ -18837,6 +18909,19 @@ mod tests {
             )
             .await
             .unwrap();
+        let rooted = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                root_turn_id: Some(receipt.event_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(rooted.iter().any(|event| {
+            event.id == receipt.event_id
+                && event.topic == "chat/user_message"
+                && event.payload["root_turn_id"] == receipt.event_id
+        }));
 
         let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
             .await

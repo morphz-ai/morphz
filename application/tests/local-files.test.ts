@@ -8,6 +8,7 @@ import {
   symlinkSync,
   renameSync,
   unlinkSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +16,10 @@ import { randomUUID } from "node:crypto";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { LocalFiles } from "../packages/application/src/local-files.js";
 import { localAccess } from "../packages/core/src/model.js";
-import { Application } from "../packages/application/src/application.js";
-import { AgentTools } from "../packages/application/src/agent-tools.js";
+import {
+  assertNoLocalBusinessData,
+  localInputFixture,
+} from "./platform-local-input-fixture.js";
 import {
   workInputRequest,
   workInputFormat,
@@ -26,19 +29,27 @@ import {
 const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "morphz-local-files-"));
-  const store = new WorkspaceStore(":memory:");
+  const store = new WorkspaceStore(join(dir, "transport.sqlite"), {
+    mode: "transport",
+  });
   const root = join(dir, "repo");
   mkdirSync(root);
   writeFileSync(join(root, "main.ts"), "export const original = 1;\n");
   writeFileSync(join(root, ".env"), "SECRET_DO_NOT_READ");
   mkdirSync(join(root, ".git"));
   const config = join(dir, "references.json");
-  return { store, root, config, files: new LocalFiles(config, store) };
+  return {
+    dir,
+    store,
+    root,
+    config,
+    files: new LocalFiles(config, store.identity()),
+  };
 }
 test("原位打开目录和文件只保存引用；不生成 Artifact、索引、附件或同步副本", () => {
-  const { store, files, root, config } = fixture();
+  const { dir, store, files, root, config } = fixture();
   try {
-    const before = store.snapshot();
+    const before = store.runtimeState();
     const directory = files.select(root, "first-project", localAccess);
     assert.deepEqual(
       directory.entries?.map((e) => e.name),
@@ -51,13 +62,13 @@ test("原位打开目录和文件只保存引用；不生成 Artifact、索引�
       localAccess,
     );
     assert.match(file.text!, /original = 1/);
-    assert.equal(store.search({ query: "original" }, localAccess).total, 0);
-    assert.deepEqual(store.snapshot(), before);
+    assertNoLocalBusinessData(dir);
+    assert.deepEqual(store.runtimeState(), before);
     assert.doesNotMatch(
       readFileSync(config, "utf8"),
       /export const|SECRET_DO_NOT_READ/,
     );
-    const reopened = new LocalFiles(config, store);
+    const reopened = new LocalFiles(config, store.identity());
     assert.deepEqual(
       reopened.validate(file.reference, "first-project", localAccess),
       file,
@@ -76,13 +87,15 @@ test("原位打开目录和文件只保存引用；不生成 Artifact、索引�
       ).text!,
       /original = 2/,
     );
-    assert.deepEqual(store.snapshot(), before);
+    assert.deepEqual(store.runtimeState(), before);
+    assertNoLocalBusinessData(dir);
   } finally {
     store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 test("拒绝跨目录、符号链接、凭据、跨项目和跨身份读取；原文件消失后仍可撤销", () => {
-  const { store, files, root } = fixture();
+  const { dir, store, files, root } = fixture();
   try {
     const view = files.select(root, "first-project", localAccess),
       id = view.reference.grantId;
@@ -103,13 +116,7 @@ test("拒绝跨目录、符号链接、凭据、跨项目和跨身份读取；�
       () => files.read(id, "main.ts", "first-project", agent),
       /未获授权/,
     );
-    const other = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: { type: "create-project", title: "其他项目" },
-      },
-      localAccess,
-    ).entityId;
+    const other = randomUUID();
     assert.throws(
       () => files.read(id, "main.ts", other, localAccess),
       /未获授权/,
@@ -130,15 +137,16 @@ test("拒绝跨目录、符号链接、凭据、跨项目和跨身份读取；�
     files.revoke(id, "first-project", localAccess);
   } finally {
     store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 test("Agent 只按本次持久输入的原位引用读取；发送校验版本、引用和旧协议兼容", async () => {
-  const { store, files, root } = fixture();
+  const { dir, store, files, root } = fixture();
+  let inputFixture: Awaited<ReturnType<typeof localInputFixture>> | undefined;
   try {
     const view = files.select(root, "first-project", localAccess);
-    const app = new Application(store, { localFiles: files }).session(
-      localAccess,
-    );
+    inputFixture = await localInputFixture(dir, store, files);
+    const app = inputFixture.app;
     const operation = {
       type: "record-input",
       projectId: "first-project",
@@ -150,18 +158,9 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
       localFile: view.reference,
     } as const;
     const acceptedCommand = { commandId: randomUUID(), operation };
-    const receipt = await app.command(acceptedCommand);
-    const input = store
-      .snapshot()
-      .inputs.find((i) => i.id === receipt.entityId)!;
-    const tools = new AgentTools(
-      store,
-      "token",
-      () => ({ projectId: "first-project", inputId: input.id, access: agent }),
-      undefined,
-      undefined,
-      files,
-    );
+    const receipt = await inputFixture.send(acceptedCommand);
+    const input = inputFixture.input(receipt.entityId);
+    const tools = inputFixture.tools(() => input.id);
     const envelope = {
       protocol: 1,
       tool: "host_morphz",
@@ -175,7 +174,7 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
         thread_id: "thread",
         target_id: "target",
       },
-      arguments: { action: "local-file", path: "main.ts", limit: 10 },
+      arguments: { action: "local-file" as const, path: "main.ts", limit: 10 },
     };
     const result = (await tools.call(envelope)) as {
       text: string;
@@ -192,7 +191,7 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
       workInputRequest(oldInput).message.format.version,
       workInputFormat.version,
     );
-    assert.equal(store.snapshot().artifacts.length, 0);
+    assertNoLocalBusinessData(dir);
     const file = files.read(
       view.reference.grantId,
       "main.ts",
@@ -206,7 +205,7 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
       /本次输入/,
     );
     await assert.rejects(
-      app.command({
+      app.platformMessage({
         commandId: randomUUID(),
         operation: {
           ...operation,
@@ -214,11 +213,11 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
           selection: "伪造原文",
         },
       }),
-      /选区/,
+      /选区|应用来源/,
     );
     writeFileSync(join(root, "main.ts"), "changed");
     await assert.rejects(
-      app.command({
+      app.platformMessage({
         commandId: randomUUID(),
         operation: { ...operation, localFile: file.reference },
       }),
@@ -226,15 +225,31 @@ test("Agent 只按本次持久输入的原位引用读取；发送校验版本�
     );
     files.revoke(view.reference.grantId, "first-project", localAccess);
     assert.deepEqual(
-      await app.command(acceptedCommand),
+      await app.platformMessage(acceptedCommand),
       receipt,
       "已经接受的命令在引用撤销后重试仍返回同一回执，不重复写入",
+    );
+    await assert.rejects(
+      app.platformMessage({
+        ...acceptedCommand,
+        operation: { ...operation, body: "different request" },
+      }),
+      /操作标识已用于另一条输入/,
+    );
+    await assert.rejects(
+      app.platformMessage({
+        commandId: randomUUID(),
+        operation,
+      }),
+      /未获授权/,
     );
     await assert.rejects(
       Promise.resolve().then(() => tools.call(envelope)),
       /未获授权/,
     );
   } finally {
+    await inputFixture?.close();
     store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

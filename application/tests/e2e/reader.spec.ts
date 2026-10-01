@@ -3,16 +3,118 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { PlatformClient } from "../../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../../packages/core/src/http-application-client.js";
+import { readSavedInputs } from "../../apps/web/src/local-saved-inputs.js";
+import type { ReaderService } from "../../packages/application/src/reader-service.js";
+import type { ReadingSection } from "../../packages/core/src/reader.js";
+import {
+  readerOffsets,
+  readerRange,
+  readerSourceSpanAtPoint,
+  readerViewport,
+} from "../../apps/web/src/reader-dom.js";
 
-const snapshot = async (page: Page) =>
-  (await page.request.get("/api/workspace")).json();
+const platform = (page: Page) =>
+  PlatformClient.connect(new HttpApplicationClient(new URL(page.url()).origin));
+async function readerEntry(page: Page, title: string) {
+  const entries = await (
+    await platform(page)
+  ).content({ appId: "morphz.reader", query: title, limit: 10 });
+  const entry = entries.items.find((item) => item.title === title);
+  expect(entry, "读物必须真实保存并登记在 Platform 目录").toBeDefined();
+  return entry!;
+}
+async function readerState(page: Page, contentId: string) {
+  const response = await page.request.get(
+    `/api/reader/state?artifactId=${encodeURIComponent(contentId)}&revision=1`,
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json() as Promise<
+    Awaited<ReturnType<ReaderService["state"]>>
+  >;
+}
+async function readerMarks(page: Page, contentId: string) {
+  const response = await page.request.get(
+    `/api/reader/marks?artifactId=${encodeURIComponent(contentId)}&revision=1&limit=50`,
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json() as Promise<
+    Awaited<ReturnType<ReaderService["marks"]>>
+  >;
+}
+/** No Runtime is configured in this suite. Saved questions are actual local
+ * unsent records, not messages persisted by Platform or fake workspace rows. */
+async function localInputs(page: Page) {
+  const client = await platform(page);
+  const scope = `${client.boot.centerId}:${client.boot.principalId}:${client.boot.actantId}`;
+  const values = await page.evaluate(() =>
+    Object.fromEntries(
+      Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)!]),
+    ),
+  );
+  const keys = Object.keys(values);
+  const storage = {
+    length: keys.length,
+    key: (index: number) => keys[index] ?? null,
+    getItem: (key: string) => values[key] ?? null,
+  } as Storage;
+  return readSavedInputs(storage, scope).map((item) => ({
+    ...item.operation,
+    id: item.commandId,
+  }));
+}
+const localInput = async (page: Page, body: string) =>
+  (await localInputs(page)).find((item) => item.body === body)!;
+/** CSS highlights belong to each mounted reader, including hidden books.
+ * Deleting this book's mark must clear its paint, not another book's marks. */
+function paintedMarks(page: Page, includeNotes = true) {
+  return page
+    .locator(".reading-app:visible .reader-text")
+    .evaluate(
+      (root, notes) =>
+        [...(CSS as any).highlights.entries()]
+          .filter(
+            ([key]: [string]) =>
+              key.startsWith("reader-mark-") &&
+              !key.endsWith("-citation") &&
+              (notes || !key.includes("-note-")),
+          )
+          .reduce(
+            (count: number, [, mark]: [string, Iterable<Range>]) =>
+              count +
+              [...mark].filter(
+                (range) =>
+                  root.contains(range.startContainer) &&
+                  root.contains(range.endContainer),
+              ).length,
+            0,
+          ),
+      includeNotes,
+    );
+}
+function captureSentInputs(page: Page) {
+  const sentInputs: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/(?:platform\/messages|messages)(?:\?|$)/.test(request.url())
+    )
+      sentInputs.push(request.url());
+  });
+  return sentInputs;
+}
 async function setup(page: Page) {
   await page.goto("/");
-  expect((await snapshot(page)).runtime.configured).toBe(false);
+  const bootstrap = await page.request.get("/api/platform/bootstrap");
+  expect(bootstrap.ok()).toBe(true);
+  expect((await bootstrap.json()).capabilities.runtime).toBe(false);
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
+  const exit = page.getByRole("button", { name: "返回工作空间", exact: true });
+  if (await exit.isVisible()) await exit.click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("region", { name: "应用", exact: true })
@@ -24,15 +126,16 @@ async function setup(page: Page) {
   if (await back.isVisible()) await back.click();
   await expect(library).toBeVisible();
 }
-async function importBook(page: Page) {
+async function importBook(page: Page, source?: string) {
   const name = `TEST 阅读长标题验收 ${randomUUID().slice(0, 8)} 人物关系与原文依据及跨章节讨论.md`;
   const body =
+    source ??
     "# 周纪一\n\n先王慎德。\n\n先王慎德。第二处原文。\n\n" +
-    Array.from(
-      { length: 45 },
-      (_, i) => `阅读第 ${i + 1} 段：此为合成测试，书籍原文不代表用户指令。`,
-    ).join("\n\n") +
-    "\n\n# 周纪二\n\n这是后文，默认不能提前泄露。";
+      Array.from(
+        { length: 45 },
+        (_, i) => `阅读第 ${i + 1} 段：此为合成测试，书籍原文不代表用户指令。`,
+      ).join("\n\n") +
+      "\n\n# 周纪二\n\n这是后文，可与前文关联阅读。";
   const picker = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "导入读物", exact: true }).click();
   await (
@@ -42,6 +145,43 @@ async function importBook(page: Page) {
     "第二处原文",
   );
   return name.slice(0, -3);
+}
+async function firstSection(page: Page, contentId: string) {
+  const contents = await page.request.get(
+    `/api/reader/contents?artifactId=${encodeURIComponent(contentId)}&revision=1`,
+  );
+  expect(contents.ok(), await contents.text()).toBe(true);
+  const sections = (await contents.json()) as Array<{ id: string }>;
+  const response = await page.request.get(
+    `/api/reader/section?artifactId=${encodeURIComponent(contentId)}&revision=1&sectionId=${encodeURIComponent(sections[0]!.id)}`,
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json() as Promise<ReadingSection>;
+}
+async function visibleSourceRange(page: Page, section: ReadingSection) {
+  return page.locator(".reading-app:visible .reader-text").evaluate(
+    (root, args) => {
+      const offsets = new Function("__name", `return (${args.offsets});`)(
+        (fn: unknown) => fn,
+      );
+      const viewport = new Function(
+        "readerOffsets",
+        "__name",
+        `return (${args.viewport});`,
+      )(offsets, (fn: unknown) => fn) as typeof readerViewport;
+      return viewport(
+        root as HTMLElement,
+        args.source,
+        root.closest(".reader-viewport") as HTMLElement,
+        "visible",
+      );
+    },
+    {
+      source: section.text,
+      offsets: readerOffsets.toString(),
+      viewport: readerViewport.toString(),
+    },
+  );
 }
 async function selectSecond(page: Page) {
   const text = page.locator(".reading-app:visible .reader-text");
@@ -86,13 +226,36 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   page,
 }, testInfo) => {
   await setup(page);
+  const sentInputs = captureSentInputs(page);
   const title = await importBook(page);
-  const before = await snapshot(page);
-  const book = before.workspace.artifacts.find((a: any) => a.title === title);
-  const marks = async () =>
-    (await snapshot(page)).workspace.readingMarks.filter(
-      (m: any) => m.artifactId === book.id && !m.deletedAt,
+  const directory = await page.request.get(
+    `/api/platform/content?query=${encodeURIComponent(title)}&limit=10`,
+  );
+  expect(directory.ok()).toBe(true);
+  const books = (await directory.json()) as Array<{
+    appId: string;
+    id: string;
+    title: string;
+  }>;
+  const book = books.find(
+    (entry) => entry.appId === "morphz.reader" && entry.title === title,
+  );
+  expect(book).toBeDefined();
+  const marks = async () => {
+    const response = await page.request.get(
+      `/api/reader/marks?artifactId=${encodeURIComponent(book!.id)}&revision=1&limit=50`,
     );
+    expect(response.ok(), await response.text()).toBe(true);
+    const state = (await response.json()) as {
+      marks: Array<{
+        kind: string;
+        color: string | null;
+        note: string | null;
+        deletedAt: string | null;
+      }>;
+    };
+    return state.marks.filter((mark) => !mark.deletedAt);
+  };
   const toolbar = page.getByRole("toolbar", { name: "阅读选文操作" });
   await selectSecond(page);
   await page.getByRole("button", { name: "高亮选文", exact: true }).click();
@@ -126,12 +289,9 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   }
   // A failed deletion stays actionable; retry uses the same durable command ID.
   const deletionIds: string[] = [];
-  await page.route("**/api/commands", async (route) => {
+  await page.route("**/api/reader/commands", async (route) => {
     const request = route.request().postDataJSON();
-    if (
-      request?.operation?.type === "reader-command" &&
-      request.operation.command.action === "mark-remove"
-    ) {
+    if (request?.command?.action === "mark-remove") {
       deletionIds.push(request.commandId);
       if (deletionIds.length === 1) {
         await route.fulfill({
@@ -152,7 +312,7 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   await toolbar.getByRole("button", { name: "取消高亮", exact: true }).click();
   await expect.poll(async () => (await marks()).length).toBe(0);
   expect(deletionIds).toEqual([deletionIds[0], deletionIds[0]]);
-  await page.unroute("**/api/commands");
+  await page.unroute("**/api/reader/commands");
   await page
     .getByRole("status")
     .getByRole("button", { name: "撤销", exact: true })
@@ -180,23 +340,7 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   await expect
     .poll(async () => (await marks()).map((m: any) => m.kind))
     .toEqual(["note"]);
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        [...(CSS as any).highlights.entries()]
-          .filter(
-            ([key]: [string]) =>
-              /^reader-mark-/.test(key) &&
-              !key.includes("-note-") &&
-              !key.endsWith("-citation"),
-          )
-          .reduce(
-            (count: number, [, mark]: [string, any]) => count + mark.size,
-            0,
-          ),
-      ),
-    )
-    .toBe(0);
+  await expect.poll(() => paintedMarks(page, false)).toBe(0);
   // Removing a highlight must not also discard a separate note on that text.
   await page.reload();
   await expect(page.locator(".reading-app:visible .reader-text")).toContainText(
@@ -206,19 +350,7 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   await expect(toolbar).toContainText("修正后的理解");
   await toolbar.getByRole("button", { name: "删除批注", exact: true }).click();
   await expect.poll(async () => (await marks()).length).toBe(0);
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const registry = (CSS as any).highlights;
-        return [...registry.keys()]
-          .filter((key: string) => key.startsWith("reader-mark-"))
-          .reduce(
-            (total: number, key: string) => total + registry.get(key).size,
-            0,
-          );
-      }),
-    )
-    .toBe(0);
+  await expect.poll(() => paintedMarks(page)).toBe(0);
   await clickSecond(page);
   await expect(toolbar).toHaveCount(0);
   await selectSecond(page);
@@ -226,9 +358,255 @@ test("标注可在原文直接管理：取消高亮、改色、编辑删除批�
   await expect(toolbar).toHaveCount(0);
   await page.reload();
   await expect.poll(async () => (await marks()).length).toBe(0);
-  expect((await snapshot(page)).workspace.inputs.length).toBe(
-    before.workspace.inputs.length,
+  expect(sentInputs).toEqual([]);
+});
+
+test("标注改色后的真实分页回执跨窄窗仍定位同一标注，不变成普通选文", async ({
+  page,
+}) => {
+  await setup(page);
+  const title = await importBook(page);
+  const book = await readerEntry(page, title);
+  const section = await firstSection(page, book.id);
+  const activeMarks = async () =>
+    (await readerMarks(page, book.id)).marks.filter((mark) => !mark.deletedAt);
+  await selectSecond(page);
+  await page.getByRole("button", { name: "高亮选文", exact: true }).click();
+  await expect.poll(async () => (await activeMarks()).length).toBe(1);
+  const original = (await activeMarks())[0]!;
+  await clickSecond(page);
+  const toolbar = page.getByRole("toolbar", { name: "阅读选文操作" });
+  const highlightRow = toolbar.locator(".reader-selected-mark").filter({
+    has: page.getByRole("button", { name: "取消高亮", exact: true }),
+  });
+  await expect(
+    toolbar.getByRole("button", { name: "取消高亮", exact: true }),
+  ).toBeVisible();
+
+  let release!: () => void;
+  const responseGate = new Promise<void>((resolve) => (release = resolve));
+  const pages: Array<{
+    start: number;
+    end: number;
+    width: number;
+    count?: number;
+    fulfilled: boolean;
+  }> = [];
+  await page.route("**/api/reader/marks?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.searchParams.get("artifactId") !== book.id ||
+      !url.searchParams.has("sectionId")
+    ) {
+      await route.continue();
+      return;
+    }
+    // Gate a genuine authorized HTTP page, not a fabricated annotation or
+    // selected-state update. Reflow happens while this read is in flight.
+    const read = {
+      start: Number(url.searchParams.get("start")),
+      end: Number(url.searchParams.get("end")),
+      width: page.viewportSize()!.width,
+      count: undefined as number | undefined,
+      fulfilled: false,
+    };
+    pages.push(read);
+    await responseGate;
+    try {
+      const response = await route.fetch();
+      expect(response.ok(), await response.text()).toBe(true);
+      const result = await response.json();
+      read.count = result.marks.length;
+      await route.fulfill({ response });
+      read.fulfilled = true;
+    } catch (error) {
+      // Resize may cancel the old viewport's request. Only that explicit
+      // cancellation is dispensable; the current narrow page must complete.
+      if (route.request().failure()?.errorText !== "net::ERR_ABORTED")
+        throw error;
+    }
+  });
+  const receiptNote = `当前窄窗分页已消费 ${randomUUID()}`;
+  try {
+    await toolbar.getByRole("button", { name: "绿色", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText("颜色已更新");
+    await page.setViewportSize({ width: 640, height: 760 });
+    await expect
+      .poll(async () => {
+        const range = await visibleSourceRange(page, section);
+        return pages.some(
+          (read) =>
+            read.width === 640 &&
+            read.start === range?.start &&
+            read.end === range?.end,
+        );
+      })
+      .toBe(true);
+    // This real write occurs after the optimistic color update and while
+    // reads are gated. Its note cannot appear until a fresh authorized page
+    // is consumed by the production Client at the narrow viewport.
+    const client = await platform(page);
+    const response = await page.request.post("/api/reader/commands", {
+      headers: {
+        Origin: new URL(page.url()).origin,
+        "X-Morphz-Token": client.boot.csrfToken,
+      },
+      data: {
+        commandId: randomUUID(),
+        artifactId: book.id,
+        revision: 1,
+        command: {
+          action: "mark-add",
+          artifactId: book.id,
+          artifactRevision: 1,
+          location: original.location,
+          quote: original.quote,
+          kind: "note",
+          color: "yellow",
+          note: receiptNote,
+        },
+      },
+    });
+    expect(response.ok(), await response.text()).toBe(true);
+  } finally {
+    release();
+  }
+  await expect(toolbar).toContainText(receiptNote);
+  const narrowRange = await visibleSourceRange(page, section);
+  await expect
+    .poll(() =>
+      pages.some(
+        (read) =>
+          read.width === 640 &&
+          read.fulfilled &&
+          read.start === narrowRange?.start &&
+          read.end === narrowRange?.end,
+      ),
+    )
+    .toBe(true);
+  await expect(
+    highlightRow.getByRole("button", { name: "绿色", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    toolbar.getByRole("button", { name: "取消高亮", exact: true }),
+  ).toBeVisible();
+  await expect(
+    toolbar.getByRole("button", { name: "高亮选文", exact: true }),
+  ).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 760 });
+  await expect(
+    highlightRow.getByRole("button", { name: "绿色", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const changed = await activeMarks();
+  expect(changed).toHaveLength(2);
+  expect(changed.find((mark) => mark.id === original.id)).toMatchObject({
+    id: original.id,
+    revision: original.revision + 1,
+    color: "green",
+    location: original.location,
+  });
+  expect(pages.length).toBeGreaterThan(0);
+  expect(
+    pages.every((read) => read.count === undefined || read.count <= 50),
+  ).toBe(true);
+  await toolbar.getByRole("button", { name: "取消高亮", exact: true }).click();
+  await expect
+    .poll(async () => (await activeMarks()).map((mark) => mark.kind))
+    .toEqual(["note"]);
+  await clickSecond(page);
+  await toolbar.getByRole("button", { name: "删除批注", exact: true }).click();
+  await expect.poll(async () => (await activeMarks()).length).toBe(0);
+  await page.reload();
+  await expect.poll(async () => (await activeMarks()).length).toBe(0);
+});
+
+test("真实读物的点击字形锚不包含省略的段间空白，并保留 emoji 的原文位置", async ({
+  page,
+}) => {
+  await setup(page);
+  const title = await importBook(
+    page,
+    "# 精确字形\n\n甲\n\n乙\n\n😀第二处原文。\n\n甲",
   );
+  const book = await readerEntry(page, title);
+  const section = await firstSection(page, book.id);
+  for (const width of [1440, 640]) {
+    await page.setViewportSize({ width, height: 760 });
+    const results = await page
+      .locator(".reading-app:visible .reader-text")
+      .evaluate(
+        (root, args) => {
+          const identity = (fn: unknown) => fn;
+          const offsets = new Function("__name", `return (${args.offsets});`)(
+            identity,
+          ) as typeof readerOffsets;
+          const range = new Function("__name", `return (${args.range});`)(
+            identity,
+          ) as typeof readerRange;
+          const hit = new Function(
+            "readerOffsets",
+            "readerRange",
+            "__name",
+            `return (${args.hit});`,
+          )(offsets, range, identity) as typeof readerSourceSpanAtPoint;
+          const alignment = offsets(root.textContent ?? "", args.source);
+          if (!alignment)
+            throw new Error("actual DOM and stored text are not aligned");
+          const spans = args.positions.map(({ start, glyph }) => {
+            const from = alignment.sourceToDom[start]!;
+            const actual = range(
+              root as HTMLElement,
+              from,
+              from + glyph.length,
+            );
+            if (!actual) throw new Error("actual glyph has no DOM range");
+            const rect = actual.getBoundingClientRect();
+            return hit(
+              root as HTMLElement,
+              args.source,
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            );
+          });
+          const bounds = root.getBoundingClientRect();
+          return {
+            spans,
+            outside: hit(
+              root as HTMLElement,
+              args.source,
+              bounds.right + 10,
+              bounds.top - 10,
+            ),
+          };
+        },
+        {
+          source: section.text,
+          positions: [
+            { start: section.text.indexOf("甲"), glyph: "甲" },
+            { start: section.text.lastIndexOf("甲"), glyph: "甲" },
+            { start: section.text.indexOf("😀"), glyph: "😀" },
+          ],
+          offsets: readerOffsets.toString(),
+          range: readerRange.toString(),
+          hit: readerSourceSpanAtPoint.toString(),
+        },
+      );
+    expect(results.spans).toEqual([
+      {
+        start: section.text.indexOf("甲"),
+        end: section.text.indexOf("甲") + 1,
+      },
+      {
+        start: section.text.lastIndexOf("甲"),
+        end: section.text.lastIndexOf("甲") + 1,
+      },
+      {
+        start: section.text.indexOf("😀"),
+        end: section.text.indexOf("😀") + 2,
+      },
+    ]);
+    expect(results.outside).toBeNull();
+  }
 });
 
 test("常见阅读格式走同一导入、选文标注和恢复流程，不隐式发送给模型", async ({
@@ -236,7 +614,7 @@ test("常见阅读格式走同一导入、选文标注和恢复流程，不隐�
 }) => {
   test.setTimeout(90000);
   await setup(page);
-  const before = await snapshot(page);
+  const sentInputs = captureSentInputs(page);
   const directory = execFileSync(
     process.execPath,
     ["scripts/reader-fixtures.mjs"],
@@ -322,19 +700,18 @@ test("常见阅读格式走同一导入、选文标注和恢复流程，不隐�
       ).toBeVisible();
     }
   }
-  expect((await snapshot(page)).workspace.inputs.length).toBe(
-    before.workspace.inputs.length,
-  );
+  expect(sentInputs).toEqual([]);
 });
 
-test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定原文、统一 Session 和引用回跳", async ({
+test("阅读闭环：导入、高亮批注、进度恢复、未发送提问固定原文、统一对话和引用回跳", async ({
   page,
 }, testInfo) => {
   await setup(page);
   const title = await importBook(page);
-  const before = await snapshot(page),
-    book = before.workspace.artifacts.find((a: any) => a.title === title);
-  expect(book.content.kind).toBe("publication");
+  const client = await platform(page),
+    book = await readerEntry(page, title);
+  const spaces = await client.ensurePersonalSpaces();
+  expect(book.kind).toBe("publication");
   // Unrelated workspace/render updates must not replace text nodes or collapse
   // the native selection. This was observable only in the live polling app.
   const paragraph = await page
@@ -360,16 +737,9 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   ).toBe("0px");
   await page.getByRole("button", { name: "高亮选文", exact: true }).click();
   await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.readingMarks.filter(
-          (m: any) => m.artifactId === book.id,
-        ).length,
-    )
+    .poll(async () => (await readerMarks(page, book.id)).marks.length)
     .toBe(1);
-  const mark = (await snapshot(page)).workspace.readingMarks.find(
-    (m: any) => m.artifactId === book.id,
-  );
+  const mark = (await readerMarks(page, book.id)).marks[0]!;
   expect(mark.location.start).toBe(10);
   expect(mark.quote).toBe("先王慎德。");
   await selectSecond(page);
@@ -424,25 +794,26 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await expect
     .poll(
       async () =>
-        (await snapshot(page)).workspace.inputs.filter((i: any) =>
+        (await localInputs(page)).filter((i) =>
           i.textQuotes?.some(
             (q: any) => q.source.kind === "reading" && q.source.title === title,
           ),
         ).length,
     )
     .toBe(1);
-  const input = (await snapshot(page)).workspace.inputs.find((i: any) =>
+  const input = (await localInputs(page)).find((i) =>
     i.textQuotes?.some(
       (q: any) => q.source.kind === "reading" && q.source.title === title,
     ),
-  );
-  expect(input.textQuotes[0].source.location).toEqual(mark.location);
-  expect(input.textQuotes[0].text).toEqual(mark.quote);
-  expect(input.textQuotes[0].comment).toContain("简短解释这段原文");
+  )!;
+  const quote = input.textQuotes![0]!;
+  expect(
+    quote.source.kind === "reading" ? quote.source.location : null,
+  ).toEqual(mark.location);
+  expect(quote.text).toEqual(mark.quote);
+  expect(quote.comment).toContain("简短解释这段原文");
   expect(input.reading).toBeUndefined();
-  expect(input.conversationId).toBe(
-    before.workspace.projects.find((p: any) => p.kind === "dialogue").id,
-  );
+  expect(input.conversationId).toBe(spaces.dialogueId);
   const links = page.getByRole("button", {
     name: "查看引用 1 的原文",
     exact: true,
@@ -465,9 +836,7 @@ test("阅读闭环：导入、高亮批注、进度恢复、选文提问固定�
   await expect
     .poll(
       async () =>
-        (await snapshot(page)).workspace.readingStates.find(
-          (s: any) => s.artifactId === book.id,
-        )?.location.sectionId,
+        (await readerState(page, book.id)).position?.location.sectionId,
     )
     .toBe("section-2");
   await page.reload();
@@ -498,8 +867,8 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   const title = await importBook(page);
   const reader = page.locator(".reading-app:visible"),
     view = reader.locator(".reader-viewport");
-  const before = await snapshot(page);
-  const book = before.workspace.artifacts.find((a: any) => a.title === title);
+  const before = await localInputs(page);
+  const book = await readerEntry(page, title);
   // Scroll then send without waiting for the 700 ms progress persistence timer.
   await view.evaluate((e) => {
     e.scrollTop = e.scrollHeight / 2;
@@ -518,23 +887,20 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   await expect(context.locator(".reading-context-preview")).toHaveText(title);
   await expect(context.locator("blockquote")).toHaveCount(0);
   await expect(context).not.toContainText("先王慎德");
-  expect((await snapshot(page)).workspace.inputs.length).toBe(
-    before.workspace.inputs.length,
-  );
+  expect((await localInputs(page)).length).toBe(before.length);
   await page.screenshot({
     path: testInfo.outputPath("reading-current-context.png"),
   });
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const findInput = async (body: string) =>
-    (await snapshot(page)).workspace.inputs.find((i: any) => i.body === body);
+  const findInput = (body: string) => localInput(page, body);
   await expect
     .poll(() => findInput("TEST 普通闲聊，今天心情不错"))
     .toBeTruthy();
   const sent = await findInput("TEST 普通闲聊，今天心情不错");
-  expect(Object.keys(sent.reading).sort()).toEqual(
+  expect(Object.keys(sent.reading!).sort()).toEqual(
     ["book", "location", "chapter"].sort(),
   );
-  expect(sent.reading.location.start).toBeGreaterThan(100);
+  expect(sent.reading!.location.start).toBeGreaterThan(100);
   expect(sent.selection).toBe("");
   expect(sent.artifactId).toBe(book.id);
   await page.getByRole("button", { name: "目录", exact: true }).click();
@@ -566,8 +932,8 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   await expect.poll(() => findInput("TEST 直接讨论所选原文")).toBeTruthy();
   const selected = await findInput("TEST 直接讨论所选原文");
   expect(selected.selection).toBe("先王慎德。");
-  expect(selected.reading.location.start).toBe(10);
-  expect(selected.reading.quote).toBe(selected.selection);
+  expect(selected.reading!.location.start).toBe(10);
+  expect(selected.reading).toHaveProperty("quote", selected.selection);
   expect(selected.conversationId).toBe(sent.conversationId);
   await expect(input).toBeVisible();
   // Full history hides the canvas without navigating away from the book.
@@ -634,22 +1000,19 @@ test("长段落精确定位但不发送正文；未就绪保留草稿且允许�
   await expect(context.locator("blockquote")).toHaveCount(0);
   await expect(context.locator(".reading-context-preview p")).toHaveCount(0);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const find = async () =>
-    (await snapshot(page)).workspace.inputs.find(
-      (i: any) => i.body === "TEST 长段落当前位置",
-    );
+  const find = () => localInput(page, "TEST 长段落当前位置");
   await expect.poll(find).toBeTruthy();
   const sent = await find();
-  expect(sent.reading.location.start).toBeGreaterThan(1000);
+  expect(sent.reading!.location.start).toBeGreaterThan(1000);
   expect(
-    sent.reading.location.end - sent.reading.location.start,
+    sent.reading!.location.end - sent.reading!.location.start,
   ).toBeGreaterThan(100);
   expect(
-    sent.reading.location.end - sent.reading.location.start,
+    sent.reading!.location.end - sent.reading!.location.start,
   ).toBeLessThanOrEqual(3200);
-  expect(sent.reading.quote).toBeUndefined();
-  expect(sent.reading.before).toBeUndefined();
-  expect(sent.reading.after).toBeUndefined();
+  expect(sent.reading).not.toHaveProperty("quote");
+  expect(sent.reading).not.toHaveProperty("before");
+  expect(sent.reading).not.toHaveProperty("after");
   await input.fill("TEST 无法定位时的草稿");
   // Corrupt only this isolated test's rendered source to exercise the actual
   // fail-closed path, not a guessed saved position or silent blank reference.
@@ -672,8 +1035,8 @@ test("长段落精确定位但不发送正文；未就绪保留草稿且允许�
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect
     .poll(async () =>
-      (await snapshot(page)).workspace.inputs.some(
-        (i: any) => i.body === "TEST 无法定位时的草稿" && !i.reading,
+      (await localInputs(page)).some(
+        (i) => i.body === "TEST 无法定位时的草稿" && !i.reading,
       ),
     )
     .toBe(true);
@@ -685,7 +1048,7 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await setup(page);
-  const before = await snapshot(page),
+  const before = await localInputs(page),
     name = `TEST PDF ${randomUUID().slice(0, 8)}.pdf`;
   const picker = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "导入读物", exact: true }).click();
@@ -711,20 +1074,11 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
     page.getByRole("toolbar", { name: "阅读选文操作" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "高亮选文", exact: true }).click();
-  const book = (await snapshot(page)).workspace.artifacts.find(
-    (a: any) => a.title === name.slice(0, -4),
-  );
+  const book = await readerEntry(page, name.slice(0, -4));
   await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.readingMarks.filter(
-          (m: any) => m.artifactId === book.id,
-        ).length,
-    )
+    .poll(async () => (await readerMarks(page, book.id)).marks.length)
     .toBe(1);
-  const mark = (await snapshot(page)).workspace.readingMarks.find(
-    (m: any) => m.artifactId === book.id,
-  );
+  const mark = (await readerMarks(page, book.id)).marks[0]!;
   expect(mark.location.sectionId).toBe("page-1");
   expect(mark.quote).toContain("DESIGN NOTES");
   await expect(page.getByRole("status")).toContainText("已高亮");
@@ -733,9 +1087,8 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   await expect
     .poll(
       async () =>
-        (await snapshot(page)).workspace.readingMarks.filter(
-          (m: any) => m.artifactId === book.id && !m.deletedAt,
-        ).length,
+        (await readerMarks(page, book.id)).marks.filter((m) => !m.deletedAt)
+          .length,
     )
     .toBe(0);
   await page.getByRole("button", { name: "撤销", exact: true }).click();
@@ -745,12 +1098,7 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   await page.getByRole("button", { name: "书签与批注", exact: true }).click();
   await page.getByRole("button", { name: "保存当前位置", exact: true }).click();
   await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.readingMarks.filter(
-          (m: any) => m.artifactId === book.id,
-        ).length,
-    )
+    .poll(async () => (await readerMarks(page, book.id)).marks.length)
     .toBe(2);
   await page
     .getByRole("button", { name: "移除此标注", exact: true })
@@ -760,14 +1108,11 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
   await expect
     .poll(
       async () =>
-        (await snapshot(page)).workspace.readingMarks.filter(
-          (m: any) => m.artifactId === book.id && !m.deletedAt,
-        ).length,
+        (await readerMarks(page, book.id)).marks.filter((m) => !m.deletedAt)
+          .length,
     )
     .toBe(2);
-  expect((await snapshot(page)).workspace.inputs.length).toBe(
-    before.workspace.inputs.length,
-  );
+  expect((await localInputs(page)).length).toBe(before.length);
   await page.screenshot({ path: testInfo.outputPath("reader-pdf.png") });
   await page.reload();
   await expect(
@@ -793,14 +1138,11 @@ test("PDF 保留原页，选文与页码一致，书签恢复且阅读行为不�
     .getByLabel("AI 输入内容", { exact: true })
     .fill("TEST PDF 当前页自动引用");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const find = async () =>
-    (await snapshot(page)).workspace.inputs.find(
-      (i: any) => i.body === "TEST PDF 当前页自动引用",
-    );
+  const find = () => localInput(page, "TEST PDF 当前页自动引用");
   await expect.poll(find).toBeTruthy();
-  expect((await find()).reading.location.sectionId).toBe("page-2");
-  expect((await find()).reading.quote).toBeUndefined();
-  expect((await find()).reading.before).toBeUndefined();
-  expect((await find()).reading.after).toBeUndefined();
+  expect((await find()).reading!.location.sectionId).toBe("page-2");
+  expect((await find()).reading).not.toHaveProperty("quote");
+  expect((await find()).reading).not.toHaveProperty("before");
+  expect((await find()).reading).not.toHaveProperty("after");
   expect((await find()).selection).toBe("");
 });

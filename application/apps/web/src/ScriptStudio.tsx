@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   scriptLocationSchema,
-  resolveScriptLocation,
   type ScriptLocation,
 } from "../../../packages/core/src/script-delivery.js";
 import {
@@ -28,34 +27,30 @@ import {
   scriptStudioApplication,
 } from "../../../packages/core/src/applications.js";
 import {
-  currentScriptDraft,
   emptyScriptDraft,
   scriptItemKinds,
   scriptKindLabels,
   scriptIssues,
+  scriptStructureIssues,
   scriptImpact,
-  scriptContextCurrent,
   type ScriptCommand,
   type ScriptGeneration,
   type ScriptItem,
-  type ScriptProduction,
 } from "../../../packages/core/src/script-studio.js";
 import { buildScriptDocx } from "../../../packages/core/src/script-studio-docx.js";
 import type { Receipt } from "../../../packages/core/src/model.js";
 import { spaceKind } from "../../../packages/core/src/model.js";
-import {
-  contentOwnershipTitle,
-  type ContentEntry,
-} from "../../../packages/core/src/content.js";
+import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 import { ContentMetadata } from "./ContentMetadata.js";
+import type { CatalogContentEntry } from "./catalog-content-entries.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { ScriptItemEditor } from "./ScriptStudioEditor.js";
 import { scriptFocusReturn } from "./script-studio-focus.js";
-import {
-  scriptDisplayTime,
-  scriptExportContents,
-} from "../../../packages/core/src/script-studio-presentation.js";
+import { scriptDisplayTime } from "../../../packages/core/src/script-studio-presentation.js";
+import type { ScriptEditorProduction } from "./script-editor-reader.js";
+import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
+import { useScriptEditorRead } from "./useScriptEditorRead.js";
 import {
   ScriptStudioNavigation,
   scriptCreateLabels,
@@ -83,8 +78,7 @@ type Props = {
   ) => ScriptComposeResult;
   onConceive: () => void;
   globalLibrary?: boolean;
-  onOpenScript: (id: string) => void;
-  onContentVisit: (id: string) => void;
+  onOpenScript: (id: string, itemId?: string) => void;
   onLibrary: () => void;
   onNotice: (text: string) => void;
   onNativeDialog?: (open: boolean) => void;
@@ -146,7 +140,6 @@ export function ScriptStudio({
   onConceive,
   globalLibrary = false,
   onOpenScript,
-  onContentVisit,
   onLibrary,
   onNotice,
   onNativeDialog,
@@ -162,7 +155,9 @@ export function ScriptStudio({
   const [productionId, setProductionId] = useState(initial.productionId ?? "");
   const [itemId, setItemId] = useState(initial.itemId ?? "");
   const [view, setView] = useState(initial.view ?? "library");
-  const [organizing, setOrganizing] = useState<ContentEntry | null>(null);
+  const [organizing, setOrganizing] = useState<CatalogContentEntry | null>(
+    null,
+  );
   useLayoutEffect(() => {
     if (
       instance.state.navigationId &&
@@ -189,13 +184,13 @@ export function ScriptStudio({
       ? { ...savedTarget.data, requestId: instance.state.navigationId }
       : null);
   const externalKey = JSON.stringify(externalTarget);
+  const externalProductionReady = Boolean(
+    externalTarget &&
+    boot.scriptLibrary.find((entry) => entry.id === externalTarget.productionId)
+      ?.projectId === instance.workspaceId,
+  );
   useLayoutEffect(() => {
-    if (
-      !externalTarget ||
-      resolveScriptLocation(boot.workspace, externalTarget)?.production
-        .projectId !== instance.workspaceId
-    )
-      return;
+    if (!externalTarget || !externalProductionReady) return;
     setProductionId(externalTarget.productionId);
     setItemId(externalTarget.itemId ?? "");
     const nextView = locationRequest?.view ?? "editor";
@@ -210,7 +205,7 @@ export function ScriptStudio({
     } catch {
       onNotice("定位暂时无法保存；文稿未受影响。");
     }
-  }, [externalKey]);
+  }, [externalKey, externalProductionReady]);
   const [query, setQuery] = useState("");
   const space = boot.workspace.projects.find(
     (p) => p.id === instance.workspaceId,
@@ -234,6 +229,27 @@ export function ScriptStudio({
     message: string;
   } | null>(null);
   const studio = useRef<HTMLElement>(null);
+  const libraryFocus = useRef<{ id: string; anchor: Element | null } | null>(
+    null,
+  );
+  const editorFocus = useRef<{
+    productionId: string;
+    itemId?: string;
+    anchor: Element | null;
+  } | null>(null);
+  useEffect(() => {
+    // A delayed directory page must not steal focus after another user action.
+    const cancel = () => {
+      libraryFocus.current = null;
+      editorFocus.current = null;
+    };
+    document.addEventListener("pointerdown", cancel, true);
+    document.addEventListener("keydown", cancel, true);
+    return () => {
+      document.removeEventListener("pointerdown", cancel, true);
+      document.removeEventListener("keydown", cancel, true);
+    };
+  }, []);
   const directoryId = useId();
   const directoryTrigger = useRef<HTMLButtonElement>(null);
   const exportTrigger = useRef<HTMLButtonElement>(null);
@@ -299,7 +315,7 @@ export function ScriptStudio({
   const exportHistory = useRef<HTMLDetailsElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [exportSelection, setExportSelection] = useState<{
-    production: ScriptProduction;
+    production: ScriptEditorProduction;
     trigger: HTMLButtonElement;
   } | null>(null);
   const savingRef = useRef(false);
@@ -313,21 +329,91 @@ export function ScriptStudio({
       alive.current = false;
     };
   }, []);
-  const productions = boot.workspace.scriptProductions.filter(
-    (p) => p.projectId === instance.workspaceId,
+  const catalogEntry = boot.scriptLibrary.find(
+    (entry) =>
+      entry.id === productionId && entry.projectId === instance.workspaceId,
   );
-  const production =
-    productions.find((p) => p.id === productionId) ?? productions[0];
+  const editorRead = useScriptEditorRead(
+    `${boot.csrfToken}:${productionId}`,
+    catalogEntry?.activityRevision ?? 0,
+    () => client.readScriptEditor(productionId),
+    view === "editor" && !!productionId && !!catalogEntry,
+  );
+  const production = catalogEntry ? editorRead.value : undefined;
+  const [issuesOpen, setIssuesOpen] = useState(false);
+  const reviewRead = useScriptEditorRead(
+    `issues:${boot.csrfToken}:${productionId}`,
+    production?.activityRevision ?? 0,
+    () => client.readScriptEditorPage(production!, "reviews"),
+    !!production && issuesOpen,
+  );
+  const issues = production
+    ? reviewRead.value
+      ? scriptIssues({
+          head: production,
+          items: production.items,
+          reviews: reviewRead.value.reviews,
+        })
+      : scriptStructureIssues({ head: production, items: production.items })
+    : [];
+  const exportRead = useScriptEditorRead(
+    `exports:${boot.csrfToken}:${productionId}`,
+    production?.activityRevision ?? 0,
+    async () => {
+      const headers = await client.readScriptEditorPage(production!, "exports");
+      const result = [];
+      for (const header of headers.exports) {
+        const record = await client.readScriptExport(production!, header.id);
+        const titles = [];
+        for (const ref of record.items) {
+          const title = await client.readScriptVersionTitle(
+            production!,
+            ref.itemId,
+            ref.revision,
+          );
+          titles.push(`${title} · v${ref.revision}`);
+        }
+        result.push({ ...record, titles });
+      }
+      return result;
+    },
+    !!production && historyOpen,
+  );
   const currentProductionRef = useRef(production?.id);
   currentProductionRef.current = production?.id;
   const item = production?.items.find((i) => i.id === itemId);
   const sorted = [...(production?.items ?? [])].sort(
-    (a, b) =>
-      currentScriptDraft(a).order - currentScriptDraft(b).order ||
-      a.id.localeCompare(b.id),
+    (a, b) => a.order - b.order || a.id.localeCompare(b.id),
   );
-  const canWrite = activeView && client.online && !busy && !saving;
-  const library = view === "library" || !production;
+  const library = view === "library" || !productionId || !catalogEntry;
+  const canWrite =
+    activeView &&
+    client.online &&
+    !busy &&
+    !saving &&
+    (library || editorRead.fresh);
+  function restoreEditorFocus() {
+    const request = editorFocus.current;
+    if (
+      !request ||
+      library ||
+      !activeView ||
+      request.productionId !== production?.id ||
+      (request.itemId && request.itemId !== item?.id)
+    )
+      return;
+    const target = editorFocusTarget();
+    if (!target) return;
+    editorFocus.current = null;
+    if (
+      document.activeElement === document.body ||
+      document.activeElement === request.anchor
+    )
+      target.focus({ preventScroll: true });
+  }
+  useLayoutEffect(() => {
+    restoreEditorFocus();
+  }, [library, item?.id, production?.id, activeView]);
   const executionIssue =
     boot.runtime.configured && boot.runtime.connected
       ? harnessReadinessError(
@@ -340,6 +426,8 @@ export function ScriptStudio({
     nextItem = "",
     nextView: "library" | "editor" = "editor",
   ) => {
+    libraryFocus.current = null;
+    editorFocus.current = null;
     setError("");
     setDeliveryTarget(null);
     if (nextProduction !== production?.id) {
@@ -379,7 +467,8 @@ export function ScriptStudio({
       return;
     }
     flushSync(() => choose(production?.id ?? "", itemId, "library"));
-    // Complete navigation focus synchronously so it cannot steal a later action.
+    // The directory arrives asynchronously. Focus a stable control while
+    // loading, then return to the card only if the user has not moved on.
     const card = Array.from(
       studio.current?.querySelectorAll<HTMLElement>("[data-production-id]") ??
         [],
@@ -388,6 +477,11 @@ export function ScriptStudio({
       card ??
       studio.current?.querySelector<HTMLElement>('[aria-label="查找剧本"]')
     )?.focus({ preventScroll: true });
+    if (!card && production)
+      libraryFocus.current = {
+        id: production.id,
+        anchor: document.activeElement,
+      };
   };
   const run: ScriptRun = async (command) => {
     if (!activeView || !client.online || working.current)
@@ -421,25 +515,30 @@ export function ScriptStudio({
       }
     }
   };
-  function focusCreated() {
-    requestAnimationFrame(focusEditor);
+  function focusCreated(nextProductionId: string, nextItemId?: string) {
+    editorFocus.current = {
+      productionId: nextProductionId,
+      itemId: nextItemId,
+      anchor: document.activeElement,
+    };
+    requestAnimationFrame(restoreEditorFocus);
   }
-  function focusEditor() {
+  function editorFocusTarget() {
     if (
       !alive.current ||
       !activeViewRef.current ||
       document.querySelector("dialog[open]")
     )
-      return;
-    (
+      return null;
+    return (
       studio.current?.querySelector<HTMLElement>(
         '.script-editor [aria-label="文稿标题"]',
       ) ??
       studio.current?.querySelector<HTMLElement>("[data-script-focus-anchor]")
-    )?.focus({ preventScroll: true });
+    );
   }
   async function download(
-    p: ScriptProduction,
+    p: ScriptEditorProduction,
     existingExportId: string | null,
     trigger: HTMLButtonElement,
     selection?: { itemId: string; revision: number }[],
@@ -463,7 +562,6 @@ export function ScriptStudio({
     setExportStatus(null);
     try {
       let exportId = existingExportId;
-      let frozen = p;
       if (!exportId) {
         if (!selection?.length) throw new Error("请选择需要导出的分集或分场。");
         const receipt = await run({
@@ -481,15 +579,6 @@ export function ScriptStudio({
           snapshot.principalId !== identity.principalId
         )
           throw new Error("身份已变化，未保存文件。");
-        const current = snapshot.workspace.scriptProductions.find(
-          (value) => value.id === p.id,
-        );
-        if (
-          !current ||
-          !current.exports.some((value) => value.id === receipt.entityId)
-        )
-          throw new Error("导出记录尚未读回，请刷新后从导出历史重试。");
-        frozen = current;
         exportId = receipt.entityId;
       }
       if (!sameView())
@@ -497,12 +586,14 @@ export function ScriptStudio({
       if (window.morphzDesktop?.application) {
         if (!window.morphzDesktop.scriptExports)
           throw new Error("当前桌面尚未提供剧本保存接口；请更新桌面后重试。");
+        if (!p.contentId) throw new Error("剧本目录尚未就绪，请刷新后重试。");
         nativeDialog = true;
         // Suspend composer auto-collapse before the native dialog can blur the app.
         flushSync(() => onNativeDialog?.(true));
         const receipt = await window.morphzDesktop.scriptExports.save({
           ...identity,
-          productionId: frozen.id,
+          contentId: p.contentId,
+          productionId: p.id,
           exportId,
         });
         if (receipt.exportId !== exportId)
@@ -521,7 +612,9 @@ export function ScriptStudio({
           });
         return;
       }
-      const bytes = buildScriptDocx(frozen, exportId);
+      const bytes = buildScriptDocx(
+        await client.readScriptExportManifest(p, exportId),
+      );
       const url = URL.createObjectURL(
         new Blob([new Uint8Array(bytes)], {
           type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -529,7 +622,7 @@ export function ScriptStudio({
       );
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${frozen.title.replace(/[\\/:*?"<>|]/g, "_")}-${exportId.slice(0, 8)}.docx`;
+      a.download = `${p.title.replace(/[\\/:*?"<>|]/g, "_")}-${exportId.slice(0, 8)}.docx`;
       document.body.append(a);
       a.click();
       a.remove();
@@ -580,7 +673,7 @@ export function ScriptStudio({
             aria-label="剧本目录开关"
             aria-expanded={directoryOpen}
             aria-controls={directoryId}
-            title={`${directoryOpen ? "收起" : "展开"}目录 · ${item ? currentScriptDraft(item).title : "概览"}`}
+            title={`${directoryOpen ? "收起" : "展开"}目录 · ${item ? item.title : "概览"}`}
             onClick={() => {
               if (directoryOpen) closeDirectory();
               else if (compactDirectory) setNarrowDirectoryOpen(true);
@@ -642,7 +735,13 @@ export function ScriptStudio({
                 aria-label="设置项目"
                 title={`归属项目：${contentOwnershipTitle(space)} · 点击设置`}
                 onClick={() =>
-                  setOrganizing({ kind: "script", value: production })
+                  void client
+                    .resolveCatalogContent(production.contentId)
+                    .then((entry) => {
+                      if (entry)
+                        setOrganizing({ kind: "catalog", value: entry });
+                    })
+                    .catch((error) => onNotice(error.message))
                 }
                 disabled={!canWrite}
               >
@@ -763,39 +862,59 @@ export function ScriptStudio({
           {executionIssue} 手动编辑不受影响。
         </p>
       )}
-      {error && (
+      {(error ||
+        (issuesOpen && reviewRead.error) ||
+        (historyOpen && exportRead.error)) && (
         <p className="script-error" role="alert">
-          {error}
+          {error ||
+            (issuesOpen && reviewRead.error) ||
+            (historyOpen && exportRead.error)}
         </p>
       )}
       {library ? (
         <ScriptStudioLibrary
-          productions={
-            globalLibrary
-              ? boot.workspace.scriptProductions.filter(
-                  (p) =>
-                    !boot.workspace.projects.find(
-                      (owner) => owner.id === p.projectId,
-                    )?.deletedAt,
-                )
-              : productions
-          }
+          client={client}
+          projectId={instance.workspaceId}
           projects={boot.workspace.projects}
           global={globalLibrary}
           lastOpenedId={productionId}
           query={query}
           onQuery={setQuery}
+          onReady={() => {
+            const request = libraryFocus.current;
+            libraryFocus.current = null;
+            if (
+              !request ||
+              !activeView ||
+              document.activeElement !== request.anchor
+            )
+              return;
+            Array.from(
+              studio.current?.querySelectorAll<HTMLElement>(
+                "[data-production-id]",
+              ) ?? [],
+            )
+              .find((element) => element.dataset.productionId === request.id)
+              ?.focus({ preventScroll: true });
+          }}
           disabled={!activeView || busy || saving}
           onOpen={(id) => {
-            if (!productions.some((p) => p.id === id)) {
-              onOpenScript(id);
-              return;
-            }
-            flushSync(() => choose(id, id === productionId ? itemId : ""));
-            onContentVisit(id);
-            focusEditor();
+            editorFocus.current = {
+              productionId: id,
+              anchor: document.activeElement,
+            };
+            // The paged library does not load item bodies. Keep the remembered
+            // ID and let the existing resolver verify it against the original.
+            onOpenScript(
+              id,
+              id === productionId && itemId ? itemId : undefined,
+            );
           }}
         />
+      ) : !production ? (
+        <p className="script-hint" role={editorRead.error ? "alert" : "status"}>
+          {editorRead.error || "正在打开剧本…"}
+        </p>
       ) : (
         <div
           className="script-layout"
@@ -832,6 +951,7 @@ export function ScriptStudio({
                 run={run}
                 canWrite={canWrite}
                 onCompose={onCompose}
+                onReady={restoreEditorFocus}
               />
             ) : (
               <div className="script-overview">
@@ -870,9 +990,9 @@ export function ScriptStudio({
                             type="button"
                             key={value.id}
                             onClick={() => choose(production.id, value.id)}
-                            title={currentScriptDraft(value).title}
+                            title={value.title}
                           >
-                            <span>{currentScriptDraft(value).title}</span>
+                            <span>{value.title}</span>
                             <small>
                               {scriptKindLabels[value.kind]} ·{" "}
                               {scriptStatusLabels[value.status]}
@@ -952,14 +1072,23 @@ export function ScriptStudio({
                 <details
                   className="script-overview-details"
                   key={`issues:${production.id}`}
+                  onToggle={(event) => setIssuesOpen(event.currentTarget.open)}
                 >
                   <summary>
-                    结构检查与修改影响（{scriptIssues(production).length}）
+                    结构检查与修改影响（
+                    {issues.length +
+                      (reviewRead.value
+                        ? 0
+                        : production.items.reduce(
+                            (sum, item) => sum + item.blockingReviewCount,
+                            0,
+                          ))}
+                    ）
                   </summary>
                   <small>
                     仅检查版本依赖、分集归属和阻断意见，不代表戏剧质量审查。
                   </small>
-                  {scriptIssues(production).map((issue, n) => (
+                  {issues.map((issue, n) => (
                     <p key={n}>
                       <button
                         type="button"
@@ -970,16 +1099,23 @@ export function ScriptStudio({
                     </p>
                   ))}
                   {production.items
-                    .filter((i) => scriptImpact(production, [i.id]).length)
+                    .filter(
+                      (i) =>
+                        scriptImpact(
+                          { head: production, items: production.items },
+                          [i.id],
+                        ).length,
+                    )
                     .map((i) => (
                       <p key={i.id}>
-                        {currentScriptDraft(i).title} →{" "}
-                        {scriptImpact(production, [i.id])
+                        {i.title} →{" "}
+                        {scriptImpact(
+                          { head: production, items: production.items },
+                          [i.id],
+                        )
                           .map(
                             (id) =>
-                              currentScriptDraft(
-                                production.items.find((x) => x.id === id)!,
-                              ).title,
+                              production.items.find((x) => x.id === id)!.title,
                           )
                           .join("、")}
                       </p>
@@ -992,20 +1128,18 @@ export function ScriptStudio({
                   open={historyOpen}
                   onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
                 >
-                  <summary>导出历史（{production.exports.length}）</summary>
+                  <summary>导出历史（{production.totals.exports}）</summary>
                   <small>
                     按保存的版本和模板重新生成；不代表制作方已收到。
                   </small>
-                  {production.exports.map((record) => (
+                  {(exportRead.value ?? []).map((record) => (
                     <article className="script-export-record" key={record.id}>
                       <time>{scriptDisplayTime(record.createdAt)}</time>
                       <small>
                         {" "}
                         · {record.workingCopy ? "创作文稿" : "正式交付"}
                       </small>
-                      <p>
-                        {scriptExportContents(production, record).join("；")}
-                      </p>
+                      <p>{record.titles.join("；")}</p>
                       <button
                         type="button"
                         className="secondary-action"
@@ -1044,7 +1178,9 @@ export function ScriptStudio({
           onClose={() => setOrganizing(null)}
           onSaved={(old) => {
             setOrganizing(null);
-            onOpenScript(old.value.id);
+            onOpenScript(
+              old.kind === "catalog" ? old.value.appObjectId : old.value.id,
+            );
           }}
         />
       )}
@@ -1062,7 +1198,7 @@ export function ScriptStudio({
               choose(receipt.entityId);
               setDialog(null);
             });
-            focusCreated();
+            focusCreated(receipt.entityId);
           }}
         />
       )}
@@ -1078,7 +1214,7 @@ export function ScriptStudio({
               choose(production.id, id);
               setDialog(null);
             });
-            focusCreated();
+            focusCreated(production.id, id);
           }}
         />
       )}
@@ -1116,7 +1252,7 @@ function ExportDialog({
   onClose,
   onSubmit,
 }: {
-  production: ScriptProduction;
+  production: ScriptEditorProduction;
   onClose: () => void;
   onSubmit: (
     selection: { itemId: string; revision: number }[],
@@ -1126,23 +1262,23 @@ function ExportDialog({
   const [workingCopy, setWorkingCopy] = useState(true);
   const items = production.items
     .filter((i) => i.kind === "episode" || i.kind === "scene")
-    .sort(
-      (a, b) =>
-        currentScriptDraft(a).order - currentScriptDraft(b).order ||
-        a.id.localeCompare(b.id),
-    );
-  const issues = scriptIssues(production);
-  const ready = (item: ScriptItem) =>
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  const issues = scriptStructureIssues({
+    head: production,
+    items: production.items,
+  });
+  const ready = (item: ScriptDirectoryItem) =>
     item.status === "locked" &&
     !!item.approval &&
-    scriptContextCurrent(production, item.approval.contextRevision) &&
+    item.approvalCurrent &&
+    item.blockingReviewCount === 0 &&
     !issues.some((issue) => issue.itemId === item.id) &&
-    currentScriptDraft(item).dependencies.every((ref) => {
+    item.dependencies.every((ref) => {
       const dependency = production.items.find((i) => i.id === ref.itemId);
       return (
         !!dependency?.approval &&
         dependency.approval.revision === ref.revision &&
-        scriptContextCurrent(production, dependency.approval.contextRevision)
+        dependency.approvalCurrent
       );
     });
   const deliveryEligible = new Set(
@@ -1152,9 +1288,7 @@ function ExportDialog({
           ready(item) &&
           (item.kind !== "scene" ||
             items.some(
-              (parent) =>
-                parent.id === currentScriptDraft(item).parentId &&
-                ready(parent),
+              (parent) => parent.id === item.parentId && ready(parent),
             )),
       )
       .map((i) => i.id),
@@ -1163,13 +1297,9 @@ function ExportDialog({
     items
       .filter(
         (item) =>
-          currentScriptDraft(item).text.trim() ||
+          item.hasText ||
           (item.kind === "episode" &&
-            items.some(
-              (child) =>
-                currentScriptDraft(child).parentId === item.id &&
-                currentScriptDraft(child).text.trim(),
-            )),
+            items.some((child) => child.parentId === item.id && child.hasText)),
       )
       .map((item) => item.id),
   );
@@ -1223,20 +1353,18 @@ function ExportDialog({
                     const next = new Set(previous);
                     if (event.target.checked) {
                       next.add(item.id);
-                      const parentId = currentScriptDraft(item).parentId;
+                      const parentId = item.parentId;
                       if (parentId) next.add(parentId);
                     } else {
                       next.delete(item.id);
                       for (const child of items)
-                        if (currentScriptDraft(child).parentId === item.id)
-                          next.delete(child.id);
+                        if (child.parentId === item.id) next.delete(child.id);
                     }
                     return next;
                   })
                 }
               />
-              {scriptKindLabels[item.kind]} · {currentScriptDraft(item).title} ·
-              v{item.revision}
+              {scriptKindLabels[item.kind]} · {item.title} · v{item.revision}
               {!eligible.has(item.id) &&
                 (workingCopy ? " · 尚无已保存正文" : " · 需完成审阅锁稿")}
             </label>
@@ -1321,7 +1449,7 @@ function CreateItemDialog({
   onClose,
   onCreated,
 }: {
-  production: ScriptProduction;
+  production: ScriptEditorProduction;
   initialKind: ScriptItem["kind"];
   initialParent?: string;
   run: ScriptRun;
@@ -1403,7 +1531,7 @@ function CreateItemDialog({
                 .filter((i) => i.kind === "episode")
                 .map((i) => (
                   <option key={i.id} value={i.id}>
-                    {currentScriptDraft(i).title}
+                    {i.title}
                   </option>
                 ))}
             </select>
@@ -1432,7 +1560,7 @@ function ProductionSettings({
   run,
   onClose,
 }: {
-  production: ScriptProduction;
+  production: ScriptEditorProduction;
   client: WorkspaceClient;
   run: ScriptRun;
   onClose: () => void;

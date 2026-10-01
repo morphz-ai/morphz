@@ -12,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import type { PlatformContent } from "./platform-client.js";
 import {
   advanceStreamText,
   streamingTextPlugin,
@@ -20,6 +21,7 @@ import {
 } from "./streaming-text.js";
 const MarkdownScope = createContext<{
   state: Workspace;
+  catalog?: readonly PlatformContent[];
   onOpen: (id: string) => void;
 } | null>(null);
 const markdownComponents = {
@@ -139,23 +141,21 @@ export function objectLink(value: string): string | null {
 function Link({
   href = "",
   children,
-  state,
   onOpen,
 }: {
   href?: string;
   children: ReactNode;
   state: Workspace;
+  catalog?: readonly PlatformContent[];
   onOpen: (id: string) => void;
 }) {
   const [error, setError] = useState("");
   const id = objectLink(href);
   if (id)
-    return state.artifacts.some((a) => a.id === id) ? (
+    return (
       <button className="inline-object-link" onClick={() => onOpen(id)}>
         {children}
       </button>
-    ) : (
-      <span title="对象不存在或无访问权限">{children}（不可用）</span>
     );
   const url = webURL(href);
   if (!url) return <span title="不支持的链接地址">{children}</span>;
@@ -192,11 +192,13 @@ function Picture({
   src = "",
   alt = "图片",
   state,
+  catalog = [],
   onOpen,
 }: {
   src?: string;
   alt?: string;
   state: Workspace;
+  catalog?: readonly PlatformContent[];
   onOpen: (id: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
@@ -221,29 +223,37 @@ function Picture({
     );
   if (webURL(src))
     return (
-      <Link href={src} state={state} onOpen={onOpen}>
+      <Link href={src} state={state} catalog={catalog} onOpen={onOpen}>
         查看外部图片：{alt}
       </Link>
     );
-  return <span className="muted">{alt}（图片不可用）</span>;
+  return id ? (
+    <button className="inline-object-link" onClick={() => onOpen(id!)}>
+      查看图片：{alt}
+    </button>
+  ) : (
+    <span className="muted">{alt}（图片不可用）</span>
+  );
 }
 
 /** Content cannot execute code or load remote media just by being rendered. */
 export function SafeMarkdown({
   children,
   state,
+  catalog,
   onOpen,
   documentTitle,
   streaming = false,
 }: {
   children: string;
   state: Workspace;
+  catalog?: readonly PlatformContent[];
   onOpen: (id: string) => void;
   documentTitle?: string;
   streaming?: boolean;
 }) {
   return (
-    <MarkdownScope.Provider value={{ state, onOpen }}>
+    <MarkdownScope.Provider value={{ state, catalog, onOpen }}>
       <MarkdownBody documentTitle={documentTitle} streaming={streaming}>
         {children}
       </MarkdownBody>

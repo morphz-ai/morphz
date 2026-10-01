@@ -366,6 +366,43 @@ test("审批重新核对原文指纹，只允许单次授权，不能提升到�
     /已结束或内容已变化/,
   );
 });
+test("事项审批计数只读取精确会话、上下文、根和线程，不查询任务结果或写入", async () => {
+  const taskScope = { ...scope, threadId: "thread-1", taskRun: true as const };
+  const taskBinding = { ...binding, rootId: "root-1", threadId: "thread-1" };
+  const matching = {
+    ...approval,
+    request: { ...approval.request, root_turn_id: "root-1", thread_id: "thread-1" },
+  };
+  let pending = [
+    matching,
+    ...[
+      { session_id: "another-session" },
+      { context_id: "another-context" },
+      { root_turn_id: "another-root" },
+      { thread_id: "another-thread" },
+      { root_turn_id: undefined },
+    ].map((change) => ({ ...matching, request: { ...matching.request, ...change } })),
+  ];
+  const paths: string[] = [];
+  const controls = new ExecutionControls(async (path, method) => {
+    assert.equal(method, undefined);
+    assert.equal(path, "/api/approvals");
+    paths.push(path);
+    return { approvals: pending };
+  }, () => taskBinding);
+  assert.equal(await controls.pendingApprovalCount(taskScope), 1);
+  pending = [];
+  assert.equal(await controls.pendingApprovalCount(taskScope), 0);
+  assert.deepEqual(paths, ["/api/approvals", "/api/approvals"]);
+  const unavailable = new ExecutionControls(async () => {
+    throw new Error("Runtime offline");
+  }, () => taskBinding);
+  await assert.rejects(unavailable.pendingApprovalCount(taskScope), /Runtime offline/);
+  const empty = new ExecutionControls(async () => {
+    throw new Error("empty scope must not query Runtime");
+  }, () => null);
+  assert.equal(await empty.pendingApprovalCount(taskScope), 0);
+});
 test("结果校验执行和事件归属；超长输出有明确截断标识", async () => {
   let event = {
     id: "event-1",

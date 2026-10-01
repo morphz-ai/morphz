@@ -1,11 +1,41 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { seedCenter } from "./center-fixtures.js";
 import { openInput } from "./interaction-helpers.js";
-import type { Boot } from "../apps/web/src/client.js";
+import {
+  PlatformClient,
+  type PlatformContent,
+  type ContentCursor,
+} from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { platformInputState } from "./platform-input-state-fixture.js";
 
-const snapshot = async (page: Page): Promise<Boot> =>
-  (await page.request.get("/api/workspace")).json();
+// Inspect each actual owner, not a synthetic workspace projection. Navigation
+// may persist application views and local recency, but not originals or inputs.
+const snapshot = async (page: Page, source: PlatformClient) => {
+  const content: PlatformContent[] = [];
+  let before: ContentCursor | undefined;
+  do {
+    const next = await source.content({ limit: 100, before });
+    content.push(...next.items);
+    before = next.nextCursor ?? undefined;
+  } while (before);
+  const documents = await Promise.all(
+    content
+      .filter((entry) => entry.kind === "document")
+      .map(async (entry) => ({
+        contentId: entry.id,
+        original: await source.readDocument(entry.id),
+        versions: await source.objectVersions(entry.id),
+      })),
+  );
+  const conversations = await source.allNavigationConversations();
+  return {
+    content,
+    documents,
+    conversations,
+    inputs: await platformInputState(page, source),
+  };
+};
 const nav = (page: Page, name: string) =>
   page
     .getByRole("navigation", { name: "主导航" })
@@ -13,16 +43,36 @@ const nav = (page: Page, name: string) =>
     .click();
 const home = async (page: Page) => {
   await nav(page, "工作台");
-  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  const launcher = page.getByRole("button", {
+    name: "应用启动台",
+    exact: true,
+  });
+  const browserHome = page.getByRole("button", {
+    name: "返回工作空间",
+    exact: true,
+  });
+  // App views persist in the actual Platform across test files. A restored
+  // browser has its own chrome; use its existing return action before opening
+  // the launcher instead of assuming a fresh workspace or resetting its data.
+  await expect(launcher.or(browserHome).first()).toBeVisible();
+  if (await browserHome.isVisible()) await browserHome.click();
+  await launcher.click();
 };
 const titles = (page: Page) => page.locator(".workspace-recent-title");
-const seed = (page: Page, projectId: string, title: string) =>
-  seedCenter(page, {
-    type: "create-artifact",
+const seed = async (
+  source: PlatformClient,
+  projectId: string,
+  title: string,
+) => {
+  const created = await source.createDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
     projectId,
     title,
-    content: { kind: "document", markdown: title + "的原始正文" },
+    markdown: title + "的原始正文",
   });
+  return (created as { contentId: string }).contentId;
+};
 const read = async (page: Page, title: string) => {
   await nav(page, "内容");
   await page.getByLabel("内容范围", { exact: true }).selectOption("all");
@@ -31,19 +81,20 @@ const read = async (page: Page, title: string) => {
   await expect(page.locator(".object-paper > h1")).toHaveText(title);
 };
 const setup = async (page: Page) => {
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const spaces = await source.ensurePersonalSpaces();
   await page.goto("/");
-  const boot = await snapshot(page);
-  const desk = boot.workspace.projects.find(
-    (p) => p.kind === "desk" && p.ownerPrincipalId === boot.principalId,
-  )!;
-  return { desk, prefix: "TEST 继续工作 " + randomUUID().slice(0, 8) };
+  const desk = await source.project(spaces.deskId);
+  return { source, desk, prefix: "TEST 继续工作 " + randomUUID().slice(0, 8) };
 };
 
 test("启动台明确区分继续工作和应用；没有访问记录不拿新建内容凑数", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
-  for (let i = 0; i < 5; i++) await seed(page, desk.id, prefix + i);
+  const { source, desk, prefix } = await setup(page);
+  for (let i = 0; i < 5; i++) await seed(source, desk.id, prefix + i);
   await page.reload();
   await home(page);
   const recent = page.getByRole("region", { name: "继续工作", exact: true });
@@ -64,18 +115,19 @@ test("启动台明确区分继续工作和应用；没有访问记录不拿新�
 test("本空间内容固定进入列表，继续工作和应用标签保留明确阅读与草稿", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
+  const { source, desk, prefix } = await setup(page);
   const projectTitle = prefix + "项目";
-  const projectId = await seedCenter(page, {
-    type: "create-project",
-    title: projectTitle,
-  });
+  const projectId = await source.createProject(
+    projectTitle,
+    randomUUID(),
+    randomUUID(),
+  );
   const deskTitle = prefix + "工作台原文";
   const projectDocument = prefix + "项目原文";
-  await seed(page, desk.id, deskTitle);
-  await seed(page, projectId, projectDocument);
+  await seed(source, desk.id, deskTitle);
+  await seed(source, projectId, projectDocument);
   await page.reload();
-  const before = (await snapshot(page)).workspace;
+  const before = await snapshot(page, source);
   const contents = page.getByRole("button", {
     name: /^查看(?:全部|项目)内容$/,
     exact: true,
@@ -153,21 +205,24 @@ test("本空间内容固定进入列表，继续工作和应用标签保留明�
     await recent.click();
     await expect(page.locator(".object-paper > h1")).toHaveText(title!);
   }
-  const after = (await snapshot(page)).workspace;
-  expect(after.artifacts).toEqual(before.artifacts);
-  expect(after.inputs).toEqual(before.inputs);
-  expect(after.conversations).toEqual(before.conversations);
+  expect(await snapshot(page, source)).toEqual(before);
 });
 
 test("内容入口失败保留原位置，迟到回执不抢回后来选择的页面", async ({
   page,
 }) => {
-  const { prefix } = await setup(page);
+  const { source, prefix } = await setup(page);
   const title = prefix + "保留原文";
-  await seed(page, "first-project", title);
+  const projectTitle = prefix + "保留项目";
+  const projectId = await source.createProject(
+    projectTitle,
+    randomUUID(),
+    randomUUID(),
+  );
+  await seed(source, projectId, title);
   await page.reload();
   await read(page, title);
-  await page.getByRole("button", { name: "我的项目", exact: true }).click();
+  await page.getByRole("button", { name: projectTitle, exact: true }).click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("button", { name: "继续打开：" + title, exact: true })
@@ -178,10 +233,9 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/api/commands", async (route) => {
-    const op = route.request().postDataJSON()?.operation;
-    if (op?.type !== "launch-application" || op.artifactId !== null)
-      return route.continue();
+  await page.route("**/api/platform/app-views/launch", async (route) => {
+    const request = route.request().postDataJSON();
+    if (request?.state?.artifactId !== null) return route.continue();
     calls++;
     if (calls === 1)
       return route.fulfill({
@@ -207,15 +261,15 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
   await nav(page, "项目");
   const response = page.waitForResponse(
     (value) =>
-      value.url().endsWith("/api/commands") &&
-      value.request().postDataJSON()?.operation?.artifactId === null,
+      value.url().endsWith("/api/platform/app-views/launch") &&
+      value.request().postDataJSON()?.state?.artifactId === null,
   );
   release();
   await response;
   await expect(
     page.getByRole("heading", { name: "项目", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "我的项目", exact: true }).click();
+  await page.getByRole("button", { name: projectTitle, exact: true }).click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await contents.click();
   await expect(page.locator(".library-collection:visible")).toBeVisible();
@@ -224,14 +278,14 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
 test("真实打开顺序、重复访问、刷新与键盘继续；正文草稿和会话不改变", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
+  const { source, desk, prefix } = await setup(page);
   const a = prefix + "旧报告",
     b = prefix + "阅读笔记";
-  await seed(page, desk.id, a);
-  await seed(page, desk.id, b);
-  await seed(page, desk.id, prefix + "新建但没看过");
+  await seed(source, desk.id, a);
+  await seed(source, desk.id, b);
+  await seed(source, desk.id, prefix + "新建但没看过");
   await page.reload();
-  const before = (await snapshot(page)).workspace;
+  const before = await snapshot(page, source);
   await read(page, a);
   await read(page, b);
   const input = await openInput(page);
@@ -266,38 +320,36 @@ test("真实打开顺序、重复访问、刷新与键盘继续；正文草稿�
     .click();
   await expect(page.locator(".object-paper > h1")).toHaveText(b);
   await expect(await openInput(page)).toHaveValue("TEST 阅读笔记未发送的想法");
-  const after = (await snapshot(page)).workspace;
-  expect(after.artifacts).toEqual(before.artifacts);
-  expect(after.inputs).toEqual(before.inputs);
-  expect(after.conversations).toEqual(before.conversations);
+  expect(await snapshot(page, source)).toEqual(before);
 });
 
 test("工作台汇总最近内容、项目只看本项目；后台更新不会伪装成打开", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
-  const projectId = await seedCenter(page, {
-    type: "create-project",
-    title: prefix + "项目",
-  });
+  const { source, desk, prefix } = await setup(page);
+  const projectId = await source.createProject(
+    prefix + "项目",
+    randomUUID(),
+    randomUUID(),
+  );
   const a = prefix + "工作台报告",
     b = prefix + "工作台笔记",
     c = prefix + "项目报告";
-  const id = await seed(page, desk.id, a);
-  await seed(page, desk.id, b);
-  await seed(page, projectId, c);
+  const id = await seed(source, desk.id, a);
+  await seed(source, desk.id, b);
+  await seed(source, projectId, c);
   await page.reload();
   await read(page, a);
   await read(page, b);
   await read(page, c);
   await home(page);
   await expect(titles(page)).toHaveText([c, b, a]);
-  await seedCenter(page, {
-    type: "revise-artifact",
-    artifactId: id,
+  await source.reviseDocument({
+    commandId: randomUUID(),
+    contentId: id,
     expectedRevision: 1,
     title: a + "（更新）",
-    content: { kind: "document", markdown: "后台更新正文" },
+    markdown: "后台更新正文",
   });
   await page.reload();
   await expect(titles(page)).toHaveText([c, b, a + "（更新）"]);
@@ -313,11 +365,11 @@ test("工作台汇总最近内容、项目只看本项目；后台更新不会�
 test("打开失败不更改最近顺序，重试成功才前移；迟到打开不抢回导航", async ({
   page,
 }) => {
-  const { desk, prefix } = await setup(page);
+  const { source, desk, prefix } = await setup(page);
   const a = prefix + "A",
     b = prefix + "B";
-  const id = await seed(page, desk.id, a);
-  await seed(page, desk.id, b);
+  const id = await seed(source, desk.id, a);
+  await seed(source, desk.id, b);
   await page.reload();
   await read(page, a);
   await read(page, b);
@@ -329,10 +381,9 @@ test("打开失败不更改最近顺序，重试成功才前移；迟到打开�
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/api/commands", async (route) => {
-    const operation = route.request().postDataJSON()?.operation;
-    if (operation?.type !== "launch-application" || operation.artifactId !== id)
-      return route.continue();
+  await page.route("**/api/platform/app-views/launch", async (route) => {
+    const request = route.request().postDataJSON();
+    if (request?.state?.artifactId !== id) return route.continue();
     if (fail) {
       fail = false;
       return route.fulfill({
@@ -360,8 +411,8 @@ test("打开失败不更改最近顺序，重试成功才前移；迟到打开�
   await expect.poll(() => requested).toBe(true);
   const finished = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/commands") &&
-      response.request().postDataJSON()?.operation?.artifactId === id,
+      response.url().endsWith("/api/platform/app-views/launch") &&
+      response.request().postDataJSON()?.state?.artifactId === id,
   );
   await nav(page, "项目");
   release();
@@ -381,9 +432,9 @@ test("打开失败不更改最近顺序，重试成功才前移；迟到打开�
 });
 
 test("长标题、亮暗与窄窗下分区和内容入口清楚可达", async ({ page }) => {
-  const { desk, prefix } = await setup(page);
+  const { source, desk, prefix } = await setup(page);
   const title = prefix + "用于验证长标题的阅读笔记".repeat(5);
-  await seed(page, desk.id, title);
+  await seed(source, desk.id, title);
   await page.reload();
   await read(page, title);
   await home(page);

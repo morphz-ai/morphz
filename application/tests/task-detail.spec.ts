@@ -108,7 +108,7 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await page.reload();
   await expect(input).toHaveValue("检查完成，说明与实际安装过程一致。");
   await expect(page.locator(".task-result-intent")).toContainText("v1");
-  await page.route("**/api/commands", (route) =>
+  await page.route("**/api/platform/tasks/respond", (route) =>
     route.fulfill({ status: 503, json: { message: "测试失败，未写入" } }),
   );
   await page
@@ -118,29 +118,28 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await expect(page.getByLabel("事项状态", { exact: true })).toHaveValue(
     "planned",
   );
-  await page.unroute("**/api/commands");
+  await page.unroute("**/api/platform/tasks/respond");
   // A concurrent edit must not silently advance the version captured by the draft.
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const task = boot.workspace.artifacts.find(
+  const tasks = await (
+    await page.request.get("/api/platform/tasks?owner=all&limit=100")
+  ).json();
+  const task = tasks.find(
     (a: { title: string }) => a.title === "核对事项回应语义",
   );
-  const revised = await page.request.post("/api/commands", {
+  expect(task).toBeTruthy();
+  const bootstrap = await (
+    await page.request.get("/api/platform/bootstrap")
+  ).json();
+  const revised = await page.request.post("/api/platform/tasks/revise", {
     headers: {
-      "X-Morphz-Token": boot.csrfToken,
-      Origin: "http://127.0.0.1:65421",
+      "X-Morphz-Token": bootstrap.csrfToken,
+      Origin: new URL(page.url()).origin,
     },
     data: {
       commandId: crypto.randomUUID(),
-      operation: {
-        type: "revise-artifact",
-        artifactId: task.id,
-        expectedRevision: task.revision,
-        title: task.title,
-        content: {
-          ...task.content,
-          description: "检查范围已更新，请重新确认。",
-        },
-      },
+      taskId: task.id,
+      expectedRevision: task.revision,
+      description: "检查范围已更新，请重新确认。",
     },
   });
   expect(revised.ok()).toBeTruthy();
@@ -168,15 +167,9 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
   await expect(page.locator(".task-run-panel blockquote")).toContainText(
     "检查完成，说明与实际安装过程一致。",
   );
-  const result = await (await page.request.get("/api/workspace")).json();
-  expect(
-    result.workspace.taskResponses.filter(
-      (r: { taskId: string }) => r.taskId === task.id,
-    ),
-  ).toHaveLength(1);
-  expect(
-    result.workspace.inputs.filter(
-      (r: { artifactId: string }) => r.artifactId === task.id,
-    ),
-  ).toHaveLength(1);
+  const responses = await (
+    await page.request.get(`/api/platform/tasks/${task.id}/responses?limit=50`)
+  ).json();
+  expect(responses).toHaveLength(1);
+  expect(responses[0].body).toBe("检查完成，说明与实际安装过程一致。");
 });

@@ -1,140 +1,227 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { DatabaseSync } from "node:sqlite";
-import { WorkspaceStore } from "../packages/application/src/store.js";
-import {
-  localAccess,
-  commandSchema,
-  type Operation,
-} from "../packages/core/src/model.js";
-import { contentEntries } from "../packages/core/src/content.js";
+import { createHash, randomUUID } from "node:crypto";
+import { localAccess, commandSchema } from "../packages/core/src/model.js";
 import { emptyScriptDraft } from "../packages/core/src/script-studio.js";
-import { scriptSourceText } from "../packages/core/src/script-studio-commands.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import {
+  createDocument,
+  reviseDocument,
+} from "../packages/application/src/document-service.js";
+import {
+  createScriptItem,
+  createScriptProduction,
+  objectsScriptSourceVerifier,
+} from "../packages/application/src/script-production-service.js";
+import type { LiveScriptDraft } from "../packages/script-studio/src/store.js";
 import { migrateContentLocalState } from "../apps/web/src/content-local-migration.js";
 import { applicationStoragePrefix } from "../packages/core/src/application-names.js";
 
-const run = (s: WorkspaceStore, operation: Operation) =>
-  s.execute({ commandId: randomUUID(), operation }, localAccess).entityId;
-const script = (s: WorkspaceStore, title: string) =>
-  run(s, {
-    type: "script-command",
-    command: {
-      action: "create-production",
-      projectId: "local-worktable",
+function draft(title: string, text = ""): LiveScriptDraft {
+  const { sources: _sources, ...value } = emptyScriptDraft(title);
+  return { ...value, text, sources: [] };
+}
+type Fixture = Awaited<ReturnType<typeof agentDomainFixture>>;
+const script = (f: Fixture, projectId: string, title: string) =>
+  f.withHuman((actor) =>
+    createScriptProduction({
+      platform: f.domains.content.platform,
+      studio: f.domains.content.studio,
+      actor,
+      instanceId: f.domains.content.instanceIds.scriptStudio,
+      commandId: randomUUID(),
+      productionId: randomUUID(),
+      projectId,
       title,
-    },
-  });
-
-test("统一成果目录：剧本与文档只有一份，选择加入项目不搬走工作台、其他成果或交流", () => {
-  const s = new WorkspaceStore(":memory:");
-  try {
-    const a = script(s, "废火"),
-      b = script(s, "第二部");
-    run(s, {
-      type: "script-command",
-      command: {
-        action: "create-item",
-        productionId: a,
-        kind: "episode",
-        draft: { ...emptyScriptDraft("第一集"), text: "原文保持" },
-      },
-    });
-    const document = run(s, {
-      type: "create-artifact",
-      projectId: "local-worktable",
+    }),
+  );
+const document = (f: Fixture, projectId: string, markdown = "原作正文") =>
+  f.withHuman((actor) =>
+    createDocument({
+      platform: f.domains.content.platform,
+      objects: f.domains.content.objects,
+      actor,
+      instanceId: f.domains.content.instanceIds.objects,
+      commandId: randomUUID(),
+      objectId: randomUUID(),
+      projectId,
       title: "原作",
-      content: { kind: "document", markdown: "原作正文" },
-    });
-    const before = s.snapshot();
+      markdown,
+    }),
+  );
+const item = (
+  f: Fixture,
+  productionId: string,
+  value: LiveScriptDraft,
+  kind: "episode" | "source" = "episode",
+) =>
+  f.withHuman((actor) =>
+    createScriptItem({
+      platform: f.domains.content.platform,
+      studio: f.domains.content.studio,
+      actor,
+      instanceId: f.domains.content.instanceIds.scriptStudio,
+      commandId: randomUUID(),
+      productionId,
+      itemId: randomUUID(),
+      expectedActivityRevision: 1,
+      kind,
+      draft: value,
+    }),
+  );
+
+test("统一成果目录：剧本与文档只有一份，选择加入项目不搬走工作台、其他成果或交流", async () => {
+  const f = await agentDomainFixture();
+  try {
+    const { deskId } = await f.withHuman((actor) =>
+      f.domains.work.service.ensurePersonalSpaces(actor),
+    );
+    const a = await script(f, deskId, "废火"),
+      b = await script(f, deskId, "第二部");
+    const episode = await item(
+      f,
+      a.original.productionId,
+      draft("第一集", "原文保持"),
+    );
+    const doc = await document(f, deskId);
+    const before = await f.withHuman((actor) =>
+      f.domains.content.studio.readItemVersion({
+        credential: actor.credential,
+        productionId: a.original.productionId,
+        itemId: episode.original.itemId,
+      }),
+    );
+    const messages = structuredClone(f.transport.runtimeState());
+    const conversations = await f.withHuman((actor) =>
+      f.domains.work.service.listConversations(actor, { projectId: deskId }),
+    );
     const cmd = {
       commandId: randomUUID(),
-      operation: {
-        type: "organize-content" as const,
-        target: { kind: "script" as const, id: a },
-        expectedRevision: 1,
-        changes: { newProjectTitle: "短剧项目" },
-      },
+      projectId: "script-owned-project",
+      title: "短剧项目",
+      contentId: a.contentId,
+      expectedRevision: 2,
     };
-    const receipt = s.execute(cmd, localAccess);
-    assert.deepEqual(s.execute(cmd, localAccess), receipt);
-    let after = s.snapshot();
-    assert.equal(
-      after.scriptProductions.find((p) => p.id === a)!.projectId,
-      cmd.commandId,
+    const receipt = await f.withHuman((actor) =>
+      f.domains.work.service.createProjectForContent(actor, cmd),
     );
     assert.deepEqual(
-      after.scriptProductions.find((p) => p.id === a)!.items,
-      before.scriptProductions[0]!.items,
+      await f.withHuman((actor) =>
+        f.domains.work.service.createProjectForContent(actor, cmd),
+      ),
+      receipt,
     );
-    assert.equal(
-      after.scriptProductions.find((p) => p.id === b)!.projectId,
-      "local-worktable",
+    const head = await f.withHuman((actor) =>
+      f.domains.content.studio.readProductionOverview({
+        credential: actor.credential,
+        productionId: a.original.productionId,
+      }),
     );
-    assert.equal(
-      after.artifacts.find((p) => p.id === document)!.projectId,
-      "local-worktable",
-    );
-    assert.deepEqual(after.inputs, before.inputs);
+    assert.equal(head.projectId, cmd.projectId);
+    assert.equal(head.activityRevision, 2);
     assert.deepEqual(
-      after.conversations.filter((c) => c.projectId !== cmd.commandId),
-      before.conversations,
+      await f.withHuman((actor) =>
+        f.domains.content.studio.readItemVersion({
+          credential: actor.credential,
+          productionId: a.original.productionId,
+          itemId: episode.original.itemId,
+        }),
+      ),
+      before,
     );
     assert.equal(
-      after.projects.find((p) => p.id === "local-worktable")!.kind,
+      (
+        await f.withHuman((actor) =>
+          f.domains.content.platform.content(actor, b.contentId),
+        )
+      ).project_id,
+      deskId,
+    );
+    assert.equal(
+      (
+        await f.withHuman((actor) =>
+          f.domains.content.platform.content(actor, doc.contentId),
+        )
+      ).project_id,
+      deskId,
+    );
+    assert.deepEqual(f.transport.runtimeState(), messages);
+    assert.deepEqual(
+      await f.withHuman((actor) =>
+        f.domains.work.service.listConversations(actor, { projectId: deskId }),
+      ),
+      conversations,
+    );
+    assert.equal(
+      (
+        await f.withHuman((actor) =>
+          f.domains.work.service.getProject(actor, { projectId: deskId }),
+        )
+      ).kind,
       "desk",
     );
-    assert.equal(contentEntries(after).length, 3);
-    run(s, {
-      ...cmd.operation,
-      target: { kind: "script", id: b },
-      changes: { projectId: cmd.commandId },
-    });
-    after = s.snapshot();
     assert.equal(
-      contentEntries(after).filter((e) => e.value.projectId === cmd.commandId)
-        .length,
+      (
+        await f.withHuman((actor) =>
+          f.domains.work.service.listContent(actor, { limit: 50 }),
+        )
+      ).length,
+      3,
+    );
+    await f.withHuman((actor) =>
+      f.domains.work.service.moveContent(actor, {
+        commandId: randomUUID(),
+        contentId: b.contentId,
+        expectedRevision: 1,
+        targetProjectId: cmd.projectId,
+      }),
+    );
+    const after = await f.withHuman((actor) =>
+      f.domains.work.service.listContent(actor, { limit: 50 }),
+    );
+    assert.equal(
+      after.filter((entry) => entry.projectId === cmd.projectId).length,
       2,
     );
-    assert.equal(new Set(contentEntries(after).map((e) => e.value.id)).size, 3);
-    assert.throws(
-      () => s.execute({ ...cmd, commandId: randomUUID() }, localAccess),
+    assert.equal(new Set(after.map((entry) => entry.id)).size, 3);
+    await assert.rejects(
+      f.withHuman((actor) =>
+        f.domains.work.service.createProjectForContent(actor, {
+          ...cmd,
+          commandId: randomUUID(),
+          projectId: "must-not-be-created",
+        }),
+      ),
       /已变化/,
     );
-    assert.equal(s.snapshot().projects.length, after.projects.length);
+    await assert.rejects(
+      f.withHuman((actor) =>
+        f.domains.work.service.getProject(actor, {
+          projectId: "must-not-be-created",
+        }),
+      ),
+      /不存在|访问/,
+    );
+    f.assertNoLegacyData();
   } finally {
-    s.close();
+    await f.close();
   }
 });
 
-test("删除错误创建路径和工作台转换操作，不保留别名；项目与未归项目是内容仅有的归属", () => {
-  const s = new WorkspaceStore(":memory:");
+test("删除错误创建路径和工作台转换操作，不保留别名；项目与未归项目是内容仅有的归属", async () => {
+  const f = await agentDomainFixture();
   try {
-    for (const projectId of ["local-dialogue", "local-inbox"]) {
-      assert.throws(
-        () =>
-          run(s, {
-            type: "create-artifact",
-            projectId,
-            title: "不应写入",
-            content: { kind: "document", markdown: "内容" },
-          }),
-        /不能存入对话或事项/,
+    const { dialogueId, inboxId } = await f.withHuman((actor) =>
+      f.domains.work.service.ensurePersonalSpaces(actor),
+    );
+    for (const projectId of [dialogueId, inboxId]) {
+      await assert.rejects(
+        document(f, projectId),
+        /不能存入对话或事项|内容只能/,
       );
-      assert.throws(
-        () =>
-          run(s, {
-            type: "script-command",
-            command: {
-              action: "create-production",
-              projectId,
-              title: "不应写入",
-            },
-          }),
-        /不能存入对话或事项/,
+      await assert.rejects(
+        script(f, projectId, "不应写入"),
+        /不能存入对话或事项|内容只能/,
       );
     }
     assert.equal(
@@ -142,7 +229,7 @@ test("删除错误创建路径和工作台转换操作，不保留别名；项�
         commandId: randomUUID(),
         operation: {
           type: "save-workspace-as-project",
-          workspaceId: "local-worktable",
+          workspaceId: "obsolete-desk",
           title: "旧操作",
         },
       }).success,
@@ -161,144 +248,193 @@ test("删除错误创建路径和工作台转换操作，不保留别名；项�
       false,
     );
   } finally {
-    s.close();
+    await f.close();
   }
 });
 
-test("归属修改保留固定原作引用，权限边界一旦改变则停止读取；不能借整理扩大共享", () => {
-  const s = new WorkspaceStore(":memory:");
+test("归属修改保留固定原作引用，权限边界一旦改变则停止读取；不能借整理扩大共享", async () => {
+  const other = { principalId: "other", actantId: "other-human" };
+  const f = await agentDomainFixture({ additionalHumans: [other] });
   try {
-    const a = script(s, "改编");
-    const sourceId = run(s, {
-      type: "create-artifact",
-      projectId: "local-worktable",
-      title: "原作",
-      content: { kind: "document", markdown: "准确原文" },
-    });
-    const ref = { artifactId: sourceId, revision: 1, quote: "准确原文" };
-    run(s, {
-      type: "script-command",
-      command: {
-        action: "create-item",
-        productionId: a,
-        kind: "source",
-        draft: { ...emptyScriptDraft("原作"), sources: [ref] },
-      },
-    });
-    const move = {
-      type: "organize-content" as const,
-      target: { kind: "script" as const, id: a },
-      expectedRevision: 1,
-      changes: { newProjectTitle: "改编项目" },
+    const { deskId } = await f.withHuman((actor) =>
+      f.domains.work.service.ensurePersonalSpaces(actor),
+    );
+    const a = await script(f, deskId, "改编");
+    const source = await document(f, deskId, "准确原文");
+    const ref = {
+      appId: "morphz.objects",
+      instanceId: f.domains.content.instanceIds.objects,
+      objectId: source.original.objectId,
+      versionRef: "1",
+      quote: "准确原文",
     };
-    run(s, move);
-    let state = s.snapshot(),
-      production = state.scriptProductions[0]!;
-    assert.equal(scriptSourceText(state, production, ref).text, "准确原文");
-    s.provisionMembers([
-      {
-        principalId: "other",
-        actantId: "other-human",
-        name: "其他人",
-        enabled: true,
-        projectIds: [production.projectId],
-      },
-    ]);
-    state = s.snapshot();
-    production = state.scriptProductions[0]!;
-    assert.throws(() => scriptSourceText(state, production, ref), /原作版本/);
-    assert.throws(
-      () =>
-        run(s, {
-          ...move,
-          expectedRevision: 2,
-          changes: { projectId: "first-project" },
+    const original = await item(
+      f,
+      a.original.productionId,
+      { ...draft("原作"), sources: [ref] },
+      "source",
+    );
+    const move = {
+      commandId: randomUUID(),
+      projectId: "adaptation-project",
+      title: "改编项目",
+      contentId: a.contentId,
+      expectedRevision: 2,
+    };
+    await f.withHuman((actor) =>
+      f.domains.work.service.createProjectForContent(actor, move),
+    );
+    const read = () =>
+      f.withHuman((actor) =>
+        f.domains.content.studio.readItemVersion({
+          credential: actor.credential,
+          productionId: a.original.productionId,
+          itemId: original.original.itemId,
         }),
+      );
+    assert.deepEqual((await read()).draft.sources, [ref]);
+    const verifier = objectsScriptSourceVerifier(
+      f.domains.content.platform,
+      f.domains.content.objects,
+      f.domains.content.instanceIds.objects,
+    );
+    const verify = () =>
+      f.withHuman(async (actor) => {
+        const grant =
+          await f.domains.content.platform.authorizeApplicationObject(
+            actor,
+            f.domains.content.instanceIds.scriptStudio,
+            "morphz.script-studio",
+            a.original.productionId,
+            "read",
+          );
+        return verifier({
+          credential: actor.credential,
+          tenantId: grant.tenantId,
+          principalId: grant.principalId,
+          actantId: grant.actantId,
+          kind: grant.kind,
+          runtimeInputId: grant.runtimeInputId,
+          runtimeTaskRunEventId: grant.runtimeTaskRunEventId,
+          productionProjectId: grant.projectId,
+          alreadyPinned: true,
+          ...ref,
+        });
+      });
+    assert.equal(await verify(), true);
+    await f.withHuman((actor) =>
+      reviseDocument({
+        platform: f.domains.content.platform,
+        objects: f.domains.content.objects,
+        actor,
+        instanceId: f.domains.content.instanceIds.objects,
+        commandId: randomUUID(),
+        objectId: source.original.objectId,
+        expectedRevision: 1,
+        title: "原作",
+        markdown: "最新正文不能冒充固定引用",
+      }),
+    );
+    assert.equal(await verify(), true);
+    assert.equal((await read()).draft.sources[0]!.versionRef, "1");
+    await f.identity!.replaceConfiguration(
+      {
+        version: 1,
+        members: [localAccess, other].map((human) => ({
+          ...human,
+          loginTokenHash: createHash("sha256")
+            .update(`synthetic-login-${human.principalId}`)
+            .digest("hex"),
+          enabled: true,
+        })),
+      },
+      [
+        {
+          ...localAccess,
+          enabled: true,
+          projectIds: [f.projectId, move.projectId],
+        },
+        { ...other, enabled: true, projectIds: [move.projectId] },
+      ],
+    );
+    assert.equal(await verify(), false);
+    await assert.rejects(
+      f.withHuman((actor) =>
+        f.domains.work.service.moveContent(actor, {
+          commandId: randomUUID(),
+          contentId: a.contentId,
+          expectedRevision: 3,
+          targetProjectId: f.projectId,
+        }),
+      ),
       /成员不同/,
     );
+    f.assertNoLegacyData();
   } finally {
-    s.close();
+    await f.close();
   }
 });
 
-test("一次性迁移个人成果归属：正文/候选/输入/会话/回执不重放，重开只使用新归属", () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphz-content-ownership-")),
-    path = join(dir, "workspace.sqlite");
-  let s = new WorkspaceStore(path);
+test("成果归属重启保持：正文/版本/输入/会话/回执不重放，重开只使用已提交归属", async () => {
+  const f = await agentDomainFixture();
   try {
-    const p = script(s, "旧对话里创建的剧本");
-    run(s, {
-      type: "script-command",
-      command: {
-        action: "create-item",
-        productionId: p,
-        kind: "episode",
-        draft: { ...emptyScriptDraft("第一集"), text: "历史正文" },
-      },
-    });
-    const inputId = run(s, {
-      type: "record-input",
-      projectId: "local-worktable",
-      conversationId: "local-dialogue",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "已完成的历史输入",
-      targetActantId: "morphz-agent",
-    });
-    const a = run(s, {
-      type: "create-artifact",
-      projectId: "local-worktable",
-      title: "旧内容",
-      content: { kind: "document", markdown: "逐字保留" },
-    });
-    const old = s.snapshot();
-    old.scriptProductions.find((x) => x.id === p)!.projectId = "local-dialogue";
-    old.inputs.find((i) => i.id === inputId)!.projectId = "local-dialogue";
-    old.artifacts.find((x) => x.id === a)!.projectId = "local-inbox";
-    s.close();
-    const db = new DatabaseSync(path);
-    db.prepare("UPDATE workspace SET body=? WHERE id=1").run(
-      JSON.stringify(old),
+    const { deskId } = await f.withHuman((actor) =>
+      f.domains.work.service.ensurePersonalSpaces(actor),
     );
-    db.exec("PRAGMA user_version=13");
-    const pending = { deliveries: [{ inputId, state: "running" }] };
-    db.prepare("INSERT OR REPLACE INTO runtime_state(id,body) VALUES(1,?)").run(
-      JSON.stringify(pending),
+    const p = await script(f, deskId, "持久剧本");
+    const episode = await item(
+      f,
+      p.original.productionId,
+      draft("第一集", "历史正文"),
     );
-    assert.throws(() => new WorkspaceStore(path), /执行结束后升级/);
+    const a = await document(f, deskId, "逐字保留");
+    const move = {
+      commandId: randomUUID(),
+      contentId: p.contentId,
+      targetProjectId: f.projectId,
+      expectedRevision: 2,
+    };
+    const receipt = await f.withHuman((actor) =>
+      f.domains.work.service.moveContent(actor, move),
+    );
+    const read = () =>
+      f.withHuman(async (actor) => ({
+        catalog: await f.domains.work.service.listContent(actor, { limit: 50 }),
+        draft: await f.domains.content.studio.readItemVersion({
+          credential: actor.credential,
+          productionId: p.original.productionId,
+          itemId: episode.original.itemId,
+        }),
+        original: await f.domains.content.objects.readDocument({
+          credential: actor.credential,
+          objectId: a.original.objectId,
+          revision: 1,
+        }),
+        conversations: await f.domains.work.service.listConversations(actor, {
+          projectId: f.projectId,
+        }),
+      }));
+    const before = await read();
+    const pendingInputEvidence = structuredClone(
+      f.transport.serviceState("fixture-input-execution"),
+    );
+    await f.reopen();
+    assert.deepEqual(await read(), before);
     assert.deepEqual(
-      JSON.parse(
-        (db.prepare("SELECT body FROM workspace").get() as { body: string })
-          .body,
-      ),
-      old,
+      f.transport.serviceState("fixture-input-execution"),
+      pendingInputEvidence,
     );
     assert.equal(
-      (db.prepare("PRAGMA user_version").get() as { user_version: number })
-        .user_version,
-      13,
+      await f.withHuman((actor) =>
+        f.domains.work.service.moveContent(actor, move),
+      ),
+      receipt,
     );
-    pending.deliveries[0]!.state = "completed";
-    db.prepare("UPDATE runtime_state SET body=?").run(JSON.stringify(pending));
-    db.close();
-    s = new WorkspaceStore(path);
-    const next = s.snapshot();
-    assert.equal(next.scriptProductions[0]!.projectId, "local-worktable");
-    assert.equal(next.artifacts[0]!.projectId, "local-worktable");
-    assert.deepEqual(next.inputs, old.inputs);
-    assert.deepEqual(next.conversations, old.conversations);
-    assert.deepEqual(
-      next.scriptProductions[0]!.items,
-      old.scriptProductions[0]!.items,
-    );
-    assert.deepEqual(next.artifacts[0]!.content, old.artifacts[0]!.content);
-    s.close();
-    s = new WorkspaceStore(path);
-    assert.deepEqual(s.snapshot(), next);
+    await f.reopen();
+    assert.deepEqual(await read(), before);
+    f.assertNoLegacyData();
   } finally {
-    s.close();
-    rmSync(dir, { recursive: true });
+    await f.close();
   }
 });
 

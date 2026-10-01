@@ -13,26 +13,31 @@ import {
   Clapperboard,
 } from "lucide-react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
-import {
-  contentEntries,
-  contentOwnershipTitle,
-  type ContentEntry,
-} from "../../../packages/core/src/content.js";
-import { searchTerms } from "../../../packages/core/src/retrieval.js";
+import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ContentMetadata } from "./ContentMetadata.js";
 import { ContentPreview } from "./ContentPreview.js";
 import {
-  compareContent,
   contentOrigin,
   contentSorts,
   relatedContentTasks,
   type ContentSort,
 } from "./content-catalog.js";
-import { useContentSearch } from "./useContentSearch.js";
+import {
+  catalogContentEntries,
+  listingKind,
+  listingRevision,
+  type CatalogContentEntry,
+} from "./catalog-content-entries.js";
+import { CatalogPreview } from "./CatalogPreview.js";
+import { useVisibleScriptOverview } from "./useVisibleScriptOverview.js";
+import { useContentDirectory } from "./useContentDirectory.js";
 import { searchPreview } from "./document-presentation.js";
+import { scriptLibraryEntryFromContent } from "./platform-workspace-view.js";
+
+const listedApps = ["morphz.objects", "morphz.reader", "morphz.script-studio"];
 
 export function ObjectCollection({
   project,
@@ -103,43 +108,45 @@ export function ObjectCollection({
       ? catalogScope
       : "all";
   const [editing, setEditing] = useState<{
-    entry: ContentEntry;
+    entry: CatalogContentEntry;
     mode: "rename" | "move";
   } | null>(null);
   const [undo, setUndo] = useState<{
-    old: ContentEntry;
+    old: CatalogContentEntry;
     revision: number;
     mode: "rename" | "move";
   } | null>(null);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  const contentObjects = contentEntries(state);
-  const scopedObjects = contentObjects.filter(
-    (a) => scope === "all" || a.value.projectId === scope,
+  const directory = useContentDirectory(
+    client,
+    {
+      ...(scope === "all" ? {} : { projectId: scope }),
+      appIds: listedApps,
+      ...(filter === "all" ? {} : { kind: filter }),
+      ...(query.trim() ? { query: query.trim() } : {}),
+      sort,
+    },
+    true,
+    true,
   );
+  const hits = new Map(directory.matches.map((hit) => [hit.artifactId, hit]));
+  const contentObjects = catalogContentEntries(state, directory.items);
+  const byId = new Map(
+    contentObjects.map((entry) => [
+      entry.kind === "script"
+        ? (entry.value.contentId ?? entry.value.id)
+        : entry.value.id,
+      entry,
+    ]),
+  );
+  const visible = directory.items.flatMap((item) => {
+    const entry = byId.get(item.id);
+    return entry ? [entry] : [];
+  });
   const ownerTitles = new Map(
     projects.map((p) => [p.id, contentOwnershipTitle(p)]),
   );
-  const search = useContentSearch(client, query, scope);
-  const hits = new Map(
-    search.hits
-      .filter((hit) => hit.kind !== "task")
-      .map((hit) => [hit.artifactId, hit]),
-  );
-  const terms = searchTerms(query);
-  const visible = scopedObjects
-    .filter(
-      (entry) =>
-        (filter === "all" ||
-          (entry.kind === "script" ? "script" : entry.value.content.kind) ===
-            filter) &&
-        (!terms.length ||
-          terms.every((term) =>
-            entry.value.title.toLocaleLowerCase().includes(term),
-          ) ||
-          (entry.kind === "artifact" && hits.has(entry.value.id))),
-    )
-    .sort((a, b) => compareContent(sort, a.value, b.value));
   useEffect(() => {
     try {
       storage.writeLocal(key, { filter, query, layout, scope, sort });
@@ -154,7 +161,18 @@ export function ObjectCollection({
     try {
       await client.execute({
         type: "organize-content",
-        target: { kind: undo.old.kind, id: undo.old.value.id },
+        target: {
+          kind:
+            undo.old.kind === "catalog"
+              ? listingKind(undo.old) === "script"
+                ? "script"
+                : "artifact"
+              : undo.old.kind,
+          id:
+            undo.old.kind === "catalog" && listingKind(undo.old) === "script"
+              ? undo.old.value.appObjectId
+              : undo.old.value.id,
+        },
         expectedRevision: undo.revision,
         changes:
           undo.mode === "rename"
@@ -251,10 +269,7 @@ export function ObjectCollection({
                   ))}
               </select>
             )}
-            <label
-              className="search-field"
-              title="搜索标题及智能体产物正文；导入文件仅匹配标题"
-            >
+            <label className="search-field" title="查找标题或智能体产物正文">
               <Search />
               <input
                 aria-label="搜索内容"
@@ -298,9 +313,9 @@ export function ObjectCollection({
       >
         <div className="library-caption">
           <span>
-            {search.busy
+            {directory.busy && directory.count === null
               ? "正在查找…"
-              : `${visible.length} 项内容${terms.length && search.more ? " · 还有匹配结果" : ""}`}
+              : `${directory.count ?? visible.length} 项内容`}
           </span>
           <select
             aria-label="内容排序"
@@ -337,13 +352,166 @@ export function ObjectCollection({
             {error}
           </p>
         )}
-        {search.error && (
+        {directory.error && (
           <p className="content-search-note" role="alert">
-            {search.error} <button onClick={search.retry}>重试</button>
+            {directory.error} <button onClick={directory.retry}>重试</button>
+          </p>
+        )}
+        {directory.searchError && (
+          <p className="content-search-note" role="alert">
+            {directory.searchError}{" "}
+            <button onClick={directory.retry}>重试</button>
           </p>
         )}
         <div className={layout === "grid" ? "artifact-grid" : "artifact-list"}>
           {visible.map((entry) => {
+            if (
+              entry.kind === "catalog" &&
+              entry.value.appId === "morphz.script-studio"
+            ) {
+              const script = entry.value;
+              return (
+                <article className="artifact-card" key={script.id}>
+                  <button
+                    className="artifact-card-open"
+                    aria-label={`打开内容：${script.title}`}
+                    onClick={() => onOpen(script.id)}
+                  >
+                    <div className="artifact-card-heading">
+                      <Clapperboard />
+                      <h2>{script.title}</h2>
+                    </div>
+                    {layout === "grid" && (
+                      <p className="content-match">
+                        <ScriptCatalogProgress
+                          client={client}
+                          entry={scriptLibraryEntryFromContent(script)}
+                        />
+                      </p>
+                    )}
+                    <div className="artifact-caption">
+                      <span>{ownerTitles.get(script.projectId)} · 剧本</span>
+                      <time dateTime={script.updatedAt}>
+                        {new Date(script.updatedAt).toLocaleDateString(
+                          "zh-CN",
+                          { month: "short", day: "numeric" },
+                        )}
+                      </time>
+                    </div>
+                  </button>
+                  <div className="content-item-actions">
+                    <ComposerOptions
+                      label={`内容操作：${script.title}`}
+                      menuLabel="内容操作"
+                      below
+                      options={[
+                        {
+                          label: "重命名",
+                          icon: <PencilLine />,
+                          disabled: !client.online,
+                          onSelect: () => setEditing({ entry, mode: "rename" }),
+                        },
+                        {
+                          label: "设置项目",
+                          icon: <FolderOpen />,
+                          disabled: !client.online,
+                          onSelect: () => setEditing({ entry, mode: "move" }),
+                        },
+                      ]}
+                    />
+                  </div>
+                </article>
+              );
+            }
+            if (entry.kind === "catalog") {
+              const a = entry.value;
+              const kind = listingKind(entry);
+              const knownKind = kind in kindLabel;
+              const hit = hits.get(a.id);
+              const snippet =
+                hit?.revision === listingRevision(entry)
+                  ? searchPreview(hit.excerpt, a.title, query, {
+                      kind: hit.kind,
+                      page: hit.page,
+                    })
+                  : null;
+              return (
+                <article className="artifact-card" key={a.id}>
+                  <button
+                    className="artifact-card-open"
+                    onClick={() => onOpen(a.id)}
+                    aria-label={`打开内容：${a.title}`}
+                    title={`${a.title} · v${listingRevision(entry)}`}
+                  >
+                    <div className="artifact-card-heading">
+                      {kind === "script" ? (
+                        <Clapperboard />
+                      ) : knownKind ? (
+                        <ObjectIcon
+                          kind={kind as Artifact["content"]["kind"]}
+                        />
+                      ) : (
+                        <FilePlus2 />
+                      )}
+                      <h2>{a.title}</h2>
+                    </div>
+                    {snippet ? (
+                      <p className="content-match">{snippet}</p>
+                    ) : (
+                      layout === "grid" &&
+                      kind !== "script" && (
+                        <CatalogPreview id={a.id} client={client} />
+                      )
+                    )}
+                    <div className="artifact-caption">
+                      <span>
+                        {ownerTitles.get(a.projectId) ?? "所属空间不可用"} ·{" "}
+                        {kind === "script"
+                          ? "剧本"
+                          : knownKind
+                            ? kindLabel[kind as keyof typeof kindLabel]
+                            : "内容"}
+                      </span>
+                      <time dateTime={a.updatedAt}>
+                        {new Date(a.updatedAt).toLocaleDateString("zh-CN", {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </time>
+                    </div>
+                  </button>
+                  <div className="content-item-actions">
+                    <button
+                      className="icon-button"
+                      aria-label={`让智能体处理：${a.title}`}
+                      title="让智能体处理"
+                      onClick={() => onCompose(a.id)}
+                    >
+                      <MessageSquareText />
+                    </button>
+                    <ComposerOptions
+                      label={`内容操作：${a.title}`}
+                      menuLabel="内容操作"
+                      below
+                      options={[
+                        {
+                          label: "重命名",
+                          icon: <PencilLine />,
+                          onSelect: () => setEditing({ entry, mode: "rename" }),
+                          disabled: !client.online,
+                        },
+                        {
+                          label: "设置项目",
+                          icon: <FolderOpen />,
+                          onSelect: () => setEditing({ entry, mode: "move" }),
+                          disabled: !client.online,
+                        },
+                      ]}
+                    />
+                  </div>
+                </article>
+              );
+            }
             if (entry.kind === "script") {
               const p = entry.value;
               return (
@@ -404,9 +572,7 @@ export function ObjectCollection({
             const tasks = relatedContentTasks(a, objects, state.relations);
             const hit = hits.get(a.id);
             const snippet =
-              terms.length &&
-              hit?.revision === a.revision &&
-              hit.matchedIn === "content"
+              hit?.revision === a.revision
                 ? searchPreview(hit.excerpt, a.title, query, {
                     kind: hit.kind,
                     page: hit.page,
@@ -424,10 +590,11 @@ export function ObjectCollection({
                     <ObjectIcon kind={a.content.kind} />
                     <h2>{a.title}</h2>
                   </div>
-                  {layout === "grid" && !snippet && (
-                    <ContentPreview artifact={a} />
+                  {snippet ? (
+                    <p className="content-match">{snippet}</p>
+                  ) : (
+                    layout === "grid" && <ContentPreview artifact={a} />
                   )}
-                  {snippet && <p className="content-match">{snippet}</p>}
                   <div className="artifact-caption">
                     <span>
                       {ownerTitles.get(a.projectId) ?? "所属空间不可用"} ·{" "}
@@ -502,40 +669,40 @@ export function ObjectCollection({
             );
           })}
         </div>
-        {!visible.length && !search.busy && (
-          <div className="empty-state">
-            <span className="empty-icon">
-              <Search />
-            </span>
-            <h2>
-              {scopedObjects.length
-                ? "没有找到匹配的内容"
-                : "这个范围内还没有内容"}
-            </h2>
-            {terms.length > 0 && (
-              <p>可搜索标题及智能体产物正文；导入文件仅按标题查找。</p>
-            )}
-            {(scope !== "all" || query || filter !== "all") && (
-              <button
-                className="outline"
-                onClick={() => {
-                  setFilter("all");
-                  setQuery("");
-                  if (catalog && !scopedObjects.length) onScopeChange?.("all");
-                }}
-              >
-                显示全部内容
-              </button>
-            )}
-          </div>
-        )}
-        {terms.length > 0 && search.more && (
+        {!visible.length &&
+          !directory.busy &&
+          !directory.error &&
+          !directory.searchError && (
+            <div className="empty-state">
+              <span className="empty-icon">
+                <Search />
+              </span>
+              <h2>
+                {query || filter !== "all"
+                  ? "没有找到匹配的内容"
+                  : "这个范围内还没有内容"}
+              </h2>
+              {(scope !== "all" || query || filter !== "all") && (
+                <button
+                  className="outline"
+                  onClick={() => {
+                    setFilter("all");
+                    setQuery("");
+                    if (catalog && !directory.count) onScopeChange?.("all");
+                  }}
+                >
+                  显示全部内容
+                </button>
+              )}
+            </div>
+          )}
+        {directory.nextCursor && (
           <button
             className="outline content-load-more"
-            disabled={search.busy}
-            onClick={() => void search.loadMore()}
+            disabled={directory.busy}
+            onClick={() => void directory.loadMore()}
           >
-            继续查找
+            继续加载
           </button>
         )}
       </div>
@@ -553,5 +720,25 @@ export function ObjectCollection({
         />
       )}
     </section>
+  );
+}
+
+function ScriptCatalogProgress({
+  client,
+  entry,
+}: {
+  client: WorkspaceClient;
+  entry: import("./platform-client.js").ScriptLibraryEntry;
+}) {
+  const { element, overview, error } =
+    useVisibleScriptOverview<HTMLSpanElement>(client, entry);
+  return (
+    <span ref={element}>
+      {overview
+        ? `${overview.progress.episodes} 集 · ${overview.progress.scenes} 场`
+        : error
+          ? "进度暂不可用"
+          : "读取进度中…"}
+    </span>
   );
 }

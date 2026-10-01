@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { Application } from "../packages/application/src/application.js";
@@ -10,13 +13,25 @@ import { continuationTarget } from "../packages/application/src/continuation.js"
 import { localAccess, type Receipt } from "../packages/core/src/model.js";
 import { continuationInputFormat } from "../packages/application/src/session-io.js";
 import type { InputContinuation } from "../packages/core/src/continuation.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
+import {
+  assertNoLocalBusinessData,
+  storedData,
+} from "./platform-local-input-fixture.js";
 
 async function fixture() {
-  const store = new WorkspaceStore(":memory:");
+  const directory = mkdtempSync(
+    join(tmpdir(), "morphz-platform-continuation-"),
+  );
+  const store = new WorkspaceStore(join(directory, "transport.sqlite"), {
+    mode: "transport",
+  });
+  const domains = await openApplicationDomainsHost(directory, store);
   const sessions = new Map<string, any>(),
     threads = new Map<string, any>(),
     accepted = new Map<string, any>();
   const attempts: any[] = [];
+  const roots = new Map<string, { sessionId: string; event: any }>();
   let loseReceipt = false,
     closeAtAdmission = false,
     supportsDirectedInput = true;
@@ -36,6 +51,7 @@ async function fixture() {
     if (path === "/api/session-io/capabilities")
       return send(200, {
         enabled: true,
+        client_metadata: true,
         directed_input: supportsDirectedInput,
         formats: [
           { definition: { id: "morphz.application.input", version: "4" } },
@@ -96,12 +112,59 @@ async function fixture() {
           (destination ? "steering-" : "root-") + body.client_message_id,
       };
       accepted.set(body.client_message_id, receipt);
+      roots.set(body.client_message_id, {
+        sessionId: sid,
+        event: {
+          id: receipt.event_id,
+          sequence: roots.size + 1,
+          timestamp: new Date().toISOString(),
+          actor: "Session-Client",
+          type: "session_message",
+          topic: destination ? "chat/steering" : "chat/user_message",
+          payload: {
+            session_id: sid,
+            context_id: sessions.get(sid).context_id,
+            principal_id: "fixture-human",
+            client_message_id: body.client_message_id,
+            session_io: {
+              request: {
+                ...body,
+                client_metadata: storedData(body.client_metadata),
+                message: {
+                  ...body.message,
+                  content: {
+                    ...body.message.content,
+                    value: storedData(body.message.content.value),
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
       if (destination && loseReceipt) {
         loseReceipt = false;
         return res.destroy();
       }
       return send(200, receipt);
     }
+    if (path.endsWith("/timeline"))
+      return send(200, {
+        entries: [...roots.entries()]
+          .filter(([, root]) => root.sessionId === sid)
+          .map(([inputId, root]) => ({
+            entry_id: inputId,
+            visible_at: root.event.timestamp,
+            visible_at_micros: Date.parse(root.event.timestamp) * 1000,
+            root_turn_id: root.event.id,
+            attempt_id: null,
+            display_kind: "input",
+            final_event: true,
+            event: root.event,
+            root_event: null,
+          })),
+        next_before: null,
+      });
     if (path.endsWith("/events")) return send(200, { events: [] });
     if (path === "/api/approvals") return send(200, { approvals: [] });
     return send(sessions.has(sid) ? 200 : 404, sessions.get(sid) ?? {});
@@ -112,13 +175,23 @@ async function fixture() {
     token: "fixture",
     namespace: randomUUID(),
   };
-  let bridge = new RuntimeBridge(store, config),
-    connection = new LocalApplicationConnection(
-      new Application(store, { runtime: bridge }),
-    );
-  let boot = (await connection.call("workspace")) as any;
-  const call = (method: "message" | "command", command: unknown) =>
-    connection.call(method, command, {
+  let bridge = new RuntimeBridge(store, config);
+  let binding = domains.bindRuntime(bridge);
+  const application = () =>
+    new Application(store, {
+      runtime: bridge,
+      platformWork: domains.work,
+      platformDocuments: domains.content,
+    });
+  await application().session(localAccess).createPlatformProject({
+    commandId: randomUUID(),
+    projectId: "first-project",
+    title: "补充请求测试",
+  });
+  let connection = new LocalApplicationConnection(application());
+  let boot = (await connection.call("platform.bootstrap")) as any;
+  const send = (command: unknown) =>
+    connection.call("platform.message", command, {
       identityGeneration: boot.csrfToken,
     }) as Promise<Receipt>;
   const ordinary = (body: string) => ({
@@ -126,7 +199,7 @@ async function fixture() {
     operation: {
       type: "record-input",
       projectId: "first-project",
-      conversationId: "local-dialogue",
+      conversationId: "first-project",
       artifactId: null,
       artifactRevision: null,
       selection: "",
@@ -146,9 +219,36 @@ async function fixture() {
     threads,
     accepted,
     attempts,
-    call,
+    send,
     ordinary,
     supplement,
+    async runtime() {
+      return (
+        await bridge.platformConversationHistory(
+          {
+            projectId: "first-project",
+            conversationId: "first-project",
+          },
+          localAccess,
+        )
+      ).runtime;
+    },
+    target(inputId?: string) {
+      const thread = inputId
+        ? threads.get(`thread-${inputId}`)
+        : [...threads.values()][0];
+      const input = inputId ?? thread.root_turn_id.slice("root-".length);
+      assert.ok(
+        (store.runtimeState() as any).deliveries.some(
+          (delivery: any) =>
+            delivery.inputId === input &&
+            delivery.rootId === thread.root_turn_id,
+        ),
+      );
+      const target = continuationTarget(thread, input, thread.id);
+      assert.ok(target, "The controlled Runtime thread must be active");
+      return target;
+    },
     get bridge() {
       return bridge;
     },
@@ -166,11 +266,11 @@ async function fixture() {
     },
     async reopen() {
       await bridge.stop();
+      await domains.unbindRuntime(binding.authority);
       bridge = new RuntimeBridge(store, config);
-      connection = new LocalApplicationConnection(
-        new Application(store, { runtime: bridge }),
-      );
-      boot = await connection.call("workspace");
+      binding = domains.bindRuntime(bridge);
+      connection = new LocalApplicationConnection(application());
+      boot = await connection.call("platform.bootstrap");
     },
     async waitForRoot(inputId: string) {
       const deadline = Date.now() + 3000;
@@ -188,9 +288,13 @@ async function fixture() {
     },
     async close() {
       await bridge.stop();
+      await domains.unbindRuntime(binding.authority);
+      assertNoLocalBusinessData(directory);
+      await domains.close();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
       store.close();
+      rmSync(directory, { recursive: true, force: true });
     },
   };
 }
@@ -198,16 +302,16 @@ async function fixture() {
 test("定向补充沿用原 Session/root/权限；并行工作不串线，重试不新建执行", async () => {
   const f = await fixture();
   try {
-    const a = await f.call("message", f.ordinary("报告 A")),
-      b = await f.call("message", f.ordinary("资料 B"));
+    const a = await f.send(f.ordinary("报告 A")),
+      b = await f.send(f.ordinary("资料 B"));
+    await f.waitForRoot(a.entityId);
+    await f.waitForRoot(b.entityId);
     await f.bridge.tick();
-    const target = f.bridge
-      .snapshot(localAccess)
-      .activity!.threads.find((t) => t.inputId === a.entityId)!.continuation!;
+    const target = f.target(a.entityId);
     assert.equal(target.threadId, "thread-" + a.entityId);
     const command = f.supplement(target),
-      receipt = await f.call("message", command);
-    const after = f.bridge.snapshot(localAccess),
+      receipt = await f.send(command);
+    const after = await f.runtime(),
       delivery = after.deliveries.find((d) => d.inputId === receipt.entityId)!;
     assert.equal(delivery.supplement, "delivered");
     assert.equal(delivery.cancellable, false);
@@ -236,7 +340,7 @@ test("定向补充沿用原 Session/root/权限；并行工作不串线，重试
     );
     f.threads.get(target.threadId).lifecycle = "completed";
     const count = f.attempts.length;
-    assert.deepEqual(await f.call("message", command), receipt);
+    assert.deepEqual(await f.send(command), receipt);
     assert.equal(f.attempts.length, count);
     assert.equal(f.threads.size, 2);
   } finally {
@@ -247,13 +351,14 @@ test("定向补充沿用原 Session/root/权限；并行工作不串线，重试
 test("丢失补充回执后重开：同一 immutable 请求在目标结束后仍恢复回执，不重复", async () => {
   const f = await fixture();
   try {
-    await f.call("message", f.ordinary("报告 A"));
+    const original = await f.send(f.ordinary("报告 A"));
+    await f.waitForRoot(original.entityId);
     await f.bridge.tick();
-    const target = f.bridge.snapshot().activity!.threads[0]!.continuation!,
+    const target = f.target(),
       command = f.supplement(target);
     f.loseReceipt();
     await assert.rejects(
-      f.call("message", command),
+      f.send(command),
       (e: any) => e.code === "supplement_unconfirmed",
     );
     const before = f.store.runtimeState() as any,
@@ -263,50 +368,53 @@ test("丢失补充回执后重开：同一 immutable 请求在目标结束后仍
     assert.equal(f.accepted.size, 2);
     f.threads.get(target.threadId).lifecycle = "completed";
     await f.reopen();
-    const receipt = await f.call("message", command);
+    const receipt = await f.send(command);
     assert.equal(receipt.entityId, delivered.inputId);
     assert.equal(f.accepted.size, 2);
     assert.equal(
       JSON.stringify((f.store.runtimeState() as any).deliveries[1].request),
       request,
     );
-    assert.equal(f.bridge.snapshot().deliveries[1]!.supplement, "delivered");
+    assert.equal(
+      (await f.runtime()).deliveries.find(
+        (d) => d.inputId === receipt.entityId,
+      )!.supplement,
+      "delivered",
+    );
   } finally {
     await f.close();
   }
 });
 
-test("结束竞态不给新执行；显式后续请求有历史关联并创建一次新执行", async () => {
+test("结束竞态不偷偷创建新执行；用户改为普通消息后仅创建一次执行", async () => {
   const f = await fixture();
   try {
-    await f.call("message", f.ordinary("报告 A"));
+    const original = await f.send(f.ordinary("报告 A"));
+    await f.waitForRoot(original.entityId);
     await f.bridge.tick();
-    const target = f.bridge.snapshot().activity!.threads[0]!.continuation!,
+    const target = f.target(),
       command = f.supplement(target);
     f.closeAtAdmission();
-    await assert.rejects(
-      f.call("message", command),
-      (e: any) => e.code === "work_closed",
-    );
+    await assert.rejects(f.send(command), (e: any) => e.code === "work_closed");
     assert.equal(f.accepted.size, 1);
-    assert.equal(f.bridge.snapshot().deliveries[1]!.rejection, "closed");
-    await assert.rejects(
-      f.call("message", command),
-      (e: any) => e.code === "work_closed",
+    assert.equal(
+      (await f.runtime()).deliveries.find(
+        (d) => d.inputId === command.commandId,
+      )!.rejection,
+      "closed",
     );
-    const follow = f.supplement({ ...target, mode: "follow-up" }),
-      receipt = await f.call("message", follow);
+    await assert.rejects(f.send(command), (e: any) => e.code === "work_closed");
+    const follow = f.ordinary(command.operation.body),
+      receipt = await f.send(follow);
     await f.waitForRoot(receipt.entityId);
     const request = f.attempts.find(
       (r) => r.client_message_id === receipt.entityId,
     );
     assert.equal(request.activation.input_destination, undefined);
-    assert.equal(
-      request.message.content.value.continuation.original_request,
-      "报告 A",
-    );
+    assert.equal(request.message.content.value.continuation, undefined);
+    assert.equal(request.message.content.value.text, command.operation.body);
     assert.equal(f.accepted.size, 2);
-    assert.deepEqual(await f.call("message", follow), receipt);
+    assert.deepEqual(await f.send(follow), receipt);
     await f.bridge.tick();
     assert.equal(f.accepted.size, 2);
   } finally {
@@ -317,41 +425,71 @@ test("结束竞态不给新执行；显式后续请求有历史关联并创建�
 test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒绝", async () => {
   const f = await fixture();
   try {
-    const a = await f.call("message", f.ordinary("报告 A"));
-    await f.call("message", f.ordinary("资料 B"));
+    const a = await f.send(f.ordinary("报告 A"));
+    const b = await f.send(f.ordinary("资料 B"));
+    await f.waitForRoot(a.entityId);
+    await f.waitForRoot(b.entityId);
     await f.bridge.tick();
-    const targets = f.bridge
-      .snapshot()
-      .activity!.threads.map((t) => t.continuation!);
+    const targets = [f.target(a.entityId), f.target(b.entityId)];
     for (const [target, code] of [
       [{ ...targets[0]!, threadId: targets[1]!.threadId }, "forbidden"],
       [{ ...targets[0]!, generation: 2 }, "work_changed"],
     ] as const)
       await assert.rejects(
-        f.call("message", f.supplement(target)),
+        f.send(f.supplement(target)),
         (e: any) => e.code === code,
       );
     const forged = f.supplement(targets[0]!);
     Object.assign(forged.operation, { model: "other" });
-    assert.throws(() => f.store.execute(forged, localAccess), /模型和权限/);
+    await assert.rejects(f.send(forged), /不能更换执行范围/);
     await assert.rejects(
       f.bridge.as({ principalId: "other", actantId: "other" }, () =>
-        f.bridge.validateContinuation(targets[0]!),
+        f.bridge.validatePlatformContinuation(
+          targets[0]!,
+          "first-project",
+          "first-project",
+        ),
       ),
-      /其他身份/,
+      /不属于当前对话或发起者/,
     );
-    assert.equal(f.store.snapshot().inputs.length, 2);
+    assert.equal((f.store.runtimeState() as any).deliveries.length, 2);
+    const ownerActivity = f.bridge.platformNavigationSnapshot(
+      localAccess,
+      ["first-project"],
+    ).runtime.activity!;
+    assert.ok(ownerActivity.threads.length > 0);
+    assert.deepEqual(ownerActivity.threads[0]!.continuation, targets[0]);
     assert.equal(
-      f.bridge.snapshot({
-        principalId: "local-owner",
-        actantId: "morphz-agent",
-      }).activity!.threads[0]!.continuation,
+      f.bridge.platformNavigationSnapshot(
+        {
+          principalId: "local-owner",
+          actantId: "morphz-agent",
+        },
+        ["first-project"],
+      ).runtime.activity!.threads[0]!.continuation,
       undefined,
+    );
+    await assert.rejects(
+      f.bridge.platformConversationHistory(
+        { projectId: "first-project", conversationId: "first-project" },
+        { principalId: "local-owner", actantId: "morphz-agent" },
+      ),
+      (error: any) => error.code === "forbidden",
+    );
+    assert.deepEqual(
+      (await f.runtime()).activity!.threads[0]!.continuation,
+      targets[0],
+    );
+    assert.deepEqual(
+      f.bridge.platformNavigationSnapshot(localAccess, ["first-project"])
+        .runtime.activity!.threads[0]!.continuation,
+      targets[0],
+      "A read-only projection must not mutate the owner's controls",
     );
     assert.equal(f.accepted.size, 2);
     f.threads.get("thread-" + a.entityId).control_state = "paused";
     await assert.rejects(
-      f.call("message", f.supplement(targets[0]!)),
+      f.send(f.supplement(targets[0]!)),
       (e: any) => e.code === "work_closed",
     );
   } finally {
@@ -388,31 +526,32 @@ test("Objective 主线程用监督代次，custom 分支不假装可直接补充
 test("旧 Runtime 不提供假入口，也不把已接受补充重新发送", async () => {
   const f = await fixture();
   try {
-    await f.call("message", f.ordinary("报告 A"));
+    const original = await f.send(f.ordinary("报告 A"));
+    await f.waitForRoot(original.entityId);
     await f.bridge.tick();
-    const target = f.bridge.snapshot().activity!.threads[0]!.continuation!,
+    const target = f.target(),
       command = f.supplement(target);
-    const receipt = await f.call("message", command);
+    const receipt = await f.send(command);
     f.disableDirectedInput();
     await f.bridge.tick();
     assert.equal(f.bridge.supportsDirectedInput, false);
     assert.equal(
-      f.bridge.snapshot().activity!.threads[0]!.continuation,
+      (await f.runtime()).activity!.threads[0]!.continuation,
       undefined,
     );
     assert.equal(
-      ((await f.connection.call("workspace")) as any).capabilities
+      ((await f.connection.call("platform.bootstrap")) as any).capabilities
         .directedInput,
       false,
     );
     await assert.rejects(
-      f.call("message", f.supplement(target, "另一份补充")),
+      f.send(f.supplement(target, "另一份补充")),
       (e: any) => e.code === "invalid",
     );
     const count = f.attempts.length;
-    assert.deepEqual(await f.call("message", command), receipt);
+    assert.deepEqual(await f.send(command), receipt);
     assert.equal(f.attempts.length, count);
-    assert.equal(f.store.snapshot().inputs.length, 2);
+    assert.equal((f.store.runtimeState() as any).deliveries.length, 2);
   } finally {
     await f.close();
   }

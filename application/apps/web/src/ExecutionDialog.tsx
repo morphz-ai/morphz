@@ -116,9 +116,14 @@ export function ExecutionDialog({
       if (
         data.ok === true &&
         typeof data.artifactId === "string" &&
-        client.boot?.workspace.artifacts.some(
+        (client.boot?.workspace.artifacts.some(
           (a) => a.id === data.artifactId && a.projectId === scope.projectId,
-        )
+        ) ||
+          client.contentCatalog.some(
+            (entry) =>
+              entry.id === data.artifactId &&
+              entry.projectId === scope.projectId,
+          ))
       )
         producedId = data.artifactId;
     } catch {
@@ -307,7 +312,11 @@ export function ExecutionDialog({
                       <FileText />
                       {client.boot?.workspace.artifacts.find(
                         (a) => a.id === producedId,
-                      )?.title ?? "打开成果"}
+                      )?.title ??
+                        client.contentCatalog.find(
+                          (entry) => entry.id === producedId,
+                        )?.title ??
+                        "打开成果"}
                     </button>
                   )}
                   <details>

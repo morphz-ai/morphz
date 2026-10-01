@@ -104,6 +104,9 @@
   min-height: 0;
   flex: 1;
 }
+.primary-panel:not([data-interaction="history"]) .script-library {
+  padding-bottom: calc(16px + max(56px, var(--exchange-overlay-height, 0px)));
+}
 .script-library-filters {
   display: flex;
   flex-wrap: wrap;

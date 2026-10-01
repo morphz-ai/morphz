@@ -2,6 +2,9 @@ import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { platformInputState } from "./platform-input-state-fixture.js";
 
 async function action(control: Locator, label: string) {
   await expect(control).toHaveText(label);
@@ -17,8 +20,12 @@ async function action(control: Locator, label: string) {
 test("常用操作用图标与短标签区分正文，完整语义及未发送状态保留", async ({
   page,
 }) => {
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  await source.ensurePersonalSpaces();
   await page.goto("/");
-  const before = await (await page.request.get("/api/workspace")).json();
+  const before = await platformInputState(page, source);
   await openLibrary(page);
   await action(
     page.getByRole("button", { name: "让 Morphz 起草", exact: true }),
@@ -73,6 +80,5 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
   await expect(
     page.getByRole("button", { name: "提交结果并完成", exact: true }),
   ).toHaveText("提交结果并完成");
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toHaveLength(before.workspace.inputs.length);
+  expect(await platformInputState(page, source)).toEqual(before);
 });

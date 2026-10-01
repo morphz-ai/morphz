@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import type { ConversationRuntime } from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 
 test("并发交付按时间追加，运行入口打开精确详情，固定与调宽不改变会话", async ({
   page,
@@ -8,32 +12,25 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   let backgroundRunning = false;
   const inputA = "请整理签约材料-并发验收",
     inputB = "现在在做什么-并发验收";
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    body.workspace.inputs = body.workspace.inputs.filter(
-      (i: { body: string }) => [inputA, inputB].includes(i.body),
-    );
-    body.runtime = {
-      configured: false,
+  const inputs: PlatformHistory["inputs"] = [];
+  const fixture = await mockPlatformConversation(page, () => {
+    const runtime: ConversationRuntime = {
+      ...structuredClone(disconnectedRuntime),
+      configured: true,
       connected: true,
       model: "test",
-      error: "",
-      deliveries: [],
-      messages: [],
     };
-    for (const input of body.workspace.inputs) {
+    for (const input of inputs) {
       const a = input.body === inputA;
-      body.runtime.deliveries.push({
+      runtime.deliveries.push({
         inputId: input.id,
         state: a && !finished ? "running" : "completed",
         error: null,
         cancellable: a && !finished,
+        retryable: false,
       });
       if (!a || finished)
-        body.runtime.messages.push({
+        runtime.messages.push({
           id: input.id + "-reply",
           inputId: input.id,
           projectId: input.projectId,
@@ -46,7 +43,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
             : "2099-01-01T10:00:01.000Z",
         });
       if (a && backgroundRunning)
-        body.runtime.activity = {
+        runtime.activity = {
           available: true,
           truncated: false,
           threads: [
@@ -67,7 +64,30 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
           ],
         };
     }
-    await route.fulfill({ response, json: body });
+    return { inputs, runtime };
+  });
+  // Submit through the real composer and current request contract. Only
+  // Runtime receipt/history presentation is synthetic, not model execution.
+  await page.route("**/api/platform/messages", async (route) => {
+    const command = route.request().postDataJSON();
+    expect([inputA, inputB]).toContain(command.operation.body);
+    // Ordinary dialogue keeps the personal Session, while unassigned input
+    // and any resulting content belong to the user's desk.
+    expect(command.operation.projectId).toBe(fixture.spaces.deskId);
+    expect(command.operation.conversationId).toBe(fixture.scope.conversationId);
+    if (!inputs.some((input) => input.id === command.commandId))
+      inputs.push({
+        ...fixture.input(
+          command.commandId,
+          command.operation.body,
+          new Date().toISOString(),
+        ),
+        projectId: command.operation.projectId,
+      });
+    await route.fulfill({
+      status: 202,
+      json: { commandId: command.commandId, entityId: command.commandId },
+    });
   });
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
@@ -79,10 +99,10 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
     .click();
   const box = await openInput(page);
   await box.fill(inputA);
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.locator(".human-message")).toHaveCount(1);
   await box.fill(inputB);
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByText("材料还在整理中", { exact: true })).toBeVisible();
   const marker = page.getByRole("button", {
     name: "后台执行中",
@@ -113,6 +133,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   await expect(resize).toHaveAttribute("aria-valuenow", "356");
   finished = true;
   backgroundRunning = true;
+  await fixture.refresh();
   await expect(page.getByText("材料已创建完成", { exact: true })).toBeVisible();
   await expect(marker).toBeVisible();
   await panel.getByRole("button", { name: /核对剩余材料/ }).click();
@@ -134,6 +155,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
     },
   });
   backgroundRunning = false;
+  await fixture.refresh();
   await expect(
     panel.getByText("此分支已不在进行中", { exact: true }),
   ).toBeVisible();

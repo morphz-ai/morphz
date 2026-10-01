@@ -77,6 +77,13 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     args: ["tests/fixtures/production-desktop-entry.cjs"],
     env,
   });
+  const dragRequests: {
+    at: number;
+    reading: number;
+    height: number;
+    from: { x: number; y: number };
+    to: { x: number; y: number };
+  }[] = [];
   try {
     await expect
       .poll(() => desktop.windows().some((p) => p.url() === "morphz://app/"))
@@ -85,10 +92,29 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     // Native focus transfer cannot be asserted from an inactive OS window.
     // Establish the same foreground prerequisite as the capture-window test.
     await desktop.evaluate(({ app, BrowserWindow }) => {
+      const main = BrowserWindow.getAllWindows().find(
+        (window) => window.webContents.getURL() === "morphz://app/",
+      )!;
+      const events: unknown[] = [];
+      (
+        globalThis as unknown as { browserExchangeNativeDiagnostic: unknown[] }
+      ).browserExchangeNativeDiagnostic = events;
+      const record = (type: string) =>
+        events.push({
+          at: Date.now(),
+          type,
+          focused: main.isFocused(),
+          bounds: main.getBounds(),
+          contentBounds: main.getContentBounds(),
+          zoom: main.webContents.getZoomFactor(),
+        });
+      main.on("focus", () => record("focus"));
+      main.on("blur", () => record("blur"));
+      main.on("move", () => record("move"));
+      main.on("resize", () => record("resize"));
+      record("installed");
       app.focus({ steal: true });
-      BrowserWindow.getAllWindows()
-        .find((window) => window.webContents.getURL() === "morphz://app/")!
-        .focus();
+      main.focus();
     });
     await expect
       .poll(
@@ -107,9 +133,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     const boot = await page.evaluate(async () => {
       const result = await window.morphzDesktop!.application!.invoke({
         id: crypto.randomUUID(),
-        method: "workspace",
+        method: "platform.bootstrap",
       });
-      if (!result.ok) throw new Error("fixture workspace unavailable");
+      if (!result.ok) throw new Error("fixture Platform bootstrap unavailable");
       return result.value as { centerId: string; principalId: string };
     });
     const partition =
@@ -264,9 +290,121 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     // The composed guest must not intercept an edge drag or lose its viewport,
     // instance or form when the host exchange changes size.
     const resize = page.getByRole("separator", { name: "调整消息区高度" });
+    // Test-only causal recorder. It adds no per-gesture wait or synthetic
+    // pointer delivery: the original coordinate mouse gesture remains intact.
+    // A missing shield after mouseup alone cannot prove that pointerdown reached
+    // the handle, especially where Electron has native draggable hit regions.
+    await page.evaluate(() => {
+      const events: unknown[] = [];
+      (
+        window as unknown as { browserExchangeGestureDiagnostic: unknown[] }
+      ).browserExchangeGestureDiagnostic = events;
+      const name = (target: EventTarget | null) =>
+        target instanceof Element
+          ? {
+              tag: target.tagName,
+              class: target.getAttribute("class"),
+              role: target.getAttribute("role"),
+              label: target.getAttribute("aria-label"),
+            }
+          : { tag: target === window ? "WINDOW" : "DOCUMENT" };
+      const state = () => {
+        const handle = document.querySelector(".exchange-resizer");
+        const panel = document.querySelector(".exchange-panel");
+        return {
+          mode: document
+            .querySelector(".primary-panel")
+            ?.getAttribute("data-interaction"),
+          reading: handle?.getAttribute("aria-valuenow"),
+          max: handle?.getAttribute("aria-valuemax"),
+          resizing: !!panel?.hasAttribute("data-resizing"),
+          shield: !!document.querySelector(".exchange-resize-shield"),
+          focused: document.hasFocus(),
+          active: name(document.activeElement),
+        };
+      };
+      const record = (event: Event) => {
+        const pointer = event instanceof PointerEvent ? event : undefined;
+        const handle = document.querySelector(".exchange-resizer");
+        events.push({
+          at: Date.now(),
+          type: event.type,
+          target: name(event.target),
+          ...(pointer
+            ? {
+                x: pointer.clientX,
+                y: pointer.clientY,
+                pointerId: pointer.pointerId,
+                button: pointer.button,
+                buttons: pointer.buttons,
+                primary: pointer.isPrimary,
+                capture: !!handle?.hasPointerCapture(pointer.pointerId),
+                ...(event.type === "pointermove"
+                  ? {}
+                  : {
+                      hit: name(
+                        document.elementFromPoint(
+                          pointer.clientX,
+                          pointer.clientY,
+                        ),
+                      ),
+                    }),
+              }
+            : {}),
+          ...state(),
+        });
+      };
+      for (const type of [
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+        "gotpointercapture",
+        "lostpointercapture",
+        "focus",
+        "blur",
+      ])
+        window.addEventListener(type, record, true);
+      const observer = new MutationObserver((changes) => {
+        events.push({
+          at: Date.now(),
+          type: "mutation",
+          changes: changes.map((change) => ({
+            target: name(change.target),
+            attribute: change.attributeName,
+            added: [...change.addedNodes].map(name),
+            removed: [...change.removedNodes].map(name),
+          })),
+          ...state(),
+        });
+      });
+      observer.observe(document.querySelector(".primary-panel")!, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: [
+          "data-interaction",
+          "data-resizing",
+          "data-resized",
+          "aria-valuenow",
+          "aria-valuemax",
+        ],
+      });
+      observer.observe(document.body, { childList: true });
+      events.push({ at: Date.now(), type: "installed", ...state() });
+    });
     const dragTo = async (height: number) => {
       const reading = Number(await resize.getAttribute("aria-valuenow"));
       const r = (await resize.boundingBox())!;
+      dragRequests.push({
+        at: Date.now(),
+        reading,
+        height,
+        from: { x: r.x + r.width / 2, y: r.y + r.height / 2 },
+        to: {
+          x: r.x + r.width / 2,
+          y: r.y + r.height / 2 + reading - height,
+        },
+      });
       await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
       await page.mouse.down();
       await page.mouse.move(
@@ -558,7 +696,37 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await page.getByRole("button", { name: "移除引用 1", exact: true }).click();
     await expect(input).toBeFocused();
   } finally {
-    await desktop.close();
-    await rm(fixture, { recursive: true, force: true });
+    try {
+      const page = desktop.windows().find((p) => p.url() === "morphz://app/");
+      const renderer = page
+        ? await page
+            .evaluate(
+              () =>
+                (
+                  window as unknown as {
+                    browserExchangeGestureDiagnostic?: unknown[];
+                  }
+                ).browserExchangeGestureDiagnostic ?? [],
+            )
+            .catch((error: unknown) => ({ unavailable: String(error) }))
+        : { unavailable: "Host page closed" };
+      const native = await desktop
+        .evaluate(
+          () =>
+            (
+              globalThis as unknown as {
+                browserExchangeNativeDiagnostic?: unknown[];
+              }
+            ).browserExchangeNativeDiagnostic ?? [],
+        )
+        .catch((error: unknown) => ({ unavailable: String(error) }));
+      await info.attach("browser-exchange-gesture-diagnostic", {
+        body: Buffer.from(JSON.stringify({ dragRequests, renderer, native })),
+        contentType: "application/json",
+      });
+    } finally {
+      await desktop.close();
+      await rm(fixture, { recursive: true, force: true });
+    }
   }
 });

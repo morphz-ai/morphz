@@ -1,10 +1,9 @@
 import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkspaceStore } from "../dist/service/packages/application/src/store.js";
 const directory = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
 const site = createServer((_req, res) =>
   res.end(
@@ -14,7 +13,12 @@ const site = createServer((_req, res) =>
 await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${site.address().port}/`;
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !/^(MORPHZ_|MORPHZ_WORK_|DOUBAO_|OPENAI_|ANTHROPIC_)/.test(key),
+    ),
+  ),
   MORPHZ_APP_EMBEDDED_FIXTURE: directory,
   MORPHZ_APP_ENV_FILE: "",
 };
@@ -118,17 +122,37 @@ try {
   await expect(
     page.getByRole("button", { name: "编辑当前收藏" }),
   ).toBeVisible();
-  const store = new WorkspaceStore(join(directory, "data/workspace.sqlite"));
-  assert.equal(store.snapshot().artifacts.length, 0);
-  assert.equal(
-    store.snapshot().bookmarks.filter((b) => !b.deletedAt).length,
-    1,
-  );
-  store.close();
+  const persisted = await page.evaluate(async () => {
+    const api = window.morphzDesktop.application;
+    const boot = await api.invoke({
+      id: crypto.randomUUID(),
+      method: "platform.bootstrap",
+    });
+    if (!boot.ok) throw new Error(JSON.stringify(boot.error));
+    const read = async (method, params) => {
+      const reply = await api.invoke({
+        id: crypto.randomUUID(),
+        method,
+        params,
+        identityGeneration: boot.value.csrfToken,
+      });
+      if (!reply.ok) throw new Error(JSON.stringify(reply.error));
+      return reply.value;
+    };
+    return {
+      content: await read("content.list", { limit: 100 }),
+      bookmarks: await read("bookmarks.list", {}),
+    };
+  });
+  assert.equal(persisted.content.length, 0);
+  assert.equal(persisted.bookmarks.filter((b) => !b.deletedAt).length, 1);
+  assert.equal(persisted.bookmarks[0].url, url);
   console.log(
     "PASS production Electron bookmarks: native page, IPC persistence, edit/delete/undo, reload, 760px and 200% zoom",
   );
 } finally {
   await app?.close();
+  site.closeAllConnections();
   await new Promise((resolve) => site.close(resolve));
+  rmSync(directory, { recursive: true, force: true });
 }

@@ -1,8 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
 import {
   taskPresentation,
   taskRunBusy,
+  taskRuntimeSchema,
+  type TaskRuntime,
 } from "../../../packages/core/src/task-runtime.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -16,6 +18,8 @@ export function TaskRunPanel({
   onRespond,
   onOpen,
   compact = false,
+  runtimeObserved = false,
+  runtimeReadError,
 }: {
   artifact: Artifact;
   state: Workspace;
@@ -23,22 +27,124 @@ export function TaskRunPanel({
   onRespond: () => void;
   onOpen?: (id: string) => void;
   compact?: boolean;
+  runtimeObserved?: boolean;
+  runtimeReadError?: string;
 }) {
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [localReadError, setReadError] = useState("");
+  const readError = runtimeObserved ? (runtimeReadError ?? "") : localReadError;
+  const [live, setLive] = useState<{
+    taskId: string;
+    taskRevision: number;
+    view: TaskRuntime;
+  } | null>(null);
+  const [loadedResponses, setLoadedResponses] = useState<{
+    taskId: string;
+    taskRevision: number;
+    items: Workspace["taskResponses"];
+  } | null>(null);
+  const api = useRef(client);
+  api.current = client;
   const [inspect, setInspect] = useState(false);
   const task = artifact.content;
-  if (task.kind !== "task") return null;
-  // All task surfaces consume the same authenticated, cached workspace snapshot.
-  const view = client.boot?.taskRuns[artifact.id];
-  const run = view?.runs.find((r) => r.run === task.runRequested);
+  const isTask = task.kind === "task";
+  const taskRunRequested = isTask ? task.runRequested : 0;
   const human =
+    isTask &&
     state.actants.find((a) => a.id === task.assigneeId)?.kind === "human";
+  useEffect(() => {
+    if (
+      !isTask ||
+      human ||
+      !taskRunRequested ||
+      !client.online ||
+      runtimeObserved
+    )
+      return;
+    let cancelled = false;
+    let reading = false;
+    const taskId = artifact.id;
+    const taskRevision = artifact.revision;
+    const refresh = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const view = taskRuntimeSchema.parse(
+          await api.current.taskRuntime(taskId),
+        );
+        if (!cancelled) {
+          setLive({ taskId, taskRevision, view });
+          setReadError("");
+        }
+      } catch (cause) {
+        if (!cancelled)
+          setReadError(
+            cause instanceof Error ? cause.message : "无法读取执行状态。",
+          );
+      } finally {
+        reading = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [
+    artifact.id,
+    artifact.revision,
+    taskRunRequested,
+    isTask,
+    human,
+    client.online,
+    runtimeObserved,
+  ]);
+  useEffect(() => {
+    if (!isTask || !human || compact || !client.online) return;
+    let cancelled = false;
+    const taskId = artifact.id;
+    const taskRevision = artifact.revision;
+    void api.current.taskResponses(taskId).then(
+      (items) => {
+        if (cancelled) return;
+        setLoadedResponses({ taskId, taskRevision, items });
+        setReadError("");
+      },
+      (cause: unknown) => {
+        if (!cancelled)
+          setReadError(
+            cause instanceof Error ? cause.message : "无法读取事项回应。",
+          );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.id, artifact.revision, isTask, human, compact, client.online]);
+  if (!isTask) return null;
+  const view =
+    live?.taskId === artifact.id && live.taskRevision === artifact.revision
+      ? live.view
+      : client.boot?.taskRuns[artifact.id];
+  const run = view?.runs.find((r) => r.run === task.runRequested);
   const active = taskRunBusy(task, view);
   const status = taskPresentation(task, !!human, view);
   const connected = client.online && client.boot?.capabilities.runtime;
-  const responses = state.taskResponses.filter((r) => r.taskId === artifact.id);
+  const responses =
+    loadedResponses?.taskId === artifact.id &&
+    loadedResponses.taskRevision === artifact.revision
+      ? loadedResponses.items
+      : [];
+  const responsesLoading =
+    human &&
+    !compact &&
+    client.online &&
+    (loadedResponses?.taskId !== artifact.id ||
+      loadedResponses.taskRevision !== artifact.revision) &&
+    !readError;
   const canRespond =
     human &&
     client.boot?.actantId === task.assigneeId &&
@@ -158,6 +264,11 @@ export function TaskRunPanel({
     >
       {human ? (
         <>
+          {responsesLoading && (
+            <p className="muted" role="status">
+              正在读取处理结果…
+            </p>
+          )}
           {responses.length > 0 && <h2>处理结果</h2>}
           {responses.map((r) => (
             <blockquote key={r.id}>
@@ -206,18 +317,18 @@ export function TaskRunPanel({
                   )
                 }
               >
-                {run.stopRequested ? "正在停止…" : "停止"}
+                {run.stopRequested ? status.label : "停止"}
               </button>
             )}
             {active && !run && (
               <button
-                disabled={busy || !client.online}
+                disabled={busy || !connected}
                 onClick={() =>
                   void perform(() =>
-                    client.execute({
-                      type: "cancel-task",
-                      taskId: artifact.id,
-                      expectedRevision: artifact.revision,
+                    client.taskRuntime(artifact.id, {
+                      run: task.runRequested,
+                      revision: 1,
+                      action: "stop",
                     }),
                   )
                 }
@@ -277,9 +388,9 @@ export function TaskRunPanel({
           )}
         </>
       )}
-      {(error || (!compact && (view?.error || run?.error))) && (
+      {(error || readError || (!compact && (view?.error || run?.error))) && (
         <p className="delivery-error" role="alert">
-          {error || view?.error || run?.error}
+          {error || readError || view?.error || run?.error}
         </p>
       )}
       {inspect && threadId && (
@@ -290,6 +401,7 @@ export function TaskRunPanel({
             artifactId: artifact.id,
             conversationId: thread?.conversationId,
             threadId,
+            taskRun: true,
           }}
           onClose={() => setInspect(false)}
           onOpen={(id) => {

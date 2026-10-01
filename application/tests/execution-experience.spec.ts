@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 
 test("whole-message halo requires a live execution thread; status navigation stays separate from the fixed sidebar toggle", async ({
   page,
@@ -8,56 +11,50 @@ test("whole-message halo requires a live execution thread; status navigation sta
   let available = true,
     connected = true,
     lifecycle = "open";
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    const input = {
-      id: "halo-fixture",
-      projectId: "first-project",
-      conversationId: "local-dialogue",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "后台执行光效验收：整理测试资料",
-      status: "recorded",
-      targetActantId: "morphz-agent",
-      author: { principalId: "local-owner", actantId: "local-human" },
-      createdAt: "2026-09-13T00:00:00Z",
-    };
-    body.workspace.inputs = [input];
-    body.runtime = {
-      configured: false,
+  const inputs: PlatformHistory["inputs"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
       connected,
       model: "fixture",
       error: "",
       messages: [],
-      deliveries: [{ inputId: input.id, state: "running", error: null }],
+      deliveries: inputs.map((input) => ({
+        inputId: input.id,
+        state: "running" as const,
+        error: null,
+        retryable: false,
+      })),
       activity: {
         available,
         truncated: false,
-        threads: [
-          {
-            id: "halo-thread",
-            kind,
-            inputId: input.id,
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            rootId: "halo-root",
-            sessionId: "halo-session",
-            title: "整理测试资料",
-            phase: "running",
-            lifecycle,
-            revision: 1,
-            updatedAt: input.createdAt,
-          },
-        ],
+        threads: inputs.map((input) => ({
+          id: "halo-thread",
+          kind,
+          inputId: input.id,
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          rootId: "halo-root",
+          sessionId: "halo-session",
+          title: "整理测试资料",
+          phase: "running",
+          lifecycle,
+          revision: 1,
+          updatedAt: input.createdAt,
+        })),
       },
       attention: { available: true, approvals: [] },
-    };
-    await route.fulfill({ response, json: body });
-  });
+    },
+  }));
+  inputs.push(
+    fixture.input(
+      "halo-fixture",
+      "后台执行光效验收：整理测试资料",
+      "2026-09-13T00:00:00Z",
+    ),
+  );
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
   );
@@ -89,6 +86,7 @@ test("whole-message halo requires a live execution thread; status navigation sta
   });
   await expect(understanding).toBeVisible();
   kind = "execution";
+  await fixture.refresh();
   await expect(message).toHaveAttribute("data-background-execution", "true");
   await expect(understanding).toBeVisible();
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
@@ -135,24 +133,28 @@ test("whole-message halo requires a live execution thread; status navigation sta
     path: "test-results/execution-halo-dark-reduced-motion.png",
   });
   available = false;
+  await fixture.refresh();
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
   );
   available = true;
   connected = false;
+  await fixture.refresh();
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
   );
   connected = true;
   lifecycle = "cancelled";
+  await fixture.refresh();
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
   );
   lifecycle = "open";
   kind = undefined;
+  await fixture.refresh();
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
@@ -168,27 +170,10 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     available = true;
   const calls: any[] = [];
   let release: (() => void) | undefined;
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    const input = {
-      id: "approval-input",
-      projectId: "first-project",
-      conversationId: "local-dialogue",
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: "测试一次受限读取",
-      status: "recorded",
-      targetActantId: "morphz-agent",
-      author: { principalId: "local-owner", actantId: "local-human" },
-      createdAt: "2026-09-13T00:00:00Z",
-    };
-    body.workspace.inputs = [input];
+  const inputs: PlatformHistory["inputs"] = [];
+  const fixture = await mockPlatformConversation(page, () => {
     const approval = {
-      requested_at: input.createdAt,
+      requested_at: "2026-09-13T00:00:00Z",
       fingerprint: "a".repeat(64),
       request: {
         approval_id: "inline-approval",
@@ -210,18 +195,20 @@ test("pending approvals remain visible across work surfaces; inline decisions us
         },
       },
     };
-    body.runtime = {
-      configured: false,
-      connected: true,
-      model: "fixture",
-      error: "",
-      messages: [],
-      deliveries: [],
-      attention: {
-        available,
-        approvals: pending
-          ? [
-              {
+    return {
+      inputs,
+      runtime: {
+        ...disconnectedRuntime,
+        configured: true,
+        connected: true,
+        model: "fixture",
+        error: "",
+        messages: [],
+        deliveries: [],
+        attention: {
+          available,
+          approvals: pending
+            ? inputs.map((input) => ({
                 scope: {
                   projectId: input.projectId,
                   conversationId: input.conversationId,
@@ -230,13 +217,15 @@ test("pending approvals remain visible across work surfaces; inline decisions us
                   threadId: "approval-thread",
                 },
                 approval,
-              },
-            ]
-          : [],
+              }))
+            : [],
+        },
       },
     };
-    await route.fulfill({ response, json: body });
   });
+  inputs.push(
+    fixture.input("approval-input", "测试一次受限读取", "2026-09-13T00:00:00Z"),
+  );
   await page.route("**/api/executions/control", async (route) => {
     calls.push(route.request().postDataJSON());
     await new Promise<void>((resolve) => {
@@ -267,11 +256,13 @@ test("pending approvals remain visible across work surfaces; inline decisions us
   await expect(card).toContainText("读取：/fixture/private");
   await expect(card).toContainText("不额外授权联网");
   available = false;
+  await fixture.refresh();
   await expect(
     card.getByRole("button", { name: "仅允许这一次" }),
   ).toBeDisabled();
   await expect(control).toContainText("待确认");
   available = true;
+  await fixture.refresh();
   await expect(
     card.getByRole("button", { name: "仅允许这一次" }),
   ).toBeEnabled();
@@ -320,8 +311,7 @@ test("pending approvals remain visible across work surfaces; inline decisions us
   await expect.poll(() => calls.length).toBe(1);
   expect(calls[0]).toEqual({
     scope: {
-      projectId: "first-project",
-      conversationId: "local-dialogue",
+      ...fixture.scope,
       artifactId: null,
       inputId: "approval-input",
       threadId: "approval-thread",
@@ -349,6 +339,7 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     panel.getByRole("button", { name: "仅允许这一次" }),
   ).toBeDisabled();
   pending = false;
+  await fixture.refresh();
   await expect(control).toHaveCount(0);
   await expect(panel.getByLabel("待审批操作")).toHaveCount(0);
   expect(calls).toHaveLength(1);

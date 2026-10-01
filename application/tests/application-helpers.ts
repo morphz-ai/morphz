@@ -20,6 +20,14 @@ export async function openLibrary(page: Page) {
     name: /^查看(?:全部|项目)内容$/,
     exact: true,
   });
+  if (!(await contents.isVisible())) {
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "内容", exact: true })
+      .click();
+    await expect(page.locator(".content-actions")).toBeVisible();
+    return;
+  }
   // Let a newly revealed toolbar reach the native compositor before clicking.
   await contents.evaluate(
     () =>

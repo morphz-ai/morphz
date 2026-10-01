@@ -1,25 +1,28 @@
 import { test, expect } from "@playwright/test";
-import { seedLegacyDocument } from "./center-fixtures.js";
+import { randomUUID } from "node:crypto";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { openLibrary } from "./application-helpers.js";
 
-test("旧导入副本仍可阅读、引用和打开历史版本，但不再进入成果搜索", async ({
+test("导入副本可阅读、引用和打开历史版本，但不进入 Agent 成果全文搜索", async ({
   page,
 }) => {
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const suffix = randomUUID().replaceAll("-", "");
+  const projectId = `project_${suffix}`;
+  const objectId = `document_${suffix}`;
+  const name = `导入资料验证-${suffix}`;
+  await source.createProject(name, randomUUID(), projectId);
+  const imported = (await source.importDocument({
+    commandId: randomUUID(),
+    objectId,
+    projectId,
+    relativePath: "产品说明.md",
+    text: "# 产品说明\n\n只有正文出现的测试短语：蝴蝶资料检索。\n\n这是可引用的原文。",
+  })) as { contentId: string };
   await page.goto("/");
-  const name = "旧资料验证-" + Date.now();
-  await page.getByRole("button", { name: "新建项目", exact: true }).click();
-  await page.getByLabel("项目名称", { exact: true }).fill(name);
-  await page.getByRole("button", { name: "创建", exact: true }).click();
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => p.title === name,
-  );
-  await seedLegacyDocument(
-    page,
-    project.id,
-    "产品说明.md",
-    "# 产品说明\n\n只有正文出现的测试短语：蝴蝶资料检索。\n\n这是可引用的原文。",
-  );
   await openLibrary(page);
   await page.locator(".artifact-card").filter({ hasText: "产品说明" }).click();
   await expect(page.locator(".source-strip")).toContainText("产品说明.md");
@@ -50,19 +53,20 @@ test("旧导入副本仍可阅读、引用和打开历史版本，但不再进�
   ).toHaveAttribute("title", /蝴蝶资料检索/);
   await page.getByLabel("AI 输入内容").fill("请解释这段资料");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const after = await (await page.request.get("/api/workspace")).json();
-  const input = after.workspace.inputs.find(
-    (i: { body: string }) => i.body === "请解释这段资料",
+  const saved = page
+    .locator(".human-message")
+    .filter({ hasText: "请解释这段资料" });
+  await expect(saved).toContainText("已保存 · 未发送");
+  await expect(saved.locator(".sent-text-quotes")).toContainText(
+    "蝴蝶资料检索",
   );
-  expect(input.artifactRevision).toBe(1);
-  expect(input.textQuotes).toHaveLength(1);
-  expect(input.textQuotes[0].text).toContain("蝴蝶资料检索");
-  expect(input.textQuotes[0].source).toMatchObject({
-    kind: "artifact",
-    artifactId: input.artifactId,
-    revision: 1,
-  });
+  expect((await source.getContent(imported.contentId)).projectId).toBe(
+    projectId,
+  );
   await page.reload();
+  await expect(saved.locator(".sent-text-quotes")).toContainText(
+    "蝴蝶资料检索",
+  );
   await expect(page.locator(".document-body")).toContainText("蝴蝶资料检索");
   await page.getByRole("button", { name: "版本历史", exact: true }).click();
   await expect(page.getByLabel("查看版本")).toHaveValue("1");

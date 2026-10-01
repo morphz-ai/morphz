@@ -1,13 +1,26 @@
 import { test, expect } from "@playwright/test";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
 test("PDF 附件调宽后文字不叠加，分页与草稿保持，不创建内容", async ({
   page,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  const submittedInputs: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/platform/messages"
+    )
+      submittedInputs.push(request.url());
+  });
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await source.contentCounts();
   await page.goto("/");
   await page.getByRole("button", { name: "对话", exact: true }).click();
-  const before = await (await page.request.get("/api/workspace")).json();
   const input = page.getByLabel("AI 输入内容");
   await input.fill("PDF 附件回归，不发送");
   await page
@@ -55,8 +68,7 @@ test("PDF 附件调宽后文字不叠加，分页与草稿保持，不创建内�
   await expect(
     page.getByRole("button", { name: "移除附件 reader.pdf" }),
   ).toBeVisible();
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
+  expect(await source.contentCounts()).toEqual(before);
+  expect(submittedInputs).toEqual([]);
   expect(errors).toEqual([]);
 });

@@ -1,6 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 
 test("流式标记跟随真实帧状态，结束、断线与参数生成完毕即停止动效", async ({
   page,
@@ -21,46 +28,29 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       }
     };
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    body.runtime = {
-      ...body.runtime,
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
       model: "fixture-model",
       messages: [],
-      deliveries: [],
-    };
-    body.workspace.inputs = [
-      {
-        id: "fixture-input",
-        projectId: body.workspace.projects.find(
-          (p: { kind: string }) => p.kind === "desk",
-        ).id,
-        conversationId: "local-dialogue",
-        artifactId: null,
-        artifactRevision: null,
-        author: { actantId: "local-human", principalId: "local-owner" },
-        selection: "",
-        body: "流式交互验收",
-        status: "recorded",
-        targetActantId: "morphz-agent",
-        createdAt: "2026-09-09T00:00:00Z",
-      },
-    ];
-    body.runtime.deliveries = [
-      {
-        inputId: "fixture-input",
-        state: "running",
-        cancellable: true,
-        error: null,
-      },
-    ];
-    await route.fulfill({ response, json: body });
-  });
+      deliveries: [
+        {
+          inputId: "fixture-input",
+          state: "running",
+          cancellable: true,
+          error: null,
+          retryable: false,
+        },
+      ],
+    },
+  }));
+  inputs.push(
+    presentation.input("fixture-input", "流式交互验收", "2026-09-09T00:00:00Z"),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -75,41 +65,45 @@ test("流式标记跟随真实帧状态，结束、断线与参数生成完毕�
       toolStatus?: string;
     } = {},
   ) {
-    await page.evaluate((options) => {
-      for (const source of (window as any).__streamSources) {
-        const params = new URL(source.url, location.origin).searchParams;
-        source.onmessage?.({
-          data: JSON.stringify({
-            reset: true,
-            connected: options.connected ?? true,
-            removed: [],
-            messages: [
-              {
-                id: "stream:fixture",
-                projectId: params.get("projectId"),
-                conversationId: params.get("conversationId"),
-                inputId: "fixture-input",
-                rootId: null,
-                artifactId: null,
-                createdAt: "2026-09-09T00:00:00Z",
-                text: options.text ?? "这一段正在逐步输出",
-                streaming: options.streaming ?? true,
-                kind: options.toolStatus ? "tool" : "reply",
-                ...(options.toolStatus
-                  ? {
-                      tool: {
-                        name: "read_file",
-                        arguments: '{"path":',
-                        status: options.toolStatus,
-                      },
-                    }
-                  : {}),
-              },
-            ],
-          }),
-        });
-      }
-    }, options);
+    await page.evaluate(
+      ({ options, scope }) => {
+        const expectedPath = `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`;
+        for (const source of (window as any).__streamSources) {
+          if (new URL(source.url, location.origin).pathname !== expectedPath)
+            throw new Error("Stream subscription is not bound to this Session");
+          source.onmessage?.({
+            data: JSON.stringify({
+              reset: true,
+              connected: options.connected ?? true,
+              removed: [],
+              messages: [
+                {
+                  id: "stream:fixture",
+                  ...scope,
+                  inputId: "fixture-input",
+                  rootId: null,
+                  artifactId: null,
+                  createdAt: "2026-09-09T00:00:00Z",
+                  text: options.text ?? "这一段正在逐步输出",
+                  streaming: options.streaming ?? true,
+                  kind: options.toolStatus ? "tool" : "reply",
+                  ...(options.toolStatus
+                    ? {
+                        tool: {
+                          name: "read_file",
+                          arguments: '{"path":',
+                          status: options.toolStatus,
+                        },
+                      }
+                    : {}),
+                },
+              ],
+            }),
+          });
+        }
+      },
+      { options, scope: presentation.scope },
+    );
   }
   const message = page.locator('[data-message-id="stream:fixture"]');
   await expect

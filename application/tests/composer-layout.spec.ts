@@ -2,19 +2,45 @@ import { test, expect } from "@playwright/test";
 import { composerAction, openInput } from "./interaction-helpers.js";
 
 test("全宽输入、悬浮 Dock 与常驻模型在明暗和窄窗口中可用", async ({ page }) => {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    body.runtime = {
-      ...body.runtime,
-      configured: true,
-      connected: true,
-      model: "fixture-model",
-    };
-    await route.fulfill({ response, json: body });
-  });
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), "if-none-match": "" },
+      });
+      const navigation = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...navigation,
+          runtime: {
+            ...navigation.runtime,
+            configured: true,
+            connected: true,
+            model: "fixture-model",
+          },
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history$/,
+    (route) =>
+      route.fulfill({
+        json: {
+          inputs: [],
+          nextCursor: null,
+          runtime: {
+            configured: true,
+            connected: true,
+            model: "fixture-model",
+            error: "",
+            messages: [],
+            deliveries: [],
+          },
+        },
+      }),
+  );
   await page.route("**/api/models", (route) =>
     route.fulfill({
       json: {

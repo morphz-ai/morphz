@@ -17,12 +17,16 @@ import {
 } from "../../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../../packages/application/src/local-connection.js";
 import { WorkspaceStore } from "../../packages/application/src/store.js";
+import { openApplicationDomainsHost } from "../../packages/application/src/application-domains-host.js";
 import {
   loadRuntimeConfig,
   RuntimeBridge,
 } from "../../packages/application/src/runtime.js";
 import { loadIdentity } from "../../packages/application/src/identity-config.js";
-import { BrowserBroker } from "../../packages/application/src/browser.js";
+import {
+  BrowserBroker,
+  platformBrowserPageAuthority,
+} from "../../packages/application/src/browser.js";
 import { SpeechService } from "../../packages/application/src/speech.js";
 import { LocalFiles } from "../../packages/application/src/local-files.js";
 import { loadServiceEnvironment } from "../../packages/application/src/environment.js";
@@ -90,24 +94,34 @@ export async function openEmbeddedApplication(
   if (!isAbsolute(directory) || !isAbsolute(profile))
     throw new Error("应用目录必须是明确的绝对路径。");
   loadServiceEnvironment();
-  const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
+  const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
+    mode: "transport",
+  });
   let runtime: RuntimeBridge | undefined;
   let tools: Awaited<ReturnType<typeof listenLocalHostTools>> | undefined;
+  let domains:
+    Awaited<ReturnType<typeof openApplicationDomainsHost>> | undefined;
   try {
-    const identity = loadIdentity(store, directory);
+    const identity = await loadIdentity(store, directory);
     const config = loadRuntimeConfig(directory);
     runtime = config ? new RuntimeBridge(store, config, identity) : undefined;
-    const browser = new BrowserBroker(store);
     const readerOcr = new ReaderOcr(
-      store,
       join(directory, "reader-ocr-models"),
       ocrEngine,
     );
     const localFiles = new LocalFiles(
       join(profile, "local-file-references.json"),
-      store,
+      store.identity(),
     );
-    runtime?.attachBrowser(browser);
+    domains = await openApplicationDomainsHost(directory, store, identity);
+    const browser = new BrowserBroker(
+      store,
+      platformBrowserPageAuthority(domains),
+    );
+    const bookmarkAgent = runtime
+      ? domains.bindRuntime(runtime, localFiles)
+      : undefined;
+    let taskDispatcher = bookmarkAgent?.dispatcher;
     const application = new Application(store, {
       runtime,
       identity,
@@ -115,6 +129,16 @@ export async function openEmbeddedApplication(
       speech: new SpeechService(process.env.DOUBAO_API_KEY),
       localFiles,
       readerOcr,
+      bookmarkDomain: domains.browser,
+      platformWork: domains.work,
+      platformDocuments: domains.content,
+      platformScripts: domains.content,
+      platformReader: domains.reader,
+      messageAttachments: domains.messageAttachments,
+      images: domains.images,
+      uiPackages: domains.uiPackages,
+      notifications: domains.notifications,
+      platformTaskRuns: domains.taskRuns(runtime),
     });
     const authentication = authenticationFile(profile, store.identity());
     let cookie = authentication.read();
@@ -122,10 +146,14 @@ export async function openEmbeddedApplication(
       const previous =
         (await legacyAuthentication(identity.cookieName)) ??
         (await legacyAuthentication(identity.legacyCookieName));
-      if (identity.authenticate(previous)) {
+      if (await identity.authenticateShared(previous)) {
         cookie = previous;
         authentication.save(cookie);
       }
+    }
+    if (identity && cookie && !(await identity.authenticateShared(cookie))) {
+      cookie = undefined;
+      authentication.save(undefined);
     }
     const connection = new LocalApplicationConnection(application, cookie);
     let manifest = config
@@ -135,16 +163,24 @@ export async function openEmbeddedApplication(
           runtime!.teamIdentity,
         )
       : undefined;
-    if (runtime && manifest)
+    if (runtime && manifest && bookmarkAgent)
       tools = await listenLocalHostTools(
         manifest.endpoint,
         runtimeAgentTools(
-          store,
           runtime,
           manifest.token,
-          browser,
-          localFiles,
-          readerOcr,
+          {
+            authority: bookmarkAgent.authority,
+            work: domains.work.service,
+            content: domains.content,
+            reader: domains.reader.service,
+          },
+          {
+            browser: browser,
+            localFiles: localFiles,
+            readerOcr: readerOcr,
+            bookmarkDomain: bookmarkAgent,
+          },
         ),
       );
     if (!identity)
@@ -161,39 +197,63 @@ export async function openEmbeddedApplication(
             };
           }
           const candidate = new RuntimeBridge(store, next, undefined, false);
-          candidate.attachBrowser(browser);
           const prepared = prepareLocalHostTools(
             directory,
             next.namespace,
             false,
           );
-          const listener = await listenLocalHostTools(
-            prepared.endpoint,
-            runtimeAgentTools(
-              store,
-              candidate,
-              prepared.token,
-              browser,
-              localFiles,
-              readerOcr,
-            ),
+          const candidateBookmarks = domains!.bindRuntime(
+            candidate,
+            localFiles,
           );
+          let listener;
+          try {
+            listener = await listenLocalHostTools(
+              prepared.endpoint,
+              runtimeAgentTools(
+                candidate,
+                prepared.token,
+                {
+                  authority: candidateBookmarks.authority,
+                  work: domains!.work.service,
+                  content: domains!.content,
+                  reader: domains!.reader.service,
+                },
+                {
+                  browser: browser,
+                  localFiles: localFiles,
+                  readerOcr: readerOcr,
+                  bookmarkDomain: candidateBookmarks,
+                },
+              ),
+            );
+          } catch (error) {
+            await domains!.unbindRuntime(candidateBookmarks.authority);
+            await candidate.stop();
+            throw error;
+          }
           return {
             commit() {
               runtime = candidate;
               tools = listener;
               manifest = prepared;
               application.options.runtime = candidate;
+              application.options.platformTaskRuns =
+                domains!.taskRuns(candidate);
+              taskDispatcher = candidateBookmarks.dispatcher;
               candidate.start();
+              taskDispatcher.start();
             },
             async discard() {
               await listener.close();
+              await domains!.unbindRuntime(candidateBookmarks.authority);
               await candidate.stop();
             },
           };
         },
       );
     runtime?.start();
+    taskDispatcher?.start();
     let stopping: Promise<void> | undefined;
     return {
       connection,
@@ -210,7 +270,9 @@ export async function openEmbeddedApplication(
           readerOcr.close();
           application.speechStreams.close();
           await tools?.close();
+          await taskDispatcher?.stop();
           await runtime?.stop();
+          await domains?.close();
           store.close();
         })());
       },
@@ -218,6 +280,7 @@ export async function openEmbeddedApplication(
   } catch (error) {
     await tools?.close();
     await runtime?.stop();
+    await domains?.close();
     store.close();
     throw error;
   }
@@ -230,9 +293,21 @@ export function embeddedResources(
     resource(
       kind: "assets" | "attachments" | "application-view",
       id: string,
+      source?: { projectId: string; conversationId: string; inputId: string },
     ):
       | { mime: string; bytes: Uint8Array }
       | Promise<{ mime: string; bytes: Uint8Array }>;
+    readerOriginalMetadata?(
+      artifactId: string,
+      revision: number,
+    ): Promise<{ byteLength: number; sha256: string }>;
+    readerOriginalRange?(
+      artifactId: string,
+      revision: number,
+      start: number,
+      endExclusive: number,
+      expectedSha256?: string,
+    ): Promise<Uint8Array>;
   },
 ) {
   return async (request: Request): Promise<Response> => {
@@ -254,14 +329,123 @@ export function embeddedResources(
         return new Response("Forbidden", { status: 403, headers });
       if (!["GET", "HEAD"].includes(request.method))
         return new Response("Method not allowed", { status: 405, headers });
+      if (url.pathname === "/api/reader/original") {
+        const artifactId = url.searchParams.get("artifactId");
+        const revisionText = url.searchParams.get("revision");
+        const revision = Number(revisionText);
+        if (
+          [...url.searchParams.keys()].length !== 2 ||
+          !artifactId ||
+          !revisionText ||
+          !/^[1-9]\d*$/.test(revisionText) ||
+          !Number.isSafeInteger(revision)
+        )
+          return new Response("Invalid PDF source", { status: 400, headers });
+        if (
+          !connection.readerOriginalMetadata ||
+          !connection.readerOriginalRange
+        )
+          return new Response("PDF source unavailable", {
+            status: 503,
+            headers,
+          });
+        const original = await connection.readerOriginalMetadata(
+          artifactId,
+          revision,
+        );
+        const size = original.byteLength;
+        const range = request.headers.get("range");
+        const match = range === null ? null : /^bytes=(\d+)-(\d*)$/.exec(range);
+        const start = match ? Number(match[1]) : 0;
+        const inclusiveEnd =
+          match && match[2] !== "" ? Number(match[2]) : size - 1;
+        if (
+          range !== null &&
+          (!match ||
+            !Number.isSafeInteger(start) ||
+            !Number.isSafeInteger(inclusiveEnd) ||
+            start >= size ||
+            inclusiveEnd < start)
+        )
+          return new Response(null, {
+            status: 416,
+            headers: { ...headers, "Content-Range": `bytes */${size}` },
+          });
+        const end = Math.min(inclusiveEnd + 1, size);
+        let offset = start;
+        const body =
+          request.method === "HEAD"
+            ? null
+            : new ReadableStream<Uint8Array>({
+                async pull(controller) {
+                  try {
+                    if (request.signal.aborted)
+                      throw (
+                        request.signal.reason ?? new Error("PDF 读取已取消。")
+                      );
+                    if (offset >= end) {
+                      controller.close();
+                      return;
+                    }
+                    const next = Math.min(offset + 1024 * 1024, end);
+                    const bytes = await connection.readerOriginalRange!(
+                      artifactId,
+                      revision,
+                      offset,
+                      next,
+                      original.sha256,
+                    );
+                    if (bytes.byteLength !== next - offset)
+                      throw new Error("PDF 原件分块长度不匹配。");
+                    offset = next;
+                    controller.enqueue(new Uint8Array(bytes));
+                  } catch (error) {
+                    controller.error(error);
+                  }
+                },
+              });
+        return new Response(body, {
+          status: match ? 206 : 200,
+          headers: {
+            ...headers,
+            "Content-Type": "application/pdf",
+            "Content-Length": String(end - start),
+            "Accept-Ranges": "bytes",
+            ETag: `"${original.sha256}"`,
+            ...(match
+              ? { "Content-Range": `bytes ${start}-${end - 1}/${size}` }
+              : {}),
+          },
+        });
+      }
       const resource =
-        /^\/api\/(assets|attachments|application-view)\/([a-zA-Z0-9_-]+)$/.exec(
-          url.pathname,
+        /^\/api\/(assets|attachments|application-view)\/([a-zA-Z0-9._@-]+)$/.exec(
+          url.pathname.replace(/%40/gi, "@"),
         );
       if (resource) {
         const kind = resource[1] as
           "assets" | "attachments" | "application-view";
-        const file = await connection.resource(kind, resource[2]!);
+        const keys = [...url.searchParams.keys()];
+        if (
+          keys.length &&
+          (kind !== "attachments" ||
+            keys.length !== 3 ||
+            !["projectId", "conversationId", "inputId"].every((key) =>
+              url.searchParams.get(key),
+            ))
+        )
+          return new Response("Invalid resource source", {
+            status: 400,
+            headers,
+          });
+        const source = keys.length
+          ? {
+              projectId: url.searchParams.get("projectId")!,
+              conversationId: url.searchParams.get("conversationId")!,
+              inputId: url.searchParams.get("inputId")!,
+            }
+          : undefined;
+        const file = await connection.resource(kind, resource[2]!, source);
         return new Response(
           request.method === "HEAD" ? null : new Uint8Array(file.bytes),
           {

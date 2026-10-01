@@ -1,4 +1,15 @@
 import { test, expect } from "@playwright/test";
+import {
+  PlatformClient,
+  type PlatformHistory,
+} from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  platformInputState,
+  platformContentState,
+} from "./platform-input-state-fixture.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
 
 test.beforeEach(async ({ page }) => {
@@ -89,7 +100,13 @@ test("系统附件选择取消后恢复原按钮焦点，保留草稿且不触�
 }) => {
   const input = await openInput(page);
   await input.fill("TEST 取消附件后继续输入，不发送");
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = {
+    inputs: await platformInputState(page, source),
+    content: await platformContentState(source),
+  };
   const attach = page.getByRole("button", { name: "附加文件", exact: true });
   const picker = page.waitForEvent("filechooser");
   await attach.click();
@@ -110,9 +127,10 @@ test("系统附件选择取消后恢复原按钮焦点，保留草稿且不触�
   await expect(attach).toBeEnabled();
   await expect(attach).toBeFocused();
   await expect(input).toHaveValue("TEST 取消附件后继续输入，不发送");
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
-  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
+  expect({
+    inputs: await platformInputState(page, source),
+    content: await platformContentState(source),
+  }).toEqual(before);
 });
 
 test("未固定时鼠标和键盘移除附件，输入仍可继续且不影响其他附件", async ({
@@ -276,31 +294,12 @@ test("真实组件的明暗视觉样例保留消息、表格、输入和全部�
 }) => {
   // Only this isolated test supplies synthetic messages. Never write a mock
   // reply into the real center or report this image as original-app acceptance.
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p: { kind: string }) => p.kind === "desk",
-    ).id;
-    boot.workspace.inputs = [
-      {
-        id: "visual-review-input",
-        projectId,
-        conversationId: "local-dialogue",
-        artifactId: null,
-        artifactRevision: null,
-        author: { actantId: "local-human", principalId: "local-owner" },
-        selection: "",
-        body: "TEST 视觉验收：比较两家供应商的报价，并列出下一步。",
-        status: "recorded",
-        targetActantId: "morphz-agent",
-        createdAt: "2026-09-14T08:00:00Z",
-      },
-    ];
-    boot.runtime = {
-      ...boot.runtime,
+  const inputs: PlatformHistory["inputs"] = [];
+  const messages: PlatformHistory["runtime"]["messages"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
       model: "gpt-6-astra",
@@ -313,20 +312,24 @@ test("真实组件的明暗视觉样例保留消息、表格、输入和全部�
           cancellable: false,
         },
       ],
-      messages: [
-        {
-          id: "visual-review-reply",
-          projectId,
-          conversationId: "local-dialogue",
-          inputId: "visual-review-input",
-          artifactId: null,
-          kind: "reply",
-          createdAt: "2026-09-14T08:00:01Z",
-          text: "甲的报价更低，相比乙节省 **30 元**。\n\n| 供应商 | 报价 | 确认状态 |\n| --- | --- | --- |\n| 甲 | 120 元 | 已确认 |\n| 乙 | 150 元 | 待确认 |\n\n下一步：确认交付时间，再决定采用哪家报价。",
-        },
-      ],
-    };
-    await route.fulfill({ response, json: boot });
+      messages,
+    },
+  }));
+  inputs.push(
+    fixture.input(
+      "visual-review-input",
+      "TEST 视觉验收：比较两家供应商的报价，并列出下一步。",
+      "2026-09-14T08:00:00Z",
+    ),
+  );
+  messages.push({
+    id: "visual-review-reply",
+    ...fixture.scope,
+    inputId: "visual-review-input",
+    artifactId: null,
+    kind: "reply",
+    createdAt: "2026-09-14T08:00:01Z",
+    text: "甲的报价更低，相比乙节省 **30 元**。\n\n| 供应商 | 报价 | 确认状态 |\n| --- | --- | --- |\n| 甲 | 120 元 | 已确认 |\n| 乙 | 150 元 | 待确认 |\n\n下一步：确认交付时间，再决定采用哪家报价。",
   });
   await page.route("**/api/models", (route) =>
     route.fulfill({

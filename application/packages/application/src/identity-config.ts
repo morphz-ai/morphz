@@ -36,19 +36,12 @@ export const centerMembersSchema = z
       .max(200),
   })
   .strict();
+export type CenterMembers = z.infer<typeof centerMembersSchema>;
 
 /** Operator-owned local control plane, never an HTTP body or a project document. */
-export function loadIdentity(
-  store: WorkspaceStore,
-  directory: string,
-  existing?: IdentityCenter,
-) {
+export function readCenterMembers(directory: string) {
   const filename = join(directory, "members.json");
-  if (!existsSync(filename)) {
-    if (existing || requiresIdentity(store))
-      throw new Error("身份配置不可用；不允许回退为单用户模式。");
-    return undefined;
-  }
+  if (!existsSync(filename)) return undefined;
   const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const info = fstatSync(fd);
@@ -58,30 +51,45 @@ export function loadIdentity(
       (process.platform !== "win32" && info.mode & 0o077)
     )
       throw new Error("members.json 必须是仅当前用户可读写的普通文件。");
-    let config;
     try {
-      config = centerMembersSchema.parse(JSON.parse(readFileSync(fd, "utf8")));
+      return centerMembersSchema.parse(JSON.parse(readFileSync(fd, "utf8")));
     } catch {
       throw new Error("members.json 格式无效；配置内容不会写入日志。");
     }
-    const identity = identityConfigSchema.parse({
-      version: 1,
-      members: config.members.map(
-        ({ principalId, actantId, enabled, loginTokenHash }) => ({
-          principalId,
-          actantId,
-          enabled,
-          loginTokenHash,
-        }),
-      ),
-    });
-    store.provisionMembers(config.members);
-    if (existing) {
-      existing.replaceConfiguration(identity);
-      return existing;
-    }
-    return new IdentityCenter(store, identity);
   } finally {
     closeSync(fd);
   }
+}
+
+export function identityConfiguration(config: CenterMembers) {
+  return identityConfigSchema.parse({
+    version: 1,
+    members: config.members.map(
+      ({ principalId, actantId, enabled, loginTokenHash }) => ({
+        principalId,
+        actantId,
+        enabled,
+        loginTokenHash,
+      }),
+    ),
+  });
+}
+
+export async function loadIdentity(
+  store: WorkspaceStore,
+  directory: string,
+  existing?: IdentityCenter,
+) {
+  const config = readCenterMembers(directory);
+  if (!config) {
+    if (existing || requiresIdentity(store))
+      throw new Error("身份配置不可用；不允许回退为单用户模式。");
+    return undefined;
+  }
+  const identity = identityConfiguration(config);
+  if (existing) {
+    await existing.replaceConfiguration(identity, config.members);
+    return existing;
+  }
+  return new IdentityCenter(store, identity, Date.now, config.members);
 }

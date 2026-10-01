@@ -1,51 +1,144 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
-import { seedCenter } from "./center-fixtures.js";
+import { randomUUID } from "node:crypto";
 import { openInput } from "./interaction-helpers.js";
-import type { Boot } from "../apps/web/src/client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { commandSchema } from "../packages/core/src/model.js";
+import type {
+  PlatformHistory,
+  PlatformClient,
+} from "../apps/web/src/platform-client.js";
+import type { LocalSavedInput } from "../apps/web/src/local-saved-inputs.js";
 
-async function fixture(page: Page) {
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find(
-    (project) => project.kind === "dialogue",
-  )!.id;
-  const inputId = await seedCenter(page, {
-    type: "record-input",
+async function createDocument(
+  source: PlatformClient,
+  projectId: string,
+  title: string,
+  markdown: string,
+) {
+  const objectId = randomUUID();
+  await source.createDocument({
+    commandId: randomUUID(),
+    objectId,
     projectId,
-    conversationId: projectId,
-    artifactId: null,
-    artifactRevision: null,
-    selection: "",
-    body: "TEST 消息引用：如何选择工具？",
-    targetActantId: "morphz-agent",
+    title,
+    markdown,
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
+  return source.resolveContent({
+    appId: "morphz.objects",
+    appObjectId: objectId,
+  });
+}
+
+/** Message presentation uses controlled Runtime history. Document/Reader data
+ * use real app domains. Persistence and source authorization are separately
+ * exercised by text-quotes.test.ts through the formal Host ingress/outbox. */
+async function fixture(page: Page, failure?: "reject-once" | "lose-once") {
+  const inputId = randomUUID();
+  const createdAt = "2026-09-30T00:00:00.000Z";
+  const records = new Map<
+    string,
+    { operation: LocalSavedInput["operation"]; createdAt: string }
+  >();
+  const sentIds: string[] = [];
+  const submitted: PlatformHistory["inputs"] = [];
+  const runtime: PlatformHistory["runtime"] = {
+    ...disconnectedRuntime,
+    configured: true,
+    connected: true,
+    messages: [],
+    deliveries: [
+      { inputId, state: "completed", error: null, retryable: false },
+    ],
+  };
+  const source = await mockPlatformConversation(page, () => ({
+    inputs: [original, ...submitted],
+    runtime,
+  }));
+  const original = source.input(
+    inputId,
+    "TEST 消息引用：如何选择工具？",
+    createdAt,
+  );
+  const projectId = source.scope.projectId;
+  runtime.messages = [
+    {
+      id: "publication:quote-fixture",
+      ...source.scope,
+      inputId,
+      artifactId: null,
+      rootId: null,
+      kind: "reply",
+      createdAt: "2026-09-30T00:00:00.001Z",
+      text:
+        "先**理解问题**，再选择工具。\n\n第二段：可以比较多个方案。\n\n" +
+        "\u0060代码与标点 <tag> 🦋\u0060 也可以引用。",
+    },
+  ];
+  await page.route("**/api/platform/messages", async (route) => {
+    const { commandId, operation } = commandSchema.parse(
+      route.request().postDataJSON(),
+    );
+    expect(operation.type).toBe("record-input");
+    if (operation.type !== "record-input")
+      throw new Error("Wrong message operation");
+    sentIds.push(commandId);
+    if (sentIds.length === 1 && failure === "reject-once")
+      return route.fulfill({
+        status: 503,
+        json: { message: "TEST 暂时不可用" },
+      });
+    const existing = records.get(commandId);
+    if (existing) expect(operation).toEqual(existing.operation);
+    else
+      records.set(commandId, {
+        operation,
+        createdAt: new Date().toISOString(),
+      });
+    if (sentIds.length === 1 && failure === "lose-once")
+      return route.fulfill({
+        status: 503,
+        json: { message: "TEST 回执丢失" },
+      });
+    const record = records.get(commandId)!;
+    if (!submitted.some((input) => input.id === commandId)) {
+      const {
+        type: _type,
+        newConversation: _new,
+        artifactId,
+        artifactRevision,
+        application,
+        applicationInstanceId,
+        ...fields
+      } = operation;
+      submitted.push({
+        ...fields,
+        ...source.input(commandId, operation.body, record.createdAt),
+        projectId: operation.projectId,
+        conversationId: operation.conversationId ?? operation.projectId,
+        ...(artifactId ? { artifactId } : {}),
+        ...(artifactRevision ? { artifactRevision } : {}),
+        ...(application && applicationInstanceId
+          ? {
+              application: {
+                ...application,
+                instanceId: applicationInstanceId,
+                harness: null,
+              },
+            }
+          : {}),
+      });
+      runtime.deliveries.push({
+        inputId: commandId,
+        state: "queued",
+        error: null,
+        retryable: false,
+      });
+    }
+    await route.fulfill({
+      status: 202,
+      json: { commandId, entityId: commandId },
     });
-    const data: Boot = await response.json();
-    const original = data.workspace.inputs.find(
-      (input) => input.id === inputId,
-    )!;
-    data.runtime.messages = [
-      {
-        id: "publication:quote-fixture",
-        projectId,
-        conversationId: projectId,
-        inputId,
-        artifactId: null,
-        rootId: null,
-        kind: "reply",
-        createdAt: new Date(Date.parse(original.createdAt) + 1).toISOString(),
-        text: "先**理解问题**，再选择工具。\n\n第二段：可以比较多个方案。\n\n`代码与标点 <tag> 🦋` 也可以引用。",
-      },
-    ];
-    data.runtime.deliveries = data.workspace.inputs.map((input) => ({
-      inputId: input.id,
-      state: "completed",
-      error: null,
-      retryable: false,
-    }));
-    await route.fulfill({ response, json: data });
   });
   await page.goto("/");
   await page
@@ -55,7 +148,7 @@ async function fixture(page: Page) {
   await openInput(page);
   const reply = page.locator('[data-message-id="publication:quote-fixture"]');
   await expect(reply).toBeVisible();
-  return { reply, inputId, projectId };
+  return { ...source, reply, inputId, projectId, sentIds, records };
 }
 
 async function selectText(locator: Locator, text: string) {
@@ -86,10 +179,10 @@ async function selectText(locator: Locator, text: string) {
   }, text);
 }
 
-test("选文引用、逐段评论、去重、移除、草稿恢复、真实保存与来源回跳", async ({
+test("选文引用、逐段评论、去重、移除、发送与来源回跳", async ({
   page,
 }, info) => {
-  const { reply } = await fixture(page);
+  const { reply, records } = await fixture(page);
   const selected = "先理解问题，再选择工具。";
   await selectText(reply.locator("[data-quotable]"), selected);
   const quoteButton = page.getByRole("button", { name: "评论选中文字" });
@@ -124,13 +217,7 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
     "请举一个具体例子。",
   );
   await page.screenshot({ path: info.outputPath("quote-draft.png") });
-  const response = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes("/api/commands"),
-  );
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await response;
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(drafts).toHaveCount(0);
   const sent = page
     .locator(".human-message")
@@ -139,8 +226,10 @@ test("选文引用、逐段评论、去重、移除、草稿恢复、真实保�
   await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
   await sent.getByRole("button", { name: "查看引用 1 的原文" }).click();
   await expect(reply).toHaveAttribute("data-quote-revealed", "true");
-  const saved: Boot = await (await page.request.get("/api/workspace")).json();
-  expect(saved.workspace.inputs.at(-1)!.textQuotes![0]).toMatchObject({
+  const saved = [...records.values()].find(
+    (input) => input.operation.body === "请举一个具体例子。",
+  )!;
+  expect(saved.operation.textQuotes![0]).toMatchObject({
     text: selected,
     comment: "先判断问题的依据是什么？",
     source: { messageId: "publication:quote-fixture" },
@@ -318,7 +407,7 @@ test("行中引用的编号位于正文外侧，同一行多个编号不重叠�
 });
 
 test("失败保留引用与正文，可重试；只引用也能发送", async ({ page }) => {
-  const { reply } = await fixture(page);
+  const { reply, sentIds, records } = await fixture(page, "reject-once");
   await selectText(
     reply.locator("[data-quotable]"),
     "第二段：可以比较多个方案。",
@@ -326,19 +415,16 @@ test("失败保留引用与正文，可重试；只引用也能发送", async ({
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
-  await page.route(
-    "**/api/commands",
-    (route) =>
-      route.fulfill({ status: 503, json: { error: "TEST 暂时不可用" } }),
-    { times: 1 },
-  );
-  const send = page.getByRole("button", { name: "保存输入", exact: true });
+  const send = page.getByRole("button", { name: "发送消息", exact: true });
   await expect(send).toBeEnabled();
   await send.click();
   await expect(drafts).toContainText("可以比较多个方案");
   await expect(send).toBeEnabled();
   await send.click();
   await expect(drafts).toHaveCount(0);
+  expect(sentIds).toHaveLength(2);
+  expect(sentIds[1]).toBe(sentIds[0]);
+  expect(records.size).toBe(1);
   await expect(
     page.locator(".human-message").last().locator(".sent-text-quotes"),
   ).toContainText("可以比较多个方案");
@@ -384,7 +470,13 @@ test("选文按钮跟随阅读区域，不引用时间或跨消息内容，Escap
 test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷新与回跳保留当前对话", async ({
   page,
 }, info) => {
-  const { reply, projectId: conversationId } = await fixture(page);
+  const {
+    reply,
+    projectId: conversationId,
+    client,
+    spaces,
+    records,
+  } = await fixture(page);
   await selectText(
     reply.locator("[data-quotable]"),
     "先理解问题，再选择工具。",
@@ -392,18 +484,14 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("第一处：历史消息");
   await page.keyboard.press("Escape");
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
+  const projectId = spaces.deskId;
   const title = "TEST 统一评论文档 " + Date.now();
-  const documentId = await seedCenter(page, {
-    type: "create-artifact",
+  const doc = await createDocument(
+    client,
     projectId,
     title,
-    content: {
-      kind: "document",
-      markdown: "# 合成文档\n\n文档中的第二处意见。\n\n另一段原文。",
-    },
-  });
+    "# 合成文档\n\n文档中的第二处意见。\n\n另一段原文。",
+  );
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容", exact: true })
@@ -477,12 +565,11 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     .getByLabel("AI 输入内容", { exact: true })
     .fill("TEST 将这三处一起讨论");
   await page.screenshot({ path: info.outputPath("multi-source-quotes.png") });
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(drafts).toHaveCount(0);
-  const saved: Boot = await (await page.request.get("/api/workspace")).json();
-  const submitted = saved.workspace.inputs.findLast(
-    (i) => i.body === "TEST 将这三处一起讨论",
-  )!;
+  const submitted = [...records.values()].findLast(
+    (i) => i.operation.body === "TEST 将这三处一起讨论",
+  )!.operation;
   expect(submitted.conversationId).toBe(conversationId);
   expect(submitted.textQuotes!.map((q) => q.source.kind)).toEqual([
     "message",
@@ -490,7 +577,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     "reading",
   ]);
   expect(submitted.textQuotes![1]!.source).toMatchObject({
-    artifactId: documentId,
+    artifactId: doc.id,
     revision: 1,
   });
   expect(submitted.textQuotes![2]).toMatchObject({
@@ -502,16 +589,10 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
 });
 
 test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文", async ({ page }) => {
-  await fixture(page);
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
+  const { client, spaces, records } = await fixture(page);
+  const projectId = spaces.deskId;
   const title = "TEST 草稿评论 " + Date.now();
-  const artifactId = await seedCenter(page, {
-    type: "create-artifact",
-    projectId,
-    title,
-    content: { kind: "document", markdown: "已保存的原文。" },
-  });
+  const doc = await createDocument(client, projectId, title, "已保存的原文。");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容", exact: true })
@@ -548,16 +629,17 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
     ),
   ).toBe(selected);
   await openInput(page);
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("group", { name: "选文与评论" })).toHaveCount(0);
-  const after: Boot = await (await page.request.get("/api/workspace")).json();
+  expect(await client.readDocument(doc.id)).toMatchObject({
+    revision: 1,
+    markdown: "已保存的原文。",
+  });
   expect(
-    after.workspace.artifacts.find((a) => a.id === artifactId)!.content,
-  ).toEqual({ kind: "document", markdown: "已保存的原文。" });
-  expect(
-    after.workspace.inputs.findLast(
-      (i) => i.textQuotes?.[0]?.comment === "TEST 讨论草稿，不保存正文",
-    )?.textQuotes?.[0],
+    [...records.values()].findLast(
+      (i) =>
+        i.operation.textQuotes?.[0]?.comment === "TEST 讨论草稿，不保存正文",
+    )?.operation.textQuotes?.[0],
   ).toMatchObject({
     draft: true,
     text: selected,
@@ -566,7 +648,7 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
 });
 
 test("切换命名对话不带入另一 Session 的评论草稿", async ({ page }) => {
-  const { reply } = await fixture(page);
+  const { reply, client } = await fixture(page);
   await selectText(
     reply.locator("[data-quotable]"),
     "先理解问题，再选择工具。",
@@ -575,7 +657,7 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 原 Session 评论");
   await page.keyboard.press("Escape");
   const title = "TEST 独立引用 " + Date.now();
-  await seedCenter(page, { type: "create-project", title });
+  await client.createProject(title, randomUUID(), randomUUID());
   await page
     .getByRole("button", { name: "新建项目对话：" + title, exact: true })
     .click();
@@ -591,38 +673,26 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
   );
 });
 
-test("服务器已保存但回执丢失时，原评论可重试且只保存一次", async ({ page }) => {
-  const { reply } = await fixture(page);
+test("消息回执丢失时，原评论使用同一命令重试且不重复提交", async ({ page }) => {
+  const { reply, sentIds, records } = await fixture(page, "lose-once");
   await selectText(reply.locator("[data-quotable]"), "再选择工具。");
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 回执丢失");
   await page.keyboard.press("Escape");
-  const ids: string[] = [];
-  await page.route("**/api/commands", async (route) => {
-    const request = route.request().postDataJSON();
-    if (request.operation.type !== "record-input") return route.continue();
-    ids.push(request.commandId);
-    if (ids.length === 1) {
-      const result = await route.fetch();
-      expect(result.ok()).toBe(true);
-      return route.fulfill({ status: 503, json: { message: "TEST 回执丢失" } });
-    }
-    return route.continue();
-  });
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
     "TEST 回执丢失",
   );
   await page.reload();
   await openInput(page);
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect(page.getByRole("group", { name: "选文与评论" })).toHaveCount(0);
-  expect(ids).toHaveLength(2);
-  expect(ids[1]).toBe(ids[0]);
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
+  expect(sentIds).toHaveLength(2);
+  expect(sentIds[1]).toBe(sentIds[0]);
+  expect(records.size).toBe(1);
   expect(
-    boot.workspace.inputs.filter((i) =>
-      i.textQuotes?.some((q) => q.comment === "TEST 回执丢失"),
+    [...records.values()].filter((i) =>
+      i.operation.textQuotes?.some((q) => q.comment === "TEST 回执丢失"),
     ),
   ).toHaveLength(1);
 });

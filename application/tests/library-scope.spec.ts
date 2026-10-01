@@ -1,58 +1,69 @@
 import { openSettings } from "./settings-helpers.js";
-import { seedCenter } from "./center-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import type { Command } from "../packages/core/src/model.js";
-import type { Boot } from "../apps/web/src/client.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import type { LocalSavedInput } from "../apps/web/src/local-saved-inputs.js";
 import { openInput } from "./interaction-helpers.js";
-import { humanTask } from "./artifact-fixtures.js";
 
-async function snapshot(page: Page): Promise<Boot> {
-  return (await page.request.get("/api/workspace")).json();
-}
-async function command(page: Page, operation: Command["operation"]) {
-  const boot = await snapshot(page);
-  const response = await page.request.post("/api/commands", {
-    headers: {
-      "X-Morphz-Token": boot.csrfToken,
-      Origin: "http://127.0.0.1:65421",
-    },
-    data: { commandId: randomUUID(), operation },
+const connect = () =>
+  PlatformClient.connect(new HttpApplicationClient("http://127.0.0.1:65421"));
+
+async function createDocument(
+  source: PlatformClient,
+  projectId: string,
+  title: string,
+  markdown: string,
+) {
+  const objectId = randomUUID();
+  await source.createDocument({
+    commandId: randomUUID(),
+    objectId,
+    projectId,
+    title,
+    markdown,
   });
-  expect(response.ok(), await response.text()).toBe(true);
-  return (await response.json()).entityId as string;
+  return source.resolveContent({
+    appId: "morphz.objects",
+    appObjectId: objectId,
+  });
+}
+
+/** No Runtime is configured in this UI fixture. Saving an input must remain
+ * a recoverable Client record, not a fake Platform or Runtime message. */
+async function savedInput(page: Page, body: string) {
+  return page.evaluate((text) => {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.includes(":saved-input:")) continue;
+      const input = JSON.parse(localStorage.getItem(key)!);
+      if (input.operation.body === text) return input;
+    }
+    return null;
+  }, body) as Promise<LocalSavedInput | null>;
 }
 
 test("内容能直接找到对话和项目文档，长文滚动、返回和重载不丢目录", async ({
   page,
 }) => {
+  const source = await connect();
+  const spaces = await source.ensurePersonalSpaces();
+  const initialRuntime = await source.navigationRuntime();
+  const initialViews = await source.appViews();
+  const initialConversations = await source.conversations(spaces.dialogueId);
   await page.goto("/");
-  const initial = await snapshot(page);
-  const owner = initial.workspace.projects.find((p) => p.kind === "desk")!;
   const title = "对话中生成的现场清单-" + randomUUID();
-  const doc = await command(page, {
-    type: "create-artifact",
-    projectId: owner.id,
+  const doc = await createDocument(
+    source,
+    spaces.deskId,
     title,
-    content: {
-      kind: "document",
-      markdown:
-        "这份文档由对话创建，保存在未归项目。\n\n" +
-        "长文阅读与滚动验证。\n\n".repeat(120),
-    },
-  });
+    "这份文档由对话创建，保存在未归项目。\n\n" +
+      "长文阅读与滚动验证。\n\n".repeat(120),
+  );
   const projectTitle = "资料归属验证-" + randomUUID();
-  const projectId = await command(page, {
-    type: "create-project",
-    title: projectTitle,
-  });
+  const projectId = randomUUID();
+  await source.createProject(projectTitle, randomUUID(), projectId);
   const projectDoc = "项目自己的文档-" + randomUUID();
-  await command(page, {
-    type: "create-artifact",
-    projectId,
-    title: projectDoc,
-    content: { kind: "document", markdown: "项目正文" },
-  });
+  await createDocument(source, projectId, projectDoc, "项目正文");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容", exact: true })
@@ -94,45 +105,54 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   ).toHaveAttribute("aria-pressed", "true");
   await page.reload();
   await expect(card).toBeVisible();
-  const after = await snapshot(page);
-  expect(after.workspace.artifacts.find((a) => a.id === doc)?.projectId).toBe(
-    owner.id,
+  expect((await source.getContent(doc.id)).projectId).toBe(spaces.deskId);
+  expect(await source.readDocument(doc.id)).toMatchObject({
+    revision: 1,
+    title,
+  });
+  expect((await source.navigationRuntime()).runtime.deliveries).toEqual(
+    initialRuntime.runtime.deliveries,
   );
-  expect(after.workspace.inputs).toEqual(initial.workspace.inputs);
-  expect(after.workspace.applicationInstances).toEqual(
-    initial.workspace.applicationInstances,
+  expect(await source.appViews()).toEqual(initialViews);
+  expect(await source.conversations(spaces.dialogueId)).toEqual(
+    initialConversations,
   );
-  expect(
-    after.workspace.conversations.filter((c) => c.id !== projectId),
-  ).toEqual(initial.workspace.conversations);
   await page.screenshot({ path: "test-results/library-all-spaces.png" });
 });
 
-test("搜索先看到刚创建的对象时，打开会补齐快照而不是无响应", async ({
+test("搜索先看到刚创建的对象时，打开会补齐目录而不是无响应", async ({
   page,
 }) => {
+  const source = await connect();
+  const spaces = await source.ensurePersonalSpaces();
+  const initialRuntime = await source.navigationRuntime();
+  const initialViews = await source.appViews();
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容", exact: true })
     .click();
-  const initial = await snapshot(page);
-  const owner = initial.workspace.projects.find((p) => p.kind === "desk")!;
+  const initialContent = await source.content({ limit: 100 });
   const title = "先被搜索发现的新对象-" + randomUUID();
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: owner.id,
-      title,
-      content: { kind: "document", markdown: "这是轮询尚未送达的新内容。" },
-    },
-    true,
+  const doc = await createDocument(
+    source,
+    spaces.deskId,
+    title,
+    "这是轮询尚未送达的新内容。",
   );
   let deliverLatest = false;
-  await page.route("**/api/workspace", async (route) => {
+  await page.route(/\/api\/platform\/content\?/, async (route) => {
     if (deliverLatest) return route.continue();
-    await route.fulfill({ status: 200, json: initial });
+    const query = new URL(route.request().url()).searchParams;
+    const after = query.get("beforeContentId");
+    const start = after
+      ? initialContent.items.findIndex((entry) => entry.id === after) + 1
+      : 0;
+    const limit = Number(query.get("limit") ?? 50);
+    await route.fulfill({
+      status: 200,
+      json: initialContent.items.slice(start, start + limit),
+    });
   });
   await page.reload();
   await page.getByRole("button", { name: "搜索资料", exact: true }).click();
@@ -143,31 +163,39 @@ test("搜索先看到刚创建的对象时，打开会补齐快照而不是无�
   await result.click();
   await expect(page.locator(".object-paper > h1")).toHaveText(title);
   await expect(page.locator(".document-body")).toContainText("轮询尚未送达");
-  const after = await snapshot(page);
-  expect(after.workspace.applicationInstances).toEqual(
-    initial.workspace.applicationInstances,
+  expect(await source.appViews()).toEqual(initialViews);
+  expect((await source.navigationRuntime()).runtime.deliveries).toEqual(
+    initialRuntime.runtime.deliveries,
   );
-  expect(after.workspace.inputs).toEqual(initial.workspace.inputs);
+  expect(await source.readDocument(doc.id)).toMatchObject({
+    revision: 1,
+    markdown: "这是轮询尚未送达的新内容。",
+  });
 });
 
 test("内容排除事项及其计数，事项入口仍能编辑和关联输入，不复制数据", async ({
   page,
 }) => {
+  const source = await connect();
+  const spaces = await source.ensurePersonalSpaces();
+  const initialViews = await source.appViews();
+  const initialConversations = await source.conversations(spaces.dialogueId);
   await page.goto("/");
-  const initial = await snapshot(page);
-  const dialogue = initial.workspace.projects.find(
-    (p) => p.kind === "dialogue",
-  )!;
   const title = "同一事项不同入口-" + randomUUID();
-  const projectId = await command(page, {
-    type: "create-project",
-    title: "只有事项的空间-" + randomUUID(),
-  });
-  const id = await command(page, {
-    type: "create-artifact",
+  const projectId = randomUUID();
+  await source.createProject(
+    "只有事项的空间-" + randomUUID(),
+    randomUUID(),
+    projectId,
+  );
+  const id = randomUUID();
+  await source.createTask({
+    commandId: randomUUID(),
+    taskId: id,
     projectId,
     title,
-    content: humanTask("这是同一个事项的正文，只记录，不执行。"),
+    description: "这是同一个事项的正文，只记录，不执行。",
+    assigneeId: source.boot.actantId,
   });
   const nav = page.getByRole("navigation", { name: "主导航" });
   await nav.getByRole("button", { name: "内容", exact: true }).click();
@@ -199,13 +227,11 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await expect(page.getByLabel("优先级", { exact: true })).toHaveCount(0);
   await page.getByLabel("截止日期", { exact: true }).fill("2099-09-18");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
-  await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.artifacts.find((a) => a.id === id)
-          ?.revision,
-    )
-    .toBe(2);
+  await expect.poll(async () => (await source.taskHead(id)).revision).toBe(2);
+  expect((await source.taskVersion(id, 2)).description).toContain(
+    "同一个事项的正文",
+  );
+  expect((await source.taskHead(id)).dueDate).toBe("2099-09-18");
   await page
     .locator(".breadcrumb")
     .getByRole("button", { name: "事项", exact: true })
@@ -226,19 +252,14 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await (await openInput(page)).fill(body);
   await expect(page.locator(".composer .context-chip")).toContainText(title);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.inputs.find((i) => i.body === body)
-          ?.artifactId,
-    )
-    .toBe(id);
-  const sent = (await snapshot(page)).workspace.inputs.find(
-    (i) => i.body === body,
-  )!;
-  expect(sent.projectId).toBe(projectId);
-  expect(sent.conversationId).toBe(dialogue.id);
-  expect(sent.artifactRevision).toBe(2);
+  await expect.poll(() => savedInput(page, body)).not.toBeNull();
+  const sent = (await savedInput(page, body))!;
+  expect(sent.operation).toMatchObject({
+    projectId,
+    conversationId: spaces.dialogueId,
+    artifactId: id,
+    artifactRevision: 2,
+  });
   await page
     .locator(".breadcrumb")
     .getByRole("button", { name: "事项", exact: true })
@@ -252,28 +273,26 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     nav.getByRole("button", { name: "内容", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".artifact-card")).toHaveCount(0);
-  const final = await snapshot(page);
-  expect(
-    final.workspace.artifacts.filter((a) => a.title === title),
-  ).toHaveLength(1);
-  expect(
-    final.workspace.conversations.filter((c) => c.id !== projectId),
-  ).toEqual(initial.workspace.conversations);
-  expect(final.workspace.applicationInstances).toEqual(
-    initial.workspace.applicationInstances,
+  expect((await source.tasks({ projectId, query: title })).items).toHaveLength(
+    1,
   );
+  expect(await source.conversations(spaces.dialogueId)).toEqual(
+    initialConversations,
+  );
+  expect(await source.appViews()).toEqual(initialViews);
+  expect((await savedInput(page, body))!.commandId).toBe(sent.commandId);
   const documentTitle = "事项关联的成果-" + randomUUID();
-  const documentId = await command(page, {
-    type: "create-artifact",
+  const doc = await createDocument(
+    source,
     projectId,
-    title: documentTitle,
-    content: { kind: "document", markdown: "事项关联的文档仍然属于内容。" },
-  });
-  await command(page, {
-    type: "link-artifacts",
+    documentTitle,
+    "事项关联的文档仍然属于内容。",
+  );
+  await source.linkWork({
+    commandId: randomUUID(),
     fromId: id,
-    toId: documentId,
-    relation: "produces",
+    toId: doc.id,
+    kind: "produces",
   });
   await page.getByLabel("清除搜索", { exact: true }).click();
   await expect(page.locator(".artifact-card")).toHaveCount(1);
@@ -303,10 +322,9 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await expect(page.locator(".document-body")).toContainText(
     "事项关联的文档仍然属于内容",
   );
-  const linked = await snapshot(page);
   expect(
-    linked.workspace.relations.some(
-      (r) => r.fromId === id && r.toId === documentId && r.type === "produces",
+    (await source.workRelations(id)).items.some(
+      (r) => r.fromId === id && r.toId === doc.id && r.type === "produces",
     ),
   ).toBe(true);
 });
@@ -366,13 +384,18 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
 });
 
 test("内容空态和起草使用所选范围，不改变持续会话", async ({ page }) => {
+  const source = await connect();
+  const spaces = await source.ensurePersonalSpaces();
+  const initialConversations = await source.conversations(spaces.dialogueId);
+  const empty = randomUUID();
+  await source.createProject("空内容范围-" + randomUUID(), randomUUID(), empty);
+  await createDocument(
+    source,
+    spaces.deskId,
+    `其他范围文档-${randomUUID()}`,
+    "原件",
+  );
   await page.goto("/");
-  const boot = await snapshot(page);
-  const dialogue = boot.workspace.projects.find((p) => p.kind === "dialogue")!;
-  const empty = await command(page, {
-    type: "create-project",
-    title: "空内容范围-" + randomUUID(),
-  });
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容", exact: true })
@@ -394,16 +417,15 @@ test("内容空态和起草使用所选范围，不改变持续会话", async ({
   const body = "在所选空项目起草-" + randomUUID();
   await input.fill(body);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect
-    .poll(async () =>
-      (await snapshot(page)).workspace.inputs.find((i) => i.body === body),
-    )
-    .toBeTruthy();
-  const sent = (await snapshot(page)).workspace.inputs.find(
-    (i) => i.body === body,
-  )!;
-  expect(sent.projectId).toBe(empty);
-  expect(sent.conversationId).toBe(dialogue.id);
+  await expect.poll(() => savedInput(page, body)).not.toBeNull();
+  const sent = (await savedInput(page, body))!;
+  expect(sent.operation).toMatchObject({
+    projectId: empty,
+    conversationId: spaces.dialogueId,
+  });
+  expect(await source.conversations(spaces.dialogueId)).toEqual(
+    initialConversations,
+  );
   await page
     .getByRole("button", { name: "收起 AI 输入框", exact: true })
     .click();

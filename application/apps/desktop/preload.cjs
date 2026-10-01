@@ -76,12 +76,5 @@ contextBridge.exposeInMainWorld(
       read: (request) => ipcRenderer.invoke("files:read", request),
       revoke: (request) => ipcRenderer.invoke("files:revoke", request),
     }),
-    sources: Object.freeze({
-      list: () => ipcRenderer.invoke("sources:list"),
-      choose: (projectId, kind) =>
-        ipcRenderer.invoke("sources:choose", projectId, kind),
-      control: (id, action) =>
-        ipcRenderer.invoke("sources:control", id, action),
-    }),
   }),
 );

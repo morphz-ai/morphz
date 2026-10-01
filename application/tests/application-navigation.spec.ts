@@ -1,19 +1,28 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { seedCenter } from "./center-fixtures.js";
 import { openInput } from "./interaction-helpers.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
 async function openProjectDocument(page: Page) {
-  await page.goto("/");
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
   const title = `TEST 应用导航 ${randomUUID().slice(0, 8)}`;
-  const projectId = await seedCenter(page, { type: "create-project", title });
-  await seedCenter(page, {
-    type: "create-artifact",
+  const projectId = `navigation_${randomUUID().replaceAll("-", "")}`;
+  await source.createProject(title, randomUUID(), projectId);
+  await source.createDocument({
+    commandId: randomUUID(),
+    objectId: `document_${randomUUID().replaceAll("-", "")}`,
     projectId,
     title: title + "文档",
-    content: { kind: "document", markdown: "保留原文与草稿。" },
+    markdown: "保留原文与草稿。",
   });
-  await page.reload();
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "项目", exact: true })
+    .click();
   await page.getByRole("button", { name: title, exact: true }).click();
   await page.getByRole("button", { name: "查看项目内容", exact: true }).click();
   await page.getByLabel("打开内容：" + title + "文档", { exact: true }).click();
@@ -38,15 +47,10 @@ for (const operation of ["close", "launch"] as const) {
     const ready = new Promise<void>((resolve) => {
       committed = resolve;
     });
-    const matches = (op: any) =>
-      operation === "close"
-        ? op?.type === "close-application"
-        : op?.type === "launch-application" &&
-          op.applicationId === "morphz.reader";
     let captured = false;
-    await page.route("**/api/commands", async (route) => {
-      if (captured || !matches(route.request().postDataJSON()?.operation))
-        return route.continue();
+    const responsePath = `/api/platform/app-views/${operation}`;
+    await page.route(`**${responsePath}`, async (route) => {
+      if (captured) return route.continue();
       captured = true;
       const response = await route.fetch();
       committed();
@@ -78,23 +82,17 @@ for (const operation of ["close", "launch"] as const) {
         await ready;
         await page.getByRole("tab", { name: "内容", exact: true }).click();
       }
-      await expect(document).toHaveText(title + "文档");
-      const response = page.waitForResponse(
-        (r) =>
-          r.url().endsWith("/api/commands") &&
-          matches(r.request().postDataJSON()?.operation),
+      const response = page.waitForResponse((r) =>
+        r.url().endsWith(responsePath),
       );
       release();
       await response;
-      // The receipt is followed by two state refreshes. Check after another
-      // complete round trip, not just before the stale callback is delivered.
-      await page.waitForResponse((r) => r.url().endsWith("/api/workspace"));
-      await expect
-        .poll(async () => {
-          await page.waitForTimeout(200);
-          return document.isVisible();
-        })
-        .toBe(true);
+      await expect(document).toHaveText(title + "文档");
+      // Let the post-mutation read settle; a later callback must still leave
+      // the explicitly opened document selected.
+      await expect(
+        page.getByRole("button", { name: "应用启动台" }),
+      ).not.toHaveAttribute("aria-pressed", "true");
       await expect(await openInput(page)).toHaveValue(
         "TEST 导航期间保留的草稿",
       );

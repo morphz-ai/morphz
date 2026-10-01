@@ -1,285 +1,209 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { WorkspaceStore } from "../packages/application/src/store.js";
 import {
   AgentTools,
   workToolDefinitions,
 } from "../packages/application/src/agent-tools.js";
-import { workspaceFor } from "../packages/application/src/identity.js";
-import {
-  applyCommand,
-  initialWorkspace,
-  localAccess,
-  type Operation,
-} from "../packages/core/src/model.js";
+import { localAccess, type Operation } from "../packages/core/src/model.js";
+import type { PlatformActor } from "../packages/platform/src/store.js";
 import { findBookmarks } from "../packages/core/src/bookmarks.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
 
-const agent = { principalId: "morphz-service", actantId: "morphz-agent" };
-const route = {
-  job_id: "bookmark-job",
-  tool_call_id: "bookmark-call",
-  session_id: "s",
-  context_id: "c",
-  principal_id: "untrusted",
-  agent_id: "a",
-  target_id: "local",
-  thread_id: "t",
-};
-function input(store: WorkspaceStore) {
-  return store.execute(
-    {
-      commandId: randomUUID(),
-      operation: {
-        type: "record-input",
-        projectId: "first-project",
-        artifactId: null,
-        artifactRevision: null,
-        selection: "",
-        body: "收藏这个网址 https://example.com/",
-        targetActantId: agent.actantId,
-      },
-    },
-    localAccess,
-  ).entityId;
-}
-
-test("浏览器收藏独立保存：规范化去重、版本冲突、删除撤销和重开，不生成内容或索引", () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphz-bookmarks-"));
-  const filename = join(directory, "workspace.sqlite");
-  let store = new WorkspaceStore(filename);
-  const execute = (operation: Operation) =>
-    store.execute({ commandId: randomUUID(), operation }, localAccess);
-  try {
-    const command = {
-      commandId: randomUUID(),
-      operation: {
-        type: "bookmark-add",
-        title: "示例",
-        url: "https://EXAMPLE.com",
-      },
-    };
-    const receipt = store.execute(command, localAccess);
-    assert.deepEqual(store.execute(command, localAccess), receipt);
-    assert.equal(
-      execute({
-        type: "bookmark-add",
-        title: "不会覆盖名称",
-        url: "https://example.com/",
-      }).entityId,
-      receipt.entityId,
+test("浏览器收藏独立保存：规范化去重、版本冲突、删除撤销和重开，不生成内容或索引", async () => {
+  const host = await agentDomainFixture();
+  const execute = (operation: Operation, commandId = randomUUID()) =>
+    host.withHuman((actor) =>
+      host.domains.browser.service.command(actor, { commandId, operation }),
     );
-    assert.equal(store.snapshot().bookmarks.length, 1);
-    assert.equal(store.snapshot().bookmarks[0]!.title, "示例");
-    execute({
+  const bookmarks = () =>
+    host.withHuman((actor) => host.domains.browser.service.list(actor));
+  try {
+    const commandId = randomUUID();
+    const operation = {
+      type: "bookmark-add" as const,
+      title: "示例",
+      url: "https://EXAMPLE.com",
+    };
+    const receipt = await execute(operation, commandId);
+    assert.deepEqual(await execute(operation, commandId), receipt);
+    assert.equal(
+      (
+        await execute({
+          type: "bookmark-add",
+          title: "不会覆盖名称",
+          url: "https://example.com/",
+        })
+      ).receipt.bookmarkId,
+      receipt.receipt.bookmarkId,
+    );
+    assert.equal((await bookmarks()).length, 1);
+    assert.equal((await bookmarks())[0]!.title, "示例");
+    const bookmarkId = receipt.receipt.bookmarkId;
+    await execute({
       type: "bookmark-update",
-      bookmarkId: receipt.entityId,
+      bookmarkId,
       expectedRevision: 1,
       title: "新名称",
       url: "https://example.com/path#section",
     });
-    assert.throws(
-      () =>
-        execute({
-          type: "bookmark-remove",
-          bookmarkId: receipt.entityId,
-          expectedRevision: 1,
-        }),
+    await assert.rejects(
+      execute({ type: "bookmark-remove", bookmarkId, expectedRevision: 1 }),
       /已被修改/,
     );
-    execute({
-      type: "bookmark-remove",
-      bookmarkId: receipt.entityId,
-      expectedRevision: 2,
-    });
-    assert.equal(findBookmarks(store.snapshot().bookmarks).length, 0);
-    execute({
+    await execute({ type: "bookmark-remove", bookmarkId, expectedRevision: 2 });
+    assert.equal(findBookmarks(await bookmarks()).length, 0);
+    await execute({
       type: "bookmark-restore",
-      bookmarkId: receipt.entityId,
+      bookmarkId,
       expectedRevision: 3,
     });
-    assert.equal(
-      findBookmarks(store.snapshot().bookmarks, "新名称 section").length,
-      1,
-    );
+    assert.equal(findBookmarks(await bookmarks(), "新名称 section").length, 1);
     for (const url of [
       "file:///etc/passwd",
       "javascript:alert(1)",
       "https://u:p@example.com/",
     ])
-      assert.throws(() =>
+      await assert.rejects(
         execute({ type: "bookmark-add", title: "无效", url }),
       );
-    assert.equal(store.snapshot().artifacts.length, 0);
-    assert.equal(store.snapshot().inputs.length, 0);
-    assert.equal(store.search({ query: "新名称" }, localAccess).total, 0);
-    const saved = store.snapshot().bookmarks;
-    store.close();
-    store = new WorkspaceStore(filename);
-    assert.deepEqual(store.snapshot().bookmarks, saved);
-    assert.deepEqual(store.execute(command, localAccess), receipt);
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("智能体通过真实输入管理用户的同一收藏，两个 Host 均可用且不需要浏览器授权", () => {
-  const store = new WorkspaceStore(":memory:");
-  try {
-    const inputId = input(store);
-    const scope = { projectId: "first-project", access: agent, inputId };
-    const tools = new AgentTools(store, "token", () => scope);
-    function call(
-      bookmarks: unknown,
-      tool = "host_morphz",
-      tool_call_id: string = randomUUID(),
-    ) {
-      return tools.call({
-        protocol: 1,
-        tool,
-        invocation: { ...route, tool_call_id },
-        arguments: { action: "bookmarks", bookmarks },
-      }) as any;
-    }
-    for (const definition of workToolDefinitions) {
-      assert.ok(
-        (definition.parameters as any).properties.action.enum.includes(
-          "bookmarks",
-        ),
-      );
-      assert.match(definition.description, /initiating human/);
-    }
-    const added = call(
-      { action: "add", title: "智能体收藏", url: "https://example.com" },
-      "host_morphz",
-      "same-call",
-    );
     assert.deepEqual(
-      call(
-        { action: "add", title: "智能体收藏", url: "https://example.com" },
-        "host_morphz",
-        "same-call",
+      await host.withHuman((actor) =>
+        host.domains.work.service.listContent(actor, {}),
       ),
-      added,
+      [],
     );
-    assert.equal(added.bookmark.ownerPrincipalId, localAccess.principalId);
-    assert.deepEqual(added.bookmark.createdBy, agent);
     assert.equal(
-      workspaceFor(store.snapshot(), localAccess).bookmarks[0]!.id,
-      added.bookmark.id,
+      (
+        await host.withHuman((actor) =>
+          host.domains.work.service.searchContentTitles(actor, {
+            query: "新名称",
+          }),
+        )
+      ).total,
+      0,
     );
-    assert.equal(workspaceFor(store.snapshot(), agent).bookmarks.length, 0);
-    const listed = call(
-      { action: "list", query: "智能体" },
-      "host_morphz_work",
-    );
-    assert.equal(listed.total, 1);
-    call({
-      action: "update",
-      bookmarkId: added.bookmark.id,
-      revision: 1,
-      title: "共同编辑",
-      url: added.bookmark.url,
-    });
-    assert.throws(
-      () =>
-        call({ action: "remove", bookmarkId: added.bookmark.id, revision: 1 }),
-      /已被修改/,
-    );
-    call({ action: "remove", bookmarkId: added.bookmark.id, revision: 2 });
-    assert.equal(call({ action: "list" }).total, 0);
-    assert.equal(call({ action: "list", deleted: true }).total, 1);
-    call({ action: "restore", bookmarkId: added.bookmark.id, revision: 3 });
-    assert.equal(call({ action: "list" }).total, 1);
-    assert.equal(store.snapshot().artifacts.length, 0);
-    assert.equal(store.artifactOutputs(localAccess).length, 0);
-    scope.inputId = "missing";
-    assert.throws(() => call({ action: "list" }), /实际输入/);
+    const saved = await bookmarks();
+    await host.reopen();
+    assert.deepEqual(await bookmarks(), saved);
+    assert.deepEqual(await execute(operation, commandId), receipt);
+    host.assertNoLegacyData();
   } finally {
-    store.close();
+    await host.close();
   }
 });
 
-test("个人收藏不会因共享项目泄露；智能体不能自选所有者或绕过实际输入", () => {
-  let state = initialWorkspace();
-  const other = { principalId: "other-owner", actantId: "other-human" };
-  state.principals.push({ id: other.principalId, name: "另一位" });
-  state.actants.push({
-    id: other.actantId,
-    principalId: other.principalId,
-    kind: "human",
-    name: "另一位",
-  });
-  state.projects[0]!.members.push(other.principalId);
-  const result = applyCommand(
-    state,
-    {
-      commandId: randomUUID(),
-      operation: {
-        type: "bookmark-add",
-        title: "私有",
-        url: "https://example.com/",
-      },
+test("未接 Browser 领域服务的 Agent Host 拒绝收藏操作，不回落旧工作区", () => {
+  const tools = new AgentTools({
+    token: "token",
+    resolveScope: () => {
+      throw new Error("不得读取旧工作区范围");
     },
-    localAccess,
-  );
-  state = result.state;
-  assert.equal(workspaceFor(state, other).bookmarks.length, 0);
+  });
+  for (const definition of workToolDefinitions) {
+    assert.ok(
+      (definition.parameters as any).properties.action.enum.includes(
+        "bookmarks",
+      ),
+    );
+    assert.match(definition.description, /initiating human/);
+  }
   assert.throws(
     () =>
-      applyCommand(
-        state,
-        {
+      tools.call({
+        protocol: 1,
+        tool: "host_morphz",
+        invocation: {
+          job_id: "bookmark-job",
+          tool_call_id: "bookmark-call",
+          session_id: "s",
+          context_id: "c",
+          principal_id: "untrusted",
+          agent_id: "a",
+          target_id: "local",
+          thread_id: "t",
+        },
+        arguments: { action: "bookmarks", bookmarks: { action: "list" } },
+      }),
+    /浏览器收藏服务不可用/,
+  );
+});
+
+test("个人收藏不会因项目泄露；智能体不能自选所有者或绕过实际输入", async () => {
+  const other = { principalId: "other-owner", actantId: "other-human" };
+  const host = await agentDomainFixture({ additionalHumans: [other] });
+  try {
+    const created = await host.withHuman((actor) =>
+      host.domains.browser.service.command(actor, {
+        commandId: randomUUID(),
+        operation: {
+          type: "bookmark-add",
+          title: "私有",
+          url: "https://example.com/",
+        },
+      }),
+    );
+    const withOther = <T>(work: (actor: PlatformActor) => Promise<T>) =>
+      host.domains.work.authority.withSession(other, () => {}, work);
+    assert.deepEqual(
+      await withOther((actor) => host.domains.browser.service.list(actor)),
+      [],
+    );
+    await assert.rejects(
+      withOther((actor) =>
+        host.domains.browser.service.command(actor, {
           commandId: randomUUID(),
           operation: {
             type: "bookmark-remove",
-            bookmarkId: result.receipt.entityId,
+            bookmarkId: created.receipt.bookmarkId,
             expectedRevision: 1,
           },
-        },
-        other,
-      ),
-    /不可访问/,
-  );
-  assert.throws(
-    () =>
-      applyCommand(
-        state,
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "bookmark-add",
-            title: "冒用",
-            url: "https://example.org/",
-          },
-        },
-        agent,
-      ),
-    /实际输入/,
-  );
-  const store = new WorkspaceStore(":memory:");
-  try {
-    const inputId = input(store);
-    const tools = new AgentTools(store, "token", () => ({
-      projectId: "local-worktable",
-      access: agent,
-      inputId,
-    }));
-    assert.throws(
-      () =>
-        tools.call({
-          protocol: 1,
-          tool: "host_morphz",
-          invocation: route,
-          arguments: { action: "bookmarks", bookmarks: { action: "list" } },
         }),
-      /实际输入/,
+      ),
+      /不可访问/,
     );
+    await assert.rejects(
+      host.call({
+        action: "bookmarks",
+        bookmarks: {
+          action: "add",
+          title: "冒用",
+          url: "https://example.org/",
+          ownerPrincipalId: other.principalId,
+        },
+      }),
+    );
+    const reply = await host.call<any>({
+      action: "bookmarks",
+      bookmarks: {
+        action: "add",
+        title: "Agent 收藏",
+        url: "https://example.org/",
+      },
+    });
+    assert.equal(reply.ok, true);
+    assert.deepEqual(
+      await withOther((actor) => host.domains.browser.service.list(actor)),
+      [],
+    );
+    const unbound = host.input();
+    host.forgetInput(unbound);
+    await assert.rejects(
+      host.call(
+        { action: "bookmarks", bookmarks: { action: "list" } },
+        unbound,
+      ),
+      /Unknown fixture thread|实际|输入|不存在/,
+    );
+    const owner = await host.withHuman((actor) =>
+      host.domains.browser.service.list(actor),
+    );
+    assert.equal(owner.length, 2);
+    assert.ok(
+      owner.every((b) => b.ownerPrincipalId === localAccess.principalId),
+    );
+    host.assertNoLegacyData();
   } finally {
-    store.close();
+    await host.close();
   }
 });

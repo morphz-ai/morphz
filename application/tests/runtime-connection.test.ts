@@ -17,18 +17,15 @@ import {
   LocalRuntimeConnection,
   runtimeOrigin,
 } from "../packages/application/src/runtime-connection.js";
-import {
-  RuntimeBridge,
-  loadRuntimeConfig,
-} from "../packages/application/src/runtime.js";
+import { loadRuntimeConfig } from "../packages/application/src/runtime.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { Application } from "../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
 import { AgentTools } from "../packages/application/src/agent-tools.js";
-import { localAccess } from "../packages/core/src/model.js";
 import { unconfiguredConnection } from "../packages/core/src/connection.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
 async function runtimeFixture() {
   const received: { method: string; path: string; principal?: string }[] = [];
@@ -299,52 +296,64 @@ test("取消与并发身份失效不覆盖配置；准备资源失败后仍可�
 
 test("检查和更新凭据不 tick、不投递输入、不改变会话或执行回执", async () => {
   const fixture = await runtimeFixture();
-  const store = new WorkspaceStore(":memory:");
-  const bridge = new RuntimeBridge(store, fixture.config);
+  const f = await platformRuntimeHostFixture(fixture.config);
   try {
-    const input = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: null,
-          artifactRevision: null,
-          selection: "",
-          body: "留在队列，不能因检查重发",
-          targetActantId: "morphz-agent",
-        },
+    await f.session().platformMessage({
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input",
+        projectId: f.projectId,
+        artifactId: null,
+        artifactRevision: null,
+        selection: "",
+        body: "留在队列，不能因检查重发",
+        targetActantId: "morphz-agent",
       },
-      localAccess,
-    );
-    bridge.enqueue(input.entityId);
-    const before = JSON.stringify(store.runtimeState());
-    const objects = JSON.stringify(store.snapshot());
-    assert.equal((await bridge.inspectConnection()).state, "connected");
+    });
+    const before = JSON.stringify(f.store.runtimeState());
+    const objects = await f
+      .session()
+      .listPlatformContent({ projectId: f.projectId });
+    const project = await f
+      .session()
+      .getPlatformProject({ projectId: f.projectId });
+    assert.equal((await f.runtime.inspectConnection()).state, "connected");
     fixture.state.token = "new-token";
-    bridge.updateConnection({ ...fixture.config, token: fixture.state.token });
-    assert.equal((await bridge.inspectConnection()).state, "connected");
-    assert.equal(JSON.stringify(store.runtimeState()), before);
-    assert.equal(JSON.stringify(store.snapshot()), objects);
+    f.runtime.updateConnection({
+      ...fixture.config,
+      token: fixture.state.token,
+    });
+    assert.equal((await f.runtime.inspectConnection()).state, "connected");
+    assert.equal(JSON.stringify(f.store.runtimeState()), before);
+    assert.deepEqual(
+      await f.session().listPlatformContent({ projectId: f.projectId }),
+      objects,
+    );
+    assert.deepEqual(
+      await f.session().getPlatformProject({ projectId: f.projectId }),
+      project,
+    );
     assert.ok(fixture.received.every((r) => r.method === "GET"));
     assert.throws(
       () =>
-        bridge.updateConnection({ ...fixture.config, namespace: randomUUID() }),
+        f.runtime.updateConnection({
+          ...fixture.config,
+          namespace: randomUUID(),
+        }),
       /不匹配/,
     );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    store.close();
+    await f.close();
     await fixture.close();
   }
 });
-
 test("本地 IPC 有身份代际保护；凭据设置只允许本人，智能体只有脱敏只读检查", async () => {
   const store = new WorkspaceStore(":memory:");
   const app = new Application(store);
   const host = new LocalApplicationConnection(app);
   try {
-    const boot = (await host.call("workspace")) as any;
+    const boot = (await host.call("platform.bootstrap")) as any;
     await assert.rejects(host.call("connection.check"));
     assert.deepEqual(
       await host.call("connection.check", undefined, {
@@ -361,19 +370,15 @@ test("本地 IPC 有身份代际保护；凭据设置只允许本人，智能体
         .configureConnection({}, new AbortController().signal),
       /本人/,
     );
-    const tools = new AgentTools(
-      store,
-      "host-token",
-      () => ({
+    const tools = new AgentTools({
+      token: "host-token",
+      resolveScope: () => ({
         projectId: "first-project",
+        platform: true,
         access: { principalId: "morphz-service", actantId: "morphz-agent" },
       }),
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      async () => unconfiguredConnection,
-    );
+      connectionStatus: async () => unconfiguredConnection,
+    });
     const invocation = {
       job_id: "job",
       tool_call_id: "call",
@@ -417,7 +422,7 @@ test("HTTP 检查继续验证 CSRF，远端不能配置本机连接", async () =
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${port}`;
   try {
-    const boot = await (await fetch(origin + "/api/workspace")).json();
+    const boot = await (await fetch(origin + "/api/platform/bootstrap")).json();
     const headers = {
       Origin: origin,
       "X-Morphz-Token": boot.csrfToken,
@@ -466,8 +471,19 @@ test("真实内嵌宿主首次配置与重开保持中心/对象，不用重启�
   let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
   try {
     host = await openEmbeddedApplication(directory, join(directory, "profile"));
-    const boot = (await host.connection.call("workspace")) as any;
+    const boot = (await host.connection.call("platform.bootstrap")) as any;
+    assert.equal(boot.capabilities.modelSettings, false);
     const identityGeneration = boot.csrfToken;
+    const projectsBefore = await host.connection.call(
+      "projects.list",
+      { status: "all", limit: 100 },
+      { identityGeneration },
+    );
+    const contentBefore = await host.connection.call(
+      "content.list",
+      { limit: 100 },
+      { identityGeneration },
+    );
     const details = (await host.connection.call("connection.check", undefined, {
       identityGeneration,
     })) as any;
@@ -481,10 +497,29 @@ test("真实内嵌宿主首次配置与重开保持中心/对象，不用重启�
       },
       { identityGeneration },
     );
-    const connected = (await host.connection.call("workspace")) as any;
+    const connected = (await host.connection.call("platform.bootstrap")) as any;
     assert.equal(connected.centerId, boot.centerId);
-    assert.equal(connected.runtime.configured, true);
-    assert.deepEqual(connected.workspace, boot.workspace);
+    assert.equal(connected.capabilities.modelSettings, true);
+    const runtime = (await host.connection.call("runtime.snapshot", undefined, {
+      identityGeneration,
+    })) as any;
+    assert.equal(runtime.configured, true);
+    assert.deepEqual(
+      await host.connection.call(
+        "projects.list",
+        { status: "all", limit: 100 },
+        { identityGeneration },
+      ),
+      projectsBefore,
+    );
+    assert.deepEqual(
+      await host.connection.call(
+        "content.list",
+        { limit: 100 },
+        { identityGeneration },
+      ),
+      contentBefore,
+    );
     assert.ok(host.manifestPath);
     assert.equal(
       JSON.stringify(connected).includes(fixture.config.token),
@@ -493,12 +528,25 @@ test("真实内嵌宿主首次配置与重开保持中心/对象，不用重启�
     const saved = readFileSync(join(directory, "runtime.json"), "utf8");
     await host.close();
     host = await openEmbeddedApplication(directory, join(directory, "profile"));
-    const reopened = (await host.connection.call("workspace")) as any;
+    const reopened = (await host.connection.call("platform.bootstrap")) as any;
     assert.equal(reopened.centerId, boot.centerId);
-    // Bridge health checkpoints may advance the center revision; objects and work are unchanged.
+    assert.equal(reopened.capabilities.modelSettings, true);
+    // Runtime configuration does not rewrite Platform-owned projects or content.
     assert.deepEqual(
-      { ...reopened.workspace, revision: boot.workspace.revision },
-      boot.workspace,
+      await host.connection.call(
+        "projects.list",
+        { status: "all", limit: 100 },
+        { identityGeneration: reopened.csrfToken },
+      ),
+      projectsBefore,
+    );
+    assert.deepEqual(
+      await host.connection.call(
+        "content.list",
+        { limit: 100 },
+        { identityGeneration: reopened.csrfToken },
+      ),
+      contentBefore,
     );
     assert.equal(readFileSync(join(directory, "runtime.json"), "utf8"), saved);
     assert.ok(fixture.received.every((r) => r.method === "GET"));

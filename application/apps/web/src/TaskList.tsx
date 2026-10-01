@@ -70,6 +70,11 @@ export function TaskList({
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState("");
+  const [runtimeErrors, setRuntimeErrors] = useState<Record<string, string>>(
+    {},
+  );
+  const api = useRef(client);
+  api.current = client;
   const [orderUndo, setOrderUndo] = useState<{
     ids: string[];
     revision: number;
@@ -108,6 +113,70 @@ export function TaskList({
     today,
     client.boot!.taskRuns,
   );
+  // Observe the authorized list scope before applying execution-state filters.
+  // A hidden row cannot poll itself, especially after restoring a saved filter.
+  const runtimeTasks = taskGroups(
+    state,
+    client.boot!.principalId,
+    { ...options, status: "all" },
+    today,
+  )
+    .flatMap((group) => group.tasks)
+    .filter(
+      (task) =>
+        task.content.runRequested > 0 &&
+        state.actants.find((actor) => actor.id === task.content.assigneeId)
+          ?.kind === "agent",
+    );
+  const runtimeScope = JSON.stringify({
+    center: client.boot!.centerId,
+    human: client.boot!.principalId,
+    actant: client.boot!.actantId,
+    identity: client.boot!.csrfToken,
+    tasks: runtimeTasks.map((task) => [
+      task.id,
+      task.projectId,
+      task.revision,
+      task.content.assigneeId,
+      task.content.runRequested,
+    ]),
+  });
+  useEffect(() => {
+    setRuntimeErrors({});
+    if (!client.online || !runtimeTasks.length) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      let next = 0;
+      const errors: Record<string, string> = {};
+      const read = async () => {
+        while (!cancelled && next < runtimeTasks.length) {
+          const task = runtimeTasks[next++]!;
+          try {
+            await api.current.taskRuntime(task.id);
+          } catch (cause) {
+            errors[task.id] =
+              cause instanceof Error ? cause.message : "无法读取执行状态。";
+          }
+        }
+      };
+      // Bound concurrent Runtime reads; do not overlap batches or poll each card
+      // again. This is only a view observation, never execution authorization.
+      await Promise.all(
+        Array.from({ length: Math.min(4, runtimeTasks.length) }, read),
+      );
+      if (cancelled) return;
+      setRuntimeErrors((previous) =>
+        JSON.stringify(previous) === JSON.stringify(errors) ? previous : errors,
+      );
+      timer = setTimeout(() => void refresh(), 3000);
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [runtimeScope, client.online]);
   const visibleIds = new Set(
     dateGroups.flatMap((g) => g.tasks.map((a) => a.id)),
   );
@@ -806,6 +875,8 @@ export function TaskList({
                     {!own && (
                       <TaskRunPanel
                         compact
+                        runtimeObserved
+                        runtimeReadError={runtimeErrors[a.id]}
                         artifact={a}
                         state={state}
                         client={client}

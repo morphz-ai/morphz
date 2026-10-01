@@ -1,3 +1,4 @@
+import { scriptDocxManifest } from "../tests/script-docx-fixture.js";
 /** Real Runtime/Harness/Unix Host/SQLite integration. Synthetic provider and fresh data only. */
 import "./application-configuration.mjs";
 import assert from "node:assert/strict";
@@ -30,16 +31,12 @@ import {
 import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
 import { AgentTools } from "../packages/application/src/agent-tools.js";
-import {
-  localAccess,
-  type Operation,
-  type Receipt,
-} from "../packages/core/src/model.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { localAccess, type Receipt } from "../packages/core/src/model.js";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import {
   currentScriptDraft,
   emptyScriptDraft,
-  type ScriptCommand,
   type ScriptGeneration,
 } from "../packages/core/src/script-studio.js";
 import { buildScriptDocx } from "../packages/core/src/script-studio-docx.js";
@@ -86,7 +83,51 @@ let logs = "";
 let providerCalls = 0;
 let providerError: Error | undefined;
 let productionId = "",
+  contentId = "",
   targetId = "";
+let client: PlatformClient;
+const production = () => client.readScriptSnapshot(contentId);
+const item = async () =>
+  (await production()).items.find((i) => i.id === targetId)!;
+const persistedDeliveries = () => {
+  const state = host!.connection.application.store.runtimeState() as {
+    deliveries: Array<{
+      inputId: string;
+      state: string;
+      error: string | null;
+      platformSource?: unknown;
+    }>;
+  };
+  return state.deliveries;
+};
+const pinnedInput = (inputId: string) => {
+  const input = persistedDeliveries().find(
+    (d) => d.inputId === inputId,
+  )?.platformSource;
+  assert.ok(input, "The original immutable Platform input must be persisted");
+  return input as {
+    application?: { harness?: unknown };
+    scriptGeneration?: ScriptGeneration;
+  };
+};
+const assertNoLegacyWorkspace = () => {
+  const db = new DatabaseSync(join(workDirectory, "workspace.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    assert.deepEqual(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets','artifact_outputs','script_outputs')",
+        )
+        .all(),
+      [],
+      "The real Host must not recreate any legacy business authority",
+    );
+  } finally {
+    db.close();
+  }
+};
 const sourceDraft = {
   ...emptyScriptDraft("第一集 · 合成验证"),
   text: "【场景】空站台。\n林：最后一班车没有来。",
@@ -297,12 +338,12 @@ const provider = createServer(async (req, res) => {
           JSON.stringify({ observation, hostErrors }),
       );
       if (step === 1) {
-        assert.equal(result.productions.length, 1);
+        assert.equal(result.items.length, 1);
         return call("host_morphz", {
           action: "script",
           script: {
             action: "read-production",
-            productionId: result.productions[0].id,
+            productionId: result.items[0].id,
           },
         });
       }
@@ -587,7 +628,8 @@ try {
   };
   runtime = startRuntime();
   await waitUntil(
-    () => host!.connection.application.options.runtime!.snapshot().connected,
+    () =>
+      host!.connection.application.options.runtime!.platformStatus().connected,
     "Runtime connection",
   );
   // Bind only this fresh Runtime's synthetic account through the operator API.
@@ -613,31 +655,25 @@ try {
     0,
     "Binding the synthetic account must not invoke a model",
   );
-  const boot = (await host.connection.call("workspace")) as {
-    csrfToken: string;
-    centerId: string;
-  };
-  const execute = (operation: Operation) =>
-    host!.connection.application.store.execute(
-      { commandId: randomUUID(), operation },
-      localAccess,
-    ).entityId;
-  const run = (command: ScriptCommand) =>
-    execute({ type: "script-command", command });
-  productionId = run({
-    action: "create-production",
+  client = await PlatformClient.connect(host.connection);
+  await client.createProject(
+    "TEST 合成剧本工序",
+    randomUUID(),
+    "first-project",
+  );
+  productionId = randomUUID();
+  const created = (await client.createScript({
+    commandId: randomUUID(),
+    productionId,
     projectId: "first-project",
     title: "TEST 合成剧本 Runtime 闭环",
-  });
-  const production = () =>
-    host!.connection.application.store
-      .snapshot()
-      .scriptProductions.find((p) => p.id === productionId)!;
-  let p = production();
-  run({
-    action: "update-production",
-    productionId,
-    expectedRevision: p.revision,
+  })) as { contentId: string };
+  contentId = created.contentId;
+  let p = await production();
+  await client.updateScript({
+    commandId: randomUUID(),
+    contentId,
+    expectedRevision: (await client.readScript(contentId)).metadataRevision,
     title: p.title,
     brief: {
       ...p.brief,
@@ -648,28 +684,34 @@ try {
     reviewerPrincipalIds: p.reviewerPrincipalIds,
     template: p.template,
   });
-  targetId = run({
-    action: "create-item",
-    productionId,
+  targetId = randomUUID();
+  await client.createScriptItem({
+    commandId: randomUUID(),
+    contentId,
+    itemId: targetId,
+    expectedActivityRevision: (await client.readScript(contentId))
+      .activityRevision,
     kind: "episode",
     draft: sourceDraft,
   });
-  const item = () => production().items.find((i) => i.id === targetId)!;
   // Exercise the real first-party manifest. A fixture fallback would conceal a
   // missing production binding, so refuse it even when the package installed.
   assert.deepEqual(scriptStudioApplication.harness, harnessRef);
   const app = scriptStudioApplication;
-  const applicationInstanceId = execute({
-    type: "launch-application",
-    workspaceId: "first-project",
-    applicationId: app.id,
-    applicationVersion: app.version,
-  });
+  const applicationInstanceId = (
+    await client.launchAppView({
+      commandId: randomUUID(),
+      projectId: "first-project",
+      appId: app.id,
+      packageVersion: app.version,
+      state: {},
+    })
+  ).id;
   const generation: ScriptGeneration = {
     productionId,
     targetId,
     baseRevision: 1,
-    contextRevision: production().revision,
+    contextRevision: (await production()).revision,
     purpose: "rewrite",
     references: [],
     maxCandidates: 1,
@@ -687,13 +729,15 @@ try {
       body: "TEST 合成编剧工序：只生成第一集固定版本候选。不得当作真实创作质量验收。",
       targetActantId: "morphz-agent",
       applicationInstanceId,
+      application: { id: app.id, version: app.version },
       scriptGeneration:
         fault?.point === "model-discussion" ? undefined : generation,
     },
   };
-  const receipt = (await host.connection.call("message", command, {
-    identityGeneration: boot.csrfToken,
+  const receipt = (await host.connection.call("platform.message", command, {
+    identityGeneration: client.boot.csrfToken,
   })) as Receipt;
+  assertNoLegacyWorkspace();
   if (fault) {
     await waitUntil(() => Boolean(fault.hit), `Reach ${fault.point}`);
     const checkpointDb = new DatabaseSync(
@@ -720,11 +764,7 @@ try {
       60_000,
       lastLeaseExpiry - Date.now() + 30_000,
     );
-    const frozenInput = JSON.stringify(
-      host.connection.application.store
-        .snapshot()
-        .inputs.find((i) => i.id === receipt.entityId),
-    );
+    const frozenInput = JSON.stringify(pinnedInput(receipt.entityId));
     const beforeKill = {
       point: fault.point,
       hit: fault.hit,
@@ -733,7 +773,7 @@ try {
       hostCalls: proxy!.calls,
       jobs: checkpointJobs,
       recoveryTimeoutMs,
-      candidateCount: production().candidates.length,
+      candidateCount: (await production()).candidates.length,
     };
     writeFileSync(
       join(directory, "before-crash.json"),
@@ -742,7 +782,7 @@ try {
     );
     if (fault.point === "host-submit-after")
       assert.equal(
-        production().candidates.length,
+        (await production()).candidates.length,
         1,
         "Lost receipt cut must follow a real commit",
       );
@@ -778,9 +818,9 @@ try {
     }, "Restart same isolated Runtime");
     await waitUntil(
       () => {
-        const d = host!.connection.application.options
-          .runtime!.snapshot()
-          .deliveries.find((d) => d.inputId === receipt.entityId);
+        const d = persistedDeliveries().find(
+          (d) => d.inputId === receipt.entityId,
+        );
         if (d?.state === "failed")
           throw new Error(d.error ?? "Recovered input failed");
         return d?.state === "completed";
@@ -788,14 +828,7 @@ try {
       `Recover ${fault.point}`,
       recoveryTimeoutMs,
     );
-    assert.equal(
-      JSON.stringify(
-        host.connection.application.store
-          .snapshot()
-          .inputs.find((i) => i.id === receipt.entityId),
-      ),
-      frozenInput,
-    );
+    assert.equal(JSON.stringify(pinnedInput(receipt.entityId)), frozenInput);
     const expected =
       fault.point === "model-discussion"
         ? ["discussion", "relay"]
@@ -849,13 +882,13 @@ try {
           "A committed submission must replay its exact durable receipt",
         );
     }
-    const completed = production();
+    const completed = await production();
     assert.equal(
       completed.candidates.length,
       fault.point === "model-discussion" ? 0 : 1,
     );
-    assert.equal(currentScriptDraft(item()).text, sourceDraft.text);
-    assert.equal(item().status, "draft");
+    assert.equal(currentScriptDraft(await item()).text, sourceDraft.text);
+    assert.equal((await item()).status, "draft");
     if (completed.candidates[0]) {
       assert.equal(completed.candidates[0].status, "pending");
       assert.equal(
@@ -907,9 +940,9 @@ try {
     passed = true;
   } else {
     await waitUntil(() => {
-      const delivery = host!.connection.application.options
-        .runtime!.snapshot()
-        .deliveries.find((d) => d.inputId === receipt.entityId);
+      const delivery = persistedDeliveries().find(
+        (d) => d.inputId === receipt.entityId,
+      );
       if (delivery?.state === "failed")
         throw new Error(delivery.error ?? "Script delivery failed");
       return delivery?.state === "completed";
@@ -918,12 +951,10 @@ try {
       stages.filter((stage) => stage !== "relay"),
       ["intent", "create", "delivery"],
     );
-    const persistedInput = host.connection.application.store
-      .snapshot()
-      .inputs.find((i) => i.id === receipt.entityId)!;
+    const persistedInput = pinnedInput(receipt.entityId);
     assert.deepEqual(persistedInput.application?.harness, harnessRef);
     assert.deepEqual(persistedInput.scriptGeneration, generation);
-    p = production();
+    p = await production();
     assert.equal(
       p.candidates.length,
       1,
@@ -936,11 +967,11 @@ try {
     assert.equal(candidate.baseRevision, 1);
     assert.equal(candidate.status, "pending");
     assert.equal(
-      currentScriptDraft(item()).text,
+      currentScriptDraft(await item()).text,
       sourceDraft.text,
       "Agent must not alter the formal draft",
     );
-    assert.equal(item().status, "draft");
+    assert.equal((await item()).status, "draft");
     branchEvidence.push({ scenario, stages: [...stages], candidateCount: 1 });
     for (const testCase of [
       {
@@ -1054,16 +1085,20 @@ try {
       reviewCount = 0;
       selectionStep = 0;
       preparationStep = 0;
-      const before = production().candidates.length;
+      const before = (await production()).candidates.length;
       const start = stages.length;
       const branchReceipt = (await host.connection.call(
-        "message",
+        "platform.message",
         {
           commandId: randomUUID(),
           operation: {
             ...command.operation,
             applicationInstanceId:
               scenario === "chat" ? undefined : applicationInstanceId,
+            application:
+              scenario === "chat"
+                ? undefined
+                : { id: app.id, version: app.version },
             body:
               scenario === "discussion" || scenario === "defer"
                 ? "只聊聊候车人的动机，先别生成。"
@@ -1073,17 +1108,17 @@ try {
                 ? undefined
                 : {
                     ...generation,
-                    contextRevision: production().revision,
+                    contextRevision: (await production()).revision,
                     maxReviewPasses: testCase.passes,
                   },
           },
         },
-        { identityGeneration: boot.csrfToken },
+        { identityGeneration: client.boot.csrfToken },
       )) as Receipt;
       await waitUntil(() => {
-        const d = host!.connection.application.options
-          .runtime!.snapshot()
-          .deliveries.find((d) => d.inputId === branchReceipt.entityId);
+        const d = persistedDeliveries().find(
+          (d) => d.inputId === branchReceipt.entityId,
+        );
         if (d?.state === "failed")
           throw new Error(d.error ?? `${scenario} failed`);
         return d?.state === "completed";
@@ -1091,34 +1126,44 @@ try {
       const actual = stages.slice(start);
       assert.deepEqual(actual, testCase.expected, scenario);
       assert.equal(
-        production().candidates.length - before,
+        (await production()).candidates.length - before,
         testCase.writes,
         scenario,
       );
-      assert.equal(currentScriptDraft(item()).text, sourceDraft.text, scenario);
+      assert.equal(
+        currentScriptDraft(await item()).text,
+        sourceDraft.text,
+        scenario,
+      );
       if (scenario === "chat") {
-        const snapshot = host.connection.application.store.snapshot();
-        const source = snapshot.inputs.find(
-          (i) => i.id === branchReceipt.entityId,
-        )!;
+        const source = pinnedInput(branchReceipt.entityId);
         assert.equal(source.application, undefined);
         assert.equal(source.scriptGeneration, undefined);
-        assert.equal(
-          snapshot.scriptPreparations.filter((p) => p.inputId === source.id)
-            .length,
-          1,
+        const domain = host.connection.application.options.platformScripts!;
+        const preparation = await domain.authority.withSession(
+          localAccess,
+          () => {},
+          (actor) =>
+            domain.studio.readPreparation({
+              credential: actor.credential,
+              productionId,
+              inputId: branchReceipt.entityId,
+            }),
         );
+        assert.equal(preparation?.inputId, branchReceipt.entityId);
+        assert.equal(preparation?.generation.targetId, targetId);
+        const history = await client.history("first-project", "first-project");
         assert.equal(
-          host.connection.application.store
-            .scriptOutputs(localAccess)
-            .filter((o) => o.inputId === source.id && o.kind === "candidate")
-            .length,
+          history.scriptOutputs.filter(
+            (o) =>
+              o.inputId === branchReceipt.entityId && o.kind === "candidate",
+          ).length,
           1,
         );
       }
       if (scenario === "both-revisions")
         assert.equal(
-          production().candidates.at(-1)!.draft.text,
+          (await production()).candidates.at(-1)!.draft.text,
           candidateDraft.text +
             "\n【修订1】保留第一轮修改。\n【修订2】补上第二轮修改。",
           "Both revisions must reach the single persisted candidate",
@@ -1126,7 +1171,7 @@ try {
       branchEvidence.push({
         scenario,
         stages: actual,
-        candidateCount: production().candidates.length - before,
+        candidateCount: (await production()).candidates.length - before,
       });
     }
     const runtimeDb = new DatabaseSync(
@@ -1160,51 +1205,64 @@ try {
       "Malformed Bool fails before submit",
     );
     const completedCalls = providerCalls;
-    const totalCandidates = production().candidates.length;
-    run({
-      action: "decide-candidate",
-      productionId,
+    const totalCandidates = (await production()).candidates.length;
+    await client.decideScriptCandidate({
+      commandId: randomUUID(),
+      contentId,
       candidateId: candidate.id,
       expectedRevision: candidate.revision,
       decision: "accept",
     });
-    assert.equal(item().revision, 2);
-    assert.equal(currentScriptDraft(item()).text, candidateDraft.text);
-    const workflow = () => ({
-      productionId,
-      itemId: targetId,
-      expectedRevision: item().revision,
-      expectedWorkflowRevision: item().workflowRevision,
+    assert.equal((await item()).revision, 2);
+    assert.equal(currentScriptDraft(await item()).text, candidateDraft.text);
+    const workflow = async () => {
+      const original = await item();
+      return {
+        commandId: randomUUID(),
+        contentId,
+        itemId: targetId,
+        expectedRevision: original.revision,
+        expectedWorkflowRevision: original.workflowRevision,
+      };
+    };
+    await client.transitionScriptWorkflow({
+      action: "submit-review",
+      ...(await workflow()),
     });
-    run({ action: "submit-review", ...workflow() });
-    run({
+    await client.transitionScriptWorkflow({
       action: "review-decision",
-      ...workflow(),
+      ...(await workflow()),
       decision: "approve",
       note: "合成人工审批夹具；不是合作方审批",
     });
-    run({ action: "lock-item", ...workflow() });
-    assert.equal(item().status, "locked");
-    assert.throws(
+    await client.transitionScriptWorkflow({
+      action: "lock-item",
+      ...(await workflow()),
+    });
+    assert.equal((await item()).status, "locked");
+    await assert.rejects(
       () =>
-        run({
-          action: "revise-item",
-          productionId,
+        client.reviseScriptItem({
+          commandId: randomUUID(),
+          contentId,
           itemId: targetId,
-          expectedRevision: item().revision,
+          expectedRevision: 2,
           draft: sourceDraft,
         }),
       /锁/,
     );
-    p = production();
-    const exportId = run({
-      action: "record-export",
-      productionId,
-      expectedRevision: p.revision,
+    p = await production();
+    const exported = await client.recordScriptExport({
+      commandId: randomUUID(),
+      contentId,
+      expectedRevision: (await client.readScript(contentId)).metadataRevision,
       items: [{ itemId: targetId, revision: 2 }],
       template: p.template,
     });
-    const docx = buildScriptDocx(production(), exportId);
+    const exportId = (exported as { exportId: string }).exportId;
+    const docx = buildScriptDocx(
+      scriptDocxManifest(await production(), exportId),
+    );
     assert.equal(
       new DataView(docx.buffer, docx.byteOffset, docx.byteLength).getUint32(
         0,
@@ -1216,21 +1274,23 @@ try {
       new TextDecoder().decode(docx).includes("一张写着明日日期的车票"),
     );
     const centerId = host.connection.application.store.identity();
-    const stateBeforeReopen = production();
+    const stateBeforeReopen = await production();
     await host.close();
     host = await openEmbeddedApplication(
       workDirectory,
       join(directory, "profile"),
     );
+    client = await PlatformClient.connect(host.connection);
     assert.equal(host.connection.application.store.identity(), centerId);
-    assert.deepEqual(production(), stateBeforeReopen);
-    assert.deepEqual(buildScriptDocx(production(), exportId), docx);
-    const reopened = (await host.connection.call("workspace")) as {
-      csrfToken: string;
-    };
+    assertNoLegacyWorkspace();
+    assert.deepEqual(await production(), stateBeforeReopen);
     assert.deepEqual(
-      await host.connection.call("message", command, {
-        identityGeneration: reopened.csrfToken,
+      buildScriptDocx(scriptDocxManifest(await production(), exportId)),
+      docx,
+    );
+    assert.deepEqual(
+      await host.connection.call("platform.message", command, {
+        identityGeneration: client.boot.csrfToken,
       }),
       receipt,
     );
@@ -1240,8 +1300,8 @@ try {
       completedCalls,
       "Reopen/retry must not replay the model or duplicate the candidate",
     );
-    assert.equal(production().candidates.length, totalCandidates);
-    assert.equal(production().exports.length, 1);
+    assert.equal((await production()).candidates.length, totalCandidates);
+    assert.equal((await production()).exports.length, 1);
     const evidence = {
       harness: harnessRef,
       applicationId: app.id,
@@ -1252,6 +1312,7 @@ try {
       plans,
       centerId,
       productionId,
+      contentId,
       targetId,
       inputId: receipt.entityId,
       candidateId: candidate.id,
@@ -1319,10 +1380,15 @@ try {
       .all();
     const threads = db.prepare("SELECT id,status FROM threads").all();
     db.close();
-    const workspace = host?.connection.application.store.snapshot();
-    const failedProduction = workspace?.scriptProductions.find(
-      (p) => p.id === productionId,
-    );
+    const history = client
+      ? await client
+          .history("first-project", "first-project")
+          .catch(() => undefined)
+      : undefined;
+    const failedProduction =
+      contentId && client
+        ? await production().catch(() => undefined)
+        : undefined;
     const failedItem = failedProduction?.items.find((i) => i.id === targetId);
     writeFileSync(
       join(directory, "failure.json"),
@@ -1334,7 +1400,7 @@ try {
           plans,
           jobs,
           threads,
-          inputCount: workspace?.inputs.length,
+          inputCount: history?.inputs.length,
           candidateCount: failedProduction?.candidates.length,
           candidateStatuses: failedProduction?.candidates.map((c) => c.status),
           formalDraftUnchanged: failedItem
@@ -1343,8 +1409,7 @@ try {
           modelCalls: [...logicalModelCalls.entries()],
           hostCalls: proxy?.calls,
           hostErrors,
-          deliveries:
-            host?.connection.application.options.runtime?.snapshot().deliveries,
+          deliveries: host ? persistedDeliveries() : undefined,
           hit: fault.hit,
         },
         null,

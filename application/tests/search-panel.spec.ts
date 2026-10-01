@@ -1,53 +1,36 @@
 import { randomUUID } from "node:crypto";
 import { test, expect, type Page } from "@playwright/test";
-import { seedCenter } from "./center-fixtures.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import {
+  isolatedCenterDirectory,
+  seedAgentOriginal,
+} from "./platform-agent-original-fixture.js";
 
 async function fixture(
   page: Page,
   overrides: { title?: string; project?: string; relativePath?: string } = {},
 ) {
-  await page.goto("/");
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const command = async (operation: object) => {
-    const response = await page.request.post("/api/commands", {
-      headers: {
-        Origin: new URL(page.url()).origin,
-        "X-Morphz-Token": boot.csrfToken,
-      },
-      data: { commandId: randomUUID(), operation },
-    });
-    expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json()).entityId as string;
-  };
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const directory = isolatedCenterDirectory();
   const project = overrides.project ?? "搜索回归-" + randomUUID();
-  const projectId = await command({ type: "create-project", title: project });
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId,
-      title: overrides.title ?? "交互验收笔记",
-      content: {
-        kind: "document",
-        markdown: "这段摘要用于检查整条搜索结果的点击、拖选和引用行为。",
-      },
-    },
-    true,
+  const projectId = `search_${randomUUID().replaceAll("-", "")}`;
+  await source.createProject(project, randomUUID(), projectId);
+  await seedAgentOriginal(
+    directory,
+    projectId,
+    overrides.title ?? "交互验收笔记",
+    "这段摘要用于检查整条搜索结果的点击、拖选和引用行为。",
   );
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId,
-      title: "交互验收报告",
-      content: {
-        kind: "document",
-        markdown: "验收结果来自 Agent 产物，可以直接打开。",
-      },
-    },
-    true,
+  await seedAgentOriginal(
+    directory,
+    projectId,
+    "交互验收报告",
+    "验收结果来自 Agent 产物，可以直接打开。",
   );
-  await page.reload();
+  await page.goto("/");
   const search = page.getByRole("dialog", { name: "搜索资料", exact: true });
   const open = async () => {
     await page.getByRole("button", { name: "搜索资料", exact: true }).click();
@@ -57,7 +40,7 @@ async function fixture(
       search.getByText("找到 2 项内容", { exact: true }),
     ).toBeVisible();
   };
-  return { open, search, inputCount: boot.workspace.inputs.length };
+  return { open, search };
 }
 
 test("Agent 产物多关键词结果可点击摘要；外部来源不进入结果，摘要仍限两行", async ({
@@ -65,6 +48,14 @@ test("Agent 产物多关键词结果可点击摘要；外部来源不进入结�
 }) => {
   const { open, search } = await fixture(page);
   await open();
+  await search.getByLabel("全文搜索", { exact: true }).fill("摘要用于检查");
+  await expect(search.getByRole("status")).toHaveText("找到 1 项内容");
+  await expect(search.locator("article")).toHaveCount(1);
+  await expect(search.locator("article .search-excerpt")).toContainText(
+    "摘要用于检查",
+  );
+  await search.getByLabel("全文搜索", { exact: true }).fill("验收 交互");
+  await expect(search.getByRole("status")).toHaveText("找到 2 项内容");
   await expect(search.getByText("工作空间内容", { exact: true })).toHaveCount(
     0,
   );
@@ -112,7 +103,7 @@ test("Agent 产物多关键词结果可点击摘要；外部来源不进入结�
 test("摘要拖选不误打开，键盘仍可打开，引用独立且不会发送输入", async ({
   page,
 }) => {
-  const { open, search, inputCount } = await fixture(page);
+  const { open, search } = await fixture(page);
   await open();
   const note = search.locator("article").filter({ hasText: "交互验收笔记" });
   const excerpt = note.locator(".search-excerpt");
@@ -142,8 +133,7 @@ test("摘要拖选不误打开，键盘仍可打开，引用独立且不会发�
     "这段摘要用于检查",
   );
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toHaveLength(inputCount);
+  await expect(page.locator(".message-user")).toHaveCount(0);
 });
 
 test("最近修改和搜索结果的归属与标题同行，长标题和路径不挤出窄窗口", async ({

@@ -12,6 +12,7 @@ import type { ConversationStream } from "../../../packages/core/src/live-convers
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
 import { maxReadingFileBytes } from "../../../packages/core/src/reader.js";
 import { maxSpeechSegmentBytes } from "../../../packages/core/src/audio.js";
+import { maxMessageAttachmentBytes } from "../../../packages/core/src/message-attachment-policy.js";
 import {
   appContentSecurityPolicy,
   applicationViewPolicy,
@@ -52,6 +53,7 @@ function executionScope(url: URL) {
         url.searchParams.get(key) ? [[key, url.searchParams.get(key)]] : [],
       ),
     ),
+    ...(url.searchParams.get("taskRun") === "true" ? { taskRun: true } : {}),
   };
 }
 function speechScope(req: IncomingMessage) {
@@ -64,6 +66,30 @@ function speechScope(req: IncomingMessage) {
         }
       : {}),
   };
+}
+function platformQuery(url: URL, allowed: readonly string[]) {
+  for (const key of url.searchParams.keys())
+    if (!allowed.includes(key))
+      throw new DomainError("invalid", "Platform 查询参数无效。");
+  const value = (key: string) => url.searchParams.get(key) ?? undefined;
+  const number = (key: string) =>
+    url.searchParams.has(key) ? Number(value(key)) : undefined;
+  const boolean = (key: string) => {
+    const raw = value(key);
+    if (raw === undefined) return undefined;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    throw new DomainError("invalid", "Platform 布尔查询参数无效。");
+  };
+  return { value, number, boolean };
+}
+function platformArrayQuery(value: string | undefined): unknown {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new DomainError("invalid", "Platform 列表筛选参数无效。");
+  }
 }
 
 /** Web-only HTTP adapter. Business operations live in the shared package. */
@@ -127,7 +153,7 @@ export function createAppServer(
           .object({ token: z.string().max(128) })
           .strict()
           .parse(await jsonBody(req, 1024));
-        const secret = options.identity.login(
+        const secret = await options.identity.login(
           data.token,
           req.socket.remoteAddress ?? "unknown",
         );
@@ -138,7 +164,9 @@ export function createAppServer(
         json(res, 200, { connected: true });
         return;
       }
-      const authentication = options.identity?.authenticate(req.headers.cookie);
+      const authentication = await options.identity?.authenticateShared(
+        req.headers.cookie,
+      );
       const access = authentication?.access ?? localAccess,
         requestToken = authentication?.csrf ?? token;
       if (
@@ -200,6 +228,13 @@ export function createAppServer(
       const task = /^\/api\/tasks\/([a-zA-Z0-9_-]+)\/runtime$/.exec(
         url.pathname,
       );
+      const taskRunHistory = /^\/api\/tasks\/([a-zA-Z0-9_-]+)\/runs$/.exec(
+        url.pathname,
+      );
+      const taskRunStatus =
+        /^\/api\/tasks\/([a-zA-Z0-9_-]+)\/runs\/([1-9][0-9]*)\/status$/.exec(
+          url.pathname,
+        );
       if (
         ["/api/model-settings/read", "/api/model-settings/update"].includes(
           url.pathname,
@@ -210,23 +245,130 @@ export function createAppServer(
           "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
         );
       if (req.method === "GET") {
-        if (
-          url.pathname === "/api/reader/section" ||
-          url.pathname === "/api/reader/contents"
-        ) {
+        if (url.pathname === "/api/reader/original") {
+          const artifactId = url.searchParams.get("artifactId");
+          const revision = Number(url.searchParams.get("revision"));
+          const request = { artifactId, revision };
+          const original =
+            await business.readPlatformReaderOriginalMetadata(request);
+          const size = original.byteLength;
+          const range = req.headers.range;
+          const match =
+            range === undefined ? null : /^bytes=(\d+)-(\d*)$/.exec(range);
+          if (
+            range !== undefined &&
+            (!match ||
+              Number(match[1]) >= size ||
+              (match[2] !== "" && Number(match[2]) < Number(match[1])))
+          ) {
+            res.writeHead(416, { "Content-Range": `bytes */${size}` });
+            res.end();
+            return;
+          }
+          const start = match ? Number(match[1]) : 0;
+          const end =
+            match && match[2] !== ""
+              ? Math.min(Number(match[2]) + 1, size)
+              : size;
+          res.writeHead(match ? 206 : 200, {
+            "Content-Type": "application/pdf",
+            "Content-Length": String(end - start),
+            "Accept-Ranges": "bytes",
+            ETag: `"${original.sha256}"`,
+            ...(match
+              ? { "Content-Range": `bytes ${start}-${end - 1}/${size}` }
+              : {}),
+          });
+          for (
+            let offset = start;
+            offset < end && !res.destroyed;
+            offset += 1024 * 1024
+          ) {
+            const bytes = await business.readPlatformReaderOriginalRange({
+              ...request,
+              start: offset,
+              endExclusive: Math.min(offset + 1024 * 1024, end),
+            });
+            if (!res.write(bytes))
+              await new Promise<void>((resolve, reject) => {
+                const done = () => {
+                  res.off("drain", drained);
+                  res.off("close", closed);
+                };
+                const drained = () => {
+                  done();
+                  resolve();
+                };
+                const closed = () => {
+                  done();
+                  reject(new Error("PDF 原件读取连接已关闭。"));
+                };
+                res.once("drain", drained);
+                res.once("close", closed);
+              });
+          }
+          if (!res.destroyed) res.end();
+          return;
+        }
+        if (url.pathname === "/api/reader/marks") {
+          const params = url.searchParams;
           json(
             res,
             200,
-            business.readReading(
-              {
-                artifactId: url.searchParams.get("artifactId"),
-                revision: Number(url.searchParams.get("revision")),
-                ...(url.pathname.endsWith("/section")
-                  ? { sectionId: url.searchParams.get("sectionId") }
-                  : {}),
-              },
-              url.pathname.endsWith("/contents"),
-            ),
+            await business.readPlatformReaderMarks({
+              artifactId: params.get("artifactId"),
+              revision: Number(params.get("revision")),
+              ...(params.has("deleted")
+                ? {
+                    deleted:
+                      params.get("deleted") === "true"
+                        ? true
+                        : params.get("deleted") === "false"
+                          ? false
+                          : params.get("deleted"),
+                  }
+                : {}),
+              ...(params.has("sectionId")
+                ? { sectionId: params.get("sectionId") }
+                : {}),
+              ...(params.has("start")
+                ? { start: Number(params.get("start")) }
+                : {}),
+              ...(params.has("end") ? { end: Number(params.get("end")) } : {}),
+              ...(params.has("after") ? { after: params.get("after") } : {}),
+              ...(params.has("offset")
+                ? { offset: Number(params.get("offset")) }
+                : {}),
+              ...(params.has("limit")
+                ? { limit: Number(params.get("limit")) }
+                : {}),
+            }),
+          );
+          return;
+        }
+        if (
+          url.pathname === "/api/reader/section" ||
+          url.pathname === "/api/reader/book" ||
+          url.pathname === "/api/reader/contents" ||
+          url.pathname === "/api/reader/state"
+        ) {
+          const request = {
+            artifactId: url.searchParams.get("artifactId"),
+            revision: Number(url.searchParams.get("revision")),
+            ...(url.pathname.endsWith("/section")
+              ? { sectionId: url.searchParams.get("sectionId") }
+              : {}),
+          };
+          json(
+            res,
+            200,
+            await (url.pathname.endsWith("/section")
+              ? business.readPlatformReaderSection(request)
+              : url.pathname.endsWith("/book")
+                ? business.readPlatformReaderBook(request)
+                : url.pathname.endsWith("/contents")
+                  ? business.readPlatformReaderContents(request)
+                  : business.readPlatformReaderState(request)),
           );
           return;
         }
@@ -234,24 +376,623 @@ export function createAppServer(
           json(res, 200, {
             application: "morphz",
             protocol: 1,
-            runtimeConnected: options.runtime?.snapshot().connected ?? false,
+            runtimeConnected: options.runtime?.isConnected ?? false,
           });
           return;
         }
-        if (url.pathname === "/api/workspace") {
-          const boot = business.workspace(requestToken),
-            etag = `"workspace-${boot.workspace.revision}-${requestToken.slice(0, 8)}"`;
-          res.setHeader("ETag", etag);
-          if (req.headers["if-none-match"] === etag) {
-            res.writeHead(304);
-            res.end();
-            return;
-          }
-          json(res, 200, boot);
+        if (url.pathname === "/api/platform/bootstrap") {
+          platformQuery(url, []);
+          json(res, 200, business.platformBootstrap(requestToken));
+          return;
+        }
+        if (url.pathname === "/api/platform/apps") {
+          platformQuery(url, []);
+          json(res, 200, await business.listUiPackages());
+          return;
+        }
+        if (url.pathname === "/api/platform/app-views") {
+          platformQuery(url, []);
+          json(res, 200, await business.listPlatformAppViews());
+          return;
+        }
+        if (url.pathname === "/api/platform/runtime-snapshot") {
+          platformQuery(url, []);
+          json(res, 200, business.platformRuntimeSnapshot());
+          return;
+        }
+        if (url.pathname === "/api/platform/runtime-navigation") {
+          const query = platformQuery(url, ["projectId", "conversationId"]);
+          const projectId = query.value("projectId");
+          const conversationId = query.value("conversationId");
+          if (!!projectId !== !!conversationId)
+            throw new DomainError("invalid", "对话范围参数不完整。");
+          json(
+            res,
+            200,
+            await business.platformRuntimeNavigation(
+              projectId && conversationId
+                ? { projectId, conversationId }
+                : undefined,
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/bookmarks") {
+          const deleted = url.searchParams.get("deleted");
+          if (deleted !== null && deleted !== "true" && deleted !== "false")
+            throw new DomainError("invalid", "收藏筛选条件无效。");
+          json(
+            res,
+            200,
+            await business.listBookmarks({
+              ...(deleted !== null ? { deleted: deleted === "true" } : {}),
+              ...(url.searchParams.has("query")
+                ? { query: url.searchParams.get("query") }
+                : {}),
+              ...(url.searchParams.has("offset")
+                ? { offset: Number(url.searchParams.get("offset")) }
+                : {}),
+              ...(url.searchParams.has("limit")
+                ? { limit: Number(url.searchParams.get("limit")) }
+                : {}),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/projects") {
+          const query = platformQuery(url, [
+            "status",
+            "limit",
+            "afterUpdatedAt",
+            "afterProjectId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformProjects({
+              status: query.value("status"),
+              limit: query.number("limit"),
+              ...(query.value("afterUpdatedAt") || query.value("afterProjectId")
+                ? {
+                    after: {
+                      updatedAt: query.value("afterUpdatedAt"),
+                      projectId: query.value("afterProjectId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const projectUnderstanding =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/understanding$/.exec(
+            url.pathname,
+          );
+        if (projectUnderstanding) {
+          const query = platformQuery(url, ["revision"]);
+          json(
+            res,
+            200,
+            await business.getPlatformProjectUnderstanding({
+              projectId: projectUnderstanding[1],
+              revision: query.number("revision"),
+            }),
+          );
+          return;
+        }
+        const platformProject =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        if (platformProject) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.getPlatformProject({
+              projectId: platformProject[1],
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/conversations/navigation") {
+          const query = platformQuery(url, [
+            "limit",
+            "afterUpdatedAt",
+            "afterConversationId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listAccessiblePlatformConversations({
+              limit: query.number("limit"),
+              ...(query.value("afterUpdatedAt") ||
+              query.value("afterConversationId")
+                ? {
+                    after: {
+                      updatedAt: query.value("afterUpdatedAt"),
+                      conversationId: query.value("afterConversationId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformConversations =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations$/.exec(
+            url.pathname,
+          );
+        if (platformConversations) {
+          const query = platformQuery(url, [
+            "archived",
+            "limit",
+            "afterUpdatedAt",
+            "afterConversationId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformConversations({
+              projectId: platformConversations[1],
+              archived: query.boolean("archived"),
+              limit: query.number("limit"),
+              ...(query.value("afterUpdatedAt") ||
+              query.value("afterConversationId")
+                ? {
+                    after: {
+                      updatedAt: query.value("afterUpdatedAt"),
+                      conversationId: query.value("afterConversationId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformConversationHistory =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations\/([a-zA-Z0-9_-]+)\/history$/.exec(
+            url.pathname,
+          );
+        if (platformConversationHistory) {
+          const query = platformQuery(url, [
+            "beforeCreatedAt",
+            "beforeId",
+            "limit",
+          ]);
+          const beforeCreatedAt = query.value("beforeCreatedAt");
+          const beforeId = query.value("beforeId");
+          if (!!beforeCreatedAt !== !!beforeId)
+            throw new DomainError("invalid", "对话历史游标不完整。");
+          json(
+            res,
+            200,
+            await business.platformConversationHistory({
+              projectId: platformConversationHistory[1],
+              conversationId: platformConversationHistory[2],
+              ...(beforeCreatedAt && beforeId
+                ? { before: { createdAt: beforeCreatedAt, id: beforeId } }
+                : {}),
+              ...(query.number("limit") !== undefined
+                ? { limit: query.number("limit") }
+                : {}),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/tasks/order") {
+          platformQuery(url, []);
+          json(res, 200, await business.getPlatformTaskOrder({}));
+          return;
+        }
+        const platformTaskOrder =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/task-order$/.exec(
+            url.pathname,
+          );
+        if (platformTaskOrder) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.getPlatformTaskOrder({
+              projectId: platformTaskOrder[1],
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/tasks/counts") {
+          platformQuery(url, []);
+          json(res, 200, await business.platformTaskCounts());
+          return;
+        }
+        if (url.pathname === "/api/platform/tasks") {
+          const query = platformQuery(url, [
+            "projectId",
+            "owner",
+            "search",
+            "limit",
+            "afterOrderRank",
+            "afterTaskId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformTasks({
+              projectId: query.value("projectId"),
+              owner: query.value("owner"),
+              query: query.value("search"),
+              limit: query.number("limit"),
+              ...(query.value("afterOrderRank") || query.value("afterTaskId")
+                ? {
+                    after: {
+                      orderRank: query.number("afterOrderRank"),
+                      taskId: query.value("afterTaskId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformTaskHead =
+          /^\/api\/platform\/tasks\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        if (platformTaskHead) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.platformTaskHead({ taskId: platformTaskHead[1] }),
+          );
+          return;
+        }
+        const platformTaskVersion =
+          /^\/api\/platform\/tasks\/([a-zA-Z0-9_-]+)\/version$/.exec(
+            url.pathname,
+          );
+        if (platformTaskVersion) {
+          const query = platformQuery(url, ["revision"]);
+          json(
+            res,
+            200,
+            await business.getPlatformTaskVersion({
+              taskId: platformTaskVersion[1],
+              revision: query.number("revision"),
+            }),
+          );
+          return;
+        }
+        const platformTaskVersions =
+          /^\/api\/platform\/tasks\/([a-zA-Z0-9_-]+)\/versions$/.exec(
+            url.pathname,
+          );
+        if (platformTaskVersions) {
+          const query = platformQuery(url, ["limit", "beforeRevision"]);
+          json(
+            res,
+            200,
+            await business.listPlatformTaskVersions({
+              taskId: platformTaskVersions[1],
+              limit: query.number("limit"),
+              beforeRevision: query.number("beforeRevision"),
+            }),
+          );
+          return;
+        }
+        const platformTaskResponses =
+          /^\/api\/platform\/tasks\/([a-zA-Z0-9_-]+)\/responses$/.exec(
+            url.pathname,
+          );
+        if (platformTaskResponses) {
+          const query = platformQuery(url, [
+            "limit",
+            "afterCreatedAt",
+            "afterResponseId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformTaskResponses({
+              taskId: platformTaskResponses[1],
+              limit: query.number("limit"),
+              ...(query.value("afterCreatedAt") ||
+              query.value("afterResponseId")
+                ? {
+                    after: {
+                      createdAt: query.value("afterCreatedAt"),
+                      responseId: query.value("afterResponseId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/content/resolve") {
+          const query = platformQuery(url, [
+            "appId",
+            "appObjectId",
+            "instanceId",
+          ]);
+          json(
+            res,
+            200,
+            await business.resolvePlatformContent({
+              appId: query.value("appId"),
+              appObjectId: query.value("appObjectId"),
+              instanceId: query.value("instanceId"),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/content/counts") {
+          const query = platformQuery(url, [
+            "projectId",
+            "contentIds",
+            "appObjectIds",
+            "appId",
+            "appIds",
+            "kind",
+            "kinds",
+            "availability",
+            "query",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformContentCounts({
+              projectId: query.value("projectId"),
+              contentIds: platformArrayQuery(query.value("contentIds")),
+              appObjectIds: platformArrayQuery(query.value("appObjectIds")),
+              appId: query.value("appId"),
+              appIds: platformArrayQuery(query.value("appIds")),
+              kind: query.value("kind"),
+              kinds: platformArrayQuery(query.value("kinds")),
+              availability: query.value("availability"),
+              query: query.value("query"),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/content/deliveries") {
+          const query = platformQuery(url, [
+            "inputIds",
+            "limit",
+            "afterCommittedAt",
+            "afterCommandId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformContentDeliveries({
+              inputIds: platformArrayQuery(query.value("inputIds")),
+              limit: query.number("limit"),
+              ...(query.value("afterCommittedAt") ||
+              query.value("afterCommandId")
+                ? {
+                    after: {
+                      committedAt: query.value("afterCommittedAt"),
+                      commandId: query.value("afterCommandId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformContent =
+          /^\/api\/platform\/content\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        if (platformContent) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.getPlatformContent({
+              contentId: platformContent[1],
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/content") {
+          const query = platformQuery(url, [
+            "projectId",
+            "contentIds",
+            "appObjectIds",
+            "appId",
+            "appIds",
+            "kind",
+            "kinds",
+            "availability",
+            "query",
+            "sort",
+            "limit",
+            "beforeKey",
+            "beforeContentId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformContent({
+              projectId: query.value("projectId"),
+              contentIds: platformArrayQuery(query.value("contentIds")),
+              appObjectIds: platformArrayQuery(query.value("appObjectIds")),
+              appId: query.value("appId"),
+              appIds: platformArrayQuery(query.value("appIds")),
+              kind: query.value("kind"),
+              kinds: platformArrayQuery(query.value("kinds")),
+              availability: query.value("availability"),
+              query: query.value("query"),
+              sort: query.value("sort"),
+              limit: query.number("limit"),
+              ...(query.value("beforeKey") || query.value("beforeContentId")
+                ? {
+                    before: {
+                      key: query.value("beforeKey"),
+                      contentId: query.value("beforeContentId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformWorkRelations =
+          /^\/api\/platform\/work\/([a-zA-Z0-9_-]+)\/relations$/.exec(
+            url.pathname,
+          );
+        if (platformWorkRelations) {
+          const query = platformQuery(url, ["limit", "after"]);
+          json(
+            res,
+            200,
+            await business.listPlatformWorkRelations({
+              objectId: platformWorkRelations[1],
+              limit: query.number("limit"),
+              after: query.value("after"),
+            }),
+          );
+          return;
+        }
+        const platformObject =
+          /^\/api\/platform\/objects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        const platformAnnotations =
+          /^\/api\/platform\/objects\/([a-zA-Z0-9_-]+)\/annotations$/.exec(
+            url.pathname,
+          );
+        if (platformAnnotations) {
+          const query = platformQuery(url, ["limit", "afterOrdinal"]);
+          json(
+            res,
+            200,
+            await business.listPlatformObjectAnnotations({
+              contentId: platformAnnotations[1],
+              limit: query.number("limit"),
+              afterOrdinal: query.number("afterOrdinal"),
+            }),
+          );
+          return;
+        }
+        if (platformObject) {
+          const query = platformQuery(url, ["revision"]);
+          json(
+            res,
+            200,
+            await business.readPlatformObject({
+              contentId: platformObject[1],
+              revision: query.number("revision"),
+            }),
+          );
+          return;
+        }
+        const platformObjectVersions =
+          /^\/api\/platform\/objects\/([a-zA-Z0-9_-]+)\/versions$/.exec(
+            url.pathname,
+          );
+        if (platformObjectVersions) {
+          const query = platformQuery(url, ["limit", "beforeRevision"]);
+          json(
+            res,
+            200,
+            await business.listPlatformObjectVersions({
+              contentId: platformObjectVersions[1],
+              limit: query.number("limit"),
+              beforeRevision: query.number("beforeRevision"),
+            }),
+          );
+          return;
+        }
+        const platformDocument =
+          /^\/api\/platform\/documents\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        if (platformDocument) {
+          const query = platformQuery(url, ["revision"]);
+          json(
+            res,
+            200,
+            await business.readPlatformDocument({
+              contentId: platformDocument[1],
+              revision: query.number("revision"),
+            }),
+          );
+          return;
+        }
+        const platformScriptItem =
+          /^\/api\/platform\/scripts\/([a-zA-Z0-9_-]+)\/items\/([a-zA-Z0-9_-]+)$/.exec(
+            url.pathname,
+          );
+        if (platformScriptItem) {
+          const query = platformQuery(url, ["revision"]);
+          json(
+            res,
+            200,
+            await business.readPlatformScriptItem({
+              contentId: platformScriptItem[1],
+              itemId: platformScriptItem[2],
+              revision: query.number("revision"),
+            }),
+          );
+          return;
+        }
+        const platformScriptItems =
+          /^\/api\/platform\/scripts\/([a-zA-Z0-9_-]+)\/items$/.exec(
+            url.pathname,
+          );
+        if (platformScriptItems) {
+          const query = platformQuery(url, [
+            "parentId",
+            "kind",
+            "limit",
+            "expectedActivityRevision",
+            "afterOrdinal",
+            "afterItemId",
+          ]);
+          json(
+            res,
+            200,
+            await business.listPlatformScriptItems({
+              contentId: platformScriptItems[1],
+              parentId: query.value("parentId") ?? null,
+              kind: query.value("kind"),
+              limit: query.number("limit"),
+              expectedActivityRevision: query.number(
+                "expectedActivityRevision",
+              ),
+              ...(query.value("afterOrdinal") || query.value("afterItemId")
+                ? {
+                    after: {
+                      ordinal: query.number("afterOrdinal"),
+                      itemId: query.value("afterItemId"),
+                    },
+                  }
+                : {}),
+            }),
+          );
+          return;
+        }
+        const platformScriptSnapshot =
+          /^\/api\/platform\/scripts\/([a-zA-Z0-9_-]+)\/snapshot$/.exec(
+            url.pathname,
+          );
+        if (platformScriptSnapshot) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.readPlatformScriptSnapshot({
+              contentId: platformScriptSnapshot[1],
+            }),
+          );
+          return;
+        }
+        const platformScript =
+          /^\/api\/platform\/scripts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+        if (platformScript) {
+          platformQuery(url, []);
+          json(
+            res,
+            200,
+            await business.readPlatformScript({ contentId: platformScript[1] }),
+          );
           return;
         }
         if (url.pathname === "/api/notifications") {
-          json(res, 200, business.notifications());
+          json(res, 200, await business.notifications());
           return;
         }
         if (url.pathname === "/api/speech/status") {
@@ -259,7 +1000,34 @@ export function createAppServer(
           return;
         }
         if (task) {
-          json(res, 200, business.taskSnapshot(task[1]));
+          json(res, 200, await business.taskSnapshot(task[1]));
+          return;
+        }
+        if (taskRunHistory) {
+          json(
+            res,
+            200,
+            await business.taskRunHistory({
+              taskId: taskRunHistory[1],
+              ...(url.searchParams.has("limit")
+                ? { limit: Number(url.searchParams.get("limit")) }
+                : {}),
+              ...(url.searchParams.has("beforeRun")
+                ? { beforeRun: Number(url.searchParams.get("beforeRun")) }
+                : {}),
+            }),
+          );
+          return;
+        }
+        if (taskRunStatus) {
+          json(
+            res,
+            200,
+            await business.taskRunStatus({
+              taskId: taskRunStatus[1],
+              runNumber: Number(taskRunStatus[2]),
+            }),
+          );
           return;
         }
         if (url.pathname === "/api/models") {
@@ -282,41 +1050,40 @@ export function createAppServer(
           return;
         }
         if (url.pathname === "/api/search") {
+          const query = platformQuery(url, [
+            "q",
+            "projectId",
+            "limit",
+            "offset",
+            "includeTitles",
+            "kind",
+            "kinds",
+            "appIds",
+            "sort",
+          ]);
           json(
             res,
             200,
-            business.search({
-              query: url.searchParams.get("q") ?? "",
-              ...(url.searchParams.has("projectId")
-                ? { projectId: url.searchParams.get("projectId") }
-                : {}),
-              limit: Number(url.searchParams.get("limit") ?? 20),
-              offset: Number(url.searchParams.get("offset") ?? 0),
+            await business.search({
+              query: query.value("q") ?? "",
+              projectId: query.value("projectId"),
+              limit: query.number("limit"),
+              offset: query.number("offset"),
+              includeTitles: query.boolean("includeTitles"),
+              kind: query.value("kind"),
+              kinds: platformArrayQuery(query.value("kinds")),
+              appIds: platformArrayQuery(query.value("appIds")),
+              sort: query.value("sort"),
             }),
           );
           return;
         }
-        const artifact = /^\/api\/artifacts\/([a-zA-Z0-9_-]+)$/.exec(
-          url.pathname,
-        );
-        if (artifact) {
-          json(
-            res,
-            200,
-            business.artifact({
-              id: artifact[1],
-              ...(url.searchParams.has("revision")
-                ? { revision: Number(url.searchParams.get("revision")) }
-                : {}),
-            }),
+        const view =
+          /^\/api\/application-view\/([a-z][a-z0-9.-]{2,80}@\d+\.\d+\.\d+)$/.exec(
+            url.pathname.replace(/%40/gi, "@"),
           );
-          return;
-        }
-        const view = /^\/api\/application-view\/([a-zA-Z0-9_-]+)$/.exec(
-          url.pathname,
-        );
         if (view) {
-          const html = business.applicationView(view[1]);
+          const html = await business.applicationView(view[1]);
           res.setHeader("Content-Security-Policy", applicationViewPolicy);
           res.setHeader("Permissions-Policy", applicationViewPermissions);
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -327,15 +1094,33 @@ export function createAppServer(
           url.pathname,
         );
         if (asset) {
-          const file = business.asset(asset[2], asset[1] === "attachments");
+          const attachment = asset[1] === "attachments";
+          const query = platformQuery(
+            url,
+            attachment ? ["projectId", "conversationId", "inputId"] : [],
+          );
+          const source = url.searchParams.size
+            ? {
+                projectId: query.value("projectId"),
+                conversationId: query.value("conversationId"),
+                inputId: query.value("inputId"),
+              }
+            : undefined;
+          const file = await business.asset(asset[2], attachment, source);
           res.writeHead(200, {
             "Content-Type": file.mime,
             "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
           });
           res.end(file.bytes);
           return;
         }
-        if (url.pathname === "/api/conversation/stream") {
+        const platformStream =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations\/([a-zA-Z0-9_-]+)\/stream$/.exec(
+            url.pathname,
+          );
+        if (platformStream) {
+          platformQuery(url, []);
           let closed = false,
             dispose: (() => void) | undefined;
           let previous = new Map<string, string>(),
@@ -387,8 +1172,11 @@ export function createAppServer(
             connection = value.connected;
           };
           try {
-            dispose = business.observeConversation(
-              Object.fromEntries(url.searchParams),
+            dispose = await business.observePlatformConversation(
+              {
+                projectId: platformStream[1],
+                conversationId: platformStream[2],
+              },
               send,
               close,
             );
@@ -418,6 +1206,27 @@ export function createAppServer(
           });
           return;
         }
+        const scriptEditor =
+          /^\/api\/platform\/scripts\/editor\/(head|page|detail)$/.exec(
+            url.pathname,
+          );
+        if (scriptEditor) {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          const raw = await jsonBody(req, 16 * 1024);
+          json(
+            res,
+            200,
+            scriptEditor[1] === "head"
+              ? await business.readPlatformScriptEditorHead(raw)
+              : scriptEditor[1] === "page"
+                ? await business.readPlatformScriptEditorPage(raw)
+                : await business.readPlatformScriptEditorDetail(raw),
+          );
+          return;
+        }
         if (url.pathname === "/api/reader/ocr") {
           json(
             res,
@@ -426,9 +1235,386 @@ export function createAppServer(
           );
           return;
         }
+        if (url.pathname === "/api/reader/commands") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.commandPlatformReader(
+              await jsonBody(req, 32 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/bookmarks/commands") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.commandBookmark(await jsonBody(req, 16 * 1024)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/apps/install") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.installUiPackage(
+              await jsonBody(req, 2 * 1024 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname.startsWith("/api/platform/app-views/")) {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          const command = await jsonBody(req, 80 * 1024);
+          const action = url.pathname.slice("/api/platform/app-views/".length);
+          const result =
+            action === "launch"
+              ? await business.launchPlatformAppView(command)
+              : action === "save"
+                ? await business.savePlatformAppView(command)
+                : action === "close"
+                  ? await business.closePlatformAppView(command)
+                  : null;
+          if (!result)
+            throw new DomainError("not_found", "应用窗口操作不存在。");
+          json(res, 200, result);
+          return;
+        }
+        if (url.pathname === "/api/platform/messages") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            202,
+            await business.platformMessage(await jsonBody(req, 1024 * 1024)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/conversations/update") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.updatePlatformConversation(
+              await jsonBody(req, 16 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/objects/annotate") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.annotatePlatformObject(
+              await jsonBody(req, 32 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/objects/rename") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.renamePlatformObject(await jsonBody(req, 16 * 1024)),
+          );
+          return;
+        }
+        if (
+          url.pathname === "/api/platform/interactive/rows" ||
+          url.pathname === "/api/platform/interactive/patch"
+        ) {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          const payload = await jsonBody(
+            req,
+            url.pathname.endsWith("/rows") ? 16 * 1024 : 3 * 1024 * 1024,
+          );
+          json(
+            res,
+            200,
+            url.pathname.endsWith("/rows")
+              ? await business.queryPlatformInteractiveRows(payload)
+              : await business.patchPlatformInteractiveRows(payload),
+          );
+          return;
+        }
+        if (
+          url.pathname === "/api/platform/documents" ||
+          url.pathname === "/api/platform/documents/import" ||
+          url.pathname === "/api/platform/documents/revise" ||
+          url.pathname === "/api/platform/images" ||
+          url.pathname === "/api/platform/images/revise" ||
+          url.pathname === "/api/platform/interactive" ||
+          url.pathname === "/api/platform/interactive/revise"
+        ) {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          const payload = await jsonBody(
+            req,
+            url.pathname === "/api/platform/documents/import"
+              ? 9 * 1024 * 1024
+              : 3 * 1024 * 1024,
+          );
+          json(
+            res,
+            200,
+            url.pathname.startsWith("/api/platform/images")
+              ? url.pathname.endsWith("/revise")
+                ? await business.revisePlatformImage(payload)
+                : await business.createPlatformImage(payload)
+              : url.pathname.startsWith("/api/platform/interactive")
+                ? url.pathname.endsWith("/revise")
+                  ? await business.revisePlatformInteractive(payload)
+                  : await business.createPlatformInteractive(payload)
+                : url.pathname.endsWith("/import")
+                  ? await business.importPlatformDocument(payload)
+                  : url.pathname.endsWith("/revise")
+                    ? await business.revisePlatformDocument(payload)
+                    : await business.createPlatformDocument(payload),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.createPlatformScript(await jsonBody(req, 16 * 1024)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/update") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.updatePlatformScript(await jsonBody(req, 32 * 1024)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/rename") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.renamePlatformScript(await jsonBody(req, 16 * 1024)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/items") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.createPlatformScriptItem(
+              await jsonBody(req, 3 * 1024 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/items/revise") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.revisePlatformScriptItem(
+              await jsonBody(req, 3 * 1024 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/items/restore") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.restorePlatformScriptItem(
+              await jsonBody(req, 16 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/items/workflow") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.transitionPlatformScriptWorkflow(
+              await jsonBody(req, 16 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/reviews") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.changePlatformScriptReview(
+              await jsonBody(req, 32 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/candidates/decide") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.decidePlatformScriptCandidate(
+              await jsonBody(req, 16 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/scripts/exports") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.recordPlatformScriptExport(
+              await jsonBody(req, 256 * 1024),
+            ),
+          );
+          return;
+        }
+        if (url.pathname === "/api/platform/spaces/ensure") {
+          platformQuery(url, []);
+          json(res, 200, await business.ensurePlatformSpaces());
+          return;
+        }
+        if (
+          url.pathname === "/api/platform/projects" ||
+          url.pathname === "/api/platform/projects/rename" ||
+          url.pathname === "/api/platform/projects/state" ||
+          url.pathname === "/api/platform/tasks" ||
+          url.pathname === "/api/platform/tasks/revise" ||
+          url.pathname === "/api/platform/tasks/respond" ||
+          url.pathname === "/api/platform/tasks/complete" ||
+          url.pathname === "/api/platform/tasks/run-request" ||
+          url.pathname === "/api/platform/tasks/reorder" ||
+          url.pathname === "/api/platform/tasks/reorder-selection" ||
+          url.pathname === "/api/platform/content/move" ||
+          url.pathname === "/api/platform/content/move-new-project" ||
+          url.pathname === "/api/platform/work/relations"
+        ) {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          const payload = await jsonBody(
+            req,
+            url.pathname === "/api/platform/tasks/reorder-selection"
+              ? 64 * 1024
+              : 16 * 1024,
+          );
+          json(
+            res,
+            200,
+            url.pathname === "/api/platform/tasks"
+              ? await business.createPlatformTask(payload)
+              : url.pathname === "/api/platform/tasks/revise"
+                ? await business.revisePlatformTask(payload)
+                : url.pathname === "/api/platform/tasks/respond"
+                  ? await business.respondPlatformTask(payload)
+                  : url.pathname === "/api/platform/tasks/complete"
+                    ? await business.completePlatformTask(payload)
+                    : url.pathname === "/api/platform/tasks/run-request"
+                      ? await business.requestPlatformTaskRun(payload)
+                      : url.pathname === "/api/platform/tasks/reorder"
+                        ? await business.reorderPlatformTask(payload)
+                        : url.pathname ===
+                            "/api/platform/tasks/reorder-selection"
+                          ? await business.reorderPlatformTaskSelection(payload)
+                          : url.pathname === "/api/platform/content/move"
+                            ? await business.movePlatformContent(payload)
+                            : url.pathname ===
+                                "/api/platform/content/move-new-project"
+                              ? await business.createPlatformProjectForContent(
+                                  payload,
+                                )
+                              : url.pathname === "/api/platform/work/relations"
+                                ? await business.linkPlatformWork(payload)
+                                : url.pathname ===
+                                    "/api/platform/projects/state"
+                                  ? await business.changePlatformProjectState(
+                                      payload,
+                                    )
+                                  : url.pathname.endsWith("/rename")
+                                    ? await business.renamePlatformProject(
+                                        payload,
+                                      )
+                                    : await business.createPlatformProject(
+                                        payload,
+                                      ),
+          );
+          return;
+        }
         if (url.pathname === "/api/identity/logout") {
           if (options.identity && authentication)
-            options.identity.logout(authentication.sessionHash);
+            await options.identity.logout(authentication.sessionHash);
           if (options.identity)
             res.setHeader(
               "Set-Cookie",
@@ -480,7 +1666,7 @@ export function createAppServer(
           json(
             res,
             200,
-            business.controlNotifications(await jsonBody(req, 20000)),
+            await business.controlNotifications(await jsonBody(req, 20000)),
           );
           return;
         }
@@ -544,7 +1730,7 @@ export function createAppServer(
           json(
             res,
             200,
-            business.browserRegister(
+            await business.browserRegister(
               {
                 key: req.headers["x-desktop-key"],
                 data: await jsonBody(req, 500000),
@@ -581,36 +1767,15 @@ export function createAppServer(
           );
           return;
         }
-        if (
-          [
-            "/api/executions/control",
-            "/api/commands",
-            "/api/messages",
-          ].includes(url.pathname)
-        ) {
+        if (url.pathname === "/api/executions/control") {
           if (req.headers["content-type"] !== "application/json") {
             json(res, 415, { message: "需要 JSON 请求。" });
             return;
           }
-          if (url.pathname === "/api/executions/control") {
-            json(
-              res,
-              200,
-              await business.executionControl(await jsonBody(req, 16384)),
-            );
-            return;
-          }
-          const message = url.pathname === "/api/messages";
-          const command = await jsonBody(
-            req,
-            message ? 1024 * 1024 : 16 * 1024 * 1024,
-          );
           json(
             res,
-            message ? 202 : 200,
-            await (message
-              ? business.message(command)
-              : business.command(command)),
+            200,
+            await business.executionControl(await jsonBody(req, 16384)),
           );
           return;
         }
@@ -634,8 +1799,8 @@ export function createAppServer(
             res,
             202,
             input[2] === "send"
-              ? business.sendInput(input[1])
-              : business.cancelInput(input[1]),
+              ? await business.sendInput(input[1])
+              : await business.cancelInput(input[1]),
           );
           return;
         }
@@ -646,15 +1811,19 @@ export function createAppServer(
           json(
             res,
             201,
-            business.addAttachment({
+            await business.addAttachment({
               name,
-              data: await body(req, 20 * 1024 * 1024),
+              data: await body(req, maxMessageAttachmentBytes),
             }),
           );
           return;
         }
         if (url.pathname === "/api/assets") {
-          json(res, 201, business.addAsset(await body(req, 6 * 1024 * 1024)));
+          json(
+            res,
+            201,
+            await business.addAsset(await body(req, 6 * 1024 * 1024)),
+          );
           return;
         }
       }

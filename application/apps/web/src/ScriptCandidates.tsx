@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, CheckCheck, X } from "lucide-react";
 import { quoteSource } from "./text-quote-dom.js";
-import {
-  scriptCandidateStale,
-  type ScriptDraft,
-  type ScriptItem,
-  type ScriptProduction,
-} from "../../../packages/core/src/script-studio.js";
+import { type ScriptDraft } from "../../../packages/core/src/script-studio.js";
 import {
   scriptDisplayTime,
   scriptFieldLabels,
@@ -14,6 +9,10 @@ import {
 } from "../../../packages/core/src/script-studio-presentation.js";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import type { ScriptRun } from "./ScriptStudio.js";
+import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
+import type { ScriptEditorProduction } from "./script-editor-reader.js";
+import type { WorkspaceClient } from "./client.js";
+import { useScriptEditorRead } from "./useScriptEditorRead.js";
 
 const statusLabels = {
   pending: "待决定",
@@ -22,6 +21,7 @@ const statusLabels = {
 };
 
 export function ScriptCandidates({
+  client,
   production,
   item,
   canWrite,
@@ -30,25 +30,22 @@ export function ScriptCandidates({
   run,
   onShowBody,
 }: {
-  production: ScriptProduction;
-  item: ScriptItem;
+  client: WorkspaceClient;
+  production: ScriptEditorProduction;
+  item: ScriptDirectoryItem;
   canWrite: boolean;
   dirty: boolean;
   deliveryTarget?: ScriptLocation & { requestId: string };
   run: ScriptRun;
   onShowBody: () => void;
 }) {
-  const candidates = production.candidates.filter(
-    (c) => c.targetId === item.id,
+  const page = useScriptEditorRead(
+    `candidates:${client.boot!.csrfToken}:${production.id}:${item.id}`,
+    production.activityRevision,
+    () => client.readScriptEditorPage(production, "candidates", item.id),
   );
-  const [selected, setSelected] = useState(
-    deliveryTarget?.candidateId ??
-      candidates.findLast(
-        (c) => c.status === "pending" && !scriptCandidateStale(production, c),
-      )?.id ??
-      candidates.at(-1)?.id ??
-      "",
-  );
+  const candidates = page.value?.candidates ?? [];
+  const [selected, setSelected] = useState(deliveryTarget?.candidateId ?? "");
   const [decision, setDecision] = useState<"accept" | "reject" | null>(null);
   const busy = decision !== null;
   const [error, setError] = useState("");
@@ -58,12 +55,44 @@ export function ScriptCandidates({
   useEffect(() => {
     if (deliveryTarget?.candidateId) setSelected(deliveryTarget.candidateId);
   }, [deliveryTarget?.requestId]);
-  const candidate =
+  const summary =
     candidates.find((c) => c.id === selected) ??
-    candidates.findLast(
-      (c) => c.status === "pending" && !scriptCandidateStale(production, c),
-    ) ??
-    candidates.at(-1);
+    candidates.find((c) => c.id === page.value?.defaultCandidateId) ??
+    candidates[0];
+  const detail = useScriptEditorRead(
+    `candidate:${client.boot!.csrfToken}:${production.id}:${summary?.id ?? ""}`,
+    production.activityRevision,
+    async () => {
+      const candidate = await client.readScriptCandidate(
+        production,
+        summary!.id,
+      );
+      const before = await client.readScriptVersion(
+        production,
+        item.id,
+        candidate.baseRevision,
+      );
+      const titles = new Map<string, string>();
+      for (const draft of [candidate.draft, before.draft])
+        for (const ref of draft.dependencies) {
+          const key = `${ref.itemId}:${ref.revision}`;
+          if (!titles.has(key))
+            titles.set(
+              key,
+              (
+                await client.readScriptVersion(
+                  production,
+                  ref.itemId,
+                  ref.revision,
+                )
+              ).draft.title,
+            );
+        }
+      return { candidate, before: before.draft, titles };
+    },
+    !!summary,
+  );
+  const candidate = detail.value?.candidate;
   useEffect(() => {
     const list = candidateList.current;
     const selected = list?.querySelector<HTMLElement>('[aria-current="true"]');
@@ -77,32 +106,43 @@ export function ScriptCandidates({
   }, [candidate?.id]);
   if (!candidate)
     return (
-      <p className="script-hint">
-        尚无候选。可以在对话中要求生成，或从正文页选择「生成候选」。
+      <p
+        className="script-hint"
+        role={page.error || detail.error ? "alert" : undefined}
+      >
+        {page.error ||
+          detail.error ||
+          (page.pending || detail.pending
+            ? "正在读取候选…"
+            : "尚无候选。可以在对话中要求生成，或从正文页选择「生成候选」。")}
       </p>
     );
   const c = candidate;
-  const ordinal = candidates.indexOf(c) + 1;
-  const adoptedVersion = item.versions.find(
-    (version) => version.candidateId === c.id,
-  );
-  const before = item.versions.find(
-    (v) => v.revision === c.baseRevision,
-  )?.draft;
-  const obsolete = scriptCandidateStale(production, c);
-  const displayStatus = (entry: typeof c) =>
-    entry.status === "pending" && scriptCandidateStale(production, entry)
+  const ordinal = c.ordinal;
+  const adoptedVersion = c.acceptedRevision
+    ? { revision: c.acceptedRevision }
+    : null;
+  const before = detail.value?.before;
+  const obsolete = c.stale;
+  const displayStatus = (entry: {
+    status: keyof typeof statusLabels;
+    stale: boolean;
+  }) =>
+    entry.status === "pending" && entry.stale
       ? "旧稿"
       : statusLabels[entry.status];
-  const blocked = !canWrite
-    ? "你没有修改权限。"
-    : item.status === "locked"
-      ? "正文已锁稿，请先解锁再采纳。"
-      : dirty
-        ? "正文有未保存的修改，请先保存或处理草稿。"
-        : obsolete
-          ? "正文或引用已变化，这份候选不能直接采纳；请根据最新内容重新生成。"
-          : "";
+  const blocked =
+    !detail.fresh || !page.fresh
+      ? "正在核对候选版本…"
+      : !canWrite
+        ? "你没有修改权限。"
+        : item.status === "locked"
+          ? "正文已锁稿，请先解锁再采纳。"
+          : dirty
+            ? "正文有未保存的修改，请先保存或处理草稿。"
+            : obsolete
+              ? "正文或引用已变化，这份候选不能直接采纳；请根据最新内容重新生成。"
+              : "";
   const fields = before
     ? (Object.keys(c.draft) as (keyof ScriptDraft)[]).filter(
         (k) =>
@@ -139,8 +179,8 @@ export function ScriptCandidates({
         className="script-candidate-list"
         aria-label="选择候选稿"
       >
-        {[...candidates].reverse().map((entry) => {
-          const number = candidates.indexOf(entry) + 1;
+        {candidates.map((entry) => {
+          const number = entry.ordinal;
           return (
             <button
               key={entry.id}
@@ -148,7 +188,7 @@ export function ScriptCandidates({
               disabled={busy}
               aria-current={entry.id === c.id ? "true" : undefined}
               aria-label={`候选 ${number} · ${displayStatus(entry)}`}
-              title={`${number === candidates.length ? "最新生成 · " : ""}${scriptDisplayTime(entry.createdAt)} · ${Array.from(entry.draft.text).length} 字`}
+              title={`${number === page.value?.total ? "最新生成 · " : ""}${scriptDisplayTime(entry.createdAt)} · ${entry.textCharacters} 字`}
               onClick={() => {
                 setSelected(entry.id);
                 setError("");
@@ -158,7 +198,7 @@ export function ScriptCandidates({
               <span className="script-candidate-state">
                 {displayStatus(entry)}
               </span>
-              {number === candidates.length && (
+              {number === page.value?.total && (
                 <small className="script-candidate-latest">最新</small>
               )}
             </button>
@@ -167,7 +207,15 @@ export function ScriptCandidates({
       </nav>
       <article
         className="script-candidate-detail"
-        {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${c.draft.title} · 候选 ${ordinal}`, productionId: production.id, entryId: item.id, revision: c.baseRevision, candidateId: c.id })}
+        {...quoteSource({
+          kind: "script",
+          projectId: production.projectId,
+          title: `${production.title} · ${c.draft.title} · 候选 ${ordinal}`,
+          productionId: production.id,
+          entryId: item.id,
+          revision: c.baseRevision,
+          candidateId: c.id,
+        })}
         key={c.id}
         data-script-result-id={c.id}
         data-delivery-target={deliveryTarget?.candidateId === c.id || undefined}
@@ -190,7 +238,7 @@ export function ScriptCandidates({
                 <button
                   className="secondary-action"
                   type="button"
-                  disabled={!canWrite || busy}
+                  disabled={!canWrite || busy || !detail.fresh || !page.fresh}
                   onClick={() => void decide("reject")}
                 >
                   <X />
@@ -252,11 +300,25 @@ export function ScriptCandidates({
                   <div className="script-diff">
                     <section>
                       <strong>原版本</strong>
-                      <pre>{scriptFieldValue(production, before, field)}</pre>
+                      <pre>
+                        {scriptFieldValue(
+                          (id, revision) =>
+                            detail.value?.titles.get(`${id}:${revision}`),
+                          before,
+                          field,
+                        )}
+                      </pre>
                     </section>
                     <section>
                       <strong>候选稿</strong>
-                      <pre>{scriptFieldValue(production, c.draft, field)}</pre>
+                      <pre>
+                        {scriptFieldValue(
+                          (id, revision) =>
+                            detail.value?.titles.get(`${id}:${revision}`),
+                          c.draft,
+                          field,
+                        )}
+                      </pre>
                     </section>
                   </div>
                   {(

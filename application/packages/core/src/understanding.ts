@@ -1,3 +1,19 @@
+import { z } from "zod";
+
+/** A published source names a catalog original and the App's exact version.
+ * It is a navigation reference, not a copy of the original or a file grant.
+ */
+export const understandingSourceSchema = z
+  .object({
+    contentId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+    versionRef: z.string().min(1).max(200),
+  })
+  .strict();
+export const understandingSourcesSchema = z
+  .array(understandingSourceSchema)
+  .max(100);
+export type UnderstandingSource = z.infer<typeof understandingSourceSchema>;
+
 /** Decode only the explicit public-summary marker, never arbitrary frame bodies.
  * Runtime's SExpr Display preserves literal newlines/tabs in a quoted atom.
  */

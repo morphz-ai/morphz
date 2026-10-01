@@ -5,33 +5,23 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { crc32 } from "node:zlib";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parsePublication,
   parsePublicationRaw,
   safeReadingSection,
 } from "../packages/application/src/reader-import.js";
-import { WorkspaceStore } from "../packages/application/src/store.js";
-import { RuntimeBridge } from "../packages/application/src/runtime.js";
-import {
-  localAccess,
-  applyCommand,
-  type Operation,
-} from "../packages/core/src/model.js";
-import { workspaceFor } from "../packages/application/src/identity.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import { localAccess, type RecordedInput } from "../packages/core/src/model.js";
 import {
   readingReference,
   readingPosition,
   readingInputSchema,
   readingPreferencesSchema,
   type ReaderCommand,
+  type ReadingInput,
 } from "../packages/core/src/reader.js";
-import {
-  AgentTools,
-  workToolDefinitions,
-} from "../packages/application/src/agent-tools.js";
+import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
 import {
   workInputData,
   workInputRequest,
@@ -40,6 +30,7 @@ import {
 } from "../packages/application/src/session-io.js";
 import { migrateReadingLocalState } from "../apps/web/src/legacy-storage.js";
 import { readerOffsets } from "../apps/web/src/reader-dom.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
 
 /** Synthetic fixtures only. Stored entries make size/path attacks deterministic. */
 function zip(files: Record<string, string>) {
@@ -95,121 +86,106 @@ const epubFiles = {
     '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="note">后章</h1><p>这是后文。</p></body></html>',
 };
 
-test("一次性删除废弃阅读选项，原书、位置、标注、消息和在途请求保留", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "morphz-reader-policy-"));
-  const filename = join(directory, "workspace.sqlite");
-  let store = new WorkspaceStore(filename);
+test("阅读设置不附加剧情限制；原书、位置、标注和已提交请求重启后保持", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
-    const bytes = zip(epubFiles);
-    const parsed = await parsePublication("test.epub", bytes);
-    const content = store.addPublication(bytes, parsed, localAccess);
-    const execute = (operation: Operation) =>
-      store.execute({ commandId: randomUUID(), operation }, localAccess);
-    const artifactId = execute({
-      type: "import-publication",
-      projectId: "first-project",
+    const imported = await f.session().importReading({
+      commandId: randomUUID(),
+      projectId: f.projectId,
       relativePath: "test.epub",
-      title: parsed.title,
-      content,
-    }).entityId;
-    const section = store.readerSection(
+      data: zip(epubFiles),
+    });
+    const artifactId = imported.entityId;
+    const section = await f.session().readPlatformReaderSection({
       artifactId,
-      1,
-      "section-1",
-      localAccess,
-    );
+      revision: 1,
+      sectionId: "section-1",
+    });
     const location = {
       sourceId: section.sourceId,
       sectionId: section.id,
       start: 0,
       end: 5,
     };
-    execute({
-      type: "reader-command",
-      command: {
-        action: "save-position",
+    const preferences = {
+      font: "serif",
+      fontSize: 24,
+      theme: "paper",
+    } as const;
+    const command = (command: ReaderCommand) =>
+      f.session().commandPlatformReader({
+        commandId: randomUUID(),
         artifactId,
-        artifactRevision: 1,
-        location,
-        preferences: { font: "serif", fontSize: 24, theme: "paper" },
-        expectedRevision: 0,
-      },
-    });
-    execute({
-      type: "reader-command",
-      command: {
-        action: "mark-add",
-        artifactId,
-        artifactRevision: 1,
-        location,
-        kind: "highlight",
-        color: "green",
-        note: "保留我的批注",
-        quote: section.text.slice(0, 5),
-      },
-    });
-    execute({
-      type: "record-input",
-      projectId: "first-project",
+        revision: 1,
+        command,
+      });
+    await command({
+      action: "save-position",
       artifactId,
       artifactRevision: 1,
-      selection: "",
-      body: "原消息不改",
-      targetActantId: "morphz-agent",
-      reading: readingPosition(section, location),
+      location,
+      preferences,
+      expectedRevision: 0,
     });
-    const expected = store.snapshot();
-    store.close();
-    const db = new DatabaseSync(filename);
-    const old = structuredClone(expected) as any;
-    Object.assign(old.readingStates[0].preferences, {
-      spoilers: false,
-      personalContext: false,
+    await command({
+      action: "mark-add",
+      artifactId,
+      artifactRevision: 1,
+      location,
+      kind: "highlight",
+      color: "green",
+      note: "保留我的批注",
+      quote: section.text.slice(0, 5),
     });
-    Object.assign(old.inputs[0].reading, {
-      spoilers: false,
-      personalContext: false,
+    const request = {
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input" as const,
+        projectId: f.projectId,
+        artifactId,
+        artifactRevision: 1,
+        selection: "",
+        body: "原消息不改",
+        targetActantId: "morphz-agent",
+        reading: readingPosition(section, location),
+      },
+    };
+    const receipt = await f.session().platformMessage(request);
+    const expected = await f.session().readPlatformReaderState({
+      artifactId,
+      revision: 1,
     });
-    const outbox = JSON.stringify({
-      deliveries: [
-        {
-          inputId: old.inputs[0].id,
-          state: "running",
-          request: {
-            message: {
-              format: { version: "7" },
-              content: { value: old.inputs[0].reading },
-            },
-          },
-        },
-      ],
-    });
-    db.prepare("UPDATE workspace SET body=? WHERE id=1").run(
-      JSON.stringify(old),
-    );
-    db.prepare("INSERT INTO runtime_state(id,body) VALUES(1,?)").run(outbox);
-    db.exec("PRAGMA user_version=15");
-    const commands = db.prepare("SELECT * FROM commands ORDER BY id").all();
-    db.close();
-    store = new WorkspaceStore(filename);
-    assert.deepEqual(store.snapshot(), expected);
-    assert.deepEqual(store.runtimeState(), JSON.parse(outbox));
-    store.close();
-    const check = new DatabaseSync(filename);
-    assert.deepEqual(
-      check.prepare("SELECT * FROM commands ORDER BY id").all(),
-      commands,
+    const outbox = structuredClone(f.store.runtimeState());
+    assert.equal(
+      readingPreferencesSchema.safeParse({ ...preferences, spoilers: false })
+        .success,
+      false,
     );
     assert.equal(
-      (check.prepare("PRAGMA user_version").get() as any).user_version,
-      16,
+      readingPreferencesSchema.safeParse({
+        ...preferences,
+        personalContext: false,
+      }).success,
+      false,
     );
-    check.close();
-    store = new WorkspaceStore(filename);
-    assert.deepEqual(store.snapshot(), expected);
+    await f.reopen();
+    assert.deepEqual(
+      await f.session().readPlatformReaderState({ artifactId, revision: 1 }),
+      expected,
+    );
+    assert.deepEqual(f.store.runtimeState(), outbox);
+    assert.deepEqual(await f.session().platformMessage(request), receipt);
+    assert.deepEqual(
+      await f.session().readPlatformReaderSection({
+        artifactId,
+        revision: 1,
+        sectionId: "section-1",
+      }),
+      section,
+    );
+    f.assertNoLegacyData();
   } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
+    await f.close();
   }
 });
 
@@ -326,7 +302,7 @@ for (const selected of [true, false])
       };
       if (path === "/api/status") return send(200, { model: "fixture" });
       if (path === "/api/session-io/capabilities")
-        return send(200, { enabled: true, formats: [] });
+        return send(200, { enabled: true, client_metadata: true, formats: [] });
       if (path === "/api/sessions" && request.method === "POST") {
         const session = { id: body.id, context_id: body.mount.context_id };
         sessions.set(session.id, session);
@@ -351,76 +327,69 @@ for (const selected of [true, false])
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
     );
-    const store = new WorkspaceStore(":memory:");
-    const bridge = new RuntimeBridge(store, {
+    const f = await platformRuntimeHostFixture({
       url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
       token: "test-only",
       namespace: randomUUID(),
     });
     try {
-      const bytes = zip(epubFiles),
-        parsed = await parsePublication("test.epub", bytes),
-        content = store.addPublication(bytes, parsed, localAccess);
-      const book = store.execute(
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "import-publication",
-            projectId: "first-project",
-            relativePath: "test.epub",
-            title: parsed.title,
-            content,
-          },
-        },
-        localAccess,
-      );
-      const section = store.readerSection(
-        book.entityId,
-        1,
-        "section-1",
-        localAccess,
-      );
+      const book = await f.session().importReading({
+        commandId: randomUUID(),
+        projectId: f.projectId,
+        relativePath: "test.epub",
+        data: zip(epubFiles),
+      });
+      const section = await f.session().readPlatformReaderSection({
+        artifactId: book.entityId,
+        revision: 1,
+        sectionId: "section-1",
+      });
       const reading = (selected ? readingReference : readingPosition)(section, {
-        sourceId: content.assetId,
+        sourceId: section.sourceId,
         sectionId: section.id,
         start: 0,
         end: 5,
       });
-      const input = store.execute(
-        {
-          commandId: randomUUID(),
-          operation: {
-            type: "record-input",
-            projectId: "first-project",
-            artifactId: book.entityId,
-            artifactRevision: 1,
-            selection: "quote" in reading ? reading.quote : "",
-            reading,
-            body: "只解释这句",
-            targetActantId: "morphz-agent",
-          },
+      const input = await f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: {
+          type: "record-input",
+          projectId: f.projectId,
+          artifactId: book.entityId,
+          artifactRevision: 1,
+          selection: "quote" in reading ? reading.quote : "",
+          reading,
+          body: "只解释这句",
+          targetActantId: "morphz-agent",
         },
-        localAccess,
-      );
-      bridge.enqueue(input.entityId);
-      await bridge.tick();
-      const failed = bridge.snapshot().deliveries[0]!;
+      });
+      await f.enableDispatch();
+      const ledger = () =>
+        f.store.runtimeState() as {
+          deliveries: {
+            state: string;
+            error: string | null;
+            platformSource: { reading: ReadingInput };
+          }[];
+        };
+      await f.runtime.tick();
+      const failed = ledger().deliveries[0]!;
       assert.equal(failed.state, "failed");
       assert.match(
         failed.error!,
         new RegExp(`阅读消息格式（v${selected ? 8 : 9}）`),
       );
       assert.match(failed.error!, /重试发送/);
-      bridge.enqueue(input.entityId);
-      await bridge.tick();
-      assert.equal(bridge.snapshot().deliveries[0]!.state, "running");
+      await f.runtime.retryPlatformInput(input.entityId);
+      await f.runtime.tick();
+      assert.equal(ledger().deliveries[0]!.state, "running");
       assert.equal(requests.length, 2);
       assert.deepEqual(requests[0], requests[1]);
-      assert.equal(store.snapshot().inputs.length, 1);
-      assert.deepEqual(store.snapshot().inputs[0]!.reading, reading);
+      assert.equal(ledger().deliveries.length, 1);
+      assert.deepEqual(ledger().deliveries[0]!.platformSource.reading, reading);
+      f.assertNoLegacyData();
     } finally {
-      await bridge.stop();
-      store.close();
+      await f.close();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -501,75 +470,89 @@ test("HTML 内嵌图片与跨章锚点、Markdown 脚注保留；外部资源仍
   assert.match(markdown.sections.map((s) => s.text).join(""), /注释正文/);
 });
 
-test("阅读沿用 Session 输入及同一 Host：前后文按需读取、私人标注与聊天可发现操作", async () => {
-  const store = new WorkspaceStore(":memory:");
+test("阅读沿用 Session 输入及同一 Host：真实 Reader 前后文、私人标注和聊天操作", async () => {
+  const f = await agentDomainFixture();
   try {
-    const bytes = zip(epubFiles),
-      parsed = await parsePublication("test.epub", bytes),
-      content = store.addPublication(bytes, parsed, localAccess);
-    const id = store.execute(
-      {
+    const bytes = zip(epubFiles);
+    const imported = await f.withHuman((actor) =>
+      f.domains.reader.service.import(actor, {
         commandId: randomUUID(),
-        operation: {
-          type: "import-publication",
-          projectId: "first-project",
-          relativePath: "test.epub",
-          title: parsed.title,
-          content,
-        },
-      },
-      localAccess,
-    ).entityId;
-    const section = store.readerSection(id, 1, "section-1", localAccess),
-      start = section.text.indexOf("先王慎德。");
+        projectId: f.projectId,
+        name: "test.epub",
+        bytes,
+      }),
+    );
+    const id = imported.entityId;
+    const section = await f.withHuman((actor) =>
+      f.domains.reader.service.read(actor, id, 1, "section-1"),
+    );
+    const start = section.text.indexOf("先王慎德。");
     const reading = readingReference(section, {
-      sourceId: content.assetId,
+      sourceId: section.sourceId,
       sectionId: section.id,
       start,
       end: start + 5,
     });
-    const inputId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: id,
-          artifactRevision: 1,
-          selection: reading.quote,
-          reading,
-          body: "解释这句，标注我的理解",
-          targetActantId: "morphz-agent",
-        },
-      },
-      localAccess,
-    ).entityId;
-    const input = store.snapshot().inputs.find((i) => i.id === inputId)!;
+    const validate = (reference: ReadingInput, selection: string) =>
+      f.withHuman((actor) =>
+        f.domains.reader.service.validateInputReference(
+          actor,
+          id,
+          1,
+          reference,
+          selection,
+        ),
+      );
+    await validate(reading, reading.quote);
+    const selectedRoute = f.input(
+      f.projectId,
+      "解释这句，标注我的理解",
+      reading.quote,
+      reading,
+    );
+    // Immutable Session serialization is checked against the actual Reader
+    // original; only accepted Runtime event reads are controlled by the fixture.
+    const record = (
+      route: typeof selectedRoute,
+      reference: ReadingInput,
+      body: string,
+      selection: string,
+    ): RecordedInput => ({
+      id: route.thread_id.slice("thread_".length),
+      projectId: f.projectId,
+      artifactId: id,
+      artifactRevision: 1,
+      selection,
+      reading: reference,
+      body,
+      author: localAccess,
+      targetActantId: "morphz-agent",
+      status: "recorded",
+      createdAt: new Date().toISOString(),
+    });
+    const input = record(
+      selectedRoute,
+      reading,
+      "解释这句，标注我的理解",
+      reading.quote,
+    );
     assert.deepEqual(workInputData(input).reading, reading);
     assert.equal(workInputRequest(input).message.format.version, "8");
     assert.equal(workInputData(input).reading?.book.title, "合成通鉴");
-    // Ambient awareness is metadata only. Even before/after must be absent;
-    // no source text should reach the model until it explicitly calls a tool.
     const position = readingPosition(section, reading.location);
-    const viewportInput = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "record-input",
-          projectId: "first-project",
-          artifactId: id,
-          artifactRevision: 1,
-          selection: "",
-          reading: position,
-          body: "你好，今天心情不错。",
-          targetActantId: "morphz-agent",
-        },
-      },
-      localAccess,
-    ).entityId;
-    const viewportRecord = store
-      .snapshot()
-      .inputs.find((i) => i.id === viewportInput)!;
+    await validate(position, "");
+    const viewportRoute = f.input(
+      f.projectId,
+      "你好，今天心情不错。",
+      "",
+      position,
+    );
+    const viewportRecord = record(
+      viewportRoute,
+      position,
+      "你好，今天心情不错。",
+      "",
+    );
     assert.equal(viewportRecord.selection, "");
     assert.deepEqual(workInputData(viewportRecord).reading, position);
     assert.equal(workInputRequest(viewportRecord).message.format.version, "9");
@@ -583,146 +566,97 @@ test("阅读沿用 Session 输入及同一 Host：前后文按需读取、私人
       readingInputSchema.safeParse({ ...position, before: "偷带正文" }).success,
       false,
     );
-    assert.throws(
-      () =>
-        store.execute(
-          {
-            commandId: randomUUID(),
-            operation: {
-              type: "record-input",
-              projectId: "first-project",
-              artifactId: id,
-              artifactRevision: 1,
-              selection: "",
-              reading: { ...position, chapter: "伪造当前页" },
-              body: "不能伪造位置",
-              targetActantId: "morphz-agent",
-            },
-          },
-          localAccess,
-        ),
-      /阅读引用与已保存的原文不匹配/,
+    await assert.rejects(
+      validate({ ...position, chapter: "伪造当前页" }, ""),
+      /阅读位置与原件版本不匹配/,
     );
-    assert.throws(
-      () =>
-        store.execute(
-          {
-            commandId: randomUUID(),
-            operation: {
-              type: "record-input",
-              projectId: "first-project",
-              artifactId: id,
-              artifactRevision: 1,
-              selection: "",
-              reading,
-              body: "不能隐式携带正文",
-              targetActantId: "morphz-agent",
-            },
-          },
-          localAccess,
-        ),
-      /选文必须与引用原文一致/,
+    await assert.rejects(validate(reading, ""), /阅读选文与原件位置不匹配/);
+    await assert.rejects(
+      validate(reading, "伪造选文"),
+      /阅读选文与原件位置不匹配/,
     );
-    assert.throws(
-      () =>
-        store.execute(
-          {
-            commandId: randomUUID(),
-            operation: {
-              type: "record-input",
-              projectId: "first-project",
-              artifactId: id,
-              artifactRevision: 1,
-              selection: "伪造选文",
-              reading,
-              body: "不能错配",
-              targetActantId: "morphz-agent",
-            },
-          },
-          localAccess,
-        ),
-      /选文必须与引用原文一致/,
-    );
-    const scope = {
-      projectId: "first-project",
-      inputId,
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    };
-    const tools = new AgentTools(store, "token", () => scope);
-    const call = (args: unknown, callId: string = randomUUID()) =>
-      tools.call({
-        protocol: 1,
-        tool: "host_morphz",
-        invocation: {
-          job_id: "reader-job",
-          tool_call_id: callId,
-          session_id: "s",
-          context_id: "c",
-          principal_id: "forged",
-          agent_id: "a",
-          target_id: "local",
-          thread_id: "t",
-        },
-        arguments: args,
-      }) as any;
-    const definitions = call({
+    const definitions = await f.call({
       action: "operations",
       operations: { action: "list", domain: "reader" },
     });
     assert.match(JSON.stringify(definitions), /reader\.mark-add/);
-    assert.equal(
-      call({ action: "reader", reader: { action: "catalog" } }).books[0]
-        .artifactId,
-      id,
-    );
-    scope.inputId = viewportInput;
-    const read = call({
+    const catalog = await f.call<{ books: { artifactId: string }[] }>({
       action: "reader",
-      reader: {
-        action: "read",
-        artifactId: id,
-        revision: 1,
-        sectionId: "section-1",
-        offset: 0,
-        limit: 8000,
-      },
+      reader: { action: "catalog" },
     });
+    assert.equal(catalog.books[0]!.artifactId, id);
+    type Slice = {
+      text: string;
+      totalCharacters: number;
+      location: { sectionId: string };
+    };
+    const read = await f.call<Slice>(
+      {
+        action: "reader",
+        reader: {
+          action: "read",
+          artifactId: id,
+          revision: 1,
+          sectionId: "section-1",
+          offset: 0,
+          limit: 8000,
+        },
+      },
+      viewportRoute,
+    );
     assert.equal(read.text, section.text);
     assert.equal(read.totalCharacters, section.text.length);
-    // The page is a stable reference, not a barrier to following context.
-    const later = call({
-      action: "reader",
-      reader: {
-        action: "read",
-        artifactId: id,
-        revision: 1,
-        sectionId: "section-2",
+    const later = await f.call<Slice>(
+      {
+        action: "reader",
+        reader: {
+          action: "read",
+          artifactId: id,
+          revision: 1,
+          sectionId: "section-2",
+        },
       },
-    });
+      viewportRoute,
+    );
     assert.match(later.text, /这是后文/);
     assert.equal(later.location.sectionId, "section-2");
-    const continuation = call({
-      action: "reader",
-      reader: {
-        action: "read",
-        artifactId: id,
-        revision: 1,
-        sectionId: "section-1",
-        offset: reading.location.end,
-        limit: 3,
+    const continuation = await f.call<Slice>(
+      {
+        action: "reader",
+        reader: {
+          action: "read",
+          artifactId: id,
+          revision: 1,
+          sectionId: "section-1",
+          offset: reading.location.end,
+          limit: 3,
+        },
       },
-    });
+      viewportRoute,
+    );
     assert.equal(
       continuation.text,
       section.text.slice(reading.location.end, reading.location.end + 3),
     );
-    assert.deepEqual(
-      store.snapshot().inputs.find((i) => i.id === viewportInput)!.reading,
-      position,
+    const resolved = await f.call<{ input: { reading: ReadingInput } }>(
+      { action: "read-input" },
+      viewportRoute,
     );
-    const generic = call({ action: "read", artifactId: id, revision: 1 });
-    assert.equal(generic.text, undefined);
-    assert.ok(generic.sections);
+    assert.deepEqual(resolved.input.reading, position);
+    // Generic Objects reads cannot take ownership of a Reader original.
+    await assert.rejects(
+      f.call({ action: "read", artifactId: id, revision: 1 }),
+      /内容不属于当前内容应用范围/,
+    );
+    const contents = await f.call<{
+      sections: { id: string }[];
+      text?: string;
+    }>({
+      action: "reader",
+      reader: { action: "contents", artifactId: id, revision: 1 },
+    });
+    assert.equal(contents.text, undefined);
+    assert.equal(contents.sections.length, 2);
     const args = {
       action: "reader",
       reader: {
@@ -735,26 +669,93 @@ test("阅读沿用 Session 输入及同一 Host：前后文按需读取、私人
         note: "这是用户的理解",
       },
     };
-    const saved = call(args, "stable-mark");
-    assert.equal(saved.mark.ownerPrincipalId, localAccess.principalId);
-    assert.deepEqual(call(args, "stable-mark"), saved);
+    const command = f.envelope(args, selectedRoute);
+    const saved = (await f.tools.call(command)) as {
+      receipt: { entityId: string };
+      revision: number;
+    };
+    assert.deepEqual(await f.tools.call(command), saved);
+    const marks = await f.call<{
+      marks: { id: string }[];
+    }>(
+      {
+        action: "reader",
+        reader: { action: "marks", artifactId: id },
+      },
+      selectedRoute,
+    );
+    assert.equal(marks.marks.length, 1);
+    const readerDb = new DatabaseSync(join(f.directory, "reader.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      assert.equal(
+        readerDb
+          .prepare("SELECT principal_id FROM reading_marks WHERE mark_id=?")
+          .get(saved.receipt.entityId)?.principal_id,
+        localAccess.principalId,
+      );
+    } finally {
+      readerDb.close();
+    }
+    assert.equal(marks.marks[0]!.id, saved.receipt.entityId);
     assert.throws(
       () =>
-        call({
-          action: "reader",
-          reader: { ...args.reader, ownerPrincipalId: "other" },
-        }),
+        f.tools.call(
+          f.envelope(
+            {
+              action: "reader",
+              reader: { ...args.reader, ownerPrincipalId: "other" },
+            },
+            selectedRoute,
+          ),
+        ),
       /Unrecognized/,
     );
+    await f.reopen();
+    assert.deepEqual(await f.tools.call(command), saved);
+    await f.call(
+      {
+        action: "reader",
+        reader: {
+          action: "mark-remove",
+          artifactId: id,
+          artifactRevision: 1,
+          markId: saved.receipt.entityId,
+          expectedRevision: 1,
+        },
+      },
+      selectedRoute,
+    );
     assert.equal(
-      call({ action: "reader", reader: { action: "marks", artifactId: id } })
-        .total,
+      (
+        await f.call<typeof marks>(
+          {
+            action: "reader",
+            reader: { action: "marks", artifactId: id },
+          },
+          selectedRoute,
+        )
+      ).marks.length,
+      0,
+    );
+    assert.equal(
+      (
+        await f.call<typeof marks>(
+          {
+            action: "reader",
+            reader: { action: "marks", artifactId: id, deleted: true },
+          },
+          selectedRoute,
+        )
+      ).marks.length,
       1,
     );
-    scope.inputId = "missing";
-    assert.throws(() => call(args, "stable-mark"), /实际输入/);
+    f.forgetInput(selectedRoute);
+    await assert.rejects(Promise.resolve().then(() => f.tools.call(command)));
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 
@@ -869,31 +870,33 @@ test("损坏 EPUB、路径穿越、XML 实体、正文加密及超限不会进�
 });
 
 test("读物、进度和私人标注持久化；重复选文精确定位，不能伪造引用或改写原书", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphz-reader-test-")),
-    file = join(dir, "workspace.sqlite");
-  let store = new WorkspaceStore(file);
+  const other = { principalId: "reader-other", actantId: "reader-other-human" };
+  const f = await agentDomainFixture({ additionalHumans: [other] });
   try {
-    const bytes = zip(epubFiles),
-      parsed = await parsePublication("sample.epub", bytes);
-    const content = store.addPublication(bytes, parsed, localAccess);
-    const exec = (operation: Operation) =>
-      store.execute({ commandId: randomUUID(), operation }, localAccess);
-    const artifactId = exec({
-      type: "import-publication",
-      projectId: "first-project",
-      title: parsed.title,
-      relativePath: "sample.epub",
-      content,
-    }).entityId;
-    const section = store.readerSection(
-      artifactId,
-      1,
-      "section-1",
-      localAccess,
+    await f.domains.content.platform.reconcileOperatorMembers(
+      f.transport.identity(),
+      [localAccess, other].map((access) => ({
+        ...access,
+        projectIds: [f.projectId],
+        enabled: true,
+      })),
+    );
+    const artifactId = (
+      await f.withHuman((actor) =>
+        f.domains.reader.service.import(actor, {
+          commandId: randomUUID(),
+          projectId: f.projectId,
+          name: "sample.epub",
+          bytes: zip(epubFiles),
+        }),
+      )
+    ).entityId;
+    const section = await f.withHuman((actor) =>
+      f.domains.reader.service.read(actor, artifactId, 1, "section-1"),
     );
     const start = section.text.lastIndexOf("先王慎德。");
     const location = {
-      sourceId: content.assetId,
+      sourceId: section.sourceId,
       sectionId: section.id,
       start,
       end: start + 5,
@@ -905,6 +908,15 @@ test("读物、进度和私人标注持久化；重复选文精确定位，不�
       section.text.slice(location.end, location.end + 300),
     );
     assert.equal(reading.quote, "先王慎德。");
+    const command = (command: ReaderCommand, commandId = randomUUID()) =>
+      f.withHuman((actor) =>
+        f.domains.reader.service.command(actor, {
+          commandId,
+          contentId: artifactId,
+          revision: 1,
+          command,
+        }),
+      );
     const mark: ReaderCommand = {
       action: "mark-add",
       artifactId,
@@ -915,136 +927,144 @@ test("读物、进度和私人标注持久化；重复选文精确定位，不�
       color: "yellow",
       note: "用户自己的理解",
     };
-    const marked = exec({ type: "reader-command", command: mark });
-    assert.equal(
-      exec({ type: "reader-command", command: mark }).entityId,
-      marked.entityId,
+    const commandId = randomUUID();
+    const marked = await command(mark, commandId);
+    assert.deepEqual(await command(mark, commandId), marked);
+    assert.equal((await command(mark)).id, marked.id);
+    assert.ok(marked.id, "真实 Reader 必须返回持久标注 ID");
+    await assert.rejects(
+      command({ ...mark, quote: "伪造原文" }),
+      /标注选文与原文不符/,
     );
-    assert.throws(
-      () =>
-        exec({
-          type: "reader-command",
-          command: { ...mark, quote: "伪造原文" },
-        }),
-      /不匹配/,
-    );
-    exec({
-      type: "reader-command",
-      command: {
+    await command({
+      action: "save-position",
+      artifactId,
+      artifactRevision: 1,
+      location,
+      preferences,
+      expectedRevision: 0,
+    });
+    await assert.rejects(
+      command({
         action: "save-position",
         artifactId,
         artifactRevision: 1,
         location,
         preferences,
         expectedRevision: 0,
-      },
-    });
-    assert.throws(
-      () =>
-        exec({
-          type: "reader-command",
-          command: {
-            action: "save-position",
-            artifactId,
-            artifactRevision: 1,
-            location,
-            preferences,
-            expectedRevision: 0,
-          },
-        }),
-      /另一个窗口/,
+      }),
+      /阅读进度已被其他操作更新/,
     );
-    const request = {
-      type: "record-input" as const,
-      projectId: "first-project",
-      artifactId,
-      artifactRevision: 1,
-      selection: reading.quote,
-      body: "只解释原文",
-      targetActantId: "morphz-agent",
-      reading,
-    };
-    exec(request);
-    assert.throws(
-      () => exec({ ...request, reading: { ...reading, before: "伪造背景" } }),
-      /不匹配/,
+    await f.withHuman((actor) =>
+      f.domains.reader.service.validateInputReference(
+        actor,
+        artifactId,
+        1,
+        reading,
+        reading.quote,
+      ),
     );
-    assert.throws(
-      () =>
-        exec({
-          type: "revise-artifact",
+    await assert.rejects(
+      f.withHuman((actor) =>
+        f.domains.reader.service.validateInputReference(
+          actor,
           artifactId,
+          1,
+          { ...reading, before: "伪造背景" },
+          reading.quote,
+        ),
+      ),
+      /阅读选文前文已变化/,
+    );
+    await assert.rejects(
+      f.withHuman((actor) =>
+        f.domains.content.objects.reviseDocument({
+          credential: actor.credential,
+          commandId: randomUUID(),
+          objectId: artifactId,
           expectedRevision: 1,
           title: "改写",
-          content: { kind: "document", markdown: "伪造" },
+          markdown: "伪造",
         }),
-      /原文/,
+      ),
     );
-    const other = {
-      principalId: "reader-other",
-      actantId: "reader-other-human",
-    };
-    const state = store.snapshot();
-    state.principals.push({ id: other.principalId, name: "其他人" });
-    state.actants.push({
-      id: other.actantId,
-      principalId: other.principalId,
-      kind: "human",
-      name: "其他人",
-    });
-    state.projects[0]!.members.push(other.principalId);
-    assert.equal(workspaceFor(state, other).readingMarks.length, 0);
-    assert.equal(workspaceFor(state, other).readingStates.length, 0);
-    assert.throws(
-      () =>
-        applyCommand(
-          state,
-          {
-            commandId: randomUUID(),
-            operation: {
-              type: "reader-command",
-              command: {
-                action: "mark-remove",
-                markId: marked.entityId,
-                expectedRevision: 1,
-              },
-            },
-          },
-          other,
-        ),
-      /不属于当前身份/,
-    );
-    exec({
-      type: "reader-command",
-      command: {
-        action: "mark-remove",
-        markId: marked.entityId,
-        expectedRevision: 1,
-      },
-    });
-    exec({
-      type: "reader-command",
-      command: {
-        action: "mark-restore",
-        markId: marked.entityId,
-        expectedRevision: 2,
-      },
-    });
-    store.close();
-    store = new WorkspaceStore(file);
-    assert.equal(store.snapshot().readingMarks[0]!.location.start, start);
-    assert.equal(store.snapshot().readingMarks[0]!.deletedAt, null);
+    const withOther = <T>(
+      work: Parameters<typeof f.domains.work.authority.withSession<T>>[2],
+    ) => f.domains.work.authority.withSession(other, () => {}, work);
+    // Shared-project permission allows reading the book, not another person's marks.
     assert.deepEqual(
-      store.snapshot().readingStates[0]!.preferences,
-      preferences,
-    );
-    assert.deepEqual(store.snapshot().inputs.at(-1)!.reading, reading);
-    assert.deepEqual(
-      store.readerSection(artifactId, 1, "section-1", localAccess),
+      await withOther((actor) =>
+        f.domains.reader.service.read(actor, artifactId, 1, "section-1"),
+      ),
       section,
     );
+    const otherState = await withOther((actor) =>
+      f.domains.reader.service.state(actor, artifactId, 1),
+    );
+    assert.equal(otherState.position, null);
+    assert.deepEqual(
+      (
+        await withOther((actor) =>
+          f.domains.reader.service.marks(actor, artifactId, 1, false, 0, 50),
+        )
+      ).marks,
+      [],
+    );
+    await assert.rejects(
+      withOther((actor) =>
+        f.domains.reader.service.command(actor, {
+          commandId: randomUUID(),
+          contentId: artifactId,
+          revision: 1,
+          command: {
+            action: "mark-remove",
+            markId: marked.id,
+            expectedRevision: 1,
+          },
+        }),
+      ),
+      { code: "not_found" },
+    );
+    await command({
+      action: "mark-remove",
+      markId: marked.id,
+      expectedRevision: 1,
+    });
+    await command({
+      action: "mark-restore",
+      markId: marked.id,
+      expectedRevision: 2,
+    });
+    await f.reopen();
+    const state = await f.withHuman((actor) =>
+      f.domains.reader.service.state(actor, artifactId, 1),
+    );
+    const marks = await f.withHuman((actor) =>
+      f.domains.reader.service.marks(actor, artifactId, 1, false, 0, 50),
+    );
+    assert.equal(marks.marks[0]!.location.start, start);
+    assert.equal(marks.marks[0]!.deletedAt, null);
+    assert.deepEqual(state.position!.preferences, preferences);
+    assert.deepEqual(
+      await f.withHuman((actor) =>
+        f.domains.reader.service.read(actor, artifactId, 1, "section-1"),
+      ),
+      section,
+    );
+    const reopenedOther = await withOther((actor) =>
+      f.domains.reader.service.state(actor, artifactId, 1),
+    );
+    assert.deepEqual(
+      (
+        await withOther((actor) =>
+          f.domains.reader.service.marks(actor, artifactId, 1, false, 0, 50),
+        )
+      ).marks,
+      [],
+    );
+    assert.equal(reopenedOther.position, null);
+    f.assertNoLegacyData();
   } finally {
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
+    await f.close();
   }
 });

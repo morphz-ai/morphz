@@ -1,38 +1,36 @@
 import { test, expect, type Page } from "@playwright/test";
-import type { Boot } from "../apps/web/src/client.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
 
 const draft = "TEST 返回最新后仍能继续输入，不发送";
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 async function longHistory(page: Page, view = "事项") {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    boot.workspace.inputs = Array.from({ length: 24 }, (_, i) => ({
-      id: `latest-input-${i}`,
-      projectId,
-      conversationId: projectId,
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body:
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model: "reading-position-fixture",
+    },
+  }));
+  inputs.push(
+    ...Array.from({ length: 24 }, (_, i) =>
+      presentation.input(
+        `latest-input-${i}`,
         `第 ${i} 条历史消息。` +
-        "用于验证未固定工作页面的按钮、焦点与滚动。".repeat(12),
-      author: { actantId: boot.actantId, principalId: "local-owner" },
-      targetActantId: "morphz-agent",
-      status: "recorded",
-      createdAt: new Date(Date.UTC(2026, 8, 15, 10, i)).toISOString(),
-    }));
-    boot.runtime.messages = [];
-    boot.runtime.deliveries = [];
-    boot.outputs = [];
-    await route.fulfill({ response, json: boot });
-  });
+          "用于验证未固定工作页面的按钮、焦点与滚动。".repeat(12),
+        new Date(Date.UTC(2026, 8, 15, 10, i)).toISOString(),
+      ),
+    ),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })

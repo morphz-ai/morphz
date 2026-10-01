@@ -146,7 +146,12 @@ async function stopRuntime() {
   await exited;
 }
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
   MORPHZ_APP_ENV_FILE: "",
 };
@@ -192,16 +197,59 @@ try {
   };
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  const snapshot = () =>
+  // The project-scope recovery assertion needs a real user project. Personal
+  // communication/work spaces are no longer fake project-directory entries.
+  await page.evaluate(async () => {
+    const api = window.morphzDesktop.application;
+    const boot = await api.invoke({
+      id: crypto.randomUUID(),
+      method: "platform.bootstrap",
+    });
+    if (!boot.ok) throw Error(boot.error.message);
+    const result = await api.invoke({
+      id: crypto.randomUUID(),
+      method: "projects.create",
+      identityGeneration: boot.value.csrfToken,
+      params: {
+        commandId: crypto.randomUUID(),
+        projectId: crypto.randomUUID(),
+        title: "TEST 模型设置回退项目",
+      },
+    });
+    if (!result.ok) throw Error(result.error.message);
+  });
+  const businessState = () =>
     page.evaluate(async () => {
-      const reply = await window.morphzDesktop.application.invoke({
+      const api = window.morphzDesktop.application;
+      const reply = await api.invoke({
         id: crypto.randomUUID(),
-        method: "workspace",
+        method: "platform.bootstrap",
       });
       if (!reply.ok) throw Error(reply.error.message);
-      return reply.value;
+      const boot = reply.value;
+      const call = async (method, params) => {
+        const result = await api.invoke({
+          id: crypto.randomUUID(),
+          method,
+          params,
+          identityGeneration: boot.csrfToken,
+        });
+        if (!result.ok) throw Error(result.error.message);
+        return result.value;
+      };
+      await call("spaces.ensure");
+      const lists = {
+        projects: await call("projects.list", { status: "all", limit: 100 }),
+        tasks: await call("tasks.list", { owner: "all", limit: 100 }),
+        conversations: await call("conversations.navigation", { limit: 100 }),
+        content: await call("content.list", { limit: 100 }),
+      };
+      for (const [kind, list] of Object.entries(lists))
+        if (!Array.isArray(list) || list.length >= 100)
+          throw Error(`Unexpected paginated fixture ${kind}`);
+      return { ...boot, lists };
     });
-  const original = await snapshot();
+  const original = await businessState();
   const input = await openInput(page);
   await input.fill("TEST 模型配置期间保留的草稿");
   assert.equal(original.capabilities.modelSettings, true);
@@ -555,11 +603,8 @@ try {
     .click();
   await expect(page.getByLabel("搜索项目", { exact: true })).toBeFocused();
   await expect(page.locator(".project-card")).not.toHaveCount(0);
-  const after = await snapshot();
-  assert.deepEqual(
-    { ...after.workspace, revision: original.workspace.revision },
-    original.workspace,
-  );
+  const after = await businessState();
+  assert.deepEqual(after.lists, original.lists);
   assert.equal(after.centerId, original.centerId);
   assert.equal(
     await page.evaluate(

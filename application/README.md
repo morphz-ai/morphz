@@ -49,7 +49,7 @@ Web 默认地址为 `http://127.0.0.1:65420`。桌面使用 `npm run desktop -- 
 - 内容目录展示有权访问的非事项成果与既有素材，支持 Markdown 文档编辑、图片／PDF 阅读、批注和版本历史。当前理解留在状态检查器，不作为普通交付成果混入内容目录。
 - Cmd+K／Ctrl+K 搜索；全文索引仅覆盖智能体生成且非导入的成果。外部文件不由应用批量建立索引，智能体通过获准的工具按需读取。
 - 持续维护的数据表保留表格／记录／统计视图；分析报告与一次性对比默认是 Markdown 文档，可包含 Markdown 表格。这里不是 Excel／Office 文件编辑器。
-- 工作台和项目中的认知应用启动、版本固定、状态恢复；启动台区分“继续工作”与“应用”。工作台保存为项目保留原对象、对话和应用，不复制或重新执行工作。契约见[认知应用与工作空间](docs/15-cognitive-application-host.md)。
+- 工作台和项目中的认知应用启动、版本固定、状态恢复；启动台区分“继续工作”与“应用”。内容可关联已有项目，或与新建项目一起提交；始终保留同一原件，不移动其他内容或会话，不复制或重新执行工作。契约见[认知应用与工作空间](docs/15-cognitive-application-host.md)。
 - 浏览器个人收藏独立于内容对象，人和智能体使用同一操作。收藏只保存名称与 URL，不访问网页、不创建网站 Artifact；旧网站对象仍可读取。
 - 隔离内置浏览器、页面快照、获准填写与逐次确认点击；人接管使旧授权失效，未知提交结果不自动重发。
 - 人与智能体共享具备身份、修订和持久幂等检查的业务操作。流式回复、交付引用、执行详情、单次审批和精确停止使用真实 Runtime 回执；应用 SQLite 与 Runtime 数据库分别管理。
@@ -89,13 +89,21 @@ node scripts/connect-local-runtime.mjs <Runtime进程PID> http://127.0.0.1:<Runt
 | Linux   | `$XDG_DATA_HOME/morphz/application/`，未配置时使用 `~/.local/share/morphz/application/` |
 | Windows | `%LOCALAPPDATA%\Morphz\application\`                                                    |
 
-目录内的 `workspace.sqlite` 保存对象、版本、批注、输入记录与资源。不依赖启动目录，不使用 Morphz Runtime 的数据库。可用绝对路径 `MORPHZ_APP_DATA_DIR` 或 Desktop 的 `--data-dir=` 指定中心；`MORPHZ_APP_PORT` 仅控制 Web HTTP 端口。桌面 Chromium profile 可用绝对路径 `MORPHZ_APP_PROFILE` 指定，缺省为应用数据根下的 `Morphz/desktop`。Windows 本机 Runtime 工具通信后端尚未实现，不能把目录支持当作完整桌面验收。
+当前中心按数据归属分别使用 Platform、内置认知应用和受管字节保存方；`workspace.sqlite` 只承担本机身份、可靠投递与页面控制日志，投递按脏键增量提交，不是项目、内容原件和专业版本的权威。Platform 与内置应用的关系存储同时支持 SQLite／PostgreSQL；受管文件字节默认在中心文件目录，数据库仅保存 manifest 与引用，不存文件 BLOB。它不依赖启动目录，也不使用 Morphz Runtime 的数据库。可用绝对路径 `MORPHZ_APP_DATA_DIR` 或 Desktop 的 `--data-dir=` 指定中心；`MORPHZ_APP_PORT` 仅控制 Web HTTP 端口。桌面 Chromium profile 可用绝对路径 `MORPHZ_APP_PROFILE` 指定，缺省为应用数据根下的 `Morphz/desktop`。Windows 本机 Runtime 工具通信后端尚未实现，不能把目录支持当作完整桌面验收。
+
+Service 使用 PostgreSQL Platform 时必须配置同一稳定的 `MORPHZ_APP_TENANT_ID`（UUID）。每台 Host 有自己的 `MORPHZ_APP_DATA_DIR` 和本机投递库，不复制其他 Host 的 `workspace.sqlite`；Platform、内置应用私库和云 Store 则指向该中心的同一组共享保存方。已有本机库若绑定另一中心会拒绝启动，不自动改绑。
 
 已有 `MorphzWork` 数据目录、profile 和 Chromium 分区就地继续使用，不自动搬移；同时发现新旧两份数据时拒绝猜测，要求显式选择。旧 `MORPHZWORK_*` 配置继续兼容，新名称优先（包括显式空字符串）；`MORPHZWORK_TEST_PROFILE` 对应 `MORPHZ_APP_PROFILE`。不要为了改名直接更改运行中的数据路径。
 
 离线备份前正常关闭持有数据库的应用或服务，并备份整个数据目录。不要只复制运行中的 SQLite 主文件而忽略 WAL。桌面草稿和界面偏好属于原 Chromium profile，应在桌面退出后连同 profile 备份；应用数据库备份不包含它们。同一桌面的刷新、正常退出重开可恢复已保存草稿，但不承诺草稿跨设备同步。
 
-构建后可运行 `npm run backup:center`，通过 SQLite 备份接口把含已提交 WAL 数据的一致性副本保存到数据目录的 `backups/` 下。备份不包含 Runtime 凭据、客户端草稿或外部来源原文件。当前数据库格式版本为 12；升级前备份，升级后不要用旧程序打开新库。身份模式、Runtime 地址和 namespace 不允许直接更换来接管已有对话。
+正常关闭使用该中心的 Desktop／Service 后，构建并运行 `npm run backup:center -- --stopped`。它将中心内现存的工作空间、Platform、内置应用 SQLite 库、应用实例身份，以及内嵌原件 Store 的 manifest 与字节保存为一个经过完整性和摘要校验的备份包。恢复使用 `npm run restore:center -- /绝对路径/备份包 /绝对路径/新中心目录 --stopped`，不会覆盖原中心；恢复后再以明确配置指向新目录验证。调用者必须保证写入者已停止。此命令**不备份** Runtime、客户端草稿、独立 PostgreSQL schema、S3／其他对象存储或外部原文件；云部署必须按实际数据保存方分别制定备份与恢复流程。身份模式、Runtime 地址和 namespace 不允许直接更换来接管已有对话。
+
+云端 Service 可显式为界面包、Reader 导入原件和 Objects 图片选用共享对象 Store：先分别配置 PostgreSQL Platform 和四个认知应用私库，再完整配置 `MORPHZ_APP_CLOUD_STORE_POSTGRES_URL`、`MORPHZ_APP_CLOUD_STORE_UI_SCHEMA`、`MORPHZ_APP_CLOUD_STORE_READER_SCHEMA`、`MORPHZ_APP_CLOUD_STORE_IMAGE_SCHEMA`、`MORPHZ_APP_CLOUD_STORE_STAGING_ROOT`、`MORPHZ_APP_CLOUD_STORE_BUCKET`、`MORPHZ_APP_CLOUD_STORE_PREFIX`、`MORPHZ_APP_CLOUD_STORE_REGION`。自建 S3 兼容服务才需 `MORPHZ_APP_CLOUD_STORE_ENDPOINT`，其通信须为 HTTPS；本机测试地址可用 HTTP。配置缺项、Store 身份不符或已有应用对象却缺少对应 Store 均拒绝启动；个别字节损坏在读取时拒绝，不自动迁移旧本机 Store。两个 Host 必须配置同一库、schema、bucket 和 prefix，但暂存根各自本机私有。该能力不表示第三方 Cognitive App 数据由 Morphz 托管。
+
+S3 仅是部署者明确选择时的替代字节后端，本次存储切换不要求配置或启用它，当前原版中心未使用它。三项 S3 专项因未配置端点跳过，不能称为当前云对象部署已验收；SQLite／PostgreSQL 的关系存储支持不以 S3 为前提。
+
+云应用存储冷备份：先停止所有写入同一中心的 Service／Desktop Host 和应用写入者，再构建，使用与 Service 相同的 `MORPHZ_APP_TENANT_ID`、`MORPHZ_APP_PLATFORM_*`、`MORPHZ_APP_COGNITIVE_*`、四个应用 schema、`MORPHZ_APP_CLOUD_STORE_*` 环境配置及 S3 凭据，运行 `npm run backup:cloud-application -- /绝对路径/私有备份根目录 --stopped`。恢复使用**新 PostgreSQL 数据库或不存在的目标 schema、同一中心／部署身份、空 S3 prefix** 的配置，运行 `npm run restore:cloud-application -- /绝对路径/完整备份包 --stopped`。中心 UUID 只从部署配置读取，不在命令行重复输入。可显式设置 `MORPHZ_APP_PG_DUMP`、`MORPHZ_APP_PG_RESTORE` 指向匹配服务端版本的客户端工具。备份包含 Platform、四个内置应用 schema、三个 Store manifest 与经摘要校验的对象字节；拒绝跨域缺失引用、损坏备份和覆盖恢复。此命令不备份 Runtime、其他 Host 的本机投递／附件、客户端草稿或第三方应用；完整灾备仍需分别处理这些保存方，见[存储实施设计](docs/36-storage-implementation-model.md)。
 
 ## 检查
 
@@ -112,13 +120,15 @@ npm run test:runtime-identity
 
 浏览器端到端测试使用已安装的 Chrome、独立临时数据库及 65421 端口。桌面测试使用独立临时配置和 65419 端口，运行前需确保该测试端口空闲；不会连接或清理已有用户数据库。两种测试均禁用项目 `.env` 加载，不依赖真实语音凭据。
 
+`npm run test:runtime-tools` 验收当前正式链路：Runtime 持久消息来源与重试、Platform 事项依赖和调度、内嵌 Host 的 Unix 工具调用及应用原件写入／阅读引用。它使用已编译的 Runtime、独立数据和本机合成模型，不再启动退役 workspace／command 接口，不接受 `--live`，也不算原版 Desktop 人工验收。
+
 `npm run test:native-input` 是单独的交互式 macOS 验收：真实麦克风采集仅送至本机无网络测试替身，随后丢弃，再等待人在系统界面选择一小块测试区域；超时失败，不自动截取全屏。使用独立数据与 65421 端口，不可与界面回归同时运行，不读取密钥、不调用语音供应商，不属于无人值守测试套件。`--microphone-only` 可只验收麦克风，避免重复截图。
 
 如果麦克风已经验收，使用 `npm run test:native-input -- --capture-only` 只验证截图：先取消一次在途系统选择，再等待人工选区，核对本机预览和明确保存；不重复采集麦克风。各阶段的实际结果独立保存，后续阶段超时不会抹掉前面已通过的记录，也不会将未完成项标为通过。
 
 `npm run test:desktop-speech -- --synthetic-wav=<合成 WAV 的绝对路径>` 单独验证真实豆包服务与原生语音 UI，需要有效的服务端凭据，会消耗语音服务用量。测试样例仅限 10 秒以内的单声道 16 kHz PCM WAV（这是测试夹具限制，不是产品时长限制）；通过 WebAudio 提供给实际 AudioWorklet，不读取或上传现场声音。使用独立配置与 65423 端口，验证朗读停止、识别确认和对象版本批注；`--asr-only` 可跳过 TTS，`--long-reading` 使用一份跨合成分段的短测试文档。失败会保留合成测试界面与阶段信息，不能用它代替真实麦克风权限验收。
 
-语音输入持续发送 200 ms PCM 音频帧，并通过双向 WebSocket 接收实时转写增量；不攒满一段录音或等待停止才显示文字。停止时关闭麦克风并完成已采集尾段；取消、离开输入现场或手动改字会阻止迟到识别覆盖草稿。长文朗读仍按段合成并预加载下一段，支持暂停、章节跳转及本机进度恢复。TXT／Markdown 单对象支持 8 MB／200 万字符，已验证百万字文本；不代表支持 EPUB 解析或无限大小文件。
+语音输入持续发送 200 ms PCM 音频帧，并通过双向 WebSocket 接收实时转写增量；不攒满一段录音或等待停止才显示文字。停止时关闭麦克风并完成已采集尾段；取消、离开输入现场或手动改字会阻止迟到识别覆盖草稿。长文朗读仍按段合成并预加载下一段，支持暂停、章节跳转及本机进度恢复。TXT／Markdown 单对象支持 8 MB／200 万字符，已验证百万字文本；Reader 另支持 EPUB、PDF、Word 等已接通格式，其解析、OCR 与容量边界见实施记录，不承诺无限大小文件。
 
 ## 当前边界
 

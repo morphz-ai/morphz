@@ -30,7 +30,12 @@ readingOcrModels.forEach((model, i) =>
   ),
 );
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_ENV_FILE: "",
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
 };
@@ -72,8 +77,10 @@ try {
         const api = window.morphzDesktop.application,
           boot = await api.invoke({
             id: crypto.randomUUID(),
-            method: "workspace",
+            method: "platform.bootstrap",
           });
+        if (!boot.ok) throw new Error(boot.error.message);
+        if (method === "platform.bootstrap") return boot.value;
         const result = await api.invoke({
           id: crypto.randomUUID(),
           method,
@@ -124,7 +131,8 @@ try {
   const isolation = await sandbox.evaluate(async () => ({
     mainApi: typeof window.morphzDesktop,
     node: typeof window.require,
-    applicationRead: (await fetch("morphz://app/api/workspace")).status,
+    applicationRead: (await fetch("morphz://app/api/platform/bootstrap"))
+      .status,
     externalNetwork: await fetch(
       "https://example.invalid/morphz-ocr-isolation-test",
     ).then(
@@ -142,16 +150,23 @@ try {
     /DESIGN\s*NOTES/,
     { timeout: 90000 },
   );
-  const boot = await bridge("workspace");
-  const book = boot.workspace.artifacts.find(
-    (a) => a.title === "TEST OCR 本地识别",
-  );
-  const bound = { artifactId: book.id, revision: book.revision, page: 1 };
+  const catalog = await bridge("content.list", {
+    appIds: ["morphz.reader"],
+    limit: 50,
+  });
+  const book = catalog.find((a) => a.title === "TEST OCR 本地识别");
+  assert.ok(book, "Imported PDF must have an authorized Platform entry");
+  const bound = {
+    artifactId: book.id,
+    revision: Number(book.observedVersionRef),
+    page: 1,
+  };
+  assert.ok(Number.isSafeInteger(bound.revision) && bound.revision > 0);
   const status = await bridge("reader.ocr", { operation: "status", ...bound });
   assert.ok(status.sectionId);
   const section = await bridge("reader.read", {
-    artifactId: book.id,
-    revision: book.revision,
+    artifactId: bound.artifactId,
+    revision: bound.revision,
     sectionId: status.sectionId,
   });
   assert.ok(section.ocr.items.length);
@@ -168,8 +183,8 @@ try {
   const next = await bridge("reader.ocr", { operation: "status", ...bound });
   assert.notEqual(next.sectionId, status.sectionId);
   const old = await bridge("reader.read", {
-    artifactId: book.id,
-    revision: book.revision,
+    artifactId: bound.artifactId,
+    revision: bound.revision,
     sectionId: status.sectionId,
   });
   assert.equal(old.text, section.text);
@@ -220,10 +235,14 @@ try {
     await expect(
       page.getByText("扫描页没有文字层 · 可在本机识别", { exact: true }),
     ).toBeVisible();
-    const imported = await bridge("workspace");
-    const scan = imported.workspace.artifacts.find(
-      (a) => a.title === sample.title,
-    );
+    const imported = await bridge("content.list", {
+      appIds: ["morphz.reader"],
+      limit: 50,
+    });
+    const scan = imported.find((a) => a.title === sample.title);
+    assert.ok(scan, "Imported scan must have an authorized Platform entry");
+    const scanRevision = Number(scan.observedVersionRef);
+    assert.ok(Number.isSafeInteger(scanRevision) && scanRevision > 0);
     const normalized = (text) => text.replace(/\s/g, "");
     function distance(a, b) {
       let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -270,12 +289,12 @@ try {
       const state = await bridge("reader.ocr", {
         operation: "status",
         artifactId: scan.id,
-        revision: 1,
+        revision: scanRevision,
         page: expectedPage.page,
       });
       const recognized = await bridge("reader.read", {
         artifactId: scan.id,
-        revision: 1,
+        revision: scanRevision,
         sectionId: state.sectionId,
       });
       assert.equal(recognized.ocr.layout, expectedPage.layout);

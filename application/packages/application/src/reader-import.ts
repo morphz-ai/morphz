@@ -698,6 +698,7 @@ export async function parsePublication(
             maxOldGenerationSizeMb: 256,
             maxYoungGenerationSizeMb: 32,
           },
+          name: "morphz-reader-publication-import",
           stdout: true,
           stderr: true,
         },

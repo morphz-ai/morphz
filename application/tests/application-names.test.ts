@@ -16,7 +16,8 @@ import {
 import { dataDirectory } from "../packages/application/src/paths.js";
 import { migrateApplicationLocalState } from "../apps/web/src/legacy-storage.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
-import { AgentTools } from "../packages/application/src/agent-tools.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 const require = createRequire(import.meta.url);
 const { connectionFromArgs } = require("../apps/desktop/security.cjs");
 const {
@@ -49,20 +50,29 @@ test("legacy HTTP headers retry the same command without duplicates or a CSRF by
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((resolve) => probe.close(() => resolve()));
-  const store = new WorkspaceStore(":memory:");
-  const server = createAppServer(store, { port, webRoot: "/nonexistent" });
+  const directory = mkdtempSync(join(tmpdir(), "morphz-header-platform-"));
+  const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
+    mode: "transport",
+  });
+  const domains = await openApplicationDomainsHost(directory, store);
+  const server = createAppServer(store, {
+    port,
+    webRoot: "/nonexistent",
+    platformWork: domains.work,
+  });
   await new Promise<void>((resolve) =>
     server.listen(port, "127.0.0.1", resolve),
   );
   const origin = `http://127.0.0.1:${port}`;
   try {
-    const boot = await (await fetch(origin + "/api/workspace")).json();
+    const boot = await (await fetch(origin + "/api/platform/bootstrap")).json();
     const command = {
       commandId: randomUUID(),
-      operation: { type: "create-project", title: "Header compatibility" },
+      projectId: `project_${randomUUID().replaceAll("-", "")}`,
+      title: "Header compatibility",
     };
     const post = (headers: Record<string, string>) =>
-      fetch(origin + "/api/commands", {
+      fetch(origin + "/api/platform/projects", {
         method: "POST",
         headers: {
           Origin: origin,
@@ -74,7 +84,14 @@ test("legacy HTTP headers retry the same command without duplicates or a CSRF by
     const first = await post({ "X-MorphzWork-Token": boot.csrfToken });
     assert.equal(first.status, 200);
     const receipt = await first.json();
-    const after = store.snapshot();
+    const readProject = () =>
+      domains.work.authority.withSession(
+        { principalId: boot.principalId, actantId: boot.actantId },
+        () => {},
+        (actor) =>
+          domains.content.platform.getProject(actor, command.projectId),
+      );
+    const after = await readProject();
     const acceptedHeaders: Record<string, string>[] = [
       { "X-Morphz-Token": boot.csrfToken },
       {
@@ -86,7 +103,7 @@ test("legacy HTTP headers retry the same command without duplicates or a CSRF by
       const response = await post(headers);
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), receipt);
-      assert.deepEqual(store.snapshot(), after);
+      assert.deepEqual(await readProject(), after);
     }
     const rejectedHeaders: Record<string, string>[] = [
       { "X-Morphz-Token": "", "X-MorphzWork-Token": boot.csrfToken },
@@ -95,11 +112,13 @@ test("legacy HTTP headers retry the same command without duplicates or a CSRF by
     ];
     for (const headers of rejectedHeaders) {
       assert.equal((await post(headers)).status, 403);
-      assert.deepEqual(store.snapshot(), after);
+      assert.deepEqual(await readProject(), after);
     }
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await domains.close();
     store.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -302,40 +321,29 @@ test("只迁移已认证身份的存储键，保留旧字节与新值，不重�
   assert.deepEqual([...data], entries);
 });
 
-test("旧工具回执在新名称重试时返回同一对象，不重复写入", async () => {
-  const store = new WorkspaceStore(":memory:");
+test("同一 Platform 领域回执在新旧 Host 名称下重试，不重复写入", async () => {
+  const fixture = await agentDomainFixture();
   try {
-    const tools = new AgentTools(store, "fixture", () => ({
-      projectId: "first-project",
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    }));
     const request = {
-      protocol: 1,
-      tool: "host_morphz_work",
-      invocation: {
-        job_id: "job",
-        tool_call_id: "call",
-        session_id: "session",
-        context_id: "context",
-        principal_id: "principal",
-        agent_id: "agent",
-        target_id: "local",
-        thread_id: "thread",
-      },
-      arguments: {
+      ...fixture.envelope({
         action: "create-document",
         title: "Rename retry fixture",
         markdown: "original",
-      },
+      }),
+      tool: "host_morphz_work",
     };
-    const first = await tools.call(request);
-    const snapshot = store.snapshot();
+    const first = await fixture.tools.call(request);
+    const after = await fixture.call<{ items: unknown[] }>({ action: "list" });
+    assert.equal(after.items.length, 1);
     assert.deepEqual(
-      await tools.call({ ...request, tool: "host_morphz" }),
+      await fixture.tools.call({ ...request, tool: "host_morphz" }),
       first,
     );
-    assert.deepEqual(store.snapshot(), snapshot);
+    await fixture.reopen();
+    assert.deepEqual(await fixture.tools.call(request), first);
+    assert.deepEqual(await fixture.call({ action: "list" }), after);
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });

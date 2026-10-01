@@ -6,7 +6,6 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
-  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -14,23 +13,20 @@ import { randomUUID, createHash } from "node:crypto";
 import { IdentityCenter } from "../packages/application/src/identity.js";
 import { createConnection } from "node:net";
 import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import {
   openEmbeddedApplication,
   embeddedResources,
 } from "../apps/desktop/application-host.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
-import {
-  AgentTools,
-  hostIdempotentRequests,
-} from "../packages/application/src/agent-tools.js";
+import { hostIdempotentRequests } from "../packages/application/src/agent-tools.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
 import {
   prepareLocalHostTools,
   listenLocalHostTools,
 } from "../packages/application/src/host-tools-ipc.js";
 import { localAccess } from "../packages/core/src/model.js";
-import { Application } from "../packages/application/src/application.js";
-import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
-import { DesktopSources } from "../apps/service/src/desktop-sources.js";
+import { bindIdentityTestPlatform } from "./identity-platform-fixture.js";
 const require = createRequire(import.meta.url);
 
 test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出不回退旧登录", async () => {
@@ -52,8 +48,15 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
       ],
     };
     const identity = new IdentityCenter(store, config);
-    const credential = identity.login(token, "fixture");
+    const platform = await bindIdentityTestPlatform(
+      store,
+      identity,
+      undefined,
+      join(directory, "platform.sqlite"),
+    );
+    const credential = await identity.login(token, "fixture");
     const oldCookie = identity.legacyCookieName + "=" + credential;
+    await platform.close();
     store.close();
     writeFileSync(
       join(directory, "members.json"),
@@ -62,7 +65,9 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
         members: config.members.map((member) => ({
           ...member,
           name: "fixture",
-          projectIds: ["first-project"],
+          // This cookie test does not import the old workspace project into
+          // Platform, so no Platform project grant is provisioned here.
+          projectIds: [],
         })),
       }),
       { mode: 0o600 },
@@ -74,7 +79,7 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
       return name === identity.legacyCookieName ? oldCookie : undefined;
     });
     assert.equal(
-      ((await host.connection.call("workspace")) as any).principalId,
+      ((await host.connection.call("platform.bootstrap")) as any).principalId,
       localAccess.principalId,
     );
     assert.deepEqual(requested, [
@@ -91,13 +96,13 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
         return name === identity.cookieName ? name + "=invalid" : oldCookie;
       },
     );
-    await assert.rejects(host.connection.call("workspace"));
+    await assert.rejects(host.connection.call("platform.bootstrap"));
     assert.deepEqual(requested, [identity.cookieName]);
     await host.close();
     host = await openEmbeddedApplication(directory, profile, async () => {
       throw Error("Must reuse the persisted authentication");
     });
-    const boot = (await host.connection.call("workspace")) as any;
+    const boot = (await host.connection.call("platform.bootstrap")) as any;
     await host.connection.call("logout", undefined, {
       identityGeneration: boot.csrfToken,
     });
@@ -106,7 +111,7 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
     host = await openEmbeddedApplication(directory, profile, async () => {
       throw Error("Must not re-import after logout");
     });
-    await assert.rejects(host.connection.call("workspace"));
+    await assert.rejects(host.connection.call("platform.bootstrap"));
   } finally {
     await host?.close();
     if (previousEnv === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
@@ -115,39 +120,180 @@ test("首次内嵌接入可恢复旧 Web cookie；无效新身份和显式退出
   }
 });
 
-test("桌面内嵌宿主直接打开原 SQLite，重开保留对象与命令回执且没有 HTTP 服务", async () => {
+test("桌面内嵌宿主不创建旧业务表，重开保留 Platform 项目与命令回执且没有 HTTP 服务", async () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-embedded-"));
   const profile = join(directory, "profile");
   const previous = process.env.MORPHZ_APP_ENV_FILE;
   process.env.MORPHZ_APP_ENV_FILE = "";
   let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
+  const assertNoLegacyBusinessTables = () => {
+    const transportDb = new DatabaseSync(join(directory, "workspace.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      const rows = transportDb
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets') ORDER BY name",
+        )
+        .all();
+      assert.deepEqual(rows, []);
+    } finally {
+      transportDb.close();
+    }
+  };
   try {
     host = await openEmbeddedApplication(directory, profile);
-    const boot = (await host.connection.call("workspace")) as any;
+    const boot = (await host.connection.call("platform.bootstrap")) as any;
     const command = {
       commandId: randomUUID(),
-      operation: { type: "create-project", title: "内嵌恢复测试" },
+      projectId: `project_${randomUUID().replaceAll("-", "")}`,
+      title: "内嵌恢复测试",
     };
-    const receipt = await host.connection.call("command", command, {
+    const receipt = await host.connection.call("projects.create", command, {
       identityGeneration: boot.csrfToken,
     });
+    const retiredWorkspace = await host.connection.invoke({
+      id: randomUUID(),
+      method: "workspace",
+    });
+    assert.equal(retiredWorkspace.ok, false);
+    if (!retiredWorkspace.ok) assert.equal(retiredWorkspace.error.status, 400);
+    assertNoLegacyBusinessTables();
+    const retiredCommand = await host.connection.invoke({
+      id: randomUUID(),
+      method: "command",
+      params: {
+        commandId: randomUUID(),
+        operation: { type: "create-project", title: "旧库不应写入" },
+      },
+      identityGeneration: boot.csrfToken,
+    });
+    assert.equal(retiredCommand.ok, false);
+    if (!retiredCommand.ok) assert.equal(retiredCommand.error.status, 400);
+    assertNoLegacyBusinessTables();
     assert.equal(host.manifestPath, undefined);
     await host.close();
     host = await openEmbeddedApplication(directory, profile);
-    const reopened = (await host.connection.call("workspace")) as any;
+    const reopened = (await host.connection.call("platform.bootstrap")) as any;
     assert.equal(reopened.centerId, boot.centerId);
+    const projects = (await host.connection.call(
+      "projects.list",
+      {
+        status: "active",
+      },
+      { identityGeneration: reopened.csrfToken },
+    )) as Array<{ id: string; title: string }>;
     assert.equal(
-      reopened.workspace.projects.filter((p: any) => p.title === "内嵌恢复测试")
-        .length,
+      projects.filter(
+        (p) => p.id === command.projectId && p.title === command.title,
+      ).length,
       1,
     );
     assert.deepEqual(
-      await host.connection.call("command", command, {
+      await host.connection.call("projects.create", command, {
         identityGeneration: reopened.csrfToken,
       }),
       receipt,
     );
+    assertNoLegacyBusinessTables();
+    const html = "<!doctype html><title>桌面应用原件</title>";
+    assert.equal(
+      await host.connection.call(
+        "apps.install",
+        {
+          commandId: randomUUID(),
+          manifest: {
+            format: "morphz-app/v1",
+            id: "example.desktop",
+            version: "1.0.0",
+            title: "桌面应用",
+            description: "验证内嵌宿主读取独立包字节",
+            icon: "document",
+            permissions: [],
+            harness: null,
+            ui: { type: "sandbox", html },
+          },
+        },
+        { identityGeneration: reopened.csrfToken },
+      ),
+      "example.desktop@1.0.0",
+    );
+    const packageView = await host.connection.resource(
+      "application-view",
+      "example.desktop@1.0.0",
+    );
+    assert.equal(Buffer.from(packageView.bytes).toString("utf8"), html);
     assert.notEqual(reopened.csrfToken, boot.csrfToken);
+  } finally {
+    await host?.close();
+    if (previous === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
+    else process.env.MORPHZ_APP_ENV_FILE = previous;
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test("桌面自定义协议从 Reader 私有原件按版本流式读取 PDF", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-embedded-pdf-"));
+  const previous = process.env.MORPHZ_APP_ENV_FILE;
+  process.env.MORPHZ_APP_ENV_FILE = "";
+  let host: Awaited<ReturnType<typeof openEmbeddedApplication>> | undefined;
+  try {
+    host = await openEmbeddedApplication(directory, join(directory, "profile"));
+    const boot = (await host.connection.call("platform.bootstrap")) as {
+      csrfToken: string;
+    };
+    const projectId = `project_${randomUUID().replaceAll("-", "")}`;
+    await host.connection.call(
+      "projects.create",
+      { commandId: randomUUID(), projectId, title: "PDF 原件测试" },
+      { identityGeneration: boot.csrfToken },
+    );
+    const pdf = readFileSync(new URL("./fixtures/reader.pdf", import.meta.url));
+    const imported = (await host.connection.call(
+      "reader.import",
+      {
+        commandId: randomUUID(),
+        projectId,
+        relativePath: "原页.pdf",
+        data: pdf,
+      },
+      { identityGeneration: boot.csrfToken },
+    )) as { entityId: string; revision: number };
+    const resources = embeddedResources("/nonexistent", host.connection);
+    const url = `morphz://app/api/reader/original?artifactId=${encodeURIComponent(imported.entityId)}&revision=${imported.revision}`;
+    const full = await resources(new Request(url));
+    assert.equal(full.status, 200);
+    assert.equal(full.headers.get("content-type"), "application/pdf");
+    assert.equal(full.headers.get("accept-ranges"), "bytes");
+    assert.equal(full.headers.get("content-length"), String(pdf.length));
+    assert.deepEqual(Buffer.from(await full.arrayBuffer()), pdf);
+    const range = await resources(
+      new Request(url, { headers: { Range: "bytes=7-127" } }),
+    );
+    assert.equal(range.status, 206);
+    assert.equal(
+      range.headers.get("content-range"),
+      `bytes 7-127/${pdf.length}`,
+    );
+    assert.deepEqual(
+      Buffer.from(await range.arrayBuffer()),
+      pdf.subarray(7, 128),
+    );
+    const head = await resources(new Request(url, { method: "HEAD" }));
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-length"), String(pdf.length));
+    assert.equal(await head.text(), "");
+    const invalid = await resources(
+      new Request(url, { headers: { Range: `bytes=${pdf.length}-` } }),
+    );
+    assert.equal(invalid.status, 416);
+    assert.equal(invalid.headers.get("content-range"), `bytes */${pdf.length}`);
+    assert.equal(
+      (await resources(new Request(url + "&revision=2"))).status,
+      400,
+    );
+    host.connection.close();
+    assert.equal((await resources(new Request(url))).status, 403);
   } finally {
     await host?.close();
     if (previous === undefined) delete process.env.MORPHZ_APP_ENV_FILE;
@@ -172,7 +318,7 @@ test("自定义页面协议只读：阻止跨 origin、私有文件和 HTTP 业�
     resource: (kind, id) => {
       reads++;
       assert.equal(kind, "application-view");
-      assert.equal(id, "view");
+      assert.ok(id === "view" || id === "example.notes@1.0.0");
       return {
         mime: "text/html",
         bytes: Buffer.from("<script>parent.document.body</script>"),
@@ -205,7 +351,11 @@ test("自定义页面协议只读：阻止跨 origin、私有文件和 HTTP 业�
       new Request("morphz://app/api/application-view/view"),
     );
     assert.equal(view.status, 200);
-    assert.equal(reads, 1);
+    const encodedView = await resources(
+      new Request("morphz://app/api/application-view/example.notes%401.0.0"),
+    );
+    assert.equal(encodedView.status, 200);
+    assert.equal(reads, 2);
     assert.match(
       view.headers.get("content-security-policy")!,
       /sandbox allow-scripts/,
@@ -261,7 +411,7 @@ test("桌面桥逐次核对主框架，导航后的迟到回执和第三方订�
   trusted = true;
   const pending = handlers.get("application:invoke")!(
     {},
-    { method: "workspace" },
+    { method: "platform.bootstrap" },
   );
   trusted = false;
   release({ ok: true, value: "private" });
@@ -285,78 +435,11 @@ test("桌面桥逐次核对主框架，导航后的迟到回执和第三方订�
     assert.equal(trustedAppURL(url, "morphz://app"), false);
 });
 
-test("本地资料接入直接调用共享业务层，保留来源授权、修订和重启去重", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphz-source-local-"));
-  const store = new WorkspaceStore(":memory:");
-  const connection = new LocalApplicationConnection(new Application(store));
-  const file = join(dir, "note.md"),
-    grants = join(dir, "grants.json");
-  writeFileSync(file, "本机来源原文");
-  let sources = new DesktopSources(grants, connection);
-  try {
-    const selected = await sources.addSelection(file, "first-project");
-    await sources.control(selected[0]!.id, "resume");
-    assert.equal(store.snapshot().artifacts.length, 1);
-    const id = store.snapshot().artifacts[0]!.id;
-    renameSync(file, file + ".offline");
-    await sources.tick();
-    assert.equal(
-      store.snapshot().artifacts[0]!.source?.connection?.status,
-      "unavailable",
-    );
-    renameSync(file + ".offline", file);
-    await sources.tick();
-    assert.equal(
-      store.snapshot().artifacts[0]!.source?.connection?.status,
-      "current",
-    );
-    assert.equal(store.snapshot().artifacts[0]!.revision, 1);
-    await sources.stop();
-    const artifact = store.snapshot().artifacts[0]!;
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "linked-source-status",
-          projectId: artifact.projectId,
-          sourceId: artifact.source!.connection!.sourceId,
-          deviceId: artifact.source!.connection!.deviceId,
-          status: "unavailable",
-        },
-      },
-      localAccess,
-    );
-    sources = new DesktopSources(grants, connection);
-    await sources.tick();
-    assert.equal(store.snapshot().artifacts.length, 1);
-    assert.equal(
-      store.snapshot().artifacts[0]!.source?.connection?.status,
-      "current",
-    );
-    assert.equal(store.snapshot().artifacts[0]!.versions.length, 1);
-    const revision = store.snapshot().revision;
-    await sources.tick();
-    assert.equal(store.snapshot().revision, revision);
-    writeFileSync(file, "本机来源修订");
-    await sources.tick();
-    assert.equal(store.snapshot().artifacts[0]!.id, id);
-    assert.equal(store.snapshot().artifacts[0]!.revision, 2);
-  } finally {
-    await sources.stop();
-    connection.close();
-    store.close();
-    rmSync(dir, { recursive: true });
-  }
-});
-
-test("Runtime 本地回调不使用 HTTP，认证和真实 job 幂等写入保持不变", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "morphz-ipc-node-"));
-  const store = new WorkspaceStore(":memory:");
+test("真实 Unix 工具回调写入应用域；认证、拆帧、持久幂等和无 HTTP 依赖", async () => {
+  const fixture = await agentDomainFixture();
+  const dir = fixture.directory;
   const manifest = prepareLocalHostTools(dir, "fixture-" + randomUUID());
-  const tools = new AgentTools(store, manifest.token, () => ({
-    projectId: "first-project",
-    access: localAccess,
-  }));
+  const tools = fixture.createTools(manifest.token);
   let listener: Awaited<ReturnType<typeof listenLocalHostTools>> | undefined;
   const exchange = (request: unknown) =>
     new Promise<any>((resolve, reject) => {
@@ -399,35 +482,56 @@ test("Runtime 本地回调不使用 HTTP，认证和真实 job 幂等写入保�
         markdown: "持久回执",
       },
       invocation: {
+        ...fixture.route,
         job_id: "persisted-job",
         tool_call_id: "call-1",
-        session_id: "session",
-        context_id: "context",
-        principal_id: localAccess.principalId,
-        agent_id: "agent",
-        thread_id: "thread",
-        target_id: "target",
       },
     };
     const denied = await exchange({ protocol: 1, token: "wrong", request });
     assert.equal(denied.ok, false);
-    assert.equal(store.snapshot().artifacts.length, 0);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      0,
+    );
     const first = await exchange({
       protocol: 1,
       token: manifest.token,
       request,
     });
     assert.equal(first.ok, true);
-    assert.equal(store.snapshot().artifacts.length, 1);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      1,
+    );
     assert.deepEqual(
       await exchange({ protocol: 1, token: manifest.token, request }),
       first,
     );
-    assert.equal(store.snapshot().artifacts.length, 1);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      1,
+    );
+    const changed = await exchange({
+      protocol: 1,
+      token: manifest.token,
+      request: {
+        ...request,
+        arguments: { ...request.arguments, markdown: "不是重试" },
+      },
+    });
+    assert.equal(changed.ok, false);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      1,
+    );
+    fixture.assertNoLegacyData();
   } finally {
     await listener?.close();
-    store.close();
-    rmSync(dir, { recursive: true });
+    await fixture.close();
     rmSync(dirname(manifest.endpoint), { recursive: true });
   }
 });

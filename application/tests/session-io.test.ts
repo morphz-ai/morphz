@@ -2,10 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { WorkspaceStore } from "../apps/service/src/store.js";
-import { RuntimeBridge } from "../apps/service/src/runtime.js";
-import { AgentTools } from "../apps/service/src/agent-tools.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
 
 const config = () => ({
   url: "http://127.0.0.1:1",
@@ -15,195 +13,180 @@ const config = () => ({
 type Ledger = {
   deliveries: {
     inputId: string;
+    state: string;
     request: Record<string, any>;
     resourceUploads?: {
-      dataBase64: string;
+      assetId: string;
       mediaType: string;
       stageId: string;
+      dataBase64?: string;
     }[];
   }[];
 };
-function recordInput(
-  store: WorkspaceStore,
-  artifactId: string | null = null,
-  selection = "",
+async function recordInput(
+  f: Awaited<ReturnType<typeof platformRuntimeHostFixture>>,
+  attachments?: { assetId: string; name: string; mime?: string }[],
 ) {
-  return store.execute(
-    {
+  return (
+    await f.session().platformMessage({
       commandId: randomUUID(),
       operation: {
         type: "record-input",
-        projectId: "first-project",
-        artifactId,
-        artifactRevision: artifactId ? 1 : null,
-        selection,
+        projectId: f.projectId,
+        artifactId: null,
+        artifactRevision: null,
+        selection: "",
         body: "Inspect the original input",
         targetActantId: "morphz-agent",
+        ...(attachments ? { attachments } : {}),
       },
-    },
-    localAccess,
+    })
   ).entityId;
 }
 
 test("existing outbox requests keep their protocol and fingerprint after reopening", async () => {
-  const store = new WorkspaceStore(":memory:");
-  const connection = config();
-  let bridge = new RuntimeBridge(store, connection);
+  const f = await platformRuntimeHostFixture();
   try {
-    const inputId = recordInput(store);
-    bridge.enqueue(inputId);
-    const state = store.runtimeState() as Ledger;
+    const inputId = await recordInput(f);
+    const state = f.store.runtimeState() as Ledger;
     const oldRequest = {
       text: "Previously persisted legacy request",
       client_message_id: inputId,
       dispatch_mode: "parallel",
     };
     state.deliveries[0]!.request = oldRequest;
-    store.saveRuntimeState(state);
-    await bridge.stop();
-    // Restore the simulated old durable ledger after stopping the first bridge.
-    store.saveRuntimeState(state);
-    bridge = new RuntimeBridge(store, connection);
-    bridge.enqueue(inputId);
-    const second = recordInput(store);
-    bridge.enqueue(second);
-    const reopened = store.runtimeState() as Ledger;
+    state.deliveries[0]!.state = "failed";
+    f.store.saveRuntimeState(state);
+    await f.reopen();
+    await f.runtime.retryPlatformInput(inputId);
+    await recordInput(f);
+    const reopened = f.store.runtimeState() as Ledger;
     assert.deepEqual(reopened.deliveries[0]!.request, oldRequest);
     assert.equal(reopened.deliveries[1]!.request.io_version, "1");
     assert.equal(
       reopened.deliveries[1]!.request.message.content.value.text,
       "Inspect the original input",
     );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    store.close();
+    await f.close();
   }
 });
 
 test("名称统一不重写已排队的旧 typed v2 请求，新输入才采用 Morphz 格式", async () => {
-  const store = new WorkspaceStore(":memory:");
-  const connection = config();
-  let bridge = new RuntimeBridge(store, connection);
+  const f = await platformRuntimeHostFixture();
   try {
-    const first = recordInput(store);
-    bridge.enqueue(first);
-    const ledger = store.runtimeState() as Ledger;
+    const first = await recordInput(f);
+    const ledger = f.store.runtimeState() as Ledger;
     ledger.deliveries[0]!.request.message.format = {
       id: "morphzwork.input",
       version: "2",
     };
+    ledger.deliveries[0]!.state = "failed";
     const original = JSON.stringify(ledger.deliveries[0]!.request);
-    await bridge.stop();
-    store.saveRuntimeState(ledger);
-    bridge = new RuntimeBridge(store, connection);
-    bridge.enqueue(first);
-    bridge.enqueue(recordInput(store));
-    const next = store.runtimeState() as Ledger;
+    f.store.saveRuntimeState(ledger);
+    await f.reopen();
+    await f.runtime.retryPlatformInput(first);
+    await recordInput(f);
+    const next = f.store.runtimeState() as Ledger;
     assert.equal(JSON.stringify(next.deliveries[0]!.request), original);
     assert.deepEqual(next.deliveries[1]!.request.message.format, {
       id: "morphz.application.input",
       version: "1",
     });
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    store.close();
+    await f.close();
   }
 });
 
-test("images retain real attachment bytes and original text without a prompt prefix", async () => {
-  const store = new WorkspaceStore(":memory:");
-  const bridge = new RuntimeBridge(store, config());
+test("image messages retain real managed attachment bytes and original text without a prompt prefix", async () => {
+  const f = await platformRuntimeHostFixture();
   try {
     const base64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=";
-    const { assetId } = store.addAsset(Buffer.from(base64, "base64"));
-    const artifactId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-artifact",
-          projectId: "first-project",
-          title: "Image",
-          content: { kind: "image", assetId, alt: "fixture" },
-        },
-      },
-      localAccess,
-    ).entityId;
-    bridge.enqueue(recordInput(store, artifactId));
-    const delivery = (store.runtimeState() as Ledger).deliveries[0]!;
+    const image = Buffer.from(base64, "base64");
+    const uploaded = await f
+      .session()
+      .addAttachment({ name: "image.png", data: image });
+    await recordInput(f, [{ ...uploaded, name: "image.png" }]);
+    const delivery = (f.store.runtimeState() as Ledger).deliveries[0]!;
     const request = delivery.request;
     assert.equal(
       request.message.content.value.text,
       "Inspect the original input",
     );
     assert.equal(request.io_version, "1");
-    assert.equal(delivery.resourceUploads![0]!.dataBase64, base64);
+    assert.equal(delivery.resourceUploads![0]!.assetId, uploaded.assetId);
+    assert.equal(delivery.resourceUploads![0]!.dataBase64, undefined);
     assert.equal(delivery.resourceUploads![0]!.mediaType, "image/png");
     assert.deepEqual(request.message.content.value.attachments, [
       { stage_id: delivery.resourceUploads![0]!.stageId },
     ]);
-    assert.ok(!JSON.stringify(request).includes(base64));
+    assert.deepEqual(
+      Buffer.from((await f.session().asset(uploaded.assetId, true)).bytes),
+      image,
+    );
+    assert.ok(!JSON.stringify(f.store.runtimeState()).includes(base64));
+    await f.reopen();
+    assert.deepEqual(
+      Buffer.from((await f.session().asset(uploaded.assetId, true)).bytes),
+      image,
+    );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    store.close();
+    await f.close();
   }
 });
 
-test("read-input resolves only the actual invocation scope, never a model-selected input", () => {
-  const store = new WorkspaceStore(":memory:");
+test("read-input resolves only the actual invocation scope, never a model-selected input", async () => {
+  const f = await agentDomainFixture();
   try {
-    const artifactId = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-artifact",
-          projectId: "first-project",
-          title: "Quoted text",
-          content: { kind: "document", markdown: "quoted (kernel data)" },
-        },
-      },
-      localAccess,
-    ).entityId;
-    const inputId = recordInput(store, artifactId, "quoted (kernel data)");
-    let boundInput: string | undefined = inputId;
-    const tools = new AgentTools(store, "test-only", () => ({
-      projectId: "first-project",
-      inputId: boundInput,
-      access: { principalId: "morphz-service", actantId: "morphz-agent" },
-    }));
-    const request = {
-      protocol: 1,
-      tool: "host_morphz",
-      invocation: {
-        job_id: "test-job",
-        tool_call_id: "test-call",
-        session_id: "test-session",
-        context_id: "test-context",
-        principal_id: "test-principal",
-        agent_id: "test-agent",
-        target_id: "local",
-        thread_id: "test-thread",
-      },
-      arguments: { action: "read-input" },
-    };
-    const result = tools.call(request) as {
+    const route = f.input(
+      f.projectId,
+      "Inspect the original input",
+      "quoted (kernel data)",
+    );
+    const other = f.input(f.projectId, "Different original", "Other quote");
+    const request = f.envelope({ action: "read-input" }, route);
+    const result = (await f.tools.call(request)) as {
       input: { input_id: string; text: string; selection: string };
     };
-    assert.equal(result.input.input_id, inputId);
+    assert.equal(
+      result.input.input_id,
+      route.thread_id.slice("thread_".length),
+    );
     assert.equal(result.input.text, "Inspect the original input");
     assert.equal(result.input.selection, "quoted (kernel data)");
-    boundInput = undefined;
-    assert.throws(() => tools.call(request), /原始输入/);
-    assert.throws(() =>
-      tools.call({ ...request, arguments: { action: "read-input", inputId } }),
+    const otherInput = await f.call<typeof result>(
+      { action: "read-input" },
+      other,
     );
+    assert.equal(otherInput.input.text, "Different original");
+    assert.throws(() =>
+      f.tools.call({
+        ...request,
+        arguments: { action: "read-input", inputId: otherInput.input.input_id },
+      }),
+    );
+    await assert.rejects(
+      Promise.resolve().then(() =>
+        f.tools.call({
+          ...request,
+          invocation: { ...request.invocation, principal_id: "model-spoof" },
+        }),
+      ),
+      /身份|来源|执行|输入|principal/,
+    );
+    f.forgetInput(route);
+    await assert.rejects(Promise.resolve().then(() => f.tools.call(request)));
+    f.assertNoLegacyData();
   } finally {
-    store.close();
+    await f.close();
   }
 });
 
 test("typed image upload resumes after lost acknowledgements without rewriting or resending accepted work", async () => {
-  const store = new WorkspaceStore(":memory:");
   const image = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=",
     "base64",
@@ -230,7 +213,11 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
     assert.equal(request.headers.authorization, "Bearer test-only");
     if (path === "/api/status") return send(200, { model: "fixture" });
     if (path === "/api/session-io/capabilities")
-      return send(200, { enabled: true, resources: true });
+      return send(200, {
+        enabled: true,
+        client_metadata: true,
+        resources: true,
+      });
     if (path === "/api/sessions" && request.method === "POST") {
       const session = { id: body.id, context_id: body.mount.context_id };
       sessions.set(session.id, session);
@@ -292,31 +279,23 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
     ...config(),
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
   };
-  let bridge = new RuntimeBridge(store, connection);
+  const f = await platformRuntimeHostFixture(connection);
+  const delivery = () => (f.store.runtimeState() as Ledger).deliveries[0]!;
   try {
-    const { assetId } = store.addAsset(image);
-    const artifact = store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "create-artifact",
-          projectId: "first-project",
-          title: "Image",
-          content: { kind: "image", assetId, alt: "fixture" },
-        },
-      },
-      localAccess,
-    ).entityId;
-    const input = recordInput(store, artifact);
-    bridge.enqueue(input);
-    await bridge.tick();
+    const uploadedAttachment = await f
+      .session()
+      .addAttachment({ name: "image.png", data: image });
+    const input = await recordInput(f, [
+      { ...uploadedAttachment, name: "image.png" },
+    ]);
+    await f.enableDispatch();
+    await f.runtime.tick();
     assert.equal(messages, 0, "do not submit before confirming upload");
-    assert.equal(bridge.snapshot().deliveries[0]!.state, "failed");
+    assert.equal(delivery().state, "failed");
     for (let retry = 0; retry < 2; retry++) {
-      await bridge.stop();
-      bridge = new RuntimeBridge(store, connection);
-      bridge.enqueue(input);
-      await bridge.tick();
+      await f.reopen(false);
+      await f.runtime.retryPlatformInput(input);
+      await f.runtime.tick();
     }
     assert.equal(
       uploads,
@@ -324,14 +303,28 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
       "lost upload acknowledgement must resume from the server's confirmed offset",
     );
     assert.equal(messages, 2);
-    assert.equal(bridge.snapshot().deliveries[0]!.state, "running");
+    assert.equal(delivery().state, "running");
     assert.ok(
-      !JSON.stringify(bridge.snapshot()).includes(image.toString("base64")),
+      !JSON.stringify(f.runtime.platformStatus()).includes(
+        image.toString("base64"),
+      ),
       "private upload bytes never enter UI snapshots",
     );
+    assert.ok(
+      !JSON.stringify(f.store.runtimeState()).includes(
+        image.toString("base64"),
+      ),
+    );
+    assert.deepEqual(
+      Buffer.from(
+        (await f.session().asset(uploadedAttachment.assetId, true)).bytes,
+      ),
+      image,
+    );
+    f.assertNoLegacyData();
   } finally {
-    await bridge.stop();
-    store.close();
+    await f.close();
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );

@@ -1,43 +1,32 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openInput, composerAction } from "./interaction-helpers.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 
 /** Synthetic transport only; no user message or model is replayed. */
 async function failedMessage(
   page: Page,
   options: { defer?: boolean; unavailable?: boolean } = {},
 ) {
-  let state = "failed";
+  let state: "failed" | "queued" = "failed";
+  const inputs: PlatformHistory["inputs"] = [];
   const sent: string[] = [];
   let release!: () => void;
   const responseGate = new Promise<void>((resolve) => (release = resolve));
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p: { kind: string }) => p.kind === "desk",
-    ).id;
-    boot.workspace.inputs = Array.from({ length: 24 }, (_, index) => ({
-      id: `retry-fixture-${index}`,
-      projectId,
-      conversationId: "local-dialogue",
-      artifactId: null,
-      artifactRevision: null,
-      author: { actantId: "local-human", principalId: "local-owner" },
-      selection: "",
-      body: `TEST 重试保留阅读现场 ${index}`,
-      status: "recorded",
-      targetActantId: "morphz-agent",
-      createdAt: new Date(Date.UTC(2026, 8, 19, 0, index)).toISOString(),
-    }));
-    boot.runtime = {
-      ...boot.runtime,
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
       configured: true,
       connected: true,
       model: "fixture-model",
       messages: [],
-      deliveries: boot.workspace.inputs.map((input: { id: string }) => ({
+      deliveries: inputs.map((input) => ({
         inputId: input.id,
         state: input.id === "retry-fixture-12" ? state : "completed",
         error:
@@ -47,9 +36,17 @@ async function failedMessage(
         retryable: input.id === "retry-fixture-12" && state === "failed",
         cancellable: false,
       })),
-    };
-    await route.fulfill({ response, json: boot });
-  });
+    },
+  }));
+  inputs.push(
+    ...Array.from({ length: 24 }, (_, index) =>
+      presentation.input(
+        `retry-fixture-${index}`,
+        `TEST 重试保留阅读现场 ${index}`,
+        new Date(Date.UTC(2026, 8, 19, 0, index)).toISOString(),
+      ),
+    ),
+  );
   await page.route("**/api/models", (route) =>
     route.fulfill({
       json: {

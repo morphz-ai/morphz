@@ -1,26 +1,22 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openInput } from "./interaction-helpers.js";
-import type { Command } from "../packages/core/src/model.js";
-import type { Boot } from "../apps/web/src/client.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  isolatedCenterDirectory,
+  seedAgentOriginal,
+} from "./platform-agent-original-fixture.js";
 
 const dialogue = (page: Page) =>
   page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "对话", exact: true });
 
-async function command(page: Page, operation: Command["operation"]) {
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const response = await page.request.post("/api/commands", {
-    headers: {
-      "X-Morphz-Token": boot.csrfToken,
-      Origin: "http://127.0.0.1:65421",
-    },
-    data: { commandId: randomUUID(), operation },
-  });
-  expect(response.ok(), await response.text()).toBe(true);
-  return (await response.json()).entityId as string;
-}
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
 
 test("对话常驻输入：失焦与 Escape 不隐藏，快捷键聚焦，其他工作页仍收起并保留草稿", async ({
   page,
@@ -76,69 +72,65 @@ test("日期分隔与回到最新独立于未读；新回复不抢旧消息阅�
   page,
 }) => {
   let fresh = false;
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    )!.id;
-    boot.workspace.inputs = Array.from({ length: 24 }, (_, i) => ({
-      id: `dialogue-fixture-${i}`,
-      projectId,
-      conversationId: projectId,
-      artifactId: null,
-      artifactRevision: null,
-      selection: "",
-      body: `第 ${i} 轮问题`,
-      author: { actantId: boot.actantId, principalId: "local-owner" },
-      targetActantId: "morphz-agent",
-      status: "recorded",
-      createdAt: new Date(
-        Date.UTC(2026, 8, i < 12 ? 9 : 10, 10, i),
-      ).toISOString(),
-    }));
-    boot.runtime.messages = boot.workspace.inputs.map((input, i) => ({
-      id: `dialogue-reply-${i}`,
-      projectId,
-      conversationId: projectId,
-      inputId: input.id,
-      rootId: null,
-      artifactId: null,
-      kind: "reply",
-      createdAt: new Date(
-        new Date(input.createdAt).getTime() + 1000,
-      ).toISOString(),
-      text:
-        i === 23
-          ? "截图里**「截图输入」挡住了 PDF**，这是实际格式。\n\n| 名称 | 状态 |\n| --- | --- |\n| " +
-            "long-column-".repeat(35) +
-            " | 完成 |"
-          : `第 ${i} 轮回复。\n\n` +
-            "这是一段用于验证长期阅读位置的合成正文。".repeat(8),
-    }));
-    boot.runtime.deliveries = boot.workspace.inputs.map((input) => ({
-      inputId: input.id,
-      state: "completed",
-      error: null,
-      retryable: false,
-    }));
-    boot.outputs = [];
-    if (fresh)
-      boot.runtime.messages.push({
-        id: "dialogue-fresh",
-        projectId,
-        conversationId: projectId,
-        inputId: "dialogue-fixture-0",
-        rootId: null,
-        artifactId: null,
-        kind: "reply",
-        createdAt: "2026-09-11T10:00:00Z",
-        text: "较早工作的迟到交付，按发布时间追加。",
-      });
-    await route.fulfill({ response, json: boot });
-  });
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model: "dialogue-fixture-model",
+      deliveries: inputs.map((input) => ({
+        inputId: input.id,
+        state: "completed" as const,
+        error: null,
+        retryable: false,
+      })),
+      messages: [
+        ...inputs.map((input, i) => ({
+          id: `dialogue-reply-${i}`,
+          ...presentation.scope,
+          inputId: input.id,
+          rootId: null,
+          artifactId: null,
+          kind: "reply" as const,
+          createdAt: new Date(
+            new Date(input.createdAt).getTime() + 1000,
+          ).toISOString(),
+          text:
+            i === 23
+              ? "截图里**「截图输入」挡住了 PDF**，这是实际格式。\n\n| 名称 | 状态 |\n| --- | --- |\n| " +
+                "long-column-".repeat(35) +
+                " | 完成 |"
+              : `第 ${i} 轮回复。\n\n` +
+                "这是一段用于验证长期阅读位置的合成正文。".repeat(8),
+        })),
+        ...(fresh
+          ? [
+              {
+                id: "dialogue-fresh",
+                ...presentation.scope,
+                inputId: "dialogue-fixture-0",
+                rootId: null,
+                artifactId: null,
+                kind: "reply" as const,
+                createdAt: "2026-09-11T10:00:00Z",
+                text: "较早工作的迟到交付，按发布时间追加。",
+              },
+            ]
+          : []),
+      ],
+    },
+  }));
+  inputs.push(
+    ...Array.from({ length: 24 }, (_, i) =>
+      presentation.input(
+        `dialogue-fixture-${i}`,
+        `第 ${i} 轮问题`,
+        new Date(Date.UTC(2026, 8, i < 12 ? 9 : 10, 10, i)).toISOString(),
+      ),
+    ),
+  );
   await page.goto("/");
   await dialogue(page).click();
   const scroll = page.locator(".conversation");
@@ -165,6 +157,7 @@ test("日期分隔与回到最新独立于未读；新回复不抢旧消息阅�
       .evaluate((el) => el.getBoundingClientRect().height),
   ).toBe(0);
   fresh = true;
+  await presentation.refresh();
   await expect(page.locator('[data-message-id="dialogue-fresh"]')).toHaveCount(
     1,
   );
@@ -228,55 +221,87 @@ test("日期分隔与回到最新独立于未读；新回复不抢旧消息阅�
   }
 });
 
-test("历史引用显示并打开当时标题与版本，真实交付也保持准确版本", async ({
+test("历史引用显示并打开当时标题与版本，Platform 交付回执也保持准确版本", async ({
   page,
 }) => {
-  await page.goto("/");
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const projectId = boot.workspace.projects.find((p) => p.kind === "desk")!.id;
-  const artifactId = await command(page, {
-    type: "create-artifact",
-    projectId,
-    title: "历史引用第一版",
-    content: { kind: "document", markdown: "当时讨论的正文" },
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model: "historical-reference-fixture",
+    },
+  }));
+  const inputId = `historical_${randomUUID()}`;
+  // Real app versions and Platform delivery receipt; only Runtime history is
+  // controlled presentation data, not a claim of model dispatch.
+  const objectId = await seedAgentOriginal(
+    isolatedCenterDirectory(),
+    presentation.spaces.deskId,
+    "历史引用第一版",
+    "当时讨论的正文",
+    inputId,
+  );
+  const contents = await presentation.client.content({
+    projectId: presentation.spaces.deskId,
+    appId: "morphz.objects",
+    appObjectIds: [objectId],
   });
-  const inputId = await command(page, {
-    type: "record-input",
-    projectId,
+  expect(contents.items).toHaveLength(1);
+  const artifactId = contents.items[0]!.id;
+  inputs.push({
+    ...presentation.input(
+      inputId,
+      "请查看这个旧版本",
+      new Date().toISOString(),
+    ),
     artifactId,
     artifactRevision: 1,
     selection: "当时讨论的正文",
-    body: "请查看这个旧版本",
-    targetActantId: "morphz-agent",
   });
-  await command(page, {
-    type: "revise-artifact",
-    artifactId,
+  await presentation.client.reviseDocument({
+    commandId: randomUUID(),
+    contentId: artifactId,
     expectedRevision: 1,
     title: "更新后的第二版标题",
-    content: { kind: "document", markdown: "已经更新的正文" },
+    markdown: "已经更新的正文",
   });
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const current: Boot = await response.json();
-    current.outputs = [
-      {
-        commandId: "historical-delivery",
-        inputId,
-        projectId,
-        artifactId,
-        revision: 1,
-        createdAt: new Date().toISOString(),
-      },
-    ];
-    await route.fulfill({ response, json: current });
+  expect(await presentation.client.contentDeliveries([inputId])).toEqual([
+    expect.objectContaining({
+      inputId,
+      contentId: artifactId,
+      // Catalog metadata is current; the historical title below must be
+      // resolved from the owning app's exact version, not this catalog label.
+      title: "更新后的第二版标题",
+      versionRef: "1",
+    }),
+  ]);
+  const originalReads: string[] = [];
+  const titleReads: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === `/api/platform/objects/${artifactId}`)
+      originalReads.push(request.url());
+    if (path === `/api/platform/objects/${artifactId}/versions`)
+      titleReads.push(request.url());
   });
+  await page.goto("/");
   await dialogue(page).click();
-  await page
-    .getByRole("button", { name: "历史引用第一版 · v1", exact: true })
-    .click();
+  const historicalLink = page.getByRole("button", {
+    name: "历史引用第一版 · v1",
+    exact: true,
+  });
+  await expect(historicalLink).toBeVisible();
+  expect(originalReads).toHaveLength(0);
+  expect(titleReads.length).toBeGreaterThan(0);
+  const titlesBeforeRefresh = titleReads.length;
+  await presentation.refresh();
+  await expect(historicalLink).toBeVisible();
+  expect(originalReads).toHaveLength(0);
+  expect(titleReads).toHaveLength(titlesBeforeRefresh);
+  await historicalLink.click();
   await expect(page.getByLabel("查看版本")).toHaveValue("1");
   await expect(page.locator(".object-paper")).toContainText("当时讨论的正文");
   await expect(page.locator(".object-paper > h1")).toHaveText("历史引用第一版");

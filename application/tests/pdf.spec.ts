@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { openLibrary } from "./application-helpers.js";
 
 test("既有 PDF 在阅读器中保留真实画布、中文文字层、分页批注与重开", async ({
@@ -13,29 +15,34 @@ test("既有 PDF 在阅读器中保留真实画布、中文文字层、分页批
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
   await page.getByLabel("项目名称", { exact: true }).fill(title);
   await page.getByRole("button", { name: "创建", exact: true }).click();
-  // Seed a retained pre-migration PDF, not a new UI import workflow.
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const project = boot.workspace.projects.find(
-    (p: { title: string }) => p.title === title,
+  const boot = (await (
+    await page.request.get("/api/platform/bootstrap")
+  ).json()) as { csrfToken: string };
+  const platform = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
   );
+  const project = (await platform.allProjects()).find((p) => p.title === title);
+  expect(project, "新建项目应保存在 Platform").toBeDefined();
   const imported = await page.request.post("/api/import/pdf", {
     headers: {
       Origin: new URL(page.url()).origin,
       "X-Morphz-Token": boot.csrfToken,
       "X-Command-Id": randomUUID(),
-      "X-Project-Id": project.id,
+      "X-Project-Id": project!.id,
       "X-Source-Path": "reader.pdf",
       "Content-Type": "application/pdf",
     },
     data: readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
   });
   expect(imported.ok(), await imported.text()).toBe(true);
+  const { entityId } = (await imported.json()) as { entityId: string };
   await openLibrary(page);
   await page.locator(".artifact-card").filter({ hasText: "reader" }).click();
   // Existing PDFs now open in the same reader as new imports, not the retired
   // object PDF toolbar. Hidden application instances must not match this test.
   const paper = page.locator(".reading-app:visible");
   await expect(paper.locator(".pdf-text-layer")).toContainText("DESIGN NOTES");
+  await expect(page.getByText(/阅读进度未保存/)).toHaveCount(0);
   await expect(paper.locator(".pdf-text-layer")).toContainText("合成测试资料");
   await expect(page.getByText("正在渲染第 1 页…")).toHaveCount(0);
   const toolbar = paper.locator(".reader-toolbar");
@@ -48,9 +55,63 @@ test("既有 PDF 在阅读器中保留真实画布、中文文字层、分页批
   // A fixed-layout PDF is not re-typeset: do not offer inert typography controls.
   await expect(settings.getByLabel("阅读字号", { exact: true })).toHaveCount(0);
   await expect(settings.getByLabel("阅读字体", { exact: true })).toHaveCount(0);
+  const readPosition = async () => {
+    const response = await page.request.get(
+      `/api/reader/state?artifactId=${entityId}&revision=1`,
+    );
+    expect(response.ok()).toBeTruthy();
+    return (
+      (await response.json()) as {
+        position: {
+          location: {
+            sourceId: string;
+            sectionId: string;
+            start: number;
+            end: number;
+          };
+          preferences: { fontSize: number; font: string; theme: string };
+          revision: number;
+        } | null;
+      }
+    ).position;
+  };
+  await expect
+    .poll(async () => (await readPosition())?.revision ?? 0)
+    .toBeGreaterThan(0);
+  const current = (await readPosition())!;
+  const accepted = await page.request.post("/api/reader/commands", {
+    headers: {
+      Origin: new URL(page.url()).origin,
+      "X-Morphz-Token": boot.csrfToken,
+    },
+    data: {
+      commandId: randomUUID(),
+      artifactId: entityId,
+      revision: 1,
+      command: {
+        action: "save-position",
+        artifactId: entityId,
+        artifactRevision: 1,
+        location: current.location,
+        preferences: { ...current.preferences, theme: "paper" },
+        expectedRevision: current.revision,
+      },
+    },
+  });
+  expect(accepted.ok(), await accepted.text()).toBe(true);
+  const staleWrite = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/reader/commands") &&
+      response.status() === 409,
+  );
   await settings.getByLabel("阅读主题", { exact: true }).selectOption("paper");
+  await staleWrite;
+  await expect(page.getByText(/阅读进度未保存/)).toHaveCount(0);
   await expect(paper).toHaveAttribute("data-theme", "paper");
   await settings.getByLabel("阅读主题", { exact: true }).selectOption("system");
+  await expect
+    .poll(async () => (await readPosition())?.preferences.theme)
+    .toBe("system");
   await settings
     .getByRole("button", { name: "关闭阅读侧栏", exact: true })
     .click();
@@ -116,15 +177,26 @@ test("既有 PDF 在阅读器中保留真实画布、中文文字层、分页批
   await page.getByRole("button", { name: "保存批注", exact: true }).click();
   await expect
     .poll(async () => {
-      const value = await page.request
-        .get("/api/workspace")
-        .then((r) => r.json());
-      return value.workspace.readingMarks.some(
-        (a: any) =>
-          a.location.sectionId === "page-2" &&
-          a.kind === "note" &&
-          a.note === "这段原文需要进一步解释。" &&
-          a.quote.includes("durable butterfly"),
+      const response = await page.request.get(
+        `/api/reader/marks?artifactId=${entityId}&revision=1&limit=50`,
+      );
+      expect(response.ok()).toBeTruthy();
+      const state = (await response.json()) as {
+        marks: Array<{
+          location: { sectionId: string };
+          kind: string;
+          note: string;
+          quote: string;
+          deletedAt: string | null;
+        }>;
+      };
+      return state.marks.some(
+        (mark) =>
+          !mark.deletedAt &&
+          mark.location.sectionId === "page-2" &&
+          mark.kind === "note" &&
+          mark.note === "这段原文需要进一步解释。" &&
+          mark.quote.includes("durable butterfly"),
       );
     })
     .toBe(true);

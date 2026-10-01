@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 
 const fixture = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
   MORPHZ_APP_ENV_FILE: "",
 };
@@ -30,49 +35,55 @@ try {
     .toBe(true);
   const page = app.windows().find((p) => p.url() === "morphz://app/");
   await expect(page.locator(".wordmark")).toHaveText("Morphz");
-  let identityGeneration;
   const call = async (method, params) => {
-    const result = await page.evaluate(
-      async ({ method, params, identityGeneration }) => {
-        const reply = await window.morphzDesktop.application.invoke({
+    return page.evaluate(
+      async ({ method, params }) => {
+        const api = window.morphzDesktop.application;
+        const boot = await api.invoke({
+          id: crypto.randomUUID(),
+          method: "platform.bootstrap",
+        });
+        if (!boot.ok) throw Error(JSON.stringify(boot));
+        if (method === "platform.bootstrap") return boot.value;
+        const reply = await api.invoke({
           id: crypto.randomUUID(),
           method,
           params,
-          identityGeneration,
+          identityGeneration: boot.value.csrfToken,
         });
         if (!reply.ok) throw Error(JSON.stringify(reply));
         return reply.value;
       },
-      {
-        method,
-        params,
-        identityGeneration:
-          method === "workspace" ? undefined : identityGeneration,
-      },
+      { method, params },
     );
-    if (method === "workspace") identityGeneration = result.csrfToken;
-    return result;
   };
-  const before = await call("workspace");
-  await call("command", {
+  const boot = await call("platform.bootstrap");
+  const spaces = await call("spaces.ensure");
+  const savedInputs = () =>
+    page.evaluate(({ centerId, principalId, actantId }) => {
+      const prefix = `morphz:${centerId}:${principalId}:${actantId}:saved-input:`;
+      return Object.entries(localStorage)
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, raw]) => {
+          const input = JSON.parse(raw);
+          if (
+            key !== prefix + input.commandId ||
+            input.operation.type !== "record-input"
+          )
+            throw new Error("Invalid unsent Client input identity");
+          return input;
+        });
+    }, boot);
+  const before = await savedInputs();
+  const taskId = await page.evaluate(() => crypto.randomUUID());
+  await call("tasks.create", {
     commandId: crypto.randomUUID(),
-    operation: {
-      type: "create-artifact",
-      projectId: "first-project",
-      title: "TEST 合并交流面板",
-      content: {
-        kind: "task",
-        description: "隔离布局验收",
-        assigneeId: "local-human",
-        model: null,
-        priority: "normal",
-        dueDate: null,
-        assignment: "accepted",
-        execution: "planned",
-        delivery: "none",
-        resultIds: [],
-      },
-    },
+    taskId,
+    projectId: spaces.inboxId,
+    title: "TEST 合并交流面板",
+    description: "隔离布局验收",
+    assigneeId: boot.actantId,
+    modelId: null,
   });
   await page.reload();
   await page
@@ -224,10 +235,16 @@ try {
     .click();
   await reopen();
   await expect(input).toHaveValue("TEST 未发送草稿，切换与缩放均保留");
-  const after = await call("workspace");
+  const after = await savedInputs();
+  assert.equal(after.length, before.length + 1);
+  const saved = after.find((input) => input.operation.artifactId === taskId);
+  assert.ok(saved, "Saved Client input must remain bound to the actual task");
+  assert.ok(saved.operation.body.startsWith("TEST 本地持久消息"));
+  assert.equal(saved.operation.projectId, spaces.inboxId);
   assert.equal(
-    after.workspace.inputs.length,
-    before.workspace.inputs.length + 1,
+    (await call("runtime.navigation")).runtime.messages.length,
+    0,
+    "Saving unsent Client text must not fabricate a Runtime message",
   );
   console.log(
     "PASS production Electron: unpinned return-latest mouse/Enter/Space in recent/full history, Dock clearance at 1380×920, 760×540 and 200% zoom; persisted long message, history/pin/collapse, draft/reload. No external execution.",

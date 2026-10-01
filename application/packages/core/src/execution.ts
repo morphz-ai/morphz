@@ -7,6 +7,7 @@ export const executionScopeSchema = z
     conversationId: id.optional(),
     inputId: id.optional(),
     threadId: id.optional(),
+    taskRun: z.literal(true).optional(),
   })
   .strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;

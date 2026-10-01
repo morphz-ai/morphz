@@ -72,6 +72,8 @@ export const conversationRuntimeSchema = z.object({
       inputId: z.string().nullable().optional(),
       rootId: z.string().nullable().optional(),
       publicationKey: z.string().optional(),
+      incomplete: z.boolean().optional(),
+      truncated: z.boolean().optional(),
       sequence: z.number().int().nonnegative().optional(),
       text: z.string(),
       createdAt: z.string(),

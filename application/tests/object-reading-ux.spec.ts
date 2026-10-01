@@ -32,11 +32,8 @@ test("文档不重复首标题，关联按需展开，失败就近重试且不�
     .getByLabel("要关联的对象")
     .selectOption({ label: "关联参考" });
   let fail = true;
-  await page.route("**/api/commands", async (route) => {
-    if (
-      route.request().postDataJSON()?.operation?.type === "link-artifacts" &&
-      fail
-    ) {
+  await page.route("**/api/platform/work/relations", async (route) => {
+    if (route.request().method() === "POST" && fail) {
       fail = false;
       return route.fulfill({
         status: 409,
@@ -55,11 +52,19 @@ test("文档不重复首标题，关联按需展开，失败就近重试且不�
     .click();
   await expect(relations.locator(".relation-list")).toContainText("关联参考");
   await expect(relations.getByLabel("要关联的对象")).toHaveCount(0);
-  const boot = await page.request.get("/api/workspace").then((r) => r.json());
-  const object = boot.workspace.artifacts.find(
-    (a: { title: string }) => a.title === "文档阅读验收",
+  const contents = await (
+    await page.request.get(
+      `/api/platform/content?query=${encodeURIComponent("文档阅读验收")}&limit=50`,
+    )
+  ).json();
+  const entry = contents.find(
+    (content: { title: string }) => content.title === "文档阅读验收",
   );
-  expect(object.content.markdown).toBe(markdown);
+  expect(entry).toBeTruthy();
+  const object = await (
+    await page.request.get(`/api/platform/documents/${entry.id}`)
+  ).json();
+  expect(object.markdown).toBe(markdown);
   expect(object.revision).toBe(1);
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(page.getByLabel("文档正文", { exact: true })).toHaveValue(

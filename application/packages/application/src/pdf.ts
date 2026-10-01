@@ -60,6 +60,7 @@ export async function extractPdf(bytes: Buffer): Promise<string[]> {
     return await new Promise<string[]>((accept, reject) => {
       const worker = new Worker(source, {
         eval: true,
+        name: "morphz-reader-pdf-import",
         workerData: { bytes, parser, assetRoot, maxPages: maxPdfPages },
         resourceLimits: {
           maxOldGenerationSizeMb: 192,

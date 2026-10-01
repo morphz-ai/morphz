@@ -1,10 +1,50 @@
 import { expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { contentSchema, type Content } from "../packages/core/src/model.js";
-import type { Boot } from "../apps/web/src/client.js";
+
+async function platformCommand(page: Page, path: string, data: unknown) {
+  const bootstrap = await (
+    await page.request.get("/api/platform/bootstrap")
+  ).json();
+  const response = await page.request.post(path, {
+    headers: {
+      "X-Morphz-Token": bootstrap.csrfToken,
+      Origin: new URL(page.url()).origin,
+    },
+    data,
+  });
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json();
+}
 
 export async function libraryDestination(page: Page) {
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
+  const bootstrap = await (
+    await page.request.get("/api/platform/bootstrap")
+  ).json();
+  type Project = {
+    id: string;
+    kind: string;
+    ownerPrincipalId: string | null;
+    title: string;
+    updatedAt: string;
+  };
+  const projects: Project[] = [];
+  let after: Project | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ status: "all", limit: "100" });
+    if (after) {
+      query.set("afterUpdatedAt", after.updatedAt);
+      query.set("afterProjectId", after.id);
+    }
+    const response = await page.request.get(`/api/platform/projects?${query}`);
+    expect(response.ok()).toBe(true);
+    const batch = (await response.json()) as Project[];
+    projects.push(...batch);
+    if (batch.length < 100) break;
+    const next = batch.at(-1)!;
+    expect(next.id).not.toBe(after?.id);
+    after = next;
+  }
   const scope = page.getByLabel("内容范围", { exact: true });
   const destination = (await scope.isVisible())
     ? await scope.inputValue()
@@ -12,11 +52,11 @@ export async function libraryDestination(page: Page) {
   const label = await page
     .locator(".library-collection:visible")
     .getAttribute("aria-label");
-  const project = boot.workspace.projects.find((p) =>
+  const project = projects.find((p) =>
     destination === null
       ? label === `${p.title}的内容`
       : destination === "all"
-        ? p.kind === "desk" && p.ownerPrincipalId === boot.principalId
+        ? p.kind === "desk" && p.ownerPrincipalId === bootstrap.principalId
         : p.id === destination,
   );
   expect(
@@ -26,31 +66,48 @@ export async function libraryDestination(page: Page) {
   return project!;
 }
 
-// Unrelated editor/notification tests seed real objects through the center API;
-// the Agent-first request-to-tool path has its own end-to-end coverage.
+// Editor and notification tests seed real Platform/App objects. The
+// Agent-first request-to-tool path has its own end-to-end coverage.
 export async function seedLibraryArtifact(
   page: Page,
   title: string,
   content: Content,
 ) {
   const project = await libraryDestination(page);
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const response = await page.request.post("/api/commands", {
-    headers: {
-      "X-Morphz-Token": boot.csrfToken,
-      Origin: "http://127.0.0.1:65421",
-    },
-    data: {
-      commandId: randomUUID(),
-      operation: {
-        type: "create-artifact",
-        projectId: project.id,
-        title,
-        content,
-      },
-    },
-  });
-  expect(response.ok(), await response.text()).toBeTruthy();
+  const commandId = randomUUID();
+  if (content.kind === "document") {
+    await platformCommand(page, "/api/platform/documents", {
+      commandId,
+      objectId: commandId,
+      projectId: project.id,
+      title,
+      markdown: content.markdown,
+    });
+  } else if (content.kind === "interactive") {
+    await platformCommand(page, "/api/platform/interactive", {
+      commandId,
+      objectId: commandId,
+      projectId: project.id,
+      title,
+      content,
+    });
+  } else if (content.kind === "task") {
+    await platformCommand(page, "/api/platform/tasks", {
+      commandId,
+      taskId: commandId,
+      projectId: project.id,
+      title,
+      description: content.description,
+      assigneeId: content.assigneeId,
+      modelId: content.model,
+      reasoningEffort: content.reasoningEffort ?? null,
+      notBefore: content.notBefore,
+      everySeconds: content.everySeconds,
+      ...(content.dueDate ? { dueDate: content.dueDate } : {}),
+    });
+  } else {
+    throw new Error(`测试夹具尚无「${content.kind}」的当前应用域创建路径。`);
+  }
   if (content.kind === "task") {
     // Task interaction fixtures follow the normal live-object entry. Search
     // intentionally opens the indexed revision rather than a live task.

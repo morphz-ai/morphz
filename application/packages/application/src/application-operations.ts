@@ -2,9 +2,10 @@ import { z } from "zod";
 import { DomainError } from "../../core/src/model.js";
 import { scriptStudioApplication } from "../../core/src/applications.js";
 import { scriptCommandSchema } from "../../core/src/script-studio.js";
-import { scriptToolSchema } from "./script-studio-tools.js";
+import { scriptToolSchema } from "../../core/src/script-tool.js";
 import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
 import { readerToolSchema } from "../../core/src/reader.js";
+import { applicationToolSchema } from "../../core/src/application-tool.js";
 
 export const operationRequestSchema = z.discriminatedUnion("action", [
   z
@@ -82,6 +83,19 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       ...params,
     }));
   const withoutAction = (schema: z.ZodObject) => schema.omit({ action: true });
+  for (const schema of applicationToolSchema.options) {
+    const action = schema.shape.action.value;
+    add(
+      `applications.${action}`,
+      action === "list" ? "查找已安装应用和当前项目窗口" : "打开已安装应用窗口",
+      action === "list" ? "read" : "write",
+      withoutAction(schema),
+      (params) => ({
+        action: "applications",
+        applications: { action, ...params },
+      }),
+    );
+  }
   const readingLabels: Record<string, string> = {
     catalog: "查找获准读物",
     contents: "读取目录和确切版本",
@@ -125,15 +139,15 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "read",
     "list",
     "",
-    "contentOnly sort offset limit",
+    "contentOnly sort offset cursor limit",
   );
   simple(
     "content.search",
-    "检索可检索的成果",
+    "查找内容标题与获准的原创正文",
     "read",
     "search",
     "query",
-    "offset limit",
+    "offset limit includeTitles kind kinds appIds sort",
   );
   simple(
     "content.read",
@@ -159,7 +173,7 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
   );
   simple(
     "content.organize",
-    "重命名、归入项目或新建项目并归入",
+    "归入已有项目或新建项目并归入",
     "write",
     "organize-content",
     "content revision metadata",
@@ -170,6 +184,14 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "write",
     "link",
     "artifactId toId relation",
+  );
+  simple(
+    "content.relations",
+    "读取对象的关联",
+    "read",
+    "relations",
+    "artifactId",
+    "relationCursor limit",
   );
   simple(
     "content.annotate",
@@ -192,6 +214,21 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "write",
     "revise-interactive",
     "artifactId revision title interactive",
+  );
+  simple(
+    "table.query",
+    "按确切版本筛选、排序和分页读取表格记录",
+    "read",
+    "query-interactive",
+    "artifactId",
+    "revision query rowCursor rowSort limit",
+  );
+  simple(
+    "table.patch",
+    "按当前版本增改、删除或恢复表格记录",
+    "write",
+    "patch-interactive",
+    "artifactId revision rowOperations",
   );
   simple(
     "tasks.list",
@@ -264,20 +301,36 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "finish-task",
     "artifactId revision resultIds",
   );
-  simple(
-    "applications.list",
-    "发现已安装认知应用和 Harness",
-    "read",
-    "list-applications",
-  );
-  simple(
-    "applications.open",
-    "打开应用或精确内容入口，不启动工作流",
-    "write",
-    "launch-application",
-    "applicationId applicationVersion",
-    "scriptTarget",
-  );
+  const workTasks = (
+    shape.workTask as z.ZodOptional<z.ZodDiscriminatedUnion>
+  ).unwrap();
+  for (const schema of workTasks.options) {
+    const taskSchema = schema as z.ZodObject;
+    const action = (taskSchema.shape.action as z.ZodLiteral<string>).value;
+    const labels: Record<string, string> = {
+      list: "读取当前项目的事项",
+      create: "创建事项，不自动执行",
+      version: "读取事项的确切版本",
+      revise: "按版本修订事项",
+      order: "读取事项排序版本",
+      reorder: "按版本调整项目内事项顺序",
+      start: "请求执行已指派给 Agent 的事项",
+      runs: "读取事项已提交的执行关联",
+      "run-status": "向 Runtime 核对一次执行的当前状态",
+      stop: "停止一次确切的事项执行",
+    };
+    add(
+      `work-tasks.${action}`,
+      labels[action]!,
+      action === "start" || action === "stop"
+        ? "execute"
+        : ["list", "version", "order", "runs", "run-status"].includes(action)
+          ? "read"
+          : "write",
+      withoutAction(taskSchema),
+      (params) => ({ action: "work-task", workTask: { action, ...params } }),
+    );
+  }
   simple(
     "files.read",
     "读取本次用户授权的本地文件",
@@ -320,7 +373,7 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
         `${label}${domain === "projects" ? "项目" : "会话"}`,
         action === "list" ? "read" : "write",
         action === "list"
-          ? fields("", "status query offset limit projectId", management)
+          ? fields("", "status query offset cursor limit projectId", management)
           : action === "create"
             ? fields("title", "", management)
             : fields(

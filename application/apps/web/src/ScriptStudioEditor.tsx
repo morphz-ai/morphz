@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import { quoteSource } from "./text-quote-dom.js";
@@ -9,21 +9,26 @@ import {
   scriptEventNote,
 } from "../../../packages/core/src/script-studio-presentation.js";
 import {
-  currentScriptDraft,
   prepareScriptGeneration,
-  scriptCandidateStale,
   scriptDraftSchema,
   scriptIssues,
+  scriptStructureIssues,
   scriptImpact,
   scriptKindLabels,
   type ScriptDraft,
   type ScriptGeneration,
-  type ScriptItem,
-  type ScriptProduction,
   type ScriptReview,
 } from "../../../packages/core/src/script-studio.js";
-import { quotedText } from "../../../packages/core/src/model.js";
+import { quotedText, type Artifact } from "../../../packages/core/src/model.js";
+import type { PlatformContent } from "./platform-client.js";
+import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
+import type {
+  ScriptEditorProduction,
+  ScriptEditorVersion,
+} from "./script-editor-reader.js";
+import { useScriptEditorRead } from "./useScriptEditorRead.js";
 import { draftKey, scopedStorage, type WorkspaceClient } from "./client.js";
+import { useContentDirectory } from "./useContentDirectory.js";
 import { scriptFocusReturn } from "./script-studio-focus.js";
 import { ScriptCandidates } from "./ScriptCandidates.js";
 import {
@@ -42,17 +47,53 @@ type GenerationDraft = {
 };
 type Props = {
   client: WorkspaceClient;
-  production: ScriptProduction;
-  item: ScriptItem;
+  production: ScriptEditorProduction;
+  item: ScriptDirectoryItem;
   deliveryTarget?: ScriptLocation & { requestId: string };
   canWrite: boolean;
   run: ScriptRun;
+  onReady?: () => void;
   onCompose: (
     text: string,
     generation?: ScriptGeneration,
   ) => ScriptComposeResult;
 };
-export function ScriptItemEditor({
+export function ScriptItemEditor(props: Props) {
+  const read = useScriptEditorRead(
+    `item:${props.client.boot!.csrfToken}:${props.production.id}:${props.item.id}`,
+    props.item.revision,
+    () =>
+      props.client.readScriptVersion(
+        props.production,
+        props.item.id,
+        props.item.revision,
+      ),
+  );
+  useLayoutEffect(() => {
+    if (read.value) props.onReady?.();
+  }, [read.value]);
+  if (!read.value)
+    return (
+      <p className="script-hint" role={read.error ? "alert" : "status"}>
+        {read.error || "正在读取文稿…"}
+      </p>
+    );
+  return (
+    <>
+      {read.error && <p role="alert">{read.error}</p>}
+      <ScriptItemEditorView
+        {...props}
+        version={read.value}
+        canWrite={
+          props.canWrite &&
+          !read.pending &&
+          read.value.revision === props.item.revision
+        }
+      />
+    </>
+  );
+}
+function ScriptItemEditorView({
   client,
   production,
   item,
@@ -60,17 +101,21 @@ export function ScriptItemEditor({
   canWrite,
   run,
   onCompose,
-}: Props) {
+  version,
+}: Props & { version: ScriptEditorVersion }) {
   const boot = client.boot!;
   const storage = scopedStorage(`${boot.centerId}:${boot.principalId}`);
   const localKey = draftKey(`script:${production.id}:${item.id}`);
-  const current = currentScriptDraft(item);
+  const current = version.draft;
   const [local, setLocal] = useState<DraftState>(() => {
     const base = storage.readLocal<number>(localKey + ":base", item.revision);
     const saved = scriptDraftSchema.safeParse(
       storage.readLocal<unknown>(`${localKey}:v${base}`, null),
     );
-    return saved.success && item.versions.some((v) => v.revision === base)
+    return saved.success &&
+      Number.isSafeInteger(base) &&
+      base >= 1 &&
+      base <= item.revision
       ? { baseRevision: base, draft: saved.data }
       : { baseRevision: item.revision, draft: structuredClone(current) };
   });
@@ -97,10 +142,15 @@ export function ScriptItemEditor({
   const [historyRevision, setHistoryRevision] = useState(item.revision);
   const [quote, setQuote] = useState("");
   const saving = useRef(false);
-  const base = item.versions.find(
-    (v) => v.revision === local.baseRevision,
-  )!.draft;
-  const dirty = JSON.stringify(base) !== JSON.stringify(local.draft);
+  const baseRead = useScriptEditorRead(
+    `base:${boot.csrfToken}:${production.id}:${item.id}:${local.baseRevision}`,
+    local.baseRevision,
+    () => client.readScriptVersion(production, item.id, local.baseRevision),
+    local.baseRevision !== version.revision,
+  );
+  const base =
+    local.baseRevision === version.revision ? current : baseRead.value?.draft;
+  const dirty = !base || JSON.stringify(base) !== JSON.stringify(local.draft);
   const stale = item.revision !== local.baseRevision;
   const editable = canWrite && item.status !== "locked";
   const reviewer = production.reviewerPrincipalIds.includes(boot.principalId);
@@ -120,10 +170,84 @@ export function ScriptItemEditor({
     expectedRevision: item.revision,
     expectedWorkflowRevision: item.workflowRevision,
   };
-  const candidates = production.candidates.filter(
-    (c) => c.targetId === item.id,
+  const reviewRead = useScriptEditorRead(
+    `reviews:${boot.csrfToken}:${production.id}:${item.id}`,
+    production.activityRevision,
+    () => client.readScriptEditorPage(production, "reviews", item.id),
+    pane === "reviews" || pane === "checks",
   );
-  const reviews = production.reviews.filter((r) => r.itemId === item.id);
+  const reviews = reviewRead.value?.reviews ?? [];
+  const historyRead = useScriptEditorRead(
+    `versions:${boot.csrfToken}:${production.id}:${item.id}`,
+    production.activityRevision,
+    () => client.readScriptEditorPage(production, "versions", item.id),
+    pane === "history",
+  );
+  const previewRead = useScriptEditorRead(
+    `history:${boot.csrfToken}:${production.id}:${item.id}:${historyRevision}`,
+    historyRevision,
+    () => client.readScriptVersion(production, item.id, historyRevision),
+    pane === "history",
+  );
+  const eventRead = useScriptEditorRead(
+    `events:${boot.csrfToken}:${production.id}:${item.id}`,
+    production.activityRevision,
+    async () => {
+      const page = await client.readScriptEditorPage(
+        production,
+        "events",
+        item.id,
+      );
+      const titles = new Map<string, string>();
+      for (const event of page.events) {
+        const match =
+          event.action === "invalidate" &&
+          /^上游 (.+) 更新至 v(\d+)$/.exec(event.note);
+        if (match)
+          titles.set(
+            `${match[1]}:${match[2]}`,
+            (
+              await client.readScriptVersion(
+                production,
+                match[1]!,
+                Number(match[2]),
+              )
+            ).draft.title,
+          );
+      }
+      return { ...page, titles };
+    },
+    pane === "history",
+  );
+  const [metadataOpen, setMetadataOpen] = useState(false);
+  const dependencyRead = useScriptEditorRead(
+    `dependencies:${boot.csrfToken}:${production.id}:${item.id}`,
+    `${production.activityRevision}:${local.draft.dependencies.map((ref) => ref.itemId).join(",")}`,
+    async () => {
+      const versions = new Map<
+        string,
+        Awaited<
+          ReturnType<typeof client.readScriptEditorPage<"versions">>
+        >["versions"]
+      >();
+      for (const ref of local.draft.dependencies)
+        versions.set(
+          ref.itemId,
+          (
+            await client.readScriptEditorPage(
+              production,
+              "versions",
+              ref.itemId,
+            )
+          ).versions,
+        );
+      return versions;
+    },
+    metadataOpen,
+  );
+  const issues = reviewRead.value
+    ? scriptIssues({ head: production, items: production.items, reviews })
+    : scriptStructureIssues({ head: production, items: production.items });
   useEffect(() => {
     if (!deliveryTarget) return;
     if (deliveryTarget.candidateId) setPane("candidates");
@@ -146,14 +270,19 @@ export function ScriptItemEditor({
   }, [deliveryTarget?.requestId, pane]);
   // Background refresh only advances a clean reader. It never rebases a dirty draft.
   useEffect(() => {
-    if (stale && !dirty && !saving.current) {
+    if (
+      stale &&
+      !dirty &&
+      !saving.current &&
+      version.revision === item.revision
+    ) {
       setLocal({
         baseRevision: item.revision,
         draft: structuredClone(current),
       });
       setNotice("");
     }
-  }, [item.revision, stale, dirty]);
+  }, [item.revision, version.revision, stale, dirty]);
   function persist(next: DraftState) {
     setNotice("");
     setLocal(next);
@@ -187,20 +316,19 @@ export function ScriptItemEditor({
         draft: local.draft,
       });
       const snapshot = client.getSnapshot();
-      const saved = snapshot?.workspace.scriptProductions
-        .find((p) => p.id === production.id)
-        ?.items.find((i) => i.id === item.id);
+      const fresh = await client.readScriptEditor(production.id);
+      const saved = await client.readScriptVersion(fresh, item.id);
       if (
         snapshot?.centerId !== boot.centerId ||
         snapshot?.principalId !== boot.principalId ||
-        !saved
+        saved.revision <= local.baseRevision
       )
         throw new Error(
           "保存回执已返回，但未取得同身份的新文稿；原草稿保留，请刷新核对。",
         );
       persist({
         baseRevision: saved.revision,
-        draft: structuredClone(currentScriptDraft(saved)),
+        draft: structuredClone(saved.draft),
       });
       setNotice(`已保存 v${saved.revision}`);
     } finally {
@@ -218,7 +346,18 @@ export function ScriptItemEditor({
   };
   const draft = local.draft;
   return (
-    <div className="script-editor" data-pane={pane} {...quoteSource({ kind: "script", projectId: production.projectId, title: `${production.title} · ${draft.title}`, productionId: production.id, entryId: item.id, revision: local.baseRevision })}>
+    <div
+      className="script-editor"
+      data-pane={pane}
+      {...quoteSource({
+        kind: "script",
+        projectId: production.projectId,
+        title: `${production.title} · ${draft.title}`,
+        productionId: production.id,
+        entryId: item.id,
+        revision: local.baseRevision,
+      })}
+    >
       <header className="script-editor-header">
         <strong
           tabIndex={-1}
@@ -239,14 +378,9 @@ export function ScriptItemEditor({
           ).map(([key, label]) => {
             const count =
               key === "candidates"
-                ? candidates.filter(
-                    (c) =>
-                      c.status === "pending" &&
-                      !scriptCandidateStale(production, c),
-                  ).length
+                ? item.pendingCandidateCount
                 : key === "reviews"
-                  ? reviews.filter((r) => !r.resolvedAt && !r.historicalOnly)
-                      .length
+                  ? item.currentPendingReviewCount
                   : 0;
             return (
               <button
@@ -327,6 +461,21 @@ export function ScriptItemEditor({
             关闭
           </button>
         </div>
+      )}
+      {(baseRead.error ||
+        reviewRead.error ||
+        historyRead.error ||
+        previewRead.error ||
+        eventRead.error ||
+        dependencyRead.error) && (
+        <p role="alert">
+          {baseRead.error ||
+            reviewRead.error ||
+            historyRead.error ||
+            previewRead.error ||
+            eventRead.error ||
+            dependencyRead.error}
+        </p>
       )}
       {stale && dirty && (
         <p role="alert" className="script-warning">
@@ -413,7 +562,11 @@ export function ScriptItemEditor({
               }
             }}
           />
-          <details ref={metadata} className="script-metadata">
+          <details
+            ref={metadata}
+            className="script-metadata"
+            onToggle={(event) => setMetadataOpen(event.currentTarget.open)}
+          >
             <summary>结构、来源与连续性信息</summary>
             <div className="script-form-grid">
               <label>
@@ -463,7 +616,7 @@ export function ScriptItemEditor({
                       .filter((i) => i.kind === "episode")
                       .map((i) => (
                         <option key={i.id} value={i.id}>
-                          {currentScriptDraft(i).title}
+                          {i.title}
                         </option>
                       ))}
                   </select>
@@ -512,7 +665,7 @@ export function ScriptItemEditor({
                         })
                       }
                     />
-                    {currentScriptDraft(i).title}
+                    {i.title}
                   </label>
                 ))}
             </fieldset>
@@ -542,12 +695,12 @@ export function ScriptItemEditor({
                             })
                           }
                         />
-                        {currentScriptDraft(i).title}
+                        {i.title}
                       </label>
                       {ref && (
                         <select
                           data-dependency-id={i.id}
-                          aria-label={`${currentScriptDraft(i).title}依赖版本`}
+                          aria-label={`${i.title}依赖版本`}
                           disabled={!editable}
                           value={ref.revision}
                           onChange={(e) =>
@@ -560,7 +713,11 @@ export function ScriptItemEditor({
                             })
                           }
                         >
-                          {i.versions.map((v) => (
+                          {(
+                            dependencyRead.value?.get(i.id) ?? [
+                              { revision: ref.revision },
+                            ]
+                          ).map((v) => (
                             <option key={v.revision} value={v.revision}>
                               v{v.revision}
                               {v.revision === i.revision ? " 当前" : " 历史"}
@@ -578,7 +735,11 @@ export function ScriptItemEditor({
                 <div key={n} className="script-source">
                   <small>
                     {boot.workspace.artifacts.find((a) => a.id === s.artifactId)
-                      ?.title ?? s.artifactId}{" "}
+                      ?.title ??
+                      client.contentCatalog.find(
+                        (entry) => entry.id === s.artifactId,
+                      )?.title ??
+                      s.artifactId}{" "}
                     · v{s.revision}
                   </small>
                   <blockquote>{s.quote || "整份版本引用"}</blockquote>
@@ -617,6 +778,7 @@ export function ScriptItemEditor({
           className="script-candidates"
         >
           <ScriptCandidates
+            client={client}
             production={production}
             item={item}
             canWrite={canWrite}
@@ -761,7 +923,7 @@ export function ScriptItemEditor({
               value={historyRevision}
               onChange={(e) => setHistoryRevision(Number(e.target.value))}
             >
-              {[...item.versions].reverse().map((v) => (
+              {(historyRead.value?.versions ?? []).map((v) => (
                 <option key={v.revision} value={v.revision}>
                   v{v.revision} · {scriptDisplayTime(v.createdAt)} ·{" "}
                   {scriptAuthorName(v.author, boot.workspace.actants)}
@@ -769,12 +931,7 @@ export function ScriptItemEditor({
               ))}
             </select>
           </label>
-          <pre>
-            {
-              item.versions.find((v) => v.revision === historyRevision)?.draft
-                .text
-            }
-          </pre>
+          <pre>{previewRead.value?.draft.text}</pre>
           <button
             type="button"
             className="secondary-action"
@@ -795,7 +952,8 @@ export function ScriptItemEditor({
           </button>
           <details>
             <summary>本窗口的未提交草稿</summary>
-            {item.versions
+            {(historyRead.value?.versions ?? [])
+              .toSorted((a, b) => a.revision - b.revision)
               .filter(
                 (v) =>
                   storage.readLocal(`${localKey}:v${v.revision}`, null) !==
@@ -827,14 +985,18 @@ export function ScriptItemEditor({
           </details>
           <details>
             <summary>审阅与锁稿记录</summary>
-            {[...item.events].reverse().map((event, n) => (
+            {(eventRead.value?.events ?? []).map((event, n) => (
               <div key={n}>
                 <p>
                   v{event.revision} · {scriptEventLabels[event.action]} ·{" "}
                   {scriptAuthorName(event.author, boot.workspace.actants)} ·{" "}
                   {scriptDisplayTime(event.createdAt)}
                   <br />
-                  {scriptEventNote(production, event)}
+                  {scriptEventNote(
+                    (id, revision) =>
+                      eventRead.value?.titles.get(`${id}:${revision}`),
+                    event,
+                  )}
                 </p>
                 <details>
                   <summary>追溯信息</summary>
@@ -857,7 +1019,7 @@ export function ScriptItemEditor({
           <p className="script-hint">
             以下是确定性结构检查；语义连续性仍需生成检查和人工审阅。
           </p>
-          {scriptIssues(production)
+          {issues
             .filter((i) => i.itemId === item.id)
             .map((issue, n) => (
               <div key={n} className="script-issue">
@@ -901,17 +1063,15 @@ export function ScriptItemEditor({
                 </button>
               </div>
             ))}
-          {!scriptIssues(production).some((i) => i.itemId === item.id) && (
+          {reviewRead.value && !issues.some((i) => i.itemId === item.id) && (
             <p>当前未发现结构性问题。</p>
           )}
           <p>
             修改本条目将影响：
-            {scriptImpact(production, [item.id])
-              .map(
-                (id) =>
-                  currentScriptDraft(production.items.find((i) => i.id === id)!)
-                    .title,
-              )
+            {scriptImpact({ head: production, items: production.items }, [
+              item.id,
+            ])
+              .map((id) => production.items.find((i) => i.id === id)!.title)
               .join("、") || "尚无已登记下游"}
           </p>
         </div>
@@ -959,6 +1119,7 @@ export function ScriptItemEditor({
       )}
       {generation && (
         <GenerationDialog
+          client={client}
           production={production}
           item={item}
           purpose={generation}
@@ -1086,8 +1247,8 @@ function ReviewForm({
   disabled,
   quote: selected,
 }: {
-  item: ScriptItem;
-  production: ScriptProduction;
+  item: ScriptDirectoryItem;
+  production: ScriptEditorProduction;
   run: ScriptRun;
   disabled: boolean;
   quote: string;
@@ -1239,6 +1400,7 @@ function ReviewRow({
   );
 }
 function GenerationDialog({
+  client,
   production,
   item,
   purpose,
@@ -1248,8 +1410,9 @@ function GenerationDialog({
   value,
   onChange,
 }: {
-  production: ScriptProduction;
-  item: ScriptItem;
+  client: WorkspaceClient;
+  production: ScriptEditorProduction;
+  item: ScriptDirectoryItem;
   purpose: ScriptGeneration["purpose"];
   quote: string;
   onClose: () => void;
@@ -1272,37 +1435,46 @@ function GenerationDialog({
   return (
     <StudioDialog title={`准备${names[purpose]}请求`} onClose={onClose}>
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           try {
             if (!p.brief.modelProcessingAllowed)
               throw new Error(
                 "请先由人工在剧本设置中确认资料可以交给当前模型服务处理。",
               );
-            const generation = prepareScriptGeneration(p, {
-              productionId: p.id,
-              targetId: target.id,
-              baseRevision: target.revision,
-              contextRevision: p.revision,
-              purpose,
-              references: selected.map((itemId) => ({
-                itemId,
-                revision: p.items.find((i) => i.id === itemId)!.revision,
-              })),
-              maxCandidates: count,
-              maxOutputCharacters: characters,
-              maxReviewPasses: 1,
-            });
+            const generation = prepareScriptGeneration(
+              { head: p, items: p.items },
+              {
+                productionId: p.id,
+                targetId: target.id,
+                baseRevision: target.revision,
+                contextRevision: p.revision,
+                purpose,
+                references: selected.map((itemId) => ({
+                  itemId,
+                  revision: p.items.find((i) => i.id === itemId)!.revision,
+                })),
+                maxCandidates: count,
+                maxOutputCharacters: characters,
+                maxReviewPasses: 1,
+              },
+            );
             const materials = [
-              currentScriptDraft(target),
-              ...generation.references.map((r) =>
-                currentScriptDraft(p.items.find((i) => i.id === r.itemId)!),
-              ),
+              (await client.readScriptVersion(p, target.id, target.revision))
+                .draft,
             ];
             if (JSON.stringify({ brief: p.brief, materials }).length > 120000)
               throw new Error("材料超过 120000 字符，请缩小范围。");
+            for (const ref of generation.references) {
+              materials.push(
+                (await client.readScriptVersion(p, ref.itemId, ref.revision))
+                  .draft,
+              );
+              if (JSON.stringify({ brief: p.brief, materials }).length > 120000)
+                throw new Error("材料超过 120000 字符，请缩小范围。");
+            }
             const result = onCompose(
-              `请对《${p.title}》的「${currentScriptDraft(target).title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，结果提交为候选或带引用的审阅意见，不覆盖正式稿，不代替人工批准。`,
+              `请对《${p.title}》的「${target.title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，结果提交为候选或带引用的审阅意见，不覆盖正式稿，不代替人工批准。`,
               generation,
             );
             if (!result.ok) setError(result.error);
@@ -1312,8 +1484,8 @@ function GenerationDialog({
         }}
       >
         <p>
-          固定「{currentScriptDraft(target).title}」v{target.revision} ·
-          剧本规范 v{p.revision}；全部上游依赖自动纳入并核对版本。
+          固定「{target.title}」v{target.revision} · 剧本规范 v{p.revision}
+          ；全部上游依赖自动纳入并核对版本。
         </p>
         <label>
           本次要求
@@ -1346,7 +1518,7 @@ function GenerationDialog({
                     })
                   }
                 />
-                {currentScriptDraft(i).title} · v{i.revision}
+                {i.title} · v{i.revision}
               </label>
             ))}
         </details>
@@ -1411,17 +1583,55 @@ function SourceDialog({
   onClose: () => void;
   onSubmit: (reference: ScriptDraft["sources"][number]) => void;
 }) {
-  const artifacts = client.boot!.workspace.artifacts.filter(
+  const [query, setQuery] = useState("");
+  const directory = useContentDirectory(client, {
+    projectId,
+    appIds: ["morphz.objects"],
+    kinds: ["document", "pdf", "interactive"],
+    availability: "available",
+    query,
+    sort: "updated",
+  });
+  const loaded = client.boot!.workspace.artifacts.filter(
     (a) =>
       a.projectId === projectId &&
       ["document", "pdf", "interactive"].includes(a.content.kind),
   );
+  const search = query.trim().toLocaleLowerCase();
+  const visibleLoaded = loaded.filter((artifact) =>
+    artifact.title.toLocaleLowerCase().includes(search),
+  );
+  const loadedIds = new Set(loaded.map((artifact) => artifact.id));
+  const [picked, setPicked] = useState<Artifact | PlatformContent | null>(null);
+  const available = [
+    ...visibleLoaded,
+    ...directory.items.filter((entry) => !loadedIds.has(entry.id)),
+  ];
+  const artifacts =
+    picked &&
+    picked.projectId === projectId &&
+    !available.some((entry) => entry.id === picked.id)
+      ? [...available, picked]
+      : available;
   const [artifactId, setArtifactId] = useState("");
   const [revision, setRevision] = useState(1);
   const [quote, setQuote] = useState("");
   const [error, setError] = useState("");
-  const artifact = artifacts.find((a) => a.id === artifactId);
+  const originalRead = useScriptEditorRead(
+    `source:${client.boot!.csrfToken}:${artifactId}:${revision}`,
+    revision,
+    () => client.resolveArtifact(artifactId, revision),
+    !!artifactId,
+  );
+  const artifact =
+    originalRead.value ?? loaded.find((a) => a.id === artifactId);
+  const selected = artifacts.find((a) => a.id === artifactId);
   const version = artifact?.versions.find((v) => v.revision === revision);
+  const headRevision = selected
+    ? "content" in selected
+      ? selected.revision
+      : Number(selected.observedVersionRef) || 1
+    : 0;
   return (
     <StudioDialog title="引用项目原文" onClose={onClose}>
       <form
@@ -1437,6 +1647,13 @@ function SourceDialog({
           onSubmit({ artifactId, revision, quote });
         }}
       >
+        <input
+          type="search"
+          aria-label="查找项目原文"
+          placeholder="按标题查找项目原文"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
         <label>
           原作对象
           <select
@@ -1444,10 +1661,24 @@ function SourceDialog({
             required
             onChange={(e) => {
               setArtifactId(e.target.value);
+              const chosen = artifacts.find((a) => a.id === e.target.value);
+              setPicked(chosen ?? null);
               setRevision(
-                artifacts.find((a) => a.id === e.target.value)?.revision ?? 1,
+                chosen
+                  ? "content" in chosen
+                    ? chosen.revision
+                    : Number(chosen.observedVersionRef) || 1
+                  : 1,
               );
               setQuote("");
+              if (chosen && !("content" in chosen))
+                void client
+                  .resolveArtifact(chosen.id)
+                  .catch((cause) =>
+                    setError(
+                      cause instanceof Error ? cause.message : "原作暂不可读。",
+                    ),
+                  );
             }}
           >
             <option value="">请选择本项目内容</option>
@@ -1458,7 +1689,24 @@ function SourceDialog({
             ))}
           </select>
         </label>
-        {artifact && (
+        {directory.error && (
+          <p role="alert">
+            {directory.error}{" "}
+            <button type="button" onClick={directory.retry}>
+              重试
+            </button>
+          </p>
+        )}
+        {directory.nextCursor && (
+          <button
+            type="button"
+            disabled={directory.busy}
+            onClick={() => void directory.loadMore()}
+          >
+            {directory.busy ? "正在加载…" : "继续加载"}
+          </button>
+        )}
+        {selected && (
           <label>
             原作版本
             <select
@@ -1466,11 +1714,28 @@ function SourceDialog({
               onChange={(e) => {
                 setRevision(Number(e.target.value));
                 setQuote("");
+                if (
+                  !artifact?.versions.some(
+                    (item) => item.revision === Number(e.target.value),
+                  )
+                )
+                  void client
+                    .resolveArtifact(artifactId, Number(e.target.value))
+                    .catch((cause) =>
+                      setError(
+                        cause instanceof Error
+                          ? cause.message
+                          : "原作版本暂不可读。",
+                      ),
+                    );
               }}
             >
-              {artifact.versions.map((v) => (
-                <option key={v.revision} value={v.revision}>
-                  v{v.revision}
+              {Array.from(
+                { length: headRevision },
+                (_, index) => index + 1,
+              ).map((availableRevision) => (
+                <option key={availableRevision} value={availableRevision}>
+                  v{availableRevision}
                 </option>
               ))}
             </select>

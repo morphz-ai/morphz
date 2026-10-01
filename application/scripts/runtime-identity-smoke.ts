@@ -17,29 +17,28 @@ import {
   runtimeAgentTools,
 } from "../apps/service/src/agent-tools.js";
 import type { AccessContext } from "../packages/core/src/model.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
+import { DatabaseSync } from "node:sqlite";
 
 const directory = mkdtempSync(join(tmpdir(), "morphz-identity-")),
   root = join(directory, "runtime");
 mkdirSync(root, { mode: 0o700 });
-const store = new WorkspaceStore(join(directory, "workspace.sqlite"));
+const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
+  mode: "transport",
+});
 const people = [
   { principalId: "alpha", actantId: "alpha-human" },
   { principalId: "beta", actantId: "beta-human" },
 ];
+const projects = people.map(
+  () => `project_${randomUUID().replaceAll("-", "")}`,
+);
 const members = people.map((p, i) => ({
   ...p,
   name: `测试成员 ${i + 1}`,
   enabled: true,
-  projectIds: ["first-project"],
+  projectIds: ["first-project", projects[i]!],
 }));
-store.provisionMembers(members);
-const create = (access: AccessContext, title: string) =>
-  store.execute(
-    { commandId: randomUUID(), operation: { type: "create-project", title } },
-    access,
-  ).entityId;
-const projects = people.map((p, i) => create(p, `私有项目 ${i + 1}`));
-members.forEach((m, i) => m.projectIds.push(projects[i]!));
 const tokens = people.map(() => randomBytes(32).toString("hex")),
   configuration = {
     version: 1,
@@ -49,8 +48,24 @@ const tokens = people.map(() => randomBytes(32).toString("hex")),
       loginTokenHash: createHash("sha256").update(tokens[i]!).digest("hex"),
     })),
   };
-const identity = new IdentityCenter(store, configuration),
-  requests: string[] = [],
+const identity = new IdentityCenter(store, configuration);
+const domains = await openApplicationDomainsHost(directory, store, identity);
+const create = (access: AccessContext, projectId: string, title: string) =>
+  domains.work.authority.withSession(
+    access,
+    () => {},
+    (actor) =>
+      domains.work.service.createProject(actor, {
+        commandId: randomUUID(),
+        projectId,
+        title,
+      }),
+  );
+await create(people[0]!, "first-project", "共享项目");
+for (const [i, person] of people.entries())
+  await create(person, projects[i]!, `私有项目 ${i + 1}`);
+await identity.replaceConfiguration(configuration, members);
+const requests: string[] = [],
   toolProjects = new Set<string>(),
   rememberedProjects = new Set<string>();
 const provider = createServer(async (req, res) => {
@@ -192,12 +207,21 @@ const config = {
   identityMode: "trusted_gateway" as const,
 };
 let bridge = new RuntimeBridge(store, config, identity);
+let bound = domains.bindRuntime(bridge);
 const server = createAppServer(store, {
   port: workPort,
   webRoot: resolve("dist/web"),
   identity,
   runtime: bridge,
-  agentTools: runtimeAgentTools(store, bridge, manifest.token),
+  platformWork: domains.work,
+  platformDocuments: domains.content,
+  platformReader: domains.reader,
+  agentTools: runtimeAgentTools(bridge, manifest.token, {
+    authority: bound.authority,
+    work: domains.work.service,
+    content: domains.content,
+    reader: domains.reader.service,
+  }),
 });
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 try {
@@ -229,12 +253,14 @@ try {
     const cookie = r.headers.get("set-cookie")!.split(";")[0]!;
     cookies.push(cookie);
     const boot = await (
-      await fetch(origin + "/api/workspace", { headers: { Cookie: cookie } })
+      await fetch(origin + "/api/platform/bootstrap", {
+        headers: { Cookie: cookie },
+      })
     ).json();
     csrf.push(boot.csrfToken);
   }
   const send = async (person: number, projectId: string, text: string) => {
-    const r = await fetch(origin + "/api/messages", {
+    const r = await fetch(origin + "/api/platform/messages", {
       method: "POST",
       headers: {
         Origin: origin,
@@ -259,15 +285,28 @@ try {
     assert.equal(r.status, 202, JSON.stringify(value));
     return value.entityId as string;
   };
+  const history = (person: number, projectId: string) =>
+    bridge.platformConversationHistory(
+      { projectId, conversationId: projectId },
+      people[person]!,
+    );
   const settle = async (id: string) => {
     for (let i = 0; i < 200; i++) {
       await bridge.tick();
-      const d = bridge.snapshot().deliveries.find((d) => d.inputId === id);
+      const d = (
+        store.runtimeState() as {
+          deliveries: Array<{
+            inputId: string;
+            state: string;
+            error: string | null;
+          }>;
+        }
+      ).deliveries.find((d) => d.inputId === id);
       if (d?.state === "completed") return;
       assert.notEqual(d?.state, "failed", d?.error ?? "");
       await delay(100);
     }
-    assert.fail("处理未完成：" + JSON.stringify(bridge.snapshot()));
+    assert.fail("处理未完成：" + JSON.stringify(bridge.platformStatus()));
   };
   const a = await send(0, projects[0]!, "ALPHA_PRIVATE_MARKER");
   await settle(a);
@@ -277,20 +316,56 @@ try {
     "ALPHA_PRIVATE_MARKER",
     "BETA_PRIVATE_MARKER",
   ].entries()) {
-    const object = store.snapshot().artifacts.find((a) => a.title === marker);
+    const object = (
+      await domains.work.authority.withSession(
+        people[i]!,
+        () => {},
+        (actor) =>
+          domains.work.service.listContent(actor, {
+            projectId: projects[i],
+            query: marker,
+          }),
+      )
+    ).find((entry) => entry.title === marker);
     assert.ok(object, "已认证成员的 Host 工具应实际创建对象");
     assert.equal(object.projectId, projects[i]);
-    assert.equal(object.createdBy.actantId, "morphz-agent");
+    const version = await domains.content.authority.withSession(
+      people[i]!,
+      () => {},
+      (actor) =>
+        domains.content.objects.readDocument({
+          credential: actor.credential,
+          objectId: object.appObjectId,
+        }),
+    );
+    assert.equal(version.author.actantId, "morphz-agent");
     const other = await (
-      await fetch(origin + "/api/workspace", {
+      await fetch(origin + "/api/platform/projects", {
         headers: { Cookie: cookies[1 - i]! },
       })
     ).json();
     assert.ok(
-      !other.workspace.artifacts.some(
-        (a: { id: string }) => a.id === object.id,
-      ),
+      !other.some((project: { id: string }) => project.id === projects[i]),
     );
+    const contentURL = origin + `/api/platform/content/${object.id}`;
+    const readable = await fetch(contentURL, {
+      headers: { Cookie: cookies[i]! },
+    });
+    assert.equal(
+      readable.status,
+      200,
+      "The endpoint must read the owner's actual catalog entry",
+    );
+    assert.equal((await readable.json()).appObjectId, object.appObjectId);
+    const denied = await fetch(contentURL, {
+      headers: { Cookie: cookies[1 - i]! },
+    });
+    // Platform content lookup deliberately masks inaccessible objects as missing.
+    // Prove this is the real endpoint, not a 404 from an absent legacy route.
+    assert.equal(denied.status, 404);
+    const failure = await denied.json();
+    assert.equal(failure.code, "not_found");
+    assert.ok(!JSON.stringify(failure).includes(marker));
   }
   const sharedA = await send(0, "first-project", "SHARED_ALPHA");
   await settle(sharedA);
@@ -362,35 +437,61 @@ try {
       ),
       "私有项目不能共用模型上下文",
     );
-  assert.ok(
-    !bridge.snapshot(people[1]!).deliveries.some((d) => d.inputId === a),
+  await assert.rejects(
+    history(1, projects[0]!),
+    (error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "forbidden",
   );
+  await bridge.stop();
   const pending = await send(0, projects[0]!, "REVOKED_MUST_NOT_SEND");
   configuration.members[0]!.enabled = false;
   members[0]!.enabled = false;
-  store.provisionMembers(members);
-  identity.replaceConfiguration(configuration);
+  await identity.replaceConfiguration(configuration, members);
   assert.equal(
     (
-      await fetch(origin + "/api/workspace", {
+      await fetch(origin + "/api/platform/bootstrap", {
         headers: { Cookie: cookies[0]! },
       })
     ).status,
     401,
   );
+  await domains.unbindRuntime(bound.authority);
+  bridge = new RuntimeBridge(store, config, identity);
+  bound = domains.bindRuntime(bridge);
   await bridge.tick();
   assert.equal(
-    bridge.snapshot().deliveries.find((d) => d.inputId === pending)?.state,
+    (
+      store.runtimeState() as {
+        deliveries: Array<{ inputId: string; state: string }>;
+      }
+    ).deliveries.find((d) => d.inputId === pending)?.state,
     "failed",
   );
   assert.ok(!requests.some((r) => r.includes("REVOKED_MUST_NOT_SEND")));
   await bridge.stop();
+  await domains.unbindRuntime(bound.authority);
   bridge = new RuntimeBridge(store, config, identity);
+  bound = domains.bindRuntime(bridge);
   assert.ok(
-    bridge
-      .snapshot(people[1]!)
-      .deliveries.some((d) => d.inputId === b && d.state === "completed"),
+    (await history(1, projects[1]!)).runtime.deliveries.some(
+      (d) => d.inputId === b && d.state === "completed",
+    ),
   );
+  const database = new DatabaseSync(join(directory, "workspace.sqlite"), {
+    readOnly: true,
+  });
+  try {
+    assert.deepEqual(
+      database
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspace','commands','assets')",
+        )
+        .all(),
+      [],
+    );
+  } finally {
+    database.close();
+  }
   writeFileSync(
     join(directory, "result.json"),
     JSON.stringify(
@@ -416,6 +517,7 @@ try {
   );
 } finally {
   await bridge.stop();
+  await domains.unbindRuntime(bound.authority);
   await new Promise<void>((r) => server.close(() => r()));
   server.closeAllConnections();
   runtime.kill("SIGTERM");
@@ -423,6 +525,7 @@ try {
     runtime.exitCode !== null ? r() : runtime.once("exit", () => r()),
   );
   await new Promise<void>((r) => provider.close(() => r()));
+  await domains.close();
   store.close();
 }
 import "./application-configuration.mjs";

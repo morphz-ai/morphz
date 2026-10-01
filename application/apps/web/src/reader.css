@@ -3,6 +3,9 @@
   overflow: auto;
   height: 100%;
 }
+.primary-panel:not([data-interaction="history"]) .reader-library {
+  padding-bottom: calc(32px + max(56px, var(--exchange-overlay-height, 0px)));
+}
 .reader-ocr-controls {
   max-width: 1000px;
   margin: 12px auto;

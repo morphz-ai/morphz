@@ -95,10 +95,11 @@ export function taskPresentation(
       }[task.execution],
     );
   const run = runtime?.runs.find((r) => r.run === task.runRequested);
-  if (run?.stopRequested) return result("active", "正在停止");
+  if (run?.stopRequested)
+    return result("active", "停止待确认", "已请求停止，等待执行结果确认。");
   if (run?.threadState === "open" && runtime?.approvalCount)
     return result("waiting", "等待你的确认", "确认具体操作后才能继续执行。");
-  if (run?.threadState === "open")
+  if (run?.threadState === "open" && run.record?.status === "dispatched")
     return task.execution === "waiting"
       ? result(
           "waiting",
@@ -114,6 +115,7 @@ export function taskPresentation(
       "查看失败记录后可重试；已有结果保留。",
     );
   if (run?.threadState === "cancelled") return result("planned", "已停止");
+  if (run?.sourceStopped && !run.record) return result("planned", "已停止");
   if (task.execution === "completed") return result("completed", "已完成");
   if (run?.threadState === "completed")
     return result(

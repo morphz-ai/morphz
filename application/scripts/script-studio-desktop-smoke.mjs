@@ -76,12 +76,37 @@ const editor = () => page.getByLabel("剧本正文", { exact: true });
 const checked = (text) => result.checks.push(text);
 async function snapshot() {
   return page.evaluate(async () => {
-    const reply = await window.morphzDesktop.application.invoke({
+    const api = window.morphzDesktop.application;
+    const boot = await api.invoke({
       id: crypto.randomUUID(),
-      method: "workspace",
+      method: "platform.bootstrap",
     });
-    if (!reply.ok) throw new Error(JSON.stringify(reply));
-    return reply.value;
+    if (!boot.ok) throw new Error(JSON.stringify(boot.error));
+    const call = async (method, params) => {
+      const reply = await api.invoke({
+        id: crypto.randomUUID(),
+        method,
+        params,
+        identityGeneration: boot.value.csrfToken,
+      });
+      if (!reply.ok) throw new Error(JSON.stringify(reply.error));
+      return reply.value;
+    };
+    const entries = await call("content.list", {
+      appId: "morphz.script-studio",
+      limit: 100,
+    });
+    const productions = await Promise.all(
+      entries.map((entry) => call("scripts.snapshot", { contentId: entry.id })),
+    );
+    const navigation = await call("runtime.navigation");
+    return {
+      centerId: boot.value.centerId,
+      runtime: navigation.runtime,
+      productions,
+      deliveries: navigation.runtime.deliveries,
+      conversations: await call("conversations.navigation", { limit: 100 }),
+    };
   });
 }
 async function currentPage() {
@@ -251,7 +276,7 @@ try {
   assert.equal(resolve(result.profile), resolve(fixture, "profile"));
   const initial = await snapshot();
   assert.equal(initial.runtime.configured, false);
-  assert.equal(initial.workspace.scriptProductions.length, 0);
+  assert.equal(initial.productions.length, 0);
   result.centerId = initial.centerId;
   const bridge = await page.evaluate(async () => ({
     secure: isSecureContext,
@@ -297,7 +322,7 @@ try {
   const savedText =
     "TEST 合成原创场景，不是合作方材料。\n雨夜，林舟推开车站的门，读到母亲留下的信。";
   await saveText(savedText);
-  const first = (await snapshot()).workspace.scriptProductions[0];
+  const first = (await snapshot()).productions[0];
   result.productionId = first.id;
   result.itemId = first.items[0].id;
   await page.reload();
@@ -309,7 +334,7 @@ try {
   await button("关闭应用 剧本工作室").click();
   await launchStudio();
   await expect(editor()).toHaveValue(dirtyText);
-  assert.equal((await snapshot()).workspace.scriptProductions.length, 1);
+  assert.equal((await snapshot()).productions.length, 1);
   await button("保存文稿").click();
   await expect(button("保存文稿")).toBeDisabled();
   checked(
@@ -329,7 +354,7 @@ try {
     .check();
   await settings.getByRole("button", { name: "保存规范", exact: true }).click();
   await expect(settings).toBeHidden();
-  const beforeCompose = (await snapshot()).workspace;
+  const beforeCompose = await snapshot();
   await button("生成候选").click();
   await page
     .getByRole("dialog", { name: "准备生成候选请求", exact: true })
@@ -338,14 +363,14 @@ try {
   await expect(page.getByTestId("script-input-reference")).toContainText(
     "第一集 · 合成雨夜",
   );
-  assert.deepEqual((await snapshot()).workspace.inputs, beforeCompose.inputs);
+  assert.deepEqual((await snapshot()).deliveries, beforeCompose.deliveries);
   await createItem("TEST 内部切换大纲", "outline");
   await openInput();
   await expect(page.getByTestId("script-input-reference")).toContainText(
     "第一集 · 合成雨夜",
   );
-  const afterCompose = (await snapshot()).workspace;
-  assert.deepEqual(afterCompose.inputs, beforeCompose.inputs);
+  const afterCompose = await snapshot();
+  assert.deepEqual(afterCompose.deliveries, beforeCompose.deliveries);
   assert.deepEqual(afterCompose.conversations, beforeCompose.conversations);
   await expect(
     page.getByRole("region", { name: "剧本工作区", exact: true }),
@@ -449,7 +474,7 @@ try {
   }));
   console.log("CANCEL_FOCUS", JSON.stringify(result.cancelFocus));
   await expect(button("导出 Word")).toBeFocused();
-  const cancelled = (await snapshot()).workspace.scriptProductions.find(
+  const cancelled = (await snapshot()).productions.find(
     (value) => value.id === first.id,
   );
   assert.equal(cancelled.exports.length, 1);
@@ -603,7 +628,7 @@ try {
       delete globalThis.__scriptRestoreUnlink;
     });
   }
-  const locked = (await snapshot()).workspace.scriptProductions.find(
+  const locked = (await snapshot()).productions.find(
     (item) => item.id === first.id,
   );
   assert.equal(
@@ -640,10 +665,7 @@ try {
   await expect(editor()).toHaveValue(dirtyText);
   await expect(editor()).toHaveAttribute("readonly", "");
   assert.equal((await snapshot()).centerId, initial.centerId);
-  assert.deepEqual(
-    (await snapshot()).workspace.inputs,
-    initial.workspace.inputs,
-  );
+  assert.deepEqual((await snapshot()).deliveries, initial.deliveries);
   if (process.platform === "darwin") {
     await desktop.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()

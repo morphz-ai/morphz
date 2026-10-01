@@ -1,11 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import type { Boot } from "../apps/web/src/client.js";
-import { seedCenter } from "./center-fixtures.js";
 import { openInput } from "./interaction-helpers.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
-const snapshot = async (page: Page): Promise<Boot> =>
-  (await page.request.get("/api/workspace")).json();
 const catalog = (page: Page) =>
   page
     .getByRole("navigation", { name: "主导航" })
@@ -15,19 +14,38 @@ const catalog = (page: Page) =>
 test("内容范围也是起草目标；草稿与附件分开保存，迟到发送不串项目", async ({
   page,
 }) => {
-  await page.goto("/");
-  const second = await seedCenter(page, {
-    type: "create-project",
-    title: "TEST 起草 B " + randomUUID(),
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const first = { id: randomUUID(), title: "TEST 起草 A " + randomUUID() };
+  const second = { id: randomUUID(), title: "TEST 起草 B " + randomUUID() };
+  await source.createProject(first.title, randomUUID(), first.id);
+  await source.createProject(second.title, randomUUID(), second.id);
+  const dialogue = await source.ensurePersonalSpaces();
+  let runtimeConfigured = false;
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history$/,
+    (route) =>
+      route.fulfill({
+        json: {
+          inputs: [],
+          nextCursor: null,
+          runtime: { ...disconnectedRuntime, configured: runtimeConfigured },
+        },
+      }),
+  );
+  await page.route("**/api/platform/runtime-navigation", async (route) => {
+    const response = await route.fetch();
+    const navigation = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...navigation,
+        runtime: { ...navigation.runtime, configured: runtimeConfigured },
+      },
+    });
   });
-  await page.reload();
-  const initial = await snapshot(page);
-  const first = initial.workspace.projects.find(
-    (p) => p.id === "first-project",
-  )!;
-  const dialogue = initial.workspace.projects.find(
-    (p) => p.kind === "dialogue",
-  )!;
+  await page.goto("/");
   await catalog(page);
   const scope = page.getByLabel("内容范围", { exact: true });
   const input = await openInput(page);
@@ -51,7 +69,7 @@ test("内容范围也是起草目标；草稿与附件分开保存，迟到发�
   await page.getByLabel("让 Morphz 起草", { exact: true }).click();
   await expect(input).toBeFocused();
   await expect(page.locator(".composer-intent")).toContainText("创作文档");
-  await scope.selectOption(second);
+  await scope.selectOption(second.id);
   await expect(await openInput(page)).toHaveValue("");
   await expect(
     page.getByLabel("移除附件 draft-a.txt", { exact: true }),
@@ -66,60 +84,59 @@ test("内容范围也是起草目标；草稿与附件分开保存，迟到发�
     page.getByLabel("移除附件 draft-a.txt", { exact: true }),
   ).toBeVisible();
   await expect(page.locator(".composer-intent")).toContainText("创作文档");
-  expect((await snapshot(page)).workspace.inputs).toEqual(
-    initial.workspace.inputs,
-  );
+  expect((await source.content({ projectId: first.id })).items).toHaveLength(0);
 
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  let submitted = false;
-  await page.route("**/api/commands", async (route) => {
-    if (route.request().postDataJSON()?.operation?.type === "record-input") {
-      submitted = true;
-      await gate;
-    }
-    await route.continue();
+  let submitted: {
+    commandId: string;
+    operation: Record<string, unknown>;
+  } | null = null;
+  await page.route("**/api/platform/messages", async (route) => {
+    submitted = route.request().postDataJSON();
+    await gate;
+    await route.fulfill({
+      status: 202,
+      json: { commandId: submitted!.commandId, entityId: submitted!.commandId },
+    });
   });
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect.poll(() => submitted).toBe(true);
-  await scope.selectOption(second);
-  // Submission locks editing until its receipt; inspect the destination draft
-  // without trying to focus the disabled textarea before releasing that receipt.
-  await expect(input).toHaveValue("B 的未发送草稿");
-  release();
-  await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.inputs.find((i) => i.body === body)
-          ?.projectId,
-    )
-    .toBe(first.id);
-  const after = (await snapshot(page)).workspace;
-  const recorded = after.inputs.find((i) => i.body === body)!;
-  expect(recorded.conversationId).toBe(dialogue.id);
-  expect(recorded.intent).toBe("document");
-  expect(recorded.artifactId).toBeNull();
-  expect(recorded.application).toBeUndefined();
-  expect(recorded.attachments?.map((a) => a.name)).toEqual(["draft-a.txt"]);
-  expect(after.conversations).toEqual(initial.workspace.conversations);
-  expect(after.artifacts).toEqual(initial.workspace.artifacts);
-  expect(after.applicationInstances).toEqual(
-    initial.workspace.applicationInstances,
-  );
+  runtimeConfigured = true;
+  await page.reload();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  try {
+    await expect.poll(() => submitted).not.toBeNull();
+    await scope.selectOption(second.id);
+    // The in-flight request belongs to A even while the user views B's draft.
+    await expect(input).toHaveValue("B 的未发送草稿");
+  } finally {
+    release();
+  }
+  expect(submitted!.operation).toMatchObject({
+    projectId: first.id,
+    conversationId: dialogue.dialogueId,
+    body,
+    intent: "document",
+    artifactId: null,
+    attachments: [{ name: "draft-a.txt" }],
+  });
   await expect(await openInput(page)).toHaveValue("B 的未发送草稿");
   await scope.selectOption("all");
   await expect(await openInput(page)).toHaveValue("全目录旧草稿");
 });
 
 test("手写和继续修改沿用实际内容归属，返回目录保留筛选", async ({ page }) => {
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const projectId = randomUUID();
+  await source.createProject(
+    "TEST 内容闭环 " + randomUUID(),
+    randomUUID(),
+    projectId,
+  );
   await page.goto("/");
-  const projectId = await seedCenter(page, {
-    type: "create-project",
-    title: "TEST 内容闭环 " + randomUUID(),
-  });
-  await page.reload();
   await catalog(page);
   const scope = page.getByLabel("内容范围", { exact: true });
   await scope.selectOption(projectId);
@@ -130,10 +147,13 @@ test("手写和继续修改沿用实际内容归属，返回目录保留筛选",
   await page.getByLabel("新文档正文").fill("同一份报告的第一版。");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page.locator(".object-paper > h1")).toHaveText(title);
-  const created = (await snapshot(page)).workspace.artifacts.find(
-    (a) => a.title === title,
-  )!;
+  const created = (
+    await source.content({ projectId, query: title })
+  ).items.find((entry) => entry.title === title)!;
   expect(created.projectId).toBe(projectId);
+  expect(await source.readDocument(created.id)).toMatchObject({
+    markdown: "同一份报告的第一版。",
+  });
   await catalog(page);
   await expect(scope).toHaveValue(projectId);
   await expect(
@@ -149,12 +169,32 @@ test("手写和继续修改沿用实际内容归属，返回目录保留筛选",
   await input.fill(body);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(input).toHaveValue("");
-  const after = (await snapshot(page)).workspace;
-  const recorded = after.inputs.find((i) => i.body === body)!;
-  expect(recorded.projectId).toBe(projectId);
-  expect(recorded.artifactId).toBe(created.id);
-  expect(recorded.artifactRevision).toBe(1);
-  expect(after.artifacts.filter((a) => a.title === title)).toHaveLength(1);
+  const recorded = await page.evaluate(
+    (text) =>
+      Object.keys(localStorage)
+        .filter((key) => key.includes(":saved-input:"))
+        .map(
+          (key) =>
+            JSON.parse(localStorage.getItem(key)!) as {
+              operation: {
+                body: string;
+                projectId: string;
+                artifactId: string | null;
+                artifactRevision: number | null;
+              };
+            },
+        )
+        .find((entry) => entry.operation.body === text)?.operation,
+    body,
+  );
+  expect(recorded).toMatchObject({
+    projectId,
+    artifactId: created.id,
+    artifactRevision: 1,
+  });
+  expect(
+    (await source.content({ projectId, query: title })).items,
+  ).toHaveLength(1);
   await catalog(page);
   await expect(scope).toHaveValue("all");
 });
@@ -162,19 +202,27 @@ test("手写和继续修改沿用实际内容归属，返回目录保留筛选",
 test("继续处理当前报告实时显示新版本，历史查看与旧版未发草稿仍固定", async ({
   page,
 }) => {
-  await page.goto("/");
-  const title = "TEST 连续修改 " + randomUUID();
-  const id = await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: "first-project",
-      title,
-      content: { kind: "document", markdown: "第一版正文" },
-    },
-    true,
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
   );
-  await page.reload();
+  const projectId = randomUUID();
+  await source.createProject("TEST 连续修改项目", randomUUID(), projectId);
+  const title = "TEST 连续修改 " + randomUUID();
+  const objectId = randomUUID();
+  await source.createDocument({
+    commandId: randomUUID(),
+    objectId,
+    projectId,
+    title,
+    markdown: "第一版正文",
+  });
+  const id = (
+    await source.resolveContent({
+      appId: "morphz.objects",
+      appObjectId: objectId,
+    })
+  ).id;
+  await page.goto("/");
   await catalog(page);
   const compose = page.getByLabel("让智能体处理：" + title, { exact: true });
   await compose.click();
@@ -184,17 +232,13 @@ test("继续处理当前报告实时显示新版本，历史查看与旧版未�
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(input).toHaveValue("");
   const revise = (revision: number, markdown: string) =>
-    seedCenter(
-      page,
-      {
-        type: "revise-artifact",
-        artifactId: id,
-        expectedRevision: revision,
-        title,
-        content: { kind: "document", markdown },
-      },
-      true,
-    );
+    source.reviseDocument({
+      commandId: randomUUID(),
+      contentId: id,
+      expectedRevision: revision,
+      title,
+      markdown,
+    });
   // Synthetic Agent delivery is used only in this isolated center. The native
   // acceptance runs the actual model; both must update this same document.
   await revise(1, "第二版正文");
@@ -204,12 +248,8 @@ test("继续处理当前报告实时显示新版本，历史查看与旧版未�
   await page.getByLabel("查看版本", { exact: true }).selectOption("1");
   await revise(2, "第三版正文");
   await expect
-    .poll(
-      async () =>
-        (await snapshot(page)).workspace.artifacts.find((a) => a.id === id)
-          ?.revision,
-    )
-    .toBe(3);
+    .poll(() => source.readDocument(id))
+    .toMatchObject({ revision: 3 });
   await expect(page.locator(".document-body")).toContainText("第一版正文");
   await page.getByLabel("回到当前版本", { exact: true }).click();
   await expect(page.locator(".document-body")).toContainText("第三版正文");

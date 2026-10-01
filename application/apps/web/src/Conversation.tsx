@@ -28,7 +28,7 @@ import {
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import { Wrench, ChevronRight, Copy, Check, Square, Film } from "lucide-react";
 import {
-  resolveScriptLocation,
+  scriptOutputKey,
   type ScriptOutput,
 } from "../../../packages/core/src/script-delivery.js";
 import { scriptKindLabels } from "../../../packages/core/src/script-studio.js";
@@ -71,10 +71,14 @@ export function Conversation({
   onOpenQuote,
   quoteReveal,
   onQuoteUnavailable,
+  hasEarlierHistory,
+  onLoadEarlierHistory,
 }: {
   onOpenQuote?: (quote: TextQuote) => void;
   quoteReveal?: { quote: TextQuote; token: string } | null;
-  onQuoteUnavailable?: () => void;
+  onQuoteUnavailable?: (reason?: string) => void;
+  hasEarlierHistory?: boolean;
+  onLoadEarlierHistory?: () => Promise<void>;
   onFocusComposer?: () => void;
   toolbarTarget?: HTMLElement | null;
   focusedArtifactId?: string;
@@ -114,6 +118,13 @@ export function Conversation({
       ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId }
       : {},
   );
+  const inputById = new Map(inputs.map((input) => [input.id, input]));
+  const stateInputById = new Map(
+    state.inputs.map((input) => [input.id, input]),
+  );
+  const deliveryByInputId = new Map(
+    runtime.deliveries.map((delivery) => [delivery.inputId, delivery]),
+  );
   const [stopStates, setStopStates] = useState<
     Record<string, { pending: boolean; error: string }>
   >({});
@@ -146,7 +157,37 @@ export function Conversation({
     }
   }
   const scroller = useRef<HTMLElement>(null);
+  const prependPosition = useRef<{
+    key: string;
+    height: number;
+    top: number;
+  } | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [earlierError, setEarlierError] = useState("");
+  async function loadEarlier() {
+    if (!onLoadEarlierHistory || loadingEarlier) return;
+    const el = scroller.current;
+    if (el)
+      prependPosition.current = {
+        key: positionKey,
+        height: el.scrollHeight,
+        top: el.scrollTop,
+      };
+    setLoadingEarlier(true);
+    setEarlierError("");
+    try {
+      await onLoadEarlierHistory();
+    } catch (error) {
+      prependPosition.current = null;
+      setEarlierError(
+        error instanceof Error ? error.message : "旧消息暂时无法读取，请重试。",
+      );
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }
   const revealedQuote = useRef<string | null>(null);
+  const loadingQuote = useRef<string | null>(null);
   const latestButton = useRef<HTMLButtonElement>(null);
   const positionKey =
     conversationId +
@@ -185,17 +226,16 @@ export function Conversation({
   const groups = conversationGroups(
     inputs,
     messages.filter(
-      (m) =>
-        !focused || (!!m.inputId && inputs.some((i) => i.id === m.inputId)),
+      (m) => !focused || (!!m.inputId && inputById.has(m.inputId)),
     ),
   );
   // Keep cancellation with the corresponding response, including before its
   // first token arrives. Only authoritative input IDs establish ownership.
   const responseControls = new Map(
     groups.flatMap((group) => {
-      const delivery = runtime.deliveries.find(
-        (d) => d.inputId === group.inputId,
-      );
+      const delivery = group.inputId
+        ? deliveryByInputId.get(group.inputId)
+        : undefined;
       if (
         !delivery ||
         !["queued", "sending", "running"].includes(delivery.state) ||
@@ -217,14 +257,15 @@ export function Conversation({
   );
   const items = conversationTimeline(
     groups.flatMap((group) => [
-      ...inputs
-        .filter((input) => input.id === group.inputId)
-        .map((input) => ({
-          id: input.id,
-          createdAt: input.createdAt,
-          input,
-          reply: null,
-        })),
+      ...(group.inputId && inputById.has(group.inputId)
+        ? [inputById.get(group.inputId)!]
+        : []
+      ).map((input) => ({
+        id: input.id,
+        createdAt: input.createdAt,
+        input,
+        reply: null,
+      })),
       ...group.messages
         .filter((m) => !onInspect || m.kind === "reply" || m.kind === "error")
         .filter(
@@ -239,18 +280,18 @@ export function Conversation({
     ]),
   );
   const outputs = (client.boot?.outputs ?? []).filter((o) =>
-    inputs.some((i) => i.id === o.inputId),
+    inputById.has(o.inputId),
   );
   const scriptOutputs = (client.boot?.scriptOutputs ?? []).filter((o) =>
-    inputs.some((i) => i.id === o.inputId),
+    inputById.has(o.inputId),
   );
   // Presentation only, owned by the actual input. Waiting is not a reply,
   // publication or unread receipt, and does not depend on cancellation support.
   const waitingResponses = new Map(
     groups.flatMap((group) => {
-      const delivery = runtime.deliveries.find(
-        (d) => d.inputId === group.inputId,
-      );
+      const delivery = group.inputId
+        ? deliveryByInputId.get(group.inputId)
+        : undefined;
       if (
         !runtime.configured ||
         !delivery ||
@@ -296,7 +337,7 @@ export function Conversation({
     })),
     ...deliveryItems,
     ...scriptOutputs.map((o) => ({
-      id: "output:" + o.commandId,
+      id: scriptOutputKey(o),
       createdAt: o.createdAt,
       input: null,
       reply: null,
@@ -352,6 +393,20 @@ export function Conversation({
       revealed: revealed.current,
     });
   }, [contentVersion, readVersion, revealInputId, positionKey, onRead]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const old = prependPosition.current;
+    if (!el || !old || old.key !== positionKey || loadingEarlier) return;
+    following.current = false;
+    el.scrollTop = old.top + el.scrollHeight - old.height;
+    positions.set(positionKey, {
+      top: el.scrollTop,
+      following: false,
+      revealed: revealed.current,
+    });
+    setAwayFromLatest(true);
+    prependPosition.current = null;
+  }, [contentVersion, loadingEarlier, positionKey]);
   useEffect(() => {
     const read = () => acknowledgeVisibleReplies();
     document.addEventListener("visibilitychange", read);
@@ -387,9 +442,30 @@ export function Conversation({
           messages.some((item) => item.id === quote.messageId))
       ) {
         setAllHistory(true);
+      } else if (
+        hasEarlierHistory &&
+        loadingQuote.current !== quoteReveal.token
+      ) {
+        loadingQuote.current = quoteReveal.token;
+        void client.loadHistoryUntil(quote.messageId).then(
+          (found) => {
+            if (!found) {
+              revealedQuote.current = quoteReveal.token;
+              onQuoteUnavailable?.();
+            }
+          },
+          (error: unknown) => {
+            revealedQuote.current = quoteReveal.token;
+            onQuoteUnavailable?.(
+              error instanceof Error ? error.message : undefined,
+            );
+          },
+        );
       } else {
-        revealedQuote.current = quoteReveal.token;
-        onQuoteUnavailable?.();
+        if (loadingQuote.current !== quoteReveal.token) {
+          revealedQuote.current = quoteReveal.token;
+          onQuoteUnavailable?.();
+        }
       }
       return;
     }
@@ -420,7 +496,7 @@ export function Conversation({
       clearTimeout(timeout);
       message.removeAttribute("data-quote-revealed");
     };
-  }, [quoteReveal, focused]);
+  }, [quoteReveal, focused, contentVersion, hasEarlierHistory]);
   return (
     <section
       className="conversation"
@@ -441,6 +517,21 @@ export function Conversation({
         });
       }}
     >
+      {hasEarlierHistory && onLoadEarlierHistory && (
+        <button
+          type="button"
+          className="conversation-load-older"
+          disabled={loadingEarlier}
+          onClick={() => void loadEarlier()}
+        >
+          {loadingEarlier ? "正在读取…" : "查看更早消息"}
+        </button>
+      )}
+      {earlierError && (
+        <p className="conversation-load-error" role="alert">
+          {earlierError}
+        </p>
+      )}
       {(focusedArtifactId || focusedApplicationId) &&
         toolbarTarget &&
         createPortal(
@@ -493,21 +584,20 @@ export function Conversation({
                 !dateDivider &&
                 (!inputId || inputId !== previousInputId);
               if (scriptOutput) {
-                const resolved = resolveScriptLocation(state, scriptOutput);
-                const version = resolved?.item?.versions.find(
-                  (v) => v.revision === scriptOutput.revision,
-                );
-                const candidate = resolved?.production.candidates.find(
-                  (c) => c.id === scriptOutput.candidateId,
+                const catalogEntry = client.contentCatalog.find(
+                  (entry) =>
+                    entry.appId === "morphz.script-studio" &&
+                    entry.appObjectId === scriptOutput.productionId &&
+                    entry.availability === "available",
                 );
                 const label =
                   scriptOutput.kind === "production"
                     ? "剧本"
                     : scriptOutput.kind === "candidate"
-                      ? `候选稿 · ${candidate?.status === "accepted" ? "已采纳" : candidate?.status === "rejected" ? "已拒绝" : "待决定"}`
+                      ? `候选稿 · ${scriptOutput.candidateStatus === "accepted" ? "已采纳" : scriptOutput.candidateStatus === "rejected" ? "已拒绝" : "待决定"}`
                       : scriptOutput.kind === "review"
                         ? "审查意见"
-                        : `${resolved?.item ? scriptKindLabels[resolved.item.kind] : "条目"}${version && !version.draft.text.trim() ? " · 空白条目" : ""}`;
+                        : `${scriptKindLabels[scriptOutput.itemKind!]}${scriptOutput.isEmpty ? " · 空白条目" : ""}`;
                 return (
                   <Fragment key={id}>
                     {dateDivider}
@@ -518,7 +608,7 @@ export function Conversation({
                     >
                       <button
                         className="delivery-object"
-                        disabled={!resolved || !onOpenScript}
+                        disabled={!catalogEntry || !onOpenScript}
                         aria-label={`打开${scriptOutput.kind === "production" ? "剧本" : "剧本结果"}：${scriptOutput.title}`}
                         onClick={() => onOpenScript?.(scriptOutput)}
                       >
@@ -527,9 +617,7 @@ export function Conversation({
                           <small>{label}</small>
                           <span>{scriptOutput.title}</span>
                           {scriptOutput.itemId && (
-                            <small>
-                              {resolved?.production.title ?? "对象不可用"}
-                            </small>
+                            <small>{scriptOutput.productionTitle}</small>
                           )}
                         </span>
                         {scriptOutput.itemId && (
@@ -545,8 +633,15 @@ export function Conversation({
                 const artifact = state.artifacts.find(
                   (a) => a.id === output.artifactId,
                 );
+                const catalogEntry = client.contentCatalog.find(
+                  (entry) => entry.id === output.artifactId,
+                );
                 const version = artifact?.versions.find(
                   (v) => v.revision === output.revision,
+                );
+                const title = client.contentVersionTitle(
+                  output.artifactId,
+                  output.revision,
                 );
                 return (
                   <Fragment key={id}>
@@ -558,22 +653,25 @@ export function Conversation({
                     >
                       <button
                         className="delivery-object"
-                        disabled={!version}
-                        aria-label={
-                          "打开交付：" + (version?.title ?? "对象不可用")
-                        }
+                        disabled={!version && !catalogEntry}
+                        aria-label={"打开交付：" + (title ?? "交付内容")}
                         onClick={() =>
                           onOpen(output.artifactId, output.revision)
                         }
                       >
-                        {artifact && (
-                          <ObjectIcon kind={artifact.content.kind} />
+                        {(artifact || catalogEntry) && (
+                          <ObjectIcon
+                            kind={
+                              (artifact?.content.kind ??
+                                catalogEntry!.kind) as Parameters<
+                                typeof ObjectIcon
+                              >[0]["kind"]
+                            }
+                          />
                         )}
                         <span className="delivery-object-info">
                           <small>交付内容</small>
-                          <span>
-                            {version?.title ?? "对象不存在或无访问权限"}
-                          </span>
+                          <span>{title ?? "交付内容"}</span>
                         </span>
                         <small>v{output.revision}</small>
                         <ChevronRight size={14} />
@@ -685,8 +783,8 @@ export function Conversation({
                         {item.continuation.mode === "supplement"
                           ? "补充给："
                           : "接着处理："}
-                        {state.inputs
-                          .find((i) => i.id === item.continuation!.inputId)
+                        {stateInputById
+                          .get(item.continuation!.inputId)
                           ?.body.slice(0, 50) || "原工作"}
                         <ChevronRight size={12} />
                       </button>
@@ -702,9 +800,8 @@ export function Conversation({
                           onClick={() => onInspect(reply.inputId!)}
                         >
                           关于：
-                          {inputs
-                            .find((i) => i.id === reply.inputId)
-                            ?.body.slice(0, 50) ?? "之前的工作"}
+                          {inputById.get(reply.inputId)?.body.slice(0, 50) ??
+                            "之前的工作"}
                           <ChevronRight size={12} />
                         </button>
                       )}
@@ -734,11 +831,10 @@ export function Conversation({
                           )
                         }
                       >
-                        {state.artifacts
-                          .find((a) => a.id === item.artifactId)
-                          ?.versions.find(
-                            (v) => v.revision === item.artifactRevision,
-                          )?.title ?? "关联对象"}
+                        {client.contentVersionTitle(
+                          item.artifactId,
+                          item.artifactRevision ?? undefined,
+                        ) ?? "关联对象"}
                         {item.reading &&
                           ` · ${item.reading.chapter} · 回到原文`}
                         {!item.reading &&
@@ -771,6 +867,11 @@ export function Conversation({
                               <AttachmentPreview
                                 key={a.assetId + index}
                                 attachment={a}
+                                source={{
+                                  projectId: item.projectId,
+                                  conversationId: discussionId(item),
+                                  inputId: item.id,
+                                }}
                               />
                             ))}
                           </div>
@@ -802,6 +903,7 @@ export function Conversation({
                           <>
                             <SafeMarkdown
                               state={state}
+                              catalog={client.contentCatalog}
                               onOpen={onOpen}
                               streaming={
                                 !!(streamConnected && reply?.streaming)

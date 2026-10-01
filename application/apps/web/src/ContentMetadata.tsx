@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 import {
-  contentOwnershipTitle,
-  type ContentEntry,
-} from "../../../packages/core/src/content.js";
+  listingKind,
+  type CatalogContentEntry,
+} from "./catalog-content-entries.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 
@@ -16,12 +17,12 @@ export function ContentMetadata({
   onClose,
   onSaved,
 }: {
-  entry: ContentEntry;
+  entry: CatalogContentEntry;
   projects: Workspace["projects"];
   client: WorkspaceClient;
   mode: "rename" | "move";
   onClose: () => void;
-  onSaved: (old: ContentEntry, revision: number) => void;
+  onSaved: (old: CatalogContentEntry, revision: number) => void;
 }) {
   // Keep the version captured at opening; never adopt a background edit silently.
   const [savedEntry] = useState(entry);
@@ -37,10 +38,26 @@ export function ContentMetadata({
     setBusy(true);
     setError("");
     try {
+      const catalogRevision =
+        savedEntry.kind === "catalog"
+          ? savedEntry.value.revision
+          : savedEntry.value.catalogRevision;
+      if (!catalogRevision) throw new Error("内容目录尚未就绪，请刷新后重试。");
       await client.execute({
         type: "organize-content",
-        target: { kind: savedEntry.kind, id: original.id },
-        expectedRevision: original.revision,
+        target: {
+          kind:
+            savedEntry.kind === "catalog"
+              ? listingKind(savedEntry) === "script"
+                ? "script"
+                : "artifact"
+              : savedEntry.kind,
+          id:
+            savedEntry.kind === "catalog" && listingKind(savedEntry) === "script"
+              ? savedEntry.value.appObjectId
+              : original.id,
+        },
+        expectedRevision: catalogRevision,
         changes:
           mode === "rename"
             ? { title: title.trim() }
@@ -48,7 +65,7 @@ export function ContentMetadata({
               ? { newProjectTitle: newProjectTitle.trim() }
               : { projectId },
       });
-      onSaved(savedEntry, original.revision + 1);
+      onSaved(savedEntry, catalogRevision + 1);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败，请重试。");

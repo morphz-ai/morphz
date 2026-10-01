@@ -1,16 +1,23 @@
 import { openSettings } from "./settings-helpers.js";
-import { seedCenter } from "./center-fixtures.js";
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  conversationState,
+  seedConversationDocument,
+} from "./project-conversation-fixture.js";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 
 test("新建只开草稿：反复点击与刷新不建空会话，首发失败可重试，迟到回执不抢导航", async ({
   page,
+  messageHost,
 }) => {
   await page.goto("/");
   const title = `延迟创建验收-${crypto.randomUUID().slice(0, 8)}`;
   await newProject(page, title);
-  const initial = await (await page.request.get("/api/workspace")).json();
+  const initial = await conversationState(page);
+  const initialInputs = messageHost.deliveries().length;
   const nav = page.getByRole("navigation", { name: "主导航" });
   await nav.getByRole("button", { name: "对话", exact: true }).click();
   await (await openInput(page)).fill("保留全局草稿");
@@ -27,8 +34,8 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
   let creates = 0;
   page.on("request", (request) => {
     if (
-      request.url().endsWith("/api/commands") &&
-      request.postDataJSON()?.operation.type === "create-conversation"
+      request.method() === "POST" &&
+      request.url().endsWith("/api/platform/conversations/start")
     )
       creates++;
   });
@@ -39,10 +46,9 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
   await create.dblclick();
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   await expect(group.locator(".conversation-choice")).toHaveCount(0);
-  expect(
-    (await (await page.request.get("/api/workspace")).json()).workspace
-      .conversations,
-  ).toEqual(initial.workspace.conversations);
+  expect((await conversationState(page)).conversations).toEqual(
+    initial.conversations,
+  );
   await (await openInput(page)).fill("首条独立消息");
   await expect(group.getByLabel("继续草稿：对话 1")).toBeVisible();
   await create.click();
@@ -50,26 +56,30 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
   await expect(await openInput(page)).toHaveValue("首条独立消息");
   await page.reload();
   await expect(await openInput(page)).toHaveValue("首条独立消息");
-  expect(
-    (await (await page.request.get("/api/workspace")).json()).workspace
-      .conversations,
-  ).toEqual(initial.workspace.conversations);
-  await page.route("**/api/commands", async (route) => {
-    if (route.request().postDataJSON().operation.type === "record-input")
-      await route.fulfill({
-        status: 503,
-        json: { message: "测试：发送暂不可用" },
-      });
-    else await route.continue();
+  expect((await conversationState(page)).conversations).toEqual(
+    initial.conversations,
+  );
+  const sendIds: string[] = [];
+  await page.route("**/api/platform/messages", async (route) => {
+    sendIds.push(route.request().postDataJSON().commandId);
+    await route.fulfill({
+      status: 503,
+      json: { message: "测试：发送暂不可用" },
+    });
   });
+  await expect(page.getByLabel("发送消息", { exact: true })).toBeEnabled();
   await page.getByLabel("AI 输入内容").press("Enter");
   await expect(page.getByRole("alert")).toContainText("发送暂不可用");
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("首条独立消息");
-  expect(
-    (await (await page.request.get("/api/workspace")).json()).workspace
-      .conversations,
-  ).toEqual(initial.workspace.conversations);
-  await page.unroute("**/api/commands");
+  expect((await conversationState(page)).conversations).toEqual(
+    initial.conversations,
+  );
+  expect(messageHost.deliveries()).toHaveLength(initialInputs);
+  await page.unroute("**/api/platform/messages");
+  await page.route("**/api/platform/messages", async (route) => {
+    sendIds.push(route.request().postDataJSON().commandId);
+    await route.continue();
+  });
   await page.getByLabel("AI 输入内容").press("Enter");
   await expect(
     group.getByLabel("打开对话：对话 1", { exact: true }),
@@ -77,13 +87,11 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
   await expect(page.getByLabel("AI 输入内容")).toBeFocused();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
   await expect(page.locator(".topbar .conversation-switch")).toHaveCount(0);
-  const first = await (await page.request.get("/api/workspace")).json();
-  expect(first.workspace.inputs).toHaveLength(
-    initial.workspace.inputs.length + 1,
-  );
-  expect(first.workspace.conversations).toHaveLength(
-    initial.workspace.conversations.length + 1,
-  );
+  const first = await conversationState(page);
+  expect(messageHost.deliveries()).toHaveLength(initialInputs + 1);
+  expect(first.conversations).toHaveLength(initial.conversations.length + 1);
+  expect(sendIds).toHaveLength(2);
+  expect(sendIds[1]).toBe(sendIds[0]);
   expect(creates).toBe(0);
   await nav.getByRole("button", { name: "对话", exact: true }).click();
   await expect(await openInput(page)).toHaveValue("保留全局草稿");
@@ -92,9 +100,8 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
     release = resolve;
   });
   let arrived = false;
-  await page.route("**/api/commands", async (route) => {
-    if (route.request().postDataJSON().operation.type !== "record-input")
-      return route.continue();
+  await page.unroute("**/api/platform/messages");
+  await page.route("**/api/platform/messages", async (route) => {
     arrived = true;
     await gate;
     await route.continue();
@@ -109,13 +116,9 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
     group.getByLabel("打开对话：对话 2", { exact: true }),
   ).toBeVisible();
   await expect(page).toHaveTitle("事项 — Morphz");
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.conversations.length).toBe(
-    first.workspace.conversations.length + 1,
-  );
-  expect(after.workspace.inputs).toHaveLength(
-    initial.workspace.inputs.length + 2,
-  );
+  const after = await conversationState(page);
+  expect(after.conversations.length).toBe(first.conversations.length + 1);
+  expect(messageHost.deliveries()).toHaveLength(initialInputs + 2);
   await group.getByLabel("打开对话：对话 2", { exact: true }).click();
   await expect(
     group.getByLabel("打开对话：对话 2", { exact: true }),
@@ -151,6 +154,7 @@ async function choose(page: Page, title: string) {
 }
 test("从项目搜索打开其他空间对象后，点击项目或草稿回到正确工作范围", async ({
   page,
+  messageHost,
 }) => {
   await page.goto("/");
   const title = "跨空间草稿返回-" + crypto.randomUUID().slice(0, 8);
@@ -164,20 +168,15 @@ test("从项目搜索打开其他空间对象后，点击项目或草稿回到�
   await (await openInput(page)).fill("命名会话草稿，不发送");
   const draft = group.getByLabel("继续草稿：对话 1", { exact: true });
   await expect(draft).toBeVisible();
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const workspaceId = boot.workspace.projects.find(
-    (p: any) => p.kind === "desk",
-  ).id;
+  const boot = await conversationState(page);
+  const before = messageHost.deliveries();
+  const workspaceId = (await boot.source.ensurePersonalSpaces()).deskId;
   const objectTitle = "其他空间的阅读对象-" + crypto.randomUUID().slice(0, 8);
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: workspaceId,
-      title: objectTitle,
-      content: { kind: "document", markdown: "只读验收原文，不修改。" },
-    },
-    true,
+  await seedConversationDocument(
+    messageHost,
+    workspaceId,
+    objectTitle,
+    "只读验收原文，不修改。",
   );
   const openOtherObject = async () => {
     await page.getByRole("button", { name: "搜索资料", exact: true }).click();
@@ -199,66 +198,26 @@ test("从项目搜索打开其他空间对象后，点击项目或草稿回到�
   await group.locator(".project-link").click();
   await expect(page).toHaveTitle(title + " — Morphz");
   await expect(await openInput(page)).toHaveValue("默认项目草稿，不发送");
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toEqual(boot.workspace.inputs);
-  expect(after.workspace.conversations).toEqual(boot.workspace.conversations);
+  const after = await conversationState(page);
+  expect(messageHost.deliveries()).toEqual(before);
+  expect(after.conversations).toEqual(boot.conversations);
 });
-test("旧空会话不占列表，已有草稿可恢复；只发附件才落库，丢回执重试不重复", async ({
+test("未发送草稿不建空会话，可恢复；只发附件才落库，丢回执重试不重复", async ({
   page,
+  messageHost,
 }) => {
   await page.goto("/");
   await newProject(page, "首发边界验收");
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const project = boot.workspace.projects.find(
-    (p: any) => p.title === "首发边界验收",
-  );
-  const post = async (operation: unknown) => {
-    const response = await page.request.post("/api/commands", {
-      headers: {
-        "X-Morphz-Token": boot.csrfToken,
-        Origin: new URL(page.url()).origin,
-      },
-      data: { commandId: crypto.randomUUID(), operation },
-    });
-    expect(response.status(), await response.text()).toBe(200);
-    return response;
-  };
-  const empty = await (
-    await post({
-      type: "create-conversation",
-      projectId: project.id,
-      title: "旧空记录",
-    })
-  ).json();
-  const saved = await (
-    await post({
-      type: "create-conversation",
-      projectId: project.id,
-      title: "旧草稿记录",
-    })
-  ).json();
-  await page.evaluate(
-    ({ boot, project, saved }) => {
-      const owner = sessionStorage.getItem("morphz:window");
-      const key = `morphz:${boot.centerId}:${boot.principalId}:draft:${owner}:inputs`;
-      const drafts = JSON.parse(localStorage.getItem(key) ?? "{}");
-      drafts[`${saved.entityId}:${project.id}:projects`] = {
-        body: "旧会话的未发送草稿",
-        selection: "",
-        revision: null,
-      };
-      localStorage.setItem(key, JSON.stringify(drafts));
-    },
-    { boot, project, saved },
-  );
-  await page.reload();
+  const boot = await conversationState(page);
   const group = projectGroup(page);
-  await expect(group.getByLabel("打开对话：旧空记录")).toHaveCount(0);
-  await expect(group.getByLabel("打开对话：旧草稿记录")).toHaveCount(0);
-  await group.getByLabel("继续草稿：旧草稿记录").click();
-  await expect(await openInput(page)).toHaveValue("旧会话的未发送草稿");
+  await (await openInput(page)).fill("默认会话的未发送草稿");
   await group.getByLabel("新建项目对话：首发边界验收").click();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
+  await page.reload();
+  await expect(group.locator(".conversation-choice")).toHaveCount(0);
+  expect((await conversationState(page)).conversations).toEqual(
+    boot.conversations,
+  );
   await page.getByLabel("消息附件文件").setInputFiles({
     name: "首发附件.txt",
     mimeType: "text/plain",
@@ -274,9 +233,12 @@ test("旧空会话不占列表，已有草稿可恢复；只发附件才落库�
   await expect(page.getByLabel("消息附件", { exact: true })).toContainText(
     "首发附件.txt",
   );
-  const before = await (await page.request.get("/api/workspace")).json();
+  const before = await conversationState(page);
+  const beforeInputs = messageHost.deliveries().length;
   let dropped = false;
-  await page.route("**/api/commands", async (route) => {
+  const sendIds: string[] = [];
+  await page.route("**/api/platform/messages", async (route) => {
+    sendIds.push(route.request().postDataJSON().commandId);
     if (
       route.request().postDataJSON().operation.type !== "record-input" ||
       dropped
@@ -284,13 +246,13 @@ test("旧空会话不占列表，已有草稿可恢复；只发附件才落库�
       return route.continue();
     dropped = true;
     const committed = await route.fetch();
-    expect(committed.status()).toBe(200);
+    expect(committed.status()).toBe(202);
     await route.fulfill({
       status: 503,
       json: { message: "测试：已提交但回执丢失" },
     });
   });
-  await page.getByLabel("保存输入", { exact: true }).click();
+  await page.getByLabel("发送消息", { exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("回执丢失");
   await expect(group.getByLabel("打开对话：对话 1")).toHaveAttribute(
     "aria-current",
@@ -301,31 +263,24 @@ test("旧空会话不占列表，已有草稿可恢复；只发附件才落库�
   await expect(page.getByLabel("消息附件", { exact: true })).toContainText(
     "首发附件.txt",
   );
-  await page.getByLabel("保存输入", { exact: true }).click();
+  await page.getByLabel("发送消息", { exact: true }).click();
   await expect(
     page.locator(".composer").getByLabel("消息附件", { exact: true }),
   ).toHaveCount(0);
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toHaveLength(
-    before.workspace.inputs.length + 1,
-  );
-  expect(after.workspace.conversations).toHaveLength(
-    before.workspace.conversations.length + 1,
-  );
-  const sent = after.workspace.inputs.at(-1);
+  const after = await conversationState(page);
+  expect(messageHost.deliveries()).toHaveLength(beforeInputs + 1);
+  expect(after.conversations).toHaveLength(before.conversations.length + 1);
+  expect(sendIds).toHaveLength(2);
+  expect(sendIds[1]).toBe(sendIds[0]);
+  const sent = messageHost.input(messageHost.deliveries().at(-1)!.inputId);
   expect(sent.body).toBe("");
   expect(sent.attachments).toHaveLength(1);
-  expect(
-    after.workspace.conversations.some((c: any) => c.id === empty.entityId),
-  ).toBe(true);
-  expect(
-    after.workspace.conversations.some((c: any) => c.id === saved.entityId),
-  ).toBe(true);
-  await group.getByLabel("继续草稿：旧草稿记录").click();
-  await expect(await openInput(page)).toHaveValue("旧会话的未发送草稿");
+  await group.locator(".project-link").click();
+  await expect(await openInput(page)).toHaveValue("默认会话的未发送草稿");
 });
 test("项目本身选默认会话，子项只列显式 Session；折叠不切换，刷新保留，目录进入回默认", async ({
   page,
+  messageHost,
 }) => {
   await page.goto("/");
   const title = "项目入口与会话选择验收";
@@ -356,30 +311,35 @@ test("项目本身选默认会话，子项只列显式 Session；折叠不切换
   await expect(page.getByRole("log")).toContainText("入口独立消息");
   await expect(child).toHaveAttribute("aria-current", "true");
   await box.fill("独立会话草稿");
-  const before = await (await page.request.get("/api/workspace")).json();
-  const project = before.workspace.projects.find((p: any) => p.title === title);
-  const defaultId = before.workspace.projects.find(
-    (p: any) => p.kind === "dialogue",
-  ).id;
-  const named = before.workspace.conversations.find(
+  const before = await conversationState(page);
+  const beforeInputs = messageHost.deliveries();
+  const project = before.projects.find((p) => p.title === title)!;
+  const defaultId = (await before.source.ensurePersonalSpaces()).dialogueId;
+  const named = before.conversations.find(
     (c: any) => c.projectId === project.id && c.id !== project.id,
-  );
+  )!;
   expect(
-    before.workspace.inputs.find((i: any) => i.body === "入口默认消息"),
+    beforeInputs
+      .map((i) => messageHost.input(i.inputId))
+      .find((i) => i.body === "入口默认消息"),
   ).toMatchObject({
     projectId: project.id,
     conversationId: defaultId,
   });
   expect(
-    before.workspace.inputs.find((i: any) => i.body === "入口独立消息"),
+    beforeInputs
+      .map((i) => messageHost.input(i.inputId))
+      .find((i) => i.body === "入口独立消息"),
   ).toMatchObject({
     projectId: project.id,
     conversationId: named.id,
   });
-  // Legacy storage is retained even though its redundant navigation row is gone.
-  expect(
-    before.workspace.conversations.some((c: any) => c.id === project.id),
-  ).toBe(true);
+  // Project-default navigation metadata is retained. It is not a separate
+  // personal Runtime Session and must not be listed as a named child.
+  expect(before.conversations.find((c) => c.id === project.id)).toMatchObject({
+    projectId: project.id,
+    kind: "default",
+  });
   await group.getByLabel("收起项目会话：" + title).click();
   await expect(group.locator(".conversation-choice")).toHaveCount(0);
   await expect(await openInput(page)).toHaveValue("独立会话草稿");
@@ -410,9 +370,9 @@ test("项目本身选默认会话，子项只列显式 Session；折叠不切换
   await page.locator(".project-card").click();
   await expect(parent).toHaveAttribute("aria-current", "true");
   await expect(await openInput(page)).toHaveValue("项目默认草稿");
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
-  expect(after.workspace.conversations).toEqual(before.workspace.conversations);
+  const after = await conversationState(page);
+  expect(messageHost.deliveries()).toEqual(beforeInputs);
+  expect(after.conversations).toEqual(before.conversations);
   // A real named Session with this title is not mistaken for the old default.
   await child.click();
   await group.getByLabel("对话操作：对话 1", { exact: true }).click();
@@ -557,48 +517,24 @@ test("项目多对话：不切应用，独立草稿、引用和消息，重命�
   }
 });
 
-test("迟到回复与执行记录按对话归属，不挤入当前对话", async ({ page }) => {
+test("迟到回复与执行记录按独立 Session 归属，默认 Session 不按项目过滤", async ({
+  page,
+  messageHost,
+}) => {
   await page.goto("/");
   await newProject(page, "迟到回复验收");
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const p = boot.workspace.projects.find(
-    (p: any) => p.title === "迟到回复验收",
-  ).id;
+  const boot = await conversationState(page);
+  const p = boot.projects.find((p) => p.title === "迟到回复验收")!.id;
+  const defaultId = (await boot.source.ensurePersonalSpaces()).dialogueId;
+  await (await openInput(page)).fill("默认会话的原始输入");
+  await page.getByLabel("AI 输入内容").press("Enter");
+  await expect(page.getByRole("log")).toContainText("默认会话的原始输入");
+  const inputId = messageHost.deliveries().at(-1)!.inputId;
   let c = "";
-  let messages: any[] = [];
-  await page.route("**/api/workspace", async (route) => {
-    const headers = { ...route.request().headers() };
-    delete headers["if-none-match"];
-    const response = await route.fetch({ headers });
-    const data = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...data,
-        runtime: {
-          ...data.runtime,
-          configured: true,
-          connected: true,
-          messages,
-        },
-      },
-    });
-  });
   await projectGroup(page)
     .getByRole("button", { name: /^新建项目对话：/ })
     .click();
-  // A Session exists only after a real first message (no model dispatch in this fixture).
-  await page.route("**/api/messages", async (route) => {
-    const result = await page.request.post("/api/commands", {
-      data: route.request().postDataJSON(),
-      headers: {
-        "X-Morphz-Token": boot.csrfToken,
-        Origin: new URL(page.url()).origin,
-      },
-    });
-    expect(result.ok()).toBe(true);
-    await route.fulfill({ response: result });
-  });
+  // A named conversation exists only after the real Host accepts its first input.
   await (await openInput(page)).fill("独立会话的首条输入");
   await page.getByLabel("AI 输入内容").press("Enter");
   await expect(
@@ -607,22 +543,43 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
       exact: true,
     }),
   ).toHaveAttribute("aria-current", "true");
-  const next = await (await page.request.get("/api/workspace")).json();
-  c = next.workspace.conversations.find(
-    (x: any) => x.projectId === p && x.id !== p,
-  ).id;
+  const next = await conversationState(page);
+  c = next.conversations.find((x) => x.projectId === p && x.id !== p)!.id;
   await openInput(page);
-  messages = [
+  // Only this late reply is controlled presentation data. Identity, queued
+  // input and both Session catalogs remain real, and history is scoped by Session.
+  const messages = [
     {
       id: "delayed-fixture",
       projectId: p,
-      conversationId: p,
+      conversationId: defaultId,
       artifactId: null,
+      inputId,
       text: "默认对话的迟到回复",
       createdAt: new Date().toISOString(),
       kind: "reply",
     },
   ];
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const conversationId = new URL(route.request().url()).pathname
+        .split("/")
+        .at(-2);
+      await route.fulfill({
+        response,
+        json: {
+          ...data,
+          runtime: {
+            ...data.runtime,
+            messages: conversationId === defaultId ? messages : [],
+          },
+        },
+      });
+    },
+  );
   await page.reload();
   await expect(
     projectGroup(page).getByRole("button", {
@@ -645,33 +602,24 @@ test("迟到回复与执行记录按对话归属，不挤入当前对话", async
   await openExecutionPanel(page);
   await page.getByText("工具执行记录", { exact: true }).click();
   await expect.poll(() => scope).toBe(c);
-  // The workspace poll can still be inside route.fetch when this test ends.
-  // Drain handlers here instead of leaking teardown errors into the next test.
+  // Drain active history handlers before the real HTTP fixture is closed.
   await page.unrouteAll({ behavior: "wait" });
 });
 
 test("对象引用随对话草稿保存，切换不会把选区带到另一条对话", async ({
   page,
+  messageHost,
 }) => {
   await page.goto("/");
   await newProject(page, "引用归属验收");
   await openLibrary(page);
-  const seedBoot = await (await page.request.get("/api/workspace")).json();
-  const project = seedBoot.workspace.projects.find(
-    (p: { title: string }) => p.title === "引用归属验收",
-  );
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: project.id,
-      title: "跨对话引用原文",
-      content: {
-        kind: "document",
-        markdown: "上下文事务维护当前认知，保留可追溯的历史。",
-      },
-    },
-    true,
+  const seedBoot = await conversationState(page);
+  const project = seedBoot.projects.find((p) => p.title === "引用归属验收")!;
+  await seedConversationDocument(
+    messageHost,
+    project.id,
+    "跨对话引用原文",
+    "上下文事务维护当前认知，保留可追溯的历史。",
   );
   await page
     .locator(".artifact-card")
@@ -707,13 +655,17 @@ test("对象引用随对话草稿保存，切换不会把选区带到另一条�
     "解释这段引用，尚未发送",
   );
   await page.getByLabel("AI 输入内容").press("Enter");
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const sent = boot.workspace.inputs.find(
-    (i: any) => i.body === "解释这段引用，尚未发送",
-  );
-  const c = boot.workspace.conversations.find(
-    (c: any) => c.projectId === sent.projectId && c.title === "对话 1",
-  );
+  await expect(
+    projectGroup(page).getByLabel("打开对话：对话 1", { exact: true }),
+  ).toHaveAttribute("aria-current", "true");
+  const boot = await conversationState(page);
+  const sent = messageHost
+    .deliveries()
+    .map((i) => messageHost.input(i.inputId))
+    .find((i) => i.body === "解释这段引用，尚未发送")!;
+  const c = boot.conversations.find(
+    (c) => c.projectId === sent.projectId && c.title === "对话 1",
+  )!;
   expect(sent.conversationId).toBe(c.id);
   expect(sent.artifactRevision).toBe(1);
   expect(sent.selection).toContain("可追溯的历史");

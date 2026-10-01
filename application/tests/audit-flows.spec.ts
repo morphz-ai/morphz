@@ -4,22 +4,51 @@ import { openLibrary } from "./application-helpers.js";
 import { openInput } from "./interaction-helpers.js";
 import { humanTask, seedLibraryArtifact } from "./artifact-fixtures.js";
 import type { Command } from "../packages/core/src/model.js";
-import type { Boot } from "../apps/web/src/client.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
 test("模型列表按实际目录选择，只发送所选模型；失败保留输入与选择", async ({
   page,
 }) => {
   let submitted: any = null;
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    boot.runtime.configured = true;
-    boot.runtime.connected = true;
-    boot.runtime.model = "model-a";
-    await route.fulfill({ response, json: boot });
-  });
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), "if-none-match": "" },
+      });
+      const navigation = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...navigation,
+          runtime: {
+            ...navigation.runtime,
+            configured: true,
+            connected: true,
+            model: "model-a",
+          },
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history$/,
+    (route) =>
+      route.fulfill({
+        json: {
+          inputs: [],
+          nextCursor: null,
+          runtime: {
+            configured: true,
+            connected: true,
+            model: "model-a",
+            error: "",
+            messages: [],
+            deliveries: [],
+          },
+        },
+      }),
+  );
   await page.route("**/api/models", (route) =>
     route.fulfill({
       json: {
@@ -40,7 +69,7 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
       },
     }),
   );
-  await page.route("**/api/messages", (route) => {
+  await page.route("**/api/platform/messages", (route) => {
     submitted = route.request().postDataJSON();
     return route.fulfill({
       status: 503,
@@ -48,6 +77,10 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
     });
   });
   await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
   const input = await openInput(page);
   await input.fill("指定下一次模型");
   const select = page.getByLabel("本次输入模型");
@@ -82,16 +115,68 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
 });
 
 async function command(page: Page, operation: Command["operation"]) {
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const res = await page.request.post("/api/commands", {
+  const boot = await (await page.request.get("/api/platform/bootstrap")).json();
+  const commandId = randomUUID();
+  let path: string;
+  let data: Record<string, unknown>;
+  let entityId: string;
+  if (operation.type === "create-project") {
+    entityId = `audit_${randomUUID().replaceAll("-", "")}`;
+    path = "/api/platform/projects";
+    data = { commandId, projectId: entityId, title: operation.title };
+  } else if (
+    operation.type === "create-artifact" &&
+    operation.content.kind === "document"
+  ) {
+    entityId = commandId;
+    path = "/api/platform/documents";
+    data = {
+      commandId,
+      objectId: entityId,
+      projectId: operation.projectId,
+      title: operation.title,
+      markdown: operation.content.markdown,
+    };
+  } else if (
+    operation.type === "create-artifact" &&
+    operation.content.kind === "task"
+  ) {
+    entityId = commandId;
+    path = "/api/platform/tasks";
+    data = {
+      commandId,
+      taskId: entityId,
+      projectId: operation.projectId,
+      title: operation.title,
+      description: operation.content.description,
+      assigneeId: operation.content.assigneeId,
+      modelId: operation.content.model,
+      reasoningEffort: operation.content.reasoningEffort ?? null,
+      notBefore: operation.content.notBefore,
+      everySeconds: operation.content.everySeconds,
+      ...(operation.content.dueDate
+        ? { dueDate: operation.content.dueDate }
+        : {}),
+    };
+  } else {
+    throw new Error(`没有正式存储夹具：${operation.type}`);
+  }
+  const res = await page.request.post(path, {
     headers: {
       "X-Morphz-Token": boot.csrfToken,
-      Origin: "http://127.0.0.1:65421",
+      Origin: new URL(page.url()).origin,
     },
-    data: { commandId: randomUUID(), operation },
+    data,
   });
   expect(res.ok(), await res.text()).toBe(true);
-  return (await res.json()).entityId as string;
+  if (
+    operation.type === "create-artifact" &&
+    operation.content.kind === "document"
+  ) {
+    const created = (await res.json()) as { contentId: string };
+    return created.contentId;
+  }
+  return entityId;
 }
 async function desk(page: Page) {
   await page.goto("/");
@@ -118,7 +203,7 @@ test("事项可独立选择模型和思考深度，改派给人清除设置", as
     }),
   );
   let submitted: any = null;
-  await page.route("**/api/commands", (route) => {
+  await page.route("**/api/platform/tasks/revise", (route) => {
     submitted = route.request().postDataJSON();
     return route.fulfill({
       status: 503,
@@ -132,20 +217,16 @@ test("事项可独立选择模型和思考深度，改派给人清除设置", as
   await page.getByLabel("执行模型", { exact: true }).selectOption("model-b");
   await page.getByLabel("事项思考深度", { exact: true }).selectOption("high");
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
-  await expect.poll(() => submitted?.operation?.content?.model).toBe("model-b");
-  await expect
-    .poll(() => submitted?.operation?.content?.reasoningEffort)
-    .toBe("high");
+  await expect.poll(() => submitted?.modelId).toBe("model-b");
+  await expect.poll(() => submitted?.reasoningEffort).toBe("high");
   await expect(page.getByLabel("事项思考深度", { exact: true })).toHaveValue(
     "high",
   );
   await owner.selectOption(human);
   await expect(page.getByLabel("事项思考深度", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
-  await expect.poll(() => submitted?.operation?.content?.model).toBeNull();
-  await expect
-    .poll(() => submitted?.operation?.content?.reasoningEffort)
-    .toBeNull();
+  await expect.poll(() => submitted?.modelId).toBeNull();
+  await expect.poll(() => submitted?.reasoningEffort).toBeNull();
 });
 
 test("资料 → A → B → 返回恢复对象、筛选和未发送草稿，不切换会话", async ({
@@ -195,7 +276,9 @@ test("Web 内容页不展示无法原位访问的文件入口，不再展示导�
   page,
 }) => {
   await desk(page);
-  const before = await (await page.request.get("/api/workspace")).json();
+  const before = await (
+    await page.request.get("/api/platform/content?limit=50")
+  ).json();
   await expect(
     page.getByRole("button", { name: "导入资料", exact: true }),
   ).toHaveCount(0);
@@ -206,8 +289,10 @@ test("Web 内容页不展示无法原位访问的文件入口，不再展示导�
   await expect(
     page.getByRole("button", { name: "资料导入与来源", exact: true }),
   ).toHaveCount(0);
-  const after = await (await page.request.get("/api/workspace")).json();
-  expect(after.workspace.artifacts).toEqual(before.workspace.artifacts);
+  const after = await (
+    await page.request.get("/api/platform/content?limit=50")
+  ).json();
+  expect(after).toEqual(before);
 });
 
 test("标记通知已读失败不阻止打开，恢复后补记；失去权限时拒绝读取", async ({
@@ -246,7 +331,7 @@ test("标记通知已读失败不阻止打开，恢复后补记；失去权限�
   expect(acknowledged).toBe(false);
   fail = false;
   await expect.poll(() => acknowledged, { timeout: 7000 }).toBe(true);
-  await page.route("**/api/workspace", async (route) => {
+  await page.route(`**/api/platform/tasks/${id}`, async (route) => {
     if (deny)
       return route.fulfill({
         status: 403,
@@ -290,6 +375,52 @@ test("过时 blur 不覆盖最新输入焦点；关闭弹窗反复恢复草稿",
 });
 
 test("交付回执直接打开准确版本；没有回执时不猜测产物", async ({ page }) => {
+  const inputId = randomUUID();
+  let inputProjectId = "";
+  const identity: { principalId: string; actantId: string } = await (
+    await page.request.get("/api/platform/bootstrap")
+  ).json();
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch();
+      const navigation = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...navigation,
+          runtime: { ...navigation.runtime, configured: true },
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
+    async (route) => {
+      const match = new URL(route.request().url()).pathname.match(
+        /\/projects\/([^/]+)\/conversations\/([^/]+)\/history$/,
+      );
+      if (!match) throw new Error("Expected a Platform history request");
+      inputProjectId = match[1]!;
+      await route.fulfill({
+        json: {
+          inputs: [
+            {
+              id: inputId,
+              projectId: match[1],
+              conversationId: match[2],
+              author: identity,
+              targetActantId: "morphz-agent",
+              body: "audit-output-request",
+              createdAt: "2026-09-28T00:00:00.000Z",
+            },
+          ],
+          nextCursor: null,
+          runtime: { ...disconnectedRuntime, configured: true },
+        },
+      });
+    },
+  );
   const projectId = await desk(page);
   const artifactId = await command(page, {
     type: "create-artifact",
@@ -297,32 +428,34 @@ test("交付回执直接打开准确版本；没有回执时不猜测产物", as
     title: "交付入口测试",
     content: { kind: "document", markdown: "真正保存的正文" },
   });
+  const content: { appObjectId: string } = await (
+    await page.request.get(`/api/platform/content/${artifactId}`)
+  ).json();
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "对话", exact: true })
     .click();
-  const box = await openInput(page);
-  await box.fill("audit-output-request");
-  await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const boot: Boot = await (await page.request.get("/api/workspace")).json();
-  const input = boot.workspace.inputs.find(
-    (i) => i.body === "audit-output-request",
-  )!;
+  await expect(page.getByText("audit-output-request")).toBeVisible();
   let delivered = false;
-  await page.route("**/api/workspace", async (route) => {
+  await page.route("**/api/platform/content/deliveries?**", async (route) => {
     const response = await route.fetch({
       headers: { ...route.request().headers(), "if-none-match": "" },
     });
-    const data: Boot = await response.json();
-    data.outputs = delivered
+    const data = delivered
       ? [
           {
             commandId: "fixture-output",
-            inputId: input.id,
-            projectId: input.projectId,
-            artifactId,
-            revision: 1,
-            createdAt: new Date().toISOString(),
+            operation: "record-content",
+            inputId,
+            sourceProjectId: inputProjectId,
+            contentId: artifactId,
+            projectId,
+            appId: "morphz.objects",
+            appObjectId: content.appObjectId,
+            kind: "document",
+            title: "交付入口测试",
+            versionRef: "1",
+            committedAt: new Date().toISOString(),
           },
         ]
       : [];
@@ -330,6 +463,7 @@ test("交付回执直接打开准确版本；没有回执时不猜测产物", as
   });
   await expect(page.getByLabel("打开交付：交付入口测试")).toHaveCount(0);
   delivered = true;
+  await page.reload();
   await page.getByLabel("打开交付：交付入口测试").click();
   await expect(page.locator(".object-paper > h1")).toHaveText("交付入口测试");
   await expect(page.getByLabel("查看版本")).toHaveValue("1");
@@ -364,15 +498,45 @@ test("只保留紧凑连接提示；详情区分应用数据与智能体，模�
 test("推理设置区分加载、读取失败和旧服务缺少能力，不误报需要更新中心", async ({
   page,
 }) => {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const boot: Boot = await response.json();
-    boot.runtime.configured = true;
-    boot.runtime.connected = true;
-    await route.fulfill({ response, json: boot });
-  });
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), "if-none-match": "" },
+      });
+      const navigation = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...navigation,
+          runtime: {
+            ...navigation.runtime,
+            configured: true,
+            connected: true,
+            model: "model-a",
+          },
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history$/,
+    (route) =>
+      route.fulfill({
+        json: {
+          inputs: [],
+          nextCursor: null,
+          runtime: {
+            configured: true,
+            connected: true,
+            model: "model-a",
+            error: "",
+            messages: [],
+            deliveries: [],
+          },
+        },
+      }),
+  );
   let release!: () => void;
   const firstRequest = new Promise<void>((resolve) => {
     release = resolve;

@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
 async function openTestBook(page: Page, paragraphs = 80) {
   await page.goto("/");
@@ -43,17 +45,28 @@ async function openTestBook(page: Page, paragraphs = 80) {
     { timeout: 60_000 },
   );
   const importMs = Date.now() - importStarted;
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const book = boot.workspace.artifacts.find(
-    (a: { title: string }) => a.title === title,
+  const platform = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
   );
+  const entries = await platform.content({
+    appId: "morphz.reader",
+    query: title,
+  });
+  const entry = entries.items.find((item) => item.title === title);
+  expect(entry, "导入的读物应登记在 Platform 目录").toBeDefined();
+  const book = (await platform.readReaderBook(entry!.id, 1)) as {
+    title: string;
+    sections: Array<{ id: string; title: string; characters: number }>;
+  };
   const position = async () => {
-    const next = await (await page.request.get("/api/workspace")).json();
-    return (
-      next.workspace.readingStates.find(
-        (s: { artifactId: string }) => s.artifactId === book.id,
-      )?.location.start ?? 0
+    const response = await page.request.get(
+      `/api/reader/state?artifactId=${entry!.id}&revision=1`,
     );
+    expect(response.ok()).toBeTruthy();
+    const state = (await response.json()) as {
+      position: { location: { start: number } } | null;
+    };
+    return state.position?.location.start ?? 0;
   };
   return {
     title,
@@ -91,9 +104,9 @@ test("长读物按段加载，连续滚动和保存进度不阻塞原文阅读",
   const { book, view, position } = await openTestBook(page, 2400);
   // Long imports are deliberately split into bounded sections. Check that all
   // source text is cataloged, while measuring the actual visible section.
-  expect(book.content.sections.length).toBeGreaterThan(1);
+  expect(book.sections.length).toBeGreaterThan(1);
   expect(
-    book.content.sections.reduce(
+    book.sections.reduce(
       (sum: number, section: { characters: number }) =>
         sum + section.characters,
       0,
@@ -135,15 +148,15 @@ test("百万字读物有界加载，末章可达且刷新保留末章位置", as
     page,
     paragraphs,
   );
-  const characters = book.content.sections.reduce(
+  const characters = book.sections.reduce(
     (sum: number, section: { characters: number }) => sum + section.characters,
     0,
   );
   expect(characters).toBeGreaterThan(1_000_000);
-  expect(book.content.sections.length).toBeGreaterThan(80);
-  // The workspace snapshot contains a catalog, never the million-character body.
+  expect(book.sections.length).toBeGreaterThan(80);
+  // Reader returns a bounded overview, never the million-character body.
   expect(JSON.stringify(book).length).toBeLessThan(100_000);
-  for (const section of book.content.sections) {
+  for (const section of book.sections) {
     expect(section.characters).toBeLessThan(12_100);
     expect(section).not.toHaveProperty("text");
     expect(section).not.toHaveProperty("html");
@@ -152,7 +165,7 @@ test("百万字读物有界加载，末章可达且刷新保留末章位置", as
   // innerText also includes browser-generated blank lines between paragraphs.
   expect((await text.innerText()).length).toBeLessThan(13_000);
   await page.getByRole("button", { name: "目录", exact: true }).click();
-  const last = book.content.sections.at(-1);
+  const last = book.sections.at(-1)!;
   await page
     .getByRole("complementary", { name: "阅读目录", exact: true })
     .getByRole("button", { name: last.title, exact: true })
@@ -178,7 +191,7 @@ test("百万字读物有界加载，末章可达且刷新保留末章位置", as
     JSON.stringify({
       paragraphs,
       characters,
-      sections: book.content.sections.length,
+      sections: book.sections.length,
       importMs,
       medianMs: timings[12],
       p95Ms: timings[22],

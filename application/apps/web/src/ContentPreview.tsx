@@ -27,14 +27,24 @@ export function ContentPreview({ artifact: a }: { artifact: Artifact }) {
           src={`/api/assets/${c.assetId}`}
           alt={c.alt || a.title}
         />
-      ) : c.kind === "pdf" ? (
+      ) : c.kind === "pdf" ||
+        (c.kind === "publication" && c.format === "pdf") ? (
         <>
           {visible && (
             <Suspense fallback={<span>正在载入预览…</span>}>
-              <PdfPreview assetId={c.assetId} />
+              <PdfPreview
+                assetId={c.assetId}
+                url={
+                  c.kind === "publication"
+                    ? `/api/reader/original?artifactId=${encodeURIComponent(a.id)}&revision=${a.revision}`
+                    : undefined
+                }
+              />
             </Suspense>
           )}
-          <small>{c.pages.length} 页</small>
+          <small>
+            {c.kind === "pdf" ? c.pages.length : c.sections.length} 页
+          </small>
         </>
       ) : c.kind === "interactive" ? (
         <div className="content-table-preview">

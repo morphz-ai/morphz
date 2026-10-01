@@ -5,11 +5,13 @@ import { PdfPage } from "./PdfReader.js";
 /** Lazy: the PDF engine does not increase the normal conversation startup cost. */
 export default function ReaderPdf({
   assetId,
+  url,
   page,
   ocr,
   line,
 }: {
   assetId: string;
+  url?: string;
   page: number;
   ocr?: import("../../../packages/core/src/reader-ocr.js").ReadingOcr;
   line?: number;
@@ -22,7 +24,7 @@ export default function ReaderPdf({
     setPdf(null);
     setError("");
     const task = getDocument({
-      url: `/api/assets/${assetId}`,
+      url: url ?? `/api/assets/${assetId}`,
       cMapUrl: "/pdfjs/cmaps/",
       cMapPacked: true,
       standardFontDataUrl: "/pdfjs/standard_fonts/",
@@ -42,7 +44,7 @@ export default function ReaderPdf({
       stopped = true;
       void task.destroy();
     };
-  }, [assetId]);
+  }, [assetId, url]);
   useEffect(() => {
     const observer = new ResizeObserver((entries) =>
       setWidth(Math.max(200, Math.min(1000, entries[0]!.contentRect.width))),

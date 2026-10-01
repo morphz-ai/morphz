@@ -33,6 +33,8 @@ export class ConversationFeed {
   constructor(
     private options: {
       sessions: () => string[];
+      initialCursor?: (sessionId: string) => number;
+      messageLimit?: number;
       url: string;
       headers: () => Record<string, string>;
       request: (path: string) => Promise<unknown>;
@@ -40,8 +42,9 @@ export class ConversationFeed {
         sessionId: string,
         event: StreamEvent,
       ) => Omit<LiveMessage, "id" | "text" | "kind" | "createdAt">;
+      onEvent?: (sessionId: string, event: StreamEvent) => void;
       changed: (snapshot: ConversationStream) => void;
-      authorize: () => void;
+      authorize: () => void | Promise<void>;
       failed: () => void;
     },
   ) {
@@ -50,50 +53,65 @@ export class ConversationFeed {
   }
   private notify() {
     if (this.disposed || this.notifyTimer) return;
-    this.notifyTimer = setTimeout(() => {
+    this.notifyTimer = setTimeout(async () => {
       this.notifyTimer = undefined;
       if (this.disposed) return;
       try {
-        this.options.authorize();
+        await this.options.authorize();
+        if (this.disposed) return;
+        const messages = [...this.connections.entries()].flatMap(
+          ([sessionId, c]) =>
+            c.projection.snapshot().map((message) => ({
+              ...message,
+              id: message.id.startsWith("tool:")
+                ? `tool:${sessionId}:${message.id.slice(5)}`
+                : message.id.startsWith("stream:")
+                  ? `stream:${sessionId}:${message.id.slice(7)}`
+                  : message.id,
+            })),
+        );
         this.options.changed({
           connected: [...this.connections.values()].every((c) => c.ready),
-          messages: [...this.connections.entries()].flatMap(([sessionId, c]) =>
-            c.projection
-              .snapshot()
-              .map((message) => ({
-                ...message,
-                id: message.id.startsWith("tool:")
-                  ? `tool:${sessionId}:${message.id.slice(5)}`
-                  : message.id.startsWith("stream:")
-                    ? `stream:${sessionId}:${message.id.slice(7)}`
-                    : message.id,
-              })),
-          ),
+          messages: this.options.messageLimit
+            ? messages
+                .sort(
+                  (a, b) =>
+                    a.createdAt.localeCompare(b.createdAt) ||
+                    a.id.localeCompare(b.id),
+                )
+                .slice(-this.options.messageLimit)
+            : messages,
         });
       } catch {
         this.close();
-        this.options.failed();
       }
     }, 50);
   }
   async sync() {
     if (this.disposed) return;
     try {
-      this.options.authorize();
+      await this.options.authorize();
+      if (this.disposed) return;
     } catch {
       this.close();
-      this.options.failed();
       return;
     }
+    const sessionIds = this.options.sessions();
+    const authorized = new Set(sessionIds);
+    for (const [id, connection] of this.connections) {
+      if (authorized.has(id)) continue;
+      this.connections.delete(id);
+      connection.socket?.terminate();
+    }
     await Promise.all(
-      this.options.sessions().map((id) => {
+      sessionIds.map((id) => {
         let c = this.connections.get(id);
         if (!c) {
           c = {
             projection: new LiveConversationProjection((e) =>
               this.options.route(id, e),
             ),
-            cursor: 0,
+            cursor: Math.max(0, this.options.initialCursor?.(id) ?? 0),
             ready: false,
             retryAt: 0,
           };
@@ -113,6 +131,7 @@ export class ConversationFeed {
     if (!parsed.success) return;
     const event = parsed.data;
     if (event.payload.session_id !== id) return;
+    this.options.onEvent?.(id, event);
     c.projection.consume(event);
     this.notify();
   }
@@ -131,14 +150,14 @@ export class ConversationFeed {
           maxPayload: 4 * 1024 * 1024,
         });
         c.socket = ws;
-        ws.on("message", (data) => {
+        ws.on("message", async (data) => {
           if (!this.disposed && c.socket === ws) {
             try {
-              this.options.authorize();
+              await this.options.authorize();
+              if (this.disposed || c.socket !== ws) return;
               this.accept(id, c, JSON.parse(data.toString()));
             } catch {
               this.close();
-              this.options.failed();
             }
           }
         });

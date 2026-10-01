@@ -1,61 +1,66 @@
-import { openLibrary } from "./application-helpers.js";
-import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
 import { test, expect } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { openSettings } from "./settings-helpers.js";
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
-test("旧提醒范围需要明确选择，不再出现高优先级选项", async ({ page }) => {
-  let mode = "off",
-    needsReview = true;
+test("通知只提供全部与不提示，修改携带版本和稳定操作 ID", async ({ page }) => {
+  let mode: "all" | "off" = "all",
+    revision = 0;
+  const commands: { commandId: string; expectedRevision: number }[] = [];
   await page.route("**/api/notifications", (route) => {
     if (route.request().method() === "POST") {
-      mode = route.request().postDataJSON().mode;
-      needsReview = false;
+      const command = route.request().postDataJSON();
+      commands.push(command);
+      mode = command.mode;
+      revision++;
     }
-    return route.fulfill({ json: { mode, needsReview, unread: 0, items: [] } });
+    return route.fulfill({ json: { mode, revision, unread: 0, items: [] } });
   });
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "通知，提醒范围待确认", exact: true })
-    .click();
+  await page.getByRole("button", { name: "通知", exact: true }).click();
   let dialog = page.getByRole("dialog", { name: "通知", exact: true });
-  await expect(dialog.getByRole("status")).toContainText(
-    "旧提醒范围已停用，请重新选择。",
-  );
   await expect(dialog.getByRole("radio")).toHaveCount(0);
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(dialog.getByRole("radio")).toHaveCount(2);
+  await dialog.getByRole("radio", { name: "不提示", exact: true }).click();
   await expect(
     dialog.getByRole("radio", { name: "不提示", exact: true }),
-  ).not.toBeChecked();
-  await dialog.getByRole("radio", { name: "全部提醒", exact: true }).click();
-  await expect(dialog.getByRole("status")).toHaveCount(0);
+  ).toBeChecked();
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.expectedRevision).toBe(0);
+  expect(commands[0]?.commandId).toMatch(/^[a-f0-9-]{36}$/);
   await page.keyboard.press("Escape");
   await openSettings(page, "通知");
   await expect(
-    dialog.getByRole("radio", { name: "全部提醒", exact: true }),
+    dialog.getByRole("radio", { name: "不提示", exact: true }),
   ).toBeChecked();
 });
 
-test("旧的待同步已读回执遇到一次断线后，转换成当前通知继续同步", async ({
-  page,
-}) => {
-  const boot = await (await page.request.get("/api/workspace")).json();
-  const key = `morphz:${boot.centerId}:${boot.principalId}:notification-reads`;
-  const legacy = "a".repeat(64),
-    current = "b".repeat(64);
-  await page.addInitScript(
-    ({ key, legacy }) => localStorage.setItem(key, JSON.stringify([legacy])),
-    { key, legacy },
+test("已读回执遇到一次断线后保留同一操作 ID 重试", async ({ page }) => {
+  const { boot } = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
   );
-  const receipts: string[][] = [];
+  const key = `morphz:${boot.centerId}:${boot.principalId}:notification-reads`;
+  const current = "b".repeat(64);
+  await page.addInitScript(
+    ({ key, current }) => localStorage.setItem(key, JSON.stringify([current])),
+    { key, current },
+  );
+  const receipts: {
+    ids: string[];
+    commandId: string;
+    expectedRevision: number;
+  }[] = [];
   let read = false;
   await page.route("**/api/notifications", (route) => {
     if (route.request().method() === "POST") {
-      const ids = route.request().postDataJSON().ids;
-      receipts.push(ids);
+      const command = route.request().postDataJSON();
+      const ids = command.ids;
+      receipts.push(command);
       if (receipts.length === 1)
         return route.fulfill({ status: 503, json: { error: "offline" } });
       read = ids.includes(current);
@@ -63,15 +68,15 @@ test("旧的待同步已读回执遇到一次断线后，转换成当前通知�
     return route.fulfill({
       json: {
         mode: "all",
+        revision: read ? 1 : 0,
         unread: read ? 0 : 1,
         items: [
           {
             id: current,
             artifactId: "test",
-            title: "TEST 旧已读",
+            title: "TEST 待确认已读",
             reason: "需要你参与的事项",
             read,
-            readAliases: [legacy],
           },
         ],
       },
@@ -79,7 +84,12 @@ test("旧的待同步已读回执遇到一次断线后，转换成当前通知�
   });
   await page.goto("/");
   await expect.poll(() => receipts.length, { timeout: 7000 }).toBe(2);
-  expect(receipts).toEqual([[legacy], [current]]);
+  expect(receipts.map((command) => command.ids)).toEqual([
+    [current],
+    [current],
+  ]);
+  expect(receipts[0]?.commandId).toBe(receipts[1]?.commandId);
+  expect(receipts[0]?.expectedRevision).toBe(receipts[1]?.expectedRevision);
   await expect(
     page.getByRole("button", { name: "通知", exact: true }),
   ).toBeVisible();
@@ -92,16 +102,32 @@ test("旧的待同步已读回执遇到一次断线后，转换成当前通知�
 });
 
 test("通知可打开事项，已读与提醒范围刷新后保留", async ({ page }) => {
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const suffix = randomUUID().slice(0, 8);
+  const title = `TEST 通知设置验证 ${suffix}`;
+  const projectId = randomUUID();
+  await source.createProject(
+    `TEST 通知项目 ${suffix}`,
+    randomUUID(),
+    projectId,
+  );
+  await source.createTask({
+    commandId: randomUUID(),
+    taskId: randomUUID(),
+    projectId,
+    title,
+    assigneeId: source.boot.actantId,
+  });
   await page.goto("/");
-  await openLibrary(page);
-  await seedLibraryArtifact(page, "通知设置验证", humanTask());
   await expect(page.getByRole("button", { name: /^通知，/ })).toBeVisible({
     timeout: 6000,
   });
   await page.locator(".notification-trigger").click();
   const dialog = page.locator(".notification-dialog");
   await expect(
-    dialog.getByRole("button", { name: /通知设置验证/ }),
+    dialog.getByRole("button", { name: new RegExp(title) }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "通知设置", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "设置", exact: true });
@@ -111,10 +137,10 @@ test("通知可打开事项，已读与提醒范围刷新后保留", async ({ pa
   ).toBeChecked();
   await page.keyboard.press("Escape");
   await page.locator(".notification-trigger").click();
-  await dialog.getByRole("button", { name: /通知设置验证/ }).click();
+  await dialog.getByRole("button", { name: new RegExp(title) }).click();
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("heading", { name: "通知设置验证", exact: true }),
+    page.getByRole("heading", { name: title, exact: true }),
   ).toBeVisible();
   await page.reload();
   await page.getByRole("button", { name: "通知", exact: true }).click();
@@ -125,7 +151,7 @@ test("通知可打开事项，已读与提醒范围刷新后保留", async ({ pa
   await page.keyboard.press("Escape");
   await page.locator(".notification-trigger").click();
   await expect(
-    dialog.getByRole("button", { name: /通知设置验证/ }),
+    dialog.getByRole("button", { name: new RegExp(title) }),
   ).toHaveAttribute("data-unread", "false");
   await page.screenshot({ path: "test-results/notifications.png" });
 });
@@ -194,7 +220,7 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
   });
   await all.click();
   await expect(dialog.getByRole("alert")).toHaveText(
-    "通知设置未保存，请重试。",
+    "通知设置未确认保存，请重试。",
   );
   await expect(dialog.getByRole("radio", { name: "不提示" })).toBeChecked();
   // A successful background GET must not erase a failed setting write.
@@ -205,7 +231,7 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
     { timeout: 6000 },
   );
   await expect(dialog.getByRole("alert")).toHaveText(
-    "通知设置未保存，请重试。",
+    "通知设置未确认保存，请重试。",
   );
   await page.setViewportSize({ width: 380, height: 540 });
   // Wait for the responsive layout after the viewport change, not a stale

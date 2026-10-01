@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import {
@@ -18,8 +21,11 @@ import {
 import { Application } from "../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
+import { createDocument } from "../packages/application/src/document-service.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { localAccess } from "../packages/core/src/model.js";
 import {
   LiveDictation,
   replaceDictationTail,
@@ -252,10 +258,85 @@ test("权限撤回、取消订阅与错误帧停止语音，不泄漏迟到结�
     );
 });
 
+test("异步项目授权撤回后，听写不公布排队中的识别结果", async () => {
+  const f = fixture();
+  const streams = new SpeechStreams(f.provider);
+  const id = randomUUID();
+  const scope = { projectId: "platform-project" };
+  let allowed = true;
+  const check = async () => {
+    await Promise.resolve();
+    if (!allowed) throw new Error("permission revoked");
+  };
+  const call = (action: Record<string, unknown>) =>
+    streams.call(
+      speechStreamCommandSchema.parse({ id, scope, ...action }),
+      "human",
+      check,
+      new AbortController().signal,
+    );
+  try {
+    await call({ action: "open" });
+    const pending = call({ action: "read", after: 0 });
+    allowed = false;
+    f.result("不应公布的文字");
+    await assert.rejects(pending, /permission revoked/);
+    assert.equal(f.closed(), 1);
+    await assert.rejects(
+      call({ action: "read", after: 0 }),
+      /permission revoked/,
+    );
+  } finally {
+    streams.close();
+  }
+});
+
 test("Desktop IPC 和 Web HTTP 都调用共享实时听写，身份失效会关连接", async () => {
-  const store = new WorkspaceStore(":memory:"),
+  const directory = mkdtempSync(join(tmpdir(), "morphz-speech-host-"));
+  const store = new WorkspaceStore(join(directory, "workspace.sqlite")),
     f = fixture();
-  const application = new Application(store, { speech: f.provider });
+  const domains = await openApplicationDomainsHost(directory, store);
+  await domains.work.authority.withSession(
+    localAccess,
+    () => {},
+    (actor) =>
+      domains.work.service.createProject(actor, {
+        commandId: randomUUID(),
+        projectId: "platform-speech-only",
+        title: "听写项目",
+      }),
+  );
+  await domains.work.authority.withSession(
+    localAccess,
+    () => {},
+    (actor) =>
+      domains.work.service.createProject(actor, {
+        commandId: randomUUID(),
+        projectId: "other-platform-project",
+        title: "其他项目",
+      }),
+  );
+  const document = await domains.content.authority.withSession(
+    localAccess,
+    () => {},
+    (actor) =>
+      createDocument({
+        platform: domains.content.platform,
+        objects: domains.content.objects,
+        actor,
+        instanceId: domains.content.instanceIds.objects,
+        commandId: randomUUID(),
+        objectId: "platform-speech-document",
+        projectId: "platform-speech-only",
+        title: "听写内容",
+        markdown: "# 正文",
+      }),
+  );
+  assert.equal("snapshot" in store, false);
+  const application = new Application(store, {
+    speech: f.provider,
+    platformWork: domains.work,
+  });
   const local = new LocalApplicationConnection(application);
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -265,6 +346,7 @@ test("Desktop IPC 和 Web HTTP 都调用共享实时听写，身份失效会关�
     port,
     webRoot: "/nonexistent",
     speech: f.provider,
+    platformWork: domains.work,
   });
   await new Promise<void>((resolve) =>
     server.listen(port, "127.0.0.1", resolve),
@@ -276,12 +358,81 @@ test("Desktop IPC 和 Web HTTP 都调用共享实时听写，身份失效会关�
       headers: { ...options?.headers, Origin: origin },
     }),
   );
-  const boot = await local.invoke({ id: randomUUID(), method: "workspace" });
+  const boot = await local.invoke({
+    id: randomUUID(),
+    method: "platform.bootstrap",
+  });
   assert.ok(boot.ok);
   const generation = (boot.value as { csrfToken: string }).csrfToken;
-  const remoteBoot = (await remote.call("workspace")) as { csrfToken: string };
-  const scope = { projectId: "first-project" };
+  const remoteBoot = (await remote.call("platform.bootstrap")) as {
+    csrfToken: string;
+  };
+  const scope = { projectId: "platform-speech-only" };
   try {
+    assert.deepEqual(
+      await local.call(
+        "speech.transcribe",
+        {
+          scope,
+          data: new Uint8Array([0]),
+        },
+        { identityGeneration: generation },
+      ),
+      { text: "" },
+    );
+    assert.equal(
+      (
+        (await local.call(
+          "speech.synthesize",
+          { scope, text: "验收" },
+          {
+            identityGeneration: generation,
+          },
+        )) as Uint8Array
+      ).byteLength,
+      0,
+    );
+    assert.deepEqual(
+      await local.call(
+        "speech.transcribe",
+        {
+          scope: {
+            ...scope,
+            artifactId: document.contentId,
+            revision: 1,
+          },
+          data: new Uint8Array([0]),
+        },
+        { identityGeneration: generation },
+      ),
+      { text: "" },
+    );
+    await assert.rejects(
+      local.call(
+        "speech.transcribe",
+        {
+          scope: {
+            projectId: "other-platform-project",
+            artifactId: document.contentId,
+            revision: 1,
+          },
+          data: new Uint8Array([0]),
+        },
+        { identityGeneration: generation },
+      ),
+      /内容不属于当前项目/,
+    );
+    await assert.rejects(
+      local.call(
+        "speech.transcribe",
+        {
+          scope: { projectId: "missing-platform-project" },
+          data: new Uint8Array([0]),
+        },
+        { identityGeneration: generation },
+      ),
+      /项目不存在/,
+    );
     for (const mode of ["local", "remote"] as const) {
       const id = randomUUID();
       const call = async (action: Record<string, unknown>) => {
@@ -332,7 +483,9 @@ test("Desktop IPC 和 Web HTTP 都调用共享实时听写，身份失效会关�
     application.speechStreams.close();
     server.closeStreams();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await domains.close();
     store.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

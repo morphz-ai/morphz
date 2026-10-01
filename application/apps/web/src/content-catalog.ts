@@ -25,10 +25,12 @@ export function contentOrigin(
   actors: Workspace["actants"],
 ) {
   if (a.source) return "导入副本";
+  // Agent work records the initiating Human principal and the Agent actant.
+  // Human attribution still requires both IDs to match.
   const author = actors.find(
     (actor) =>
       actor.id === a.createdBy.actantId &&
-      actor.principalId === a.createdBy.principalId,
+      (actor.kind === "agent" || actor.principalId === a.createdBy.principalId),
   );
   return author
     ? `${author.name}${author.kind === "agent" ? "生成" : "创建"}`

@@ -1,18 +1,44 @@
 import { test, expect } from "@playwright/test";
-import { openLibrary } from "./application-helpers.js";
+import { randomUUID } from "node:crypto";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { openInput } from "./interaction-helpers.js";
-import { seedLibraryArtifact } from "./artifact-fixtures.js";
+
+const platform = () =>
+  PlatformClient.connect(new HttpApplicationClient("http://127.0.0.1:65421"));
+
+const deliveryIds = async (source: PlatformClient) =>
+  (await source.navigationRuntime()).runtime.deliveries.map(
+    (delivery) => delivery.inputId,
+  );
 
 test("选区批注使用同一输入但不发送 Agent；对象交流可以切回完整历史", async ({
   page,
 }) => {
-  await page.goto("/");
-  await openLibrary(page);
-  await seedLibraryArtifact(page, "选区验收", {
-    kind: "document",
+  const source = await platform();
+  const suffix = randomUUID().replaceAll("-", "");
+  const title = `TEST 选区验收 ${suffix}`;
+  const projectId = `annotation_${suffix}`;
+  await source.createProject(
+    `TEST 批注项目 ${suffix}`,
+    randomUUID(),
+    projectId,
+  );
+  const created = (await source.createDocument({
+    commandId: randomUUID(),
+    objectId: `document_${suffix}`,
+    projectId,
+    title,
     markdown: "这段合成正文用于验证选区操作。",
-  });
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  })) as { contentId: string };
+  const beforeDeliveries = await deliveryIds(source);
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "内容", exact: true })
+    .click();
+  await page.getByRole("textbox", { name: "搜索内容" }).fill(title);
+  await page.getByRole("button", { name: `打开内容：${title}` }).click();
   await page.locator(".document-body p").evaluate((el) => {
     const range = document.createRange();
     range.selectNodeContents(el);
@@ -35,11 +61,12 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   await page.getByLabel("AI 输入内容").fill("这是我自己的批注。");
   await page.getByRole("button", { name: "保存批注", exact: true }).click();
   await expect(page.locator(".annotation")).toContainText("这是我自己的批注。");
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs.length).toBe(before.workspace.inputs.length);
-  expect(after.workspace.annotations.length).toBe(
-    before.workspace.annotations.length + 1,
-  );
+  expect(await deliveryIds(source)).toEqual(beforeDeliveries);
+  const annotations = (await source.listObjectAnnotations(
+    created.contentId,
+  )) as Array<{ annotation: { body: string } }>;
+  expect(annotations).toHaveLength(1);
+  expect(annotations[0]?.annotation.body).toBe("这是我自己的批注。");
   await openInput(page);
   await expect(
     page.getByRole("button", { name: "查看全部交流" }),
@@ -50,7 +77,10 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   ).toBeVisible();
 });
 
-test("截图默认附加到消息，发送前后均不创建内容对象", async ({ page }) => {
+test("截图附加后保存为未发送消息，不创建内容对象", async ({ page }) => {
+  const source = await platform();
+  const beforeContent = await source.contentCounts();
+  const beforeDeliveries = await deliveryIds(source);
   await page.addInitScript(() =>
     Reflect.set(window, "morphzDesktop", {
       capture: {
@@ -63,36 +93,38 @@ test("截图默认附加到消息，发送前后均不创建内容对象", async
     }),
   );
   await page.goto("/");
+  // This case tests an ordinary screenshot message, independent of any book
+  // or application restored by earlier tests in the same server.
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
   await openInput(page);
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入" });
   await dialog.getByRole("button", { name: "添加到消息", exact: true }).click();
   await expect(page.getByLabel("消息附件", { exact: true })).toBeVisible();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
-  const middle = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(middle.workspace.artifacts.length).toBe(
-    before.workspace.artifacts.length,
-  );
-  expect(middle.workspace.inputs.length).toBe(before.workspace.inputs.length);
+  expect(await source.contentCounts()).toEqual(beforeContent);
+  expect(await deliveryIds(source)).toEqual(beforeDeliveries);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  await expect
-    .poll(
-      async () =>
-        (await page.request.get("/api/workspace").then((r) => r.json()))
-          .workspace.inputs.length,
-    )
-    .toBe(before.workspace.inputs.length + 1);
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs.at(-1).attachments).toHaveLength(1);
-  expect(after.workspace.artifacts.length).toBe(
-    before.workspace.artifacts.length,
+  await expect(page.locator(".human-message")).toContainText("未发送");
+  await expect(page.locator(".human-message .message-attachments")).toHaveCount(
+    1,
   );
+  await page.reload();
+  await expect(page.locator(".human-message .message-attachments")).toHaveCount(
+    1,
+  );
+  expect(await source.contentCounts()).toEqual(beforeContent);
+  expect(await deliveryIds(source)).toEqual(beforeDeliveries);
 });
 
 test("首次授权后听写直接在输入框内追加，停止立即停采且不自动发送", async ({
   page,
 }) => {
+  const source = await platform();
+  const beforeDeliveries = await deliveryIds(source);
   await page.addInitScript(() => {
     navigator.mediaDevices.getUserMedia = async () => {
       const context = new AudioContext(),
@@ -141,7 +173,6 @@ test("首次授权后听写直接在输入框内追加，停止立即停采且�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("已有草稿");
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
   const consent = page.getByRole("dialog", { name: "语音输入授权" });
   await expect(consent).toContainText("豆包");
@@ -173,7 +204,6 @@ test("首次授权后听写直接在输入框内追加，停止立即停采且�
   await page.keyboard.press("Escape");
   await expect(voice).toHaveCount(0);
   await expect(input).toHaveValue("已有草稿\n合成听写内容");
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs.length).toBe(before.workspace.inputs.length);
+  expect(await deliveryIds(source)).toEqual(beforeDeliveries);
   await page.evaluate(() => Reflect.get(window, "uxAudio").close());
 });

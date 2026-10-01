@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useCallback,
+  useMemo,
   type FormEvent,
   type CSSProperties,
 } from "react";
@@ -35,7 +36,6 @@ import {
   ListChecks,
 } from "lucide-react";
 import {
-  inboxFor,
   spaceKind,
   inConversation,
   discussionId,
@@ -75,6 +75,7 @@ import {
   quotedInputText,
   type TextQuote,
 } from "../../../packages/core/src/text-quotes.js";
+import { contentText } from "../../../packages/core/src/retrieval.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
@@ -85,7 +86,7 @@ import {
   type ProjectAction,
 } from "./ProjectManagement.js";
 import {
-  projectActivity,
+  projectDirectoryMetrics,
   projectStatus,
   type Project,
 } from "../../../packages/core/src/projects.js";
@@ -125,7 +126,7 @@ import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
-import type { Operation } from "../../../packages/core/src/model.js";
+import type { Operation, Workspace } from "../../../packages/core/src/model.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import { RequestError } from "./application-transport.js";
 import type { BrowserView } from "./desktop.js";
@@ -183,7 +184,6 @@ type Preferences = InterfacePreferences & {
 };
 import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
 import {
-  resolveScriptLocation,
   scriptOutputLocation,
   type ScriptLocation,
   type ScriptOutput,
@@ -419,10 +419,53 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     token: string;
   } | null>(null);
   const startedConversations = new Set([
-    ...(state?.inputs.map(discussionId) ?? []),
+    ...(state?.conversations
+      .filter((c) => c.id !== c.projectId)
+      .map((c) => c.id) ?? []),
+    ...(state?.inputs
+      .filter((input) => !client.boot?.localSavedInputIds.includes(input.id))
+      .map(discussionId) ?? []),
     ...(client.boot?.runtime.messages.map(discussionId) ?? []),
   ]);
+  const projectMetrics = useMemo(() => {
+    const metrics = projectDirectoryMetrics(
+      state!,
+      client.boot!.runtime.messages,
+    );
+    for (const count of client.taskCounts) {
+      const project = metrics.get(count.projectId);
+      if (project) {
+        project.pendingTasks = count.pending;
+        if (count.latestActivityAt > project.activityAt)
+          project.activityAt = count.latestActivityAt;
+      }
+    }
+    for (const count of client.contentCounts) {
+      const project = metrics.get(count.projectId);
+      if (project && count.latestActivityAt > project.activityAt)
+        project.activityAt = count.latestActivityAt;
+    }
+    return metrics;
+  }, [
+    state,
+    client.boot?.runtime.messages,
+    client.taskCounts,
+    client.contentCounts,
+  ]);
+  const projectActivityAt = (project: Project) => {
+    const local =
+      projectMetrics.get(project.id)?.activityAt ??
+      project.updatedAt ??
+      project.createdAt;
+    const runtime = client.boot!.activityByProject[project.id] ?? "";
+    return local > runtime ? local : runtime;
+  };
   const hasConversationDraft = (id: string) =>
+    state?.inputs.some(
+      (input) =>
+        discussionId(input) === id &&
+        client.boot?.localSavedInputIds.includes(input.id),
+    ) ||
     Object.entries(drafts).some(
       ([key, value]) =>
         key.startsWith(id + ":") &&
@@ -495,13 +538,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               personalSpace("desk"));
   // Association scopes the next input, not the shared conversation or its
   // in-flight activations. An open object wins; otherwise use the visible space.
-  const deliveredScript =
-    state && prefs.scriptLocation
-      ? resolveScriptLocation(state, prefs.scriptLocation)
-      : null;
+  const deliveredProduction = prefs.scriptLocation
+    ? client.boot!.scriptLibrary.find((entry) => entry.id === prefs.scriptLocation!.productionId)
+    : undefined;
+  const deliveredScript = deliveredProduction ? { production: deliveredProduction } : null;
   const project =
     state?.projects.find(
-      (p) => p.id === deliveredScript?.production.projectId,
+      (p) => p.id === deliveredScript?.production?.projectId,
     ) ??
     state?.projects.find(
       (p) =>
@@ -526,7 +569,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     project && applicationWorkspaceOpen
       ? prefs.applications?.[project.id] === null
         ? null
-        : (prefs.applications?.[project.id] ??
+        : (state?.applicationInstances.find(
+            (i) =>
+              i.id === prefs.applications?.[project.id] &&
+              i.workspaceId === project.id &&
+              i.status === "open",
+          )?.id ??
           state?.applicationInstances.find(
             (i) => i.workspaceId === project.id && i.status === "open",
           )?.id ??
@@ -606,6 +654,21 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     selectedConversation?.projectId ??
     project?.id ??
     "";
+  useEffect(() => {
+    // An unsent draft has no Platform conversation or Runtime Session yet.
+    // Keep the last authorized history scope until its first send commits;
+    // reading the reserved draft ID would make normal refresh fail with 404.
+    if (!selectedDraft && conversationProjectId && conversationId)
+      void client.selectHistoryScope({
+        projectId: conversationProjectId,
+        conversationId,
+      });
+  }, [conversationProjectId, conversationId, selectedDraft?.id]);
+  useEffect(() => {
+    // The shared default Session does not change when entering the task list.
+    // Fetch that view now instead of waiting for the next background poll.
+    if (prefs.view === "inbox") void client.refreshView();
+  }, [prefs.view]);
   const directoryScope = `${project?.id}:${conversationId}`;
   const canAuthorizeDirectories =
     !!client.boot?.capabilities.agentDirectories &&
@@ -742,15 +805,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     conversationFocus,
   );
   const badgeInputIds = new Set(badgeInputs.map((i) => i.id));
+  const conversationInputIds = new Set(inputs.map((i) => i.id));
   const badgeReplies =
     conversationFocus.artifactId || conversationFocus.applicationId
       ? replies.filter((m) => !!m.inputId && badgeInputIds.has(m.inputId))
       : replies;
   const receipts = replyReceipts(
     replies,
-    client.boot!.outputs.filter((o) => inputs.some((i) => i.id === o.inputId)),
+    client.boot!.outputs.filter((o) => conversationInputIds.has(o.inputId)),
     client.boot!.scriptOutputs.filter((o) =>
-      inputs.some((i) => i.id === o.inputId),
+      conversationInputIds.has(o.inputId),
     ),
   );
   const receiptVersion = JSON.stringify(receipts);
@@ -817,39 +881,60 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     current.index = current.places.length - 1;
     setTrailVersion((v) => v + 1);
   }, [placeKey, openingObject]);
-  function travel(direction: number) {
+  async function travel(direction: number) {
     const current = trail.current,
       index = current.index + direction,
       next = current.places[index];
     if (!next) return;
     if (
-      !state?.projects.some((p) => p.id === next.projectId) ||
-      (next.artifactId &&
-        !state.artifacts.some((a) => a.id === next.artifactId)) ||
-      (next.scriptLocation &&
-        !resolveScriptLocation(state!, next.scriptLocation))
+      !next.artifactId &&
+      !next.scriptLocation &&
+      !state?.projects.some((p) => p.id === next.projectId)
     ) {
       setNotice("原位置已不可用或无访问权限。");
       return;
     }
-    navigationGeneration.current++;
-    setOpeningObject(false);
-    setCreating(null);
-    setWebsiteIntent(null);
-    if (!prefs.executionPinned) setExecutions(null);
-    current.index = index;
-    restoring.current = true;
-    setRestoredPlace(next);
-    setPrefs((previous) => {
-      const restored = { ...previous, ...next };
-      try {
-        writeLocal("preferences", restored);
-      } catch {
-        setNotice("当前位置暂时无法持久保存。");
+    const generation = ++navigationGeneration.current;
+    setOpeningObject(true);
+    try {
+      if (next.artifactId) {
+        const resolved = await client.resolveArtifact(
+          next.artifactId,
+          next.artifactRevision ?? undefined,
+        );
+        if (!resolved) throw new Error("原位置已不可用或无访问权限。");
       }
-      return restored;
-    });
-    setTrailVersion((v) => v + 1);
+      if (next.scriptLocation) {
+        const resolved = await client.resolveScriptLocation(
+          next.scriptLocation,
+        );
+        if (!resolved) throw new Error("原位置已不可用或无访问权限。");
+      }
+      if (generation !== navigationGeneration.current) return;
+      setCreating(null);
+      setWebsiteIntent(null);
+      if (!prefs.executionPinned) setExecutions(null);
+      current.index = index;
+      restoring.current = true;
+      setRestoredPlace(next);
+      setPrefs((previous) => {
+        const restored = { ...previous, ...next };
+        try {
+          writeLocal("preferences", restored);
+        } catch {
+          setNotice("当前位置暂时无法持久保存。");
+        }
+        return restored;
+      });
+      setTrailVersion((v) => v + 1);
+    } catch (cause) {
+      if (generation === navigationGeneration.current)
+        setNotice(
+          cause instanceof Error ? cause.message : "原位置暂时无法读取。",
+        );
+    } finally {
+      if (generation === navigationGeneration.current) setOpeningObject(false);
+    }
   }
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -942,6 +1027,41 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     !understandingOpen &&
     !!artifact &&
     (compact ? mobileCollaboration : prefs.collaboration);
+  const [annotationRefresh, setAnnotationRefresh] = useState(0);
+  const [annotationResult, setAnnotationResult] = useState<{
+    artifactId: string;
+    items: Workspace["annotations"];
+    error: string;
+    loading: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (!collaborationVisible || !artifact) return;
+    const controller = new AbortController();
+    const artifactId = artifact.id;
+    setAnnotationResult({ artifactId, items: [], error: "", loading: true });
+    void client
+      .listObjectAnnotations(artifactId, controller.signal)
+      .then((items) => {
+        if (!controller.signal.aborted)
+          setAnnotationResult({ artifactId, items, error: "", loading: false });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted)
+          setAnnotationResult({
+            artifactId,
+            items: [],
+            error:
+              error instanceof Error ? error.message : "批注暂时无法读取。",
+            loading: false,
+          });
+      });
+    return () => controller.abort();
+  }, [
+    artifact?.id,
+    collaborationVisible,
+    annotationRefresh,
+    client.boot?.csrfToken,
+  ]);
   const { ref: inspectorWorkspace, layout: rightInspector } =
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
   const inspectorOpen =
@@ -1102,9 +1222,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   }
   function open(id: string, revision?: number, page?: number) {
-    const a = state?.artifacts.find((x) => x.id === id);
     setWebsiteIntent(null);
-    if (a) void openObject(a.projectId, id, revision, page);
+    void openUser(id, revision, page);
   }
   async function openTextQuote(quote: TextQuote) {
     window.getSelection()?.removeAllRanges();
@@ -1145,7 +1264,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     } else setNotice("已保留所选原文；这个界面没有固定的内容位置。");
   }
   async function composeContent(id: string) {
-    const target = state?.artifacts.find((a) => a.id === id);
+    const target =
+      state?.artifacts.find((a) => a.id === id) ??
+      (await client.resolveArtifact(id));
     if (!target) return;
     // Opening a result changes the object reference, never the current Session.
     const key = conversationId + ":" + id;
@@ -1175,19 +1296,35 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     page?: number,
     reading?: ReadingLocation,
   ) {
-    if (state?.scriptProductions.some((p) => p.id === id))
-      return openScriptLocation({ productionId: id });
-    const generation = ++navigationGeneration.current;
-    const a =
-      state?.artifacts.find((x) => x.id === id) ??
-      (await client.resolveArtifact(id));
-    if (generation !== navigationGeneration.current) return;
-    if (!a) {
-      setNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
-      return;
+    try {
+      const script = client.boot?.scriptLibrary.find(
+        (item) => item.id === id || item.contentId === id,
+      );
+      if (script) return openScriptLocation({ productionId: script.id });
+      const generation = ++navigationGeneration.current;
+      const loadedArtifact = state?.artifacts.find((item) => item.id === id);
+      const catalogEntry =
+        client.contentCatalog.find((entry) => entry.id === id) ??
+        (!loadedArtifact ? await client.resolveCatalogContent(id) : null);
+      if (generation !== navigationGeneration.current) return;
+      if (
+        catalogEntry?.appId === "morphz.script-studio" &&
+        catalogEntry.kind === "script"
+      )
+        return openScriptLocation({ productionId: catalogEntry.appObjectId });
+      const a = loadedArtifact ?? (await client.resolveArtifact(id));
+      if (generation !== navigationGeneration.current) return;
+      if (!a) {
+        setNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
+        return;
+      }
+      setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
+      void openObject(a.projectId, id, revision, page, !!reading, reading);
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : "内容暂时无法打开，请重试。",
+      );
     }
-    setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
-    void openObject(a.projectId, id, revision, page, !!reading, reading);
   }
   async function openReading(id: string) {
     const generation = ++navigationGeneration.current;
@@ -1283,15 +1420,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }
   async function openScriptLocation(target: ScriptLocation) {
     const generation = ++navigationGeneration.current;
-    const snapshot = client.getSnapshot();
-    const resolved =
-      snapshot && resolveScriptLocation(snapshot.workspace, target);
-    if (!resolved) {
-      setNotice("剧本结果已不可用或无访问权限。");
-      return;
-    }
     setOpeningObject(true);
     try {
+      const resolved = await client.resolveScriptLocation(target);
+      if (generation !== navigationGeneration.current) return;
+      if (!resolved) {
+        setNotice("剧本结果已不可用或无访问权限。");
+        return;
+      }
       const receipt = await client.execute({
         type: "launch-application",
         workspaceId: resolved.production.projectId,
@@ -1301,7 +1437,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
       if (generation !== navigationGeneration.current) return;
       setCreating(null);
-      recordContentVisit(resolved.production.id);
+      if (resolved.production.contentId)
+        recordContentVisit(resolved.production.contentId);
       prefer({
         artifactId: null,
         scriptLocation: { ...target, requestId: receipt.commandId },
@@ -1325,14 +1462,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     page?: number,
     readerMode = false,
     reading?: ReadingLocation,
+    expectedQuote?: string,
   ) {
     const generation = ++navigationGeneration.current;
     setOpeningObject(true);
     try {
-      const opened = await client.resolveArtifact(id);
+      const opened = await client.resolveArtifact(id, revision);
       if (generation !== navigationGeneration.current) return;
       if (!opened || opened.projectId !== workspaceId)
         throw new Error("内容暂时无法读取，请检查连接或访问权限后重试。");
+      if (expectedQuote) {
+        const exact = opened.versions.find(
+          (version) => version.revision === (revision ?? opened.revision),
+        );
+        if (!exact || !contentText(exact.content).includes(expectedQuote))
+          throw new Error("引用与当前原件版本不一致，请重新搜索后再试。");
+      }
       // Catalog and task navigation are views, not application launches.
       // Keep the workspace's current application intact when reading from them.
       const readingView =
@@ -1781,7 +1926,17 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return;
     dictationControls.current?.interrupt();
     const key = contextKey,
-      captured = { ...draft };
+      captured =
+        draft.continuation?.mode === "follow-up"
+          ? {
+              ...draft,
+              continuation: undefined,
+              continuationLabel: undefined,
+              continuationFailure: undefined,
+              pendingSupplement: undefined,
+            }
+          : { ...draft };
+    if (draft.continuation?.mode === "follow-up") setDraft(key, captured);
     const firstConversation = captured.continuation ? undefined : selectedDraft;
     if (captured.continuation) asAnnotation = false;
     sendPending.current = true;
@@ -1887,7 +2042,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         artifact &&
         captured.selection &&
         captured.revision
-      )
+      ) {
         await client.execute({
           type: "annotate",
           artifactId: artifact.id,
@@ -1896,7 +2051,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           ...(captured.page ? { page: captured.page } : {}),
           body: quotedInputText(captured.body, captured.textQuotes),
         });
-      else {
+        setAnnotationRefresh((value) => value + 1);
+      } else {
         if (
           firstConversation &&
           !client.boot?.capabilities.conversationOnFirstInput
@@ -1917,7 +2073,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               ? { newConversation: { title: firstConversation.title } }
               : {}),
             ...(activeInstance
-              ? { applicationInstanceId: activeInstance.id }
+              ? {
+                  application: {
+                    id: activeInstance.applicationId,
+                    version: activeInstance.applicationVersion,
+                  },
+                }
               : {}),
             artifactId: artifact?.id ?? null,
             artifactRevision: artifact
@@ -1958,6 +2119,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         );
         if (
           firstConversation &&
+          client.boot?.runtime.configured &&
           conversationDraftsRef.current[project.id]?.id === firstConversation.id
         ) {
           const next = { ...conversationDraftsRef.current };
@@ -2085,10 +2247,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         )}
       </div>
     );
-  const tasks = inboxFor(state, client.boot!.principalId);
-  const annotations = artifact
-    ? state.annotations.filter((a) => a.artifactId === artifact.id)
-    : [];
+  const inboxCount = client.taskCounts.reduce(
+    (total, count) => total + count.mineOpen,
+    0,
+  );
+  const annotations =
+    artifact && annotationResult?.artifactId === artifact.id
+      ? annotationResult.items
+      : [];
   const contextTitle =
     artifact?.title ??
     (activeInstance?.applicationId === browserApplication.id
@@ -2162,9 +2328,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ]
       : []),
   ];
-  const inspectExecution = (id: string) => {
-    const source = state.inputs.find((i) => i.id === id);
-    if (!source) return;
+  const inspectExecution = async (id: string) => {
+    let source = state.inputs.find((i) => i.id === id);
+    if (!source) {
+      try {
+        if (await client.loadHistoryUntil(id))
+          source = client
+            .getSnapshot()
+            ?.workspace.inputs.find((i) => i.id === id);
+      } catch (error) {
+        setNotice(
+          error instanceof Error ? error.message : "原消息暂时无法读取。",
+        );
+        return;
+      }
+    }
+    if (!source) {
+      setNotice("原消息暂时不在已加载的记录中。");
+      return;
+    }
     keepExchangeOpen();
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
@@ -2182,10 +2364,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ),
     ...(client.online && client.boot!.runtime.connected
       ? client
-          .boot!.runtime.deliveries.filter(
-            (d) =>
-              state.inputs.some((input) => input.id === d.inputId) &&
-              ["queued", "sending", "running"].includes(d.state),
+          .boot!.runtime.deliveries.filter((d) =>
+            ["queued", "sending", "running"].includes(d.state),
           )
           .map((d) => d.inputId)
       : []),
@@ -2365,7 +2545,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 >
                   <Icon />
                   {labels[view]}
-                  {view === "inbox" && <small>{tasks.length}</small>}
+                  {view === "inbox" && <small>{inboxCount}</small>}
                 </button>
               );
             })}
@@ -2388,13 +2568,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 )
                 .sort(
                   (a, b) =>
-                    projectActivity(
-                      state,
-                      b,
-                      client.boot!.runtime.messages,
-                    ).localeCompare(
-                      projectActivity(state, a, client.boot!.runtime.messages),
-                    ) || a.title.localeCompare(b.title, "zh-CN"),
+                    projectActivityAt(b).localeCompare(projectActivityAt(a)) ||
+                    a.title.localeCompare(b.title, "zh-CN"),
                 )
                 .map((p) => (
                   <ProjectConversations
@@ -2722,10 +2897,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       : undefined
                   }
                   globalLibrary={prefs.view !== "projects"}
-                  onOpenScript={(id) =>
-                    void openScriptLocation({ productionId: id })
+                  onOpenScript={(id, itemId) =>
+                    void openScriptLocation({
+                      productionId: id,
+                      ...(itemId ? { itemId } : {}),
+                    })
                   }
-                  onContentVisit={recordContentVisit}
                   onScriptLibrary={() => void openScriptLibrary()}
                   onScriptNavigate={(productionId, itemId, view) => {
                     if (prefs.scriptLocation)
@@ -2763,16 +2940,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   onComposeIntent={composeIntent}
                   onCompose={(text, artifactId, scriptGeneration) => {
                     if (scriptGeneration) {
-                      const production = state.scriptProductions.find(
-                        (p) =>
-                          p.id === scriptGeneration.productionId &&
-                          p.projectId === project.id,
-                      );
+                      const production = client.getScriptEditor(scriptGeneration.productionId);
                       const target = production?.items.find(
                         (i) => i.id === scriptGeneration.targetId,
                       );
                       if (
-                        !production ||
+                        !production || production.projectId !== project.id ||
                         !target ||
                         target.revision !== scriptGeneration.baseRevision ||
                         production.revision !== scriptGeneration.contextRevision
@@ -2814,16 +2987,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         (a) =>
                           a.id === artifactId && a.projectId === project.id,
                       );
-                      if (!target)
+                      const catalogTarget = client.contentCatalog.find(
+                        (entry) =>
+                          entry.id === artifactId &&
+                          entry.projectId === project.id,
+                      );
+                      if (!target && !catalogTarget)
                         return { ok: false, error: "引用的内容已不可用。" };
-                      prefer({ artifactId: target.id });
-                      const key = conversationId + ":" + target.id;
+                      prefer({ artifactId });
+                      const key = conversationId + ":" + artifactId;
                       setDraft(key, {
                         body: [drafts[key]?.body, text]
                           .filter(Boolean)
                           .join("\n"),
                         selection: "",
-                        revision: target.revision,
+                        revision:
+                          target?.revision ??
+                          (catalogTarget?.observedVersionRef
+                            ? Number(catalogTarget.observedVersionRef)
+                            : null),
                       });
                     } else
                       setDraft(contextKey, {
@@ -2928,10 +3110,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       key={projectDirectoryVersion}
                       toolbarTarget={pageToolbarTarget}
                       state={state}
+                      contentCounts={client.contentCounts}
                       onOpen={openProject}
                       onCreate={() => setCreating("project")}
                       onManage={manageProject}
-                      messages={client.boot!.runtime.messages}
+                      metrics={projectMetrics}
                     />
                   ) : projectStatus(project) !== "active" ? (
                     <section className="retired-project">
@@ -3024,6 +3207,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               >
                 {conversationVisible && (
                   <Conversation
+                    hasEarlierHistory={!!client.olderHistoryCursor}
+                    onLoadEarlierHistory={client.loadEarlierHistory}
                     onOpenQuote={(quote) => void openTextQuote(quote)}
                     quoteReveal={
                       quoteReveal?.quote.source.kind === "message" &&
@@ -3031,9 +3216,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         ? quoteReveal
                         : null
                     }
-                    onQuoteUnavailable={() =>
+                    onQuoteUnavailable={(reason) =>
                       setNotice(
-                        "原消息暂时不在已加载的记录中，引用内容仍保留。",
+                        reason ??
+                          "原消息暂时不在已加载的记录中，引用内容仍保留。",
                       )
                     }
                     toolbarTarget={conversationToolbarTarget}
@@ -3069,6 +3255,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       input.current?.focus({ preventScroll: true });
                       try {
                         await client.dispatchInput(id);
+                        const drafts = { ...conversationDraftsRef.current };
+                        const first = Object.entries(drafts).find(
+                          ([, draft]) => draft.inputId === id,
+                        );
+                        if (first) {
+                          delete drafts[first[0]];
+                          conversationDraftsRef.current = drafts;
+                          setConversationDrafts(drafts);
+                          writeLocal(draftKey("conversations"), drafts);
+                        }
                       } catch (error) {
                         setNotice(
                           error instanceof Error ? error.message : "发送失败。",
@@ -3134,9 +3330,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               )?.body
                             }
                           >
-                            {draft.continuation.mode === "follow-up"
-                              ? "接着处理："
-                              : "补充给："}
+                            补充给：
                             {draft.continuationLabel ||
                               state.inputs.find(
                                 (i) => i.id === draft.continuation!.inputId,
@@ -3151,6 +3345,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               setDraft(contextKey, {
                                 ...draft,
                                 continuation: undefined,
+                                continuationLabel: undefined,
                                 continuationFailure: undefined,
                               });
                               setInputErrors((old) => ({
@@ -3296,10 +3491,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               onClick={() => {
                                 setDraft(contextKey, {
                                   ...draft,
-                                  continuation: {
-                                    ...draft.continuation!,
-                                    mode: "follow-up",
-                                  },
+                                  continuation: undefined,
+                                  continuationLabel: undefined,
                                   continuationFailure: undefined,
                                   pendingSupplement: undefined,
                                 });
@@ -3310,7 +3503,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 input.current?.focus();
                               }}
                             >
-                              作为后续请求继续
+                              改为普通消息发送
                             </button>
                           </div>
                         )}
@@ -3352,21 +3545,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 data-testid="script-input-reference"
                               >
                                 剧本请求 ·{" "}
-                                {state.scriptProductions
-                                  .find(
-                                    (p) =>
-                                      p.id ===
-                                      draft.scriptGeneration!.productionId,
-                                  )
-                                  ?.items.find(
-                                    (i) =>
-                                      i.id === draft.scriptGeneration!.targetId,
-                                  )
-                                  ?.versions.find(
-                                    (v) =>
-                                      v.revision ===
-                                      draft.scriptGeneration!.baseRevision,
-                                  )?.draft.title ??
+                                {client.scriptVersionTitle(draft.scriptGeneration.productionId,
+                                  draft.scriptGeneration.targetId, draft.scriptGeneration.baseRevision) ??
                                   draft.scriptGeneration.targetId}{" "}
                                 · v{draft.scriptGeneration.baseRevision}
                                 <button
@@ -3688,9 +3868,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               draft.continuation
                                 ? draft.pendingSupplement
                                   ? "核对补充送达"
-                                  : draft.continuation.mode === "follow-up"
-                                    ? "发送后续请求"
-                                    : "发送补充"
+                                  : "发送补充"
                                 : draft.annotation
                                   ? "保存批注"
                                   : draft.taskResult
@@ -3798,7 +3976,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             onClose={closeInspector}
           >
             <div className="collaboration-scroll">
-              {!annotations.length ? (
+              {annotationResult?.artifactId === artifact?.id &&
+              annotationResult.error ? (
+                <p role="alert">批注读取失败：{annotationResult.error}</p>
+              ) : annotationResult?.artifactId !== artifact?.id ||
+                annotationResult.loading ? (
+                <p>正在读取批注…</p>
+              ) : !annotations.length ? (
                 <div className="discussion-empty">
                   <MessageSquarePlus />
                   <p>暂无批注</p>
@@ -3956,17 +4140,28 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           client={client}
           onClose={() => setSearchOpen(false)}
           onOpen={openUser}
-          onQuote={(id, revision, quote, page) => {
-            const target = state.artifacts.find((a) => a.id === id);
-            if (!target) return;
-            const key = conversationKey(target.projectId) + ":" + target.id;
-            setDraft(key, {
-              ...(drafts[key] ?? emptyDraft),
-              selection: quote,
+          onQuote={(id, projectId, revision, quote, page) => {
+            void openObject(
+              projectId,
+              id,
               revision,
               page,
-            });
-            void openObject(target.projectId, id, revision, page).then(() => {
+              false,
+              undefined,
+              quote,
+            ).then((generation) => {
+              if (
+                generation === undefined ||
+                generation !== navigationGeneration.current
+              )
+                return;
+              const key = conversationKey(projectId) + ":" + id;
+              setDraft(key, {
+                ...(drafts[key] ?? emptyDraft),
+                selection: quote,
+                revision,
+                page,
+              });
               setInteraction("recent");
               requestAnimationFrame(() => {
                 if (!exchange.current?.contains(document.activeElement))

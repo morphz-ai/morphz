@@ -1,9 +1,4 @@
-import {
-  DomainError,
-  checkProject,
-  type AccessContext,
-  type Workspace,
-} from "./model.js";
+import type { Workspace } from "./model.js";
 
 export type Project = Workspace["projects"][number];
 export type ProjectStatus = "active" | "archived" | "deleted";
@@ -13,65 +8,6 @@ export function projectStatus(project: Project): ProjectStatus {
     : project.archivedAt
       ? "archived"
       : "active";
-}
-export function assertProjectWritable(project: Project) {
-  if (projectStatus(project) !== "active")
-    throw new DomainError(
-      "conflict",
-      "项目已归档或删除，请先恢复项目。原数据与草稿仍保留。",
-    );
-}
-
-/** Management is delegated by a persisted Human input, not the shared Agent identity.
- * Cross-space metadata access is limited to the same membership boundary. */
-export function projectManager(
-  state: Workspace,
-  access: AccessContext,
-  inputId?: string,
-  targetId?: string,
-) {
-  const actor = state.actants.find(
-    (a) => a.id === access.actantId && a.principalId === access.principalId,
-  );
-  if (!actor) throw new DomainError("forbidden", "参与者与主体不匹配。");
-  const input =
-    actor.kind === "agent"
-      ? state.inputs.find(
-          (i) => i.id === inputId && i.targetActantId === actor.id,
-        )
-      : undefined;
-  const human =
-    actor.kind === "human"
-      ? actor
-      : state.actants.find(
-          (a) =>
-            a.id === input?.author.actantId &&
-            a.principalId === input.author.principalId &&
-            a.kind === "human",
-        );
-  if (!human || (actor.kind === "agent" && !input))
-    throw new DomainError("forbidden", "项目管理需要发起用户的实际输入。");
-  if (input) {
-    checkProject(state, input.projectId, access);
-    checkProject(state, input.projectId, input.author);
-  }
-  if (targetId) {
-    const target = checkProject(state, targetId, access);
-    if (!target.members.includes(human.principalId))
-      throw new DomainError("forbidden", "发起用户没有管理这个项目的权限。");
-    if (input) {
-      const source = checkProject(state, input.projectId, input.author);
-      if (
-        [...source.members].sort().join("\0") !==
-        [...target.members].sort().join("\0")
-      )
-        throw new DomainError(
-          "forbidden",
-          "不能跨不同成员的工作空间管理项目，请在目标项目中提出请求。",
-        );
-    }
-  }
-  return human;
 }
 
 export function projectActivity(
@@ -110,4 +46,57 @@ export function projectActivity(
     )
     .forEach((m) => touch(m.createdAt));
   return latest;
+}
+
+/** The existing workspace-shaped view is a presentation projection, not a
+ * storage authority. Build its project card/sidebar metrics in one pass so
+ * sorting projects never scans every task, input and reply per comparison. */
+export function projectDirectoryMetrics(
+  state: Workspace,
+  messages: {
+    inputId?: string | null;
+    projectId: string;
+    createdAt: string;
+  }[] = [],
+): Map<string, { activityAt: string; pendingTasks: number }> {
+  const metrics = new Map(
+    state.projects.map((project) => [
+      project.id,
+      {
+        activityAt: project.updatedAt ?? project.createdAt,
+        pendingTasks: 0,
+      },
+    ]),
+  );
+  const touch = (projectId: string, date: string) => {
+    const entry = metrics.get(projectId);
+    if (entry && date > entry.activityAt) entry.activityAt = date;
+  };
+  for (const artifact of state.artifacts) {
+    touch(artifact.projectId, artifact.updatedAt);
+    const entry = metrics.get(artifact.projectId);
+    if (
+      entry &&
+      artifact.content.kind === "task" &&
+      artifact.content.execution !== "completed" &&
+      artifact.content.execution !== "cancelled"
+    )
+      entry.pendingTasks += 1;
+  }
+  for (const script of state.scriptProductions)
+    touch(script.projectId, script.updatedAt);
+  for (const conversation of state.conversations)
+    touch(conversation.projectId, conversation.updatedAt);
+  const inputProjects = new Map<string, string>();
+  for (const input of state.inputs) {
+    inputProjects.set(input.id, input.projectId);
+    touch(input.projectId, input.createdAt);
+  }
+  for (const message of messages) {
+    const projectId = message.inputId
+      ? inputProjects.get(message.inputId)
+      : message.projectId;
+    if (projectId) touch(projectId, message.createdAt);
+  }
+  return metrics;
 }

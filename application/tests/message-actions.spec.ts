@@ -1,34 +1,47 @@
 import { test, expect } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import type { PlatformHistory } from "../apps/web/src/platform-client.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 
 test("已完成的人类消息不为隐藏操作留出空行，悬停操作在气泡外且不撑高正文", async ({
   page,
 }) => {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    // Presentation fixture only: no model or changes to persisted delivery state.
-    body.runtime.deliveries = body.workspace.inputs.map(
-      (input: { id: string }) => ({
+  const inputs: PlatformHistory["inputs"] = [];
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      deliveries: inputs.map((input) => ({
         inputId: input.id,
-        state: "completed",
+        state: "completed" as const,
         error: null,
-      }),
-    );
-    await route.fulfill({ response, json: body });
-  });
+        retryable: false,
+      })),
+    },
+  }));
+  const bodies = ["简短消息", "这是一条需要自动换行的消息。".repeat(12)];
+  inputs.push(
+    ...bodies.map((body, index) =>
+      presentation.input(
+        `completed-message-${index}`,
+        body,
+        new Date(Date.UTC(2026, 8, 30, 0, index)).toISOString(),
+      ),
+    ),
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "对话", exact: true })
     .click();
   await openInput(page);
-  for (const text of ["简短消息", "这是一条需要自动换行的消息。".repeat(12)]) {
-    await page.getByLabel("AI 输入内容").fill(text);
-    await page.getByRole("button", { name: "保存输入", exact: true }).click();
-    const message = page.locator(".human-message").last();
+  for (const [index, text] of bodies.entries()) {
+    const message = page.locator(
+      `.human-message[data-input-id="completed-message-${index}"]`,
+    );
     await expect(message.locator(":scope > p")).toHaveText(text);
     await expect(
       message.locator(".message-meta > span:not(.message-peek)"),

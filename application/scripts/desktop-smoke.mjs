@@ -1,4 +1,8 @@
 import { openSettings } from "./settings-test-helpers.mjs";
+import {
+  platformRead,
+  contentOwnershipAudit,
+} from "./desktop-domain-audit.mjs";
 import { _electron, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,14 +24,23 @@ try {
   if (e.message.includes("already in use")) throw e;
 }
 const dir = mkdtempSync(join(tmpdir(), "morphz-desktop-test-"));
+const dataDirectory = join(dir, "data");
+const isolatedEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([key]) =>
+      !key.startsWith("MORPHZ_APP_") &&
+      !key.startsWith("MORPHZWORK_") &&
+      key !== "DOUBAO_API_KEY",
+  ),
+);
 const service = spawn(
   process.execPath,
   ["dist/service/apps/service/src/main.js"],
   {
     env: {
-      ...process.env,
+      ...isolatedEnv,
       MORPHZ_APP_PORT: String(port),
-      MORPHZ_APP_DATA_DIR: join(dir, "data"),
+      MORPHZ_APP_DATA_DIR: dataDirectory,
       MORPHZ_APP_ENV_FILE: "",
     },
     stdio: "pipe",
@@ -47,14 +60,33 @@ try {
     await delay(100);
   }
   assert.ok(ready, "service did not start");
-  const env = { ...process.env, MORPHZ_APP_PROFILE: join(dir, "profile") };
+  const env = { ...isolatedEnv, MORPHZ_APP_PROFILE: join(dir, "profile") };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
     args: ["apps/desktop/main.cjs", `--center=${origin}`],
     env,
   });
   const window = await app.firstWindow();
-  await window.getByRole("heading", { name: "工作台", exact: true }).waitFor();
+  window.on("pageerror", (error) => console.error("Renderer:", error.message));
+  window.on("response", async (response) => {
+    if (response.url().includes("/api/") && response.status() >= 400)
+      console.error(
+        "Fixture API:",
+        response.status(),
+        response.url(),
+        await response.text().catch(() => "unavailable"),
+      );
+  });
+  try {
+    await window
+      .getByRole("heading", { name: "工作台", exact: true })
+      .waitFor();
+  } catch (error) {
+    throw new Error(
+      `Desktop did not open the workspace: ${(await window.locator("body").innerText()).slice(0, 1200)}`,
+      { cause: error },
+    );
+  }
   await expect(window.locator(".wordmark")).toHaveText("Morphz");
   await expect(window).toHaveTitle("工作台 — Morphz");
   const identity = await app.evaluate(({ app }) => ({
@@ -106,13 +138,16 @@ try {
     "https://example.com/audit",
   ]);
   await window
-    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .getByRole("button", { name: "查看全部内容", exact: true })
     .click();
+  // Content is a native destination, not a closable Cognitive App tab.
+  await expect(window.locator(".collection")).toBeVisible();
   await window
-    .getByRole("button", { name: "关闭应用 内容", exact: true })
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
     .click();
   await expect(
-    window.getByRole("button", { name: "查看本空间内容", exact: true }),
+    window.getByRole("button", { name: "查看全部内容", exact: true }),
   ).toBeVisible();
   await expect(window.locator(".statusbar")).toHaveCount(0);
   await window.getByLabel("AI 输入内容").fill("桌面快捷键检查");
@@ -123,19 +158,19 @@ try {
     await window.getByLabel("AI 输入内容").inputValue(),
     "桌面快捷键检查",
   );
-  const web = await (await fetch(`${origin}/api/workspace`)).json();
+  const web = await platformRead(origin, "/api/platform/bootstrap");
   const desktop = await window.evaluate(async () => {
     const result = await window.morphzDesktop.application.invoke({
       id: crypto.randomUUID(),
-      method: "workspace",
+      method: "platform.bootstrap",
     });
     if (!result.ok) throw new Error(JSON.stringify(result));
     return result.value;
   });
   assert.equal(desktop.centerId, web.centerId);
   assert.equal(desktop.principalId, web.principalId);
-  assert.equal(desktop.workspace.id, web.workspace.id);
-  assert.equal(desktop.workspace.revision, web.workspace.revision);
+  assert.equal(desktop.actantId, web.actantId);
+  const originalOwnership = await contentOwnershipAudit(origin, dataDirectory);
   const desktopInput = window.getByLabel("AI 输入内容");
   await desktopInput.fill("原生输入区验收，不发送");
   await expect(window.locator(".conversation")).toBeVisible();
@@ -225,20 +260,10 @@ try {
     window.getByRole("button", { name: "资料导入与来源", exact: true }),
   ).toHaveCount(0);
   await window.keyboard.press("Escape");
-  await assert.rejects(
-    window.evaluate(() =>
-      window.morphzDesktop.sources.choose("first-project", "directory"),
-    ),
-    /已停用/,
-  );
-  await assert.rejects(
-    window.evaluate(() =>
-      window.morphzDesktop.sources.control(
-        "11111111-1111-4111-8111-111111111111",
-        "refresh",
-      ),
-    ),
-    /已停用/,
+  assert.equal(
+    await window.evaluate(() => typeof window.morphzDesktop.sources),
+    "undefined",
+    "已废弃的自动同步来源 IPC 不应继续暴露",
   );
   await assert.rejects(
     window.evaluate(() =>
@@ -246,13 +271,10 @@ try {
     ),
     /本机文件打开参数无效/,
   );
-  const afterSource = await (await fetch(`${origin}/api/workspace`)).json();
-  assert.deepEqual(
-    afterSource.workspace.artifacts,
-    desktop.workspace.artifacts,
-  );
+  const afterSource = await contentOwnershipAudit(origin, dataDirectory);
+  assert.deepEqual(afterSource, originalOwnership);
   assert.equal(
-    await window.evaluate(() => typeof window.morphzDesktop.sources.readPath),
+    await window.evaluate(() => typeof window.morphzDesktop.files.readPath),
     "undefined",
   );
   await window
@@ -260,13 +282,24 @@ try {
     .setInputFiles("examples/applications/scratchpad.json");
   await window.getByRole("button", { name: "允许并安装" }).click();
   await window
-    .getByRole("button", { name: "工作便笺 1.1.1", exact: true })
+    .getByRole("button", { name: "工作便笺 1.3.0", exact: true })
     .click();
   const application = window.frameLocator('iframe[title="工作便笺应用界面"]');
-  await expect(application.locator("#status")).toContainText("已连接");
+  await expect(application.locator("#status"))
+    .toContainText("已连接")
+    .catch(async (cause) => {
+      const frames = await window.locator("iframe").evaluateAll((elements) =>
+        elements.map((element) => ({
+          title: element.title,
+          src: element.src,
+        })),
+      );
+      throw new Error(
+        `Cognitive App frame failed to connect: ${JSON.stringify(frames)} ${await window.locator("body").innerText()}`,
+        { cause },
+      );
+    });
   await application.locator("#note").fill("真实桌面的独立认知应用");
-  await application.getByRole("button", { name: "保存便笺状态" }).click();
-  await expect(application.locator("#status")).toContainText("已保存");
   await application.getByRole("button", { name: "保存为文档" }).click();
   await expect(application.locator("#status")).toContainText(
     "文档已保存到工作空间",
@@ -301,7 +334,7 @@ try {
   await expect(window.locator(".topbar .input-toggle")).toHaveCount(0);
   await window.getByRole("button", { name: "应用启动台", exact: true }).click();
   console.log(
-    "PASS: real Electron installs and launches an independent application, saves state, restores after reload, and exposes neither Node nor desktop IPC to its frame.",
+    "PASS: real Electron installs and launches an independent application, saves a document, restores the app window, and exposes neither Node nor desktop IPC to its frame. App-owned draft restoration is asserted separately.",
   );
   if (process.platform === "darwin") {
     assert.equal(
@@ -525,7 +558,7 @@ try {
   await window.getByLabel("项目名称", { exact: true }).fill("原生多对话验收");
   await window.getByRole("button", { name: "创建", exact: true }).click();
   await window
-    .getByRole("button", { name: "查看本空间内容", exact: true })
+    .getByRole("button", { name: "查看项目内容", exact: true })
     .click();
   await window
     .getByLabel("新建项目对话：原生多对话验收", { exact: true })
@@ -539,9 +572,7 @@ try {
   await expect(
     projectChats.getByLabel("继续草稿：对话 1", { exact: true }),
   ).toHaveAttribute("aria-current", "true");
-  await expect(
-    window.getByLabel("关闭应用 内容", { exact: true }),
-  ).toBeVisible();
+  await expect(window.locator(".collection")).toBeVisible();
   await projectChats.getByLabel("草稿操作：对话 1", { exact: true }).click();
   await window.getByLabel("丢弃草稿：对话 1", { exact: true }).click();
   await expect(
@@ -585,7 +616,7 @@ try {
   );
   // The global content view reuses actual objects without launching a library
   // application or moving their workspace/conversation ownership.
-  const beforeContent = await (await fetch(`${origin}/api/workspace`)).json();
+  const beforeContent = await contentOwnershipAudit(origin, dataDirectory);
   await nav.getByRole("button", { name: "内容", exact: true }).click();
   await expect(window).toHaveTitle("内容 — Morphz");
   await expect(window.getByLabel("内容范围", { exact: true })).toHaveValue(
@@ -632,23 +663,11 @@ try {
     .getByRole("button", { name: "内容", exact: true })
     .click();
   await expect(catalog.locator(".artifact-card").first()).toBeVisible();
-  const afterContent = await (await fetch(`${origin}/api/workspace`)).json();
-  assert.deepEqual(
-    afterContent.workspace.applicationInstances,
-    beforeContent.workspace.applicationInstances,
-  );
-  assert.deepEqual(
-    afterContent.workspace.artifacts,
-    beforeContent.workspace.artifacts,
-  );
-  assert.deepEqual(
-    afterContent.workspace.inputs,
-    beforeContent.workspace.inputs,
-  );
-  assert.deepEqual(
-    afterContent.workspace.conversations,
-    beforeContent.workspace.conversations,
-  );
+  const afterContent = await contentOwnershipAudit(origin, dataDirectory);
+  assert.deepEqual(afterContent.appViews, beforeContent.appViews);
+  assert.deepEqual(afterContent.content, beforeContent.content);
+  assert.deepEqual(afterContent.delivery, beforeContent.delivery);
+  assert.deepEqual(afterContent.conversations, beforeContent.conversations);
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   console.log(
     "PASS: native global content catalog, narrow layout, object opening/return and unchanged ownership, inputs and Sessions.",

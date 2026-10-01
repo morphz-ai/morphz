@@ -222,7 +222,7 @@ export class LocalRuntimeConnection {
       const old = loadRuntimeConfig(this.directory);
       if (old?.identityMode)
         throw new DomainError("forbidden", "多人工作空间的连接由管理员配置。");
-      const saved = this.store.runtimeState() as {
+      const saved = this.store.runtimeEnvelope() as {
         endpoint?: string;
         namespace?: string;
         identityMode?: string;

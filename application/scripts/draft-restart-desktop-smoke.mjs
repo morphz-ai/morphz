@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const fixture = mkdtempSync(join(tmpdir(), "morphz-embedded-electron-"));
 const env = {
-  ...process.env,
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.startsWith("MORPHZ_APP_") && !key.startsWith("MORPHZWORK_"),
+    ),
+  ),
   MORPHZ_APP_ENV_FILE: "",
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
 };
@@ -28,12 +33,19 @@ try {
   await launch();
   const before = await page.evaluate(async () => {
     const api = window.morphzDesktop.application;
-    const boot = (
-      await api.invoke({ id: crypto.randomUUID(), method: "workspace" })
-    ).value;
-    const projectId = boot.workspace.projects.find(
-      (p) => p.kind === "dialogue",
-    ).id;
+    const bootstrap = await api.invoke({
+      id: crypto.randomUUID(),
+      method: "platform.bootstrap",
+    });
+    if (!bootstrap.ok) throw new Error(bootstrap.error.message);
+    const boot = bootstrap.value;
+    const spaces = await api.invoke({
+      id: crypto.randomUUID(),
+      method: "spaces.ensure",
+      identityGeneration: boot.csrfToken,
+    });
+    if (!spaces.ok) throw new Error(spaces.error.message);
+    const projectId = spaces.value.dialogueId;
     const owner = sessionStorage.getItem("morphz:window");
     const prefix = `morphz:${boot.centerId}:${boot.principalId}:`;
     const key = prefix + `draft:${owner}:inputs`;

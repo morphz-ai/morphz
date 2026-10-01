@@ -2,25 +2,25 @@ import { test, expect, type Page } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import { platformInputState } from "./platform-input-state-fixture.js";
 
 test.afterEach(async ({ page }) => {
-  // Workspace polling can still be reading a routed response when assertions
+  // Runtime presentation polling can still be reading a routed response when assertions
   // finish. Drain these requests before Playwright disposes their context.
   await page.unrouteAll({ behavior: "wait" });
 });
 
 async function enableExecution(page: Page) {
-  await page.route("**/api/workspace", async (route) => {
-    const response = await route.fetch({
-      headers: { ...route.request().headers(), "if-none-match": "" },
-    });
-    const body = await response.json();
-    body.runtime = { ...body.runtime, configured: true, connected: true };
-    await route.fulfill({ response, json: body });
-  });
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: { ...disconnectedRuntime, configured: true, connected: true },
+  }));
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
   );
+  return presentation;
 }
 
 async function geometry(page: Page, mode: "docked" | "overlay") {
@@ -200,7 +200,7 @@ test("右栏按工作现场记住内容，关闭与导航不串用选择", async
 });
 
 test("三类检查器共用全高列、标题、调宽、焦点和草稿规则", async ({ page }) => {
-  await enableExecution(page);
+  const { client } = await enableExecution(page);
   await page.goto("/");
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   await openLibrary(page);
@@ -210,7 +210,10 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
   });
   const box = await openInput(page);
   await box.fill("检查器验收草稿，不发送");
-  const before = await page.request.get("/api/workspace").then((r) => r.json());
+  const before = {
+    inputs: await platformInputState(page, client),
+    conversations: await client.allNavigationConversations(),
+  };
   await page.getByRole("button", { name: "显示右侧栏" }).click();
   await expect(
     page.getByRole("complementary", { name: "对象批注", exact: true }),
@@ -289,9 +292,10 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
   await page.getByRole("button", { name: "当前理解", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-inspector")).toHaveCount(0);
-  const after = await page.request.get("/api/workspace").then((r) => r.json());
-  expect(after.workspace.inputs).toEqual(before.workspace.inputs);
-  expect(after.workspace.conversations).toEqual(before.workspace.conversations);
+  expect({
+    inputs: await platformInputState(page, client),
+    conversations: await client.allNavigationConversations(),
+  }).toEqual(before);
 });
 
 test("网页与窄窗检查器、悬浮 Dock 叠放，不改变网页尺寸或协助权限", async ({

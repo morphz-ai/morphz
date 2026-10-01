@@ -94,6 +94,18 @@ export function ExchangeResizeHandle({
       root.style.removeProperty("--exchange-height");
       root.style.removeProperty("--exchange-max-height");
     }
+    // The composer floats over work canvases. Expose its actual height to
+    // scrollable content so the last item can be brought above the overlay.
+    const workspace = root.closest<HTMLElement>(".primary-panel")!;
+    const overlayHeight = `${Math.ceil(
+      root.getBoundingClientRect().height +
+        parseFloat(getComputedStyle(root).marginBottom),
+    )}px`;
+    if (
+      workspace.style.getPropertyValue("--exchange-overlay-height") !==
+      overlayHeight
+    )
+      workspace.style.setProperty("--exchange-overlay-height", overlayHeight);
     const height = Math.round(
       Math.max(0, root.getBoundingClientRect().height - chrome),
     );
@@ -192,6 +204,9 @@ export function ExchangeResizeHandle({
       root.removeAttribute("data-resizing");
       root.style.removeProperty("--exchange-height");
       root.style.removeProperty("--exchange-max-height");
+      root
+        .closest<HTMLElement>(".primary-panel")
+        ?.style.removeProperty("--exchange-overlay-height");
       panel.current = null;
     };
   }, []);

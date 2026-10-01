@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Bookmark as BookmarkIcon,
@@ -8,12 +8,11 @@ import {
   X,
   ArrowLeft,
 } from "lucide-react";
-import {
-  findBookmarks,
-  type Bookmark,
+import type {
+  Bookmark,
+  BookmarkOperation,
 } from "../../../packages/core/src/bookmarks.js";
 import { websiteURL } from "../../../packages/core/src/browser.js";
-import type { Operation } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 
@@ -31,10 +30,56 @@ export function BrowserBookmarks({
   onOpen: (url: string) => Promise<void>;
 }) {
   const bookmarks = client.boot?.workspace.bookmarks ?? [];
+  const managed = !!client.boot?.capabilities.browserBookmarks;
+  const identityGeneration = client.boot?.csrfToken;
   const parsed = websiteURL.safeParse(url);
-  const saved = parsed.success
+  const legacySaved = parsed.success
     ? bookmarks.find((b) => !b.deletedAt && b.url === parsed.data)
     : undefined;
+  const [remoteSaved, setRemoteSaved] = useState<{
+    identityGeneration: string;
+    url: string;
+    revision: number;
+    bookmark?: Bookmark;
+    error?: string;
+  } | null>(null);
+  const [savedRevision, setSavedRevision] = useState(0);
+  const currentURL = parsed.success ? parsed.data : null;
+  useEffect(() => {
+    if (!managed || !identityGeneration || !currentURL) return;
+    let active = true;
+    void client
+      .bookmarkList({ url: currentURL, limit: 1 })
+      .then((rows) => {
+        if (active)
+          setRemoteSaved({
+            identityGeneration,
+            url: currentURL,
+            revision: savedRevision,
+            bookmark: rows.find((row) => row.url === currentURL),
+          });
+      })
+      .catch(() => {
+        if (active)
+          setRemoteSaved({
+            identityGeneration,
+            url: currentURL,
+            revision: savedRevision,
+            error: "收藏状态读取失败，点击重试。",
+          });
+      });
+    return () => {
+      active = false;
+    };
+  }, [managed, identityGeneration, currentURL, savedRevision]);
+  const currentSaved =
+    remoteSaved?.identityGeneration === identityGeneration &&
+    remoteSaved?.url === currentURL &&
+    remoteSaved?.revision === savedRevision
+      ? remoteSaved
+      : null;
+  const saved = managed ? currentSaved?.bookmark : legacySaved;
+  const checkingSaved = managed && !!currentURL && !currentSaved;
   const [panel, setPanel] = useState<{ selected?: Bookmark } | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -50,7 +95,7 @@ export function BrowserBookmarks({
     setError("");
     try {
       const currentTitle = readCurrentTitle ? await readCurrentTitle() : title;
-      await client.execute({
+      await client.bookmarkCommand({
         type: "bookmark-add",
         url: parsed.data,
         title: (currentTitle.trim() || new URL(parsed.data).hostname).slice(
@@ -58,6 +103,7 @@ export function BrowserBookmarks({
           180,
         ),
       });
+      setSavedRevision((value) => value + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "收藏失败，请重试。");
     } finally {
@@ -68,11 +114,30 @@ export function BrowserBookmarks({
   return (
     <>
       <button
-        aria-label={saved ? "编辑当前收藏" : "收藏此页"}
-        title={saved ? "已收藏 · 编辑" : "收藏此页"}
+        aria-label={
+          currentSaved?.error
+            ? "重试读取收藏状态"
+            : saved
+              ? "编辑当前收藏"
+              : "收藏此页"
+        }
+        title={
+          currentSaved?.error
+            ? currentSaved.error
+            : checkingSaved
+              ? "读取收藏状态…"
+              : saved
+                ? "已收藏 · 编辑"
+                : "收藏此页"
+        }
         aria-pressed={!!saved}
-        disabled={!parsed.success || busy}
-        onClick={() => void add()}
+        aria-busy={checkingSaved}
+        disabled={!parsed.success || busy || checkingSaved}
+        onClick={() =>
+          currentSaved?.error
+            ? setSavedRevision((value) => value + 1)
+            : void add()
+        }
       >
         <BookmarkIcon fill={saved ? "currentColor" : "none"} />
       </button>
@@ -86,16 +151,16 @@ export function BrowserBookmarks({
       >
         <Library />
       </button>
-      {error && (
+      {(error || currentSaved?.error) && (
         <span className="bookmark-inline-error" role="alert">
-          {error}
+          {error || currentSaved?.error}
         </span>
       )}
       {panel && (
         <BookmarkDialog
           client={client}
-          bookmarks={bookmarks}
           selected={panel.selected}
+          onChanged={() => setSavedRevision((value) => value + 1)}
           onClose={() => setPanel(null)}
           onOpen={onOpen}
         />
@@ -106,14 +171,14 @@ export function BrowserBookmarks({
 
 function BookmarkDialog({
   client,
-  bookmarks,
   selected,
+  onChanged,
   onClose,
   onOpen,
 }: {
   client: WorkspaceClient;
-  bookmarks: Bookmark[];
   selected?: Bookmark;
+  onChanged: () => void;
   onClose: () => void;
   onOpen: (url: string) => Promise<void>;
 }) {
@@ -122,6 +187,10 @@ function BookmarkDialog({
   const [name, setName] = useState(selected?.title ?? "");
   const [url, setURL] = useState(selected?.url ?? "");
   const [query, setQuery] = useState("");
+  const [rows, setRows] = useState<Bookmark[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [listRevision, setListRevision] = useState(0);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   const [removed, setRemoved] = useState<{
@@ -129,21 +198,74 @@ function BookmarkDialog({
     revision: number;
   } | null>(null);
   const pending = useRef(false);
+  const listKey = useRef("");
   useModal(dialog);
-  const rows = findBookmarks(bookmarks, query);
+  const identityGeneration = client.boot?.csrfToken;
+  listKey.current = `${identityGeneration ?? ""}:${query}:${listRevision}`;
+  useEffect(() => {
+    if (!identityGeneration) return;
+    let active = true;
+    setRows([]);
+    setHasMore(false);
+    setLoading(true);
+    const timer = setTimeout(() => {
+      void client
+        .bookmarkList({ query, limit: 50 })
+        .then((result) => {
+          if (!active) return;
+          setRows(result);
+          setHasMore(result.length === 50);
+          setLoading(false);
+        })
+        .catch((cause) => {
+          if (!active) return;
+          setRows([]);
+          setHasMore(false);
+          setLoading(false);
+          setError(cause instanceof Error ? cause.message : "读取收藏失败。");
+        });
+    }, 180);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [identityGeneration, query, listRevision]);
+  async function loadMore() {
+    if (loading || busy || !hasMore) return;
+    const key = listKey.current;
+    setLoading(true);
+    try {
+      const next = await client.bookmarkList({
+        query,
+        offset: rows.length,
+        limit: 50,
+      });
+      if (key === listKey.current) {
+        setRows((current) => [...current, ...next]);
+        setHasMore(next.length === 50);
+      }
+    } catch (cause) {
+      if (key === listKey.current)
+        setError(cause instanceof Error ? cause.message : "读取收藏失败。");
+    } finally {
+      if (key === listKey.current) setLoading(false);
+    }
+  }
   function edit(b: Bookmark) {
     setEditing(b);
     setName(b.title);
     setURL(b.url);
     setError("");
   }
-  async function run(operation: Operation, done: () => void) {
+  async function run(operation: BookmarkOperation, done: () => void) {
     if (pending.current) return;
     pending.current = true;
     setBusy(true);
     setError("");
     try {
-      await client.execute(operation);
+      await client.bookmarkCommand(operation);
+      setListRevision((value) => value + 1);
+      onChanged();
       done();
     } catch (e) {
       setError(e instanceof Error ? e.message : "操作失败，请重试。");
@@ -198,6 +320,7 @@ function BookmarkDialog({
             onClick={() => {
               setEditing(undefined);
               setError("");
+              setListRevision((value) => value + 1);
             }}
           >
             <ArrowLeft />
@@ -298,8 +421,18 @@ function BookmarkDialog({
                   </button>
                 </div>
               ))
+            ) : loading ? (
+              <p className="muted">正在读取收藏…</p>
             ) : (
               <p className="muted">{query ? "没有匹配的收藏" : "暂无收藏"}</p>
+            )}
+            {hasMore && (
+              <button
+                disabled={loading || busy}
+                onClick={() => void loadMore()}
+              >
+                {loading ? "读取中…" : "加载更多"}
+              </button>
             )}
           </div>
           {removed && (

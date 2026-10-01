@@ -76,7 +76,8 @@ export async function applicationCall(
           id,
           method,
           params,
-          ...(method !== "workspace" && method !== "login"
+          ...(method !== "platform.bootstrap" &&
+          method !== "login"
             ? { identityGeneration: requestOptions.identityGeneration }
             : {}),
         });
@@ -96,7 +97,8 @@ export async function applicationCall(
     options.signal?.throwIfAborted();
     if (epoch !== connectionEpoch)
       throw new DOMException("身份已切换，旧响应已丢弃。", "AbortError");
-    if (method === "workspace") observeIdentity(value);
+    if (method === "platform.bootstrap")
+      observeIdentity(value);
     if (method === "login" || method === "logout") {
       identity = "disconnected";
       generation = "";
@@ -110,6 +112,7 @@ export async function applicationCall(
   }
 }
 
+/** The formal exchange and execution inspector share the Platform Session stream. */
 export function subscribeConversation(
   scope: { projectId: string; conversationId: string },
   update: (value: ConversationStream) => void,
@@ -161,7 +164,9 @@ export function subscribeConversation(
       retry = setTimeout(() => {
         retry = undefined;
         if (!closed)
-          void bridge.subscribe(id, scope, expected).catch(reconnect);
+          void bridge
+            .subscribe(id, { ...scope, kind: "platform" }, expected)
+            .catch(reconnect);
       }, delay);
       delay = Math.min(8000, delay * 2);
     };
@@ -178,7 +183,9 @@ export function subscribeConversation(
         }
       }
     });
-    void bridge.subscribe(id, scope, expected).catch(reconnect);
+    void bridge
+      .subscribe(id, { ...scope, kind: "platform" }, expected)
+      .catch(reconnect);
     return () => {
       closed = true;
       clearTimeout(retry);
@@ -186,10 +193,10 @@ export function subscribeConversation(
       dispose();
     };
   }
-  const source = new EventSource(
-    `/api/conversation/stream?${new URLSearchParams(scope)}`,
+  const stream = new EventSource(
+    `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`,
   );
-  source.onmessage = (event) => {
+  stream.onmessage = (event) => {
     if (closed) return;
     try {
       const value = conversationFrameSchema.parse(JSON.parse(event.data));
@@ -209,9 +216,9 @@ export function subscribeConversation(
       lost();
     }
   };
-  source.onerror = lost;
+  stream.onerror = lost;
   return () => {
     closed = true;
-    source.close();
+    stream.close();
   };
 }

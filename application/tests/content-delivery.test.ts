@@ -1,13 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import {
-  AgentTools,
-  workToolDefinitions,
-} from "../packages/application/src/agent-tools.js";
-import { WorkspaceStore } from "../packages/application/src/store.js";
+import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
+import { agentDomainFixture } from "./agent-domain-fixture.js";
+import { reviseInteractive } from "../packages/application/src/document-service.js";
 import { emptyInteractive } from "../packages/core/src/interactive.js";
-import { localAccess } from "../packages/core/src/model.js";
 
 test("两种 Host 名称具有相同的交付边界；报告默认文档，表格统计不冒充分析或文件", () => {
   assert.equal(workToolDefinitions.length, 2);
@@ -37,101 +34,111 @@ test("两种 Host 名称具有相同的交付边界；报告默认文档，表�
   }
 });
 
-test("真实工具仍可交付 Markdown 报告与表格；旧统计布局、人改版本和重试保护保持", () => {
-  const store = new WorkspaceStore(":memory:");
-  const tools = new AgentTools(store, "test-token", () => ({
-    projectId: "first-project",
-    access: { principalId: "morphz-service", actantId: "morphz-agent" },
-  }));
-  const envelope = (args: unknown) => ({
-    protocol: 1 as const,
-    tool: "host_morphz",
-    invocation: {
-      job_id: randomUUID(),
-      tool_call_id: randomUUID(),
-      session_id: "s",
-      context_id: "c",
-      principal_id: "p",
-      agent_id: "a",
-      target_id: "local",
-      thread_id: "t",
-    },
-    arguments: args,
-  });
-  const read = (id: string) =>
-    store.snapshot().artifacts.find((a) => a.id === id)!;
+test("真实 Agent 与 Human 共用 Objects 文档和表格；视图、人改版本、重开与幂等保护", async () => {
+  const fixture = await agentDomainFixture();
   try {
     const markdown =
       "# 报价分析\n\n| 供应商 | 报价 |\n| --- | --- |\n| 甲 | 120 |\n| 乙 | 150 |\n\n甲比乙低 30；这只是报价比较。";
-    const report = tools.call(
-      envelope({
-        action: "create-document",
-        title: "报价分析报告",
-        markdown,
-      }),
-    ) as { artifactId: string };
-    assert.equal(read(report.artifactId).content.kind, "document");
-    assert.deepEqual(read(report.artifactId).content, {
-      kind: "document",
+    const report = await fixture.call<{ contentId: string }>({
+      action: "create-document",
+      title: "报价分析报告",
       markdown,
     });
+    const reportRead = await fixture.call<{ objectId: string }>({
+      action: "read",
+      artifactId: report.contentId,
+    });
+    const reportOriginal = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.readObject({
+        credential: actor.credential,
+        objectId: reportRead.objectId,
+      }),
+    );
+    assert.deepEqual(reportOriginal.content, { kind: "document", markdown });
     const table = {
       ...structuredClone(emptyInteractive),
       layout: "report" as const,
       rows: [{ id: "r1", cells: { name: "甲", value: 120 } }],
     };
-    const created = tools.call(
-      envelope({
-        action: "create-interactive",
-        title: "持续维护的报价",
+    const created = await fixture.call<{ contentId: string }>({
+      action: "create-interactive",
+      title: "持续维护的报价",
+      interactive: table,
+    });
+    const read = () =>
+      fixture.call<{
+        objectId: string;
+        revision: number;
+        title: string;
+        interactive: typeof table;
+      }>({ action: "read", artifactId: created.contentId });
+    const original = await read();
+    const humanTable = {
+      ...table,
+      rows: [{ id: "r1", cells: { name: "甲", value: 110 } }],
+    };
+    await fixture.withHuman((actor) =>
+      reviseInteractive({
+        ...fixture.domains.content,
+        actor,
+        instanceId: fixture.domains.content.instanceIds.objects,
+        commandId: randomUUID(),
+        objectId: original.objectId,
+        expectedRevision: 1,
+        title: original.title,
+        content: humanTable,
+      }),
+    );
+    await assert.rejects(
+      fixture.call({
+        action: "revise-interactive",
+        artifactId: created.contentId,
+        revision: 1,
+        title: original.title,
         interactive: table,
       }),
-    ) as { artifactId: string };
-    const original = read(created.artifactId);
-    store.execute(
-      {
-        commandId: randomUUID(),
-        operation: {
-          type: "revise-artifact",
-          artifactId: original.id,
-          expectedRevision: 1,
-          title: original.title,
-          content: {
-            ...table,
-            rows: [{ id: "r1", cells: { name: "甲", value: 110 } }],
-          },
-        },
-      },
-      localAccess,
+      /版本|修订/,
     );
-    assert.throws(
-      () =>
-        tools.call(
-          envelope({
-            action: "revise-interactive",
-            artifactId: original.id,
-            revision: 1,
-            title: original.title,
-            interactive: table,
-          }),
-        ),
-      /新版本/,
-    );
-    const current = read(original.id);
-    const update = envelope({
+    const current = await read();
+    assert.equal(current.revision, 2);
+    assert.deepEqual(current.interactive, humanTable);
+    const updated = { ...humanTable, layout: "form" as const };
+    const update = fixture.envelope({
       action: "revise-interactive",
-      artifactId: original.id,
+      artifactId: created.contentId,
       revision: 2,
       title: original.title,
-      interactive: { ...current.content, layout: "form" },
+      interactive: updated,
     });
-    assert.deepEqual(tools.call(update), tools.call(update));
-    const result = read(original.id);
+    const receipt = await fixture.tools.call(update);
+    assert.deepEqual(await fixture.tools.call(update), receipt);
+    await fixture.reopen();
+    assert.deepEqual(await fixture.tools.call(update), receipt);
+    const result = await read();
     assert.equal(result.revision, 3);
-    assert.deepEqual(result.versions[0], original.versions[0]);
-    assert.deepEqual(result.content, { ...current.content, layout: "form" });
-    assert.equal(store.snapshot().artifacts.length, 2);
+    assert.deepEqual(result.interactive, updated);
+    const first = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.readObject({
+        credential: actor.credential,
+        objectId: original.objectId,
+        revision: 1,
+      }),
+    );
+    assert.deepEqual(first.content, table);
+    const history = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.listObjectVersions({
+        credential: actor.credential,
+        objectId: original.objectId,
+      }),
+    );
+    assert.equal(history.versions.length, 3);
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      2,
+    );
+    fixture.assertNoLegacyData();
   } finally {
-    store.close();
+    await fixture.close();
   }
 });

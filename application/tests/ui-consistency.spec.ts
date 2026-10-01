@@ -1,7 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
-import { seedCenter } from "./center-fixtures.js";
-import { humanTask } from "./artifact-fixtures.js";
 import { openSettings } from "./settings-helpers.js";
+import { randomUUID } from "node:crypto";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  isolatedCenterDirectory,
+  seedAgentOriginal,
+} from "./platform-agent-original-fixture.js";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
@@ -10,17 +15,19 @@ test.afterEach(async ({ page }) => {
 async function prepare(
   page: Page,
   runtime?: { configured: boolean; connected: boolean },
+  teamAuthentication = false,
 ) {
-  await page.route("**/api/workspace", async (route) => {
+  const presentation = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: { ...disconnectedRuntime, ...runtime },
+  }));
+  await page.route("**/api/platform/bootstrap", async (route) => {
     const { "if-none-match": _etag, ...headers } = route.request().headers();
     const response = await route.fetch({ headers });
     const boot = await response.json();
     boot.capabilities.modelSettings = true;
-    if (runtime) Object.assign(boot.runtime, runtime);
-    const human = boot.workspace.actants.find(
-      (a: { id: string }) => a.id === boot.actantId,
-    );
-    human.name = "TEST 较长的工作空间使用者名称";
+    boot.capabilities.teamAuthentication = teamAuthentication;
+    boot.displayName = "TEST 较长的工作空间使用者名称";
     await route.fulfill({ response, json: boot });
   });
   await page.route("**/api/model-settings/read", (route) =>
@@ -57,6 +64,7 @@ async function prepare(
       },
     }),
   );
+  return presentation;
 }
 
 test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且不被项目挤走", async ({
@@ -67,12 +75,13 @@ test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且�
   await page.addInitScript(() => {
     (window as any).morphzDesktop = {};
   });
-  await prepare(page);
+  const { client } = await prepare(page);
   for (let i = 0; i < 22; i++)
-    await seedCenter(page, {
-      type: "create-project",
-      title: `TEST 侧栏密度 ${i}`,
-    });
+    await client.createProject(
+      `TEST 侧栏密度 ${i}`,
+      randomUUID(),
+      randomUUID(),
+    );
   await page.goto("/");
   for (const size of [
     { width: 1380, height: 920 },
@@ -170,7 +179,7 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
   page,
 }) => {
   const runtime = { configured: true, connected: true };
-  await prepare(page, runtime);
+  const presentation = await prepare(page, runtime);
   await page.goto("/");
   const trigger = page.locator(".profile-summary:visible");
   const status = page.locator(".sidebar-bottom .profile-status");
@@ -183,6 +192,7 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
   ]) {
     runtime.configured = state.configured;
     runtime.connected = state.connected;
+    await presentation.refresh();
     await expect(status).toHaveText(state.label);
     await expect(status).toBeInViewport();
     await expect(status.locator(".presence-dot")).toHaveAttribute(
@@ -224,22 +234,20 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
 test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍可恢复", async ({
   page,
 }) => {
-  await prepare(page);
-  await seedCenter(
-    page,
-    {
-      type: "create-artifact",
-      projectId: "first-project",
-      title: "TEST UI 内容",
-      content: { kind: "document", markdown: "检查实际文档的阅读与操作层级。" },
-    },
-    true,
+  const { client, spaces } = await prepare(page);
+  await seedAgentOriginal(
+    isolatedCenterDirectory(),
+    spaces.deskId,
+    "TEST UI 内容",
+    "检查实际文档的阅读与操作层级。",
   );
-  await seedCenter(page, {
-    type: "create-artifact",
-    projectId: "first-project",
+  await client.createTask({
+    commandId: randomUUID(),
+    taskId: randomUUID(),
+    projectId: spaces.inboxId,
     title: "TEST UI 事项",
-    content: humanTask("检查列表与看板，不启动执行。"),
+    description: "检查列表与看板，不启动执行。",
+    assigneeId: client.boot.actantId,
   });
   await page.goto("/");
   await expect(page.locator(".app")).toBeVisible();
@@ -284,9 +292,16 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
   await page.keyboard.press("Escape");
   await expect(trigger).toBeFocused();
   await page.setViewportSize({ width: 760, height: 540 });
-  await page.route("**/api/workspace", (route) =>
+  await page.route("**/api/platform/bootstrap", (route) =>
     route.fulfill({ status: 503, json: { message: "TEST 断线" } }),
   );
+  const interrupted = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/platform/bootstrap" &&
+      response.status() === 503,
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await interrupted;
   await expect(
     page.locator(".sidebar-bottom .profile-warning"),
   ).toHaveAttribute("aria-label", "应用连接中断");
@@ -355,14 +370,7 @@ test("设置表单的长账号名和模型 ID 不挤压动作，窄窗操作可�
 test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返回可见齿轮", async ({
   page,
 }) => {
-  await prepare(page);
-  await page.route("**/api/workspace", async (route) => {
-    const { "if-none-match": _etag, ...headers } = route.request().headers();
-    const response = await route.fetch({ headers });
-    const boot = await response.json();
-    boot.capabilities.teamAuthentication = true;
-    await route.fulfill({ response, json: boot });
-  });
+  await prepare(page, undefined, true);
   await page.goto("/");
   const trigger = page.getByRole("button", { name: "用户菜单", exact: true });
   await trigger.click();

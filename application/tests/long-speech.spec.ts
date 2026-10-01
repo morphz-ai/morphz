@@ -1,4 +1,10 @@
-import { seedLegacyDocument } from "./center-fixtures.js";
+import { randomUUID } from "node:crypto";
+import { PlatformClient } from "../apps/web/src/platform-client.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import {
+  platformInputState,
+  platformContentState,
+} from "./platform-input-state-fixture.js";
 import { openLibrary } from "./application-helpers.js";
 import { libraryDestination } from "./artifact-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
@@ -39,8 +45,10 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
     await route.fulfill({ json: { text: "第" + ++uploads + "段。" } });
   });
   await page.goto("/");
-  const before = (await (await page.request.get("/api/workspace")).json())
-    .workspace.inputs.length;
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await platformInputState(page, source);
   await openTranscription(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   expect(uploads).toBe(0);
@@ -83,15 +91,13 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
   ).toBe(true);
   await dialog.screenshot({ path: "test-results/continuous-speech.png" });
   await dialog.getByRole("button", { name: "放入输入框", exact: true }).click();
-  const after = (await (await page.request.get("/api/workspace")).json())
-    .workspace.inputs.length;
-  expect(after).toBe(before);
+  expect(await platformInputState(page, source)).toEqual(before);
   await page.evaluate(() =>
     (Reflect.get(window, "testContext") as AudioContext).close(),
   );
 });
 
-test("旧百万字 TXT 副本仍可连续朗读、暂停不预取、章节跳转与刷新恢复", async ({
+test("百万字 TXT 导入原件可连续朗读、暂停不预取、章节跳转与刷新恢复", async ({
   page,
 }) => {
   test.setTimeout(90000);
@@ -113,7 +119,17 @@ test("旧百万字 TXT 副本仍可连续朗读、暂停不预取、章节跳转
   await page.goto("/");
   await openLibrary(page);
   const project = await libraryDestination(page);
-  await seedLegacyDocument(page, project.id, "百万字朗读.txt", source);
+  const client = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  await client.importDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
+    projectId: project.id,
+    relativePath: "百万字朗读.txt",
+    text: source,
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page
     .locator(".artifact-card")
     .filter({ hasText: "百万字朗读" })
@@ -163,6 +179,10 @@ test("长转写不被输入框截断，可完整保存为文档", async ({ page 
     return route.fulfill({ json: { text: "合成转写" } });
   });
   await page.goto("/");
+  const source = await PlatformClient.connect(
+    new HttpApplicationClient("http://127.0.0.1:65421"),
+  );
+  const before = await platformContentState(source);
   await openTranscription(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
@@ -177,12 +197,13 @@ test("长转写不被输入框截断，可完整保存为文档", async ({ page 
   await expect(dialog.getByLabel("语音识别文字")).toHaveValue(text);
   await dialog.getByRole("button", { name: "保存为文档", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  const boot = await (await page.request.get("/api/workspace")).json();
-  expect(
-    boot.workspace.artifacts.some(
-      (a: { content: { markdown?: string } }) => a.content.markdown === text,
-    ),
-  ).toBe(true);
+  const after = await platformContentState(source);
+  const added = after.documents.filter(
+    (document) =>
+      !before.documents.some((old) => old.contentId === document.contentId),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]?.original).toMatchObject({ markdown: text });
   expect(uploads).toBe(1);
   await page.evaluate(() =>
     (Reflect.get(window, "testContext") as AudioContext).close(),
