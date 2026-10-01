@@ -449,13 +449,24 @@ for (const zoom of [1, 2]) {
   });
 }
 
-async function iconPaths(icon: Locator) {
-  return icon.evaluate(
-    (svg) =>
-      `${getComputedStyle(svg).fill}|${Array.from(svg.querySelectorAll("path"))
-        .map((path) => path.getAttribute("d"))
-        .join("|")}`,
-  );
+async function iconDrawing(icon: Locator) {
+  return icon.evaluate((svg) => ({
+    fill: getComputedStyle(svg).fill,
+    nodes: Array.from(
+      svg.querySelectorAll("path,circle,rect,line,polyline,polygon,ellipse"),
+    ).map((node) => ({
+      tag: node.tagName,
+      attributes: Object.fromEntries(
+        Array.from(node.attributes)
+          .filter((attribute) =>
+            /^(d|cx|cy|r|x|y|width|height|rx|ry|x1|x2|y1|y2|points)$/.test(
+              attribute.name,
+            ),
+          )
+          .map((attribute) => [attribute.name, attribute.value]),
+      ),
+    })),
+  }));
 }
 
 /** Read actual rendered geometry and colour, not the component or CSS text. */
@@ -468,9 +479,48 @@ async function expectApprovalPresentation(page: Page, mode: Mode) {
   await expect(icons.row).toHaveAttribute("data-approval-mode", mode);
   await expect(icons.trigger).toHaveAttribute("aria-hidden", "true");
   await expect(icons.row).toHaveAttribute("aria-hidden", "true");
-  const paths = await iconPaths(icons.trigger);
-  expect(paths).not.toBe("");
-  expect(await iconPaths(icons.row)).toBe(paths);
+  const drawing = await iconDrawing(icons.trigger);
+  expect(drawing.fill).toBe("none");
+  const expectedNodes = {
+    request_approval: [
+      { tag: "circle", attributes: { cx: "12", cy: "12", r: "10" } },
+      {
+        tag: "path",
+        attributes: { d: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" },
+      },
+      { tag: "path", attributes: { d: "M12 17h.01" } },
+    ],
+    auto_review: [
+      {
+        tag: "path",
+        attributes: {
+          d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+        },
+      },
+      { tag: "path", attributes: { d: "m9 12 2 2 4-4" } },
+    ],
+    full_access: [
+      {
+        tag: "rect",
+        attributes: {
+          width: "18",
+          height: "11",
+          x: "3",
+          y: "11",
+          rx: "2",
+          ry: "2",
+        },
+      },
+      { tag: "path", attributes: { d: "M7 11V7a5 5 0 0 1 9.9-1" } },
+    ],
+  } satisfies Record<Mode, unknown>;
+  // Inspect the actual SVG primitives: a question circle is not an empty
+  // shield, and an open lock must never regress to a forbidden/slashed shield.
+  expect(drawing.nodes).toEqual(expectedNodes[mode]);
+  expect(await iconDrawing(icons.row)).toEqual(drawing);
+  await expect(icons.trigger).toHaveCSS("width", "16px");
+  await expect(icons.trigger).toHaveCSS("height", "16px");
+  const paths = JSON.stringify(drawing);
   const colour = await icons.trigger.evaluate(
     (svg) => getComputedStyle(svg).color,
   );
@@ -684,6 +734,9 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
   await f.settings.screenshot({
     path: info.outputPath("approval-request.png"),
   });
+  await approvalIcons(page).trigger.screenshot({
+    path: info.outputPath("approval-request-16px.png"),
+  });
   for (const mode of ["auto_review", "full_access"] as const) {
     await f.approval.selectOption(mode);
     if (mode === "full_access")
@@ -695,6 +748,9 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
     presentations.push(await expectApprovalPresentation(page, mode));
     await f.settings.screenshot({
       path: info.outputPath(`approval-${mode}.png`),
+    });
+    await approvalIcons(page).trigger.screenshot({
+      path: info.outputPath(`approval-${mode}-16px.png`),
     });
     await page.keyboard.press("Escape");
     await expect(f.settings).not.toBeVisible();
@@ -788,7 +844,7 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
   messageHost,
 }) => {
   const f = await fixture(page, messageHost);
-  const originalPaths = await iconPaths(approvalIcons(page).row);
+  const originalDrawing = await iconDrawing(approvalIcons(page).row);
   f.state.failUpdate = true;
   await f.approval.selectOption("auto_review");
   await expect(f.settings.getByRole("alert")).toContainText(
@@ -800,7 +856,7 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
     "data-approval-mode",
     "request_approval",
   );
-  expect(await iconPaths(approvalIcons(page).row)).toBe(originalPaths);
+  expect(await iconDrawing(approvalIcons(page).row)).toEqual(originalDrawing);
   await expect(approvalIcons(page).trigger).toHaveAttribute(
     "data-approval-mode",
     "unread",
@@ -851,7 +907,7 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
     "data-approval-mode",
     "request_approval",
   );
-  expect(await iconPaths(approvalIcons(page).row)).toBe(originalPaths);
+  expect(await iconDrawing(approvalIcons(page).row)).toEqual(originalDrawing);
   await expect(approvalIcons(page).trigger).toHaveAttribute(
     "data-approval-mode",
     "unread",
