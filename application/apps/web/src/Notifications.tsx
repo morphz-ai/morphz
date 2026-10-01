@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useModal } from "./useModal.js";
+import { visibleProfileMenuTrigger } from "./profile-menu-focus.js";
 import { Bell, X, Settings2 } from "lucide-react";
 import { z } from "zod";
 import { RequestError, scopedStorage, type WorkspaceClient } from "./client.js";
@@ -297,7 +298,7 @@ export function Notifications({
       window.removeEventListener("morphz:notifications-changed", changed);
     };
   }, []);
-  useModal(dialog, heading, open);
+  useModal(dialog, heading, open, visibleProfileMenuTrigger);
   function settings() {
     setOpen(false);
     trigger.current?.focus();

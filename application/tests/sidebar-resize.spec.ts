@@ -18,8 +18,10 @@ const resizer = (page: Page) =>
     exact: true,
   });
 
-async function railMenu(page: Page, name: "更多") {
-  const trigger = sidebar(page).getByRole("button", { name, exact: true });
+async function railMenu(page: Page) {
+  const trigger = sidebar(page)
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true });
   await trigger.press("Enter");
   const id = await trigger.getAttribute("aria-controls");
   expect(id).toBeTruthy();
@@ -264,13 +266,16 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
     await button.focus();
     await expect(button).toBeFocused();
   }
-  const moreIcon = sidebar(page)
-    .getByRole("button", { name: "更多", exact: true })
-    .locator("svg");
-  await expect(moreIcon).toHaveCSS("width", "20px");
-  await expect(moreIcon).toHaveCSS("height", "20px");
+  await expect(
+    sidebar(page).getByRole("button", { name: "更多", exact: true }),
+  ).toHaveCount(0);
+  const accountIcon = sidebar(page).locator(
+    ".sidebar-bottom .profile-trigger .avatar svg",
+  );
+  await expect(accountIcon).toHaveCSS("width", "16px");
+  await expect(accountIcon).toHaveCSS("height", "16px");
   // Reuse the original five navigation entries and their existing behavior.
-  // Only utilities fold into More; the rail adds no second navigation model.
+  // Utilities share the Human menu; the rail adds no second navigation model.
   await expect(
     nav.getByRole("button", { name: "搜索资料", exact: true }),
   ).toHaveCount(0);
@@ -301,9 +306,14 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
   await expect(projectCreation).toBeFocused();
   await expect(directory).toBeVisible();
 
-  const search = await railMenu(page, "更多");
-  await expect(search.menu).toHaveAttribute("aria-label", "侧栏选项");
-  await expect(search.menu.getByRole("button")).toHaveCount(4);
+  const search = await railMenu(page);
+  await expect(search.menu).toHaveAttribute("aria-label", "用户菜单");
+  await expect(search.menu.getByRole("button")).toHaveCount(
+    4 +
+      Number(
+        (await conversationClient(page)).boot!.capabilities.teamAuthentication,
+      ),
+  );
   await expect(search.menu.getByRole("button").first()).toHaveAccessibleName(
     "搜索资料",
   );
@@ -328,7 +338,7 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
       name + "工具栏",
     );
   }
-  const appearance = await railMenu(page, "更多");
+  const appearance = await railMenu(page);
   await appearance.menu
     .getByRole("button", { name: "外观设置", exact: true })
     .click();
@@ -337,7 +347,7 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
   await expect(settings.getByLabel("阅读字号")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(appearance.trigger).toBeFocused();
-  const notifications = await railMenu(page, "更多");
+  const notifications = await railMenu(page);
   await notifications.menu
     .getByRole("button", { name: "通知", exact: true })
     .click();
@@ -346,7 +356,7 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
   ).toBeInViewport();
   await page.keyboard.press("Escape");
   await expect(notifications.trigger).toBeFocused();
-  const generalSettings = await railMenu(page, "更多");
+  const generalSettings = await railMenu(page);
   await generalSettings.menu
     .getByRole("button", { name: "设置", exact: true })
     .click();

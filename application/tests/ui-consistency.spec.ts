@@ -67,7 +67,7 @@ async function prepare(
   return presentation;
 }
 
-test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且不被项目挤走", async ({
+test("侧栏个人入口和连接状态常驻，设置收入同一菜单且不被项目挤走", async ({
   page,
 }) => {
   // This is Desktop chrome; the Web-only product-family navigation is tested
@@ -90,7 +90,7 @@ test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且�
     await page.setViewportSize(size);
     const footer = page.locator(".sidebar-bottom");
     const models = footer.getByRole("button", {
-      name: "设置",
+      name: "用户菜单",
       exact: true,
     });
     await expect(models).toBeInViewport();
@@ -121,7 +121,10 @@ test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且�
       const box = (await target.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(32);
       expect(box.width).toBeGreaterThanOrEqual(32);
-      expect(box.x).toBeGreaterThanOrEqual(identity.x + identity.width);
+      expect(box.x).toBeLessThanOrEqual(identity.x);
+      expect(box.x + box.width).toBeGreaterThanOrEqual(
+        identity.x + identity.width,
+      );
       expect(
         await target.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       ).toBe(true);
@@ -145,15 +148,21 @@ test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且�
     await expect(models).toBeInViewport();
     const menu = page.getByRole("group", { name: "用户菜单", exact: true });
     await status.click();
-    await expect(menu).toHaveCount(0);
+    await expect(menu).toBeVisible();
+    await expect(
+      menu.getByRole("button", { name: "退出当前身份", exact: true }),
+    ).toHaveCount(0);
     await expect(footer.getByRole("button", { name: "用户菜单" })).toHaveCount(
-      0,
+      1,
     );
-    await expect(footer.locator(".sidebar-entry-chevron")).toHaveCount(0);
+    await expect(footer.locator(".sidebar-entry-chevron")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(models).toBeFocused();
     await page.screenshot({
       path: `test-results/ui-profile-menu-${size.width}.png`,
     });
     await models.press("Enter");
+    await menu.getByRole("button", { name: "设置", exact: true }).click();
     await expect(page.locator(".settings-dialog :focus")).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(models).toBeFocused();
@@ -175,13 +184,15 @@ test("侧栏身份和连接状态常驻，设置在底部右侧一步打开且�
   }
 });
 
-test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持续可读", async ({
+test("个人菜单有真实客户端功能但不虚构账号操作，连接与窄屏描述持续可读", async ({
   page,
 }) => {
   const runtime = { configured: true, connected: true };
   const presentation = await prepare(page, runtime);
   await page.goto("/");
-  const trigger = page.locator(".profile-summary:visible");
+  const trigger = page
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true });
   const status = page.locator(".sidebar-bottom .profile-status");
   const menu = page.getByRole("group", { name: "用户菜单", exact: true });
   for (const state of [
@@ -204,8 +215,19 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
     );
     await expect(menu).toBeHidden();
     await status.click();
-    await expect(menu).toHaveCount(0);
-    await expect(page.locator(".sidebar-entry-chevron")).toHaveCount(0);
+    await expect(menu).toBeVisible();
+    for (const name of ["搜索资料", "外观设置", "通知", "设置"])
+      await expect(
+        menu.getByRole("button", { name, exact: true }),
+      ).toBeVisible();
+    await expect(
+      menu.getByRole("button", { name: "退出当前身份", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      menu.getByRole("button", { name: /邀请|订阅|用量/ }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
     await expect(
       page.getByText(state.label, { exact: true }).filter({ visible: true }),
     ).toHaveCount(1);
@@ -216,7 +238,9 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
     await expect(trigger).toHaveAccessibleDescription(
       "TEST 较长的工作空间使用者名称 · 智能体已连接",
     );
-    await expect(trigger).not.toHaveAttribute("tabindex", "0");
+    expect(await trigger.evaluate((element) => element.tagName)).toBe("BUTTON");
+    await trigger.press("Space");
+    await expect(menu).toBeInViewport();
     const settings = page.getByRole("button", { name: "设置", exact: true });
     await expect(settings).toBeInViewport();
     await settings.press("Space");
@@ -227,7 +251,7 @@ test("个人身份不再伪装成菜单，连接状态和窄屏状态描述持�
       path: `test-results/ui-profile-menu-${width}.png`,
     });
     await page.keyboard.press("Escape");
-    await expect(settings).toBeFocused();
+    await expect(trigger).toBeFocused();
   }
 });
 
@@ -265,7 +289,9 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
           .getByRole("button", { name: new RegExp(`^${label}(?: |$)`) })
           .click();
         await expect(
-          page.getByRole("button", { name: "设置", exact: true }),
+          page
+            .getByRole("button", { name: "用户菜单", exact: true })
+            .filter({ visible: true }),
         ).toBeInViewport();
         await expect(
           page.locator(".sidebar-model-settings, .connection-summary"),
@@ -284,7 +310,8 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
   }
   const trigger = page
     .locator(".sidebar")
-    .getByRole("button", { name: "设置", exact: true });
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true });
   await openSettings(page, "智能体连接");
   await expect(
     page.getByRole("dialog", { name: "设置", exact: true }),
@@ -367,18 +394,26 @@ test("设置表单的长账号名和模型 ID 不挤压动作，窄窗操作可�
   }
 });
 
-test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返回可见齿轮", async ({
+test("个人菜单保留真实身份操作与客户端功能；外部关闭和跨宽度焦点正确", async ({
   page,
 }) => {
   await prepare(page, undefined, true);
   await page.goto("/");
-  const trigger = page.getByRole("button", { name: "用户菜单", exact: true });
+  const trigger = page
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true });
   await trigger.click();
   const menu = page.getByRole("group", { name: "用户菜单", exact: true });
-  await expect(menu.getByRole("button")).toHaveText(["退出登录"]);
+  await expect(menu.getByRole("button")).toHaveText([
+    "搜索",
+    "外观",
+    "通知",
+    "设置",
+    "退出登录",
+  ]);
   await expect(
     menu.getByRole("button", { name: "设置", exact: true }),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容库", exact: true })
@@ -389,6 +424,10 @@ test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返�
   ).toBeVisible();
   await trigger.press("Enter");
   await expect(
+    menu.getByRole("button", { name: "搜索资料", exact: true }),
+  ).toBeFocused();
+  for (let index = 0; index < 4; index++) await page.keyboard.press("Tab");
+  await expect(
     menu.getByRole("button", { name: "退出当前身份", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("Escape");
@@ -397,22 +436,26 @@ test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返�
     await openSettings(page, "外观");
     await page.setViewportSize({ width, height: 540 });
     await page.keyboard.press("Escape");
-    const settings = page.getByRole("button", { name: "设置", exact: true });
-    await expect(settings).toBeFocused();
-    await settings.press("Space");
+    await expect(trigger).toBeFocused();
+    await trigger.press("Space");
+    await menu.getByRole("button", { name: "设置", exact: true }).click();
     await expect(
       page.getByRole("dialog", { name: "设置", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(settings).toBeFocused();
+    await expect(trigger).toBeFocused();
     await trigger.press("Space");
     await expect(menu).toBeInViewport();
-    await expect(menu.getByRole("button")).toHaveText(["退出登录"]);
-    if (width < 560)
-      await expect(menu.locator(".profile-menu-summary")).toContainText(
-        "智能体未连接",
-      );
-    else await expect(menu.locator(".profile-menu-summary")).toHaveCount(0);
+    await expect(menu.getByRole("button")).toHaveText([
+      "搜索",
+      "外观",
+      "通知",
+      "设置",
+      "退出登录",
+    ]);
+    await expect(menu.locator(".profile-menu-summary")).toContainText(
+      "智能体未连接",
+    );
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
   }

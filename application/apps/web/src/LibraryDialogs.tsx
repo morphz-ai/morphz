@@ -4,6 +4,7 @@ import type { SearchResult } from "../../../packages/core/src/retrieval.js";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import { useModal } from "./useModal.js";
+import { visibleProfileMenuTrigger } from "./profile-menu-focus.js";
 import { searchPreview } from "./document-presentation.js";
 
 export function SearchDocuments({
@@ -59,7 +60,7 @@ export function SearchDocuments({
   search.current = client.search;
   const listContentPage = useRef(client.listContentPage);
   listContentPage.current = client.listContentPage;
-  useModal(dialog, searchInput);
+  useModal(dialog, searchInput, true, visibleProfileMenuTrigger);
   useEffect(() => {
     if (query.trim()) return;
     const abort = new AbortController();

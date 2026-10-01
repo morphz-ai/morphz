@@ -5,6 +5,7 @@ import { ModelSettings } from "./ModelSettings.js";
 import { ConnectionSettings } from "./ConnectionDetails.js";
 import { NotificationPreferences } from "./Notifications.js";
 import { useModal } from "./useModal.js";
+import { visibleProfileMenuTrigger } from "./profile-menu-focus.js";
 import { AppearanceChoices } from "./AppearanceControls.js";
 import type { InterfacePreferences } from "./interface-preferences.js";
 
@@ -45,13 +46,7 @@ export function SettingsDialog({
   const dialog = useRef<HTMLDialogElement>(null),
     content = useRef<HTMLDivElement>(null),
     closeButton = useRef<HTMLButtonElement>(null);
-  useModal(dialog, closeButton, true, (origin) =>
-    origin.matches(".profile-settings")
-      ? ([...document.querySelectorAll<HTMLElement>(".profile-settings")].find(
-          (button) => button.getClientRects().length > 0,
-        ) ?? null)
-      : null,
-  );
+  useModal(dialog, closeButton, true, visibleProfileMenuTrigger);
   useLayoutEffect(() => {
     if (content.current) content.current.scrollTop = 0;
   }, [active]);

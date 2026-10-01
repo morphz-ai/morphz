@@ -50,7 +50,6 @@ import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
-import { CompactSidebar } from "./CompactSidebar.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import {
   interfacePreferences,
@@ -2524,6 +2523,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     name: identityLabel,
     status: connectionLabel,
     connected,
+    unreadNotifications,
+    onSearch: () => setSearchOpen(true),
+    onAppearance: () => setSettingsSection("appearance"),
+    onNotifications: () => setNotificationsOpen(true),
     onSettings: () =>
       setSettingsSection(
         client.boot!.capabilities.modelSettings ? "models" : "appearance",
@@ -2720,14 +2723,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </div>
           </div>
         </div>
-        <CompactSidebar
-          unreadNotifications={unreadNotifications}
-          onSearch={() => setSearchOpen(true)}
-          onSettings={(section) =>
-            section ? setSettingsSection(section) : profileMenu.onSettings()
-          }
-          onNotifications={() => setNotificationsOpen(true)}
-        />
         <div className="sidebar-bottom">
           {!window.morphzDesktop && (
             <ProductBridge

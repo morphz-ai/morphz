@@ -1829,6 +1829,19 @@ body:has(dialog[open]) .cognitive-application-frame {
   flex: 1;
   min-width: 0;
 }
+.profile-controls .avatar {
+  position: relative;
+}
+.profile-unread {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 2px var(--sidebar-fill, var(--side));
+}
 .profile-name {
   min-width: 0;
   font-size: 13px;

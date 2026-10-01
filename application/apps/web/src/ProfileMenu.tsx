@@ -1,11 +1,23 @@
-import { ChevronsUpDown, LogOut, Settings, UserRound } from "lucide-react";
-import { ComposerOptions } from "./ComposerOptions.js";
+import {
+  Bell,
+  ChevronsUpDown,
+  LogOut,
+  Palette,
+  Search,
+  Settings,
+  UserRound,
+} from "lucide-react";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 
 export function ProfileMenu({
   name,
   status,
   connected,
   compact = false,
+  unreadNotifications = 0,
+  onSearch,
+  onAppearance,
+  onNotifications,
   onSettings,
   onLogout,
 }: {
@@ -13,6 +25,10 @@ export function ProfileMenu({
   status: string;
   connected: boolean;
   compact?: boolean;
+  unreadNotifications?: number;
+  onSearch?: () => void;
+  onAppearance?: () => void;
+  onNotifications?: () => void;
   onSettings: () => void;
   onLogout?: () => void;
 }) {
@@ -20,6 +36,7 @@ export function ProfileMenu({
     <>
       <span className="avatar" aria-hidden="true">
         <UserRound />
+        {unreadNotifications > 0 && <span className="profile-unread" />}
       </span>
       {!compact && (
         <span className="profile-identity">
@@ -36,7 +53,7 @@ export function ProfileMenu({
           </span>
         </span>
       )}
-      {!compact && onLogout && (
+      {!compact && (
         <ChevronsUpDown className="sidebar-entry-chevron" aria-hidden="true" />
       )}
       {!connected && (
@@ -46,65 +63,74 @@ export function ProfileMenu({
       )}
     </>
   );
+  const options: ComposerOption[] = [
+    ...(onSearch
+      ? [
+          {
+            label: "搜索资料",
+            text: "搜索",
+            icon: <Search />,
+            onSelect: onSearch,
+          },
+        ]
+      : []),
+    ...(onAppearance
+      ? [
+          {
+            label: "外观设置",
+            text: "外观",
+            icon: <Palette />,
+            onSelect: onAppearance,
+          },
+        ]
+      : []),
+    ...(onNotifications
+      ? [
+          {
+            label: `通知${unreadNotifications ? `，${unreadNotifications} 项未读` : ""}`,
+            text: "通知",
+            icon: <Bell />,
+            onSelect: onNotifications,
+          },
+        ]
+      : []),
+    { label: "设置", icon: <Settings />, onSelect: onSettings },
+    ...(onLogout
+      ? [
+          {
+            label: "退出当前身份",
+            text: "退出登录",
+            icon: <LogOut />,
+            onSelect: onLogout,
+          },
+        ]
+      : []),
+  ];
   return (
     <div
       className={`profile-controls${compact ? " profile-controls-compact" : ""}`}
     >
-      {onLogout ? (
-        <ComposerOptions
-          label="用户菜单"
-          description={`${name} · ${status}`}
-          menuLabel="用户菜单"
-          below={compact}
-          triggerClassName={
-            compact ? "icon-button profile-compact" : "profile-trigger"
-          }
-          menuClassName="profile-menu"
-          triggerIcon={identity}
-          header={
-            compact ? (
-              <div className="profile-menu-summary">
-                <strong title={name}>{name}</strong>
-                <span>
-                  <span className="presence-dot" data-online={connected} />
-                  {status}
-                </span>
-              </div>
-            ) : undefined
-          }
-          options={[
-            {
-              label: "退出当前身份",
-              text: "退出登录",
-              icon: <LogOut />,
-              onSelect: onLogout,
-            },
-          ]}
-        />
-      ) : (
-        <div
-          className={
-            compact
-              ? "profile-compact profile-summary"
-              : "profile-trigger profile-summary"
-          }
-          role="group"
-          aria-label="当前身份"
-          aria-description={`${name} · ${status}`}
-          title={`${name} · ${status}`}
-        >
-          {identity}
-        </div>
-      )}
-      <button
-        type="button"
-        className="icon-button profile-settings"
-        aria-label="设置"
-        title="设置"
-        onClick={onSettings}
-      >
-        <Settings />
-      </button>
+      <ComposerOptions
+        label="用户菜单"
+        description={`${name} · ${status}${unreadNotifications ? ` · ${unreadNotifications} 项未读通知` : ""}`}
+        menuLabel="用户菜单"
+        below={compact}
+        triggerClassName={
+          compact ? "icon-button profile-compact" : "profile-trigger"
+        }
+        menuClassName="profile-menu"
+        triggerIcon={identity}
+        header={
+          <div className="profile-menu-summary">
+            <strong title={name}>{name}</strong>
+            <span>
+              <span className="presence-dot" data-online={connected} />
+              {status}
+            </span>
+          </div>
+        }
+        options={options}
+      />
     </div>
   );
 }
