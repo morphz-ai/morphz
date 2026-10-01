@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Brain } from "lucide-react";
+import { Brain, Cpu } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
 import { composerSettingsSummary } from "./composer-settings-summary.js";
 import {
@@ -17,6 +17,7 @@ export function ModelPicker({
   disabled = false,
   label = "本次输入模型",
   compact = false,
+  menu = false,
   current,
   reasoning,
   onSummaryChange,
@@ -26,6 +27,8 @@ export function ModelPicker({
   disabled?: boolean;
   label?: string;
   compact?: boolean;
+  /** Inline rows for the composer popover, not a second settings form. */
+  menu?: boolean;
   current?: string;
   reasoning?: {
     value?: ReasoningEffort;
@@ -81,6 +84,10 @@ export function ModelPicker({
   const defaultLabel = defaultName
     ? modelLabel(defaultName)
     : catalog?.current || current || "默认模型";
+  const defaultMenuLabel =
+    defaultName?.physical_models?.join(" / ") ||
+    defaultName?.label ||
+    defaultLabel;
   useEffect(() => {
     onSummaryChange?.(
       composerSettingsSummary({
@@ -96,15 +103,22 @@ export function ModelPicker({
       <div
         ref={picker}
         tabIndex={-1}
-        className={`model-picker${compact ? " model-picker-compact" : ""}`}
+        className={`model-picker${compact ? " model-picker-compact" : ""}${menu ? " model-picker-menu" : ""}`}
       >
-        <label>
-          {!compact && label}
+        <label className={menu ? "composer-setting-row" : undefined}>
+          {menu ? (
+            <>
+              <Cpu aria-hidden="true" />
+              <span>模型</span>
+            </>
+          ) : (
+            !compact && label
+          )}
           <select
             ref={select}
             aria-label={label}
             title={
-              compact
+              compact || menu
                 ? `${selected ? modelLabel(selected) : value || defaultLabel} · ${value ? "本次指定" : "跟随默认"}，仅用于下一次发送`
                 : undefined
             }
@@ -113,9 +127,11 @@ export function ModelPicker({
             onChange={(e) => onChange(e.target.value)}
           >
             <option value="">
-              {compact
-                ? `默认 · ${defaultLabel}`
-                : `自动选择${catalog?.current ? " · " + catalog.current : ""}`}
+              {menu
+                ? `默认 · ${defaultMenuLabel}`
+                : compact
+                  ? `默认 · ${defaultLabel}`
+                  : `自动选择${catalog?.current ? " · " + catalog.current : ""}`}
             </option>
             {value && !catalog?.options.some((m) => m.id === value) && (
               <option value={value}>{value} · 待确认</option>
@@ -145,7 +161,7 @@ export function ModelPicker({
         {!compact && !error && !catalog && !disabled && (
           <small>读取可用模型…</small>
         )}
-        {!compact && (
+        {!compact && !menu && (
           <small>
             {label === "本次输入模型"
               ? "仅用于下一次发送，不改变其他工作。"
@@ -155,7 +171,7 @@ export function ModelPicker({
       </div>
       {reasoning && (
         <label
-          className="composer-reasoning"
+          className={`composer-reasoning${menu ? " composer-setting-row" : ""}`}
           title={
             disabled
               ? "连接智能体后可设置推理强度。"
@@ -171,7 +187,11 @@ export function ModelPicker({
           }
         >
           <Brain aria-hidden="true" />
-          {!compact && reasoning.label && <span>{reasoning.label}</span>}
+          {menu ? (
+            <span>推理</span>
+          ) : (
+            !compact && reasoning.label && <span>{reasoning.label}</span>
+          )}
           <select
             aria-label={reasoning.label ?? "本次输入推理强度"}
             value={reasoning.value ?? ""}

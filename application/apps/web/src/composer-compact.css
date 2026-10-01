@@ -126,38 +126,118 @@
   max-width: calc(100vw - 16px);
   padding: 12px;
 }
-.composer-settings-section + .composer-settings-section {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+.app .composer-settings-menu {
+  width: 320px;
+  padding: 6px;
 }
-.app :is(.composer-settings-section, .composer-scope-menu) h3 {
+.app .composer-scope-menu h3 {
   margin: 0 0 8px;
   font-size: 13px;
   font-weight: 600;
 }
-.app :is(.composer-settings-section, .composer-scope-menu) p {
+.app :is(.composer-directory-details, .composer-scope-menu) p {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
 }
-.app .composer-settings-section .model-picker {
+.app .composer-settings-menu .model-picker-menu {
   padding: 0;
 }
-.app .composer-settings-section .composer-reasoning {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 8px;
+.app
+  .composer-settings-menu
+  :is(.composer-setting-row, .composer-directory-settings > summary) {
+  display: grid;
+  grid-template-columns: 18px 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 13px;
 }
-.app .composer-settings-section .model-picker label {
+.app .composer-settings-menu :is(.composer-setting-row, summary) > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+.app .composer-settings-menu .composer-setting-row select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: right;
+  text-overflow: ellipsis;
+}
+.app .composer-settings-menu :is(select, summary):focus {
+  outline: none;
+  box-shadow: none;
+}
+.app .composer-settings-menu :is(select, summary):focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: -1px;
+}
+.app .composer-settings-menu .composer-setting-row:focus-within,
+.app .composer-directory-settings > summary:hover {
+  background: var(--soft);
+}
+.app .composer-settings-menu .model-picker-menu small {
+  margin: 4px 8px;
+}
+.app .composer-setting-row > small {
+  grid-column: 1 / -1;
+  max-width: none;
+}
+.app .composer-directory-settings {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.composer-directory-settings > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.composer-directory-settings > summary::-webkit-details-marker {
+  display: none;
+}
+.composer-directory-value {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
   font-size: 12px;
 }
-.app .composer-settings-section select {
-  max-width: 100%;
+.composer-directory-value svg {
+  width: 14px;
+  height: 14px;
+}
+.composer-directory-settings[open] .composer-directory-value svg {
+  transform: rotate(180deg);
+}
+.composer-directory-details {
+  padding: 0 8px 8px;
+}
+.app .composer-settings-scope {
+  margin: 4px 8px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.app .composer-continuation-settings {
+  margin: 6px 8px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .app .composer-scope-menu .composer-meta {
   flex-direction: column;
@@ -170,7 +250,8 @@
   display: flex;
   gap: 7px;
   align-items: center;
-  width: 100%;
+  width: auto;
+  margin-top: 8px;
   padding: 7px 8px;
   min-height: 34px;
   border: 0;
@@ -183,13 +264,28 @@
   width: 15px;
   height: 15px;
 }
-.composer-settings-section .agent-directories {
+.composer-directory-details .agent-directories {
   align-items: flex-start;
   flex-direction: column;
 }
-.composer-settings-section .directory-grant {
+.composer-directory-details .directory-grant {
   width: 100%;
   justify-content: space-between;
+}
+.composer-directory-details .directory-grant > span {
+  min-width: 0;
+  max-width: calc(100% - 30px);
+}
+.composer-directory-details .directory-grant :is(strong, small) {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.composer-directory-details .directory-grant small {
+  color: var(--muted);
 }
 @container exchange (max-width: 540px) {
   .composer-settings-summary {
@@ -218,6 +314,19 @@
   }
 }
 @media (pointer: coarse) {
+  .app .composer-settings-menu select {
+    font-size: 16px;
+  }
+  .app
+    .composer-settings-menu
+    :is(
+      .composer-setting-row,
+      .composer-directory-settings > summary,
+      select,
+      .composer-directory-action
+    ) {
+    min-height: 44px;
+  }
   .app :is(.composer-settings-trigger, .composer-scope-trigger) {
     min-height: 44px;
   }

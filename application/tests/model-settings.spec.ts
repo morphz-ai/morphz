@@ -228,7 +228,9 @@ test("模型与账号可直接打开；没有多余返回层级，Esc 返回入�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("TEST 直接模型设置保留输入");
-  const trigger = page.getByRole("button", { name: "设置", exact: true });
+  const trigger = page
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true });
   await openSettings(page, "模型与账号");
   const dialog = page.getByRole("dialog", { name: "设置", exact: true });
   await expect(
@@ -392,7 +394,8 @@ test("模型设置在原窗口内；默认修改立即刷新目录，不跳 Dash
   await expect(
     page
       .locator(".sidebar-bottom")
-      .getByRole("button", { name: "设置", exact: true }),
+      .getByRole("button", { name: "用户菜单", exact: true })
+      .filter({ visible: true }),
   ).toBeFocused();
   expect(operations).toEqual([
     { action: "default", model: "second", expectedCurrent: "first" },
@@ -597,7 +600,8 @@ test("读取设置期间仍可关闭，迟到响应不重开窗口", async ({ pa
   await expect(
     page
       .locator(".sidebar-bottom")
-      .getByRole("button", { name: "设置", exact: true }),
+      .getByRole("button", { name: "用户菜单", exact: true })
+      .filter({ visible: true }),
   ).toBeFocused();
 });
 

@@ -77,10 +77,12 @@ export function ComposerOptions({
     position();
     const resize = new ResizeObserver(position);
     resize.observe(element);
-    element
-      .querySelector<HTMLElement>(
-        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
-      )
+    Array.from(
+      element.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary",
+      ),
+    )
+      .find((control) => control.getClientRects().length > 0)
       ?.focus();
     const outside = (event: Event) => {
       if (
@@ -157,7 +159,7 @@ export function ComposerOptions({
               panel.current!.querySelectorAll<HTMLButtonElement>(
                 "button:not(:disabled)",
               ),
-            );
+            ).filter((button) => button.getClientRects().length > 0);
             const current = buttons.indexOf(
               document.activeElement as HTMLButtonElement,
             );

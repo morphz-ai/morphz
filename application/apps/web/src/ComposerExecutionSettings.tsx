@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ChevronDown, ShieldCheck, Shield } from "lucide-react";
+import { ChevronDown, FolderKey, ShieldCheck, Shield } from "lucide-react";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -77,13 +77,13 @@ export function ComposerExecutionSettings({
       persistentContent={
         <>
           <section className="composer-settings-section">
-            <h3>{continuation ? "原工作设置" : "下一次新输入"}</h3>
             {continuation ? (
-              <p>
-                补充沿用原工作的模型、推理与权限。不能通过此处修改在途工作。
+              <p className="composer-continuation-settings">
+                补充沿用原工作的模型、推理与授权，不改变在途工作。
               </p>
             ) : (
               <ModelPicker
+                menu
                 value={model}
                 current={current}
                 disabled={disabled}
@@ -93,17 +93,39 @@ export function ComposerExecutionSettings({
               />
             )}
           </section>
-          <section className="composer-settings-section">
-            <h3>文件权限</h3>
-            <div hidden={continuation}>
-              {permissionControls || <p>未授予本机目录读写权限。</p>}
+          {/* Keep the permission controller mounted even inside a closed
+              disclosure: it supplies the grants and ready guard for send. */}
+          <details
+            className="composer-directory-settings"
+            hidden={continuation}
+          >
+            <summary>
+              <FolderKey aria-hidden="true" />
+              <span>目录权限</span>
+              <span className="composer-directory-value">
+                <span>
+                  {!directoryReady
+                    ? "待核对"
+                    : directoryCount
+                      ? `可读写 ${directoryCount}`
+                      : "未授权"}
+                </span>
+                <ChevronDown aria-hidden="true" />
+              </span>
+            </summary>
+            <div className="composer-directory-details">
+              <p>仅当前对话与工作空间，持续有效直到撤销。</p>
+              <p>
+                不含执行命令或删除文件；撤销会阻止进行中工作的后续目录访问。
+              </p>
+              {permissionControls || <p>当前环境不提供本机目录授权。</p>}
             </div>
-            <p>
-              {continuation
-                ? "沿用原始输入绑定的授权范围，不将当前场景的目录授权带入原工作。"
-                : "目录授权持续有效直到撤销，不包含执行命令或删除文件。"}
+          </details>
+          {!continuation && (
+            <p className="composer-settings-scope">
+              模型与推理仅用于下一次发送
             </p>
-          </section>
+          )}
         </>
       }
     />

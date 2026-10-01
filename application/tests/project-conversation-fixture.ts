@@ -9,10 +9,11 @@ import { platformMessageFixture } from "./platform-message-fixture.js";
 
 /** Isolated real Host, HTTP adapter, identity, Platform/App stores and queued
  * inputs. Runtime dispatch remains stopped; no model success is fabricated. */
-async function openMessageHost() {
+async function openMessageHost(localFiles = false) {
   const host = await platformMessageFixture([], {
     browser: true,
     model: "isolated-project-conversation-model",
+    localFiles,
   });
   const reservation = createServer();
   await new Promise<void>((resolve) =>
@@ -60,9 +61,11 @@ async function openMessageHost() {
 
 export const test = base.extend<{
   messageHost: Awaited<ReturnType<typeof openMessageHost>>;
+  localFiles: boolean;
 }>({
-  messageHost: async ({}, use) => {
-    const host = await openMessageHost();
+  localFiles: [false, { option: true }],
+  messageHost: async ({ localFiles }, use) => {
+    const host = await openMessageHost(localFiles);
     try {
       await use(host);
     } finally {

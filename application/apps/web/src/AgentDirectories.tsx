@@ -139,7 +139,14 @@ export function AgentDirectories({
           <span
             title={`${grant.path}\n仅当前对话与工作空间，持续有效直到撤销；不是消息附件。`}
           >
-            {grant.name}
+            {variant === "settings" ? (
+              <>
+                <strong>{grant.name}</strong>
+                <small>{grant.path}</small>
+              </>
+            ) : (
+              grant.name
+            )}
           </span>
           <button
             type="button"
@@ -169,15 +176,11 @@ export function AgentDirectories({
         onClick={() => void choose()}
       >
         <FolderKey />
-        {variant === "settings" && <span>授权 Agent 读写目录</span>}
+        {variant === "settings" && <span>添加读写目录</span>}
       </button>
       {variant === "settings" && (
         <>
-          <p>
-            {ready
-              ? "仅当前对话与工作空间。撤销也会阻止进行中工作的后续目录访问。"
-              : "正在读取此对话的目录权限…"}
-          </p>
+          {!ready && <p>正在读取此对话的目录权限…</p>}
           {grantList}
         </>
       )}

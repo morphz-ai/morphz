@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Application } from "../packages/application/src/application.js";
 import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 import { IdentityCenter } from "../packages/application/src/identity.js";
+import { LocalFiles } from "../packages/application/src/local-files.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import type { workInputRequest } from "../packages/application/src/session-io.js";
@@ -21,7 +22,7 @@ import {
  * Runtime outbox. Dispatch is stopped: this fixture never invents model replies. */
 export async function platformMessageFixture(
   additionalHumans: AccessContext[] = [],
-  options: { browser?: boolean; model?: string } = {},
+  options: { browser?: boolean; model?: string; localFiles?: boolean } = {},
 ) {
   const directory = mkdtempSync(
     join(
@@ -133,6 +134,7 @@ export async function platformMessageFixture(
   let binding!: ReturnType<typeof domains.bindRuntime>;
   let application!: Application;
   let applicationOptions!: ConstructorParameters<typeof Application>[1];
+  let files: LocalFiles | undefined;
   const open = async () => {
     store = new WorkspaceStore(filename, { mode: "transport" });
     const identity = identityConfiguration
@@ -141,10 +143,14 @@ export async function platformMessageFixture(
     domains = await openApplicationDomainsHost(directory, store, identity);
     runtime = new RuntimeBridge(store, config, identity, false);
     await runtime.stop();
-    binding = domains.bindRuntime(runtime);
+    files = options.localFiles
+      ? new LocalFiles(join(directory, "local-files.json"), store.identity())
+      : undefined;
+    binding = domains.bindRuntime(runtime, files);
     applicationOptions = {
       identity,
       runtime,
+      ...(files ? { localFiles: files } : {}),
       platformWork: domains.work,
       platformDocuments: domains.content,
       platformScripts: domains.content,
@@ -201,6 +207,9 @@ export async function platformMessageFixture(
     },
     get applicationOptions() {
       return applicationOptions;
+    },
+    get localFiles() {
+      return files;
     },
     session: (access: AccessContext = localAccess) =>
       application.session(access),

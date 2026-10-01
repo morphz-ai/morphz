@@ -29,7 +29,7 @@ test("底栏仅一行；范围与执行设置按需展开，菜单内交互不�
   await expect(
     settings.getByLabel("本次输入模型", { exact: true }),
   ).toBeVisible();
-  await expect(settings.getByText("文件权限", { exact: true })).toBeVisible();
+  await expect(settings.getByText("目录权限", { exact: true })).toBeVisible();
   await expect(input).toBeVisible();
   await expect(input).toHaveValue("TEST 单底栏草稿，不发送");
   await page.keyboard.press("Escape");
