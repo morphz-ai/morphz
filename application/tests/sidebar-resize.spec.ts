@@ -487,12 +487,21 @@ test("真实 Electron 图标栏隐藏再恢复与刷新保持80，Mac系统按�
         .getByRole("button", { name: "显示右侧栏", exact: true })
         .click();
       await expect(page.locator(".workspace-inspector")).toBeVisible();
-      await page
-        .getByRole("button", { name: "切换右栏内容", exact: true })
-        .click();
+      const subjectTabs = page.getByRole("tablist", {
+        name: "Morphz 信息分类",
+        exact: true,
+      });
+      await expect(subjectTabs.getByRole("tab")).toHaveCount(4);
+      const permissions = subjectTabs.getByRole("tab", {
+        name: "授权",
+        exact: true,
+      });
+      await permissions.click();
+      await expect(permissions).toHaveAttribute("aria-selected", "true");
+      await permissions.press("End");
       await expect(
-        page.getByRole("group", { name: "右栏内容", exact: true }),
-      ).toBeVisible();
+        subjectTabs.getByRole("tab", { name: "设定", exact: true }),
+      ).toBeFocused();
       await page
         .getByRole("button", { name: "隐藏右侧栏", exact: true })
         .click();

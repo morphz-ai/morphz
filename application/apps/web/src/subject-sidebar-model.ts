@@ -2,6 +2,97 @@ import type { ConversationRuntime } from "../../../packages/core/src/conversatio
 import type { TaskRuntime } from "../../../packages/core/src/task-runtime.js";
 
 export type SubjectView = "activity" | "permissions" | "schedules" | "settings";
+
+export type SubjectLogoState = {
+  state: "working" | "approval" | "paused" | "waiting" | "idle" | "unknown";
+  label: string;
+  working: boolean;
+  view: "activity" | "permissions";
+};
+
+/** A subject's presence is not a network light or a background-task count.
+ * Dialogue generation is real work too. Delivery acceptance is not proof of
+ * execution, and pausing future activations does not stop an existing step. */
+export function subjectLogoState(
+  runtime: ConversationRuntime,
+  online: boolean,
+): SubjectLogoState {
+  const result = (
+    state: SubjectLogoState["state"],
+    label: string,
+    working = false,
+  ): SubjectLogoState => ({
+    state,
+    label,
+    working,
+    view: state === "approval" ? "permissions" : "activity",
+  });
+  if (!online || !runtime.connected)
+    return result("unknown", "暂无法读取工作状态");
+  const activity = runtime.activity;
+  const open = activity?.available
+    ? activity.threads.filter((thread) => thread.lifecycle === "open")
+    : [];
+  const known = open.filter((thread) =>
+    ["execution", "dialogue_turn"].includes(thread.kind ?? ""),
+  );
+  const running = known.filter((thread) => thread.phase === "running");
+  if (runtime.attention?.available && runtime.attention.approvals.length)
+    return result(
+      "approval",
+      running.length
+        ? "有操作等待你的批准，其他工作仍在进行"
+        : "有操作等待你的批准",
+      running.length > 0,
+    );
+  if (!activity?.available) return result("unknown", "工作状态待核对");
+  if (running.length) {
+    const paused = running.filter((thread) => thread.controlState === "paused");
+    return result(
+      "working",
+      paused.length === running.length
+        ? "当前步骤仍在执行，后续已暂停"
+        : paused.length
+          ? "正在工作，部分后续步骤已暂停"
+          : running.every((thread) => thread.kind === "dialogue_turn")
+            ? "正在回应你"
+            : "正在工作",
+      true,
+    );
+  }
+  const advancing = known.filter((thread) => thread.controlState !== "paused");
+  if (advancing.some((thread) => thread.phase === "runnable"))
+    return result("waiting", "工作待推进");
+  if (advancing.some((thread) => ["waiting", "idle"].includes(thread.phase)))
+    return result("waiting", "等待后续条件");
+  if (open.length !== known.length || advancing.length)
+    return result("unknown", "工作状态待核对");
+  if (known.length) return result("paused", "有工作已暂停");
+  const objectives = activity.objectives ?? [];
+  if (
+    objectives.some((goal) =>
+      ["active", "paused", "blocked"].includes(goal.status),
+    )
+  )
+    return result("waiting", "有目标等待推进或处理");
+  if (
+    runtime.deliveries.some((delivery) =>
+      ["queued", "sending", "running"].includes(delivery.state),
+    )
+  )
+    return result("waiting", "输入等待处理结果");
+  if (
+    activity.truncated ||
+    activity.objectivesTruncated ||
+    !runtime.attention?.available ||
+    objectives.some(
+      (goal) => !["completed", "cancelled", "failed"].includes(goal.status),
+    )
+  )
+    return result("unknown", "工作状态待核对");
+  return result("idle", "目前没有进行中的工作");
+}
+
 export function subjectStatus(runtime: ConversationRuntime, online: boolean) {
   if (!online || !runtime.connected) return "暂未连接";
   if (runtime.attention?.available && runtime.attention.approvals.length)

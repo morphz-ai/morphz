@@ -75,7 +75,8 @@ import { contentText } from "../../../packages/core/src/retrieval.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
-import type { SubjectView } from "./subject-sidebar-model.js";
+import { subjectLogoState, type SubjectView } from "./subject-sidebar-model.js";
+import { SubjectLogo } from "./SubjectLogo.js";
 import { ApplicationDock } from "./ApplicationDock.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import "./execution.css";
@@ -359,6 +360,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const leftSidebar = useSidebarLayout(leftSidebarPreference);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [subjectView, setSubjectView] = useState<SubjectView | null>(null);
+  const [allActivity, setAllActivity] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const dictationControls = useRef<{
     toggle(): void;
@@ -2370,6 +2372,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           },
       );
   }
+  function openSubjectFromLogo(view: SubjectView) {
+    selectSubjectView(view);
+    if (view === "activity") {
+      // The mark represents the one subject, not the selected project or an
+      // old message detail. Use the existing authorized all-work projection.
+      setAllActivity(true);
+      setExecutions({
+        projectId: conversationProjectId,
+        conversationId,
+        artifactId: null,
+      });
+    }
+  }
   const inspectorViewOptions: ComposerOption[] = [
     {
       label: "执行记录",
@@ -2572,10 +2587,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         aria-label="工作空间导航"
       >
         <div className="sidebar-header">
-          <div className="wordmark">
-            <BrandMark />
-            <span>Morphz</span>
-          </div>
+          <SubjectLogo
+            presence={subjectLogoState(client.boot!.runtime, client.online)}
+            onOpen={openSubjectFromLogo}
+          />
           <div className="sidebar-tools">
             <AppearanceMenu
               prefs={prefs}
@@ -4069,6 +4084,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   }
                   client={client}
                   scope={activityScope}
+                  allWork={allActivity}
+                  onAllWorkChange={setAllActivity}
                   viewOptions={inspectorViewOptions}
                   layout={rightInspector}
                   onResize={resizeInspector}

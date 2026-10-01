@@ -1,0 +1,108 @@
+/* Presence lives in the original brand position, not a new card or toolbar. */
+.app .sidebar-header .agent-presence {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.6;
+  background: transparent;
+  -webkit-app-region: no-drag;
+}
+.app .agent-presence:is(:hover, :active):not(:disabled) {
+  background: transparent;
+}
+.agent-presence-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+.agent-presence .brand-mark {
+  transform-origin: 50% 56%;
+  transition: transform var(--motion-surface) var(--motion-ease);
+}
+.agent-presence:is(:hover, :focus-visible) .brand-mark {
+  transform: translateY(-0.5px) scale(1.035);
+}
+.brand-mark-glint {
+  opacity: 0;
+  pointer-events: none;
+}
+.agent-presence-status {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  right: -8px;
+  bottom: -7px;
+  overflow: visible;
+  color: var(--muted);
+  background: var(--sidebar-fill);
+  border-radius: 50%;
+  box-shadow: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+.agent-presence[data-state="working"] .agent-presence-status {
+  color: var(--accent);
+}
+.agent-presence[data-state="approval"] .agent-presence-status {
+  color: light-dark(#94600f, #ebbf73);
+  background: light-dark(#fff3d9, #3b3020);
+}
+.agent-presence[data-state="paused"] .agent-presence-status {
+  stroke-width: 2.4;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-app-motion="reduce"])
+    .agent-presence:not([data-working="true"]):is(:hover, :focus-visible)
+    .brand-mark-glint {
+    animation: subject-mark-glint 900ms ease-out;
+  }
+  :root:not([data-app-motion="reduce"])
+    .agent-presence[data-working="true"]
+    .brand-mark {
+    animation: subject-mark-breathe 4.4s ease-in-out infinite;
+  }
+  :root:not([data-app-motion="reduce"])
+    .agent-presence[data-working="true"]
+    .brand-mark-glint {
+    animation: subject-mark-glint 5.6s ease-in-out infinite;
+  }
+}
+@keyframes subject-mark-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-0.65px) scale(1.02);
+  }
+}
+@keyframes subject-mark-glint {
+  0%,
+  20% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.75;
+  }
+  55%,
+  100% {
+    transform: translateX(192px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-presence:is(:hover, :focus-visible) .brand-mark {
+    transform: none;
+  }
+}
+:root[data-app-motion="reduce"]
+  .agent-presence:is(:hover, :focus-visible)
+  .brand-mark {
+  transform: none;
+}

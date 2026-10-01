@@ -47,6 +47,8 @@ export function ExecutionSidebar({
   embedded = false,
   overviewLeading,
   onRefresh,
+  allWork: allWorkOverride,
+  onAllWorkChange,
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
@@ -61,6 +63,8 @@ export function ExecutionSidebar({
   embedded?: boolean;
   overviewLeading?: ReactNode | ((allWork: boolean) => ReactNode);
   onRefresh?: () => void | Promise<void>;
+  allWork?: boolean;
+  onAllWorkChange?: (allWork: boolean) => void;
 }) {
   const state = client.boot!.workspace,
     runtime = client.boot!.runtime;
@@ -69,7 +73,9 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [allWork, setAllWork] = useState(false);
+  const [localAllWork, setLocalAllWork] = useState(false);
+  const allWork = allWorkOverride ?? localAllWork;
+  const setAllWork = onAllWorkChange ?? setLocalAllWork;
   const [showOther, setShowOther] = useState(false),
     [stopRequested, setStopRequested] = useState(false);
   const threads = runtime.activity?.threads ?? [];

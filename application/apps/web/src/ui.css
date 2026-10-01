@@ -344,10 +344,10 @@
     justify-content: center;
     width: 100%;
   }
-  .app.sidebar-compact .wordmark > span {
+  .app.sidebar-compact .wordmark > .wordmark-label {
     display: none;
   }
-  .app.sidebar-compact .wordmark > .brand-mark {
+  .app.sidebar-compact .wordmark .brand-mark {
     width: 32px;
     height: 32px;
   }
