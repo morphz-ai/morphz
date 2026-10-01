@@ -238,6 +238,60 @@
   font-size: 12px;
   line-height: 1.5;
 }
+.app .composer-permissions-scope {
+  margin: 2px 8px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.app .composer-session-permissions .composer-setting-row > small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.app :is(.composer-permission-error, .composer-permission-confirm) {
+  margin: 3px 8px 6px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app .composer-permission-confirm p {
+  margin: 0 0 6px;
+}
+.composer-permission-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.app :is(.composer-permission-actions, .composer-permission-error) button {
+  width: auto;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+}
+.app .composer-permission-error button {
+  display: block;
+  margin-top: 4px;
+}
+.app .composer-default-workspace small,
+.app .composer-default-workspace code {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.app .composer-default-workspace small {
+  margin-bottom: 3px;
+  color: var(--muted);
+}
 .app .composer-continuation-settings {
   margin: 6px 8px;
   font-size: 13px;

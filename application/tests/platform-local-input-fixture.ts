@@ -66,7 +66,15 @@ export async function localInputFixture(
 ) {
   assert.equal(Reflect.has(store, "snapshot"), false);
   assert.equal(Reflect.has(store, "execute"), false);
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
   const accepted = new Map<
     string,
     { sessionId: string; body: Record<string, any> }
@@ -162,6 +170,13 @@ export async function localInputFixture(
     }
     if (path.endsWith("/events")) return send({ events: [] });
     if (path === "/api/approvals") return send({ approvals: [] });
+    if (request.method === "PATCH") {
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      Object.assign(sessions.get(sessionId)!, {
+        permission_mode: body.permission_mode,
+        sandbox_mode: null,
+      });
+    }
     response.statusCode = sessions.has(sessionId) ? 200 : 404;
     return send(sessions.get(sessionId) ?? {});
   });

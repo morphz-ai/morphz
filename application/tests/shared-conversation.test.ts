@@ -28,7 +28,15 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
   const isolated = randomUUID();
   let dialogueId = "";
   const commands = new Map<string, Command>();
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
   const received = new Map<
     string,
     { sessionId: string; root: string; text: string; request: unknown }
@@ -198,6 +206,13 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
     if (path === "/api/approvals") {
       approvalReads++;
       return send(approvalsDown ? 503 : 200, { approvals: pendingApprovals });
+    }
+    if (req.method === "PATCH") {
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      Object.assign(sessions.get(sid)!, {
+        permission_mode: body.permission_mode,
+        sandbox_mode: null,
+      });
     }
     return send(sessions.has(sid) ? 200 : 404, sessions.get(sid) ?? {});
   });

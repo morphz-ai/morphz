@@ -10,6 +10,7 @@ import type {
   ApplicationReply,
 } from "../packages/core/src/application-api.js";
 import { localAccess } from "../packages/core/src/model.js";
+import type { SessionPermissionsSnapshot } from "../packages/core/src/session-permissions.js";
 import { test, expect } from "./project-conversation-fixture.js";
 import { platformMessageFixture } from "./platform-message-fixture.js";
 import { openInput, openComposerSettings } from "./interaction-helpers.js";
@@ -59,6 +60,28 @@ async function desktopFixture(page: Page, host: Host) {
       calls.push(structuredClone(request));
       if (request.method === "directories.list")
         state.scope = request.params as Scope;
+      if (request.method === "session-permissions.read") {
+        const scope = request.params as Scope;
+        const snapshot: SessionPermissionsSnapshot = {
+          scope: { ...scope, kind: "global" },
+          runtimeSessionId: null,
+          permissionMode: "request_approval",
+          sandboxMode: "workspace-write",
+          reviewer: "user",
+          source: "safe_default",
+          canUpdate: false,
+          readOnlyReason: "not_started",
+          fingerprint: null,
+          workspace: {
+            targetId: null,
+            targetName: null,
+            workspaceRoot: null,
+            ready: false,
+            reason: "not_started",
+          },
+        };
+        return { ok: true, value: snapshot };
+      }
       if (request.method === "models")
         return {
           ok: true,
@@ -183,12 +206,12 @@ async function desktopFixture(page: Page, host: Host) {
   await expect(
     settings.getByLabel("本次输入模型", { exact: true }),
   ).toBeEnabled();
-  await expect(settings.locator("summary")).toContainText("未授权");
+  await expect(settings.locator("summary")).toContainText("待核对");
   await expect.poll(() => state.scope).toBeTruthy();
   return { ...state, state, input, settings };
 }
 
-test("执行设置首屏仅三行，长模型名在 390×540 内可见；Escape 保留草稿并回触发器", async ({
+test("执行设置首屏四行，长模型名在 390×540 内可见；Escape 保留草稿并回触发器", async ({
   page,
   messageHost,
 }) => {
@@ -199,7 +222,7 @@ test("执行设置首屏仅三行，长模型名在 390×540 内可见；Escape 
     await page.setViewportSize({ width, height: 540 });
     await openComposerSettings(page);
     const rows = settings.locator(".composer-setting-row, details > summary");
-    await expect(rows).toHaveCount(3);
+    await expect(rows).toHaveCount(4);
     await expect(settings.locator("details")).not.toHaveAttribute("open", "");
     const geometry = await settings.evaluate((element) => {
       const rect = element.getBoundingClientRect();
@@ -213,7 +236,7 @@ test("执行设置首屏仅三行，长模型名在 390×540 内可见；Escape 
         clientWidth: element.clientWidth,
       };
     });
-    expect(geometry.height).toBeLessThanOrEqual(210);
+    expect(geometry.height).toBeLessThanOrEqual(280);
     expect(geometry.top).toBeGreaterThanOrEqual(7);
     expect(geometry.bottom).toBeLessThanOrEqual(533);
     expect(geometry.left).toBeGreaterThanOrEqual(7);
@@ -341,7 +364,7 @@ test("模型推理绑定真实新输入；后续菜单与目录撤销不能修�
   await settings
     .getByRole("button", { name: "授权 Agent 读写目录", exact: true })
     .click();
-  await expect(settings.locator("summary")).toContainText("可读写 1");
+  await expect(settings.locator("summary")).toContainText("额外 1 个");
   const scope = state.scope!;
   const grants = state.files.directories(
     scope.projectId,
@@ -375,7 +398,7 @@ test("模型推理绑定真实新输入；后续菜单与目录撤销不能修�
       exact: true,
     })
     .click();
-  await expect(settings.locator("summary")).toContainText("未授权");
+  await expect(settings.locator("summary")).toContainText("待核对");
   expect(
     state.files.directories(scope.projectId, scope.conversationId, localAccess),
   ).toEqual([]);
@@ -394,7 +417,7 @@ test("目录 details 和执行弹层关闭不卸载授权控制器、不额外�
   await openComposerSettings(page);
   await settings.locator("summary").click();
   await expect(settings).toContainText(
-    "仅当前对话与工作空间，持续有效直到撤销",
+    "额外目录仅当前对话与工作空间可读写，持续有效直到撤销",
   );
   await expect(settings).toContainText("不含执行命令或删除文件");
   await expect(settings).toContainText("撤销会阻止进行中工作的后续目录访问");
@@ -444,7 +467,7 @@ test("原生目录取消、失败与撤销失败保留草稿和真实授权；�
     exact: true,
   });
   await authorize.click();
-  await expect(settings.locator("summary")).toContainText("可读写 1");
+  await expect(settings.locator("summary")).toContainText("额外 1 个");
   const scope = state.scope!;
   const original = structuredClone(
     state.files.directories(scope.projectId, scope.conversationId, localAccess),
@@ -461,7 +484,7 @@ test("原生目录取消、失败与撤销失败保留草稿和真实授权；�
   ).toBeDisabled();
   await expect(input).toBeVisible();
   state.release();
-  await expect(settings.locator("summary")).toContainText("可读写 1");
+  await expect(settings.locator("summary")).toContainText("额外 1 个");
   await expect(authorize).toBeFocused();
   expect(
     state.files.directories(scope.projectId, scope.conversationId, localAccess),
@@ -484,7 +507,7 @@ test("原生目录取消、失败与撤销失败保留草稿和真实授权；�
   await expect(
     page.getByText("TEST 撤销失败，原授权保持有效", { exact: true }),
   ).toBeVisible();
-  await expect(settings.locator("summary")).toContainText("可读写 1");
+  await expect(settings.locator("summary")).toContainText("额外 1 个");
   expect(
     state.files.directories(scope.projectId, scope.conversationId, localAccess),
   ).toEqual(original);

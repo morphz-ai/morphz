@@ -56,14 +56,14 @@ export async function openComposerMedia(page: Page) {
   return menu;
 }
 
-/** Next-input configuration is inside one setting menu; it never sends. */
+/** Next-input model and persistent Session permissions share a menu; no send. */
 export async function openComposerSettings(page: Page) {
   const trigger = page.getByRole("button", { name: "执行设置", exact: true });
   await expect(trigger).toBeVisible();
   if ((await trigger.getAttribute("aria-expanded")) !== "true")
     await trigger.click();
   const menu = page.getByRole("group", {
-    name: "本次输入执行设置",
+    name: "执行设置",
     exact: true,
   });
   await expect(menu).toBeVisible();

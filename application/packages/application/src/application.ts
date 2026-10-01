@@ -15,6 +15,10 @@ import {
   quotedText,
 } from "../../../packages/core/src/model.js";
 import { unconfiguredConnection } from "../../core/src/connection.js";
+import {
+  sessionPermissionsReadSchema,
+  sessionPermissionsUpdateSchema,
+} from "../../core/src/session-permissions.js";
 import { maxMessageAttachmentBytes } from "../../core/src/message-attachment-policy.js";
 import type { LocalRuntimeConnection } from "./runtime-connection.js";
 import { disconnectedRuntime } from "../../../packages/core/src/conversation.js";
@@ -2428,6 +2432,50 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async readSessionPermissions(raw: unknown) {
+    this.active();
+    const scope = sessionPermissionsReadSchema.parse(raw);
+    const runtime = this.runtime();
+    const result = await runtime.as(this.access, () =>
+      runtime.readSessionPermissions(scope, this.access, () => this.active()),
+    );
+    this.active();
+    return result;
+  }
+  async updateSessionPermissions(raw: unknown) {
+    this.active();
+    const request = sessionPermissionsUpdateSchema.parse(raw);
+    const runtime = this.runtime();
+    if (
+      this.options.identity ||
+      runtime.teamIdentity ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId
+    )
+      throw new DomainError(
+        "forbidden",
+        "审批方式只能由本机本人调整；团队与远端会话暂为只读。",
+      );
+    // Use the exact current Human message route authority, not possession of
+    // a Runtime operator token or a read grant, before changing this Session.
+    const authorizeWrite = async () => {
+      this.active();
+      await this.work((service, actor) =>
+        service.authorizeLocalDirectory(
+          actor,
+          request.projectId,
+          request.conversationId,
+          true,
+        ),
+      );
+      this.active();
+    };
+    const result = await runtime.as(this.access, () =>
+      runtime.updateSessionPermissions(request, this.access, authorizeWrite),
+    );
+    this.active();
+    return result;
+  }
   async asset(raw: unknown, attachment = false, rawSource?: unknown) {
     this.active();
     const id = z
@@ -3358,6 +3406,10 @@ export function invokeApplication(
       return session.modelSettings(undefined, signal);
     case "model-settings.update":
       return session.modelSettings(params, signal, true);
+    case "session-permissions.read":
+      return session.readSessionPermissions(params);
+    case "session-permissions.update":
+      return session.updateSessionPermissions(params);
     case "asset.add":
       return session.addAsset(params);
     case "attachment.add":

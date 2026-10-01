@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { ChevronDown, FolderKey, ShieldCheck, Shield } from "lucide-react";
+import { ChevronDown, ShieldCheck, Shield } from "lucide-react";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { composerSettingsSummary } from "./composer-settings-summary.js";
+import { ComposerSessionPermissions } from "./ComposerSessionPermissions.js";
 import "./composer-compact.css";
 
 export type ComposerExecutionSettingsProps = {
@@ -14,6 +15,9 @@ export type ComposerExecutionSettingsProps = {
   onReasoningChange(value?: ReasoningEffort): void;
   disabled?: boolean;
   continuation?: boolean;
+  /** Existing input scope only; an unsent named draft passes no scope. */
+  sessionScope?: { projectId: string; conversationId: string };
+  sessionIdentity?: string;
   /** Only actual authorized directory grants, never an implied sandbox mode. */
   directoryCount?: number;
   directoryReady?: boolean;
@@ -28,18 +32,21 @@ export function ComposerExecutionSettings({
   onReasoningChange,
   disabled = false,
   continuation = false,
+  sessionScope,
+  sessionIdentity,
   directoryCount = 0,
   directoryReady = true,
   permissionControls,
 }: ComposerExecutionSettingsProps) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [summary, setSummary] = useState(() =>
     composerSettingsSummary({ model, current, reasoning }),
   );
   const permissionLabel = !directoryReady
-    ? "正在核对目录权限"
+    ? "正在核对额外目录"
     : directoryCount
-      ? `${directoryCount} 个目录可读写`
-      : "未授权本机目录";
+      ? `${directoryCount} 个额外目录可读写`
+      : "未添加额外目录";
   const description = continuation
     ? "补充沿用原工作模型与权限；此处不改变正在执行的工作"
     : `${summary.model} · ${summary.reasoning} · ${permissionLabel}；模型与推理用于下一次新输入`;
@@ -47,10 +54,11 @@ export function ComposerExecutionSettings({
     <ComposerOptions
       label="执行设置"
       description={description}
-      menuLabel="本次输入执行设置"
+      menuLabel="执行设置"
       triggerClassName="composer-settings-trigger"
       menuClassName="composer-settings-menu"
       initialFocus="panel"
+      onOpenChange={setSettingsOpen}
       triggerIcon={
         <>
           <span className="composer-settings-summary">
@@ -94,34 +102,18 @@ export function ComposerExecutionSettings({
               />
             )}
           </section>
-          {/* Keep the permission controller mounted even inside a closed
-              disclosure: it supplies the grants and ready guard for send. */}
-          <details
-            className="composer-directory-settings"
-            hidden={continuation}
-          >
-            <summary>
-              <FolderKey aria-hidden="true" />
-              <span>目录权限</span>
-              <span className="composer-directory-value">
-                <span>
-                  {!directoryReady
-                    ? "待核对"
-                    : directoryCount
-                      ? `可读写 ${directoryCount}`
-                      : "未授权"}
-                </span>
-                <ChevronDown aria-hidden="true" />
-              </span>
-            </summary>
-            <div className="composer-directory-details">
-              <p>仅当前对话与工作空间，持续有效直到撤销。</p>
-              <p>
-                不含执行命令或删除文件；撤销会阻止进行中工作的后续目录访问。
-              </p>
-              {permissionControls || <p>当前环境不提供本机目录授权。</p>}
-            </div>
-          </details>
+          {/* The controller and grants stay mounted; Session policy reads only
+              occur while open, never creating or preparing an empty Session. */}
+          <ComposerSessionPermissions
+            scope={sessionScope}
+            identityGeneration={sessionIdentity}
+            open={settingsOpen}
+            disabled={disabled}
+            continuation={continuation}
+            directoryCount={directoryCount}
+            directoryReady={directoryReady}
+            directoryControls={permissionControls}
+          />
           {!continuation && (
             <p className="composer-settings-scope">
               模型与推理仅用于下一次发送

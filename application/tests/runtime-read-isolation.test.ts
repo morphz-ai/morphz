@@ -14,7 +14,15 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
   let mode: Mode = "healthy";
   let posts = 0;
   let requests = 0;
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
   const roots: ReturnType<typeof acceptedRuntimeInput>[] = [];
   const server = createServer(async (req, res) => {
     requests++;
@@ -70,6 +78,13 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
         entries: roots.flatMap((root) => runtimeTimeline(root, [])),
         next_before: null,
       });
+    if (req.method === "PATCH") {
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      Object.assign(sessions.get(sessionId)!, {
+        permission_mode: body.permission_mode,
+        sandbox_mode: null,
+      });
+    }
     return send(200, sessions.get(sessionId));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

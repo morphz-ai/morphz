@@ -3905,10 +3905,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         }
                         settings={
                           <ComposerExecutionSettings
+                            sessionIdentity={client.boot!.csrfToken}
                             current={client.boot!.runtime.model}
                             model={draft.model}
                             reasoning={draft.reasoningEffort}
                             continuation={!!draft.continuation}
+                            sessionScope={
+                              selectedDraft
+                                ? undefined
+                                : {
+                                    projectId: project.id,
+                                    conversationId,
+                                  }
+                            }
                             directoryCount={
                               directoryState.scope === directoryScope
                                 ? directoryState.grants.length

@@ -18,7 +18,15 @@ import { localAccess } from "../packages/core/src/model.js";
 test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重启恢复与凭据隔离", async () => {
   const namespace = randomUUID(),
     token = "test-server-private-token";
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
   const received = new Map<
     string,
     {
@@ -142,7 +150,11 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
     }
     if (request.method === "PATCH") {
       assert.equal(body.permission_mode, "request_approval");
-      assert.equal(body.sandbox_mode, "workspace-write");
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      Object.assign(sessions.get(id)!, {
+        permission_mode: body.permission_mode,
+        sandbox_mode: null,
+      });
     }
     return send(sessions.has(id) ? 200 : 404, sessions.get(id) ?? {});
   });
@@ -383,6 +395,7 @@ test("批量历史归属与逐条因果规则一致，且不为每条消息重�
 
 test("按输入停止：排队不发送、并发 root 隔离、丢回执后重启确认", async () => {
   const sessions = new Map<string, string>();
+  const permissionModes = new Map<string, string>();
   const roots = new Map<
     string,
     {
@@ -446,9 +459,15 @@ test("按输入停止：排队不发送、并发 root 隔离、丢回执后重�
       return send(200, entry);
     }
     if (path.endsWith("/events")) return send(200, { events: [] });
+    if (req.method === "PATCH") {
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      permissionModes.set(sid, body.permission_mode);
+    }
     return send(sessions.has(sid) ? 200 : 404, {
       id: sid,
       context_id: sessions.get(sid),
+      permission_mode: permissionModes.get(sid) ?? null,
+      sandbox_mode: null,
     });
   });
   await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));

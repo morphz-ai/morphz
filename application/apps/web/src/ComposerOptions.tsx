@@ -36,6 +36,7 @@ export function ComposerOptions({
   persistentContent,
   triggerRef,
   initialFocus = "control",
+  onOpenChange,
 }: {
   model?: string;
   unread?: boolean;
@@ -55,6 +56,8 @@ export function ComposerOptions({
   triggerRef?: RefObject<HTMLButtonElement | null>;
   /** A settings group can receive initial focus without selecting a value. */
   initialFocus?: "control" | "panel";
+  /** Persistent input controls may read only while their popover is open. */
+  onOpenChange?(open: boolean): void;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -63,20 +66,45 @@ export function ComposerOptions({
   const [keyboardNavigation, setKeyboardNavigation] = useState(false);
 
   useLayoutEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
+
+  useLayoutEffect(() => {
     const element = panel.current!;
     if (!open) return;
     // Use the top layer so the working canvas cannot clip this compact menu.
     element.showPopover();
     const position = () => {
-      const anchor = trigger.current!.getBoundingClientRect();
-      element.style.maxHeight = `${Math.max(80, (below ? innerHeight : anchor.top) - 16)}px`;
+      // Rects include CSS zoom, whereas offset dimensions and left/top use
+      // layout pixels. Keep all positioning in the popover's layout space;
+      // do not infer zoom from its animated (possibly scaled) visible rect.
+      let zoom = (element as HTMLElement & { currentCSSZoom?: number })
+        .currentCSSZoom;
+      if (!zoom) {
+        zoom = 1;
+        for (
+          let node: HTMLElement | null = element;
+          node;
+          node = node.parentElement
+        )
+          zoom *= Number.parseFloat(getComputedStyle(node).zoom) || 1;
+      }
+      const rect = trigger.current!.getBoundingClientRect();
+      const anchor = {
+        right: rect.right / zoom,
+        top: rect.top / zoom,
+        bottom: rect.bottom / zoom,
+      };
+      const viewport = { width: innerWidth / zoom, height: innerHeight / zoom };
+      element.style.maxWidth = `${Math.max(1, viewport.width - 16)}px`;
+      element.style.maxHeight = `${Math.max(80, (below ? viewport.height : anchor.top) - 16)}px`;
       // Anchor using stable layout dimensions, independent of reveal effects.
       const bounds = {
         width: element.offsetWidth,
         height: element.offsetHeight,
       };
-      element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, innerWidth - bounds.width - 8))}px`;
-      element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, innerHeight - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
+      element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, viewport.width - bounds.width - 8))}px`;
+      element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, viewport.height - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
     };
     position();
     const resize = new ResizeObserver(position);

@@ -3,6 +3,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import {
+  sessionPermissionModeSchema,
+  sessionPermissionsReadSchema,
+  sessionPermissionsUpdateSchema,
+  sessionPermissionsSnapshotSchema,
+  type SessionPermissionsRead,
+  type SessionPermissionsSnapshot,
+  type SessionPermissionsUpdate,
+} from "../../core/src/session-permissions.js";
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { readingInputSchema } from "../../core/src/reader.js";
@@ -240,6 +249,49 @@ const sessionSchema = z.object({
   id: z.string(),
   context_id: z.string(),
 });
+const permissionSessionSchema = sessionSchema.extend({
+  permission_mode: sessionPermissionModeSchema.nullable().optional(),
+  sandbox_mode: z
+    .enum(["workspace-write", "danger-full-access"])
+    .nullable()
+    .optional(),
+  default_target_id: z.string().nullable().optional(),
+});
+const permissionStatusSchema = z.object({
+  permission_mode: sessionPermissionModeSchema,
+  sandbox_mode: z.enum(["workspace-write", "danger-full-access"]),
+  reviewer: z.enum(["user", "auto_review", "deny"]),
+});
+const sessionTargetsSchema = z.object({
+  session_id: z.string(),
+  effective_target_id: z.string().nullable(),
+  ready: z.boolean(),
+  reason: z.string(),
+  targets: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      workspace_root: z.string().nullable(),
+    }),
+  ),
+});
+const permissionPreset = (
+  mode: SessionPermissionsSnapshot["permissionMode"],
+) => {
+  switch (mode) {
+    case "request_approval":
+      return { sandboxMode: "workspace-write", reviewer: "user" } as const;
+    case "auto_review":
+      return {
+        sandboxMode: "workspace-write",
+        reviewer: "auto_review",
+      } as const;
+    case "full_access":
+      return { sandboxMode: "danger-full-access", reviewer: "deny" } as const;
+    default:
+      return null;
+  }
+};
 const platformInputSourceSchema = z.object({
   projectId: z.string(),
   conversationId: z.string(),
@@ -403,6 +455,9 @@ const storedSchema = z.object({
       cursor: z.number(),
       events: storedEventHistorySchema,
       runtimePrincipalId: z.string().nullable().default(null),
+      // Durable first-creation receipt only, never a pending Human policy.
+      // Persist before POST; clear only after safe Runtime policy readback.
+      permissionInitializationRequired: z.boolean().optional(),
       turnControl: z.boolean().default(false),
       schedules: z.boolean().default(false),
       hasWork: z.boolean().default(false),
@@ -619,6 +674,294 @@ function causalThreadEvents(deliveries: StoredDelivery[]): RuntimeEvent[] {
   );
 }
 export class RuntimeBridge {
+  private permissionOperations = new Map<string, Promise<unknown>>();
+  private async serialSessionPolicy<T>(
+    id: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.permissionOperations.get(id) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    this.permissionOperations.set(id, current);
+    try {
+      return await current;
+    } finally {
+      if (this.permissionOperations.get(id) === current)
+        this.permissionOperations.delete(id);
+    }
+  }
+
+  private async permissionScope(
+    scope: SessionPermissionsRead,
+    access: AccessContext,
+  ) {
+    if (!this.authorizePlatformRead)
+      throw new DomainError("forbidden", "当前对话授权不可用。");
+    const grant = await this.authorizePlatformRead(scope, access);
+    return {
+      id: this.objectSessionId(
+        scope.projectId,
+        scope.conversationId,
+        grant.personalDefault,
+      ),
+      shared: grant.personalDefault,
+    };
+  }
+  async readSessionPermissions(
+    raw: SessionPermissionsRead,
+    access: AccessContext,
+    active: () => void = () => {},
+  ) {
+    const scope = sessionPermissionsReadSchema.parse(raw);
+    active();
+    const route = await this.permissionScope(scope, access);
+    return this.serialSessionPolicy(route.id, async () => {
+      active();
+      const value = await this.readSessionPolicy(scope, access, route);
+      active();
+      return value;
+    });
+  }
+  private async readSessionPolicy(
+    scope: SessionPermissionsRead,
+    access: AccessContext,
+    route: { id: string; shared: boolean },
+  ): Promise<SessionPermissionsSnapshot> {
+    const verify = async () => {
+      const current = await this.permissionScope(scope, access);
+      if (current.id !== route.id || current.shared !== route.shared)
+        throw new DomainError(
+          "forbidden",
+          "当前对话权限范围已变化，请重新读取。",
+        );
+    };
+    await verify();
+    const resultScope = {
+      ...scope,
+      kind: route.shared ? ("global" as const) : ("conversation" as const),
+    };
+    const safeDefault = (): SessionPermissionsSnapshot => ({
+      scope: resultScope,
+      runtimeSessionId: null,
+      permissionMode: "request_approval",
+      sandboxMode: "workspace-write",
+      reviewer: "user",
+      source: "safe_default",
+      canUpdate: false,
+      readOnlyReason: "not_started",
+      fingerprint: null,
+      workspace: {
+        targetId: null,
+        targetName: null,
+        workspaceRoot: null,
+        ready: false,
+        reason: "not_started",
+      },
+    });
+    let session: z.infer<typeof permissionSessionSchema>;
+    try {
+      session = permissionSessionSchema.parse(
+        await this.request(
+          `/api/sessions/${route.id}`,
+          "GET",
+          undefined,
+          access,
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof UpstreamError) || error.status !== 404)
+        throw error;
+      await verify();
+      return safeDefault();
+    }
+    if (
+      session.id !== route.id ||
+      session.context_id !==
+        this.contextId(route.shared ? scope.conversationId : scope.projectId)
+    )
+      throw new DomainError(
+        "forbidden",
+        "Runtime 会话绑定不匹配，无法读取审批方式。",
+      );
+    const knownPrincipal = this.state.sessions[route.id]?.runtimePrincipalId;
+    if (knownPrincipal) {
+      const principal = z
+        .object({
+          principal_id: z.literal(knownPrincipal),
+          session_id: z.literal(route.id),
+          context_id: z.literal(session.context_id),
+        })
+        .safeParse(
+          await this.request(
+            `/api/sessions/${route.id}/principal`,
+            "GET",
+            undefined,
+            access,
+          ),
+        );
+      if (!principal.success)
+        throw new DomainError(
+          "forbidden",
+          "Runtime 会话身份发生变化，不能读取或修改审批方式。",
+        );
+    }
+    if (this.state.sessions[route.id]?.permissionInitializationRequired) {
+      await verify();
+      return safeDefault();
+    }
+    let mode = session.permission_mode ?? null;
+    let sandbox = session.sandbox_mode ?? null;
+    let reviewer: SessionPermissionsSnapshot["reviewer"] = null;
+    const preset = permissionPreset(mode);
+    if (preset) {
+      sandbox = preset.sandboxMode;
+      reviewer = preset.reviewer;
+    } else if (
+      !this.teamIdentity &&
+      access.principalId === localAccess.principalId &&
+      access.actantId === localAccess.actantId
+    ) {
+      // The personal operator may read the Runtime default. Team readers must
+      // never borrow that token's global configuration or invent an inherited preset.
+      const defaults = permissionStatusSchema.parse(
+        await this.request("/api/status", "GET", undefined, access),
+      );
+      mode = defaults.permission_mode;
+      sandbox = defaults.sandbox_mode;
+      reviewer = defaults.reviewer;
+      // Mirror PermissionBroker.profile_with_overrides: explicit custom uses
+      // the base profile (ignoring sandbox); only a differing sandbox-only
+      // override changes the inherited preset into a custom profile.
+      if (
+        session.permission_mode == null &&
+        session.sandbox_mode != null &&
+        session.sandbox_mode !== defaults.sandbox_mode
+      ) {
+        mode = "custom";
+        sandbox = session.sandbox_mode;
+      }
+    } else {
+      mode = null;
+      sandbox = null;
+    }
+    const targets = sessionTargetsSchema.parse(
+      await this.request(
+        `/api/sessions/${route.id}/execution-targets`,
+        "GET",
+        undefined,
+        access,
+      ),
+    );
+    if (targets.session_id !== route.id)
+      throw new DomainError("forbidden", "执行节点的会话范围不匹配。");
+    const target = targets.targets.find(
+      (item) => item.id === targets.effective_target_id,
+    );
+    const workspace = {
+      targetId: targets.effective_target_id,
+      targetName: target?.name ?? null,
+      workspaceRoot: target?.workspace_root ?? null,
+      ready: targets.ready,
+      reason:
+        targets.reason === "ready"
+          ? target?.workspace_root
+            ? null
+            : "workspace_root_unavailable"
+          : targets.reason,
+    };
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify([
+          route.id,
+          session.context_id,
+          session.permission_mode ?? null,
+          session.sandbox_mode ?? null,
+          mode,
+          sandbox,
+          reviewer,
+          session.default_target_id ?? null,
+          workspace.targetId,
+          workspace.workspaceRoot,
+        ]),
+      )
+      .digest("hex");
+    await verify();
+    const canUpdate =
+      !this.teamIdentity &&
+      access.principalId === localAccess.principalId &&
+      access.actantId === localAccess.actantId;
+    return sessionPermissionsSnapshotSchema.parse({
+      scope: resultScope,
+      runtimeSessionId: route.id,
+      permissionMode: mode,
+      sandboxMode: sandbox,
+      reviewer,
+      source: "runtime",
+      canUpdate,
+      readOnlyReason: canUpdate ? null : "team_managed",
+      fingerprint,
+      workspace,
+    });
+  }
+  async updateSessionPermissions(
+    raw: SessionPermissionsUpdate,
+    access: AccessContext,
+    authorizeWrite: () => Promise<void>,
+  ) {
+    const request = sessionPermissionsUpdateSchema.parse(raw);
+    if (
+      this.teamIdentity ||
+      access.principalId !== localAccess.principalId ||
+      access.actantId !== localAccess.actantId
+    )
+      throw new DomainError("forbidden", "审批方式只能由本机本人调整。");
+    const scope = {
+      projectId: request.projectId,
+      conversationId: request.conversationId,
+    };
+    await authorizeWrite();
+    const route = await this.permissionScope(scope, access);
+    return this.serialSessionPolicy(route.id, async () => {
+      await authorizeWrite();
+      const before = await this.readSessionPolicy(scope, access, route);
+      if (!before.canUpdate || !before.runtimeSessionId)
+        throw new DomainError(
+          "conflict",
+          "首次发送并建立会话后才能调整审批方式。",
+        );
+      if (before.fingerprint !== request.expectedFingerprint)
+        throw new DomainError(
+          "conflict",
+          "审批方式或执行节点已变化，请重新读取后调整。",
+        );
+      await authorizeWrite();
+      const currentRoute = await this.permissionScope(scope, access);
+      if (currentRoute.id !== route.id || currentRoute.shared !== route.shared)
+        throw new DomainError(
+          "forbidden",
+          "当前对话权限范围已变化，未修改审批方式。",
+        );
+      // Runtime switches the whole preset and clears a legacy sandbox override.
+      // This is not Runtime CAS: other Runtime clients can still race the PATCH.
+      await this.request(
+        `/api/sessions/${route.id}`,
+        "PATCH",
+        { permission_mode: request.permissionMode },
+        access,
+      );
+      const after = await this.readSessionPolicy(scope, access, route);
+      await authorizeWrite();
+      if (
+        !after.canUpdate ||
+        after.permissionMode !== request.permissionMode ||
+        after.source !== "runtime"
+      )
+        throw new DomainError(
+          "conflict",
+          "审批方式写入结果未确认，请重新读取；未报告成功。",
+        );
+      return after;
+    });
+  }
   private loadedHarnesses: { id: string; version: string }[] | null = null;
   private feeds = new Set<ConversationFeed>();
   /** Stream the same Platform-authorized history exposed by
@@ -4545,16 +4888,25 @@ export class RuntimeBridge {
       .digest("hex");
   }
   private async ensureSession(id: string) {
+    return this.serialSessionPolicy(id, () => this.ensureSessionPolicy(id));
+  }
+  private async ensureSessionPolicy(id: string) {
     const contextId = this.contextId(this.state.sessions[id]!.projectId);
-    let session: z.infer<typeof sessionSchema>;
+    let session: z.infer<typeof permissionSessionSchema>;
     try {
-      session = sessionSchema.parse(await this.request(`/api/sessions/${id}`));
+      session = permissionSessionSchema.parse(
+        await this.request(`/api/sessions/${id}`),
+      );
     } catch (error) {
       if (!(error instanceof UpstreamError) || error.status !== 404)
         throw error;
+      // Save before attempting creation, including a lost POST response. The
+      // receipt survives restart; a later GET/409 cannot bypass initialization.
+      this.state.sessions[id]!.permissionInitializationRequired = true;
+      this.save();
       try {
         try {
-          session = sessionSchema.parse(
+          session = permissionSessionSchema.parse(
             await this.request("/api/sessions", "POST", {
               id,
               title: "Morphz",
@@ -4564,7 +4916,7 @@ export class RuntimeBridge {
         } catch (missing) {
           if (!(missing instanceof UpstreamError) || missing.status !== 404)
             throw missing;
-          session = sessionSchema.parse(
+          session = permissionSessionSchema.parse(
             await this.request("/api/sessions", "POST", {
               id,
               title: "Morphz",
@@ -4578,13 +4930,13 @@ export class RuntimeBridge {
         }
       } catch (e) {
         if (e instanceof UpstreamError && e.status === 409)
-          session = sessionSchema.parse(
+          session = permissionSessionSchema.parse(
             await this.request(`/api/sessions/${id}`),
           );
         else throw e;
       }
     }
-    if (session.context_id !== contextId)
+    if (session.id !== id || session.context_id !== contextId)
       throw new Error("会话绑定不匹配，已停止发送。");
     const binding = this.state.sessions[id]!;
     try {
@@ -4621,12 +4973,31 @@ export class RuntimeBridge {
       binding.runtimePrincipalId = null;
       binding.turnControl = false;
     }
+    if (binding.permissionInitializationRequired) {
+      if (session.permission_mode == null && session.sandbox_mode == null) {
+        await this.request(`/api/sessions/${id}`, "PATCH", {
+          permission_mode: "request_approval",
+        });
+        const policy = permissionSessionSchema.parse(
+          await this.request(`/api/sessions/${id}`),
+        );
+        if (
+          policy.id !== id ||
+          policy.context_id !== contextId ||
+          policy.permission_mode !== "request_approval" ||
+          policy.sandbox_mode != null
+        )
+          throw new DomainError(
+            "conflict",
+            "新会话的安全审批方式尚未确认，已停止发送。",
+          );
+      }
+      // A 409/restart may now observe a durable explicit Runtime choice, e.g.
+      // our safe PATCH completed with a lost receipt, or the Human changed it
+      // in Dashboard. Do not overwrite that authority with a Host default.
+      delete binding.permissionInitializationRequired;
+    }
     this.save();
-    // Do not inherit the running server's full-access preset into this new client.
-    await this.request(`/api/sessions/${id}`, "PATCH", {
-      permission_mode: "request_approval",
-      sandbox_mode: "workspace-write",
-    });
   }
   start() {
     void this.tick();

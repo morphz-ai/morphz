@@ -570,6 +570,13 @@ export class HttpApplicationClient {
       case "models":
         path = "/api/models";
         break;
+      case "session-permissions.read":
+        path = "/api/session-permissions?" + query(fields(params));
+        break;
+      case "session-permissions.update":
+        path = "/api/session-permissions/update";
+        post(params);
+        break;
       case "connection.check":
         path = "/api/connection/check";
         post();

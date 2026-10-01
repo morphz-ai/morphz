@@ -1034,6 +1034,22 @@ export function createAppServer(
           json(res, 200, await business.models());
           return;
         }
+        if (url.pathname === "/api/session-permissions") {
+          const query = platformQuery(url, ["projectId", "conversationId"]);
+          const result = await business.readSessionPermissions({
+            projectId: query.value("projectId"),
+            conversationId: query.value("conversationId"),
+          });
+          // This transport is Web/remote, not the local Human settings host.
+          json(res, 200, {
+            ...result,
+            canUpdate: false,
+            readOnlyReason: result.canUpdate
+              ? "local_only"
+              : result.readOnlyReason,
+          });
+          return;
+        }
         if (url.pathname === "/api/executions") {
           json(res, 200, await business.executionSnapshot(executionScope(url)));
           return;
@@ -1209,6 +1225,11 @@ export function createAppServer(
         const scriptEditor =
           /^\/api\/platform\/scripts\/editor\/(head|page|detail)$/.exec(
             url.pathname,
+          );
+        if (url.pathname === "/api/session-permissions/update")
+          throw new DomainError(
+            "forbidden",
+            "审批方式只能由本机本人调整；团队与远端会话暂为只读。",
           );
         if (scriptEditor) {
           if (req.headers["content-type"] !== "application/json") {
