@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Brain } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
+import { composerSettingsSummary } from "./composer-settings-summary.js";
 import {
   modelCatalogSchema,
   modelLabel,
@@ -18,6 +19,7 @@ export function ModelPicker({
   compact = false,
   current,
   reasoning,
+  onSummaryChange,
 }: {
   value?: string;
   onChange: (id: string) => void;
@@ -30,6 +32,9 @@ export function ModelPicker({
     onChange(value?: ReasoningEffort): void;
     label?: string;
   };
+  onSummaryChange?: (
+    summary: ReturnType<typeof composerSettingsSummary>,
+  ) => void;
 }) {
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [error, setError] = useState("");
@@ -76,6 +81,16 @@ export function ModelPicker({
   const defaultLabel = defaultName
     ? modelLabel(defaultName)
     : catalog?.current || current || "默认模型";
+  useEffect(() => {
+    onSummaryChange?.(
+      composerSettingsSummary({
+        model: value,
+        current,
+        reasoning: reasoning?.value,
+        catalog,
+      }),
+    );
+  }, [catalog, value, current, reasoning?.value, onSummaryChange]);
   return (
     <>
       <div

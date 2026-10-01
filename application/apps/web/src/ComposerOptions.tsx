@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { MoreHorizontal } from "lucide-react";
 
@@ -32,6 +33,8 @@ export function ComposerOptions({
   menuClassName = "",
   header,
   content,
+  persistentContent,
+  triggerRef,
 }: {
   model?: string;
   unread?: boolean;
@@ -46,6 +49,9 @@ export function ComposerOptions({
   menuClassName?: string;
   header?: ReactNode;
   content?: (close: () => void) => ReactNode;
+  /** Keep stateful input tools mounted while this menu is closed. */
+  persistentContent?: ReactNode;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -69,6 +75,8 @@ export function ComposerOptions({
       element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, innerHeight - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
     };
     position();
+    const resize = new ResizeObserver(position);
+    resize.observe(element);
     element
       .querySelector<HTMLElement>(
         "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
@@ -87,6 +95,7 @@ export function ComposerOptions({
     window.addEventListener("scroll", position, true);
     return () => {
       element.hidePopover();
+      resize.disconnect();
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);
       window.removeEventListener("resize", position);
@@ -103,7 +112,10 @@ export function ComposerOptions({
   return (
     <>
       <button
-        ref={trigger}
+        ref={(element) => {
+          trigger.current = element;
+          if (triggerRef) triggerRef.current = element;
+        }}
         className={triggerClassName}
         aria-label={label}
         aria-description={description}
@@ -163,6 +175,7 @@ export function ComposerOptions({
         }}
       >
         {header}
+        {persistentContent}
         {open && content?.(closeToTrigger)}
         {options.map((option) => (
           <button

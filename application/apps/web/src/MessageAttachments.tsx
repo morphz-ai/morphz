@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { Paperclip, X } from "lucide-react";
+import {
+  FilePlus,
+  Paperclip,
+  Plus,
+  SquareBottomDashedScissors,
+  X,
+} from "lucide-react";
+import { ComposerOptions } from "./ComposerOptions.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import { restoreInputToolFocus } from "./input-tool-focus.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
@@ -18,6 +25,8 @@ export function MessageAttachments({
   onBusy,
   previewTarget,
   inputRef,
+  variant = "tool",
+  capture,
 }: {
   previewTarget: HTMLElement | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -28,6 +37,12 @@ export function MessageAttachments({
   onChange(value: (previous: InputAttachment[]) => InputAttachment[]): void;
   onError(message: string): void;
   onBusy(busy: boolean): void;
+  variant?: "tool" | "menu";
+  capture?: {
+    disabled?: boolean;
+    title?: string;
+    onSelect(hideWindow: boolean): void;
+  };
 }) {
   const file = useRef<HTMLInputElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -109,6 +124,20 @@ export function MessageAttachments({
     input?.addEventListener("paste", paste);
     return () => input?.removeEventListener("paste", paste);
   });
+  function chooseFiles() {
+    // Native file pickers blur the window. Suspend collapse before opening.
+    flushSync(() => {
+      setSelecting(true);
+      onBusy(true);
+    });
+    try {
+      file.current?.click();
+    } catch (error) {
+      finishSelection(true);
+      onError(error instanceof Error ? error.message : "无法打开文件选择器。");
+    }
+  }
+  const fileDisabled = disabled || busy || selecting || attachments.length >= 8;
   return (
     <>
       {previewTarget &&
@@ -138,7 +167,49 @@ export function MessageAttachments({
           </div>,
           previewTarget,
         )}
-      {allowAdd && (
+      {allowAdd && variant === "menu" && (
+        <ComposerOptions
+          label="添加输入内容"
+          menuLabel="添加到这条消息"
+          triggerIcon={<Plus />}
+          triggerClassName="icon-button composer-add"
+          triggerRef={trigger}
+          options={[
+            {
+              label: "附加文件",
+              text: selecting
+                ? "正在选择文件…"
+                : busy
+                  ? "正在添加…"
+                  : "图片或文件",
+              title: "支持的文件以实际附件能力为准；不保存为内容库对象",
+              icon: <FilePlus />,
+              disabled: fileDisabled,
+              onSelect: chooseFiles,
+            },
+          ]}
+          persistentContent={
+            capture && (
+              <button
+                type="button"
+                className="composer-capture-action"
+                aria-label="截图输入"
+                title={capture.title}
+                disabled={capture.disabled}
+                onClick={(event) => {
+                  // Move focus to the persistent + before the capture panel opens.
+                  trigger.current?.focus({ preventScroll: true });
+                  capture.onSelect(event.altKey);
+                }}
+              >
+                <SquareBottomDashedScissors />
+                <span>截图</span>
+              </button>
+            )
+          }
+        />
+      )}
+      {allowAdd && variant !== "menu" && (
         <button
           ref={trigger}
           className="icon-button"
@@ -151,23 +222,7 @@ export function MessageAttachments({
                 ? "正在添加…"
                 : "附加文件到这条消息，不保存为内容"
           }
-          onClick={() => {
-            // Native file pickers blur the window. Keep the originating draft
-            // mounted before opening it, otherwise auto-collapse detaches the
-            // file input and the OS chooser cannot deliver its selection.
-            flushSync(() => {
-              setSelecting(true);
-              onBusy(true);
-            });
-            try {
-              file.current?.click();
-            } catch (error) {
-              finishSelection(true);
-              onError(
-                error instanceof Error ? error.message : "无法打开文件选择器。",
-              );
-            }
-          }}
+          onClick={chooseFiles}
         >
           <Paperclip />
         </button>

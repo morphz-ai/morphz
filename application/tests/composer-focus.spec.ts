@@ -156,13 +156,13 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
       .locator(".model-status")
       .getByRole("button", { name: "连接详情", exact: true }),
   ).toBeFocused();
-  // Both tool groups follow the input in one uninterrupted keyboard path.
-  for (const name of ["附加文件", "截图输入", "语音输入"]) {
+  // The compact input row follows the text without hidden menu items in Tab order.
+  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
     await expect(input).toHaveValue("在控件与弹窗之间保留输入");
   }
-  await page.keyboard.press("Tab");
+  await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();
   await expect(
     page.getByRole("button", { name: "收起交流记录", exact: true }),
   ).toBeFocused();
@@ -178,6 +178,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await page.mouse.click(composerBounds.x - 20, composerBounds.y + 20);
   await expect(input).toHaveCount(0);
   await openInput(page);
+  await page.getByRole("button", { name: "添加输入内容", exact: true }).click();
   await page.getByRole("button", { name: "截图输入", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -185,7 +186,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("button", { name: "截图输入", exact: true }),
+    page.getByRole("button", { name: "添加输入内容", exact: true }),
   ).toBeFocused();
   await expect(input).toHaveValue("在控件与弹窗之间保留输入");
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
@@ -225,7 +226,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(input).toHaveValue("在控件与弹窗之间保留输入");
 });
 
-test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录不过度占位", async ({
+test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录不过度占位", async ({
   page,
 }) => {
   await page.goto("/");
@@ -253,7 +254,7 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
     const composer = page.getByRole("region", { name: "AI 输入", exact: true });
     await expect(composer.locator(".composer-heading")).toHaveCount(0);
     const tools = (await composer
-      .locator(".composer-input-tools")
+      .locator(".composer-action-bar")
       .boundingBox())!;
     await expect(composer.locator(".composer-tools")).toHaveCount(0);
     const textBounds = (await composer
@@ -268,15 +269,14 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
     const outer = (await composer.boundingBox())!;
     expect(textBounds.y - outer.y).toBeLessThanOrEqual(11);
     const media = (await composer
-      .locator(".composer-media-tools")
+      .getByRole("button", { name: "添加输入内容", exact: true })
       .boundingBox())!;
     const preferences = (await composer
-      .locator(".composer-preferences")
+      .getByRole("button", { name: "执行设置", exact: true })
       .boundingBox())!;
-    // Narrow frames wrap input tools above the model/send row, not outside
-    // the frame. Budget only that one necessary additional 32px row + gap.
-    const wrapped = preferences.y >= media.y + media.height;
-    expect(outer.height).toBeLessThanOrEqual(144 + (wrapped ? 36 : 0));
+    // Even narrow frames retain one row; neither scope nor model creates another.
+    expect(preferences.y).toBe(media.y);
+    expect(outer.height).toBeLessThanOrEqual(144);
     expect(
       await composer.evaluate((el) => getComputedStyle(el).boxShadow),
     ).toBe("none");
@@ -291,14 +291,22 @@ test("工具集中在输入框；相机与语音紧邻，窄窗口和空记录�
     ).toHaveCount(1);
     await expect(composer.locator(".lucide-camera")).toHaveCount(0);
     await expect(composer.locator(".lucide-scan")).toHaveCount(0);
-    const camera = (await composer
-      .getByLabel("截图输入", { exact: true })
-      .boundingBox())!;
+    await expect(composer.getByLabel("截图输入", { exact: true })).toBeHidden();
     const mic = (await composer
       .getByLabel("语音输入", { exact: true })
       .boundingBox())!;
-    expect(mic.x - camera.x - camera.width).toBeLessThanOrEqual(4);
-    expect(mic.y).toBe(camera.y);
+    const send = (await composer
+      .getByRole("button", { name: "保存输入", exact: true })
+      .boundingBox())!;
+    expect(send.x - mic.x - mic.width).toBeLessThanOrEqual(4);
+    expect(mic.y).toBe(send.y);
+    await composer
+      .getByRole("button", { name: "添加输入内容", exact: true })
+      .click();
+    await expect(
+      composer.getByLabel("截图输入", { exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(
       composer.getByLabel("长录音转写", { exact: true }),
     ).toHaveCount(0);

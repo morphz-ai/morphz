@@ -27,7 +27,6 @@ import {
   Search,
   Mic,
   Square,
-  SquareBottomDashedScissors,
   Brain,
   ListChecks,
 } from "lucide-react";
@@ -46,7 +45,9 @@ import {
   storageScope,
 } from "./client.js";
 import { ArtifactEditor } from "./ArtifactEditor.js";
-import { ModelPicker } from "./ModelPicker.js";
+import { ComposerActionBar } from "./ComposerActionBar.js";
+import { ComposerScope } from "./ComposerScope.js";
+import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
@@ -88,7 +89,6 @@ import {
   type Project,
 } from "../../../packages/core/src/projects.js";
 import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
-import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
 import { BrandMark } from "./BrandMark.js";
 import { NavigationIcon } from "./NavigationIcon.js";
@@ -3243,6 +3243,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               <ExchangePanel
                 open={inputVisible || conversationVisible}
                 scopeRef={setConversationToolbarTarget}
+                controls={
+                  !dialogueCanvas && inputVisible ? (
+                    <ExchangeControls
+                      conversationVisible={conversationVisible}
+                      historyVisible={historyVisible}
+                      pinned={inputPinned}
+                      unread={!conversationVisible && unseenReply}
+                      onInteraction={setInteraction}
+                      onPin={() => {
+                        keepExchangeOpen();
+                        if (inputPinned) input.current?.focus();
+                        prefer({
+                          pinnedInputs: { [exchangeKey]: !inputPinned },
+                        });
+                      }}
+                      onHide={hideInput}
+                    />
+                  ) : undefined
+                }
                 resize={
                   !dialogueCanvas &&
                   inputVisible &&
@@ -3575,134 +3594,188 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           正在核对原投递；确认前保留这份草稿，请勿另发一遍。
                         </small>
                       )}
-                      <div className="composer-actions">
-                        <div className="composer-footer-info">
-                          {(!client.online ||
-                            (draft.taskResult && !draft.continuation) ||
-                            (!draft.annotation &&
-                              !client.boot!.runtime.connected)) && (
-                            <small className="model-status">
-                              {!client.online
-                                ? "应用连接中断"
-                                : draft.taskResult && !draft.continuation
-                                  ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
-                                  : client.boot!.runtime.configured
-                                    ? client.boot!.runtime.error
-                                      ? "智能体连接异常 · 消息已保留"
-                                      : "正在连接智能体"
-                                    : "尚未连接智能体 · 输入只会保存"}
-                              {(!client.online || !draft.taskResult) && (
-                                <button
-                                  className="text-button"
-                                  onClick={() => setConnectionOpen(true)}
-                                >
-                                  连接详情
-                                </button>
-                              )}
-                            </small>
+                      {(!client.online ||
+                        (draft.taskResult && !draft.continuation) ||
+                        (!draft.annotation &&
+                          !client.boot!.runtime.connected)) && (
+                        <small className="model-status">
+                          {!client.online
+                            ? "应用连接中断"
+                            : draft.taskResult && !draft.continuation
+                              ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
+                              : client.boot!.runtime.configured
+                                ? client.boot!.runtime.error
+                                  ? "智能体连接异常 · 消息已保留"
+                                  : "正在连接智能体"
+                                : "尚未连接智能体 · 输入只会保存"}
+                          {(!client.online || !draft.taskResult) && (
+                            <button
+                              className="text-button"
+                              onClick={() => setConnectionOpen(true)}
+                            >
+                              连接详情
+                            </button>
                           )}
-                          <div className="composer-meta">
-                            {draft.scriptGeneration && (
-                              <span
-                                className="composer-intent"
-                                data-testid="script-input-reference"
-                              >
-                                剧本请求 ·{" "}
-                                {client.scriptVersionTitle(
-                                  draft.scriptGeneration.productionId,
-                                  draft.scriptGeneration.targetId,
-                                  draft.scriptGeneration.baseRevision,
-                                ) ?? draft.scriptGeneration.targetId}{" "}
-                                · v{draft.scriptGeneration.baseRevision}
-                                <button
-                                  type="button"
-                                  className="icon-button"
-                                  aria-label="移除剧本请求引用"
-                                  disabled={sending}
-                                  onClick={() => {
-                                    const { scriptGeneration: _, ...rest } =
-                                      draft;
-                                    setDraft(contextKey, rest);
-                                  }}
+                        </small>
+                      )}
+                      <ComposerActionBar
+                        scope={
+                          <ComposerScope
+                            label={
+                              draft.continuation
+                                ? "补充原工作"
+                                : draft.taskResult
+                                  ? "提交事项结果"
+                                  : contextTitle
+                            }
+                            description={
+                              contextTitle +
+                              (draft.revision ? " · v" + draft.revision : "")
+                            }
+                          >
+                            <div className="composer-meta">
+                              {draft.scriptGeneration && (
+                                <span
+                                  className="composer-intent"
+                                  data-testid="script-input-reference"
                                 >
-                                  <X />
-                                </button>
-                              </span>
-                            )}
-                            {!draft.continuation && (
-                              <span
-                                className="context-chip"
-                                title={
-                                  contextTitle +
-                                  (draft.revision
-                                    ? " · v" + draft.revision
-                                    : "")
-                                }
-                              >
-                                <Link2 />
-                                {contextTitle}
-                                {draft.revision ? " · v" + draft.revision : ""}
-                              </span>
-                            )}
-                            {!draft.continuation &&
-                              (draft.taskResult || draft.intent) && (
-                                <div
-                                  className={
-                                    "composer-intent" +
-                                    (draft.taskResult
-                                      ? " task-result-intent"
-                                      : "")
-                                  }
-                                >
-                                  <span
-                                    title={
-                                      draft.taskResult
-                                        ? "提交结果并完成事项"
-                                        : inputIntents[draft.intent!].label
-                                    }
-                                  >
-                                    {draft.taskResult
-                                      ? `提交结果并完成 · v${draft.taskResult.revision}`
-                                      : inputIntents[draft.intent!].label}
-                                  </span>
+                                  剧本请求 ·{" "}
+                                  {client.scriptVersionTitle(
+                                    draft.scriptGeneration.productionId,
+                                    draft.scriptGeneration.targetId,
+                                    draft.scriptGeneration.baseRevision,
+                                  ) ?? draft.scriptGeneration.targetId}{" "}
+                                  · v{draft.scriptGeneration.baseRevision}
                                   <button
+                                    type="button"
                                     className="icon-button"
-                                    aria-label={
-                                      draft.taskResult
-                                        ? "改为普通输入"
-                                        : "移除输入意图"
-                                    }
-                                    title={
-                                      draft.taskResult
-                                        ? "改为普通输入，不完成事项"
-                                        : "移除输入意图"
-                                    }
+                                    aria-label="移除剧本请求引用"
+                                    disabled={sending}
                                     onClick={() => {
-                                      const {
-                                        taskResult: _,
-                                        intent: __,
-                                        ...rest
-                                      } = draft;
+                                      const { scriptGeneration: _, ...rest } =
+                                        draft;
                                       setDraft(contextKey, rest);
-                                      input.current?.focus();
                                     }}
                                   >
                                     <X />
                                   </button>
-                                </div>
+                                </span>
                               )}
-                          </div>
-                        </div>
-                        <div className="composer-floating-tools">
-                          <div
-                            className="composer-media-tools"
-                            role="group"
-                            aria-label="输入工具"
-                          >
+                              {!draft.continuation && (
+                                <span
+                                  className="context-chip"
+                                  title={
+                                    contextTitle +
+                                    (draft.revision
+                                      ? " · v" + draft.revision
+                                      : "")
+                                  }
+                                >
+                                  <Link2 />
+                                  {contextTitle}
+                                  {draft.revision
+                                    ? " · v" + draft.revision
+                                    : ""}
+                                </span>
+                              )}
+                              {!draft.continuation &&
+                                (draft.taskResult || draft.intent) && (
+                                  <div
+                                    className={
+                                      "composer-intent" +
+                                      (draft.taskResult
+                                        ? " task-result-intent"
+                                        : "")
+                                    }
+                                  >
+                                    <span
+                                      title={
+                                        draft.taskResult
+                                          ? "提交结果并完成事项"
+                                          : inputIntents[draft.intent!].label
+                                      }
+                                    >
+                                      {draft.taskResult
+                                        ? `提交结果并完成 · v${draft.taskResult.revision}`
+                                        : inputIntents[draft.intent!].label}
+                                    </span>
+                                    <button
+                                      className="icon-button"
+                                      aria-label={
+                                        draft.taskResult
+                                          ? "改为普通输入"
+                                          : "移除输入意图"
+                                      }
+                                      title={
+                                        draft.taskResult
+                                          ? "改为普通输入，不完成事项"
+                                          : "移除输入意图"
+                                      }
+                                      onClick={() => {
+                                        const {
+                                          taskResult: _,
+                                          intent: __,
+                                          ...rest
+                                        } = draft;
+                                        setDraft(contextKey, rest);
+                                        input.current?.focus();
+                                      }}
+                                    >
+                                      <X />
+                                    </button>
+                                  </div>
+                                )}
+                              {artifact && draft.selection && (
+                                <button
+                                  type="button"
+                                  disabled={
+                                    !!draft.continuation ||
+                                    !draft.body.trim() ||
+                                    sending ||
+                                    !client.online
+                                  }
+                                  onClick={() => {
+                                    input.current?.focus();
+                                    void send(true);
+                                  }}
+                                >
+                                  保存为批注
+                                </button>
+                              )}
+                            </div>
+                          </ComposerScope>
+                        }
+                        media={
+                          <>
                             {((!draft.annotation && !draft.taskResult) ||
                               !!draft.continuation ||
                               !!draft.attachments?.length) && (
                               <MessageAttachments
+                                variant="menu"
+                                capture={{
+                                  title: `截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`,
+                                  disabled:
+                                    sending ||
+                                    !!draft.pendingSupplement ||
+                                    !!uploadingDrafts[contextKey] ||
+                                    !client.online ||
+                                    (draft.attachments?.length ?? 0) >= 8,
+                                  onSelect: (hideWindow) =>
+                                    setCapture({
+                                      key: contextKey,
+                                      projectId: project.id,
+                                      hideWindow,
+                                      ...(artifact
+                                        ? {
+                                            artifactId: artifact.id,
+                                            artifactRevision:
+                                              draft.revision ??
+                                              prefs.artifactRevision ??
+                                              artifact.revision,
+                                          }
+                                        : {}),
+                                    }),
+                                }}
                                 key={`attachments:${contextKey}`}
                                 inputRef={input}
                                 previewTarget={attachmentSlot}
@@ -3737,196 +3810,118 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 }
                               />
                             )}
-                            {canAuthorizeDirectories && (
-                              <AgentDirectories
-                                key={`${client.boot!.csrfToken}:${directoryScope}`}
-                                projectId={project.id}
-                                conversationId={conversationId}
-                                identity={client.boot!.csrfToken}
-                                previewTarget={
-                                  draft.continuation ? null : attachmentSlot
-                                }
-                                disabled={
-                                  sending ||
-                                  !client.online ||
-                                  !!draft.continuation
-                                }
-                                onSelecting={(selecting) =>
-                                  setDirectoryPickerScope((current) =>
-                                    selecting
-                                      ? directoryScope
-                                      : current === directoryScope
-                                        ? null
-                                        : current,
-                                  )
-                                }
-                                onState={setDirectoryState}
-                                onError={(message) =>
-                                  setInputErrors((old) => ({
-                                    ...old,
-                                    [contextKey]: message,
-                                  }))
-                                }
-                              />
-                            )}
-                            {((!draft.annotation && !draft.taskResult) ||
-                              !!draft.continuation) && (
-                              <button
-                                className="icon-button"
-                                aria-label="截图输入"
-                                title={`截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`}
-                                disabled={
-                                  sending ||
-                                  !!draft.pendingSupplement ||
-                                  !!uploadingDrafts[contextKey] ||
-                                  !client.online ||
-                                  (draft.attachments?.length ?? 0) >= 8
-                                }
-                                onClick={(event) =>
-                                  setCapture({
-                                    key: contextKey,
+                          </>
+                        }
+                        microphone={
+                          <button
+                            className="icon-button"
+                            aria-label="语音输入"
+                            aria-pressed={speechRecording}
+                            data-recording={speechRecording || undefined}
+                            title={speechRecording ? "停止听写" : "开始听写"}
+                            disabled={
+                              (sending ||
+                                !!draft.pendingSupplement ||
+                                !client.online) &&
+                              !speechRecording
+                            }
+                            onClick={() => {
+                              if (speech?.key === contextKey && !speech.modal)
+                                dictationControls.current?.toggle();
+                              else
+                                setSpeech({
+                                  scope: {
                                     projectId: project.id,
-                                    hideWindow: event.altKey,
                                     ...(artifact
                                       ? {
                                           artifactId: artifact.id,
-                                          artifactRevision:
+                                          revision:
                                             draft.revision ??
                                             prefs.artifactRevision ??
                                             artifact.revision,
                                         }
                                       : {}),
-                                  })
-                                }
-                              >
-                                <SquareBottomDashedScissors />
-                              </button>
-                            )}
-                            <button
-                              className="icon-button"
-                              aria-label="语音输入"
-                              aria-pressed={speechRecording}
-                              data-recording={speechRecording || undefined}
-                              title={speechRecording ? "停止听写" : "开始听写"}
-                              disabled={
-                                (sending ||
-                                  !!draft.pendingSupplement ||
-                                  !client.online) &&
-                                !speechRecording
-                              }
-                              onClick={() => {
-                                if (speech?.key === contextKey && !speech.modal)
-                                  dictationControls.current?.toggle();
-                                else
-                                  setSpeech({
-                                    scope: {
-                                      projectId: project.id,
-                                      ...(artifact
-                                        ? {
-                                            artifactId: artifact.id,
-                                            revision:
-                                              draft.revision ??
-                                              prefs.artifactRevision ??
-                                              artifact.revision,
-                                          }
-                                        : {}),
-                                    },
-                                    title: contextTitle,
-                                    key: contextKey,
-                                    draft: { ...draft },
-                                  });
-                              }}
-                            >
-                              {speechRecording ? <Square /> : <Mic />}
-                            </button>
-                            <ComposerToolButtons
-                              key={`options:${contextKey}`}
-                              options={[
-                                ...(artifact
-                                  ? [
-                                      {
-                                        label: "保存为批注",
-                                        reserveOnly: !draft.selection,
-                                        icon: <MessageSquarePlus />,
-                                        disabled:
-                                          !!draft.continuation ||
-                                          !draft.body.trim() ||
-                                          sending ||
-                                          !client.online,
-                                        onSelect: () => {
-                                          // Saving clears the selection and removes this
-                                          // tool. Leave focus on the persistent input.
-                                          input.current?.focus();
-                                          void send(true);
-                                        },
-                                      },
-                                    ]
-                                  : []),
-                              ]}
-                            />
-                          </div>
-                          {!dialogueCanvas && (
-                            <div
-                              className="exchange-view-tools"
-                              role="group"
-                              aria-label="交流面板操作"
-                            >
-                              <ExchangeControls
-                                conversationVisible={conversationVisible}
-                                historyVisible={historyVisible}
-                                pinned={inputPinned}
-                                unread={!conversationVisible && unseenReply}
-                                onInteraction={setInteraction}
-                                onPin={() => {
-                                  keepExchangeOpen();
-                                  if (inputPinned) input.current?.focus();
-                                  prefer({
-                                    pinnedInputs: {
-                                      [exchangeKey]: !inputPinned,
-                                    },
-                                  });
-                                }}
-                                onHide={hideInput}
-                              />
-                            </div>
-                          )}
-                        </div>
-                        {draft.continuation ? (
-                          <small className="composer-preferences continuation-model">
-                            沿用原工作设置
-                          </small>
-                        ) : (
-                          !draft.annotation &&
-                          !draft.taskResult && (
-                            <div className="composer-preferences">
-                              <ModelPicker
-                                compact
-                                current={client.boot!.runtime.model}
-                                value={draft.model}
-                                reasoning={{
-                                  value: draft.reasoningEffort,
-                                  onChange: (reasoningEffort) =>
-                                    setDraft(contextKey, {
-                                      ...draft,
-                                      reasoningEffort,
-                                    }),
-                                }}
-                                disabled={
-                                  sending ||
-                                  !client.online ||
-                                  !client.boot!.runtime.connected
-                                }
-                                onChange={(model) =>
-                                  setDraft(contextKey, {
-                                    ...draft,
-                                    model: model || undefined,
-                                  })
-                                }
-                              />
-                            </div>
-                          )
-                        )}
-                        <div className="inline composer-input-tools">
+                                  },
+                                  title: contextTitle,
+                                  key: contextKey,
+                                  draft: { ...draft },
+                                });
+                            }}
+                          >
+                            {speechRecording ? <Square /> : <Mic />}
+                          </button>
+                        }
+                        settings={
+                          <ComposerExecutionSettings
+                            current={client.boot!.runtime.model}
+                            model={draft.model}
+                            reasoning={draft.reasoningEffort}
+                            continuation={!!draft.continuation}
+                            directoryCount={
+                              directoryState.scope === directoryScope
+                                ? directoryState.grants.length
+                                : 0
+                            }
+                            directoryReady={
+                              !canAuthorizeDirectories ||
+                              (directoryState.scope === directoryScope &&
+                                directoryState.ready)
+                            }
+                            disabled={
+                              sending ||
+                              !client.online ||
+                              !client.boot!.runtime.connected ||
+                              !!draft.annotation ||
+                              !!draft.taskResult
+                            }
+                            onModelChange={(model) =>
+                              setDraft(contextKey, {
+                                ...draft,
+                                model: model || undefined,
+                              })
+                            }
+                            onReasoningChange={(reasoningEffort) =>
+                              setDraft(contextKey, {
+                                ...draft,
+                                reasoningEffort,
+                              })
+                            }
+                            permissionControls={
+                              canAuthorizeDirectories ? (
+                                <AgentDirectories
+                                  variant="settings"
+                                  key={`${client.boot!.csrfToken}:${directoryScope}`}
+                                  projectId={project.id}
+                                  conversationId={conversationId}
+                                  identity={client.boot!.csrfToken}
+                                  previewTarget={null}
+                                  disabled={
+                                    sending ||
+                                    !client.online ||
+                                    !!draft.continuation
+                                  }
+                                  onSelecting={(selecting) =>
+                                    setDirectoryPickerScope((current) =>
+                                      selecting
+                                        ? directoryScope
+                                        : current === directoryScope
+                                          ? null
+                                          : current,
+                                    )
+                                  }
+                                  onState={setDirectoryState}
+                                  onError={(message) =>
+                                    setInputErrors((old) => ({
+                                      ...old,
+                                      [contextKey]: message,
+                                    }))
+                                  }
+                                />
+                              ) : undefined
+                            }
+                          />
+                        }
+                        send={
                           <button
                             className="send"
                             aria-label={
@@ -3966,8 +3961,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               <ArrowUp />
                             )}
                           </button>
-                        </div>
-                      </div>
+                        }
+                      />
                     </section>
                   ) : (
                     <button

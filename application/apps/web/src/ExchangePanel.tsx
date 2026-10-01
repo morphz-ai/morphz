@@ -13,11 +13,13 @@ export function ExchangePanel({
   scopeRef,
   resize,
   children,
+  controls,
 }: {
   open: boolean;
   scopeRef: (element: HTMLDivElement | null) => void;
   resize?: ExchangeResizeOptions;
   children: ReactNode;
+  controls?: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -55,6 +57,15 @@ export function ExchangePanel({
       {open && (
         <div className="exchange-panel-header">
           <div className="exchange-scope" ref={scopeRef} />
+          {controls && (
+            <div
+              className="exchange-view-tools"
+              role="group"
+              aria-label="交流面板操作"
+            >
+              {controls}
+            </div>
+          )}
         </div>
       )}
       {children}

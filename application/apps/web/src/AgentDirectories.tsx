@@ -26,6 +26,7 @@ export function AgentDirectories({
   onSelecting,
   onState,
   onError,
+  variant = "tool",
 }: {
   projectId: string;
   conversationId: string;
@@ -35,6 +36,7 @@ export function AgentDirectories({
   onSelecting(value: boolean): void;
   onState(value: DirectoryState): void;
   onError(message: string): void;
+  variant?: "tool" | "settings";
 }) {
   const scope = `${projectId}:${conversationId}`;
   const [grants, setGrants] = useState<DirectoryGrant[]>([]);
@@ -129,11 +131,37 @@ export function AgentDirectories({
       restoreInputToolFocus(origin);
     }
   }
+  const grantList = grants.length > 0 && (
+    <div className="agent-directories" aria-label="此对话的目录读写权限">
+      <span className="directory-scope">Agent 可读写</span>
+      {grants.map((grant) => (
+        <span className="directory-grant" key={grant.grantId}>
+          <span
+            title={`${grant.path}\n仅当前对话与工作空间，持续有效直到撤销；不是消息附件。`}
+          >
+            {grant.name}
+          </span>
+          <button
+            type="button"
+            className="icon-button"
+            disabled={disabled || busy}
+            aria-label={`撤销 ${grant.name} 的读写权限`}
+            title="撤销权限，包括进行中工作的后续文件访问"
+            onClick={() => void revoke(grant)}
+          >
+            <X />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
   return (
     <>
       <button
         ref={trigger}
-        className="icon-button"
+        className={
+          variant === "settings" ? "composer-directory-action" : "icon-button"
+        }
         type="button"
         aria-label="授权 Agent 读写目录"
         title="授权 Agent 读写目录（仅当前对话与工作空间）"
@@ -141,34 +169,22 @@ export function AgentDirectories({
         onClick={() => void choose()}
       >
         <FolderKey />
+        {variant === "settings" && <span>授权 Agent 读写目录</span>}
       </button>
-      {previewTarget &&
+      {variant === "settings" && (
+        <>
+          <p>
+            {ready
+              ? "仅当前对话与工作空间。撤销也会阻止进行中工作的后续目录访问。"
+              : "正在读取此对话的目录权限…"}
+          </p>
+          {grantList}
+        </>
+      )}
+      {variant !== "settings" &&
+        previewTarget &&
         grants.length > 0 &&
-        createPortal(
-          <div className="agent-directories" aria-label="此对话的目录读写权限">
-            <span className="directory-scope">Agent 可读写</span>
-            {grants.map((grant) => (
-              <span className="directory-grant" key={grant.grantId}>
-                <span
-                  title={`${grant.path}\n仅当前对话与工作空间，持续有效直到撤销；不是消息附件。`}
-                >
-                  {grant.name}
-                </span>
-                <button
-                  type="button"
-                  className="icon-button"
-                  disabled={disabled || busy}
-                  aria-label={`撤销 ${grant.name} 的读写权限`}
-                  title="撤销权限，包括进行中工作的后续文件访问"
-                  onClick={() => void revoke(grant)}
-                >
-                  <X />
-                </button>
-              </span>
-            ))}
-          </div>,
-          previewTarget,
-        )}
+        createPortal(grantList, previewTarget)}
     </>
   );
 }
