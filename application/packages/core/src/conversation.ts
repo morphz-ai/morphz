@@ -13,6 +13,28 @@ export type ArtifactOutput = z.infer<typeof artifactOutputSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
   truncated: z.boolean().default(false),
+  /** Per Context snapshot bound, not a claim of complete execution history. */
+  limit: z.number().int().positive().optional(),
+  objectivesTruncated: z.boolean().optional(),
+  objectives: z
+    .array(
+      z.object({
+        id: z.string(),
+        projectId: z.string(),
+        conversationId: z.string(),
+        inputId: z.string(),
+        rootId: z.string(),
+        sessionId: z.string(),
+        title: z.string(),
+        status: z.string(),
+        statusReason: z.string().nullable(),
+        readiness: z.string(),
+        parentId: z.string().nullable(),
+        threadIds: z.array(z.string()),
+        updatedAt: z.string(),
+      }),
+    )
+    .optional(),
   threads: z.array(
     z.object({
       id: z.string(),
@@ -25,6 +47,18 @@ export const activitySchema = z.object({
       title: z.string(),
       phase: z.string(),
       lifecycle: z.string(),
+      controlState: z.string().optional(),
+      createdAt: z.string().optional(),
+      parentThreadId: z.string().nullable().optional(),
+      objectiveId: z.string().optional(),
+      outcome: z
+        .object({
+          terminalKind: z.string(),
+          disposition: z.string(),
+          summary: z.string().nullable(),
+          createdAt: z.string(),
+        })
+        .optional(),
       revision: z.number(),
       updatedAt: z.string(),
       continuation: continuationSchema.optional(),

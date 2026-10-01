@@ -1630,6 +1630,20 @@ export class RuntimeBridge {
   private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
   private attention: ExecutionAttention = { available: false, approvals: [] };
+  // Disposable provenance only. Runtime roots remain authoritative; current
+  // Platform grants are checked when exposing a view, never cached here.
+  private activitySources = new Map<string, PlatformInputSource>();
+  private activityRootRoutes = new Map<
+    string,
+    {
+      checkedAt: number;
+      route: {
+        inputId: string;
+        source: PlatformInputSource;
+        rootId: string;
+      } | null;
+    }
+  >();
   private busy = false;
   private busyCompletion: Promise<void> | null = null;
   private stopped = false;
@@ -3090,6 +3104,10 @@ export class RuntimeBridge {
                   visibleInputs,
                   access,
                 ),
+                objectives: this.platformActivityObjectives(
+                  readableProjects,
+                  visibleInputs,
+                ),
               },
             }
           : {}),
@@ -3192,6 +3210,31 @@ export class RuntimeBridge {
       });
   }
 
+  private platformActivityObjectives(
+    projects: ReadonlySet<string>,
+    inputs: ReadonlySet<string>,
+  ) {
+    const threads = new Set(
+      (this.state.activity?.threads ?? [])
+        .filter(
+          (thread) =>
+            projects.has(thread.projectId) &&
+            !!thread.inputId &&
+            inputs.has(thread.inputId),
+        )
+        .map((thread) => thread.id),
+    );
+    return this.state.activity?.objectives
+      ?.filter(
+        (objective) =>
+          projects.has(objective.projectId) && inputs.has(objective.inputId),
+      )
+      .map((objective) => ({
+        ...objective,
+        threadIds: objective.threadIds.filter((id) => threads.has(id)),
+      }));
+  }
+
   /** Compact, authorization-scoped navigation state. Runtime remains the
    * source of message/activity time; Platform supplies current project grants.
    * No message body or history is copied into the global workspace refresh. */
@@ -3230,6 +3273,14 @@ export class RuntimeBridge {
       const session = deliveriesBySession.get(delivery.sessionId) ?? [];
       session.push(delivery);
       deliveriesBySession.set(delivery.sessionId, session);
+    }
+    for (const [inputId, source] of this.activitySources) {
+      if (
+        !readable.has(source.projectId) ||
+        (!this.teamIdentity && source.author.principalId !== access.principalId)
+      )
+        continue;
+      allowedInputIds.add(inputId);
     }
     // An opaque, authorization-scoped invalidation token. The navigation
     // response never carries message bodies; the Client can reuse its current
@@ -3281,6 +3332,10 @@ export class RuntimeBridge {
                   allowedInputIds,
                   access,
                 ),
+                objectives: this.platformActivityObjectives(
+                  readable,
+                  allowedInputIds,
+                ),
               },
             }
           : {}),
@@ -3312,6 +3367,9 @@ export class RuntimeBridge {
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
+      limit: 200,
+      objectivesTruncated: false,
+      objectives: [],
       threads: [],
     };
     const sessions = this.activeSessions();
@@ -3319,69 +3377,231 @@ export class RuntimeBridge {
       sessions.map((session) => [session.id, session]),
     );
     const deliveries = this.activeDeliveries();
+    const sources = new Map<string, PlatformInputSource>();
+    const routes = new Map(
+      deliveries
+        .filter((d) => d.rootId)
+        .map((d) => [
+          `${d.sessionId}:${d.rootId}`,
+          { inputId: d.inputId, source: d.platformSource!, rootId: d.rootId! },
+        ]),
+    );
+    let lookupBudget = 16;
+    const resolveRoot = async (
+      sessionId: string,
+      eventId: string,
+      contextId: string,
+    ): Promise<{ inputId: string; source: PlatformInputSource; rootId: string } | null> => {
+      const local = routes.get(`${sessionId}:${eventId}`);
+      if (local) return local;
+      const key = `${this.config.namespace}:${contextId}:${sessionId}:${eventId}:${this.actor().principalId}`;
+      const cached = this.activityRootRoutes.get(key);
+      if (cached && (cached.route || Date.now() - cached.checkedAt < 30_000))
+        return cached.route;
+      if (lookupBudget-- <= 0) return null;
+      let route: {
+        inputId: string;
+        source: PlatformInputSource;
+        rootId: string;
+      } | null = null;
+      try {
+        const event = z
+          .object({ event: eventSchema })
+          .parse(
+            await this.request(
+              `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}`,
+            ),
+          ).event;
+        if (
+          event.id !== eventId ||
+          payloadString(event, "session_id") !== sessionId
+        )
+          return null;
+        const rootId = payloadString(event, "root_turn_id");
+        if (rootId && rootId !== eventId) {
+          route = await resolveRoot(sessionId, rootId, contextId);
+        } else {
+          const inputId = payloadString(event, "client_message_id");
+          const source = inputId
+            ? platformSourceFromRuntimeRoot(event, sessionId, inputId, (id) =>
+                this.teamIdentity ? this.principalId(id) : null,
+              )
+            : null;
+          const session = sessionsById.get(sessionId);
+          if (
+            source &&
+            inputId &&
+            session &&
+            source.sharedDefault === session.sharedDefault &&
+            this.contextId(source.projectId) === contextId &&
+            this.objectSessionId(
+              source.projectId,
+              source.conversationId,
+              source.sharedDefault,
+            ) === sessionId
+          ) {
+            route = { inputId, source, rootId: eventId };
+          }
+        }
+      } catch {
+        /* Missing provenance never becomes inferred project authority. */
+      }
+      this.activityRootRoutes.delete(key);
+      this.activityRootRoutes.set(key, { checkedAt: Date.now(), route });
+      while (this.activityRootRoutes.size > 400)
+        this.activityRootRoutes.delete(
+          this.activityRootRoutes.keys().next().value!,
+        );
+      return route;
+    };
     try {
       for (const contextId of new Set(
         sessions.map((s) => this.contextId(s.projectId)),
       )) {
-        const view = z
-          .object({
-            threads: z.array(
+        const schema = z.object({
+          detail_bounds: z
+            .object({
+              limit: z.number(),
+              has_more_threads: z.boolean(),
+              has_more_objectives: z.boolean().optional(),
+            })
+            .optional(),
+          objectives: z
+            .array(
               z.object({
-                intent: z.string().nullable().optional(),
-                phase: z.string(),
-                thread: z
-                  .object({
-                    id: z.string(),
-                    kind: z.string().optional(),
-                    session_id: z.string(),
-                    context_id: z.string(),
-                    root_turn_id: z.string(),
-                    lifecycle: z.string(),
-                    revision: z.number(),
-                    updated_at: z.string(),
-                  })
-                  .passthrough(),
+                readiness: z.object({ state: z.string() }),
+                objective: z.object({
+                  id: z.string(),
+                  context_id: z.string(),
+                  coordinator_session_id: z.string(),
+                  source_event_id: z.string(),
+                  stated_objective: z.string(),
+                  status: z.string(),
+                  status_reason: z.string().nullable(),
+                  parent_objective_id: z.string().nullable(),
+                  updated_at: z.string(),
+                }),
               }),
+            )
+            .optional(),
+          threads: z.array(
+            z.object({
+              intent: z.string().nullable().optional(),
+              phase: z.string(),
+              outcome: z
+                .object({
+                  terminal_kind: z.string(),
+                  disposition: z.string(),
+                  summary: z.string().nullable(),
+                  created_at: z.string(),
+                })
+                .nullable()
+                .optional(),
+              thread: z
+                .object({
+                  id: z.string(),
+                  kind: z.string().optional(),
+                  session_id: z.string(),
+                  context_id: z.string(),
+                  root_turn_id: z.string(),
+                  lifecycle: z.string(),
+                  control_state: z.string().optional(),
+                  created_at: z.string().optional(),
+                  supervision: z
+                    .object({
+                      supervisor_kind: z.string(),
+                      supervisor_id: z.string().nullable(),
+                      parent_thread_id: z.string().nullable().optional(),
+                    })
+                    .passthrough()
+                    .optional(),
+                  revision: z.number(),
+                  updated_at: z.string(),
+                })
+                .passthrough(),
+            }),
+          ),
+        });
+        const [active, history] = await Promise.all(
+          [false, true].map(async (terminal) =>
+            schema.parse(
+              await this.request(
+                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
+              ),
             ),
-          })
-          .parse(
-            await this.request(
-              `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200`,
-            ),
-          );
-        activity.truncated ||= view.threads.length >= 200;
-        for (const value of view.threads) {
+          ),
+        );
+        activity.truncated ||= [active!, history!].some(
+          (view) =>
+            view.detail_bounds?.has_more_threads ?? view.threads.length >= 200,
+        );
+        // The existing Runtime caps its recent terminal query at limit (not
+        // limit + 1). A full history page cannot prove there is no older row,
+        // even when its detail_bounds flag is false.
+        activity.truncated ||= history!.threads.length >= (history!.detail_bounds?.limit ?? 200);
+        activity.objectivesTruncated ||=
+          !history!.objectives ||
+          (history!.detail_bounds?.has_more_objectives ??
+            history!.objectives.length >= 200);
+        const threads = new Map(
+          history!.threads.map((value) => [value.thread.id, value]),
+        );
+        for (const value of active!.threads) {
+          const previous = threads.get(value.thread.id);
+          if (
+            !previous ||
+            value.thread.revision > previous.thread.revision ||
+            value.thread.updated_at > previous.thread.updated_at
+          )
+            threads.set(value.thread.id, value);
+        }
+        for (const value of threads.values()) {
           const t = value.thread,
             session = sessionsById.get(t.session_id);
-          if (
-            !session ||
-            t.context_id !== contextId ||
-            (t.lifecycle !== "open" && value.phase === "idle")
-          )
-            continue;
+          if (!session || t.context_id !== contextId) continue;
           const delivery = deliveries.find(
             (d) => d.sessionId === t.session_id && d.rootId === t.root_turn_id,
           );
-          const source = delivery?.platformSource;
+          const route = await resolveRoot(
+            t.session_id,
+            t.root_turn_id,
+            contextId,
+          );
+          const source = route?.source;
           // A shared transport is not authority to guess an unknown work project.
-          if (session.sharedDefault && !source) {
+          if (!source) {
             activity.truncated = true;
             continue;
           }
+          sources.set(route!.inputId, source);
           activity.threads.push({
             id: t.id,
             kind: t.kind,
             projectId: source?.projectId ?? session.projectId,
             conversationId: source?.conversationId ?? discussionId(session),
-            inputId: source ? delivery!.inputId : null,
+            inputId: route!.inputId,
             rootId: t.root_turn_id,
             sessionId: t.session_id,
-            title:
-              (t.kind === "dialogue_turn" ? "主执行" : value.intent?.trim()) ||
-              (delivery?.platformSource ? platformInputBody(delivery) : "") ||
-              "后台执行",
+            title: value.intent?.trim() || source.body || "后台执行",
             phase: value.phase,
             lifecycle: t.lifecycle,
+            controlState: t.control_state,
+            createdAt: t.created_at,
+            parentThreadId: t.supervision?.parent_thread_id,
+            ...(t.supervision?.supervisor_kind === "objective" &&
+            t.supervision.supervisor_id
+              ? { objectiveId: t.supervision.supervisor_id }
+              : {}),
+            ...(value.outcome
+              ? {
+                  outcome: {
+                    terminalKind: value.outcome.terminal_kind,
+                    disposition: value.outcome.disposition,
+                    summary: value.outcome.summary,
+                    createdAt: value.outcome.created_at,
+                  },
+                }
+              : {}),
             revision: t.revision,
             updatedAt: t.updated_at,
             ...(source && delivery && this.state.directedInput
@@ -3389,8 +3609,44 @@ export class RuntimeBridge {
               : {}),
           });
         }
+        for (const value of history!.objectives ?? []) {
+          const objective = value.objective;
+          if (
+            objective.context_id !== contextId ||
+            !sessionsById.has(objective.coordinator_session_id)
+          )
+            continue;
+          const route = await resolveRoot(
+            objective.coordinator_session_id,
+            objective.source_event_id,
+            contextId,
+          );
+          if (!route) {
+            activity.objectivesTruncated = true;
+            continue;
+          }
+          sources.set(route.inputId, route.source);
+          activity.objectives!.push({
+            id: objective.id,
+            projectId: route.source.projectId,
+            conversationId: route.source.conversationId,
+            inputId: route.inputId,
+            rootId: route.rootId,
+            sessionId: objective.coordinator_session_id,
+            title: objective.stated_objective,
+            status: objective.status,
+            statusReason: objective.status_reason,
+            readiness: value.readiness.state,
+            parentId: objective.parent_objective_id,
+            threadIds: activity.threads
+              .filter((thread) => thread.objectiveId === objective.id)
+              .map((thread) => thread.id),
+            updatedAt: objective.updated_at,
+          });
+        }
       }
       this.state.activity = activity;
+      this.activitySources = sources;
       for (const thread of activity.threads)
         this.state.threadBindings[thread.id] = thread;
     } catch {
