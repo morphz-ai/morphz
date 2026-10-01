@@ -36,9 +36,10 @@ import {
   maxSpeechSegmentBytes,
   maxSpeechSegmentSeconds,
 } from "../../../packages/core/src/audio.js";
-import type {
-  ApplicationMethod,
-  ApplicationFailure,
+import {
+  runtimeNavigationRequestSchema,
+  type ApplicationMethod,
+  type ApplicationFailure,
 } from "../../../packages/core/src/application-api.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import type { WorkspaceStore } from "./store.js";
@@ -627,10 +628,25 @@ export class ApplicationSession {
     return this.options.runtime?.platformStatus() ?? disconnectedRuntime;
   }
   async platformRuntimeNavigation(raw?: unknown) {
-    const scope = raw === undefined ? undefined : conversationScope.parse(raw);
-    const { projectIds, catalogVersion, revisions } = await this.work(
+    const request = runtimeNavigationRequestSchema.parse(raw ?? {});
+    const scope =
+      request.projectId && request.conversationId
+        ? {
+            projectId: request.projectId,
+            conversationId: request.conversationId,
+          }
+        : undefined;
+    let { projectIds, catalogVersion, revisions } = await this.work(
       (service, actor) => service.conversationNavigation(actor),
     );
+    if (request.refreshActivity && this.options.runtime) {
+      await this.options.runtime.refreshPlatformActivity();
+      // A read may finish after membership/identity changes. Re-read the
+      // current Human's project grant before publishing the new inventory.
+      ({ projectIds, catalogVersion, revisions } = await this.work(
+        (service, actor) => service.conversationNavigation(actor),
+      ));
+    }
     let head:
       | Awaited<ReturnType<RuntimeBridge["platformConversationHead"]>>
       | undefined;
@@ -2956,6 +2972,7 @@ export class ApplicationSession {
             run: link.runNumber,
             artifactRevision: link.taskRevision,
             record: {
+              id: link.runtime.scheduleId,
               revision:
                 current && live
                   ? live.schedule.revision
@@ -2969,6 +2986,9 @@ export class ApplicationSession {
                 current && live
                   ? live.schedule.intervalSeconds
                   : link.observed.scheduleIntervalSeconds,
+              ...(current && live
+                ? { not_before: live.schedule.notBefore }
+                : {}),
             },
             error: link.bridge.error || (current ? readError : ""),
             paused: link.bridge.paused,

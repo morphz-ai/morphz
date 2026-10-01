@@ -196,7 +196,11 @@ export function SubjectSidebar({
           </section>
         )}
         {view === "schedules" && (
-          <SubjectSchedules client={client} onOpen={onOpen} />
+          <SubjectSchedules
+            client={client}
+            onOpen={onOpen}
+            onInspect={onInspect}
+          />
         )}
         {view === "settings" && (
           <section className="subject-section subject-settings">

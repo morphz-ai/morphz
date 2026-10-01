@@ -10,6 +10,28 @@ export const artifactOutputSchema = z.object({
   createdAt: z.string(),
 });
 export type ArtifactOutput = z.infer<typeof artifactOutputSchema>;
+/** Read-only Runtime inventory. Source IDs are verified persisted links, not
+ * renderer-selected scope or a second Host schedule/timer authority. */
+export const runtimeScheduleSchema = z.object({
+  scheduleId: z.string(),
+  threadId: z.string(),
+  sessionId: z.string(),
+  contextId: z.string(),
+  rootId: z.string(),
+  inputId: z.string(),
+  sourceTurnId: z.string(),
+  sourceRootId: z.string(),
+  projectId: z.string(),
+  conversationId: z.string(),
+  status: z.enum(["queued", "paused", "dispatched", "completed", "cancelled"]),
+  revision: z.number().int().positive(),
+  notBefore: z.string().nullable(),
+  intervalSeconds: z.number().int().positive().nullable(),
+  dependencyThreadIds: z.array(z.string()),
+  intent: z.string(),
+  updatedAt: z.string(),
+});
+export type RuntimeSchedule = z.infer<typeof runtimeScheduleSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
   truncated: z.boolean().default(false),
@@ -19,6 +41,9 @@ export const activitySchema = z.object({
   /** Per Context snapshot bound, not a claim of complete execution history. */
   limit: z.number().int().positive().optional(),
   objectivesTruncated: z.boolean().optional(),
+  schedulesAvailable: z.boolean().optional(),
+  schedulesTruncated: z.boolean().optional(),
+  schedules: z.array(runtimeScheduleSchema).optional(),
   objectives: z
     .array(
       z.object({

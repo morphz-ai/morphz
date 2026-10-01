@@ -401,19 +401,24 @@ export function createAppServer(
           return;
         }
         if (url.pathname === "/api/platform/runtime-navigation") {
-          const query = platformQuery(url, ["projectId", "conversationId"]);
+          const query = platformQuery(url, [
+            "projectId",
+            "conversationId",
+            "refreshActivity",
+          ]);
           const projectId = query.value("projectId");
           const conversationId = query.value("conversationId");
+          const refreshActivity = query.boolean("refreshActivity");
           if (!!projectId !== !!conversationId)
             throw new DomainError("invalid", "对话范围参数不完整。");
           json(
             res,
             200,
-            await business.platformRuntimeNavigation(
-              projectId && conversationId
-                ? { projectId, conversationId }
-                : undefined,
-            ),
+            await business.platformRuntimeNavigation({
+              projectId,
+              conversationId,
+              refreshActivity,
+            }),
           );
           return;
         }

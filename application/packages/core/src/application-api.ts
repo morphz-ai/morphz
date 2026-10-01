@@ -10,6 +10,18 @@ export const navigationRevisionsSchema = z.object({
   access: z.number().int().nonnegative(),
 });
 export type NavigationRevisions = z.infer<typeof navigationRevisionsSchema>;
+export const runtimeNavigationRequestSchema = z
+  .object({
+    projectId: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    /** Explicit read-only refresh only; routine navigation polling omits it. */
+    refreshActivity: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (value) => !!value.projectId === !!value.conversationId,
+    "对话范围参数不完整。",
+  );
 
 export const applicationMethods = [
   "platform.bootstrap",

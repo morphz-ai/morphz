@@ -27,6 +27,7 @@ export const taskRuntimeSchema = z.object({
         artifactRevision: z.number(),
         record: z
           .object({
+            id: z.string().optional(),
             revision: z.number(),
             thread_id: z.string().optional(),
             status: z.enum([
@@ -37,6 +38,7 @@ export const taskRuntimeSchema = z.object({
               "cancelled",
             ]),
             interval_seconds: z.number().nullable(),
+            not_before: z.string().nullable().optional(),
           })
           .nullable(),
         error: z.string().default(""),

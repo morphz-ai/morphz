@@ -2054,7 +2054,19 @@ export class RuntimeBridge {
   }
   private save(delivery?: StoredDelivery) {
     if (delivery) this.markDeliveryDirty(delivery);
-    this.store.saveRuntimeBridgeState(this.state, this.dirtyDeliveries);
+    // The new schedule inventory is a read-only live projection. Do not turn
+    // it into a Host schedule ledger or retain a second durable authority.
+    const activity = this.state.activity;
+    const {
+      schedules: _schedules,
+      schedulesAvailable: _schedulesAvailable,
+      schedulesTruncated: _schedulesTruncated,
+      ...persistedActivity
+    } = activity ?? {};
+    this.store.saveRuntimeBridgeState(
+      activity ? { ...this.state, activity: persistedActivity } : this.state,
+      this.dirtyDeliveries,
+    );
     // Keep the dirty set if SQLite fails; a later save retries the same queue
     // records together with their Event and connection cursors.
     this.dirtyDeliveries.clear();
@@ -3451,6 +3463,11 @@ export class RuntimeBridge {
                   readableProjects,
                   visibleInputs,
                 ),
+                schedules: this.platformActivitySchedules(
+                  readableProjects,
+                  visibleInputs,
+                  access,
+                ),
               },
             }
           : {}),
@@ -3578,6 +3595,24 @@ export class RuntimeBridge {
       }));
   }
 
+  private platformActivitySchedules(
+    projects: ReadonlySet<string>,
+    inputs: ReadonlySet<string>,
+    access: AccessContext,
+  ) {
+    return this.state.activity?.schedules?.filter((schedule) => {
+      const source = this.activitySources.get(schedule.inputId);
+      return (
+        projects.has(schedule.projectId) &&
+        inputs.has(schedule.inputId) &&
+        source?.projectId === schedule.projectId &&
+        source.conversationId === schedule.conversationId &&
+        source.author.principalId === access.principalId &&
+        source.author.actantId === access.actantId
+      );
+    });
+  }
+
   /** Compact, authorization-scoped navigation state. Runtime remains the
    * source of message/activity time; Platform supplies current project grants.
    * No message body or history is copied into the global workspace refresh. */
@@ -3679,6 +3714,11 @@ export class RuntimeBridge {
                   readable,
                   allowedInputIds,
                 ),
+                schedules: this.platformActivitySchedules(
+                  readable,
+                  allowedInputIds,
+                  access,
+                ),
               },
             }
           : {}),
@@ -3706,7 +3746,24 @@ export class RuntimeBridge {
         this.state.sessions[delivery.sessionId]?.platform,
     );
   }
-  private async refreshActivity() {
+  private activityRefresh: Promise<void> | null = null;
+  private refreshActivity() {
+    if (!this.activityRefresh)
+      this.activityRefresh = this.refreshActivityNow().finally(() => {
+        this.activityRefresh = null;
+      });
+    return this.activityRefresh;
+  }
+  /** An explicit inventory read never dispatches the outbox or creates work. */
+  async refreshPlatformActivity() {
+    await this.as(
+      this.teamIdentity
+        ? { principalId: "morphz-service", actantId: "morphz-agent" }
+        : localAccess,
+      () => this.refreshActivity(),
+    );
+  }
+  private async refreshActivityNow() {
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
@@ -3714,6 +3771,9 @@ export class RuntimeBridge {
       limit: 200,
       objectivesTruncated: false,
       objectives: [],
+      schedulesAvailable: false,
+      schedulesTruncated: false,
+      schedules: [],
       threads: [],
     };
     const sessions = this.activeSessions();
@@ -3883,21 +3943,41 @@ export class RuntimeBridge {
       return route;
     };
     try {
+      const scheduleLink = z.object({
+        id: z.string(),
+        thread_id: z.string(),
+        source_turn_id: z.string(),
+        revision: z.number().int().positive().optional(),
+        status: z.string().optional(),
+        not_before: z.string().nullable().optional(),
+        interval_seconds: z.number().int().positive().nullable().optional(),
+        dependency_thread_ids: z.array(z.string()).optional(),
+        intent: z.string().optional(),
+        updated_at: z.string().optional(),
+      });
+      const scheduleRecord = scheduleLink.extend({
+        revision: z.number().int().positive(),
+        status: z.enum([
+          "queued",
+          "paused",
+          "dispatched",
+          "completed",
+          "cancelled",
+        ]),
+        not_before: z.string().nullable(),
+        interval_seconds: z.number().int().positive().nullable(),
+        dependency_thread_ids: z.array(z.string()),
+        intent: z.string(),
+        updated_at: z.string(),
+      });
       const schema = z.object({
-        schedules: z
-          .array(
-            z.object({
-              id: z.string(),
-              thread_id: z.string(),
-              source_turn_id: z.string(),
-            }),
-          )
-          .optional(),
+        schedules: z.array(scheduleLink).optional(),
         detail_bounds: z
           .object({
             limit: z.number(),
             has_more_threads: z.boolean(),
             has_more_objectives: z.boolean().optional(),
+            has_more_schedules: z.boolean().optional(),
           })
           .optional(),
         objectives: z
@@ -3922,15 +4002,7 @@ export class RuntimeBridge {
           z.object({
             intent: z.string().nullable().optional(),
             phase: z.string(),
-            schedules: z
-              .array(
-                z.object({
-                  id: z.string(),
-                  thread_id: z.string(),
-                  source_turn_id: z.string(),
-                }),
-              )
-              .optional(),
+            schedules: z.array(scheduleLink).optional(),
             outcome: z
               .object({
                 terminal_kind: z.string(),
@@ -4013,7 +4085,8 @@ export class RuntimeBridge {
             !thread ||
             !schedule.source_turn_id ||
             schedule.source_turn_id === thread.root_turn_id
-          ) continue;
+          )
+            continue;
           const key = routeKey(
             thread.session_id,
             thread.root_turn_id,
@@ -4080,6 +4153,33 @@ export class RuntimeBridge {
             ))
           )
             activity.openWorkComplete = false;
+        }
+      }
+      // Current timers have the same source-lookup priority as open work.
+      // Terminal history must not exhaust the bounded Event budget before a
+      // future reminder's exact initiating root has been verified.
+      for (const { contextId, active, history } of snapshots) {
+        const owners = new Map(
+          [...history.threads, ...active.threads].flatMap(({ thread }) =>
+            sessionsById.has(thread.session_id) &&
+            thread.context_id === contextId
+              ? [[thread.id, thread] as const]
+              : [],
+          ),
+        );
+        for (const record of (active.schedules ?? []).slice(0, 200)) {
+          const owner = owners.get(record.thread_id);
+          if (
+            owner &&
+            (["queued", "paused"].includes(record.status ?? "") ||
+              (record.status === "dispatched" &&
+                record.interval_seconds != null))
+          )
+            await resolveRoot(
+              owner.session_id,
+              record.source_turn_id,
+              contextId,
+            );
         }
       }
       for (const { contextId, active, history } of snapshots) {
@@ -4216,7 +4316,102 @@ export class RuntimeBridge {
             updatedAt: objective.updated_at,
           });
         }
+        const ownerThreads = new Map(
+          [...history.threads, ...active.threads].flatMap(({ thread }) =>
+            sessionsById.has(thread.session_id) &&
+            thread.context_id === contextId
+              ? [[thread.id, thread] as const]
+              : [],
+          ),
+        );
+        const records = new Map<string, z.infer<typeof scheduleLink>>();
+        const conflictingIds = new Set<string>();
+        for (const record of [
+          ...(history.schedules ?? []),
+          ...(active.schedules ?? []),
+          ...[...history.threads, ...active.threads].flatMap((value) =>
+            (value.schedules ?? []).filter(
+              (schedule) => schedule.thread_id === value.thread.id,
+            ),
+          ),
+        ]) {
+          if (!scheduleRecord.safeParse(record).success)
+            activity.schedulesTruncated = true;
+          const previous = records.get(record.id);
+          if (
+            previous &&
+            (previous.thread_id !== record.thread_id ||
+              previous.source_turn_id !== record.source_turn_id)
+          )
+            conflictingIds.add(record.id);
+          if (!previous || (record.revision ?? 0) >= (previous.revision ?? 0))
+            records.set(record.id, record);
+        }
+        activity.schedulesTruncated ||=
+          !active.schedules ||
+          active.detail_bounds?.has_more_schedules !== false ||
+          active.schedules.length >= (active.detail_bounds?.limit ?? 200);
+        const candidates = [...records.values()].filter(
+          (record) =>
+            ["queued", "paused"].includes(record.status ?? "") ||
+            (record.status === "dispatched" && record.interval_seconds != null),
+        );
+        if (candidates.length > 200) activity.schedulesTruncated = true;
+        for (const raw of candidates.slice(0, 200)) {
+          const parsed = scheduleRecord.safeParse(raw);
+          const thread = ownerThreads.get(raw.thread_id);
+          if (!parsed.success || !thread || conflictingIds.has(raw.id)) {
+            activity.schedulesTruncated = true;
+            continue;
+          }
+          const record = parsed.data;
+          // Each schedule carries its own immutable caller root. Several
+          // enqueues to one Thread must not be guessed into one input/project.
+          const route = await resolveRoot(
+            thread.session_id,
+            record.source_turn_id,
+            contextId,
+          );
+          const session = sessionsById.get(thread.session_id);
+          if (
+            !route ||
+            !session ||
+            route.source.sharedDefault !== session.sharedDefault ||
+            this.contextId(route.source.projectId) !== contextId ||
+            this.objectSessionId(
+              route.source.projectId,
+              route.source.conversationId,
+              route.source.sharedDefault,
+            ) !== thread.session_id
+          ) {
+            activity.schedulesTruncated = true;
+            continue;
+          }
+          sources.set(route.inputId, route.source);
+          activity.schedules!.push({
+            scheduleId: record.id,
+            threadId: thread.id,
+            sessionId: thread.session_id,
+            contextId,
+            rootId: thread.root_turn_id,
+            inputId: route.inputId,
+            sourceTurnId: record.source_turn_id,
+            sourceRootId: route.rootId,
+            projectId: route.source.projectId,
+            conversationId: route.source.conversationId,
+            status: record.status,
+            revision: record.revision,
+            notBefore: record.not_before,
+            intervalSeconds: record.interval_seconds,
+            dependencyThreadIds: record.dependency_thread_ids,
+            intent: record.intent,
+            updatedAt: record.updated_at,
+          });
+        }
       }
+      activity.schedulesAvailable = snapshots.every(
+        ({ active }) => active.schedules !== undefined,
+      );
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
@@ -4227,6 +4422,7 @@ export class RuntimeBridge {
       this.state.activity = {
         ...(this.state.activity ?? activity),
         available: false,
+        schedulesAvailable: false,
         openWorkComplete: false,
       };
     }

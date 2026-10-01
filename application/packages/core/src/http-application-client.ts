@@ -1,5 +1,6 @@
 import {
   ApplicationRequestError,
+  runtimeNavigationRequestSchema,
   type ApplicationMethod,
   type ApplicationCallOptions as CallOptions,
 } from "./application-api.js";
@@ -74,15 +75,18 @@ export class HttpApplicationClient {
         path = "/api/platform/runtime-snapshot";
         break;
       case "runtime.navigation": {
-        const p = params === undefined ? {} : fields(params);
+        const p = runtimeNavigationRequestSchema.parse(params ?? {});
         path = "/api/platform/runtime-navigation";
-        if (p.projectId !== undefined || p.conversationId !== undefined)
-          path +=
-            "?" +
-            query({
-              projectId: projectPathId(p.projectId),
-              conversationId: projectPathId(p.conversationId),
-            });
+        const paramsQuery = query({
+          ...(p.projectId && p.conversationId
+            ? {
+                projectId: projectPathId(p.projectId),
+                conversationId: projectPathId(p.conversationId),
+              }
+            : {}),
+          refreshActivity: p.refreshActivity,
+        });
+        if (paramsQuery) path += "?" + paramsQuery;
         break;
       }
       case "login":
