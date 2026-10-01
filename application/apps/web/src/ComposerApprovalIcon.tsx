@@ -1,9 +1,4 @@
-import {
-  CircleQuestionMark,
-  LockOpen,
-  Shield,
-  ShieldCheck,
-} from "lucide-react";
+import { LockOpen, Shield, ShieldCheck, ShieldUser } from "lucide-react";
 import type { SessionPermissionsSnapshot } from "../../../packages/core/src/session-permissions.js";
 
 export function ComposerApprovalIcon({
@@ -13,7 +8,7 @@ export function ComposerApprovalIcon({
 }) {
   const Icon =
     mode === "request_approval"
-      ? CircleQuestionMark
+      ? ShieldUser
       : mode === "auto_review"
         ? ShieldCheck
         : mode === "full_access"
