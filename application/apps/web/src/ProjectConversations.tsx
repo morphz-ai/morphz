@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   Folder,
+  FolderOpen,
   MessageCircle,
   Pencil,
   SquarePen,
@@ -76,6 +77,7 @@ export function ProjectConversations({
   const hasNamed =
     conversations.length > 0 || drafts.length > 0 || discardedDrafts.length > 0;
   const defaultSelected = active && selectedId === defaultConversationId;
+  const ProjectFolder = active ? FolderOpen : Folder;
   const archivedCount = conversations.filter((c) => c.archivedAt).length;
   useEffect(() => {
     if (active) setExpanded(true);
@@ -149,6 +151,7 @@ export function ProjectConversations({
       <div className="sidebar-project-heading" data-active={defaultSelected}>
         <button
           className="project-link"
+          aria-label={projectTitle}
           aria-current={defaultSelected ? "true" : undefined}
           onClick={() => {
             setExpanded(true);
@@ -156,7 +159,11 @@ export function ProjectConversations({
           }}
           title={projectTitle}
         >
-          <Folder />
+          <ProjectFolder
+            data-folder-state={active ? "open" : "closed"}
+            aria-hidden="true"
+            focusable="false"
+          />
           <span>{projectTitle}</span>
         </button>
         {hasNamed && (

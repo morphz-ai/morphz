@@ -401,7 +401,7 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await expect(dialog).toBeHidden();
   await expect(page.locator(".script-project")).toHaveText(projectTitle);
   const nav = page.getByRole("navigation", { name: "主导航" });
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await page.getByLabel("内容范围", { exact: true }).selectOption("all");
   await page
     .getByRole("group", { name: "内容类型" })

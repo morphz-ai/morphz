@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { openInput } from "./interaction-helpers.js";
 
@@ -64,29 +65,38 @@ test("连接恢复后发送本机消息沿用原 ID，且不误走服务端重�
   page,
 }) => {
   let runtimeConfigured = false;
+  let confirmedInput: Record<string, unknown> | undefined;
   await page.route(
-    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history$/,
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
     async (route) => {
       await route.fulfill({
         json: {
-          inputs: [],
+          inputs: confirmedInput ? [confirmedInput] : [],
           nextCursor: null,
           runtime: { ...disconnectedRuntime, configured: runtimeConfigured },
         },
       });
     },
   );
-  await page.route("**/api/platform/runtime-navigation", async (route) => {
-    const response = await route.fetch();
-    const navigation = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...navigation,
-        runtime: { ...navigation.runtime, configured: runtimeConfigured },
-      },
-    });
-  });
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch();
+      const navigation = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...navigation,
+          historyVersion: confirmedInput
+            ? createHash("sha256")
+                .update(JSON.stringify(confirmedInput))
+                .digest("hex")
+            : navigation.historyVersion,
+          runtime: { ...navigation.runtime, configured: runtimeConfigured },
+        },
+      });
+    },
+  );
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -110,6 +120,25 @@ test("连接恢复后发送本机消息沿用原 ID，且不误走服务端重�
   });
   await page.route("**/api/platform/messages", async (route) => {
     sent = route.request().postDataJSON();
+    const saved = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((value) =>
+        value.includes(":saved-input:"),
+      );
+      return key ? JSON.parse(localStorage.getItem(key)!) : null;
+    });
+    const boot = await (
+      await page.request.get("/api/platform/bootstrap")
+    ).json();
+    confirmedInput = {
+      id: savedId,
+      projectId: saved.operation.projectId,
+      conversationId:
+        saved.operation.conversationId ?? saved.operation.projectId,
+      body: saved.operation.body,
+      targetActantId: saved.operation.targetActantId,
+      author: { principalId: boot.principalId, actantId: boot.actantId },
+      createdAt: saved.createdAt,
+    };
     await route.fulfill({
       status: 202,
       json: { commandId: savedId, entityId: savedId },

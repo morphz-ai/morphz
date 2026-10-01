@@ -7,17 +7,24 @@ import {
 } from "../../../packages/core/src/model.js";
 
 type InputOperation = Extract<Operation, { type: "record-input" }>;
+export const inputSubmissionSchema = z.object({
+  state: z.enum(["sending", "accepted", "failed"]),
+  error: z.string().optional(),
+});
+export type InputSubmission = z.infer<typeof inputSubmissionSchema>;
 const savedInputSchema = z
   .object({
     commandId: z.uuid(),
     createdAt: z.iso.datetime(),
     operation: operationSchema,
+    submission: inputSubmissionSchema.optional(),
   })
   .strict();
 export type LocalSavedInput = {
   commandId: string;
   createdAt: string;
   operation: InputOperation;
+  submission?: InputSubmission;
 };
 
 const prefix = (scope: string) =>
@@ -73,20 +80,38 @@ export function removeSavedInput(storage: Storage, scope: string, id: string) {
   storage.removeItem(prefix(scope) + id);
 }
 
-/** Presentation only. Platform and Runtime remain the sole authorities for
- * conversations and sent messages; these records never enter their stores. */
+/** Remove only the local display overlay, never authoritative history. */
+export function withoutSavedInputs(workspace: Workspace, localIds: string[]) {
+  const ids = new Set(localIds);
+  return {
+    ...workspace,
+    inputs: workspace.inputs.filter((input) => !ids.has(input.id)),
+  };
+}
+
+/** Presentation only. A staged message is not an accepted Runtime input. */
 export function withSavedInputs(
   workspace: Workspace,
   saved: LocalSavedInput[],
   author: { principalId: string; actantId: string },
+  sendingIds: ReadonlySet<string> = new Set(),
 ) {
   const projects = new Set(workspace.projects.map((project) => project.id));
   const knownInputs = new Set(workspace.inputs.map((input) => input.id));
   const inputs = [...workspace.inputs];
+  const localInputIds: string[] = [];
+  const submissions: Record<string, InputSubmission> = {};
   for (const entry of saved) {
     const op = entry.operation;
     if (!projects.has(op.projectId)) continue;
     if (knownInputs.has(entry.commandId)) continue;
+    localInputIds.push(entry.commandId);
+    if (entry.submission) {
+      submissions[entry.commandId] =
+        entry.submission.state === "sending" && !sendingIds.has(entry.commandId)
+          ? { state: "failed", error: "发送结果待确认，点击重试。" }
+          : entry.submission;
+    }
     const {
       type: _type,
       newConversation: _newConversation,
@@ -109,7 +134,7 @@ export function withSavedInputs(
     inputs.push({
       ...fields,
       id: entry.commandId,
-      author,
+      author: { principalId: author.principalId, actantId: author.actantId },
       status: "recorded",
       createdAt: entry.createdAt,
       ...(instance && manifest
@@ -127,6 +152,7 @@ export function withSavedInputs(
   }
   return {
     workspace: { ...workspace, inputs },
-    localInputIds: saved.map((entry) => entry.commandId),
+    localInputIds,
+    submissions,
   };
 }

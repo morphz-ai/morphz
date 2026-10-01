@@ -1,8 +1,167 @@
-import { test, expect } from "@playwright/test";
-import { openInput } from "./interaction-helpers.js";
+import { test, expect, type Page } from "@playwright/test";
+import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+
+async function openAllWork(page: Page) {
+  await openExecutionPanel(page);
+  await page
+    .getByRole("complementary", { name: "执行面板", exact: true })
+    .getByRole("button", { name: "全部工作", exact: true })
+    .click();
+}
+
+test("incomplete or disconnected work snapshots never claim an exact count or idle work", async ({
+  page,
+}) => {
+  let truncated = true,
+    connected = true;
+  const threads: NonNullable<
+    PlatformHistory["runtime"]["activity"]
+  >["threads"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected,
+      activity: { available: true, truncated, threads },
+      attention: { available: true, approvals: [] },
+    },
+  }));
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await openAllWork(page);
+  const execution = page.getByRole("complementary", {
+    name: "执行面板",
+    exact: true,
+  });
+  const count = execution.locator(".execution-scope-count");
+  const quiet = execution.locator(".execution-quiet");
+  await expect(count).toHaveText("工作状态待核对");
+  await expect(quiet).toHaveText("尚不能确认是否有工作进行中");
+  threads.push({
+    id: "incomplete-background",
+    inputId: null,
+    projectId: fixture.scope.projectId,
+    conversationId: fixture.scope.conversationId,
+    rootId: "incomplete-root",
+    sessionId: "incomplete-session",
+    title: "TEST 部分可见的工作",
+    kind: "execution",
+    lifecycle: "open",
+    phase: "running",
+    revision: 1,
+    updatedAt: "2026-10-01T00:00:00Z",
+  });
+  await fixture.refresh();
+  await expect(count).toHaveText("至少 1 项进行中");
+  await expect(quiet).toHaveCount(0);
+  connected = false;
+  await fixture.refresh();
+  await expect(count).toHaveText("工作状态待核对");
+  await expect(
+    execution.getByText("连接中断，执行状态尚未确认。", { exact: true }),
+  ).toBeVisible();
+  connected = true;
+  truncated = false;
+  threads.length = 0;
+  await fixture.refresh();
+  await expect(count).toHaveText("0 项进行中");
+  await expect(quiet).toHaveText("当前没有正在处理的工作");
+});
+
+test("all-work overview includes authorized work whose source message is not loaded, without changing the input scope", async ({
+  page,
+}) => {
+  const inputs: PlatformHistory["inputs"] = [];
+  const threads: NonNullable<
+    PlatformHistory["runtime"]["activity"]
+  >["threads"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      deliveries: inputs.map((input) => ({
+        inputId: input.id,
+        state: "running" as const,
+        error: null,
+        retryable: false,
+      })),
+      activity: { available: true, truncated: false, threads },
+      attention: { available: true, approvals: [] },
+    },
+  }));
+  const projectId = crypto.randomUUID();
+  await fixture.client.createProject(
+    "TEST 尚未加载输入的工作",
+    crypto.randomUUID(),
+    projectId,
+  );
+  inputs.push(
+    fixture.input(
+      "subject-loaded",
+      "TEST 当前对话输入",
+      "2026-10-01T00:00:00Z",
+    ),
+  );
+  for (const [id, inputId, owner, title] of [
+    [
+      "subject-local",
+      "subject-loaded",
+      fixture.scope.projectId,
+      "TEST 当前工作",
+    ],
+    ["subject-other", "subject-unloaded", projectId, "TEST 其他项目中的工作"],
+  ])
+    threads.push({
+      id: id!,
+      inputId: inputId!,
+      projectId: owner!,
+      conversationId: owner!,
+      rootId: id! + "-root",
+      sessionId: id! + "-session",
+      title: title!,
+      kind: "execution",
+      lifecycle: "open",
+      phase: "running",
+      revision: 1,
+      updatedAt: "2026-10-01T00:00:00Z",
+    });
+  await page.goto("/");
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  await nav.getByRole("button", { name: "对话", exact: true }).click();
+  const composer = await openInput(page);
+  await composer.fill("TEST 当前输入范围不能被活动概览改变");
+  await expect(
+    page.getByRole("button", { name: "执行记录与审批", exact: true }),
+  ).toContainText("2 进行中");
+  await openAllWork(page);
+  const execution = page.getByRole("complementary", {
+    name: "执行面板",
+    exact: true,
+  });
+  await expect(
+    execution.getByRole("button", { name: "全部工作", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(execution.locator(".execution-scope-count")).toHaveText(
+    "2 项进行中",
+  );
+  await expect(
+    execution.getByRole("button", { name: /TEST 其他项目中的工作/ }),
+  ).toBeVisible();
+  await expect(
+    nav.getByRole("button", { name: "对话", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await expect(composer).toHaveValue("TEST 当前输入范围不能被活动概览改变");
+  await expect(page.locator(".human-message")).toHaveCount(1);
+});
 
 test("whole-message halo requires a live execution thread; status navigation stays separate from the fixed sidebar toggle", async ({
   page,
@@ -109,6 +268,11 @@ test("whole-message halo requires a live execution thread; status navigation sta
     await expect(control).toBeFocused();
     await expect(control).toBeInViewport();
     expect(await control.boundingBox()).toEqual(before);
+    const statusBounds = (await control.boundingBox())!;
+    const toggleBounds = (await toggle.boundingBox())!;
+    expect(statusBounds.x + statusBounds.width).toBeLessThanOrEqual(
+      toggleBounds.x,
+    );
     await expect(
       page.getByRole("complementary", { name: "执行面板" }),
     ).toBeVisible();
@@ -120,6 +284,7 @@ test("whole-message halo requires a live execution thread; status navigation sta
     await toggle.click();
     await expect(page.locator(".workspace-inspector")).toHaveCount(0);
     expect(await control.boundingBox()).toEqual(before);
+    await expect(toggle).toBeInViewport();
   }
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
@@ -280,7 +445,9 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     const pin = (await header
       .getByLabel("固定执行面板", { exact: true })
       .boundingBox())!;
-    expect(pin.x + pin.width).toBeLessThanOrEqual(toggle.x);
+    expect(
+      pin.x + pin.width <= toggle.x || toggle.x + toggle.width <= pin.x,
+    ).toBe(true);
     expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
       true,
     );

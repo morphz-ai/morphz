@@ -259,7 +259,7 @@ test("各主页面在亮暗及窄窗保留统一侧栏操作，连接异常仍�
     }, appearance);
     for (const width of [1380, 760, 380, 320]) {
       await page.setViewportSize({ width, height: width > 760 ? 920 : 540 });
-      for (const label of ["对话", "事项", "内容", "工作台", "项目"]) {
+      for (const label of ["对话", "事项", "内容库", "工作台", "项目"]) {
         await page
           .getByRole("navigation", { name: "主导航" })
           .getByRole("button", { name: new RegExp(`^${label}(?: |$)`) })
@@ -381,11 +381,11 @@ test("账号菜单只有身份操作且外部点击关闭；设置跨宽度返�
   ).toHaveCount(0);
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(menu).toBeHidden();
   await expect(
-    page.getByRole("heading", { name: "内容", exact: true }),
+    page.getByRole("heading", { name: "内容库", exact: true }),
   ).toBeVisible();
   await trigger.press("Enter");
   await expect(

@@ -3,10 +3,16 @@ import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
 
-test("工作台与项目拥有独立空间；应用恢复、对话归属和多窗口尺寸保持一致", async ({
+test("工作台与项目拥有独立空间；白净画布、应用恢复、对话归属和窗口尺寸保持", async ({
   page,
 }) => {
   await page.goto("/");
+  await expect(page.locator(".wordmark")).toHaveText("Morphz");
+  const returnToWorkspace = page.getByRole("button", {
+    name: "返回工作空间",
+    exact: true,
+  });
+  if (await returnToWorkspace.isVisible()) await returnToWorkspace.click();
   const nav = page.getByRole("navigation", { name: "主导航" });
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(
@@ -58,10 +64,24 @@ test("工作台与项目拥有独立空间；应用恢复、对话归属和多�
     "background-color",
     "rgb(32, 32, 34)",
   );
+  await expect(page.locator(".sidebar")).toHaveCSS("background-image", "none");
+  await expect(page.locator(".sidebar")).toHaveCSS("box-shadow", "none");
   await page.screenshot({
     path: "test-results/workbench-dark.png",
     animations: "disabled",
   });
+  await openSettings(page, "外观");
+  await page.getByRole("button", { name: "亮色", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".sidebar")).toHaveCSS("width", "280px");
+  await expect(page.locator(".sidebar")).toHaveCSS(
+    "background-color",
+    "rgb(250, 250, 250)",
+  );
+  await expect(page.locator(".workspace")).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
   const project = async (name: string) => {
     await page.locator(".project-link").filter({ hasText: name }).click();
     await openInput(page);

@@ -88,16 +88,16 @@ async function setup(page: Page) {
       generation++;
       await presentation.refresh();
     },
-    async stream(text: string, streaming = true) {
+    async stream(text: string, streaming = true, streamConnected = true) {
       await expect
         .poll(() => page.evaluate(() => (window as any).__waitingStreams.size))
         .toBeGreaterThan(0);
       await page.evaluate(
-        ({ text, streaming, scope }) => {
+        ({ text, streaming, streamConnected, scope }) => {
           for (const source of (window as any).__waitingStreams) {
             source.onmessage?.({
               data: JSON.stringify({
-                connected: true,
+                connected: streamConnected,
                 reset: true,
                 removed: [],
                 messages: [
@@ -118,7 +118,7 @@ async function setup(page: Page) {
             });
           }
         },
-        { text, streaming, scope },
+        { text, streaming, streamConnected, scope },
       );
     },
   };
@@ -169,9 +169,10 @@ test("等待、发送、断线、停止确认与终态不混淆，亮暗和减�
   }
   delivery.cancellable = true;
   await f.update();
-  await expect(
-    waiting(page).getByRole("button", { name: "停止这次处理" }),
-  ).toBeEnabled();
+  const stop = page
+    .locator('[data-message-id="waiting-a"]')
+    .getByRole("button", { name: "停止这次处理" });
+  await expect(stop).toBeEnabled();
   for (const theme of ["light", "dark"]) {
     await page
       .locator(".app")
@@ -206,16 +207,105 @@ test("等待、发送、断线、停止确认与终态不混淆，亮暗和减�
     "animation-name",
     "none",
   );
-  await expect(waiting(page).getByRole("button")).toBeDisabled();
+  await expect(stop).toBeDisabled();
   delivery.cancelRequested = true;
   await f.update(true);
   await expect(waiting(page)).toContainText("已请求停止，等待确认");
-  await expect(waiting(page).getByRole("button")).toBeDisabled();
+  await expect(
+    page
+      .locator('[data-message-id="waiting-a"]')
+      .getByRole("button", { name: "已请求停止，等待确认" }),
+  ).toBeDisabled();
   for (const state of ["cancelled", "failed", "completed"] as const) {
     delivery.state = state;
     await f.update();
     await expect(waiting(page)).toHaveCount(0);
   }
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+});
+
+test("输出间歇末尾三点继续运动，结束与断线撤下；减少动态保留清晰静态提示", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  await f.stream("已收到的正文，正在继续生成。");
+  const reply = page.locator('[data-message-id="waiting-reply"]');
+  const tail = reply.locator(".reply-content > p:last-child");
+  const style = () =>
+    tail.evaluate((el) => {
+      const css = getComputedStyle(el, "::after");
+      return {
+        content: css.content,
+        animation: css.animationName,
+        position: css.backgroundPosition,
+        width: css.width,
+        height: css.height,
+        background: css.backgroundImage,
+      };
+    });
+  for (const theme of ["light", "dark"]) {
+    await page
+      .locator(".app")
+      .evaluate(
+        (el, value) => el.setAttribute("data-appearance", value),
+        theme,
+      );
+    const before = await style();
+    expect(before).toMatchObject({
+      content: '""',
+      animation: "stream-activity",
+      width: "27px",
+      height: "14px",
+    });
+    expect(before.background.match(/radial-gradient/g)).toHaveLength(3);
+    // No new stream event: CSS motion must continue without a React update.
+    await expect
+      .poll(async () => (await style()).position)
+      .not.toBe(before.position);
+    await expect(tail).toHaveText("已收到的正文，正在继续生成。");
+    await page.screenshot({
+      path: `test-results/stream-activity-${theme}.png`,
+    });
+  }
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await style()).toMatchObject({ content: '""', animation: "none" });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page
+    .locator("html")
+    .evaluate((el) => el.setAttribute("data-app-motion", "reduce"));
+  expect(await style()).toMatchObject({ content: '""', animation: "none" });
+  await page
+    .locator("html")
+    .evaluate((el) => el.removeAttribute("data-app-motion"));
+  await f.stream("已收到的正文，正在继续生成。", true, false);
+  await f.update(false);
+  await expect(reply).not.toHaveAttribute("data-stream-active", "true");
+  expect((await style()).content).toBe("none");
+  await expect(tail).toHaveText("已收到的正文，正在继续生成。");
+  await f.update(true);
+  await f.stream("已收到的正文，正在继续生成。", true, true);
+  await expect(reply).toHaveAttribute("data-stream-active", "true");
+  for (const [source, selector] of [
+    ["- 列表末尾", ".reply-content > ul:last-child > li:last-child"],
+    ["> 引用末尾", ".reply-content > blockquote:last-child > p:last-child"],
+    ["```txt\n代码末尾\n```", ".reply-content > pre:last-child > code"],
+    [
+      "| 列 |\n| --- |\n| 表格末尾 |",
+      ".reply-content > .markdown-table-scroll:last-child",
+    ],
+  ]) {
+    await f.stream(source!);
+    await expect
+      .poll(() =>
+        reply
+          .locator(selector!)
+          .evaluate((el) => getComputedStyle(el, "::after").animationName),
+      )
+      .toBe("stream-activity");
+  }
+  await f.stream("生成已经结束。", false);
+  await expect(reply).not.toHaveAttribute("data-stream-active", "true");
+  expect((await style()).content).toBe("none");
   await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
 });
 

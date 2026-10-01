@@ -9,6 +9,11 @@ test("真实对象、刷新恢复、引用批注、关联、事项和全局输�
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
   await expect(page.locator(".wordmark")).toHaveText("Morphz");
+  const returnToWorkspace = page.getByRole("button", {
+    name: "返回工作空间",
+    exact: true,
+  });
+  if (await returnToWorkspace.isVisible()) await returnToWorkspace.click();
   // Application restoration may reopen an object left by an earlier test.
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await expect(page).toHaveTitle("工作台 — Morphz");

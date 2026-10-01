@@ -35,7 +35,7 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("textbox", { name: "搜索内容" }).fill(title);
   await page.getByRole("button", { name: `打开内容：${title}` }).click();

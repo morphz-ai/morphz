@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
@@ -26,7 +33,16 @@ import {
   type ReplyReceipt,
 } from "./conversation-read.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
-import { Wrench, ChevronRight, Copy, Check, Square, Film } from "lucide-react";
+import {
+  Wrench,
+  ChevronRight,
+  Copy,
+  Check,
+  Square,
+  Film,
+  RotateCcw,
+  LoaderCircle,
+} from "lucide-react";
 import {
   scriptOutputKey,
   type ScriptOutput,
@@ -229,8 +245,8 @@ export function Conversation({
       (m) => !focused || (!!m.inputId && inputById.has(m.inputId)),
     ),
   );
-  // Keep cancellation with the corresponding response, including before its
-  // first token arrives. Only authoritative input IDs establish ownership.
+  // The initiating input owns cancellation, even without a current output.
+  // Background execution branches retain their separate inspector controls.
   const responseControls = new Map(
     groups.flatMap((group) => {
       const delivery = group.inputId
@@ -242,17 +258,7 @@ export function Conversation({
         !(delivery.cancellable || delivery.cancelRequested)
       )
         return [];
-      return [
-        [
-          group.messages
-            .filter(
-              (m) =>
-                (m.kind === "reply" || m.kind === "error") && m.text.trim(),
-            )
-            .at(-1)?.id ?? group.id,
-          delivery,
-        ] as const,
-      ];
+      return [[group.id, delivery] as const];
     }),
   );
   const items = conversationTimeline(
@@ -579,6 +585,13 @@ export function Conversation({
                 previous?.reply?.inputId ??
                 previous?.output?.inputId ??
                 previous?.scriptOutput?.inputId;
+              const replySourceText = reply?.inputId
+                ? inputById
+                    .get(reply.inputId)
+                    ?.body.slice(0, 50)
+                    .replace(/\s+/g, " ")
+                    .trim() || "原消息"
+                : "";
               const startsTurn =
                 !!previous &&
                 !dateDivider &&
@@ -683,6 +696,11 @@ export function Conversation({
               const delivery = item
                 ? runtime.deliveries.find((d) => d.inputId === item.id)
                 : undefined;
+              const localInput =
+                !!item && client.boot!.localSavedInputIds.includes(item.id);
+              const submission = item
+                ? client.boot!.localInputSubmissions[item.id]
+                : undefined;
               const textSource = quoteSource({
                 kind: "message",
                 messageId: id,
@@ -728,21 +746,24 @@ export function Conversation({
                     rejected: "补充未送达",
                     unknown: "补充送达待确认",
                   }[delivery.supplement]
-                : !delivery
-                  ? "已保存 · 未发送"
-                  : {
-                      queued: "",
-                      sending: "",
-                      running: "",
-                      completed: "",
-                      failed: "执行失败",
-                      cancelled: "已取消",
-                    }[delivery.state];
+                : submission
+                  ? ""
+                  : !delivery
+                    ? "已保存 · 未发送"
+                    : {
+                        queued: "",
+                        sending: "",
+                        running: "",
+                        completed: "",
+                        failed: "执行失败",
+                        cancelled: "已取消",
+                      }[delivery.state];
               const control = responseControls.get(id);
               const waiting = waitingResponses.get(id);
               const stopControl = control && (
                 <StopResponse
                   key={control.inputId}
+                  compact
                   delivery={control}
                   stopping={stopStates[control.inputId]?.pending ?? false}
                   error={stopStates[control.inputId]?.error ?? ""}
@@ -760,6 +781,7 @@ export function Conversation({
                     }
                     key={id}
                     data-input-id={item?.id ?? reply?.inputId ?? undefined}
+                    data-submission-state={submission?.state}
                     data-message-id={id}
                     data-starts-turn={startsTurn || undefined}
                     data-background-execution={activeBranch || undefined}
@@ -796,13 +818,12 @@ export function Conversation({
                         timeline[index - 1]?.output?.inputId) !==
                         reply.inputId && (
                         <button
-                          className="message-source"
+                          className="message-source response-source"
+                          aria-label={"回复：" + replySourceText}
+                          title={replySourceText}
                           onClick={() => onInspect(reply.inputId!)}
                         >
-                          关于：
-                          {inputById.get(reply.inputId)?.body.slice(0, 50) ??
-                            "之前的工作"}
-                          <ChevronRight size={12} />
+                          <span>{replySourceText}</span>
                         </button>
                       )}
                     {item?.intent && (
@@ -867,17 +888,24 @@ export function Conversation({
                               <AttachmentPreview
                                 key={a.assetId + index}
                                 attachment={a}
-                                source={{
-                                  projectId: item.projectId,
-                                  conversationId: discussionId(item),
-                                  inputId: item.id,
-                                }}
+                                source={
+                                  localInput
+                                    ? undefined
+                                    : {
+                                        projectId: item.projectId,
+                                        conversationId: discussionId(item),
+                                        inputId: item.id,
+                                      }
+                                }
                               />
                             ))}
                           </div>
                         )}
                         {item.body && (
-                          <p data-quotable {...textSource}>
+                          <p
+                            data-quotable={!localInput || undefined}
+                            {...textSource}
+                          >
                             {item.body}
                           </p>
                         )}
@@ -915,7 +943,7 @@ export function Conversation({
                         )}
                       </div>
                     )}
-                    {(reply?.kind !== "tool" || stopControl) && (
+                    {reply?.kind !== "tool" && (
                       <div className="message-meta">
                         {item && onSupplement && targets.length > 0 && (
                           <button
@@ -938,7 +966,6 @@ export function Conversation({
                             后台执行中
                           </button>
                         )}
-                        {reply && stopControl}
                         {reply?.incomplete && <span>未完成的回复</span>}
                         {reply?.truncated && <span>仅保留部分内容</span>}
                         {item &&
@@ -948,16 +975,15 @@ export function Conversation({
                             </span>
                           )}
                         {item && status && <span>{status}</span>}
-                        {reply?.kind !== "tool" && (
-                          <MessageActions
-                            createdAt={createdAt}
-                            text={
-                              item
-                                ? quotedInputText(item.body, item.textQuotes)
-                                : reply!.text
-                            }
-                          />
-                        )}
+                        <MessageActions
+                          createdAt={createdAt}
+                          control={item ? stopControl : undefined}
+                          text={
+                            item
+                              ? quotedInputText(item.body, item.textQuotes)
+                              : reply!.text
+                          }
+                        />
                       </div>
                     )}
                     {delivery?.error && (
@@ -965,7 +991,28 @@ export function Conversation({
                         {delivery.error}
                       </div>
                     )}
+                    {item && submission?.state === "sending" && (
+                      <span
+                        className="message-submission"
+                        role="status"
+                        aria-label="正在发送消息"
+                      >
+                        <LoaderCircle size={16} aria-hidden="true" />
+                      </span>
+                    )}
+                    {item && submission?.state === "failed" && (
+                      <button
+                        className="message-submission retry-submission"
+                        aria-label="重新发送消息"
+                        title={`发送失败：${submission.error ?? "请重试"}`}
+                        disabled={!runtime.configured || !client.online}
+                        onClick={() => void onRetry(item.id)}
+                      >
+                        <RotateCcw size={16} aria-hidden="true" />
+                      </button>
+                    )}
                     {item &&
+                      !submission &&
                       runtime.configured &&
                       (!delivery || delivery.retryable) && (
                         <button
@@ -1010,7 +1057,6 @@ export function Conversation({
                         </span>
                         {waiting.label}
                       </span>
-                      {stopControl}
                     </div>
                   )}
                 </Fragment>
@@ -1049,47 +1095,55 @@ export function StopResponse({
   error,
   onStop,
   available = true,
+  compact = false,
 }: {
   delivery: ConversationRuntime["deliveries"][number];
   stopping: boolean;
   error: string;
   onStop: (inputId: string) => Promise<void>;
   available?: boolean;
+  compact?: boolean;
 }) {
   const pending = stopping || delivery.cancelRequested;
   const label = pending ? "已请求停止，等待确认" : "停止这次处理";
+  const Container = compact ? "span" : "div";
   return (
-    <div
-      className="response-controls"
+    <Container
+      className={`response-controls${compact ? " message-stop-controls" : ""}`}
       data-response-input-id={delivery.inputId}
+      data-stop-pending={pending || undefined}
     >
       <button
         className="stop-response"
         aria-label={label}
-        title={pending ? label : "停止这次处理；已发生的操作不会撤销。"}
+        title={
+          error || (pending ? label : "停止这次处理；已发生的操作不会撤销。")
+        }
         disabled={pending || !available}
         onClick={() => {
           if (!pending) void onStop(delivery.inputId);
         }}
       >
         <Square size={12} fill="currentColor" aria-hidden="true" />
-        <span>停止</span>
+        {!compact && <span>停止</span>}
       </button>
       {error && (
         <span className="delivery-error" role="alert">
           {error}
         </span>
       )}
-    </div>
+    </Container>
   );
 }
 
 function MessageActions({
   createdAt,
   text,
+  control,
 }: {
   createdAt: string;
   text: string;
+  control?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
@@ -1131,6 +1185,7 @@ function MessageActions({
             <Copy size={13} aria-hidden="true" />
           )}
         </button>
+        {control}
       </span>
       {error && (
         <span className="delivery-error" role="alert">

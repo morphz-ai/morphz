@@ -105,7 +105,9 @@ export function ExecutionSidebar({
   const active = entries.filter(({ delivery: d }) => pending(d));
   const background = threads.filter(
     (t) =>
-      !t.inputId &&
+      t.lifecycle === "open" &&
+      (!t.inputId ||
+        (allWork && !entries.some(({ source }) => source.id === t.inputId))) &&
       (allWork ||
         inConversation(
           state,
@@ -114,6 +116,20 @@ export function ExecutionSidebar({
           !client.boot!.capabilities.teamAuthentication,
         )),
   );
+  const activeCount = new Set([
+    ...active.map(({ source }) => source.id),
+    ...background.map((t) => t.inputId ?? t.rootId),
+  ]).size;
+  const activityAvailable =
+    runtime.connected && runtime.activity?.available === true;
+  const activityComplete = activityAvailable && !runtime.activity?.truncated;
+  const activitySummary = !activityAvailable
+    ? "工作状态待核对"
+    : runtime.activity?.truncated
+      ? activeCount
+        ? `至少 ${activeCount} 项进行中`
+        : "工作状态待核对"
+      : `${activeCount} 项进行中`;
   const deliveredAt = (id: string, fallback: string) =>
     runtime.messages
       .filter((m) => m.inputId === id)
@@ -312,10 +328,7 @@ export function ExecutionSidebar({
             <button aria-pressed={allWork} onClick={() => setAllWork(true)}>
               全部工作
             </button>
-            <small className="execution-scope-count">
-              {active.length + new Set(background.map((t) => t.rootId)).size} 项
-              {runtime.activity?.available === false ? "状态待确认" : "进行中"}
-            </small>
+            <small className="execution-scope-count">{activitySummary}</small>
           </div>
         )}
         {!runtime.connected && (
@@ -323,7 +336,7 @@ export function ExecutionSidebar({
             连接中断，执行状态尚未确认。
           </p>
         )}
-        {runtime.connected && runtime.activity?.available === false && (
+        {runtime.connected && !runtime.activity?.available && (
           <p className="execution-progress" role="status">
             后台调度状态暂不可用，以下保留上次记录。
           </p>
@@ -527,7 +540,11 @@ export function ExecutionSidebar({
             {active.map(row)}
             {background.map((branch) => branchRow(branch))}
             {!active.length && !background.length && (
-              <p className="execution-quiet">当前没有正在处理的工作</p>
+              <p className="execution-quiet">
+                {activityComplete
+                  ? "当前没有正在处理的工作"
+                  : "尚不能确认是否有工作进行中"}
+              </p>
             )}
             {recent.length > 0 && (
               <section className="execution-recent">

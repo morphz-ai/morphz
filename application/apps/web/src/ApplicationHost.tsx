@@ -13,7 +13,6 @@ import {
   Film,
   Globe,
   Grid2X2,
-  FolderOpen,
   Layers2,
   Upload,
   X,
@@ -37,6 +36,7 @@ import {
   spaceKind,
 } from "../../../packages/core/src/model.js";
 import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import { NavigationIcon } from "./NavigationIcon.js";
 import {
   catalogContentEntries,
   listingKind,
@@ -291,18 +291,18 @@ export function ApplicationHost({
       <button
         className="workspace-content"
         aria-label={
-          spaceKind(space) === "project" ? "查看项目内容" : "查看全部内容"
+          spaceKind(space) === "project" ? "查看项目内容" : "查看内容库"
         }
         title={
           spaceKind(space) === "project"
             ? `查看${space.title}的内容列表`
-            : "查看全部内容"
+            : "查看内容库"
         }
         disabled={busy}
         onClick={() => void launch(objectsApplication, true)}
       >
-        <FolderOpen />
-        <span>{spaceKind(space) === "project" ? "项目内容" : "内容"}</span>
+        <NavigationIcon kind="content" />
+        <span>{spaceKind(space) === "project" ? "项目内容" : "内容库"}</span>
       </button>
       <div
         role="tablist"

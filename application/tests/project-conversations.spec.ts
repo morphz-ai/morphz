@@ -8,6 +8,7 @@ import {
 } from "./project-conversation-fixture.js";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
+import { applicationTokenHeader } from "../packages/core/src/application-names.js";
 
 test("新建只开草稿：反复点击与刷新不建空会话，首发失败可重试，迟到回执不抢导航", async ({
   page,
@@ -69,8 +70,16 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
   });
   await expect(page.getByLabel("发送消息", { exact: true })).toBeEnabled();
   await page.getByLabel("AI 输入内容").press("Enter");
-  await expect(page.getByRole("alert")).toContainText("发送暂不可用");
-  await expect(page.getByLabel("AI 输入内容")).toHaveValue("首条独立消息");
+  const firstBubble = page
+    .locator(".human-message")
+    .filter({ hasText: "首条独立消息" });
+  const retry = firstBubble.getByRole("button", {
+    name: "重新发送消息",
+    exact: true,
+  });
+  await expect(firstBubble).toHaveAttribute("data-submission-state", "failed");
+  await expect(retry).toHaveAttribute("title", /发送暂不可用/);
+  await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
   expect((await conversationState(page)).conversations).toEqual(
     initial.conversations,
   );
@@ -80,7 +89,7 @@ test("新建只开草稿：反复点击与刷新不建空会话，首发失败�
     sendIds.push(route.request().postDataJSON().commandId);
     await route.continue();
   });
-  await page.getByLabel("AI 输入内容").press("Enter");
+  await retry.click();
   await expect(
     group.getByLabel("打开对话：对话 1", { exact: true }),
   ).toHaveAttribute("aria-current", "true");
@@ -202,7 +211,7 @@ test("从项目搜索打开其他空间对象后，点击项目或草稿回到�
   expect(messageHost.deliveries()).toEqual(before);
   expect(after.conversations).toEqual(boot.conversations);
 });
-test("未发送草稿不建空会话，可恢复；只发附件才落库，丢回执重试不重复", async ({
+test("未发送草稿不建空会话，可恢复；附件首发丢回执后由权威历史确认，重复命令不重复", async ({
   page,
   messageHost,
 }) => {
@@ -237,8 +246,10 @@ test("未发送草稿不建空会话，可恢复；只发附件才落库，丢�
   const beforeInputs = messageHost.deliveries().length;
   let dropped = false;
   const sendIds: string[] = [];
+  let firstCommand: { commandId: string; operation: unknown } | undefined;
   await page.route("**/api/platform/messages", async (route) => {
     sendIds.push(route.request().postDataJSON().commandId);
+    firstCommand ??= route.request().postDataJSON();
     if (
       route.request().postDataJSON().operation.type !== "record-input" ||
       dropped
@@ -253,25 +264,58 @@ test("未发送草稿不建空会话，可恢复；只发附件才落库，丢�
     });
   });
   await page.getByLabel("发送消息", { exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("回执丢失");
   await expect(group.getByLabel("打开对话：对话 1")).toHaveAttribute(
     "aria-current",
     "true",
   );
-  // A repeated new action must not discard the unresolved first-send identity.
-  await group.getByLabel("新建项目对话：首发边界验收").click();
-  await expect(page.getByLabel("消息附件", { exact: true })).toContainText(
-    "首发附件.txt",
+  const confirmed = page.locator(
+    `.human-message[data-input-id="${firstCommand!.commandId}"]`,
   );
-  await page.getByLabel("发送消息", { exact: true }).click();
+  await expect(
+    confirmed.getByRole("button", {
+      name: "预览附件 首发附件.txt",
+      exact: true,
+    }),
+  ).toBeVisible();
+  // Once authoritative history confirms acceptance, do not show a false
+  // failure or move the already-submitted attachment back into the composer.
+  await expect(confirmed).not.toHaveAttribute(
+    "data-submission-state",
+    "failed",
+  );
+  await expect(
+    confirmed.getByRole("button", { name: "重新发送消息", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.locator(".composer").getByLabel("消息附件", { exact: true }),
   ).toHaveCount(0);
+  expect(sendIds).toHaveLength(1); // No implicit resend to learn the receipt.
+  await group.getByLabel("新建项目对话：首发边界验收").click();
+  await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
+  await expect(
+    page.locator(".composer").getByLabel("消息附件", { exact: true }),
+  ).toHaveCount(0);
+  // Exercise the real Host's retry boundary using the exact captured command,
+  // even though the UI correctly no longer asks the user to retry acceptance.
+  const duplicate = await page.request.post(
+    `${messageHost.origin}/api/platform/messages`,
+    {
+      headers: {
+        Origin: messageHost.origin,
+        [applicationTokenHeader]: before.source.boot.csrfToken,
+      },
+      data: firstCommand,
+    },
+  );
+  expect(duplicate.status(), await duplicate.text()).toBe(202);
+  expect(await duplicate.json()).toMatchObject({
+    commandId: firstCommand!.commandId,
+    entityId: firstCommand!.commandId,
+  });
   const after = await conversationState(page);
   expect(messageHost.deliveries()).toHaveLength(beforeInputs + 1);
   expect(after.conversations).toHaveLength(before.conversations.length + 1);
-  expect(sendIds).toHaveLength(2);
-  expect(sendIds[1]).toBe(sendIds[0]);
+  expect(sendIds).toHaveLength(1);
   const sent = messageHost.input(messageHost.deliveries().at(-1)!.inputId);
   expect(sent.body).toBe("");
   expect(sent.attachments).toHaveLength(1);

@@ -49,7 +49,7 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
 
 test("切换工作页面和重新展开输入不重复挂载附件按钮", async ({ page }) => {
   await page.goto("/");
-  for (const name of ["对话", "工作台", "内容", "对话", "工作台"]) {
+  for (const name of ["对话", "工作台", "内容库", "对话", "工作台"]) {
     await page
       .getByRole("navigation", { name: "主导航" })
       .getByRole("button", { name, exact: true })

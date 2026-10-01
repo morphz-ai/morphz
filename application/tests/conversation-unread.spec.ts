@@ -451,7 +451,7 @@ test("当前对象的提示与展开的局部交流一致，不用别处回复�
   const artifactId = created.contentId;
   const fixture = await setup(page, artifactId);
   await page
-    .getByRole("button", { name: /^查看(?:全部|项目)内容$/, exact: true })
+    .getByRole("button", { name: /^查看(?:内容库|项目内容)$/, exact: true })
     .click();
   await page.locator(".artifact-card").filter({ hasText: title }).click();
   await openInput(page);

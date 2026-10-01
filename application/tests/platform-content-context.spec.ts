@@ -32,7 +32,7 @@ test("从内容继续交流只切换输入上下文，不发送消息或覆盖�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const catalogInput = await openInput(page);
   await catalogInput.fill(`目录未发送草稿 ${suffix}`);
@@ -47,7 +47,7 @@ test("从内容继续交流只切换输入上下文，不发送消息或覆盖�
 
   await page
     .locator(".breadcrumb")
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(await openInput(page)).toHaveValue(`目录未发送草稿 ${suffix}`);
   await page.getByRole("button", { name: `让智能体处理：${title}` }).click();

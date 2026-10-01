@@ -37,7 +37,7 @@ test("原内容界面保存批注并在重开后从 Objects 原件恢复", async
   const openCreatedDocument = async () => {
     await page
       .getByRole("navigation", { name: "主导航" })
-      .getByRole("button", { name: "内容", exact: true })
+      .getByRole("button", { name: "内容库", exact: true })
       .click();
     // The catalog is paginated. Locate the newly created object through its
     // title filter rather than assuming it must be in the first 50 entries.

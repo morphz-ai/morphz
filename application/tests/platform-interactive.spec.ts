@@ -38,7 +38,7 @@ test("正式内容界面编辑交互表格，修订由应用私库保存且刷�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByLabel("搜索内容", { exact: true }).fill(title);
   await page.getByRole("button", { name: `打开内容：${title}` }).click();
@@ -141,7 +141,7 @@ test("三种表格视图共用应用原件；切换查看不改写版本与标�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByLabel("搜索内容", { exact: true }).fill(prefix);
   await page

@@ -107,7 +107,10 @@ else {
       ...(process.platform === "darwin"
         ? {
             titleBarStyle: "hiddenInset",
-            trafficLightPosition: { x: 20, y: 20 },
+            // Native button origins use device-independent pixels, not CSS
+            // zoom. Fit the cluster inside the compact sidebar with breathing
+            // room before its divider and resize hit area.
+            trafficLightPosition: { x: 8, y: 16 },
           }
         : {}),
       ...appearanceOptions,

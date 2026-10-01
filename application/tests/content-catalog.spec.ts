@@ -18,7 +18,7 @@ const platform = () =>
 const catalog = async (p: Page) =>
   p
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
 async function doc(
   source: PlatformClient,
@@ -335,7 +335,7 @@ test("从内容继续交流准确引用版本、不自动发送、不覆盖其�
   await input.fill("此产物的未发草稿");
   await page
     .locator(".breadcrumb")
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(page.getByLabel("搜索内容", { exact: true })).toHaveValue(title);
   await expect(page.getByLabel("列表视图", { exact: true })).toHaveAttribute(

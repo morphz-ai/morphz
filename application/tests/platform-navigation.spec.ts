@@ -49,7 +49,7 @@ test("历史前进后退按 ID 核对目录；内容移动后仍打开同一原�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("button", { name: `打开内容：${firstTitle}` }).click();
   await expect(page.locator(".document-body")).toContainText("第一项正文");

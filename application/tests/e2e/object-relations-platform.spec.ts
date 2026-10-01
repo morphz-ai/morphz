@@ -63,7 +63,7 @@ test("内容页添加对象关联后刷新仍可打开目标", async ({ page }) 
   await page.reload();
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("textbox", { name: "搜索内容" }).fill(sourceTitle);
   await page.getByRole("button", { name: `打开内容：${sourceTitle}` }).click();
@@ -83,7 +83,7 @@ test("内容页添加对象关联后刷新仍可打开目标", async ({ page }) 
   await page.reload();
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("textbox", { name: "搜索内容" }).fill(sourceTitle);
   await page.getByRole("button", { name: `打开内容：${sourceTitle}` }).click();

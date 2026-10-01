@@ -157,10 +157,18 @@ export function Notifications({
   client,
   onOpen,
   onSettings,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+  onUnreadChange,
 }: {
   client: WorkspaceClient;
   onOpen: (id: string) => void;
   onSettings: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
+  onUnreadChange?: (unread: number) => void;
 }) {
   const [view, setView] = useState<z.infer<typeof schema>>({
       mode: "all",
@@ -168,9 +176,17 @@ export function Notifications({
       unread: 0,
       items: [],
     }),
-    [open, setOpen] = useState(false),
+    [localOpen, setLocalOpen] = useState(false),
     [error, setError] = useState(""),
     [loadError, setLoadError] = useState("");
+  const open = controlledOpen ?? localOpen;
+  function setOpen(next: boolean) {
+    if (controlledOpen === undefined) setLocalOpen(next);
+    onOpenChange?.(next);
+  }
+  useEffect(() => {
+    onUnreadChange?.(view.unread);
+  }, [view.unread, onUnreadChange]);
   const generation = useRef(0);
   const storage = useState(() => scopedStorage())[0];
   const pendingReads = useRef(
@@ -289,20 +305,22 @@ export function Notifications({
   }
   return (
     <>
-      <button
-        ref={trigger}
-        className="icon-button notification-trigger"
-        aria-label={`通知${view.unread ? `，${view.unread} 项未读` : ""}`}
-        title="通知"
-        onClick={() => setOpen(true)}
-      >
-        <Bell size={17} />
-        {view.unread > 0 && (
-          <span className="notification-badge" aria-hidden="true">
-            {view.unread > 99 ? "99+" : view.unread}
-          </span>
-        )}
-      </button>
+      {!hideTrigger && (
+        <button
+          ref={trigger}
+          className="icon-button notification-trigger"
+          aria-label={`通知${view.unread ? `，${view.unread} 项未读` : ""}`}
+          title="通知"
+          onClick={() => setOpen(true)}
+        >
+          <Bell size={17} />
+          {view.unread > 0 && (
+            <span className="notification-badge" aria-hidden="true">
+              {view.unread > 99 ? "99+" : view.unread}
+            </span>
+          )}
+        </button>
+      )}
       {open && (
         <dialog
           className="create-dialog notification-dialog"
@@ -351,7 +369,8 @@ export function Notifications({
                     );
                   } catch (e) {
                     setError(
-                      e instanceof RequestError && [401, 403, 404].includes(e.status)
+                      e instanceof RequestError &&
+                        [401, 403, 404].includes(e.status)
                         ? "请重新登录或检查事项权限。"
                         : "暂时无法确认事项权限，请重试。",
                     );

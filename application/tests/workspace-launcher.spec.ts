@@ -74,7 +74,7 @@ const seed = async (
   return (created as { contentId: string }).contentId;
 };
 const read = async (page: Page, title: string) => {
-  await nav(page, "内容");
+  await nav(page, "内容库");
   await page.getByLabel("内容范围", { exact: true }).selectOption("all");
   await page.getByLabel("搜索内容", { exact: true }).fill(title);
   await page.getByLabel("打开内容：" + title, { exact: true }).click();
@@ -129,7 +129,7 @@ test("本空间内容固定进入列表，继续工作和应用标签保留明�
   await page.reload();
   const before = await snapshot(page, source);
   const contents = page.getByRole("button", {
-    name: /^查看(?:全部|项目)内容$/,
+    name: /^查看(?:内容库|项目内容)$/,
     exact: true,
   });
   const library = page.locator(".library-collection:visible");
@@ -247,7 +247,7 @@ test("内容入口失败保留原位置，迟到回执不抢回后来选择的�
     return route.continue();
   });
   const contents = page.getByRole("button", {
-    name: /^查看(?:全部|项目)内容$/,
+    name: /^查看(?:内容库|项目内容)$/,
     exact: true,
   });
   await contents.click();

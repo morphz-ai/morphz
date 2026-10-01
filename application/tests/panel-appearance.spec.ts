@@ -7,7 +7,7 @@ import {
   seedAgentOriginal,
 } from "./platform-agent-original-fixture.js";
 
-test("搜索与通知在四主题亮暗模式下保持中性色层次和可见键盘焦点", async ({
+test("搜索与通知在四主题亮暗模式下保持清爽中性色、可读文字和键盘焦点", async ({
   page,
 }) => {
   await page.goto("/");
@@ -54,7 +54,7 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
       );
       await expect(search.locator("article[data-selected=true]")).toHaveCSS(
         "background-color",
-        appearance === "亮色" ? "rgb(228, 228, 228)" : "rgb(58, 58, 58)",
+        appearance === "亮色" ? "rgb(240, 240, 240)" : "rgb(58, 58, 58)",
       );
       await field.fill("产品资料");
       await expect(search.getByText("找到 1 项内容")).toBeVisible();
@@ -92,13 +92,20 @@ test("搜索与通知在四主题亮暗模式下保持中性色层次和可见�
         .locator("article")
         .first()
         .evaluate((row) => {
+          const context = document.createElement("canvas").getContext("2d")!;
+          const rgb = (value: string) => {
+            context.clearRect(0, 0, 1, 1);
+            context.fillStyle = value;
+            context.fillRect(0, 0, 1, 1);
+            return `rgb(${[...context.getImageData(0, 0, 1, 1).data].slice(0, 3).join(",")})`;
+          };
           const color = (selector: string) =>
-            getComputedStyle(row.querySelector(selector)!).color;
+            rgb(getComputedStyle(row.querySelector(selector)!).color);
           return {
             title: color("strong"),
             excerpt: color(".search-excerpt"),
             metadata: color(".search-result-meta"),
-            background: getComputedStyle(row).backgroundColor,
+            background: rgb(getComputedStyle(row).backgroundColor),
           };
         });
       expect(

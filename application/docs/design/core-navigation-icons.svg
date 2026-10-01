@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1090" viewBox="0 0 1280 1090" role="img" aria-labelledby="title description">
+  <title id="title">Morphz 五个核心导航图标设计稿</title>
+  <desc id="description">正式界面已采用名称内容库、工作台分区三卡及项目 A 普通文件夹；下方项目夹与叠放项目夹仅为未选候选。展示 24 像素收缩态与 17 像素展开态，以及明暗主题。本文件是矢量设计参照，不是实际应用截图。</desc>
+  <defs>
+    <!-- Transparent, currentColor glyphs. No background-colored occlusion,
+         gradients, masks, text, or extra frame in the reusable symbols. -->
+    <symbol id="nav-dialogue" viewBox="0 0 24 24">
+      <path d="M21 11.4c0 4.7-4 8.6-9 8.6a9.5 9.5 0 0 1-4.2-1L3 21l1.2-4.5A8.1 8.1 0 0 1 3 11.4C3 6.8 7 3 12 3s9 3.8 9 8.4Z"/>
+    </symbol>
+    <symbol id="nav-matters" viewBox="0 0 24 24">
+      <path d="m3 6 2.5 2.5L9 4.5M13 6.5h8M12 17h9"/>
+      <circle cx="5.5" cy="17" r="2.5"/>
+    </symbol>
+    <symbol id="nav-content" viewBox="0 0 24 24">
+      <path d="M17 5V4.5A1.5 1.5 0 0 0 15.5 3h-11A1.5 1.5 0 0 0 3 4.5v11A1.5 1.5 0 0 0 4.5 17H5"/>
+      <rect x="7" y="7" width="14" height="14" rx="2.5"/>
+      <path d="M11 12h6"/>
+    </symbol>
+    <symbol id="nav-workbench" viewBox="0 0 24 24">
+      <rect x="3" y="3" width="7" height="18" rx="2"/>
+      <rect x="14" y="3" width="7" height="7" rx="2"/>
+      <rect x="14" y="14" width="7" height="7" rx="2"/>
+    </symbol>
+    <symbol id="nav-projects" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.4.6L13 8h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
+    </symbol>
+    <symbol id="projects-organized-folder" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.4.6L13 8h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
+      <path d="M7 12h10M7 16h6"/>
+    </symbol>
+    <symbol id="projects-stacked-folders" viewBox="0 0 24 24">
+      <path d="M5 17H4.5A1.5 1.5 0 0 1 3 15.5V5a2 2 0 0 1 2-2h2.2a2 2 0 0 1 1.4.6L11 6h6"/>
+      <path d="M7 10a2 2 0 0 1 2-2h2.2a2 2 0 0 1 1.4.6L15 11h4a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2Z"/>
+    </symbol>
+    <symbol id="morphz-mark" viewBox="0 0 96 96">
+      <path fill="currentColor" stroke="none" d="M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z"/>
+    </symbol>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif; fill: #1f2024; }
+      .glyph { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .muted { fill: #64666f; }
+      .label { font-size: 18px; font-weight: 600; }
+      .small { font-size: 12px; }
+      .nav-label { font-size: 14px; font-weight: 500; }
+      .light { color: #64666f; }
+      .dark { color: #a4a5ae; }
+      .dark text { fill: #a4a5ae; }
+      .selected-light { color: #168997; }
+      .selected-dark { color: #56d0de; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="1090" fill="#fff"/>
+  <text x="48" y="59" font-size="28" font-weight="650">Morphz 核心导航</text>
+  <text x="48" y="89" font-size="14" class="muted">已确认：内容库、工作台分区图形 · 项目暂保留 A，继续选型</text>
+  <text x="1232" y="58" text-anchor="end" font-size="13" class="muted">24 × 24 网格 / 2px 圆头线</text>
+
+  <!-- Enlarged forms explain the silhouette; the next row is actual size. -->
+  <g color="#1f2024" class="glyph">
+    <use href="#nav-dialogue" x="130" y="133" width="40" height="40"/>
+    <use href="#nav-matters" x="374" y="133" width="40" height="40"/>
+    <use href="#nav-content" x="618" y="133" width="40" height="40"/>
+    <use href="#nav-workbench" x="862" y="133" width="40" height="40"/>
+    <use href="#nav-projects" x="1106" y="133" width="40" height="40"/>
+  </g>
+  <g text-anchor="middle" class="label">
+    <text x="150" y="207">对话</text>
+    <text x="394" y="207">事项</text>
+    <text x="638" y="207">内容库</text>
+    <text x="882" y="207">工作台</text>
+    <text x="1126" y="207">项目</text>
+  </g>
+  <g text-anchor="middle" font-size="13" class="muted">
+    <text x="150" y="230">交流</text>
+    <text x="394" y="230">待办与进度</text>
+    <text x="638" y="230">工作成果</text>
+    <text x="882" y="230">开始与继续工作</text>
+    <text x="1126" y="230">工作集合</text>
+  </g>
+  <g class="glyph light">
+    <use href="#nav-dialogue" x="115.5" y="254.5" width="17" height="17"/>
+    <use href="#nav-dialogue" x="163" y="251" width="24" height="24"/>
+    <use href="#nav-matters" x="359.5" y="254.5" width="17" height="17"/>
+    <use href="#nav-matters" x="407" y="251" width="24" height="24"/>
+    <use href="#nav-content" x="603.5" y="254.5" width="17" height="17"/>
+    <use href="#nav-content" x="651" y="251" width="24" height="24"/>
+    <use href="#nav-workbench" x="847.5" y="254.5" width="17" height="17"/>
+    <use href="#nav-workbench" x="895" y="251" width="24" height="24"/>
+    <use href="#nav-projects" x="1091.5" y="254.5" width="17" height="17"/>
+    <use href="#nav-projects" x="1139" y="251" width="24" height="24"/>
+  </g>
+  <g text-anchor="middle" class="small muted">
+    <text x="124" y="294">17px</text><text x="175" y="294">24px</text>
+    <text x="368" y="294">17px</text><text x="419" y="294">24px</text>
+    <text x="612" y="294">17px</text><text x="663" y="294">24px</text>
+    <text x="856" y="294">17px</text><text x="907" y="294">24px</text>
+    <text x="1100" y="294">17px</text><text x="1151" y="294">24px</text>
+  </g>
+  <path d="M48 321H1232" stroke="#eef0f3"/>
+
+  <text x="48" y="357" font-size="16" font-weight="600">亮色 · 实际大小</text>
+  <text x="496" y="357" font-size="16" font-weight="600">暗色 · 实际大小</text>
+  <!-- The previews are glyph reviews, not screenshots of a modified app. -->
+  <g transform="translate(48 378)" class="light">
+    <rect width="80" height="338" rx="12" fill="#fafafa" stroke="#e4e7ec"/>
+    <use href="#morphz-mark" x="24" y="18" width="32" height="32" color="#3de1f5"/>
+    <rect x="12" y="166" width="56" height="44" rx="8" fill="#e3f1f3"/>
+    <g class="glyph">
+      <use href="#nav-dialogue" x="28" y="88" width="24" height="24"/>
+      <use href="#nav-matters" x="28" y="132" width="24" height="24"/>
+      <use href="#nav-content" x="28" y="176" width="24" height="24" class="selected-light"/>
+      <use href="#nav-workbench" x="28" y="220" width="24" height="24"/>
+      <use href="#nav-projects" x="28" y="264" width="24" height="24"/>
+    </g>
+  </g>
+  <g transform="translate(158 378)" class="light">
+    <rect width="280" height="338" rx="12" fill="#fafafa" stroke="#e4e7ec"/>
+    <use href="#morphz-mark" x="17" y="21" width="23" height="25" color="#3de1f5"/>
+    <text x="50" y="41" font-size="19" font-weight="650">Morphz</text>
+    <rect x="12" y="166" width="256" height="44" rx="8" fill="#e3f1f3"/>
+    <g class="glyph">
+      <use href="#nav-dialogue" x="22" y="91.5" width="17" height="17"/>
+      <use href="#nav-matters" x="22" y="135.5" width="17" height="17"/>
+      <use href="#nav-content" x="22" y="179.5" width="17" height="17" class="selected-light"/>
+      <use href="#nav-workbench" x="22" y="223.5" width="17" height="17"/>
+      <use href="#nav-projects" x="22" y="267.5" width="17" height="17"/>
+    </g>
+    <g class="nav-label">
+      <text x="52" y="105">对话</text><text x="52" y="149">事项</text>
+      <text x="52" y="193" style="fill:#168997;font-weight:600">内容库</text>
+      <text x="52" y="237">工作台</text><text x="52" y="281">项目</text>
+    </g>
+  </g>
+  <g transform="translate(496 378)" class="dark">
+    <rect width="80" height="338" rx="12" fill="#242424"/>
+    <use href="#morphz-mark" x="24" y="18" width="32" height="32" color="#56d0de"/>
+    <rect x="12" y="166" width="56" height="44" rx="8" fill="#26373b"/>
+    <g class="glyph">
+      <use href="#nav-dialogue" x="28" y="88" width="24" height="24"/>
+      <use href="#nav-matters" x="28" y="132" width="24" height="24"/>
+      <use href="#nav-content" x="28" y="176" width="24" height="24" class="selected-dark"/>
+      <use href="#nav-workbench" x="28" y="220" width="24" height="24"/>
+      <use href="#nav-projects" x="28" y="264" width="24" height="24"/>
+    </g>
+  </g>
+  <g transform="translate(606 378)" class="dark">
+    <rect width="280" height="338" rx="12" fill="#242424"/>
+    <use href="#morphz-mark" x="17" y="21" width="23" height="25" color="#56d0de"/>
+    <text x="50" y="41" font-size="19" font-weight="650" style="fill:#f4f4f6">Morphz</text>
+    <rect x="12" y="166" width="256" height="44" rx="8" fill="#26373b"/>
+    <g class="glyph">
+      <use href="#nav-dialogue" x="22" y="91.5" width="17" height="17"/>
+      <use href="#nav-matters" x="22" y="135.5" width="17" height="17"/>
+      <use href="#nav-content" x="22" y="179.5" width="17" height="17" class="selected-dark"/>
+      <use href="#nav-workbench" x="22" y="223.5" width="17" height="17"/>
+      <use href="#nav-projects" x="22" y="267.5" width="17" height="17"/>
+    </g>
+    <g class="nav-label">
+      <text x="52" y="105">对话</text><text x="52" y="149">事项</text>
+      <text x="52" y="193" style="fill:#56d0de;font-weight:600">内容库</text>
+      <text x="52" y="237">工作台</text><text x="52" y="281">项目</text>
+    </g>
+  </g>
+  <g transform="translate(936 378)">
+    <text y="28" font-size="16" font-weight="600">统一，不雷同</text>
+    <text y="62" font-size="14" class="muted">圆头、圆角、线条重量一致</text>
+    <text y="88" font-size="14" class="muted">轮廓区分对象、应用与容器</text>
+    <path d="M0 115H296" stroke="#eef0f3"/>
+    <text y="153" font-size="16" font-weight="600">状态克制</text>
+    <text y="187" font-size="14" class="muted">普通图标中性，选中用主题色</text>
+    <text y="213" font-size="14" class="muted">不加渐变、阴影或额外外框</text>
+    <path d="M0 240H296" stroke="#eef0f3"/>
+    <text y="278" font-size="16" font-weight="600">Logo 保留品牌轮廓</text>
+    <text y="312" font-size="14" class="muted">窄栏 32px · 导航 24px · 点击区 44px</text>
+  </g>
+  <text x="48" y="752" font-size="12" class="muted">仅设计提案；侧栏预览用于评审图形和比例，不是产品已更新的截图。</text>
+  <path d="M48 791H1232" stroke="#eef0f3"/>
+  <text x="48" y="828" font-size="22" font-weight="600">项目 · 保留文件夹，比较组织感</text>
+  <text x="1232" y="826" text-anchor="end" font-size="13" class="muted">下方小图分别为 17px / 24px</text>
+  <g class="glyph" color="#1f2024">
+    <use href="#nav-projects" x="234" y="857" width="40" height="40"/>
+    <use href="#projects-organized-folder" x="618" y="857" width="40" height="40"/>
+    <use href="#projects-stacked-folders" x="1002" y="857" width="40" height="40"/>
+  </g>
+  <g text-anchor="middle" font-size="17" font-weight="600">
+    <text x="254" y="929">原 A · 简洁文件夹</text>
+    <text x="638" y="929">新候选 1 · 项目夹</text>
+    <text x="1022" y="929">新候选 2 · 叠放项目夹</text>
+  </g>
+  <g text-anchor="middle" font-size="14" class="muted">
+    <text x="254" y="956">最简洁，辨识成本低</text>
+    <text x="638" y="956">两条工作项，强调组织</text>
+    <text x="1022" y="956">多个项目，强调集合</text>
+  </g>
+  <g class="glyph light">
+    <use href="#nav-projects" x="219.5" y="980.5" width="17" height="17"/>
+    <use href="#nav-projects" x="267" y="977" width="24" height="24"/>
+    <use href="#projects-organized-folder" x="603.5" y="980.5" width="17" height="17"/>
+    <use href="#projects-organized-folder" x="651" y="977" width="24" height="24"/>
+    <use href="#projects-stacked-folders" x="987.5" y="980.5" width="17" height="17"/>
+    <use href="#projects-stacked-folders" x="1035" y="977" width="24" height="24"/>
+  </g>
+  <text x="48" y="1053" font-size="14" style="fill:#168997">我更看好候选 1：保留文件夹的辨识度，增加少量组织感；短线不表示进度。</text>
+</svg>

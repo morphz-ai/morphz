@@ -72,8 +72,8 @@ test("文档不重复首标题，关联按需展开，失败就近重试且不�
   );
   await page.getByRole("button", { name: "取消编辑", exact: true }).click();
   await page.setViewportSize({ width: 760, height: 540 });
-  const toolbar = page.getByRole("banner", { name: "内容工具栏" });
-  const back = toolbar.getByRole("button", { name: "内容", exact: true });
+  const toolbar = page.getByRole("banner", { name: "内容库工具栏" });
+  const back = toolbar.getByRole("button", { name: "内容库", exact: true });
   await expect(back).toBeInViewport();
   const toolbarBounds = (await toolbar.boundingBox())!;
   const backBounds = (await back.boundingBox())!;

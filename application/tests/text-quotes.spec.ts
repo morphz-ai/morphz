@@ -406,28 +406,55 @@ test("行中引用的编号位于正文外侧，同一行多个编号不重叠�
   }
 });
 
-test("失败保留引用与正文，可重试；只引用也能发送", async ({ page }) => {
+test("仅引用消息失败后保留引文，可从原卡片重试", async ({ page }) => {
   const { reply, sentIds, records } = await fixture(page, "reject-once");
-  await selectText(
-    reply.locator("[data-quotable]"),
-    "第二段：可以比较多个方案。",
-  );
+  const selected = "第二段：可以比较多个方案。";
+  await selectText(reply.locator("[data-quotable]"), selected);
   await page.getByRole("button", { name: "评论选中文字" }).click();
   await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
   const send = page.getByRole("button", { name: "发送消息", exact: true });
+  const input = page.getByLabel("AI 输入内容");
+  await expect(input).toHaveValue("");
   await expect(send).toBeEnabled();
+  const firstRequest = page.waitForRequest("**/api/platform/messages");
   await send.click();
-  await expect(drafts).toContainText("可以比较多个方案");
-  await expect(send).toBeEnabled();
-  await send.click();
+  const original = commandSchema.parse((await firstRequest).postDataJSON());
+  const sent = page.locator(
+    `.human-message[data-input-id="${original.commandId}"]`,
+  );
+  const retry = sent.getByRole("button", { name: "重新发送消息", exact: true });
+  await expect(sent).toHaveCount(1);
+  await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
+  await expect(retry).toBeVisible();
+  await expect(sent).toHaveAttribute("data-submission-state", "failed");
+  await expect(drafts).toHaveCount(0);
+  await expect(input).toHaveValue("");
+  await expect(send).toBeDisabled();
+  expect(sentIds).toEqual([original.commandId]);
+  expect(records.size).toBe(0); // The first request was rejected before storage.
+
+  const nextDraft = "TEST 新草稿不参与原引用消息重试";
+  await input.fill(nextDraft);
+  const retryRequest = page.waitForRequest("**/api/platform/messages");
+  await retry.click();
+  expect(commandSchema.parse((await retryRequest).postDataJSON())).toEqual(
+    original,
+  );
+  await expect(retry).toHaveCount(0);
+  await expect(sent).toHaveCount(1);
+  await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
+  await expect(input).toHaveValue(nextDraft);
   await expect(drafts).toHaveCount(0);
   expect(sentIds).toHaveLength(2);
   expect(sentIds[1]).toBe(sentIds[0]);
   expect(records.size).toBe(1);
-  await expect(
-    page.locator(".human-message").last().locator(".sent-text-quotes"),
-  ).toContainText("可以比较多个方案");
+  expect(records.get(original.commandId)!.operation).toMatchObject({
+    body: "",
+    textQuotes: [
+      { text: selected, source: { messageId: "publication:quote-fixture" } },
+    ],
+  });
 });
 
 test("选文按钮跟随阅读区域，不引用时间或跨消息内容，Escape 关闭；窄屏和暗色不溢出", async ({
@@ -494,7 +521,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
   );
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page
     .getByRole("button", { name: new RegExp(title) })
@@ -595,7 +622,7 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
   const doc = await createDocument(client, projectId, title, "已保存的原文。");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page
     .getByRole("button", { name: new RegExp(title) })
@@ -675,24 +702,72 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
 
 test("消息回执丢失时，原评论使用同一命令重试且不重复提交", async ({ page }) => {
   const { reply, sentIds, records } = await fixture(page, "lose-once");
-  await selectText(reply.locator("[data-quotable]"), "再选择工具。");
+  const selected = "再选择工具。";
+  const comment = "TEST 回执丢失";
+  const body = "TEST 回执丢失时原消息正文";
+  await selectText(reply.locator("[data-quotable]"), selected);
   await page.getByRole("button", { name: "评论选中文字" }).click();
-  await page.getByLabel("引用 1 的评论（可选）").fill("TEST 回执丢失");
+  await page.getByLabel("引用 1 的评论（可选）").fill(comment);
   await page.keyboard.press("Escape");
+  const input = page.getByLabel("AI 输入内容");
+  await input.fill(body);
+  const firstRequest = page.waitForRequest("**/api/platform/messages");
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
-  await expect(page.getByRole("group", { name: "选文与评论" })).toContainText(
-    "TEST 回执丢失",
+  const original = commandSchema.parse((await firstRequest).postDataJSON());
+  const sent = page.locator(
+    `.human-message[data-input-id="${original.commandId}"]`,
   );
+  const retry = sent.getByRole("button", { name: "重新发送消息", exact: true });
+  await expect(retry).toBeVisible();
+  await expect(sent).toHaveCount(1);
+  await expect(sent).toHaveAttribute("data-submission-state", "failed");
+  await expect(sent).toContainText(body);
+  await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
+  await expect(sent.locator(".text-quote-comment")).toHaveText(comment);
+  await expect(page.getByRole("group", { name: "选文与评论" })).toHaveCount(0);
+  await expect(input).toHaveValue("");
+  expect(sentIds).toEqual([original.commandId]);
+  expect(records.size).toBe(1); // Stored once even though its receipt was lost.
+
   await page.reload();
   await openInput(page);
-  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(retry).toBeVisible();
+  await expect(sent).toHaveCount(1);
+  await expect(sent).toHaveAttribute("data-submission-state", "failed");
+  await expect(sent).toContainText(body);
+  await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
+  await expect(sent.locator(".text-quote-comment")).toHaveText(comment);
+  expect(sentIds).toHaveLength(1); // Reload must not silently resend.
+  const nextDraft = "TEST 刷新后的新草稿不参与原消息重试";
+  await input.fill(nextDraft);
+  const retryRequest = page.waitForRequest("**/api/platform/messages");
+  await retry.click();
+  expect(commandSchema.parse((await retryRequest).postDataJSON())).toEqual(
+    original,
+  );
+  await expect(retry).toHaveCount(0);
+  await expect(sent).toHaveCount(1);
+  await expect(sent).toContainText(body);
+  await expect(sent.locator(".sent-text-quotes")).toContainText(selected);
+  await expect(sent.locator(".text-quote-comment")).toHaveText(comment);
+  await expect(input).toHaveValue(nextDraft);
   await expect(page.getByRole("group", { name: "选文与评论" })).toHaveCount(0);
   expect(sentIds).toHaveLength(2);
   expect(sentIds[1]).toBe(sentIds[0]);
   expect(records.size).toBe(1);
+  expect(records.get(original.commandId)!.operation).toMatchObject({
+    body,
+    textQuotes: [
+      {
+        text: selected,
+        comment,
+        source: { messageId: "publication:quote-fixture" },
+      },
+    ],
+  });
   expect(
     [...records.values()].filter((i) =>
-      i.operation.textQuotes?.some((q) => q.comment === "TEST 回执丢失"),
+      i.operation.textQuotes?.some((q) => q.comment === comment),
     ),
   ).toHaveLength(1);
 });

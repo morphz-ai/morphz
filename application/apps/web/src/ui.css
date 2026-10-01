@@ -30,9 +30,13 @@
 .app {
   --muted: light-dark(#686868, #a3a3a3);
   --workspace-offset: var(--sidebar-width);
+  position: relative;
 }
 .app.sidebar-hidden {
   --workspace-offset: 0px;
+}
+.app .navigation-icon {
+  stroke-width: 2;
 }
 /* Keep the four brand accent tokens; use their strong shade for small text. */
 .app .document-link,
@@ -309,11 +313,202 @@
   gap: 8px;
   margin-top: 47px;
 }
+.sidebar {
+  container: sidebar / inline-size;
+}
 .sidebar-header .wordmark {
   padding: 0 4px;
   min-height: 48px;
   font-size: 18px;
   gap: 8px;
+}
+.app[data-desktop="mac"] .sidebar-header .wordmark {
+  margin-top: 0;
+  min-height: 48px;
+}
+/* A narrow rail is still navigation, not the fully hidden sidebar. */
+.compact-sidebar-controls {
+  display: none;
+}
+@media (min-width: 561px) {
+  .app.sidebar-compact .sidebar {
+    padding-inline: 12px;
+  }
+  .app.sidebar-compact .sidebar-header {
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .app.sidebar-compact .wordmark {
+    padding: 0;
+    justify-content: center;
+    width: 100%;
+  }
+  .app.sidebar-compact .wordmark > span {
+    display: none;
+  }
+  .app.sidebar-compact .wordmark > .brand-mark {
+    width: 32px;
+    height: 32px;
+  }
+  .app.sidebar-compact .sidebar-tools {
+    display: contents;
+  }
+  .app.sidebar-compact
+    .sidebar-tools
+    > :is(.appearance-trigger, .notification-trigger, .profile-controls) {
+    display: none;
+  }
+  .app.sidebar-compact .sidebar-navigation {
+    overflow: auto;
+  }
+  .app.sidebar-compact
+    .sidebar-navigation
+    > :is(.space-label, .sidebar-search, .sidebar-section) {
+    display: none;
+  }
+  .app.sidebar-compact .compact-sidebar-controls {
+    display: flex;
+    /* Reserve the utility's real height instead of overflowing the profile. */
+    flex: none;
+    flex-direction: column;
+    margin-top: auto;
+    padding-top: 8px;
+  }
+  .app.sidebar-compact .compact-sidebar-button {
+    position: relative;
+    width: 100%;
+    height: 40px;
+    min-height: 40px;
+    padding: 8px;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+  }
+  .app.sidebar-compact .compact-sidebar-button svg {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+  .app.sidebar-compact .compact-sidebar-button[aria-expanded="true"] {
+    background: var(--nav-selected);
+    color: var(--ink);
+  }
+  .app.sidebar-compact .compact-sidebar-button:hover {
+    background: var(--nav-hover);
+  }
+  .compact-sidebar-unread {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent-strong);
+  }
+  .app.sidebar-compact .sidebar-bottom .profile-settings {
+    display: none;
+  }
+  .app.sidebar-compact
+    :is(
+      .sidebar-nav-label,
+      nav small,
+      .profile-identity,
+      .sidebar-entry-chevron,
+      .product-bridge
+    ) {
+    display: none;
+  }
+  .app.sidebar-compact nav > button {
+    justify-content: center;
+    width: 100%;
+    padding-inline: 0;
+    min-height: 44px;
+  }
+  .app.sidebar-compact nav > button > svg {
+    width: 24px;
+    height: 24px;
+  }
+  .app.sidebar-compact .sidebar-bottom .profile-controls {
+    flex-direction: column;
+  }
+  .app.sidebar-compact .profile-trigger {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .app.sidebar-compact .sidebar-toggle {
+    position: static;
+    transform: none;
+  }
+  .app.sidebar-compact[data-desktop="mac"] .topbar {
+    padding-left: calc(max(0px, 94px - var(--sidebar-width)) + 12px);
+  }
+  .app.sidebar-compact .browser-sidebar-toggle {
+    left: calc(var(--sidebar-width) + 12px);
+  }
+  .app.sidebar-compact[data-desktop="mac"] .browser-sidebar-toggle {
+    left: 100px;
+  }
+  .app.sidebar-compact.application-browser-workspace .browser-toolbar {
+    margin-left: 44px;
+    padding-left: 8px;
+  }
+  .app.sidebar-compact.application-browser-workspace[data-desktop="mac"]
+    .browser-toolbar {
+    margin-left: 60px;
+    padding-left: 12px;
+  }
+}
+.sidebar-resizer {
+  position: absolute;
+  left: calc(var(--sidebar-width) - 4px);
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 30;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+.app :is(.sidebar-resizer, .inspector-resizer)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--hairline);
+  pointer-events: none;
+  transition: background-color 160ms ease;
+}
+.app :is(.sidebar-resizer, .inspector-resizer):hover::after,
+.app :is(.sidebar-resizer, .inspector-resizer):focus-visible::after,
+.app .inspector-resizer:active::after,
+.app[data-sidebar-resizing] .sidebar-resizer::after {
+  background: var(--line-strong);
+}
+.app :is(.sidebar-resizer, .inspector-resizer):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+/* Native controls do not scale with CSS zoom. Keep the titlebar hit region
+   reserved even when the rail is visually narrowed by zooming out. */
+.app.sidebar-compact[data-desktop="mac"] .sidebar-resizer {
+  top: 48px;
+}
+.app.sidebar-compact[data-desktop="mac"] .sidebar-resizer::after {
+  top: -48px;
+}
+.sidebar-resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
 }
 .sidebar-tools {
   display: flex;
@@ -328,10 +523,6 @@
   right: auto;
   top: 100%;
   width: min(248px, calc(100vw - 32px));
-}
-.app[data-desktop="mac"] .sidebar-header .wordmark {
-  margin-top: 0;
-  min-height: 48px;
 }
 .application-toolbar-slot {
   min-width: 0;
@@ -852,6 +1043,40 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .human-message:first-child {
   border-top: 0;
 }
+.conversation .message-submission {
+  position: absolute;
+  right: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+}
+.conversation .retry-submission {
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+}
+.conversation .retry-submission:hover {
+  background: var(--surface-hover);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .message-submission[role="status"] svg {
+    animation: message-submission-spin 1s linear infinite;
+  }
+}
+@keyframes message-submission-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+:root[data-app-motion="off"] .message-submission svg {
+  animation: none;
+}
 .conversation-message > p,
 .reply-content {
   font-size: 15px;
@@ -862,6 +1087,39 @@ body:has(dialog[open]) .cognitive-application-frame {
   max-width: 94%;
   padding: 0;
   margin-bottom: 8px;
+}
+.conversation .response-source {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 2px 0 2px 8px;
+  border: 0;
+  border-left: 2px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+.conversation .response-source > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conversation .response-source:hover {
+  color: var(--ink);
+  border-left-color: var(--text-secondary);
+}
+@media (any-pointer: coarse) {
+  .conversation .response-source {
+    min-height: 44px;
+  }
 }
 .response-controls {
   display: inline-flex;
@@ -939,6 +1197,28 @@ body:has(dialog[open]) .cognitive-application-frame {
 .app .stop-response:hover:not(:disabled) {
   color: var(--ink);
   background: var(--soft);
+}
+.message-peek:has(.message-stop-controls[data-stop-pending]),
+.message-peek:has(.message-stop-controls [role="alert"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.app .message-stop-controls .stop-response {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: light-dark(#e5484d, #ffb4b8);
+}
+.app .message-stop-controls .stop-response:hover:not(:disabled) {
+  color: light-dark(#e5484d, #ffb4b8);
+  background: var(--hover);
+}
+.message-stop-controls .delivery-error {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .response-controls .delivery-error {
   margin: 0;
@@ -1086,6 +1366,51 @@ body:has(dialog[open]) .cognitive-application-frame {
   .reply-content
   > pre:last-child
   > code::after,
+.conversation-message[data-stream-active="true"]
+  .reply-content
+  > .markdown-table-scroll:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 27px;
+  height: 14px;
+  margin-left: 8px;
+  vertical-align: -1px;
+  background:
+    radial-gradient(circle closest-side, var(--accent) 95%, transparent) left
+      center / 7px 7px no-repeat,
+    radial-gradient(circle closest-side, var(--accent) 95%, transparent) center
+      center / 7px 7px no-repeat,
+    radial-gradient(circle closest-side, var(--accent) 95%, transparent) right
+      center / 7px 7px no-repeat;
+  animation: stream-activity 1.1s ease-in-out infinite;
+}
+@keyframes stream-activity {
+  0%,
+  100% {
+    background-position:
+      left center,
+      center center,
+      right center;
+  }
+  25% {
+    background-position:
+      left top,
+      center center,
+      right center;
+  }
+  50% {
+    background-position:
+      left center,
+      center top,
+      right center;
+  }
+  75% {
+    background-position:
+      left center,
+      center center,
+      right top;
+  }
+}
 .conversation-message[data-stream-active="true"] .tool-name::after,
 .execution-live-calls [data-stream-active="true"] .tool-name::after {
   content: "";

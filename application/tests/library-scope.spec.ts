@@ -66,7 +66,7 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   await createDocument(source, projectId, projectDoc, "项目正文");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(page.getByLabel("内容范围", { exact: true })).toHaveValue("all");
   await page
@@ -94,7 +94,7 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
     .toBeGreaterThan(0);
   await page
     .locator(".breadcrumb")
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(page.getByLabel("内容范围", { exact: true })).toHaveValue("all");
   await expect(card).toBeVisible();
@@ -130,7 +130,7 @@ test("搜索先看到刚创建的对象时，打开会补齐目录而不是无�
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const initialContent = await source.content({ limit: 100 });
   const title = "先被搜索发现的新对象-" + randomUUID();
@@ -198,7 +198,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     assigneeId: source.boot.actantId,
   });
   const nav = page.getByRole("navigation", { name: "主导航" });
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(
     page
       .getByRole("group", { name: "内容类型" })
@@ -236,7 +236,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     .locator(".breadcrumb")
     .getByRole("button", { name: "事项", exact: true })
     .click();
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(page.getByLabel("搜索内容")).toHaveValue(title);
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await nav.getByRole("button", { name: /^事项/ }).click();
@@ -265,12 +265,12 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     .getByRole("button", { name: "事项", exact: true })
     .click();
   await expect(page.getByLabel("事项列表")).toBeVisible();
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(page.getByLabel("搜索内容")).toHaveValue(title);
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   await page.reload();
   await expect(
-    nav.getByRole("button", { name: "内容", exact: true }),
+    nav.getByRole("button", { name: "内容库", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".artifact-card")).toHaveCount(0);
   expect((await source.tasks({ projectId, query: title })).items).toHaveLength(
@@ -340,9 +340,9 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
   await expect(
     page.locator(".application-tile").filter({ hasText: /^(资料|内容)/ }),
   ).toHaveCount(0);
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "内容", exact: true }),
+    page.getByRole("heading", { name: "内容库", exact: true }),
   ).toHaveCount(1);
   await expect(page.getByRole("tablist", { name: "已打开的应用" })).toHaveCount(
     0,
@@ -368,7 +368,7 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
       const actions = await page
         .getByRole("group", { name: "创建内容" })
         .boundingBox();
-      const toolbar = await page.getByLabel("内容工具栏").boundingBox();
+      const toolbar = await page.getByLabel("内容库工具栏").boundingBox();
       expect(actions!.y + actions!.height).toBeLessThanOrEqual(
         toolbar!.y + toolbar!.height,
       );
@@ -379,7 +379,7 @@ test("内容是固定目录，不再作为应用卡片；全局输入和工作�
   }
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(await openInput(page)).toHaveValue(deskDraft);
-  await nav.getByRole("button", { name: "内容", exact: true }).click();
+  await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(await openInput(page)).toHaveValue("内容目录草稿");
 });
 
@@ -398,7 +398,7 @@ test("内容空态和起草使用所选范围，不改变持续会话", async ({
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const scope = page.getByLabel("内容范围", { exact: true });
   await scope.selectOption(empty);

@@ -207,10 +207,6 @@
   z-index: 2;
   -webkit-app-region: no-drag;
 }
-.inspector-resizer:focus-visible {
-  outline: 1px solid var(--accent-strong);
-  outline-offset: -3px;
-}
 .execution-scope-count {
   margin-left: auto;
   color: var(--muted);

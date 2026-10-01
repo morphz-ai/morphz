@@ -114,10 +114,139 @@ async function fixture(page: Page) {
     ).toBeVisible();
     return page.locator(`[data-response-input-id="${ids.get(text)}"]`);
   }
-  return { entries, ids, input, add, refresh: presentation.refresh };
+  return { entries, ids, inputs, input, add, refresh: presentation.refresh };
 }
 
-test("中间投递状态不占气泡空间，停止仅在对应的回复区域", async ({ page }) => {
+test("本人气泡使用清透主题面色，四主题明暗可读且不增加立体装饰", async ({
+  page,
+}) => {
+  const { add, input, inputs, refresh } = await fixture(page);
+  await add("TEST 消息配色回归：正文与操作保持原位。", "completed");
+  inputs[0]!.textQuotes = [
+    {
+      id: "8bb526f1-5f62-4920-9a60-a07f8f786cba",
+      source: {
+        kind: "surface",
+        projectId: inputs[0]!.projectId,
+        title: "来源：测试原文",
+      },
+      text: "带有来源的小字也必须清楚可读。",
+      comment: "",
+    },
+  ];
+  await refresh();
+  const message = page.locator(".human-message").last();
+  await expect(message.locator(".sent-text-quote small")).toHaveText(
+    "来源：测试原文",
+  );
+  const initial = await message.boundingBox();
+  await input.fill("配色切换后保留的未发送草稿");
+  for (const appearance of ["light", "dark"]) {
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.locator(".app").evaluate(
+        (element, theme) => {
+          element.setAttribute("data-appearance", theme.appearance);
+          element.setAttribute("data-accent", theme.accent);
+        },
+        { appearance, accent },
+      );
+      const paint = await message.evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((a) => a.finished));
+        const canvas = document.createElement("canvas").getContext("2d")!;
+        const rgb = (color: string) => {
+          canvas.clearRect(0, 0, 1, 1);
+          canvas.fillStyle = color;
+          canvas.fillRect(0, 0, 1, 1);
+          return [...canvas.getImageData(0, 0, 1, 1).data];
+        };
+        const probe = document.createElement("span");
+        probe.style.color = "var(--accent)";
+        element.append(probe);
+        const accent = rgb(getComputedStyle(probe).color);
+        probe.remove();
+        const style = getComputedStyle(element);
+        // The quote's translucent inner fill composites over the real bubble,
+        // not over white. Check the source label on that effective surface.
+        const quote = element.querySelector(".sent-text-quote")!;
+        canvas.clearRect(0, 0, 1, 1);
+        canvas.fillStyle = style.backgroundColor;
+        canvas.fillRect(0, 0, 1, 1);
+        canvas.fillStyle = getComputedStyle(quote).backgroundColor;
+        canvas.fillRect(0, 0, 1, 1);
+        const quoteFill = [...canvas.getImageData(0, 0, 1, 1).data];
+        return {
+          ink: rgb(style.color),
+          fill: rgb(style.backgroundColor),
+          paper: rgb(
+            getComputedStyle(document.querySelector(".workspace")!)
+              .backgroundColor,
+          ),
+          accent,
+          shadow: style.boxShadow,
+          quoteFill,
+          quoteInk: rgb(getComputedStyle(quote.querySelector("small")!).color),
+        };
+      });
+      expect(paint.shadow).toBe("none");
+      expect(paint.fill[3]).toBe(255);
+      if (appearance === "light")
+        expect(paint.paper).toEqual([255, 255, 255, 255]);
+      if (appearance === "light") {
+        // A dark, readable foreground diluted with white looked dusty. Large
+        // surfaces retain the theme's hue but use a clear high-chroma pastel.
+        const expected = {
+          cyan: [197, 245, 252],
+          iris: [208, 197, 252],
+          coral: [252, 203, 197],
+          mono: [240, 240, 240],
+        }[accent]!;
+        for (let channel = 0; channel < 3; channel++)
+          expect(
+            Math.abs(paint.fill[channel]! - expected[channel]!),
+          ).toBeLessThanOrEqual(1);
+        if (accent !== "mono") {
+          const channels = paint.fill.slice(0, 3);
+          expect(
+            Math.max(...channels) - Math.min(...channels),
+          ).toBeGreaterThanOrEqual(50);
+        }
+      } else {
+        for (let channel = 0; channel < 3; channel++) {
+          expect(
+            Math.abs(
+              paint.fill[channel]! -
+                (paint.accent[channel]! * 0.25 + paint.paper[channel]! * 0.75),
+            ),
+          ).toBeLessThanOrEqual(1);
+        }
+      }
+      const luminance = (rgb: number[]) => {
+        const linear = rgb.slice(0, 3).map((v) => {
+          const c = v / 255;
+          return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        });
+        return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+      };
+      const ink = luminance(paint.ink),
+        fill = luminance(paint.fill);
+      expect(
+        (Math.max(ink, fill) + 0.05) / (Math.min(ink, fill) + 0.05),
+      ).toBeGreaterThanOrEqual(4.5);
+      const quoteInk = luminance(paint.quoteInk),
+        quoteFill = luminance(paint.quoteFill);
+      expect(
+        (Math.max(quoteInk, quoteFill) + 0.05) /
+          (Math.min(quoteInk, quoteFill) + 0.05),
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(await message.boundingBox()).toEqual(initial);
+      await expect(input).toHaveValue("配色切换后保留的未发送草稿");
+    }
+  }
+});
+
+test("中间投递状态不占气泡空间，红色停止图标悬停显示在对应用户消息", async ({
+  page,
+}) => {
   const { input, add } = await fixture(page);
   for (const state of ["queued", "sending", "running", "completed"] as const) {
     await add(
@@ -152,25 +281,45 @@ test("中间投递状态不占气泡空间，停止仅在对应的回复区域",
         expect(bubble.height - text.height).toBeLessThanOrEqual(21);
       }
       for (const control of await page.locator(".response-controls").all()) {
-        expect((await control.boundingBox())!.height).toBe(28);
-        expect(await control.textContent()).toBe("停止");
+        expect((await control.boundingBox())!.height).toBe(24);
+        expect(await control.textContent()).toBe("");
         expect(
           await control.evaluate(
             (el) => !!el.closest(".human-message, .composer"),
           ),
-        ).toBe(false);
+        ).toBe(true);
         expect(
           await control.evaluate((el) => {
-            const owner =
-              el.closest(".agent-reply") ??
-              el.closest(".response-placeholder")?.previousElementSibling;
+            const owner = el.closest(".human-message");
             return (
               owner?.getAttribute("data-input-id") ===
               el.getAttribute("data-response-input-id")
             );
           }),
         ).toBe(true);
+        await input.focus();
+        await page.mouse.move(0, 0);
+        const actions = control.locator("..");
+        await expect(actions).toHaveClass("message-peek");
+        await expect(actions).toHaveCSS("opacity", "0");
+        await control.locator("xpath=ancestor::article").hover();
+        await expect(actions).toHaveCSS("opacity", "1");
+        await expect(control.getByRole("button")).toHaveCSS(
+          "color",
+          theme === "dark" ? "rgb(255, 180, 184)" : "rgb(229, 72, 77)",
+        );
+        const copy = (await actions
+          .getByRole("button", { name: "复制消息" })
+          .boundingBox())!;
+        const button = (await control.getByRole("button").boundingBox())!;
+        expect(button.x).toBeGreaterThanOrEqual(copy.x + copy.width);
+        expect(Math.abs(button.y - copy.y)).toBeLessThan(1);
       }
+      await expect(
+        page.locator(
+          ".agent-reply .response-controls, .response-placeholder .response-controls",
+        ),
+      ).toHaveCount(0);
       await page.screenshot({
         path: `test-results/response-controls-${theme}-${width}.png`,
       });

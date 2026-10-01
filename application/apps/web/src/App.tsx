@@ -16,12 +16,8 @@ import {
   AudioLines,
   ArrowLeft,
   ArrowRight,
-  Inbox,
-  Layers2,
-  Library,
   MessageCircle,
   MessageSquareText,
-  PanelsTopLeft,
   Plus,
   X,
   Link2,
@@ -54,6 +50,7 @@ import { ModelPicker } from "./ModelPicker.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
+import { CompactSidebar } from "./CompactSidebar.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import {
   interfacePreferences,
@@ -94,6 +91,7 @@ import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
 import { BrandMark } from "./BrandMark.js";
+import { NavigationIcon } from "./NavigationIcon.js";
 import { ProductBridge } from "./ProductBridge.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
@@ -137,6 +135,11 @@ import { useExchangeFocus } from "./useExchangeFocus.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
 import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
+import {
+  SidebarResizeHandle,
+  useSidebarLayout,
+} from "./SidebarResizeHandle.js";
+import { sidebarPreference } from "./sidebar-layout.js";
 import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
 import { contentVisits, visitContent } from "./recent-content.js";
 import { useConversationStream } from "./useConversationStream.js";
@@ -171,6 +174,8 @@ type Preferences = InterfacePreferences & {
   composer: boolean;
   conversation: boolean | null;
   sidebar: boolean;
+  sidebarWidth?: number;
+  sidebarCompact?: boolean;
   projectOpen: boolean;
   applications?: Record<string, string | null>;
   scriptLocation?:
@@ -243,7 +248,7 @@ const emptyDraft: InputDraft = { body: "", selection: "", revision: null };
 const labels: Record<View, string> = {
   dialogue: "对话",
   inbox: "事项",
-  content: "内容",
+  content: "内容库",
   desk: "工作台",
   projects: "项目",
 };
@@ -334,6 +339,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ...defaultPrefs,
       ...p,
       ...interfacePreferences(p),
+      ...sidebarPreference(p.sidebarWidth, p.sidebarCompact),
       projectOpen: p.projectOpen ?? p.view === "projects",
       view: ["dialogue", "inbox", "content", "desk", "projects"].includes(
         p.view ?? "",
@@ -342,6 +348,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : defaultPrefs.view,
     };
   });
+  const leftSidebarPreference = sidebarPreference(
+    prefs.sidebarWidth,
+    prefs.sidebarCompact,
+  );
+  const leftSidebar = useSidebarLayout(leftSidebarPreference);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const dictationControls = useRef<{
     toggle(): void;
     interrupt(): void;
@@ -427,6 +440,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       .map(discussionId) ?? []),
     ...(client.boot?.runtime.messages.map(discussionId) ?? []),
   ]);
+  useEffect(() => {
+    // The first local bubble does not create a Session. Retire its draft only
+    // once authoritative navigation/history confirms the same conversation.
+    const next = { ...conversationDraftsRef.current };
+    let changed = false;
+    for (const [projectId, entry] of Object.entries(next)) {
+      if (
+        state?.conversations.some(
+          (conversation) => conversation.id === entry.id,
+        )
+      ) {
+        delete next[projectId];
+        changed = true;
+      }
+    }
+    if (changed) {
+      conversationDraftsRef.current = next;
+      setConversationDrafts(next);
+      writeLocal(draftKey("conversations"), next);
+    }
+  }, [state?.conversations]);
   const projectMetrics = useMemo(() => {
     const metrics = projectDirectoryMetrics(
       state!,
@@ -539,9 +573,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   // Association scopes the next input, not the shared conversation or its
   // in-flight activations. An open object wins; otherwise use the visible space.
   const deliveredProduction = prefs.scriptLocation
-    ? client.boot!.scriptLibrary.find((entry) => entry.id === prefs.scriptLocation!.productionId)
+    ? client.boot!.scriptLibrary.find(
+        (entry) => entry.id === prefs.scriptLocation!.productionId,
+      )
     : undefined;
-  const deliveredScript = deliveredProduction ? { production: deliveredProduction } : null;
+  const deliveredScript = deliveredProduction
+    ? { production: deliveredProduction }
+    : null;
   const project =
     state?.projects.find(
       (p) => p.id === deliveredScript?.production?.projectId,
@@ -1921,6 +1959,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         !draft.textQuotes?.length) ||
       sending ||
       sendPending.current ||
+      (selectedDraft &&
+        client.boot?.localSavedInputIds.includes(selectedDraft.inputId)) ||
       uploadingDrafts[contextKey]
     )
       return;
@@ -1942,6 +1982,25 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     sendPending.current = true;
     setSending(true);
     setInputErrors((old) => ({ ...old, [key]: "" }));
+    let staged = false;
+    const onInputStaged = (inputId: string) => {
+      staged = true;
+      updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
+      setRevealedInputs((old) => ({ ...old, [conversationId]: inputId }));
+      if (currentContext.current === key) {
+        setMobileCollaboration(false);
+        setInteraction(afterSend(latestInteraction.current));
+        if (latestInteraction.current !== "hidden")
+          sentInputFocus.current = {
+            key,
+            generation: navigationGeneration.current,
+          };
+      }
+      // Only preparation locks the editor. Delivery owns its immutable payload;
+      // later receipts must never erase or disable the next draft.
+      sendPending.current = false;
+      setSending(false);
+    };
     try {
       if (
         !asAnnotation &&
@@ -2060,7 +2119,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           throw new Error(
             "当前版本不支持新建会话，请更新应用；草稿已保留，现有会话仍可使用。",
           );
-        const receipt = await client.execute(
+        await client.execute(
           {
             type: "record-input",
             ...(captured.model ? { model: captured.model } : {}),
@@ -2116,26 +2175,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           !!client.boot?.runtime.configured,
           undefined,
           firstConversation?.inputId,
+          onInputStaged,
         );
-        if (
-          firstConversation &&
-          client.boot?.runtime.configured &&
-          conversationDraftsRef.current[project.id]?.id === firstConversation.id
-        ) {
-          const next = { ...conversationDraftsRef.current };
-          delete next[project.id];
-          conversationDraftsRef.current = next;
-          setConversationDrafts(next);
-          writeLocal(draftKey("conversations"), next);
-        }
-        setRevealedInputs((old) => ({
-          ...old,
-          [conversationId]: receipt.entityId,
-        }));
       }
       // The acknowledged input consumed this conversation's references.
-      updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
-      if (currentContext.current === key) {
+      if (!staged) updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
+      if (!staged && currentContext.current === key) {
         if (asAnnotation) {
           if (compact) setMobileCollaboration(true);
           else prefer({ collaboration: true });
@@ -2156,6 +2201,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         }
       }
     } catch (e) {
+      // A staged input owns its failure/retry control. Do not attach an older
+      // submission error to the user's new composer contents.
+      if (staged) return;
       if (captured.continuation) {
         const reason =
           e instanceof RequestError && e.code === "work_closed"
@@ -2174,8 +2222,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
       }));
     } finally {
-      sendPending.current = false;
-      setSending(false);
+      if (!staged) {
+        sendPending.current = false;
+        setSending(false);
+      }
     }
   }
   function supplement(target: InputContinuation) {
@@ -2478,6 +2528,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         (!collaborationVisible ? "without-collaboration" : "") +
         (compact && mobileCollaboration ? " mobile-collaboration" : "") +
         (!prefs.sidebar ? " sidebar-hidden" : "") +
+        (prefs.sidebar && leftSidebar.compact ? " sidebar-compact" : "") +
         (immersiveApplication ? " application-immersive" : "") +
         (applicationWorkspaceOpen &&
         activeInstance?.applicationId === browserApplication.id
@@ -2485,6 +2536,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           : "")
       }
       data-accent={prefs.accent}
+      style={{ "--sidebar-width": `${leftSidebar.width}px` } as CSSProperties}
       data-appearance={prefs.appearance}
       data-text-size={prefs.textSize}
       data-desktop={
@@ -2511,6 +2563,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               client={client}
               onOpen={openUser}
               onSettings={() => setSettingsSection("notifications")}
+              open={notificationsOpen}
+              onOpenChange={setNotificationsOpen}
+              onUnreadChange={setUnreadNotifications}
             />
             <ProfileMenu {...profileMenu} compact />
           </div>
@@ -2530,21 +2585,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             {(
               ["dialogue", "inbox", "content", "desk", "projects"] as View[]
             ).map((view) => {
-              const Icon = {
-                dialogue: MessageCircle,
-                inbox: Inbox,
-                content: Library,
-                desk: PanelsTopLeft,
-                projects: Layers2,
-              }[view];
               return (
                 <button
                   key={view}
                   aria-current={prefs.view === view ? "page" : undefined}
+                  aria-label={
+                    labels[view] + (view === "inbox" ? ` ${inboxCount}` : "")
+                  }
+                  title={labels[view]}
                   onClick={() => navigate(view)}
                 >
-                  <Icon />
-                  {labels[view]}
+                  <NavigationIcon kind={view} />
+                  <span className="sidebar-nav-label">{labels[view]}</span>
                   {view === "inbox" && <small>{inboxCount}</small>}
                 </button>
               );
@@ -2552,7 +2604,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           </nav>
           <div className="sidebar-section">
             <div className="section-label">
-              项目
+              <span>项目</span>
               <button
                 aria-label="新建项目"
                 onClick={() => setCreating("project")}
@@ -2636,6 +2688,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </div>
           </div>
         </div>
+        <CompactSidebar
+          unreadNotifications={unreadNotifications}
+          onSearch={() => setSearchOpen(true)}
+          onSettings={(section) =>
+            section ? setSettingsSection(section) : profileMenu.onSettings()
+          }
+          onNotifications={() => setNotificationsOpen(true)}
+        />
         <div className="sidebar-bottom">
           {!window.morphzDesktop && (
             <ProductBridge
@@ -2646,6 +2706,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           <ProfileMenu {...profileMenu} />
         </div>
       </aside>
+      {prefs.sidebar && !leftSidebar.mobile && !immersiveApplication && (
+        <SidebarResizeHandle
+          preference={leftSidebarPreference}
+          scope={navigationProject?.id ?? prefs.view}
+          onCommit={prefer}
+        />
+      )}
       <div
         className="workspace"
         ref={inspectorWorkspace}
@@ -2940,12 +3007,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   onComposeIntent={composeIntent}
                   onCompose={(text, artifactId, scriptGeneration) => {
                     if (scriptGeneration) {
-                      const production = client.getScriptEditor(scriptGeneration.productionId);
+                      const production = client.getScriptEditor(
+                        scriptGeneration.productionId,
+                      );
                       const target = production?.items.find(
                         (i) => i.id === scriptGeneration.targetId,
                       );
                       if (
-                        !production || production.projectId !== project.id ||
+                        !production ||
+                        production.projectId !== project.id ||
                         !target ||
                         target.revision !== scriptGeneration.baseRevision ||
                         production.revision !== scriptGeneration.contextRevision
@@ -3255,20 +3325,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       input.current?.focus({ preventScroll: true });
                       try {
                         await client.dispatchInput(id);
-                        const drafts = { ...conversationDraftsRef.current };
-                        const first = Object.entries(drafts).find(
-                          ([, draft]) => draft.inputId === id,
-                        );
-                        if (first) {
-                          delete drafts[first[0]];
-                          conversationDraftsRef.current = drafts;
-                          setConversationDrafts(drafts);
-                          writeLocal(draftKey("conversations"), drafts);
-                        }
                       } catch (error) {
-                        setNotice(
-                          error instanceof Error ? error.message : "发送失败。",
-                        );
+                        if (!client.boot?.localSavedInputIds.includes(id))
+                          setNotice(
+                            error instanceof Error
+                              ? error.message
+                              : "发送失败。",
+                          );
                       }
                     }}
                   />
@@ -3545,9 +3608,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 data-testid="script-input-reference"
                               >
                                 剧本请求 ·{" "}
-                                {client.scriptVersionTitle(draft.scriptGeneration.productionId,
-                                  draft.scriptGeneration.targetId, draft.scriptGeneration.baseRevision) ??
-                                  draft.scriptGeneration.targetId}{" "}
+                                {client.scriptVersionTitle(
+                                  draft.scriptGeneration.productionId,
+                                  draft.scriptGeneration.targetId,
+                                  draft.scriptGeneration.baseRevision,
+                                ) ?? draft.scriptGeneration.targetId}{" "}
                                 · v{draft.scriptGeneration.baseRevision}
                                 <button
                                   type="button"
@@ -3882,6 +3947,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 !draft.attachments?.length &&
                                 !draft.textQuotes?.length) ||
                               sending ||
+                              (selectedDraft &&
+                                client.boot?.localSavedInputIds.includes(
+                                  selectedDraft.inputId,
+                                )) ||
                               !!uploadingDrafts[contextKey] ||
                               (!draft.continuation &&
                                 canAuthorizeDirectories &&

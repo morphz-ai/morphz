@@ -8,7 +8,7 @@ import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 const catalog = (page: Page) =>
   page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
 
 test("内容范围也是起草目标；草稿与附件分开保存，迟到发送不串项目", async ({

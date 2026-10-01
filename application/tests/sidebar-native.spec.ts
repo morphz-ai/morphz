@@ -35,6 +35,11 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
   try {
     const page = await desktop.firstWindow();
     await expect(page.locator(".app")).toBeVisible();
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]!.getWindowButtonPosition(),
+      ),
+    ).toEqual({ x: 8, y: 16 });
     const inputs = await platformInputState(page, source);
     await desktop.evaluate(({ BrowserWindow, nativeTheme }) => {
       const window = BrowserWindow.getAllWindows()[0]!;

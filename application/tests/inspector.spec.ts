@@ -226,31 +226,29 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
   await geometry(page, "docked");
   await expect(page.locator(".inspector-header h2")).toBeFocused();
   await page
+    .locator(".workspace-inspector")
     .getByRole("separator", { name: "调整批注栏宽度" })
     .press("ArrowLeft");
-  await expect(page.getByRole("separator")).toHaveAttribute(
-    "aria-valuenow",
-    "356",
-  );
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveAttribute("aria-valuenow", "356");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "显示右侧栏" })).toBeFocused();
   await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
   await page.getByRole("button", { name: "当前理解", exact: true }).click();
   await geometry(page, "docked");
-  await expect(page.getByRole("separator")).toHaveAttribute(
-    "aria-valuenow",
-    "356",
-  );
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveAttribute("aria-valuenow", "356");
   await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "执行记录", exact: true }),
   ).toBeVisible();
   await geometry(page, "docked");
-  await expect(page.getByRole("separator")).toHaveAttribute(
-    "aria-valuenow",
-    "356",
-  );
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveAttribute("aria-valuenow", "356");
   await page.screenshot({ path: "test-results/inspector-docked-light.png" });
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.getByRole("button", { name: "隐藏右侧栏" })).toHaveCSS(
@@ -260,19 +258,19 @@ test("三类检查器共用全高列、标题、调宽、焦点和草稿规则",
   await page.screenshot({ path: "test-results/inspector-docked-dark.png" });
   await page.setViewportSize({ width: 1220, height: 760 });
   await geometry(page, "docked");
-  await expect(page.getByRole("separator")).toHaveAttribute(
-    "aria-valuenow",
-    "300",
-  );
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveAttribute("aria-valuenow", "300");
   await page.setViewportSize({ width: 1000, height: 700 });
   await geometry(page, "overlay");
-  await expect(page.getByRole("separator")).toHaveCount(0);
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "隐藏侧边栏", exact: true }).click();
   await geometry(page, "docked");
-  await expect(page.getByRole("separator")).toHaveAttribute(
-    "aria-valuenow",
-    "356",
-  );
+  await expect(
+    page.locator(".workspace-inspector").getByRole("separator"),
+  ).toHaveAttribute("aria-valuenow", "356");
   for (const width of [760, 390, 320]) {
     await page.setViewportSize({ width, height: 540 });
     await geometry(page, "overlay");

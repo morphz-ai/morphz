@@ -148,7 +148,7 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
     (p: { kind: string }) => p.kind === "desk",
   ).id;
   await page
-    .getByRole("button", { name: /^查看(?:全部|项目)内容$/, exact: true })
+    .getByRole("button", { name: /^查看(?:内容库|项目内容)$/, exact: true })
     .click();
   await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();

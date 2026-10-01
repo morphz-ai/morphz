@@ -38,7 +38,7 @@ test("正式内容界面设置项目、撤销和新建项目归入，原文档�
   });
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const card = page.locator(".artifact-card").filter({ hasText: title });
   await expect(card).toContainText(firstTitle);
@@ -51,7 +51,7 @@ test("正式内容界面设置项目、撤销和新建项目归入，原文档�
   ).toContainText("1 项内容");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("button", { name: `内容操作：${title}` }).click();
   await page.getByRole("button", { name: "设置项目", exact: true }).click();
@@ -94,7 +94,7 @@ test("正式内容界面设置项目、撤销和新建项目归入，原文档�
   ).toContainText("1 项内容");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const inNewProject = await source.getContent(original!.id);
   expect((await source.project(inNewProject.projectId)).title).toBe(newTitle);
@@ -118,7 +118,7 @@ test("正式内容界面设置项目、撤销和新建项目归入，原文档�
   await page.reload();
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   const renamedTitle = `改名验收${suffix}`;
   await page.getByRole("button", { name: `内容操作：${title}` }).click();
@@ -143,7 +143,7 @@ test("正式内容界面设置项目、撤销和新建项目归入，原文档�
   await page.reload();
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: `打开内容：${renamedTitle}` }),
@@ -173,7 +173,7 @@ test("正式内容界面重命名剧本，目录与工作室原件一致", async
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("button", { name: `内容操作：${title}` }).click();
   await page.getByRole("button", { name: "重命名", exact: true }).click();
@@ -213,7 +213,7 @@ test("正式内容界面重命名剧本，目录与工作室原件一致", async
   await page.reload();
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: `打开内容：${renamedTitle}` }),
@@ -242,7 +242,7 @@ test("内容改名冲突保留未提交名称，不覆盖应用原件", async ({
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容", exact: true })
+    .getByRole("button", { name: "内容库", exact: true })
     .click();
   await page.getByRole("button", { name: `内容操作：${title}` }).click();
   await page.getByRole("button", { name: "重命名", exact: true }).click();
