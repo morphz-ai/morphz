@@ -405,7 +405,8 @@ test("个人菜单保留真实身份操作与客户端功能；外部关闭和�
   await trigger.click();
   const menu = page.getByRole("group", { name: "用户菜单", exact: true });
   await expect(menu.getByRole("button")).toHaveText([
-    "搜索",
+    "个人资料",
+    /^搜索(?:⌘K|Ctrl\+K)$/,
     "外观",
     "通知",
     "设置",
@@ -424,9 +425,9 @@ test("个人菜单保留真实身份操作与客户端功能；外部关闭和�
   ).toBeVisible();
   await trigger.press("Enter");
   await expect(
-    menu.getByRole("button", { name: "搜索资料", exact: true }),
+    menu.getByRole("button", { name: "个人资料", exact: true }),
   ).toBeFocused();
-  for (let index = 0; index < 4; index++) await page.keyboard.press("Tab");
+  for (let index = 0; index < 5; index++) await page.keyboard.press("Tab");
   await expect(
     menu.getByRole("button", { name: "退出当前身份", exact: true }),
   ).toBeFocused();
@@ -447,7 +448,8 @@ test("个人菜单保留真实身份操作与客户端功能；外部关闭和�
     await trigger.press("Space");
     await expect(menu).toBeInViewport();
     await expect(menu.getByRole("button")).toHaveText([
-      "搜索",
+      "个人资料",
+      /^搜索(?:⌘K|Ctrl\+K)$/,
       "外观",
       "通知",
       "设置",

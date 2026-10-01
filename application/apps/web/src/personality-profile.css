@@ -1,0 +1,318 @@
+.personality-profile {
+  --profile-accent: var(--accent);
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+  padding: 2px 0 12px;
+}
+.personality-identity {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 0 4px;
+  min-width: 0;
+}
+.personality-portrait {
+  position: relative;
+  flex: 0 0 96px;
+  width: 96px;
+  height: 96px;
+}
+.app .personality-camera {
+  position: absolute;
+  right: -3px;
+  bottom: 1px;
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.app .personality-camera:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+.personality-name {
+  min-width: 0;
+  flex: 1;
+}
+.personality-name > label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .personality-name > input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  font-size: 23px;
+  font-weight: 550;
+  padding: 7px 0;
+  color: var(--ink);
+}
+.app .personality-name > input:not(:disabled):hover {
+  border-bottom-color: var(--line);
+}
+.app .personality-name > input:focus-visible {
+  outline: 0;
+  border-bottom-color: var(--accent);
+}
+.app .personality-text-action {
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--muted);
+  box-shadow: none;
+}
+.personality-onboarding {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--paper));
+}
+.app .personality-onboarding button {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font-size: 12px;
+  padding: 0;
+}
+.personality-field {
+  display: grid;
+  gap: 9px;
+  font-size: 13px;
+}
+.app .personality-field > input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.personality-traits {
+  display: grid;
+  gap: 23px;
+}
+.personality-trait {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.personality-trait-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.personality-trait-heading output {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.personality-trait-heading output b {
+  min-width: 24px;
+  padding: 2px 5px;
+  text-align: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 13%, var(--paper));
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.app .personality-trait input[type="range"] {
+  --track-empty: color-mix(in srgb, var(--ink) 9%, var(--paper));
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0;
+  height: 22px;
+  border: 0;
+  outline-offset: 5px;
+  padding: 0;
+  box-shadow: none;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent) 36%, var(--paper)),
+        color-mix(in srgb, var(--accent) 70%, var(--paper))
+      )
+      left center / var(--trait-fill) 9px no-repeat,
+    linear-gradient(var(--track-empty), var(--track-empty)) center / 100% 9px
+      no-repeat;
+  cursor: pointer;
+}
+.personality-trait input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 3px solid var(--paper);
+  background: var(--accent);
+  box-shadow: 0 1px 6px #0002;
+}
+.personality-trait input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 3px solid var(--paper);
+  background: var(--accent);
+  box-shadow: 0 1px 6px #0002;
+}
+.personality-trait-ends {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: -5px;
+}
+.personality-speaking {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  margin: 0;
+}
+.personality-speaking legend {
+  margin-bottom: 12px;
+  padding: 0;
+  font-size: 13px;
+}
+.personality-speaking > div {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 4px;
+  gap: 3px;
+  border-radius: 13px;
+  background: var(--hover);
+}
+.personality-speaking label {
+  position: relative;
+  text-align: center;
+  cursor: pointer;
+}
+.personality-speaking input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.personality-speaking label > span {
+  display: block;
+  padding: 9px 2px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.personality-speaking input:checked + span {
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 1px 5px #0001;
+}
+.personality-speaking input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.personality-custom {
+  color: var(--muted);
+  font-size: 12px;
+}
+.personality-custom summary {
+  cursor: pointer;
+}
+.app .personality-custom textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  padding: 12px;
+  resize: vertical;
+  background: var(--soft);
+  font-size: 13px;
+}
+.personality-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+.personality-save-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.app .personality-save {
+  min-width: 68px;
+  border-radius: 11px;
+}
+.app .personality-reset {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+.personality-error,
+.personality-read-error {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.personality-error {
+  color: var(--danger);
+}
+.personality-error button,
+.personality-read-error button {
+  margin-left: 10px;
+}
+.personality-profile input:disabled,
+.personality-profile fieldset:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.subject-settings > .personality-profile {
+  margin-bottom: 18px;
+}
+.subject-tabs .profile-avatar {
+  pointer-events: none;
+}
+.subject-tabs .profile-avatar svg {
+  width: 100%;
+  height: 100%;
+}
+@media (max-width: 520px) {
+  .personality-identity {
+    gap: 16px;
+  }
+  .personality-name > input {
+    font-size: 21px;
+  }
+}

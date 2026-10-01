@@ -35,13 +35,37 @@ export function useModal(
     const position = () => {
       const bounds = main?.getBoundingClientRect();
       if (!bounds || bounds.width < 1) return;
+      // DOMRect is already rendered through CSS zoom. The dialog's fixed
+      // offsets and dimensions are layout CSS pixels; applying the rendered
+      // coordinates directly would scale them a second time.
+      const nativeZoom = (element as HTMLElement & { currentCSSZoom?: number })
+        .currentCSSZoom;
+      let zoom = nativeZoom ?? 1;
+      if (nativeZoom === undefined) {
+        for (
+          let ancestor: HTMLElement | null = element;
+          ancestor;
+          ancestor = ancestor.parentElement
+        ) {
+          const value = getComputedStyle(ancestor).zoom;
+          const factor = value.endsWith("%")
+            ? Number.parseFloat(value) / 100
+            : Number.parseFloat(value);
+          if (Number.isFinite(factor) && factor > 0) zoom *= factor;
+        }
+      }
+      if (!Number.isFinite(zoom) || zoom <= 0) zoom = 1;
       element.style.setProperty(
         "--modal-center",
-        `${bounds.x + bounds.width / 2}px`,
+        `${(bounds.x + bounds.width / 2) / zoom}px`,
       );
       element.style.setProperty(
         "--modal-max-width",
-        `${Math.max(240, bounds.width - 32)}px`,
+        `${Math.max(0, bounds.width / zoom - 32)}px`,
+      );
+      element.style.setProperty(
+        "--modal-max-height",
+        `${Math.max(0, window.innerHeight / zoom - 32)}px`,
       );
     };
     const observer = new ResizeObserver(position);

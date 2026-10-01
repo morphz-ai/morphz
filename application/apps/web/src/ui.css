@@ -2038,7 +2038,7 @@ body:has(dialog[open]) .cognitive-application-frame {
 .create-dialog {
   /* Variants choose a preferred width; they never compete with this rule. */
   width: min(var(--ui-dialog-width, 460px), calc(100vw - 40px));
-  max-height: calc(100dvh - 32px);
+  max-height: var(--modal-max-height, calc(100dvh - 32px));
   border-radius: var(--ui-radius-panel);
   padding: 4px 12px 12px;
   overflow: auto;
@@ -2901,7 +2901,7 @@ summary:focus-visible {
 .settings-dialog[open] {
   display: flex;
   flex-direction: column;
-  height: min(480px, calc(100dvh - 32px));
+  height: min(480px, var(--modal-max-height, calc(100dvh - 32px)));
   overflow: hidden;
 }
 .settings-dialog > header {

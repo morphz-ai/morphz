@@ -18,6 +18,13 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { SubjectSchedules } from "./SubjectSchedules.js";
 import { subjectStatus, type SubjectView } from "./subject-sidebar-model.js";
 import "./subject-sidebar.css";
+import { ProfileEditor } from "./ProfileEditor.js";
+import { ProfileAvatar } from "./ProfileAvatar.js";
+import type { ProfileController } from "./useProfile.js";
+import {
+  subjectLogoState,
+  type SubjectLogoState,
+} from "./subject-sidebar-model.js";
 
 const tabs = [
   { id: "activity", label: "活动", icon: List },
@@ -44,6 +51,9 @@ export function SubjectSidebar({
   directoryScope,
   directoryAvailable,
   onDirectories,
+  profile,
+  allowMotion = true,
+  presence,
 }: {
   client: WorkspaceClient;
   view: SubjectView;
@@ -62,6 +72,9 @@ export function SubjectSidebar({
   directoryScope: string;
   directoryAvailable: boolean;
   onDirectories(): void;
+  profile?: ProfileController;
+  allowMotion?: boolean;
+  presence?: SubjectLogoState;
 }) {
   const bar = useRef<HTMLDivElement>(null),
     boot = client.boot!,
@@ -70,14 +83,22 @@ export function SubjectSidebar({
     (actor) => actor.kind === "agent",
   );
   const attention = runtime.attention;
+  const name =
+    (profile?.snapshot?.agent.available && profile.snapshot.agent.revision > 0
+      ? profile.snapshot.agent.data.name
+      : undefined) ??
+    subject?.name ??
+    "Morphz";
+  const logo = presence ?? subjectLogoState(runtime, client.online);
+  const avatarState = logo.state === "unknown" ? "unavailable" : logo.state;
   const permissionsReady =
     directories.scope === directoryScope && directories.ready;
   return (
     <InspectorPanel
       className="subject-sidebar"
-      label="Morphz 信息"
+      label={`${name} 信息`}
       focusOnMount={false}
-      title={subject?.name ?? "Morphz"}
+      title={name}
       resizeLabel="调整 Morphz 信息栏宽度"
       layout={layout}
       onResize={onResize}
@@ -127,7 +148,17 @@ export function SubjectSidebar({
               tabIndex={view === id ? 0 : -1}
               onClick={() => onView(id)}
             >
-              <Icon />
+              {id === "settings" && profile ? (
+                <ProfileAvatar
+                  name={name}
+                  size={18}
+                  src={profile.media.agent?.poster}
+                  state="idle"
+                  allowMotion={false}
+                />
+              ) : (
+                <Icon />
+              )}
             </button>
           ))}
         </div>
@@ -203,9 +234,23 @@ export function SubjectSidebar({
         {view === "settings" && (
           <section className="subject-section subject-settings">
             <h3>设定</h3>
+            {profile && (
+              <ProfileEditor
+                key={profile.scope}
+                profile={profile}
+                subject="agent"
+                state={avatarState}
+                stateLabel={logo.label}
+                allowMotion={allowMotion}
+              />
+            )}
             <dl>
-              <dt>名字</dt>
-              <dd>{subject?.name ?? "Morphz"}</dd>
+              {!profile && (
+                <>
+                  <dt>名字</dt>
+                  <dd>{subject?.name ?? "Morphz"}</dd>
+                </>
+              )}
               <dt>默认模型</dt>
               <dd>{runtime.model || "尚未配置"}</dd>
             </dl>

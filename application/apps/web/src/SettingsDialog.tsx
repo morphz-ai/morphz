@@ -1,5 +1,15 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Bell, Keyboard, Palette, Plug, Settings2, X } from "lucide-react";
+import {
+  Bell,
+  Keyboard,
+  Palette,
+  Plug,
+  Settings2,
+  UserRound,
+  X,
+} from "lucide-react";
+import { ProfileEditor } from "./ProfileEditor.js";
+import type { ProfileController } from "./useProfile.js";
 import type { WorkspaceClient } from "./client.js";
 import { ModelSettings } from "./ModelSettings.js";
 import { ConnectionSettings } from "./ConnectionDetails.js";
@@ -10,7 +20,12 @@ import { AppearanceChoices } from "./AppearanceControls.js";
 import type { InterfacePreferences } from "./interface-preferences.js";
 
 export type SettingsSection =
-  "models" | "appearance" | "input" | "notifications" | "connection";
+  | "profile"
+  | "models"
+  | "appearance"
+  | "input"
+  | "notifications"
+  | "connection";
 
 export function SettingsDialog({
   client,
@@ -18,14 +33,19 @@ export function SettingsDialog({
   prefs,
   onPreference,
   onClose,
+  profile,
 }: {
   client: WorkspaceClient;
   initialSection?: SettingsSection;
   prefs: InterfacePreferences;
   onPreference: (update: Partial<InterfacePreferences>) => void;
   onClose: () => void;
+  profile?: ProfileController;
 }) {
   const sections = [
+    ...(profile
+      ? [{ id: "profile" as const, label: "个人资料", icon: UserRound }]
+      : []),
     ...(client.boot!.capabilities.modelSettings
       ? [{ id: "models" as const, label: "模型与账号", icon: Settings2 }]
       : []),
@@ -42,7 +62,8 @@ export function SettingsDialog({
   const [modelBusy, setModelBusy] = useState(false);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [notificationBusy, setNotificationBusy] = useState(false);
-  const busy = modelBusy || connectionBusy || notificationBusy;
+  const [profileBusy, setProfileBusy] = useState(false);
+  const busy = modelBusy || connectionBusy || notificationBusy || profileBusy;
   const dialog = useRef<HTMLDialogElement>(null),
     content = useRef<HTMLDivElement>(null),
     closeButton = useRef<HTMLButtonElement>(null);
@@ -131,6 +152,23 @@ export function SettingsDialog({
           ))}
         </nav>
         <div className="settings-content" ref={content}>
+          {profile && visited.includes("profile") && (
+            <section
+              hidden={active !== "profile"}
+              aria-label="个人资料设置面板"
+            >
+              <header>
+                <h2>个人资料</h2>
+              </header>
+              <ProfileEditor
+                key={profile.scope}
+                subject="human"
+                profile={profile}
+                allowMotion={prefs.motion !== "reduce"}
+                onBusy={setProfileBusy}
+              />
+            </section>
+          )}
           {visited.includes("models") && (
             <section hidden={active !== "models"} aria-label="模型与账号">
               <ModelSettings

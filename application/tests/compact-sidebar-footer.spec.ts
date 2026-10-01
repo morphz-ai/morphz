@@ -303,7 +303,7 @@ test("个人菜单打开时随窗口临时收缩向侧面、恢复后回到上�
     await expect(account).toHaveAttribute("aria-expanded", "true");
     await expectProfilePlacement(page, account, menu, compact);
     await expect(
-      menu.getByRole("button", { name: "搜索资料", exact: true }),
+      menu.getByRole("button", { name: "个人资料", exact: true }),
     ).toBeFocused();
     // At 640px the unpinned composer may legitimately unmount after the
     // outside click. Verify its real saved draft without stealing menu focus.

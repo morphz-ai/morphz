@@ -8,6 +8,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
+import { HumanAvatar } from "./HumanAvatar.js";
 
 export function ProfileMenu({
   name,
@@ -21,6 +22,11 @@ export function ProfileMenu({
   onNotifications,
   onSettings,
   onLogout,
+  onProfile,
+  avatarSrc,
+  avatarPosterSrc,
+  avatarAnimated = false,
+  allowMotion = true,
 }: {
   name: string;
   status: string;
@@ -34,11 +40,27 @@ export function ProfileMenu({
   onNotifications?: () => void;
   onSettings: () => void;
   onLogout?: () => void;
+  onProfile?: () => void;
+  avatarSrc?: string;
+  avatarPosterSrc?: string;
+  avatarAnimated?: boolean;
+  allowMotion?: boolean;
 }) {
   const identity = (
     <>
       <span className="avatar" aria-hidden="true">
-        <UserRound />
+        {avatarSrc ? (
+          <HumanAvatar
+            name={name}
+            src={avatarSrc}
+            posterSrc={avatarPosterSrc}
+            animated={avatarAnimated}
+            allowMotion={allowMotion}
+            size={32}
+          />
+        ) : (
+          <UserRound />
+        )}
         {unreadNotifications > 0 && <span className="profile-unread" />}
       </span>
       {!compact && (
@@ -67,6 +89,9 @@ export function ProfileMenu({
     </>
   );
   const options: ComposerOption[] = [
+    ...(onProfile
+      ? [{ label: "个人资料", icon: <UserRound />, onSelect: onProfile }]
+      : []),
     ...(onSearch
       ? [
           {

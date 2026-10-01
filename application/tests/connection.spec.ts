@@ -72,8 +72,8 @@ test("未配置可进入设置；焦点、取消、Esc 和草稿恢复正常，�
   await expect(dialog).toHaveCount(0);
   await expect(
     page
-      .locator(".sidebar-bottom")
-      .getByRole("button", { name: "设置", exact: true }),
+      .getByRole("button", { name: "用户菜单", exact: true })
+      .filter({ visible: true }),
   ).toBeFocused();
   await openInput(page);
   await expect(input).toHaveValue("连接检查过程中保留的草稿");

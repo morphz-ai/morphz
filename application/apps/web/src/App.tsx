@@ -51,6 +51,7 @@ import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
+import { useProfile } from "./useProfile.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import {
   interfacePreferences,
@@ -326,6 +327,7 @@ function WorkspaceLogin({
   );
 }
 function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
+  const profile = useProfile(client);
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
   const [recentContentVisits, setRecentContentVisits] = useState(() =>
@@ -2399,6 +2401,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
     }
   }
+  const agentName =
+    (profile.snapshot?.agent.available && profile.snapshot.agent.revision > 0
+      ? profile.snapshot.agent.data.name
+      : undefined) ??
+    client.boot!.workspace.actants.find((actor) => actor.kind === "agent")
+      ?.name ??
+    "Morphz";
+  const presence = subjectLogoState(
+    client.boot!.runtime,
+    client.online,
+    stream,
+    [
+      ...client.boot!.outputs.map((output) => output.inputId),
+      ...client.boot!.scriptOutputs.map((output) => output.inputId),
+    ],
+  );
   const inspectorViewOptions: ComposerOption[] = [
     {
       label: "执行记录",
@@ -2407,7 +2425,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       pressed: !!executions,
     },
     {
-      label: "Morphz 设定",
+      label: `${agentName} 设定`,
       icon: <SlidersHorizontal />,
       onSelect: () => selectSubjectView("settings"),
       pressed: subjectView === "settings",
@@ -2484,10 +2502,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       : client.boot!.runtime.configured
         ? "智能体连接异常"
         : "智能体未连接";
-  const identityLabel = actorName(state, client.boot!.actantId);
+  const identityLabel =
+    (profile.snapshot?.human.available && profile.snapshot.human.revision > 0
+      ? profile.snapshot.human.data.name
+      : undefined) ?? actorName(state, client.boot!.actantId);
   const connected = client.online && client.boot!.runtime.connected;
   const profileMenu = {
     name: identityLabel,
+    avatarSrc: profile.media.human?.original,
+    avatarPosterSrc: profile.media.human?.poster,
+    avatarAnimated: (profile.snapshot?.human.avatar.media?.frames ?? 1) > 1,
+    allowMotion: prefs.motion !== "reduce",
+    onProfile: () => setSettingsSection("profile"),
     status: connectionLabel,
     connected,
     unreadNotifications,
@@ -2552,15 +2578,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       >
         <div className="sidebar-header">
           <SubjectLogo
-            presence={subjectLogoState(
-              client.boot!.runtime,
-              client.online,
-              stream,
-              [
-                ...client.boot!.outputs.map((output) => output.inputId),
-                ...client.boot!.scriptOutputs.map((output) => output.inputId),
-              ],
-            )}
+            presence={presence}
+            name={agentName}
+            avatarSrc={profile.media.agent?.original}
+            avatarPosterSrc={profile.media.agent?.poster}
+            avatarAnimated={
+              (profile.snapshot?.agent.avatar.media?.frames ?? 1) > 1
+            }
+            allowMotion={prefs.motion !== "reduce"}
             onOpen={openSubjectFromLogo}
           />
           <div className="sidebar-tools">
@@ -4023,7 +4048,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       aria-expanded={false}
                       onClick={showInput}
                     >
-                      <MessageCircle />向 Morphz 输入<kbd>{shortcut}</kbd>
+                      <MessageCircle />向 {agentName} 输入<kbd>{shortcut}</kbd>
                       {unseenReply && (
                         <span className="unread-label">有新回复</span>
                       )}
@@ -4039,6 +4064,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           !collaborationVisible && (
             <SubjectSidebar
               client={client}
+              profile={profile}
+              presence={presence}
+              allowMotion={prefs.motion !== "reduce"}
               view={subjectView ?? "activity"}
               onView={selectSubjectView}
               layout={rightInspector}
@@ -4244,6 +4272,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       {settingsSection !== null && (
         <SettingsDialog
           client={client}
+          profile={profile}
           initialSection={settingsSection}
           prefs={prefs}
           onPreference={prefer}
