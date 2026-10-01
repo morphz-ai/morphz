@@ -1,3 +1,5 @@
+import type { InputDispatchMode } from "../../../packages/core/src/model.js";
+
 /** Device-local presentation/input preferences, separate from workspace routing. */
 export type InterfacePreferences = {
   appearance: "system" | "light" | "dark";
@@ -53,4 +55,23 @@ export function shouldSubmitInput(
     event.keyCode !== 229 &&
     (shortcut === "enter" || event.metaKey || event.ctrlKey)
   );
+}
+
+/** Parallel input is an explicit gesture, never a persistent composer mode. */
+export function inputDispatchMode(
+  event: Parameters<typeof shouldSubmitInput>[0],
+  shortcut: InterfacePreferences["sendShortcut"],
+): InputDispatchMode | null {
+  if (
+    event.key === "Enter" &&
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !event.repeat &&
+    !event.isComposing &&
+    event.keyCode !== 229
+  )
+    return "parallel";
+  return shouldSubmitInput(event, shortcut) ? "interrupt" : null;
 }

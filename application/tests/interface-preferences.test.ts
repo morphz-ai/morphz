@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   interfacePreferences,
+  inputDispatchMode,
   shouldSubmitInput,
 } from "../apps/web/src/interface-preferences.js";
 
@@ -38,6 +39,48 @@ test("interface settings normalize absent and invalid stored values without chan
       sendShortcut: "mod-enter",
     },
   );
+});
+
+test("ordinary submission interrupts; only explicit Alt Enter is parallel and guards still apply", () => {
+  const enter = {
+    key: "Enter",
+    shiftKey: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    repeat: false,
+    isComposing: false,
+    keyCode: 13,
+  };
+  for (const shortcut of ["enter", "mod-enter"] as const) {
+    assert.equal(
+      inputDispatchMode({ ...enter, metaKey: true }, shortcut),
+      "interrupt",
+    );
+    assert.equal(
+      inputDispatchMode({ ...enter, ctrlKey: true }, shortcut),
+      "interrupt",
+    );
+    assert.equal(
+      inputDispatchMode({ ...enter, altKey: true }, shortcut),
+      "parallel",
+    );
+    for (const guard of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { repeat: true },
+      { isComposing: true },
+      { keyCode: 229 },
+      { key: "a" },
+    ])
+      assert.equal(
+        inputDispatchMode({ ...enter, altKey: true, ...guard }, shortcut),
+        null,
+      );
+  }
+  assert.equal(inputDispatchMode(enter, "enter"), "interrupt");
+  assert.equal(inputDispatchMode(enter, "mod-enter"), null);
 });
 
 test("send shortcut preserves multiline, IME and key-repeat guards on both platforms", () => {

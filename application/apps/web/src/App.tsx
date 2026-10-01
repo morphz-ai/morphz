@@ -35,6 +35,7 @@ import {
   discussionId,
   applicationFor,
   isContentArtifact,
+  type InputDispatchMode,
 } from "../../../packages/core/src/model.js";
 import {
   actorName,
@@ -53,7 +54,7 @@ import { ProfileMenu } from "./ProfileMenu.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import {
   interfacePreferences,
-  shouldSubmitInput,
+  inputDispatchMode,
   type InterfacePreferences,
 } from "./interface-preferences.js";
 import {
@@ -1945,7 +1946,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       delete document.documentElement.dataset.appMotion;
     };
   }, [prefs.motion]);
-  async function send(asAnnotation = draft.annotation === true) {
+  async function send(
+    asAnnotation = draft.annotation === true,
+    dispatchMode: InputDispatchMode = "interrupt",
+  ) {
     if (
       !project ||
       selectedConversation?.archivedAt ||
@@ -2117,6 +2121,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         await client.execute(
           {
             type: "record-input",
+            dispatchMode,
             ...(captured.model ? { model: captured.model } : {}),
             ...(captured.reasoningEffort
               ? { reasoningEffort: captured.reasoningEffort }
@@ -3543,14 +3548,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                             });
                           }}
                           onKeyDown={(event) => {
-                            if (
-                              shouldSubmitInput(
-                                event.nativeEvent,
-                                prefs.sendShortcut,
-                              )
-                            ) {
+                            const mode = inputDispatchMode(
+                              event.nativeEvent,
+                              prefs.sendShortcut,
+                            );
+                            if (mode) {
                               event.preventDefault();
-                              if (client.online) void send();
+                              if (client.online)
+                                void send(draft.annotation === true, mode);
                             }
                           }}
                         />
@@ -3937,6 +3942,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         send={
                           <button
                             className="send"
+                            title={
+                              draft.continuation ||
+                              draft.annotation ||
+                              draft.taskResult
+                                ? undefined
+                                : `默认打断当前会话思考中的回复；${/Mac/.test(navigator.platform) ? "Option" : "Alt"}+Enter 或按住该键点击并发发送；工具执行不取消`
+                            }
                             aria-label={
                               draft.continuation
                                 ? draft.pendingSupplement
@@ -3966,7 +3978,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                   !directoryState.ready)) ||
                               !client.online
                             }
-                            onClick={() => void send()}
+                            onClick={(event) =>
+                              void send(
+                                draft.annotation === true,
+                                event.altKey ? "parallel" : "interrupt",
+                              )
+                            }
                           >
                             {draft.annotation && !draft.continuation ? (
                               <MessageSquarePlus />

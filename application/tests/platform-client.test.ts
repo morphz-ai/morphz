@@ -1189,6 +1189,7 @@ test("Platform Client 只读取按领域分页数据，不请求整工作区", a
       projectId: "project-one",
       body: "继续工作",
       textQuotes: [quote],
+      dispatchMode: "interrupt",
       artifactId: null,
       artifactRevision: null,
       selection: "",

@@ -16,6 +16,7 @@ import {
   browserReferenceSchema,
   inputApplicationSchema,
   inputAttachmentSchema,
+  type InputDispatchMode,
 } from "../../../packages/core/src/model.js";
 import { continuationSchema } from "../../../packages/core/src/continuation.js";
 import { conversationRuntimeSchema } from "../../../packages/core/src/conversation.js";
@@ -629,7 +630,10 @@ export class PlatformClient {
     );
   }
 
-  /** The command ID belongs to the local draft and must survive retries. */
+  /**
+   * Fresh input defaults to interrupt. The command ID and selected mode must
+   * survive retries; pre-upgrade saved inputs use their frozen operation instead.
+   */
   async sendMessage(input: {
     commandId: string;
     projectId: string;
@@ -639,6 +643,7 @@ export class PlatformClient {
     textQuotes?: TextQuote[];
     model?: string;
     reasoningEffort?: ReasoningEffort;
+    dispatchMode?: InputDispatchMode;
   }) {
     const { commandId, ...scope } = input;
     return z.object({ commandId: id, entityId: id }).parse(
@@ -647,6 +652,7 @@ export class PlatformClient {
         operation: {
           type: "record-input",
           ...scope,
+          dispatchMode: input.dispatchMode ?? "interrupt",
           artifactId: null,
           artifactRevision: null,
           selection: "",

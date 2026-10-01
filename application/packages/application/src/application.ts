@@ -1857,6 +1857,7 @@ export class ApplicationSession {
         !!op.localFile ||
         !!op.directories?.length ||
         !!op.selection ||
+        (op.dispatchMode !== undefined && op.dispatchMode !== "parallel") ||
         !!op.model ||
         !!op.reasoningEffort)
     )
@@ -2142,6 +2143,7 @@ export class ApplicationSession {
       targetActantId: op.targetActantId,
       status: "recorded",
       ...(op.intent ? { intent: op.intent } : {}),
+      ...(op.dispatchMode ? { dispatchMode: op.dispatchMode } : {}),
       ...(op.model ? { model: op.model } : {}),
       ...(op.reasoningEffort ? { reasoningEffort: op.reasoningEffort } : {}),
       ...(op.textQuotes?.length ? { textQuotes: op.textQuotes } : {}),

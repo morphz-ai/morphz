@@ -97,7 +97,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     }
   };
   assertNoLegacyWorkspace();
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    { id: string; context_id: string; permission_mode: string | null }
+  >();
   const events = new Map<string, FixtureEvent[]>();
   const sent: Array<Record<string, unknown>> = [];
   let rootLookupReads = 0;
@@ -154,11 +157,21 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       });
     }
     if (path === "/api/sessions" && request.method === "POST") {
-      const session = { id: body.id, context_id: body.mount.context_id };
+      const session = {
+        id: body.id,
+        context_id: body.mount.context_id,
+        permission_mode: null,
+      };
       sessions.set(session.id, session);
       return send(201, session);
     }
     const sessionId = path.split("/")[3]!;
+    if (/^\/api\/sessions\/[^/]+$/.test(path) && request.method === "PATCH") {
+      const session = sessions.get(sessionId);
+      if (!session) return send(404, { error: "Unknown Runtime session" });
+      session.permission_mode = body.permission_mode;
+      return send(200, session);
+    }
     if (path.endsWith("/attachment-stages") && request.method === "POST") {
       const prior = stages.get(body.stage_id);
       if (!prior)

@@ -46,6 +46,11 @@ export const id = z
 const title = z.string().trim().min(1).max(180);
 const text = z.string().max(maxDocumentCharacters);
 const timestamp = z.iso.datetime();
+/** Input dispatch is frozen on admission, not a mutable Session preference.
+ * Keep it optional for historical saved inputs; schema reads never upgrade
+ * their original parallel semantics to the new-input default. */
+export const inputDispatchModeSchema = z.enum(["interrupt", "parallel"]);
+export type InputDispatchMode = z.infer<typeof inputDispatchModeSchema>;
 export const contentOrganizationChangesSchema = z
   .object({
     title: title.optional(),
@@ -418,6 +423,7 @@ export const stateSchema = z
           targetActantId: id,
           status: z.literal("recorded"),
           intent: inputIntentSchema.optional(),
+          dispatchMode: inputDispatchModeSchema.optional(),
           model: z.string().trim().min(1).max(256).optional(),
           reasoningEffort: reasoningEffortSchema.optional(),
           application: inputApplicationSchema.optional(),
@@ -655,6 +661,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       reading: readingInputSchema.optional(),
       continuation: continuationSchema.optional(),
       scriptGeneration: scriptGenerationSchema.optional(),
+      dispatchMode: inputDispatchModeSchema.optional(),
       model: z.string().trim().min(1).max(256).optional(),
       reasoningEffort: reasoningEffortSchema.optional(),
       conversationId: id.optional(),

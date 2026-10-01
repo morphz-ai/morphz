@@ -369,7 +369,10 @@ test("个人默认对话、精确输入请求和回执冷重启保持；创建�
 });
 
 test("多对话使用不同 Session 与同一授权 Context；旧路由不变，归档后迟到回复与执行仍归原对话", async () => {
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    { id: string; context_id: string; permission_mode: string | null }
+  >();
   const received: {
     id: string;
     session: string;
@@ -394,7 +397,11 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
     if (path === "/api/session-io/capabilities")
       return send(200, { enabled: true, client_metadata: true });
     if (path === "/api/sessions" && req.method === "POST") {
-      const s = { id: body.id, context_id: body.mount.context_id };
+      const s = {
+        id: body.id,
+        context_id: body.mount.context_id,
+        permission_mode: null,
+      };
       sessions.set(s.id, s);
       return send(201, s);
     }
@@ -404,6 +411,11 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
       return send(200, { jobs: [] });
     }
     if (!sessions.has(id)) return send(404, {});
+    if (req.method === "PATCH") {
+      const session = sessions.get(id)!;
+      session.permission_mode = body.permission_mode;
+      return send(200, session);
+    }
     if (path.endsWith("/principal"))
       return send(200, {
         principal_id: "fixture-principal",
@@ -411,7 +423,7 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
         context_id: sessions.get(id)!.context_id,
       });
     if (path.endsWith("/messages")) {
-      assert.equal(body.activation.dispatch_mode, "parallel");
+      assert.equal(body.activation.dispatch_mode, "interrupt");
       received.push({
         id: body.client_message_id,
         session: id,

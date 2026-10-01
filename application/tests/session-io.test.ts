@@ -191,7 +191,10 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGmQAAAAASUVORK5CYII=",
     "base64",
   );
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    { id: string; context_id: string; permission_mode: string | null }
+  >();
   let declared: { sha: string; stage: string; client: string } | undefined;
   let uploaded: Buffer | undefined;
   let uploads = 0,
@@ -219,11 +222,19 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
         resources: true,
       });
     if (path === "/api/sessions" && request.method === "POST") {
-      const session = { id: body.id, context_id: body.mount.context_id };
+      const session = {
+        id: body.id,
+        context_id: body.mount.context_id,
+        permission_mode: null,
+      };
       sessions.set(session.id, session);
       return send(201, session);
     }
     const session = sessions.get(path.split("/")[3]!);
+    if (session && request.method === "PATCH") {
+      session.permission_mode = body.permission_mode;
+      return send(200, session);
+    }
     if (path.endsWith("/principal"))
       return send(200, {
         principal_id: "fixture-user",
@@ -255,6 +266,7 @@ test("typed image upload resumes after lost acknowledgements without rewriting o
     }
     if (path.endsWith("/io/messages")) {
       messages++;
+      assert.equal(body.activation.dispatch_mode, "interrupt");
       assert.deepEqual(uploaded, image);
       assert.equal(body.client_message_id, declared!.client);
       assert.deepEqual(body.message.content.value.attachments, [

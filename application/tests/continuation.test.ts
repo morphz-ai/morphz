@@ -58,8 +58,17 @@ async function fixture() {
         ],
       });
     if (path === "/api/sessions" && req.method === "POST") {
-      sessions.set(body.id, { id: body.id, context_id: body.mount.context_id });
+      sessions.set(body.id, {
+        id: body.id,
+        context_id: body.mount.context_id,
+        permission_mode: null,
+      });
       return send(201, sessions.get(body.id));
+    }
+    if (sessions.has(sid) && req.method === "PATCH") {
+      const session = sessions.get(sid)!;
+      session.permission_mode = body.permission_mode;
+      return send(200, session);
     }
     if (path.endsWith("/principal"))
       return send(200, {

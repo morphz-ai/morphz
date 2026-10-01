@@ -348,7 +348,14 @@ export function workInputRequest(
     },
     activation: {
       mode: "evaluate",
-      dispatch_mode: "parallel",
+      // Session IO otherwise defaults to parallel in Runtime, unlike the
+      // Dashboard's ordinary message ingress. A new ordinary input explicitly
+      // interrupts only Runtime's pre-execution dialogue lane; exact directed
+      // supplements retain their original-work route instead.
+      dispatch_mode:
+        input.continuation?.mode === "supplement"
+          ? "parallel"
+          : (input.dispatchMode ?? "interrupt"),
       ...(input.continuation?.mode === "supplement"
         ? {
             input_destination: inputDestination(input.continuation),

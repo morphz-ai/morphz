@@ -82,7 +82,7 @@ test("剧本工作室正式入口固定编剧 Harness，冷重开不重写已排
     assert.deepEqual(before.deliveries[0]!.request.activation.harness, harness);
     assert.equal(
       before.deliveries[0]!.request.activation.dispatch_mode,
-      "parallel",
+      "interrupt",
     );
     await f.reopen();
     assert.deepEqual(await f.session().platformMessage(command), receipt);
@@ -150,7 +150,7 @@ test("默认对话跨项目／应用共享 Session，每个输入固定 Harness�
     );
     assert.ok(
       before.deliveries.every(
-        (d) => d.request.activation.dispatch_mode === "parallel",
+        (d) => d.request.activation.dispatch_mode === "interrupt",
       ),
     );
     await f.reopen();

@@ -45,6 +45,8 @@ import {
   withSavedInputs,
   withoutSavedInputs,
   inputSubmissionSchema,
+  newInputOperation,
+  savedInputOperation,
   type LocalSavedInput,
 } from "./local-saved-inputs.js";
 import { applicationCall, RequestError } from "./application-transport.js";
@@ -2105,7 +2107,10 @@ export function useWorkspace() {
       executePlatformOperation(
         source,
         identity,
-        { commandId: entry.commandId, operation: entry.operation },
+        {
+          commandId: entry.commandId,
+          operation: savedInputOperation(entry.operation),
+        },
         true,
       ),
     );
@@ -2177,7 +2182,9 @@ export function useWorkspace() {
         localStorage,
         savedInputScope(identity),
       ).find((input) => input.commandId === commandId);
-      const parsed = operationSchema.parse(operation);
+      const parsed = operationSchema.parse(
+        existing ? operation : newInputOperation(operation),
+      );
       if (
         existing &&
         JSON.stringify(existing.operation) !== JSON.stringify(parsed)

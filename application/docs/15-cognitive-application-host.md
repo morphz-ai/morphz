@@ -36,7 +36,9 @@
 
 输入框的关联跟随当前工作现场：打开具体事项或文档就关联该对象，停在事项列表就关联事项视图，对话和工作台也各自显示对应范围。关联随下一次输入一起固定，只影响该次 activation，不切换持续默认 Session，也不修改已有执行的作用范围。
 
-每次发送保存当前应用的确切版本、Harness 引用，以及对象版本和选择内容。Harness 通过 Runtime 的消息级 `harness: {id, version}` 传入，而不是修改 Session 的全局 Harness。新输入显式使用 `parallel` 调度，避免打断另一个应用的执行；它不是对某个正在执行线程的隐式插话。事项回应继续走原来的持久调度与依赖接口。
+每次发送保存当前应用的确切版本、Harness 引用，以及对象版本和选择内容。Harness 通过 Runtime 的消息级 `harness: {id, version}` 传入，而不是修改 Session 的全局 Harness。2026-10-02 用户确认普通新输入默认使用 Runtime 既有 `interrupt`，Option/Alt+Enter 显式 `parallel`；只打断当前 Session 最近仍占用 dialogue lane 的思考回复，不取消已进入工具执行、独立 Execution、目标或提醒。个人默认 Session 跨项目，共享命名会话也按 Session 而非当前页面／Principal 语义工作。定向补充固定 parallel 与确切 InputDestination，不是对线程的隐式插话；事项回应继续走原持久调度与依赖接口。
+
+派发模式是输入准入时的不可变字段，不是可变 Session 权限。Client 在保存新输入前冻结默认，Host 已准入同 command 不能换模式；已有 typed 请求保留原省略字段和历史 parallel 语义，升级前本机 saved 缺模式输入按 parallel 发送而不改保存 bytes。断线、失败及重启重试沿用原请求，不把新默认重放到旧输入，不新增线程停止遍历或 Rust 调度机制。
 
 旧对象及空间 Session 不删除、不重放；已经排队或发送的输入保留原路由。新的持续默认会话使用单独、稳定的传输 Session，不把旧空间 Session 强行改绑。每次输入保存真实工作项目，Host 工具通过 Runtime 的 thread/root 与该输入对应，写入原项目。独立命名会话、事项持久安排和浏览器回执保持各自既有路由。执行查询与审批进一步限定到输入根或具体分支，不能因为切换界面而重定向。
 

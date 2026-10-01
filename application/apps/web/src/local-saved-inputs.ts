@@ -7,6 +7,29 @@ import {
 } from "../../../packages/core/src/model.js";
 
 type InputOperation = Extract<Operation, { type: "record-input" }>;
+
+/** Freeze the dispatch choice before a new input enters device storage. */
+export function newInputOperation(operation: InputOperation): InputOperation {
+  return {
+    ...operation,
+    dispatchMode:
+      operation.continuation?.mode === "supplement"
+        ? "parallel"
+        : (operation.dispatchMode ?? "interrupt"),
+  };
+}
+
+/** A retained pre-upgrade input had parallel semantics. Sending it must not
+ * acquire today's default, nor rewrite its saved retry identity or payload. */
+export function savedInputOperation(operation: InputOperation): InputOperation {
+  return {
+    ...operation,
+    dispatchMode:
+      operation.continuation?.mode === "supplement"
+        ? "parallel"
+        : (operation.dispatchMode ?? "parallel"),
+  };
+}
 export const inputSubmissionSchema = z.object({
   state: z.enum(["sending", "accepted", "failed"]),
   error: z.string().optional(),

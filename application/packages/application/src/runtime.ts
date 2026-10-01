@@ -4720,6 +4720,8 @@ export class RuntimeBridge {
           !!input.localFile ||
           !!input.directories?.length ||
           !!input.selection ||
+          (input.dispatchMode !== undefined &&
+            input.dispatchMode !== "parallel") ||
           !!input.model ||
           !!input.reasoningEffort))
     )
@@ -4851,8 +4853,28 @@ export class RuntimeBridge {
       model = z
         .object({ model_alias: z.string().optional() })
         .parse(previous.request.activation ?? {}).model_alias;
+    const prepared = workInputRequest(input, model);
+    const activation: Record<string, unknown> = { ...prepared.activation };
+    if (previous) {
+      const retained =
+        previous.request.io_version === "1"
+          ? (previous.request.activation as Record<string, unknown> | undefined)
+              ?.dispatch_mode
+          : previous.request.dispatch_mode;
+      // Omission on an admitted typed request meant parallel historically.
+      // Preserve even its omitted field, not merely an equivalent new value.
+      // A caller cannot convert the same command into a different dispatch.
+      if (
+        input.dispatchMode !== undefined &&
+        input.dispatchMode !== (retained ?? "parallel")
+      )
+        throw new DomainError("conflict", "操作标识已用于另一条输入。");
+      if (retained === undefined) delete activation.dispatch_mode;
+      else activation.dispatch_mode = retained;
+    }
     const typed = {
-      ...workInputRequest(input, model),
+      ...prepared,
+      activation,
       client_metadata: {
         kind: "morphz.platform-input",
         version: 1,
