@@ -6,9 +6,9 @@ import {
   SlidersHorizontal,
   ArrowLeft,
   Settings2,
-  BookOpen,
   FolderKey,
 } from "lucide-react";
+import { BrandMark } from "./BrandMark.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
 import type { WorkspaceClient } from "./client.js";
@@ -23,7 +23,7 @@ const tabs = [
   { id: "activity", label: "活动", icon: List },
   { id: "permissions", label: "授权", icon: ShieldCheck },
   { id: "schedules", label: "安排", icon: Clock3 },
-  { id: "settings", label: "设定", icon: SlidersHorizontal },
+  { id: "settings", label: "设定", icon: BrandMark },
 ] as const;
 
 export function SubjectSidebar({
@@ -38,7 +38,6 @@ export function SubjectSidebar({
   activity,
   onInspect,
   onOpen,
-  onUnderstanding,
   onModels,
   onConnection,
   directories,
@@ -57,7 +56,6 @@ export function SubjectSidebar({
   activity: ReactNode;
   onInspect(scope: ExecutionScope): void;
   onOpen(id: string): void;
-  onUnderstanding(): void;
   onModels?: () => void;
   onConnection(): void;
   directories: DirectoryState;
@@ -220,10 +218,6 @@ export function SubjectSidebar({
             <button onClick={onConnection}>
               <SlidersHorizontal />
               智能体连接
-            </button>
-            <button onClick={onUnderstanding}>
-              <BookOpen />
-              已发布的项目摘要
             </button>
             {runtime.harnesses?.length ? (
               <details>

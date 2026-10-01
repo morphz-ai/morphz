@@ -15,6 +15,153 @@ async function openSubject(page: Page) {
   return panel;
 }
 
+test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置入口和未发送草稿", async ({
+  page,
+}, testInfo) => {
+  // Controlled presentation data: no real model, harness or personality
+  // configuration is written by this regression.
+  const model = "TEST-profile-model";
+  await page.route("**/api/platform/bootstrap", async (route) => {
+    const { "if-none-match": _etag, ...headers } = route.request().headers();
+    const response = await route.fetch({ headers });
+    const boot = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...boot,
+        capabilities: { ...boot.capabilities, modelSettings: true },
+      },
+    });
+  });
+  await page.route("**/api/model-settings/read", (route) =>
+    route.fulfill({
+      json: {
+        catalog: { current: model, options: [{ id: model, label: model }] },
+        accounts: [],
+        services: [],
+        servicesUnavailable: false,
+      },
+    }),
+  );
+  await page.route("**/api/connection/check", (route) =>
+    route.fulfill({
+      json: {
+        state: "connected",
+        modelState: "configured",
+        model,
+        message: "",
+        checkedAt: null,
+        configurable: true,
+        modelSettingsAvailable: true,
+      },
+    }),
+  );
+  await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      model,
+      harnesses: [{ id: "TEST-profile-harness", version: "1" }],
+      activity: { available: true, truncated: false, threads: [] },
+      attention: { available: true, approvals: [] },
+    },
+  }));
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const draft = "TEST 打开主体设定和配置仍保留的未发送草稿";
+  await (await openInput(page)).fill(draft);
+  const sessionsBefore = await (
+    await page.request.get("/api/platform/conversations/navigation?limit=100")
+  ).json();
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/(?:platform\/(?:messages|conversations\/start)|model-settings\/(?:save|add|update|remove)|connection\/save)(?:\?|$)/.test(
+        request.url(),
+      )
+    )
+      writes.push(request.url());
+  });
+  const panel = await openSubject(page);
+  const tabs = panel.getByRole("tablist", { name: "Morphz 信息分类" });
+  const settings = tabs.getByRole("tab", { name: "设定", exact: true });
+  const mark = settings.locator("svg.brand-mark");
+  const leftMark = page.locator(".sidebar .agent-presence .brand-mark");
+  await expect(mark).toHaveCount(1);
+  await expect(leftMark).toHaveCount(1);
+  expect(await mark.getAttribute("viewBox")).toBe(
+    await leftMark.getAttribute("viewBox"),
+  );
+  expect(await mark.locator("path").getAttribute("d")).toBe(
+    await leftMark.locator(":scope > path").getAttribute("d"),
+  );
+  await expect(mark.locator("path")).toHaveCount(1);
+  await expect(mark.locator("defs, g, .brand-mark-glint")).toHaveCount(0);
+  await expect(mark).toHaveCSS("animation-name", "none");
+  await expect(mark.locator("path")).toHaveCSS("animation-name", "none");
+  for (const name of ["设定", "活动", "授权", "安排", "设定"]) {
+    await tabs.getByRole("tab", { name, exact: true }).click();
+    await expect(tabs.getByRole("tab", { name, exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(await openInput(page)).toHaveValue(draft);
+  }
+  await expect(settings).toHaveAttribute("data-view", "settings");
+  await expect(
+    panel.getByRole("button", { name: /已发布的项目摘要|当前理解|项目摘要/ }),
+  ).toHaveCount(0);
+  await expect(panel.locator(".subject-settings dl")).toContainText(model);
+  await panel.getByText("已安装执行方式", { exact: true }).click();
+  await expect(panel.locator(".subject-settings details")).toContainText(
+    "TEST-profile-harness",
+  );
+  await expect(panel.locator(".subject-settings details small")).toHaveText(
+    "1",
+  );
+  await panel.getByRole("button", { name: "模型与账号", exact: true }).click();
+  const modelDialog = page.getByRole("dialog", { name: "设置", exact: true });
+  await expect(modelDialog).toBeVisible();
+  await expect(
+    modelDialog.getByRole("heading", { name: "模型与账号", exact: true }),
+  ).toBeVisible();
+  await expect(
+    modelDialog.getByRole("button", { name: "添加账号", exact: true }),
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(modelDialog).not.toBeVisible();
+  await expect(await openInput(page)).toHaveValue(draft);
+  await panel.getByRole("button", { name: "智能体连接", exact: true }).click();
+  const connection = page.getByRole("dialog", {
+    name: "连接详情",
+    exact: true,
+  });
+  await expect(connection).toBeVisible();
+  await expect(connection.locator(".connection-facts")).toContainText(model);
+  await expect(
+    connection.getByRole("button", { name: "连接设置", exact: true }),
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(connection).not.toBeVisible();
+  await expect(await openInput(page)).toHaveValue(draft);
+  expect(writes).toEqual([]);
+  expect(
+    await (
+      await page.request.get("/api/platform/conversations/navigation?limit=100")
+    ).json(),
+  ).toEqual(sessionsBefore);
+  await panel.screenshot({
+    path: testInfo.outputPath("subject-settings-static-logo.png"),
+  });
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test("主体栏默认活动，四个图标分类支持键盘并记住选择，后台更新不切换视图", async ({
   page,
 }) => {

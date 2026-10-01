@@ -2318,13 +2318,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactId: null,
     });
   };
-  const openUnderstanding = () => {
-    setSubjectView(null);
-    setExecutions(null);
-    setMobileCollaboration(false);
-    prefer({ collaboration: false });
-    setUnderstandingOpen(true);
-  };
   const openCollaboration = () => {
     setSubjectView(null);
     setExecutions(null);
@@ -4026,7 +4019,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 setExecutions(scope);
               }}
               onOpen={openUser}
-              onUnderstanding={openUnderstanding}
               onModels={
                 client.boot!.capabilities.modelSettings
                   ? () => setSettingsSection("models")
