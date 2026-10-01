@@ -7,7 +7,7 @@ import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 async function openAllWork(page: Page) {
   await openExecutionPanel(page);
   await page
-    .getByRole("complementary", { name: "执行面板", exact: true })
+    .getByRole("complementary", { name: "Morphz 信息", exact: true })
     .getByRole("button", { name: "全部工作", exact: true })
     .click();
 }
@@ -26,7 +26,12 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
       ...disconnectedRuntime,
       configured: true,
       connected,
-      activity: { available: true, truncated, threads },
+      activity: {
+        available: true,
+        truncated,
+        objectivesTruncated: truncated,
+        threads,
+      },
       attention: { available: true, approvals: [] },
     },
   }));
@@ -37,12 +42,20 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
     .click();
   await openAllWork(page);
   const execution = page.getByRole("complementary", {
-    name: "执行面板",
+    name: "Morphz 信息",
     exact: true,
   });
-  const count = execution.locator(".execution-scope-count");
+  const activity = execution.getByRole("tab", { name: "活动", exact: true });
   const quiet = execution.locator(".execution-quiet");
-  await expect(count).toHaveText("工作状态待核对");
+  await expect(activity).toHaveAttribute("title", "活动 · 状态待核对");
+  await expect(execution.locator(".subject-presence")).toHaveCount(0);
+  await expect(execution.locator(".execution-scope-count")).toHaveCount(0);
+  await expect(
+    execution.locator(".execution-activity-completeness"),
+  ).toHaveCount(1);
+  await expect(
+    execution.getByRole("heading", { name: "目标", exact: true }),
+  ).toHaveCount(0);
   await expect(quiet).toHaveText("尚不能确认是否有工作进行中");
   threads.push({
     id: "incomplete-background",
@@ -59,19 +72,37 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
     updatedAt: "2026-10-01T00:00:00Z",
   });
   await fixture.refresh();
-  await expect(count).toHaveText("至少 1 项进行中");
+  await expect(activity).toHaveAttribute(
+    "title",
+    "活动 · 至少 1 项工作正在推进",
+  );
+  await expect(
+    execution.locator(
+      '[data-thread-id="incomplete-background"] .execution-activity-icon',
+    ),
+  ).toHaveAttribute("data-status", "running");
   await expect(quiet).toHaveCount(0);
   connected = false;
   await fixture.refresh();
-  await expect(count).toHaveText("工作状态待核对");
+  await expect(activity).toHaveAttribute("title", "活动 · 暂未连接");
   await expect(
-    execution.getByText("连接中断，执行状态尚未确认。", { exact: true }),
+    execution.locator(
+      '[data-thread-id="incomplete-background"] .execution-activity-icon',
+    ),
+  ).toHaveAttribute("data-status", "unknown");
+  await expect(
+    execution.getByText("连接中断，保留上次记录，进行中的状态待核对。", {
+      exact: true,
+    }),
   ).toBeVisible();
   connected = true;
   truncated = false;
   threads.length = 0;
   await fixture.refresh();
-  await expect(count).toHaveText("0 项进行中");
+  await expect(activity).toHaveAttribute(
+    "title",
+    "活动 · 目前没有进行中的执行",
+  );
   await expect(quiet).toHaveText("当前没有正在处理的工作");
 });
 
@@ -144,15 +175,15 @@ test("all-work overview includes authorized work whose source message is not loa
   ).toContainText("2 进行中");
   await openAllWork(page);
   const execution = page.getByRole("complementary", {
-    name: "执行面板",
+    name: "Morphz 信息",
     exact: true,
   });
   await expect(
     execution.getByRole("button", { name: "全部工作", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
-  await expect(execution.locator(".execution-scope-count")).toHaveText(
-    "2 项进行中",
-  );
+  await expect(
+    execution.getByRole("tab", { name: "活动", exact: true }),
+  ).toHaveAttribute("title", "活动 · 2 项工作正在推进");
   await expect(
     execution.getByRole("button", { name: /TEST 其他项目中的工作/ }),
   ).toBeVisible();
@@ -239,15 +270,19 @@ test("whole-message halo requires a live execution thread; status navigation sta
     page.locator(".composer").getByLabel("执行记录与审批"),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "显示右侧栏" }).click();
-  const understanding = page.getByRole("complementary", {
-    name: "当前理解",
+  const subject = page.getByRole("complementary", {
+    name: "Morphz 信息",
     exact: true,
   });
-  await expect(understanding).toBeVisible();
+  await expect(subject).toBeVisible();
+  await subject.getByRole("tab", { name: "设定", exact: true }).click();
   kind = "execution";
   await fixture.refresh();
   await expect(message).toHaveAttribute("data-background-execution", "true");
-  await expect(understanding).toBeVisible();
+  await expect(subject).toBeVisible();
+  await expect(
+    subject.getByRole("tab", { name: "设定", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await expect(control).toContainText("1");
   const haloBefore = await message.evaluate(
@@ -274,12 +309,12 @@ test("whole-message halo requires a live execution thread; status navigation sta
       toggleBounds.x,
     );
     await expect(
-      page.getByRole("complementary", { name: "执行面板" }),
+      page.getByRole("complementary", { name: "Morphz 信息" }),
     ).toBeVisible();
     await expect(composer).toHaveValue("未发送的原草稿");
     await control.click();
     await expect(
-      page.getByRole("complementary", { name: "执行面板" }),
+      page.getByRole("complementary", { name: "Morphz 信息" }),
     ).toBeVisible();
     await toggle.click();
     await expect(page.locator(".workspace-inspector")).toHaveCount(0);
@@ -432,7 +467,7 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     card.getByRole("button", { name: "仅允许这一次" }),
   ).toBeEnabled();
   await control.click();
-  const panel = page.getByRole("complementary", { name: "执行面板" });
+  const panel = page.getByRole("complementary", { name: "Morphz 信息" });
   await expect(panel.getByLabel("待审批操作")).toBeVisible();
   await expect(
     panel.getByText("读取：/fixture/private", { exact: false }),
@@ -443,7 +478,7 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     const header = panel.locator(".inspector-header");
     const toggle = (await control.boundingBox())!;
     const pin = (await header
-      .getByLabel("固定执行面板", { exact: true })
+      .getByLabel("固定信息栏", { exact: true })
       .boundingBox())!;
     expect(
       pin.x + pin.width <= toggle.x || toggle.x + toggle.width <= pin.x,

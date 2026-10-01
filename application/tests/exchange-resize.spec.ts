@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openComposerMedia,
+} from "./interaction-helpers.js";
 import {
   PlatformClient,
   type PlatformHistory,
@@ -41,6 +45,62 @@ async function resizeTo(page: Page, height: number) {
   await page.mouse.up();
 }
 
+test.afterEach(async ({ page }, info) => {
+  if (info.status === info.expectedStatus) return;
+  await info.attach("exchange-failure-geometry", {
+    body: JSON.stringify(
+      await page.evaluate(() => ({
+        viewport: { width: innerWidth, height: innerHeight },
+        elements: [
+          ".primary-panel",
+          ".exchange-surface",
+          ".exchange-panel",
+          ".exchange-panel-header",
+          ".composer-dock",
+          ".composer",
+          ".composer .message-attachments",
+          ".composer .message-attachment",
+          ".composer-writing",
+          ".composer textarea",
+          ".composer-action-bar",
+          ".send",
+          ".conversation",
+          ".application-dock-slot",
+        ].map((selector) => {
+          const element = document.querySelector<HTMLElement>(selector);
+          if (!element) return { selector, absent: true };
+          const bounds = element.getBoundingClientRect(),
+            style = getComputedStyle(element);
+          return {
+            selector,
+            rect: {
+              x: bounds.x,
+              y: bounds.y,
+              width: bounds.width,
+              height: bounds.height,
+            },
+            minWidth: style.minWidth,
+            maxWidth: style.maxWidth,
+            minHeight: style.minHeight,
+            maxHeight: style.maxHeight,
+            overflow: style.overflow,
+            flex: style.flex,
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+          };
+        }),
+      })),
+      null,
+      2,
+    ),
+    contentType: "application/json",
+  });
+  await info.attach("exchange-failure-screenshot", {
+    body: await page.screenshot(),
+    contentType: "image/png",
+  });
+});
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page
@@ -68,7 +128,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   };
   const canvas = page.locator(".primary-panel > main");
   const canvasBox = await canvas.boundingBox();
-  const dockBox = await page.locator(".composer-floating-tools").boundingBox();
+  const dockBox = await page.locator(".application-dock-slot").boundingBox();
   const prefs = await preferences(page);
   const height = (await panel(page).boundingBox())!.height;
   await startDrag(page, 160);
@@ -88,7 +148,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   );
   expect(Object.values(saved.exchangeHeights)[0]).toBeCloseTo(readingHeight, 0);
   await startDrag(page, 36 - readingHeight);
-  expect(await page.locator(".composer-floating-tools").boundingBox()).toEqual(
+  expect(await page.locator(".application-dock-slot").boundingBox()).toEqual(
     dockBox,
   );
   await page.mouse.up();
@@ -108,7 +168,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   await mode(page, "recent");
   await expect(canvas).toBeVisible();
   expect(await canvas.boundingBox()).toEqual(canvasBox);
-  expect(await page.locator(".composer-floating-tools").boundingBox()).toEqual(
+  expect(await page.locator(".application-dock-slot").boundingBox()).toEqual(
     dockBox,
   );
   await expect(input).toHaveAttribute("data-resize-mount", "original");
@@ -200,6 +260,7 @@ test("长草稿和附件保留，窄短窗限制实际高度但不覆盖记忆�
   const draft = "TEST 长草稿，调整记录高度不影响文字。\n".repeat(30);
   await input.fill(draft);
   const chooser = page.waitForEvent("filechooser");
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "附加文件", exact: true }).click();
   await (
     await chooser
@@ -219,14 +280,46 @@ test("长草稿和附件保留，窄短窗限制实际高度但不覆盖记忆�
     await page.setViewportSize(viewport);
     await expect(handle(page)).toBeInViewport();
     await expect(page.locator(".send")).toBeInViewport();
+    await expect
+      .poll(async () => {
+        const bounds = await page.locator(".send").boundingBox();
+        return (
+          bounds !== null &&
+          bounds.y >= 0 &&
+          bounds.y + bounds.height <= viewport.height
+        );
+      })
+      .toBe(true);
     await expect(input).toBeInViewport();
     await expect(input).toHaveValue(draft);
     await expect(
       page.getByRole("button", { name: "移除附件 resize.txt", exact: true }),
     ).toBeVisible();
+    await expect
+      .poll(async () => {
+        const preview = await page
+          .locator(".composer .message-attachment")
+          .first()
+          .boundingBox();
+        const writing = await input.boundingBox();
+        return (
+          !!preview && !!writing && preview.y + preview.height <= writing.y
+        );
+      })
+      .toBe(true);
     expect((await preferences(page)).exchangeHeights).toEqual(
       prefs.exchangeHeights,
     );
+    if (viewport.width === 390) {
+      expect(
+        await input.evaluate(
+          (element) => element.scrollHeight > element.clientHeight,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: "test-results/exchange-resize-long-draft-short.png",
+      });
+    }
   }
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "250");
   await page.screenshot({

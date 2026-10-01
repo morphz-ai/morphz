@@ -1,9 +1,45 @@
+.app .exchange-panel .composer-dock:has(.composer-action-bar) {
+  /* The canvas can be much shorter than the window (mobile navigation/zoom).
+     Shrink writing/preview areas, not the persistent send row. */
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.app .composer-dock > .composer:has(.composer-action-bar) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+}
+.app .composer:has(.composer-action-bar) > .composer-writing {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 60px;
+}
+.app .composer:has(.composer-action-bar) .composer-writing > textarea {
+  flex: 1 1 auto;
+  min-height: 60px;
+  overflow: auto;
+}
+.app .composer:has(.composer-action-bar) > div:has(> .message-attachments) {
+  /* Keep a single preview intact; long lists scroll inside this capped slot.
+     Let the writing area shrink first instead of painting over its first line. */
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: min(112px, 20dvh);
+  overflow: auto;
+}
 .app .composer-actions.composer-action-bar {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 0 0 auto;
 }
 .composer-action-leading,
 .composer-action-trailing {

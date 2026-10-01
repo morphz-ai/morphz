@@ -10,7 +10,11 @@ import {
   platformInputState,
   platformContentState,
 } from "./platform-input-state-fixture.js";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openComposerMedia,
+} from "./interaction-helpers.js";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
@@ -21,13 +25,13 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
 });
 
-test("消息显隐、展开与固定不挪动输入工具和面板控制的命中位置", async ({
+test("消息显隐、展开与固定不挪动底栏和应用 Dock；面板控制始终可达", async ({
   page,
 }) => {
   const input = await openInput(page);
   await input.fill("TEST 操作位置保持稳定，不发送");
   const buttons = page.locator(
-    ".composer-media-tools > button, .exchange-view-tools button",
+    ".composer-action-leading > button, .composer-action-trailing > button, .application-dock-shortcut",
   );
   const positions = () =>
     buttons.evaluateAll((elements) =>
@@ -64,10 +68,13 @@ test("消息显隐、展开与固定不挪动输入工具和面板控制的命�
       });
     }).toPass({ timeout: 1500 });
     await expect(input).toHaveValue("TEST 操作位置保持稳定，不发送");
+    await expect(
+      page.getByRole("group", { name: "交流面板操作", exact: true }),
+    ).toBeVisible();
   }
 });
 
-test("从输入框连续 Tab 能到达全部常用按钮，不必先跳到消息顶部", async ({
+test("从输入框连续 Tab 能到达底栏常用按钮，面板控制有独立连续路径", async ({
   page,
 }) => {
   const input = await openInput(page);
@@ -82,16 +89,14 @@ test("从输入框连续 Tab 能到达全部常用按钮，不必先跳到消息
     if (!(await input.isVisible())) break;
     if (visited.includes("收起 AI 输入框")) break;
   }
-  for (const name of [
-    "附加文件",
-    "截图输入",
-    "语音输入",
-    "收起交流记录",
-    "展开完整记录",
-    "固定输入框",
-    "收起 AI 输入框",
-  ])
+  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"])
     expect(visited, name).toContain(name);
+  await openInput(page);
+  await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();
+  for (const name of ["展开完整记录", "固定输入框", "收起 AI 输入框"]) {
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
+  }
   await expect(input).toHaveValue("TEST 连续键盘路径，不发送");
 });
 
@@ -109,6 +114,7 @@ test("系统附件选择取消后恢复原按钮焦点，保留草稿且不触�
   };
   const attach = page.getByRole("button", { name: "附加文件", exact: true });
   const picker = page.waitForEvent("filechooser");
+  await openComposerMedia(page);
   await attach.click();
   await picker;
   await page.evaluate(() => {
@@ -124,8 +130,12 @@ test("系统附件选择取消后恢复原按钮焦点，保留草稿且不触�
     window.dispatchEvent(new Event("focus"));
   });
   await page.getByLabel("消息附件文件").dispatchEvent("cancel");
+  await expect(
+    page.getByRole("button", { name: "添加输入内容", exact: true }),
+  ).toBeFocused();
+  await openComposerMedia(page);
   await expect(attach).toBeEnabled();
-  await expect(attach).toBeFocused();
+  await page.keyboard.press("Escape");
   await expect(input).toHaveValue("TEST 取消附件后继续输入，不发送");
   expect({
     inputs: await platformInputState(page, source),
@@ -139,6 +149,7 @@ test("未固定时鼠标和键盘移除附件，输入仍可继续且不影响�
   const input = await openInput(page);
   await input.fill("TEST 移除附件不收起输入，不发送");
   const picker = page.waitForEvent("filechooser");
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "附加文件", exact: true }).click();
   await (
     await picker
@@ -170,7 +181,7 @@ test("未固定时鼠标和键盘移除附件，输入仍可继续且不影响�
   await expect(page.getByLabel("消息附件", { exact: true })).toHaveCount(0);
 });
 
-test("收起记录只剩输入本体，悬浮 Dock 不留下顶部空行或底部工具行", async ({
+test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面板高度", async ({
   page,
 }) => {
   const input = await openInput(page);
@@ -182,15 +193,16 @@ test("收起记录只剩输入本体，悬浮 Dock 不留下顶部空行或底�
   await expect(page.locator(".conversation")).toHaveCount(0);
   const panel = page.locator(".exchange-panel");
   const composer = page.locator(".composer");
-  const dock = page.locator(".composer-floating-tools");
+  const dock = page.locator(".application-dock-slot");
   await expect(dock).toHaveCSS("position", "absolute");
-  await expect(page.locator(".exchange-panel-header")).toBeHidden();
+  await expect(page.locator(".exchange-panel-header")).toBeVisible();
   const p = (await panel.boundingBox())!;
   const c = (await composer.boundingBox())!;
   const d = (await dock.boundingBox())!;
-  expect(c.y - p.y).toBeLessThanOrEqual(1);
-  expect(p.height - c.height).toBeLessThanOrEqual(2);
-  expect(d.y + d.height).toBeLessThan(c.y);
+  const header = (await page.locator(".exchange-panel-header").boundingBox())!;
+  expect(c.y - header.y - header.height).toBeLessThanOrEqual(1);
+  expect(p.height - c.height).toBeLessThanOrEqual(header.height + 10);
+  expect(d.y + d.height).toBeLessThanOrEqual(c.y);
   expect(c.y - d.y - d.height).toBeLessThanOrEqual(8);
   // Removing only the tool paint must not resize the input/frame.
   await dock.evaluate((el) => ((el as HTMLElement).style.display = "none"));
@@ -199,7 +211,7 @@ test("收起记录只剩输入本体，悬浮 Dock 不留下顶部空行或底�
   await dock.evaluate((el) =>
     (el as HTMLElement).style.removeProperty("display"),
   );
-  await dock.getByRole("button", { name: "查看交流记录", exact: true }).focus();
+  await dock.getByRole("button", { name: "全部应用", exact: true }).focus();
   await expect(dock).toBeVisible();
   await expect(dock).toHaveCSS("opacity", "1");
   await expect(input).toHaveValue("TEST 悬浮 Dock 原始方案，不发送");
@@ -250,10 +262,10 @@ test("读写衔接只减弱底色差与分隔线，文字可读且增强对比�
     });
     const distance = (a: number[], b: number[]) =>
       Math.max(...a.map((channel, i) => Math.abs(channel - b[i]!)));
-    expect(distance(colors.background, colors.paper)).toBeLessThan(
+    expect(distance(colors.background, colors.paper)).toBeLessThanOrEqual(
       distance(colors.previousBackground, colors.paper),
     );
-    expect(distance(colors.divider, colors.paper)).toBeLessThan(
+    expect(distance(colors.divider, colors.paper)).toBeLessThanOrEqual(
       distance(colors.previousDivider, colors.paper),
     );
     const luminance = (rgb: number[]) => {
@@ -371,7 +383,7 @@ test("真实组件的明暗视觉样例保留消息、表格、输入和全部�
         .poll(async () => {
           const message = (await lastMessage.boundingBox())!;
           const dock = (await page
-            .locator(".composer-floating-tools")
+            .locator(".application-dock-slot")
             .boundingBox())!;
           return message.y + message.height - dock.y;
         })

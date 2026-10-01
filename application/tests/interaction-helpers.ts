@@ -1,13 +1,12 @@
 import { expect, type Page } from "@playwright/test";
 
-/** The shell toggle controls visibility; the inspector menu chooses content. */
+/** The shell toggle controls visibility; the subject tab chooses activity. */
 export async function openExecutionPanel(page: Page) {
   if (!(await page.locator(".workspace-inspector").isVisible()))
     await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
-  await page.getByRole("button", { name: "切换右栏内容", exact: true }).click();
   await page
-    .getByRole("group", { name: "右栏内容", exact: true })
-    .getByRole("button", { name: "执行记录", exact: true })
+    .getByRole("complementary", { name: "Morphz 信息", exact: true })
+    .getByRole("tab", { name: "活动", exact: true })
     .click();
 }
 
@@ -41,6 +40,34 @@ export async function composerAction(page: Page, name: string) {
     .locator(".exchange-panel")
     .getByLabel(name, { exact: true })
     .click();
+}
+
+/** Files and screenshots share the explicit + input menu, not the app Dock. */
+export async function openComposerMedia(page: Page) {
+  const trigger = page.getByRole("button", {
+    name: "添加输入内容",
+    exact: true,
+  });
+  await expect(trigger).toBeVisible();
+  if ((await trigger.getAttribute("aria-expanded")) !== "true")
+    await trigger.click();
+  const menu = page.getByRole("group", { name: "添加到这条消息", exact: true });
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+/** Next-input configuration is inside one setting menu; it never sends. */
+export async function openComposerSettings(page: Page) {
+  const trigger = page.getByRole("button", { name: "执行设置", exact: true });
+  await expect(trigger).toBeVisible();
+  if ((await trigger.getAttribute("aria-expanded")) !== "true")
+    await trigger.click();
+  const menu = page.getByRole("group", {
+    name: "本次输入执行设置",
+    exact: true,
+  });
+  await expect(menu).toBeVisible();
+  return menu;
 }
 
 /** Standalone transcription is a content tool, not a second composer mic. */

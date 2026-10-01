@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { openComposerMedia } from "./interaction-helpers.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=";
@@ -67,6 +68,7 @@ test("粘贴多文件和图片成为当前草稿附件，不插入路径、不�
   await input.fill("保留原有文字");
   // File selection and paste use the same uploader and preview list.
   const choosing = page.waitForEvent("filechooser");
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "附加文件", exact: true }).click();
   await (
     await choosing

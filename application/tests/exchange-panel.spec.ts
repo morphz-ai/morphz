@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openComposerMedia,
+} from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
@@ -21,7 +25,7 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
     name: "交流面板操作",
     exact: true,
   });
-  const media = page.getByRole("group", { name: "输入工具", exact: true });
+  const media = page.locator(".composer-action-bar");
   const canvas = page.locator(".primary-panel > main");
   const canvasBounds = await canvas.boundingBox();
   await expect(panel).toHaveCount(1);
@@ -44,7 +48,7 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
   // One empty-state line plus safe reading clearance for the floating Dock;
   // this clearance belongs to scrollable history, never a toolbar/header row.
   expect((await history.boundingBox())!.height).toBeLessThanOrEqual(
-    45 + (await page.locator(".composer-floating-tools").boundingBox())!.height,
+    45 + (await page.locator(".application-dock-slot").boundingBox())!.height,
   );
   const h = (await history.boundingBox())!;
   const c = (await composer.boundingBox())!;
@@ -62,16 +66,22 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
     await expect(
       controls.getByRole("button", { name, exact: true }),
     ).toBeVisible();
-  for (const name of ["附加文件", "截图输入", "语音输入"])
+  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"])
     await expect(
       media.getByRole("button", { name, exact: true }),
     ).toBeVisible();
   await expect(
     media.getByRole("button", { name: "固定输入框", exact: true }),
   ).toHaveCount(0);
-  expect(
-    (await media.boundingBox())!.y + (await media.boundingBox())!.height,
-  ).toBeLessThanOrEqual((await composer.boundingBox())!.y);
+  const row = (await media.boundingBox())!;
+  expect(row.y).toBeGreaterThanOrEqual(c.y);
+  expect(row.y + row.height).toBeLessThanOrEqual(c.y + c.height);
+  const adding = await openComposerMedia(page);
+  for (const name of ["附加文件", "截图输入"])
+    await expect(
+      adding.getByRole("button", { name, exact: true }),
+    ).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: "test-results/exchange-panel-empty.png" });
   await input.evaluate((el) => (el.dataset.mountCheck = "preserved"));
   await composerAction(page, "固定输入框");
@@ -129,8 +139,9 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       "relative",
     );
     for (const name of [
-      "附加文件",
-      "截图输入",
+      "添加输入内容",
+      "输入关联",
+      "执行设置",
       "语音输入",
       "取消固定输入框",
       "收起 AI 输入框",
@@ -139,6 +150,12 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
         page.getByRole("button", { name, exact: true }),
       ).toBeInViewport();
     await expect(page.locator(".send")).toBeInViewport();
+    const adding = await openComposerMedia(page);
+    for (const name of ["附加文件", "截图输入"])
+      await expect(
+        adding.getByRole("button", { name, exact: true }),
+      ).toBeInViewport();
+    await page.keyboard.press("Escape");
     const overflow = await page
       .locator(".exchange-panel")
       .evaluate((el) => el.scrollWidth - el.clientWidth);

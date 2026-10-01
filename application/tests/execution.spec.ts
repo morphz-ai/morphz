@@ -82,7 +82,7 @@ test("剧本操作记录直接显示查询、新建剧本和具体分集，返�
   await openInput(page);
   await openExecutionPanel(page);
   const panel = page.getByRole("complementary", {
-    name: "执行面板",
+    name: "Morphz 信息",
     exact: true,
   });
   await panel.getByText("工具执行记录", { exact: true }).click();
@@ -164,7 +164,7 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await page.getByLabel("AI 输入内容").fill("打开执行记录时保留的草稿");
   await openExecutionPanel(page);
   const dialog = page.getByRole("complementary", {
-    name: "执行面板",
+    name: "Morphz 信息",
     exact: true,
   });
   await dialog.getByText("工具执行记录", { exact: true }).click();
@@ -200,7 +200,9 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   expect(calls[0]!.action.type).toBe("allow-once");
   await dialog.getByRole("button", { name: "停止此项执行" }).click();
   await expect(dialog.getByText("正在停止", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("status")).toHaveText("已请求停止");
+  await expect(dialog.locator('.execution-notice[role="status"]')).toHaveText(
+    "已请求停止",
+  );
   await expect(dialog).not.toContainText("已撤销");
   expect(calls[1]!.action.type).toBe("cancel-job");
   expect(calls[1]!.action.revision).toBe(7);
@@ -242,7 +244,13 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     // The execution control is now outside the composer. Keyboard focus can
     // legitimately collapse an unpinned input; reopening restores its tools.
     await openInput(page);
-    const tools = page.getByRole("group", { name: "输入工具", exact: true });
+    const tools = composer.locator(".composer-action-bar");
+    await expect(
+      tools.getByRole("button", { name: "添加输入内容", exact: true }),
+    ).toBeVisible();
+    await expect(
+      tools.getByRole("button", { name: "执行设置", exact: true }),
+    ).toBeVisible();
     const toolBounds = (await tools.boundingBox())!;
     expect(toolBounds.x).toBeGreaterThanOrEqual(0);
     expect(toolBounds.x + toolBounds.width).toBeLessThanOrEqual(width);
