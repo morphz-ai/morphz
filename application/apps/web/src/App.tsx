@@ -13,7 +13,6 @@ import { createPortal } from "react-dom";
 import { replaceDictationTail } from "./live-dictation.js";
 import {
   ArrowUp,
-  AudioLines,
   ArrowLeft,
   ArrowRight,
   MessageCircle,
@@ -27,7 +26,7 @@ import {
   Search,
   Mic,
   Square,
-  Brain,
+  SlidersHorizontal,
   ListChecks,
 } from "lucide-react";
 import {
@@ -75,6 +74,11 @@ import {
 } from "../../../packages/core/src/text-quotes.js";
 import { contentText } from "../../../packages/core/src/retrieval.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
+import { SubjectSidebar } from "./SubjectSidebar.js";
+import { SubjectObjectives } from "./SubjectObjectives.js";
+import type { SubjectView } from "./subject-sidebar-model.js";
+import { ApplicationDock } from "./ApplicationDock.js";
+import { authorizedApplications } from "./application-dock-model.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
@@ -88,7 +92,7 @@ import {
   projectStatus,
   type Project,
 } from "../../../packages/core/src/projects.js";
-import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
+import { type ComposerOption } from "./ComposerOptions.js";
 import { ExchangePanel, ExchangeControls } from "./ExchangePanel.js";
 import { BrandMark } from "./BrandMark.js";
 import { NavigationIcon } from "./NavigationIcon.js";
@@ -159,6 +163,8 @@ type InspectorSelection =
   | { view: "execution"; scope: ExecutionScope }
   | { view: "understanding" | "collaboration" };
 type Preferences = InterfacePreferences & {
+  subjectTab?: SubjectView;
+  dockApplications?: string[];
   taskList?: TaskListOptions;
   executionPinned?: boolean;
   executionWidth?: number;
@@ -354,6 +360,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   );
   const leftSidebar = useSidebarLayout(leftSidebarPreference);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [subjectView, setSubjectView] = useState<SubjectView | null>(null);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const dictationControls = useRef<{
     toggle(): void;
@@ -534,7 +541,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null),
-    spaceOptions = useRef<HTMLDivElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [compact, setCompact] = useState(
@@ -1103,7 +1109,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const { ref: inspectorWorkspace, layout: rightInspector } =
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
   const inspectorOpen =
-    !!executions || understandingOpen || collaborationVisible;
+    !!executions || !!subjectView || understandingOpen || collaborationVisible;
   const inspectorSelections = useRef(new Map<string, InspectorSelection>());
   useLayoutEffect(() => {
     // Visibility never chooses a feature. Remember the last explicit view in
@@ -1121,6 +1127,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const resizeInspector = (inspectorWidth: number) =>
     prefer({ inspectorWidth });
   function closeInspector() {
+    setSubjectView(null);
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
@@ -2311,6 +2318,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ? browserPage?.title || "浏览器"
       : project.title);
   const openExecutions = () => {
+    setSubjectView("activity");
+    prefer({ subjectTab: "activity" });
     keepExchangeOpen();
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
@@ -2322,12 +2331,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   };
   const openUnderstanding = () => {
+    setSubjectView(null);
     setExecutions(null);
     setMobileCollaboration(false);
     prefer({ collaboration: false, executionPinned: false });
     setUnderstandingOpen(true);
   };
   const openCollaboration = () => {
+    setSubjectView(null);
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(true);
@@ -2335,6 +2346,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   };
   const rememberedInspector = inspectorSelections.current.get(contextKey);
   const showInspector = () => {
+    if (prefs.subjectTab && prefs.subjectTab !== "activity") {
+      selectSubjectView(prefs.subjectTab);
+      return;
+    }
     if (
       rememberedInspector?.view === "execution" &&
       state.projects.some(
@@ -2348,12 +2363,26 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setMobileCollaboration(false);
       prefer({ collaboration: false });
       setExecutions(rememberedInspector.scope);
-    } else if (rememberedInspector?.view === "understanding" || !artifact) {
-      openUnderstanding();
+      setSubjectView("activity");
     } else {
-      openCollaboration();
+      selectSubjectView(prefs.subjectTab ?? "activity");
     }
   };
+  function selectSubjectView(view: SubjectView) {
+    setUnderstandingOpen(false);
+    setMobileCollaboration(false);
+    prefer({ collaboration: false, subjectTab: view });
+    setSubjectView(view);
+    if (view === "activity")
+      setExecutions(
+        (current) =>
+          current ?? {
+            projectId: conversationProjectId,
+            conversationId,
+            artifactId: null,
+          },
+      );
+  }
   const inspectorViewOptions: ComposerOption[] = [
     {
       label: "执行记录",
@@ -2362,10 +2391,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       pressed: !!executions,
     },
     {
-      label: "当前理解",
-      icon: <Brain />,
-      onSelect: openUnderstanding,
-      pressed: understandingOpen,
+      label: "Morphz 设定",
+      icon: <SlidersHorizontal />,
+      onSelect: () => selectSubjectView("settings"),
+      pressed: subjectView === "settings",
     },
     ...(artifact
       ? [
@@ -2398,6 +2427,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return;
     }
     keepExchangeOpen();
+    setSubjectView("activity");
+    prefer({ subjectTab: "activity" });
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
     prefer({ collaboration: false });
@@ -2425,17 +2456,16 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     client.online &&
     client.boot!.runtime.connected &&
     client.boot!.runtime.attention?.available;
-  const inspectorTitle = executions
-    ? "执行记录"
-    : understandingOpen
-      ? "当前理解"
-      : collaborationVisible
-        ? "对象批注"
-        : rememberedInspector?.view === "execution"
-          ? "执行记录"
-          : rememberedInspector?.view === "understanding" || !artifact
-            ? "当前理解"
-            : "对象批注";
+  const inspectorTitle = understandingOpen
+    ? "已发布摘要"
+    : collaborationVisible
+      ? "对象批注"
+      : "Morphz 信息";
+  const activityScope = executions ?? {
+    projectId: conversationProjectId,
+    conversationId,
+    artifactId: null,
+  };
   const inspectorControls = (
     <div className="workspace-inspector-controls">
       {(approvalCount > 0 || activeExecutionCount > 0) && (
@@ -2446,7 +2476,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           aria-describedby="workspace-execution-status"
           data-attention={approvalCount > 0 || undefined}
           title="查看执行记录与审批"
-          onClick={openExecutions}
+          onClick={() =>
+            selectSubjectView(approvalCount ? "permissions" : "activity")
+          }
         >
           {approvalCount > 0 ? (
             <span
@@ -2827,49 +2859,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             hidden={openingObject || (!artifact && creating !== "document")}
           />
           <div className="top-actions">
-            {!(prefs.view === "content" && !artifact) && (
-              <div ref={spaceOptions} className="workspace-options">
-                <ComposerOptions
-                  key={`${project.id}:${prefs.view}:${activeId}`}
-                  label="工作空间选项"
-                  menuLabel="工作空间操作"
-                  below
-                  options={[
-                    {
-                      label: "执行记录",
-                      icon: <ListChecks />,
-                      onSelect: openExecutions,
-                    },
-                    {
-                      label: "当前理解",
-                      icon: <Brain />,
-                      onSelect: openUnderstanding,
-                    },
-                    {
-                      label: "录音转文字",
-                      icon: <AudioLines />,
-                      onSelect: () =>
-                        setSpeech({
-                          modal: true,
-                          key: contextKey,
-                          title: contextTitle,
-                          draft: { ...draft },
-                          scope: {
-                            projectId: project.id,
-                            ...(artifact
-                              ? {
-                                  artifactId: artifact.id,
-                                  revision: draft.revision ?? artifact.revision,
-                                }
-                              : {}),
-                          },
-                        }),
-                      disabled: !client.online,
-                    },
-                  ]}
-                />
-              </div>
-            )}
             {artifact && (
               <button
                 className="icon-button collaboration-panel-toggle"
@@ -2894,7 +2883,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         {inspectorControls}
         <div
           className="workspace-body"
-          data-execution-open={!!executions || undefined}
+          data-execution-open={!!executions || !!subjectView || undefined}
           data-understanding-open={understandingOpen || undefined}
         >
           <div
@@ -3356,6 +3345,68 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   />
                 )}
                 <div className="composer-dock">
+                  {projectStatus(project) === "active" &&
+                    !selectedConversation?.archivedAt && (
+                      <div
+                        className="application-dock-slot"
+                        data-expanded={inputVisible || undefined}
+                      >
+                        <ApplicationDock
+                          applications={authorizedApplications(
+                            state,
+                            client.boot!.principalId,
+                            project.id,
+                          )}
+                          pinned={prefs.dockApplications}
+                          activeKey={
+                            activeInstance
+                              ? `${activeInstance.applicationId}@${activeInstance.applicationVersion}`
+                              : undefined
+                          }
+                          onPinned={(dockApplications) =>
+                            prefer({ dockApplications })
+                          }
+                          onManage={() => {
+                            const owner = personalSpace("desk");
+                            navigate("desk");
+                            if (owner)
+                              prefer({
+                                applications: {
+                                  ...prefs.applications,
+                                  [owner.id]: null,
+                                },
+                              });
+                          }}
+                          onLaunch={async (app) => {
+                            const generation = ++navigationGeneration.current;
+                            const receipt = await client.execute({
+                              type: "launch-application",
+                              workspaceId: project.id,
+                              applicationId: app.id,
+                              applicationVersion: app.version,
+                            });
+                            if (generation !== navigationGeneration.current)
+                              return;
+                            prefer({
+                              view:
+                                spaceKind(project) === "project"
+                                  ? "projects"
+                                  : "desk",
+                              projectId: project.id,
+                              projectOpen: true,
+                              artifactId: null,
+                              artifactRevision: null,
+                              scriptLocation: null,
+                              readerMode: app.id === readerApplication.id,
+                              applications: {
+                                ...prefs.applications,
+                                [project.id]: receipt.entityId,
+                              },
+                            });
+                          }}
+                        />
+                      </div>
+                    )}
                   {projectStatus(project) !== "active" ? (
                     <div className="archived-conversation-note">
                       <span>
@@ -3983,25 +4034,92 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </div>
           </div>
         </div>
-        {executions && (
-          <ExecutionSidebar
-            key={executions.threadId ?? executions.inputId ?? "overview"}
-            client={client}
-            scope={executions}
-            viewOptions={inspectorViewOptions}
-            pinned={!!prefs.executionPinned}
-            layout={rightInspector}
-            onResize={resizeInspector}
-            onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
-            onClose={closeInspector}
-            onSelect={setExecutions}
-            onSupplement={
-              client.boot!.capabilities.directedInput ? supplement : undefined
-            }
-            onOpen={openUser}
-            onOpenScript={openScript}
-          />
-        )}
+        {(executions || subjectView) &&
+          !understandingOpen &&
+          !collaborationVisible && (
+            <SubjectSidebar
+              client={client}
+              view={subjectView ?? "activity"}
+              onView={selectSubjectView}
+              layout={rightInspector}
+              onResize={resizeInspector}
+              onClose={closeInspector}
+              pinned={!!prefs.executionPinned}
+              onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
+              detail={!!(executions?.inputId || executions?.threadId)}
+              onBack={() =>
+                setExecutions({
+                  projectId: executions?.projectId ?? conversationProjectId,
+                  conversationId: executions?.conversationId ?? conversationId,
+                  artifactId: null,
+                })
+              }
+              onInspect={(scope) => {
+                selectSubjectView("activity");
+                setExecutions(scope);
+              }}
+              onOpen={openUser}
+              onUnderstanding={openUnderstanding}
+              onModels={
+                client.boot!.capabilities.modelSettings
+                  ? () => setSettingsSection("models")
+                  : undefined
+              }
+              onConnection={() => setConnectionOpen(true)}
+              directories={directoryState}
+              directoryScope={directoryScope}
+              directoryAvailable={canAuthorizeDirectories}
+              onDirectories={() => {
+                showInput();
+                requestAnimationFrame(() =>
+                  document
+                    .querySelector<HTMLButtonElement>(
+                      ".composer-settings-trigger",
+                    )
+                    ?.click(),
+                );
+              }}
+              activity={
+                <ExecutionSidebar
+                  embedded
+                  key={
+                    activityScope.threadId ??
+                    activityScope.inputId ??
+                    "overview"
+                  }
+                  client={client}
+                  scope={activityScope}
+                  viewOptions={inspectorViewOptions}
+                  pinned={!!prefs.executionPinned}
+                  layout={rightInspector}
+                  onResize={resizeInspector}
+                  onPin={() =>
+                    prefer({ executionPinned: !prefs.executionPinned })
+                  }
+                  onClose={closeInspector}
+                  onSelect={setExecutions}
+                  onSupplement={
+                    client.boot!.capabilities.directedInput
+                      ? supplement
+                      : undefined
+                  }
+                  onOpen={openUser}
+                  onOpenScript={openScript}
+                  onRefresh={async () => {
+                    await client.refresh();
+                  }}
+                  overviewLeading={(allWork) => (
+                    <SubjectObjectives
+                      client={client}
+                      scope={activityScope}
+                      allWork={allWork}
+                      onSelect={setExecutions}
+                    />
+                  )}
+                />
+              }
+            />
+          )}
         {understandingOpen && (
           <UnderstandingPanel
             client={client}

@@ -1,0 +1,113 @@
+.application-dock-slot {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 16px);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.application-dock-slot[data-expanded],
+.exchange-surface:hover .application-dock-slot,
+.exchange-surface:focus-within .application-dock-slot {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.app .application-dock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  position: relative;
+}
+.application-dock-buttons {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 5px;
+  border-radius: 16px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.app .application-dock-shortcut {
+  width: 38px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  padding: 8px;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+}
+.app .application-dock-shortcut:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.app .application-dock-shortcut[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--accent);
+}
+.application-dock-shortcut svg,
+.application-dock-shortcut img {
+  width: 21px;
+  height: 21px;
+  object-fit: contain;
+}
+.application-dock-error {
+  margin: 4px 0 0;
+  color: var(--danger, #c53050);
+  font-size: 12px;
+}
+.application-dock-menu {
+  width: 280px;
+}
+.application-dock-catalog {
+  display: grid;
+  gap: 3px;
+}
+.application-dock-entry {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.application-dock-entry > button:first-child {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  padding: 10px;
+  border-radius: 9px;
+}
+.application-dock-entry > button:first-child:hover {
+  background: var(--hover);
+}
+.application-dock-entry > button:first-child svg,
+.application-dock-entry > button:first-child img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex: none;
+}
+.application-dock-entry > button:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.application-dock-manage {
+  margin-top: 10px;
+  width: 100%;
+  font-size: 12px;
+}

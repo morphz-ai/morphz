@@ -23,9 +23,6 @@ import {
   applicationDescription,
   applicationMessageSchema,
   objectsApplication,
-  browserApplication,
-  scriptStudioApplication,
-  readerApplication,
   type ApplicationManifest,
   type ApplicationCatalogEntry,
   type ApplicationInstance,
@@ -56,6 +53,7 @@ import { BrowserHost } from "./BrowserHost.js";
 import { useTextQuotes } from "./TextQuotes.js";
 import type { BrowserView } from "./desktop.js";
 import { Reader, type ReadingCompose } from "./Reader.js";
+import { authorizedApplications } from "./application-dock-model.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 
@@ -164,24 +162,11 @@ export function ApplicationHost({
     catalogContentEntries(state, client.contentCatalog),
     spaceKind(space) === "project" ? workspaceId : null,
   );
-  const builtins = [
-    readerApplication,
-    browserApplication,
-    scriptStudioApplication,
-  ];
-  const builtinIds = new Set(builtins.map((app) => `${app.id}@${app.version}`));
-  const applications = [
-    ...builtins,
-    ...state.applications.filter(
-      (a) =>
-        !builtinIds.has(`${a.id}@${a.version}`) &&
-        (a.installedBy === client.boot!.principalId ||
-          instances.some(
-            (i) =>
-              i.applicationId === a.id && i.applicationVersion === a.version,
-          )),
-    ),
-  ];
+  const applications = authorizedApplications(
+    state,
+    client.boot!.principalId,
+    workspaceId,
+  );
   const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
   const launching = useRef(false);

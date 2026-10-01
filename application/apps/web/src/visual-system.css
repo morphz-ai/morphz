@@ -503,6 +503,7 @@
   line-height: 24px;
 }
 .exchange-panel .composer-dock {
+  position: relative;
   padding: 0;
   background: transparent;
 }

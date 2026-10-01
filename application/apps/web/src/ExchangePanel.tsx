@@ -28,7 +28,7 @@ export function ExchangePanel({
     if (!root || !dock) return;
     let floating: HTMLElement | null = null;
     const measure = () => {
-      const next = root.querySelector<HTMLElement>(".composer-floating-tools");
+      const next = root.querySelector<HTMLElement>(".application-dock");
       if (next !== floating) {
         if (floating) observer.unobserve(floating);
         floating = next;
