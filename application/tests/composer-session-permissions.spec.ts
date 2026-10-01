@@ -351,6 +351,59 @@ function approvalIcons(page: Page) {
   };
 }
 
+for (const zoom of [1, 2]) {
+test(`审批读回过程中不闪现说明、不改变弹层与工作画布几何 (${zoom * 100}%)`, async ({ page, messageHost }, testInfo) => {
+  const { state, settings, approval } = await fixture(page, messageHost);
+  if (zoom === 2) {
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => { document.documentElement.style.zoom = "2"; });
+    await openInput(page);
+    await openComposerSettings(page);
+    await expect(approval).toBeEnabled();
+  }
+  const geometry = () => page.evaluate(() => {
+    const selectors = [".composer-settings-menu", ".composer", ".composer-action-bar", ".app"];
+    return selectors.map((selector) => {
+      const box = document.querySelector(selector)!.getBoundingClientRect();
+      return { selector, x: box.x, y: box.y, width: box.width, height: box.height };
+    });
+  });
+  const before = await geometry();
+  state.hold();
+  try {
+    await approval.selectOption("auto_review");
+    await expect.poll(() => state.updating).toBe(true);
+    const pending = await geometry();
+    await testInfo.attach("permission-pending-geometry", {
+      body: JSON.stringify({ before, pending }), contentType: "application/json",
+    });
+    await testInfo.attach("permission-pending", { body: await page.screenshot(), contentType: "image/png" });
+    expect(pending).toEqual(before);
+    await expect(settings.locator(".composer-session-permissions")).toHaveAttribute("aria-busy", "true");
+    await expect(approval).toBeDisabled();
+    await expect(settings.locator(".composer-setting-row > [role=status]")).toHaveClass("visually-hidden");
+    await expect(approval).toHaveAttribute("title", "正在确认审批方式…");
+    const samples = await page.evaluate(async () => {
+      const samples: string[] = [];
+      for (let frame = 0; frame < 12; frame++) {
+        await new Promise(requestAnimationFrame);
+        samples.push(JSON.stringify([".composer-settings-menu", ".composer", ".composer-action-bar", ".app"].map((selector) => {
+          const box = document.querySelector(selector)!.getBoundingClientRect();
+          return { selector, x: box.x, y: box.y, width: box.width, height: box.height };
+        })));
+      }
+      return samples;
+    });
+    expect(samples.every((sample) => sample === JSON.stringify(before))).toBe(true);
+  } finally {
+    state.release();
+  }
+  await expect(approval).toHaveValue("auto_review");
+  await expect(approval).toBeEnabled();
+  expect(await geometry()).toEqual(before);
+});
+}
+
 async function iconPaths(icon: Locator) {
   return icon.evaluate(
     (svg) =>
@@ -538,11 +591,13 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
 test("三种已读回审批模式有不同图形与颜色，触发器和审批行一致且收起后可识别", async ({
   page,
   messageHost,
-}) => {
+}, info) => {
   const f = await fixture(page, messageHost);
   const presentations = [
     await expectApprovalPresentation(page, "request_approval"),
   ];
+  expect(await f.approval.locator("option").allTextContents()).toEqual(["询问批准", "自动审批", "完全访问"]);
+  await f.settings.screenshot({ path: info.outputPath("approval-request.png") });
   for (const mode of ["auto_review", "full_access"] as const) {
     await f.approval.selectOption(mode);
     if (mode === "full_access")
@@ -552,6 +607,7 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
         .click();
     await expect(f.approval).toHaveValue(mode);
     presentations.push(await expectApprovalPresentation(page, mode));
+    await f.settings.screenshot({ path: info.outputPath(`approval-${mode}.png`) });
     await page.keyboard.press("Escape");
     await expect(f.settings).not.toBeVisible();
     await expect(approvalIcons(page).trigger).toHaveAttribute(

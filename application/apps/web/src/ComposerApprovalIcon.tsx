@@ -1,4 +1,4 @@
-import { Shield, ShieldCheck } from "lucide-react";
+import { Shield, ShieldCheck, ShieldOff } from "lucide-react";
 import type { SessionPermissionsSnapshot } from "../../../packages/core/src/session-permissions.js";
 
 export function ComposerApprovalIcon({
@@ -6,12 +6,13 @@ export function ComposerApprovalIcon({
 }: {
   mode?: SessionPermissionsSnapshot["permissionMode"];
 }) {
-  const Icon = mode === "auto_review" ? ShieldCheck : Shield;
+  const Icon = mode === "auto_review" ? ShieldCheck : mode === "full_access" ? ShieldOff : Shield;
   return (
     <Icon
       className="composer-approval-icon"
       data-approval-mode={mode ?? "unread"}
-      fill={mode === "full_access" ? "currentColor" : "none"}
+      strokeWidth={2}
+      fill="none"
       aria-hidden="true"
     />
   );
@@ -19,7 +20,7 @@ export function ComposerApprovalIcon({
 
 const labels: Record<string, string> = {
   request_approval: "询问批准",
-  auto_review: "自动安全评审",
+  auto_review: "自动审批",
   full_access: "完全访问",
   custom: "自定义策略",
 };

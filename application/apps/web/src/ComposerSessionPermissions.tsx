@@ -22,7 +22,7 @@ type Scope = { projectId: string; conversationId: string };
 type PermissionMode = SessionPermissionsUpdate["permissionMode"];
 const labels: Record<PermissionMode, string> = {
   request_approval: "询问批准",
-  auto_review: "自动安全评审",
+  auto_review: "自动审批",
   full_access: "完全访问",
 };
 const workspaceReasons: Record<string, string> = {
@@ -293,7 +293,7 @@ export function ComposerSessionPermissions({
   }
 
   return (
-    <section className="composer-session-permissions" hidden={continuation}>
+    <section className="composer-session-permissions" hidden={continuation} aria-busy={current?.loading || current?.saving || undefined}>
       <label className="composer-setting-row">
         <ComposerApprovalIcon mode={snapshot?.permissionMode} />
         <span>审批</span>
@@ -333,7 +333,10 @@ export function ComposerSessionPermissions({
             </option>
           ))}
         </select>
-        {note && <small role="status">{note}</small>}
+        {/* Read/save feedback must not add a grid row and move the anchored
+            popover. The disabled control and its title retain visible context;
+            announce the operation without changing the canvas geometry. */}
+        <small className="visually-hidden" role="status">{note}</small>
       </label>
       {current?.error && (
         <div className="composer-permission-error" role="alert">

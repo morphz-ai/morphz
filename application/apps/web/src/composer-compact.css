@@ -120,6 +120,7 @@
 }
 .app svg.composer-approval-icon {
   color: var(--text-secondary);
+  stroke-width: 2;
 }
 .app
   :is(.composer-settings-trigger, .composer-settings-menu)
@@ -141,6 +142,10 @@
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
+}
+.app .composer-settings-trigger svg.composer-approval-icon {
+  width: 16px;
+  height: 16px;
 }
 .app .composer-action-bar .icon-button,
 .app .composer-action-bar .send {
@@ -266,6 +271,15 @@
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
+}
+.app .composer-session-permissions .composer-setting-row > .visually-hidden {
+  /* Specific row styles cannot turn a screen-reader status into layout. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .app :is(.composer-permission-error, .composer-permission-confirm) {
   margin: 3px 8px 6px;
