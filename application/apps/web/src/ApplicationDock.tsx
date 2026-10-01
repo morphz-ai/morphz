@@ -66,28 +66,43 @@ export function ApplicationDock({
           menuLabel="选择应用"
           triggerIcon={<Grid2X2 />}
           triggerClassName="application-dock-shortcut"
-          menuClassName="application-dock-menu"
+          menuClassName={`application-dock-menu application-dock-menu-${Math.min(4, Math.max(1, applications.length))}`}
           options={[]}
           content={(close) => (
             <>
-              <div className="application-dock-catalog">
+              <div
+                className="application-dock-catalog"
+                role="list"
+                aria-label="已授权应用"
+              >
                 {applications.map((app) => {
                   const key = applicationKey(app),
                     selected = keys.includes(key);
                   return (
-                    <div key={key} className="application-dock-entry">
+                    <div
+                      key={key}
+                      className="application-dock-entry"
+                      role="listitem"
+                    >
                       <button
+                        className="application-dock-launch"
+                        aria-label={`打开${app.title}`}
+                        title={app.title}
                         disabled={busy}
                         onClick={() => {
                           close();
                           void launch(app);
                         }}
                       >
-                        <AppIcon app={app} />
-                        <span>{app.title}</span>
+                        <span className="application-dock-app-icon">
+                          <AppIcon app={app} />
+                        </span>
+                        <span className="application-dock-app-name">
+                          {app.title}
+                        </span>
                       </button>
                       <button
-                        className="icon-button"
+                        className="icon-button application-dock-pin"
                         aria-label={`${selected ? "从 Dock 移除" : "固定到 Dock"}：${app.title}`}
                         title={selected ? "从 Dock 移除" : "固定到 Dock"}
                         aria-pressed={selected}

@@ -27,39 +27,40 @@
 .application-dock-buttons {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   max-width: 100%;
   overflow-x: auto;
-  padding: 5px;
-  border-radius: 16px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  box-shadow: 0 4px 16px color-mix(in srgb, var(--ink) 7%, transparent);
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
 }
 .app .application-dock-shortcut {
-  width: 38px;
-  height: 36px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 11px;
+  border-radius: 9px;
   padding: 8px;
-  color: var(--muted);
-  background: transparent;
-  box-shadow: none;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
-.app .application-dock-shortcut:hover {
-  background: var(--hover);
-  color: var(--ink);
-}
-.app .application-dock-shortcut[aria-pressed="true"] {
+.app
+  .application-dock-shortcut:hover:not(:disabled):not([aria-pressed="true"]) {
   background: var(--soft);
-  color: var(--accent);
+}
+.app .application-dock-shortcut[aria-pressed="true"]:not(:disabled) {
+  background: var(--selection);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--ink);
 }
 .application-dock-shortcut svg,
 .application-dock-shortcut img {
-  width: 21px;
-  height: 21px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
 }
 .application-dock-error {
@@ -67,47 +68,137 @@
   color: var(--danger, #c53050);
   font-size: 12px;
 }
-.application-dock-menu {
-  width: 280px;
+.app .composer-options.application-dock-menu {
+  width: var(--launcher-width, 472px);
+  padding: 18px 14px 10px;
+  border-radius: 20px;
+}
+.application-dock-menu-1 {
+  --launcher-columns: 1;
+  --launcher-width: 136px;
+}
+.application-dock-menu-2 {
+  --launcher-columns: 2;
+  --launcher-width: 248px;
+}
+.application-dock-menu-3 {
+  --launcher-columns: 3;
+  --launcher-width: 360px;
 }
 .application-dock-catalog {
   display: grid;
-  gap: 3px;
+  grid-template-columns: repeat(var(--launcher-columns, 4), minmax(0, 1fr));
+  gap: 12px 8px;
 }
 .application-dock-entry {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+  position: relative;
+  min-width: 0;
 }
-.application-dock-entry > button:first-child {
-  flex: 1;
+.app .application-dock-launch {
+  width: 100%;
+  min-height: 114px;
   display: flex;
+  flex-direction: column;
   gap: 10px;
   align-items: center;
-  text-align: left;
+  justify-content: flex-start;
+  text-align: center;
   min-width: 0;
   background: transparent;
   border: 0;
-  padding: 10px;
-  border-radius: 9px;
+  padding: 8px 4px;
+  border-radius: 14px;
+  color: var(--ink);
 }
-.application-dock-entry > button:first-child:hover {
+.app .application-dock-launch:hover {
   background: var(--hover);
 }
-.application-dock-entry > button:first-child svg,
-.application-dock-entry > button:first-child img {
-  width: 20px;
-  height: 20px;
-  object-fit: contain;
+.application-dock-app-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
   flex: none;
+  border-radius: 15px;
+  background: var(--soft);
+  color: var(--ink);
 }
-.application-dock-entry > button:first-child span {
+.application-dock-app-icon svg,
+.application-dock-app-icon img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+.application-dock-app-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.4;
 }
-.application-dock-manage {
-  margin-top: 10px;
+.app .application-dock-pin {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 6px;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.application-dock-pin svg {
+  width: 16px;
+  height: 16px;
+}
+.application-dock-entry:hover .application-dock-pin,
+.application-dock-entry:focus-within .application-dock-pin {
+  opacity: 1;
+  pointer-events: auto;
+}
+.app .application-dock-pin:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+.app .application-dock-launch:focus-visible,
+.app .application-dock-pin:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+.app .composer-options .application-dock-manage {
+  margin-top: 12px;
   width: 100%;
   font-size: 12px;
+  text-align: center;
+  justify-content: center;
+  color: var(--muted);
+}
+@media (max-width: 500px) {
+  .application-dock-menu-4 {
+    --launcher-columns: 3;
+    --launcher-width: 360px;
+  }
+}
+@media (max-width: 360px) {
+  .application-dock-menu-3,
+  .application-dock-menu-4 {
+    --launcher-columns: 2;
+    --launcher-width: 248px;
+  }
+}
+@media (hover: none), (pointer: coarse) {
+  .app .application-dock-pin {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    padding: 10px;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
