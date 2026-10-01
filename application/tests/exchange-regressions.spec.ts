@@ -89,7 +89,8 @@ test("从输入框连续 Tab 能到达底栏常用按钮，面板控制有独立
     if (!(await input.isVisible())) break;
     if (visited.includes("收起 AI 输入框")) break;
   }
-  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"])
+  expect(visited).not.toContain("输入关联");
+  for (const name of ["添加输入内容", "执行设置", "语音输入"])
     expect(visited, name).toContain(name);
   await openInput(page);
   await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();

@@ -5,7 +5,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ChevronDown, FolderKey, Shield } from "lucide-react";
+import { flushSync } from "react-dom";
+import { ChevronDown, FolderKey } from "lucide-react";
+import { ComposerApprovalIcon } from "./ComposerApprovalIcon.js";
 import {
   sessionPermissionsSnapshotSchema,
   type SessionPermissionsSnapshot,
@@ -55,6 +57,7 @@ export function ComposerSessionPermissions({
   directoryCount = 0,
   directoryReady = true,
   directoryControls,
+  onSnapshotChange,
 }: {
   scope?: Scope;
   identityGeneration?: string;
@@ -64,6 +67,7 @@ export function ComposerSessionPermissions({
   directoryCount?: number;
   directoryReady?: boolean;
   directoryControls?: ReactNode;
+  onSnapshotChange?(snapshot: SessionPermissionsSnapshot | null): void;
 }) {
   const identity = applicationIdentity();
   const key = JSON.stringify([
@@ -90,6 +94,9 @@ export function ComposerSessionPermissions({
   const mounted = useRef(false);
   const current = view.key === key ? view : null;
   const snapshot = current?.snapshot;
+  useEffect(() => {
+    onSnapshotChange?.(current?.error ? null : (snapshot ?? null));
+  }, [key, snapshot, current?.error, onSnapshotChange]);
 
   useEffect(() => {
     mounted.current = true;
@@ -180,6 +187,14 @@ export function ComposerSessionPermissions({
     )
       return;
     const originatingKey = key;
+    const confirmationGroup = cancel.current?.closest(
+      ".composer-permission-confirm",
+    );
+    // A native control loses focus when saving disables it. Capture the
+    // originating focus before that render, rather than after the response.
+    const ownedFocus =
+      document.activeElement === select.current ||
+      confirmationGroup?.contains(document.activeElement);
     const request: SessionPermissionsUpdate = {
       ...scope,
       permissionMode,
@@ -213,7 +228,22 @@ export function ComposerSessionPermissions({
     } finally {
       mutation.current = false;
       if (mounted.current) {
-        if (currentKey.current === originatingKey) setConfirmFull(false);
+        if (currentKey.current === originatingKey) {
+          const restore =
+            ownedFocus &&
+            (document.activeElement === document.body ||
+              document.activeElement === select.current ||
+              confirmationGroup?.contains(document.activeElement));
+          // Closing the confirmation removes its focused button. Return to
+          // this still-open control, not body; never steal newer navigation.
+          flushSync(() => setConfirmFull(false));
+          const panel = select.current?.closest<HTMLElement>("[popover]");
+          if (restore && panel?.matches(":popover-open")) {
+            if (select.current && !select.current.disabled)
+              select.current.focus({ preventScroll: true });
+            else panel.focus({ preventScroll: true });
+          }
+        }
         // A new scope's read was deliberately deferred while this write was
         // in flight. Reconcile it now; never apply the old scope's response.
         else setRefresh((value) => value + 1);
@@ -265,7 +295,7 @@ export function ComposerSessionPermissions({
   return (
     <section className="composer-session-permissions" hidden={continuation}>
       <label className="composer-setting-row">
-        <Shield aria-hidden="true" />
+        <ComposerApprovalIcon mode={snapshot?.permissionMode} />
         <span>审批</span>
         <select
           ref={select}
@@ -273,11 +303,14 @@ export function ComposerSessionPermissions({
           value={snapshot?.permissionMode ?? ""}
           disabled={unavailable}
           title={note || scopeNote}
-          aria-describedby={
+          aria-description={[
+            scopeNote,
             snapshot?.permissionMode === "auto_review"
-              ? "composer-auto-review-note"
-              : undefined
-          }
+              ? "自动安全评审，可能拒绝或交由你批准"
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
           onChange={(event) => {
             const mode = event.target.value as PermissionMode;
             if (mode === "full_access") setConfirmFull(true);
@@ -302,14 +335,6 @@ export function ComposerSessionPermissions({
         </select>
         {note && <small role="status">{note}</small>}
       </label>
-      {snapshot?.permissionMode === "auto_review" && (
-        <p
-          className="composer-permissions-scope"
-          id="composer-auto-review-note"
-        >
-          自动安全评审，可能拒绝或交由你批准
-        </p>
-      )}
       {current?.error && (
         <div className="composer-permission-error" role="alert">
           <span>{current.error}</span>
@@ -358,7 +383,6 @@ export function ComposerSessionPermissions({
           </div>
         </div>
       )}
-      {scopeNote && <p className="composer-permissions-scope">{scopeNote}</p>}
       <details className="composer-directory-settings">
         <summary>
           <FolderKey aria-hidden="true" />

@@ -3626,6 +3626,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       <ComposerActionBar
                         scope={
                           <ComposerScope
+                            expandable={
+                              !!(
+                                draft.scriptGeneration ||
+                                (!draft.continuation &&
+                                  (draft.taskResult ||
+                                    draft.intent ||
+                                    (artifact && draft.selection)))
+                              )
+                            }
                             label={
                               draft.continuation
                                 ? "补充原工作"
@@ -3752,69 +3761,66 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         }
                         media={
                           <>
-                            {((!draft.annotation && !draft.taskResult) ||
-                              !!draft.continuation ||
-                              !!draft.attachments?.length) && (
-                              <MessageAttachments
-                                variant="menu"
-                                capture={{
-                                  title: `截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`,
-                                  disabled:
-                                    sending ||
-                                    !!draft.pendingSupplement ||
-                                    !!uploadingDrafts[contextKey] ||
-                                    !client.online ||
-                                    (draft.attachments?.length ?? 0) >= 8,
-                                  onSelect: (hideWindow) =>
-                                    setCapture({
-                                      key: contextKey,
-                                      projectId: project.id,
-                                      hideWindow,
-                                      ...(artifact
-                                        ? {
-                                            artifactId: artifact.id,
-                                            artifactRevision:
-                                              draft.revision ??
-                                              prefs.artifactRevision ??
-                                              artifact.revision,
-                                          }
-                                        : {}),
-                                    }),
-                                }}
-                                key={`attachments:${contextKey}`}
-                                inputRef={input}
-                                previewTarget={attachmentSlot}
-                                client={client}
-                                attachments={draft.attachments ?? []}
-                                allowAdd={
-                                  !!draft.continuation ||
-                                  (!draft.annotation && !draft.taskResult)
-                                }
-                                disabled={
+                            <MessageAttachments
+                              variant="menu"
+                              capture={{
+                                title: `截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`,
+                                disabled:
                                   sending ||
                                   !!draft.pendingSupplement ||
-                                  !!uploadingDrafts[contextKey]
-                                }
-                                onBusy={(busy) =>
-                                  setUploadingDrafts((old) => ({
-                                    ...old,
-                                    [contextKey]: busy,
-                                  }))
-                                }
-                                onChange={(update) =>
-                                  updateDraft(contextKey, (old) => ({
-                                    ...old,
-                                    attachments: update(old.attachments ?? []),
-                                  }))
-                                }
-                                onError={(message) =>
-                                  setInputErrors((old) => ({
-                                    ...old,
-                                    [contextKey]: message,
-                                  }))
-                                }
-                              />
-                            )}
+                                  !!uploadingDrafts[contextKey] ||
+                                  !client.online ||
+                                  (draft.attachments?.length ?? 0) >= 8,
+                                onSelect: (hideWindow) =>
+                                  setCapture({
+                                    key: contextKey,
+                                    projectId: project.id,
+                                    hideWindow,
+                                    ...(artifact
+                                      ? {
+                                          artifactId: artifact.id,
+                                          artifactRevision:
+                                            draft.revision ??
+                                            prefs.artifactRevision ??
+                                            artifact.revision,
+                                        }
+                                      : {}),
+                                  }),
+                              }}
+                              key={`attachments:${contextKey}`}
+                              inputRef={input}
+                              previewTarget={attachmentSlot}
+                              client={client}
+                              attachments={draft.attachments ?? []}
+                              allowAdd={
+                                !!draft.continuation ||
+                                (!draft.annotation && !draft.taskResult)
+                              }
+                              disabled={
+                                sending ||
+                                !!draft.pendingSupplement ||
+                                !!uploadingDrafts[contextKey] ||
+                                !client.online
+                              }
+                              onBusy={(busy) =>
+                                setUploadingDrafts((old) => ({
+                                  ...old,
+                                  [contextKey]: busy,
+                                }))
+                              }
+                              onChange={(update) =>
+                                updateDraft(contextKey, (old) => ({
+                                  ...old,
+                                  attachments: update(old.attachments ?? []),
+                                }))
+                              }
+                              onError={(message) =>
+                                setInputErrors((old) => ({
+                                  ...old,
+                                  [contextKey]: message,
+                                }))
+                              }
+                            />
                           </>
                         }
                         microphone={

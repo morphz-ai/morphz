@@ -70,6 +70,10 @@ export function ProfileMenu({
             label: "搜索资料",
             text: "搜索",
             icon: <Search />,
+            shortcut: /Mac/.test(navigator.platform) ? "⌘K" : "Ctrl+K",
+            keyShortcut: /Mac/.test(navigator.platform)
+              ? "Meta+K"
+              : "Control+K",
             onSelect: onSearch,
           },
         ]
@@ -115,6 +119,7 @@ export function ProfileMenu({
         description={`${name} · ${status}${unreadNotifications ? ` · ${unreadNotifications} 项未读通知` : ""}`}
         menuLabel="用户菜单"
         below={compact}
+        placement="right"
         triggerClassName={
           compact ? "icon-button profile-compact" : "profile-trigger"
         }

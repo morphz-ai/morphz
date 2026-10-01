@@ -63,11 +63,12 @@ test("应用 Dock 与单底栏分工清楚；内部菜单保留草稿，外部�
     await expect(input).toHaveValue("TEST Dock 和输入边界，不发送");
     await page.keyboard.press("Escape");
   }
-  await page.getByRole("button", { name: "输入关联", exact: true }).click();
+  await expect(page.locator(".composer-scope-label")).toBeVisible();
+  await page.locator(".composer-scope-label").click();
   await expect(
     page.getByRole("group", { name: "本次输入关联", exact: true }),
-  ).toBeVisible();
-  await page.keyboard.press("Escape");
+  ).toHaveCount(0);
+  await expect(input).toHaveValue("TEST Dock 和输入边界，不发送");
   await page
     .getByRole("main", { name: "主工作区" })
     .click({ position: { x: 600, y: 200 } });

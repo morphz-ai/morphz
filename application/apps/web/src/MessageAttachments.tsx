@@ -124,6 +124,75 @@ export function MessageAttachments({
     input?.addEventListener("paste", paste);
     return () => input?.removeEventListener("paste", paste);
   });
+  useEffect(() => {
+    const input = inputRef.current;
+    const composer = input?.closest<HTMLElement>(".composer") ?? input;
+    if (!composer) return;
+    let depth = 0;
+    const hasFiles = (event: DragEvent) =>
+      !!event.dataTransfer &&
+      (Array.from(event.dataTransfer.types).includes("Files") ||
+        Array.from(event.dataTransfer.items).some(
+          (item) => item.kind === "file",
+        ));
+    const clear = () => {
+      depth = 0;
+      delete composer.dataset.fileDrop;
+    };
+    const enter = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      depth++;
+      if (allowAdd && !disabled && !adding.current)
+        composer.dataset.fileDrop = "ready";
+    };
+    const over = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer!.dropEffect =
+        allowAdd && !disabled && !adding.current ? "copy" : "none";
+    };
+    const leave = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) clear();
+    };
+    const drop = (event: DragEvent) => {
+      if (!hasFiles(event)) return; // Text dragging retains native insertion.
+      event.preventDefault();
+      clear();
+      if (!allowAdd) {
+        onError("当前输入不支持附件。");
+        return;
+      }
+      const data = event.dataTransfer!;
+      if (
+        Array.from(data.items).some(
+          (item) => item.webkitGetAsEntry?.()?.isDirectory,
+        )
+      ) {
+        onError("请拖入文件，不支持文件夹。");
+        return;
+      }
+      const files = Array.from(data.files); // Capture only this explicit gesture.
+      if (!files.length) return;
+      input?.focus({ preventScroll: true });
+      void addFiles(files);
+    };
+    composer.addEventListener("dragenter", enter);
+    composer.addEventListener("dragover", over);
+    composer.addEventListener("dragleave", leave);
+    composer.addEventListener("drop", drop);
+    window.addEventListener("blur", clear);
+    return () => {
+      clear();
+      composer.removeEventListener("dragenter", enter);
+      composer.removeEventListener("dragover", over);
+      composer.removeEventListener("dragleave", leave);
+      composer.removeEventListener("drop", drop);
+      window.removeEventListener("blur", clear);
+    };
+  });
   function chooseFiles() {
     // Native file pickers blur the window. Suspend collapse before opening.
     flushSync(() => {
@@ -169,6 +238,7 @@ export function MessageAttachments({
         )}
       {allowAdd && variant === "menu" && (
         <ComposerOptions
+          align="start"
           label="添加输入内容"
           menuLabel="添加到这条消息"
           triggerIcon={<Plus />}

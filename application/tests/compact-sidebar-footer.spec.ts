@@ -101,6 +101,26 @@ for (const appearance of ["light", "dark"] as const) {
         await expect(menu).toBeVisible();
         await expect(menu).toHaveAttribute("aria-label", "用户菜单");
         await expect(menu).toBeInViewport();
+        const menuBounds = (await menu.boundingBox())!;
+        expect(menuBounds.x).toBeGreaterThanOrEqual(
+          bounds.x + bounds.width + 7,
+        );
+        expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(
+          viewport.width - 7,
+        );
+        expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(
+          viewport.height - 7,
+        );
+        const search = menu.getByRole("button", {
+          name: "搜索资料",
+          exact: true,
+        });
+        const mac = await page.evaluate(() => /Mac/.test(navigator.platform));
+        await expect(search.locator("kbd")).toHaveText(mac ? "⌘K" : "Ctrl+K");
+        await expect(search).toHaveAttribute(
+          "aria-keyshortcuts",
+          mac ? "Meta+K" : "Control+K",
+        );
         for (const name of ["搜索资料", "外观设置", "通知", "设置"]) {
           await expect(
             menu.getByRole("button", { name, exact: true }),

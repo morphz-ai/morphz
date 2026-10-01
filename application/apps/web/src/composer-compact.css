@@ -14,6 +14,9 @@
   height: auto;
   max-height: 100%;
 }
+.app .composer[data-file-drop="ready"] {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 .app .composer:has(.composer-action-bar) > .composer-writing {
   display: flex;
   flex-direction: column;
@@ -55,7 +58,12 @@
 .composer-action-trailing {
   flex: 0 1 auto;
 }
-.app :is(.composer-settings-trigger, .composer-scope-trigger) {
+.app
+  :is(
+    .composer-settings-trigger,
+    .composer-scope-trigger,
+    .composer-scope-label
+  ) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -78,10 +86,12 @@
   background: var(--soft);
   color: var(--ink);
 }
-.composer-scope-trigger {
+.composer-scope-trigger,
+.composer-scope-label {
   max-width: 180px;
 }
 .composer-scope-trigger > span,
+.composer-scope-label > span,
 .composer-settings-summary {
   display: block;
   min-width: 0;
@@ -108,7 +118,26 @@
 .composer-permission-summary[data-authorized] {
   color: var(--accent);
 }
-.app :is(.composer-settings-trigger, .composer-scope-trigger) svg {
+.app svg.composer-approval-icon {
+  color: var(--text-secondary);
+}
+.app
+  :is(.composer-settings-trigger, .composer-settings-menu)
+  svg.composer-approval-icon[data-approval-mode="auto_review"] {
+  color: var(--accent-strong);
+}
+.app
+  :is(.composer-settings-trigger, .composer-settings-menu)
+  svg.composer-approval-icon[data-approval-mode="full_access"] {
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+}
+.app
+  :is(
+    .composer-settings-trigger,
+    .composer-scope-trigger,
+    .composer-scope-label
+  )
+  svg {
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
@@ -232,18 +261,6 @@
 .composer-directory-details {
   padding: 0 8px 8px;
 }
-.app .composer-settings-scope {
-  margin: 4px 8px 2px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.app .composer-permissions-scope {
-  margin: 2px 8px 4px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
 .app .composer-session-permissions .composer-setting-row > small {
   margin: 0;
   color: var(--muted);
@@ -349,7 +366,8 @@
   .composer-settings-summary {
     max-width: 98px;
   }
-  .composer-scope-trigger {
+  .composer-scope-trigger,
+  .composer-scope-label {
     max-width: 120px;
   }
 }
@@ -360,10 +378,16 @@
   .composer-settings-summary {
     max-width: 58px;
   }
-  .composer-scope-trigger {
+  .composer-scope-trigger,
+  .composer-scope-label {
     max-width: 65px;
   }
-  .app :is(.composer-settings-trigger, .composer-scope-trigger) {
+  .app
+    :is(
+      .composer-settings-trigger,
+      .composer-scope-trigger,
+      .composer-scope-label
+    ) {
     gap: 3px;
     padding-inline: 3px;
   }

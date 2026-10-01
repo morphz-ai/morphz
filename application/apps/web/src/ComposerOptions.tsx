@@ -16,6 +16,8 @@ export type ComposerOption = {
   disabled?: boolean;
   title?: string;
   pressed?: boolean;
+  shortcut?: string;
+  keyShortcut?: string;
 };
 
 /** A local, nonmodal popover: no new input scope and no draft mutation. */
@@ -27,6 +29,8 @@ export function ComposerOptions({
   description,
   menuLabel = "输入选项",
   below = false,
+  align = "end",
+  placement = "vertical",
   modelControl,
   triggerIcon = <MoreHorizontal />,
   triggerClassName = "icon-button composer-more",
@@ -45,6 +49,10 @@ export function ComposerOptions({
   description?: string;
   menuLabel?: string;
   below?: boolean;
+  /** Left-side input tools open towards the content, not over navigation. */
+  align?: "start" | "end";
+  /** Sidebar identity menus open beside their button into the content. */
+  placement?: "vertical" | "right";
   modelControl?: ReactNode;
   triggerIcon?: ReactNode;
   triggerClassName?: string;
@@ -91,20 +99,23 @@ export function ComposerOptions({
       }
       const rect = trigger.current!.getBoundingClientRect();
       const anchor = {
+        left: rect.left / zoom,
         right: rect.right / zoom,
         top: rect.top / zoom,
         bottom: rect.bottom / zoom,
       };
       const viewport = { width: innerWidth / zoom, height: innerHeight / zoom };
-      element.style.maxWidth = `${Math.max(1, viewport.width - 16)}px`;
-      element.style.maxHeight = `${Math.max(80, (below ? viewport.height : anchor.top) - 16)}px`;
+      const sideSpace = viewport.width - anchor.right - 16;
+      const right = placement === "right" && sideSpace >= 160;
+      element.style.maxWidth = `${Math.max(1, right ? sideSpace : viewport.width - 16)}px`;
+      element.style.maxHeight = `${Math.max(80, (placement === "right" || below ? viewport.height : anchor.top) - 16)}px`;
       // Anchor using stable layout dimensions, independent of reveal effects.
       const bounds = {
         width: element.offsetWidth,
         height: element.offsetHeight,
       };
-      element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, viewport.width - bounds.width - 8))}px`;
-      element.style.top = `${Math.max(8, below ? Math.min(anchor.bottom + 4, viewport.height - bounds.height - 8) : anchor.top - bounds.height - 8)}px`;
+      element.style.left = `${Math.max(8, Math.min(right ? anchor.right + 8 : align === "start" ? anchor.left : anchor.right - bounds.width, viewport.width - bounds.width - 8))}px`;
+      element.style.top = `${Math.max(8, Math.min(placement === "right" ? anchor.bottom - bounds.height : below ? anchor.bottom + 4 : anchor.top - bounds.height - 8, viewport.height - bounds.height - 8))}px`;
     };
     position();
     const resize = new ResizeObserver(position);
@@ -137,7 +148,7 @@ export function ComposerOptions({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open, below, initialFocus]);
+  }, [open, below, align, placement, initialFocus]);
 
   function closeToTrigger() {
     // Modal hooks capture the stable trigger, never a disappearing menu item.
@@ -229,6 +240,7 @@ export function ComposerOptions({
             aria-label={option.label}
             title={option.title}
             aria-pressed={option.pressed}
+            aria-keyshortcuts={option.keyShortcut}
             disabled={option.disabled}
             onClick={() => {
               closeToTrigger();
@@ -237,6 +249,7 @@ export function ComposerOptions({
           >
             {option.icon}
             <span>{option.text ?? option.label}</span>
+            {option.shortcut && <kbd>{option.shortcut}</kbd>}
           </button>
         ))}
         {open && modelControl}

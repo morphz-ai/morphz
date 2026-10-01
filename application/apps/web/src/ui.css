@@ -2869,6 +2869,7 @@ summary:focus-visible {
   font-size: 13px;
 }
 .profile-menu {
+  transform-origin: bottom left;
   min-width: 220px;
   max-width: calc(100vw - 16px);
 }
@@ -2878,6 +2879,14 @@ summary:focus-visible {
   padding: 8px 10px 12px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--hairline);
+}
+.profile-menu > button > kbd {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .profile-menu-summary strong {
   font-size: 13px;

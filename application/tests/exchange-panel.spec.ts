@@ -66,7 +66,8 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
     await expect(
       controls.getByRole("button", { name, exact: true }),
     ).toBeVisible();
-  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"])
+  await expect(media.locator(".composer-scope-label")).toBeVisible();
+  for (const name of ["添加输入内容", "执行设置", "语音输入"])
     await expect(
       media.getByRole("button", { name, exact: true }),
     ).toBeVisible();
@@ -140,7 +141,6 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
     );
     for (const name of [
       "添加输入内容",
-      "输入关联",
       "执行设置",
       "语音输入",
       "取消固定输入框",
@@ -149,6 +149,7 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       await expect(
         page.getByRole("button", { name, exact: true }),
       ).toBeInViewport();
+    await expect(page.locator(".composer-scope-label")).toBeInViewport();
     await expect(page.locator(".send")).toBeInViewport();
     const adding = await openComposerMedia(page);
     for (const name of ["附加文件", "截图输入"])

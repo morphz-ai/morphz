@@ -157,7 +157,12 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
       .getByRole("button", { name: "连接详情", exact: true }),
   ).toBeFocused();
   // The compact input row follows the text without hidden menu items in Tab order.
-  for (const name of ["添加输入内容", "输入关联", "执行设置", "语音输入"]) {
+  expect(
+    await page
+      .locator(".composer-scope-label")
+      .evaluate((element) => (element as HTMLElement).tabIndex),
+  ).toBe(-1);
+  for (const name of ["添加输入内容", "执行设置", "语音输入"]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
     await expect(input).toHaveValue("在控件与弹窗之间保留输入");

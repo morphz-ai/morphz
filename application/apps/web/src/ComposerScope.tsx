@@ -8,11 +8,24 @@ export function ComposerScope({
   label,
   description,
   children,
+  expandable = false,
 }: {
   label: string;
   description?: string;
   children?: ReactNode;
+  expandable?: boolean;
 }) {
+  if (!expandable)
+    return (
+      <span
+        className="composer-scope-label"
+        title={description || label}
+        aria-label={`输入关联：${description || label}`}
+      >
+        <Link2 aria-hidden="true" />
+        <span>{label}</span>
+      </span>
+    );
   return (
     <ComposerOptions
       label="输入关联"

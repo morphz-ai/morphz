@@ -1,5 +1,7 @@
-import { useState, type ReactNode } from "react";
-import { ChevronDown, ShieldCheck, Shield } from "lucide-react";
+import { useCallback, useState, type ReactNode } from "react";
+import { ChevronDown, FolderKey } from "lucide-react";
+import type { SessionPermissionsSnapshot } from "../../../packages/core/src/session-permissions.js";
+import { approvalLabel, ComposerApprovalIcon } from "./ComposerApprovalIcon.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -39,6 +41,25 @@ export function ComposerExecutionSettings({
   permissionControls,
 }: ComposerExecutionSettingsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const permissionKey = JSON.stringify([
+    sessionIdentity,
+    sessionScope?.projectId,
+    sessionScope?.conversationId,
+  ]);
+  const [permissionPreview, setPermissionPreview] = useState<{
+    key: string;
+    snapshot: SessionPermissionsSnapshot | null;
+  } | null>(null);
+  const onPermissionSnapshot = useCallback(
+    (snapshot: SessionPermissionsSnapshot | null) => {
+      setPermissionPreview({ key: permissionKey, snapshot });
+    },
+    [permissionKey],
+  );
+  const permission =
+    permissionPreview?.key === permissionKey
+      ? permissionPreview.snapshot
+      : null;
   const [summary, setSummary] = useState(() =>
     composerSettingsSummary({ model, current, reasoning }),
   );
@@ -49,7 +70,7 @@ export function ComposerExecutionSettings({
       : "未添加额外目录";
   const description = continuation
     ? "补充沿用原工作模型与权限；此处不改变正在执行的工作"
-    : `${summary.model} · ${summary.reasoning} · ${permissionLabel}；模型与推理用于下一次新输入`;
+    : `${summary.model} · ${summary.reasoning} · ${approvalLabel(permission?.permissionMode)} · ${permissionLabel}；模型与推理用于下一次新输入${permission ? (permission.scope.kind === "global" ? "；审批在当前全局会话持续生效，跨项目" : "；审批仅当前会话持续生效") : ""}`;
   return (
     <ComposerOptions
       label="执行设置"
@@ -71,14 +92,25 @@ export function ComposerExecutionSettings({
           )}
           <span
             className="composer-permission-summary"
-            data-authorized={(!continuation && directoryCount > 0) || undefined}
-            aria-label={continuation ? "沿用原工作权限" : permissionLabel}
+            aria-label={
+              continuation
+                ? "沿用原工作权限"
+                : approvalLabel(permission?.permissionMode)
+            }
           >
-            {!continuation && directoryCount ? <ShieldCheck /> : <Shield />}
-            {!continuation && directoryCount > 0 && (
-              <span>读写 {directoryCount}</span>
-            )}
+            <ComposerApprovalIcon
+              mode={continuation ? null : permission?.permissionMode}
+            />
           </span>
+          {!continuation && directoryCount > 0 && (
+            <span
+              className="composer-permission-summary"
+              data-authorized
+              aria-label={permissionLabel}
+            >
+              <FolderKey /> <span>读写 {directoryCount}</span>
+            </span>
+          )}
           <ChevronDown className="composer-settings-chevron" />
         </>
       }
@@ -113,12 +145,8 @@ export function ComposerExecutionSettings({
             directoryCount={directoryCount}
             directoryReady={directoryReady}
             directoryControls={permissionControls}
+            onSnapshotChange={onPermissionSnapshot}
           />
-          {!continuation && (
-            <p className="composer-settings-scope">
-              模型与推理仅用于下一次发送
-            </p>
-          )}
         </>
       }
     />
