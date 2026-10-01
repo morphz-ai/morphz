@@ -64,6 +64,7 @@ mod action_group;
 mod activation;
 mod activation_approval_wait;
 mod agent_provider;
+mod agent_rom;
 mod approval;
 mod delegation;
 mod delivery;
@@ -608,6 +609,9 @@ impl PostgresStore {
                     "20260901_01_agent_provider_bindings",
                     agent_provider::migrate(&store.pool),
                 )
+                .await?;
+            store
+                .run_versioned_migration("20261002_01_agent_rom", agent_rom::migrate(&store.pool))
                 .await?;
             store
                 .run_versioned_migration(

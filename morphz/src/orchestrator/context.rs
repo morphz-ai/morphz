@@ -886,6 +886,12 @@ pub struct SessionWorkingSetView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextView {
+    /// Exact immutable configuration bound to the root Thread. Absent/empty
+    /// configuration preserves the legacy encoding byte for byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_rom: Option<crate::agent_rom::ThreadRomManifest>,
+    #[serde(skip)]
+    compiled_agent_rom: Option<SExpr>,
     pub context_id: String,
     /// Greatest immutable Event sequence admitted by the physical visibility
     /// snapshot used to compile the model-facing View. Sequence is append
@@ -4633,6 +4639,7 @@ impl ContextEngine {
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
+                    agent_rom: None,
                     context_id,
                     active_session_id,
                     active_principal_id: active_principal_id.as_deref(),
@@ -4678,6 +4685,8 @@ impl ContextEngine {
         );
 
         Ok(ContextView {
+            agent_rom: None,
+            compiled_agent_rom: None,
             context_id: context_id.to_string(),
             event_sequence_upper_bound,
             event_visibility_snapshot,
@@ -4883,6 +4892,7 @@ impl ContextEngine {
             return Ok(());
         }
         view.sexpr = render_context(ContextRenderInput {
+            agent_rom: view.compiled_agent_rom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
             active_principal_id: view.active_principal_id.as_deref(),
@@ -5069,8 +5079,29 @@ impl ContextEngine {
         (total, visible)
     }
 
+    pub(crate) fn mount_thread_rom(
+        &self,
+        view: &mut ContextView,
+        manifest: crate::agent_rom::ThreadRomManifest,
+    ) -> Result<(), DynError> {
+        let compiled = manifest.context_rom()?;
+        if compiled.is_none() {
+            return Ok(());
+        }
+        if view.activation.as_ref().is_none_or(|focus| {
+            crate::memory::stable_thread_id(&focus.root_turn_id) != manifest.thread_id
+        }) {
+            return Err("ROM may only be mounted in its bound Thread's Evaluation Context".into());
+        }
+        view.compiled_agent_rom = compiled;
+        view.agent_rom = Some(manifest);
+        self.rerender_context_view(view);
+        Ok(())
+    }
+
     fn rerender_context_view(&self, view: &mut ContextView) {
         view.sexpr = render_context(ContextRenderInput {
+            agent_rom: view.compiled_agent_rom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
             active_principal_id: view.active_principal_id.as_deref(),
@@ -8653,6 +8684,7 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
 }
 
 struct ContextRenderInput<'a> {
+    agent_rom: Option<&'a SExpr>,
     context_id: &'a str,
     active_session_id: &'a str,
     active_principal_id: Option<&'a str>,
@@ -9634,6 +9666,7 @@ fn render_execution_targets(
 
 fn render_context(input: ContextRenderInput<'_>) -> String {
     let ContextRenderInput {
+        agent_rom,
         context_id,
         active_session_id,
         active_principal_id,
@@ -10139,6 +10172,10 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         session_directory,
         SExpr::List(kernel),
     ];
+    if let Some(rom) = agent_rom {
+        // Factory configuration is immutable and cache-stable, never a Mind Frame.
+        context.insert(2, rom.clone());
+    }
     if let Some(definitions) = render_session_io_definitions(observations) {
         context.push(definitions);
     }
@@ -12766,6 +12803,18 @@ pub fn attribute_prompt_components(
     });
 
     let mut context_children_weight = 0u64;
+    if let Some(rom) = &view.agent_rom {
+        for entry in &rom.entries {
+            let weight = text_weight_units(&entry.canonical_sexpr);
+            context_children_weight = context_children_weight.saturating_add(weight);
+            components.push(Weighted {
+                kind: "agent_rom".into(),
+                id: entry.entry_id.clone(),
+                label: entry.key.namespace.clone(),
+                weight,
+            });
+        }
+    }
     for frame in view
         .state
         .frames
@@ -16857,6 +16906,7 @@ mod tests {
             updated_at: Utc::now(),
         }];
         let rendered = render_context(ContextRenderInput {
+            agent_rom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -17000,6 +17050,7 @@ mod tests {
         let mut warning_pressure = pressure.clone();
         warning_pressure.level = "warning".to_string();
         let warning = render_context(ContextRenderInput {
+            agent_rom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -17067,6 +17118,7 @@ mod tests {
         let kernel_offset = rendered.find(" (kernel (context context-1)").unwrap();
         budget.attempt = 2;
         let changed = render_context(ContextRenderInput {
+            agent_rom: None,
             context_id: "context-1",
             active_session_id: "s2",
             active_principal_id: None,
@@ -17111,6 +17163,7 @@ mod tests {
             .usage
             .recall_count_total = 1;
         let state_changed = render_context(ContextRenderInput {
+            agent_rom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -20591,6 +20644,184 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn rom_survives_measurement_and_recovery_without_changing_empty_encoding() {
+        use crate::agent_rom::{AgentRomKey, PutAgentRomCommand, ThreadRomManifest};
+        use crate::memory::AgentRomStore as _;
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("rom-context.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let (agent, context, session, root) =
+            ("rom-agent", "rom-context", "rom-session", "rom-root");
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: agent.into(),
+                    title: "Agent".into(),
+                    root_context_id: context.into(),
+                },
+                NewCognitiveContext {
+                    id: context.into(),
+                    agent_id: agent.into(),
+                    title: "Context".into(),
+                },
+                NewSession {
+                    id: session.into(),
+                    agent_id: agent.into(),
+                    context_id: context.into(),
+                    parent_session_id: None,
+                    title: "Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        for index in 0..16 {
+            store
+                .append(Event::new(
+                    if index == 0 {
+                        root.into()
+                    } else {
+                        format!("rom-event-{index}")
+                    },
+                    "User".into(),
+                    TYPE_USER_MESSAGE.into(),
+                    "chat/user_message".into(),
+                    json!({"context_id":context,"session_id":session,"text":"x".repeat(400)})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let thread_id = crate::memory::stable_thread_id(root);
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.clone(),
+                agent_id: agent.into(),
+                context_id: context.into(),
+                session_id: session.into(),
+                initiating_principal_id: None,
+                root_turn_id: root.into(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+                model_alias: None,
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        let activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "rom-activation".into(),
+                agent_id: agent.into(),
+                context_id: context.into(),
+                session_id: session.into(),
+                initiating_principal_id: None,
+                trigger_event_id: root.into(),
+                trigger_sequence: 1,
+                trigger_kind: "chat/user_message".into(),
+                parent_activation_id: None,
+                root_turn_id: root.into(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            store.clone() as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                context_soft_token_limit: 100,
+                context_hard_token_limit: 200,
+                context_maintenance_reserve_tokens: 20,
+                ..Default::default()
+            },
+        )
+        .with_session_store(store.clone() as Arc<dyn SessionStore>);
+        let mut view = engine
+            .build_context_encoding_for_activation(context, &activation, &HashSet::new())
+            .await
+            .unwrap();
+        let legacy = view.sexpr.clone();
+        engine
+            .mount_thread_rom(
+                &mut view,
+                ThreadRomManifest {
+                    thread_id: thread_id.clone(),
+                    agent_id: agent.into(),
+                    initiating_principal_id: None,
+                    manifest_hash: crate::agent_rom::manifest_hash(&[]),
+                    compiler_hash: crate::agent_rom::compiler_hash(),
+                    bound_at: chrono::Utc::now(),
+                    entries: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(view.sexpr, legacy, "Empty ROM must preserve Context bytes");
+        assert!(view.agent_rom.is_none());
+
+        store
+            .put_agent_rom(
+                PutAgentRomCommand {
+                    command_id: "rom-context-create".into(),
+                    expected_revision: 0,
+                    key: AgentRomKey {
+                        agent_id: agent.into(),
+                        namespace: "example.agent".into(),
+                        principal_scope: None,
+                    },
+                    schema_tag: "example/v1".into(),
+                    body_sexpr: "(factory (public-name Nora))".into(),
+                    enabled: true,
+                },
+                "trusted-host",
+            )
+            .await
+            .unwrap();
+        let manifest = store.bind_thread_rom(&thread_id).await.unwrap();
+        let stable_rom = manifest.context_rom().unwrap().unwrap().to_string();
+        engine
+            .mount_thread_rom(&mut view, manifest.clone())
+            .unwrap();
+        assert!(view.sexpr.contains(&stable_rom));
+        let protocol_position = view.sexpr.find("(protocol ").unwrap();
+        let rom_position = view.sexpr.find("(agent-rom ").unwrap();
+        let evaluation_position = view.sexpr.find("(evaluation-profile ").unwrap();
+        assert!(protocol_position < rom_position && rom_position < evaluation_position);
+        let unchanged_mind = view.state.clone();
+        engine
+            .apply_prompt_token_count(
+                &mut view,
+                &crate::llm::PromptTokenCount {
+                    tokens: 10000,
+                    source: "test-exact".into(),
+                    model: "test-model".into(),
+                    accuracy: crate::llm::PromptTokenAccuracy::Exact,
+                    base_estimate_tokens: 10000,
+                    calibration_key: None,
+                    calibration_shape: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(view.sexpr.contains(&stable_rom));
+        assert_eq!(view.pressure.level, "critical");
+        engine.apply_critical_maintenance_projection(&mut view, 3, 128);
+        assert!(view.sexpr.contains(&stable_rom));
+        engine.apply_safety_refusal_recovery_projection(&mut view, 1, 64);
+        assert!(view.sexpr.contains(&stable_rom));
+        assert_eq!(view.agent_rom, Some(manifest));
+        assert_eq!(
+            view.state, unchanged_mind,
+            "ROM rendering must not mutate Mind"
+        );
     }
 
     #[tokio::test]

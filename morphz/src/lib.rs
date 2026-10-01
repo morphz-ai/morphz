@@ -7,6 +7,7 @@
 
 pub mod activation_admission;
 pub mod admission;
+pub mod agent_rom;
 pub mod approval;
 pub mod approval_authority;
 pub mod artifact;

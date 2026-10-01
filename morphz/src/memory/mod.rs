@@ -8566,6 +8566,36 @@ pub struct StoragePoolMetricsSnapshot {
     pub max_connections: u32,
 }
 
+/// Caller-owned, versioned read-only configuration; deliberately outside Mind.
+#[async_trait::async_trait]
+pub trait AgentRomStore: Send + Sync {
+    async fn get_agent_rom(
+        &self,
+        key: &crate::agent_rom::AgentRomKey,
+    ) -> Result<Option<crate::agent_rom::AgentRomRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Only this exact scope is returned. `None` lists public entries, never private data.
+    async fn list_agent_rom(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> Result<Vec<crate::agent_rom::AgentRomRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn put_agent_rom(
+        &self,
+        command: crate::agent_rom::PutAgentRomCommand,
+        actor_authority_id: &str,
+    ) -> Result<crate::agent_rom::AgentRomMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically freezes the latest public + exact initiating-Principal versions,
+    /// or returns the already bound immutable manifest. Never follows heads again.
+    async fn bind_thread_rom(
+        &self,
+        thread_id: &str,
+    ) -> Result<crate::agent_rom::ThreadRomManifest, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_rom(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::agent_rom::ThreadRomManifest>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 pub trait RuntimeStore:
     EventStore
     + SessionTimelineStore
@@ -8586,6 +8616,7 @@ pub trait RuntimeStore:
     + RecallProjectionStore
     + CognitiveClockStore
     + AgentProviderBindingStore
+    + AgentRomStore
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
     + StorageMaintenanceStore

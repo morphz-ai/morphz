@@ -41,6 +41,54 @@ export interface ContextRecord {
   [key: string]: unknown;
 }
 
+export interface AgentRomKey {
+  agent_id: string;
+  namespace: string;
+  principal_scope?: string;
+}
+export interface PutAgentRomCommand {
+  command_id: string;
+  expected_revision: number;
+  key: AgentRomKey;
+  schema_tag: string;
+  body_sexpr: string;
+  enabled: boolean;
+}
+export interface AgentRomRecord {
+  entry_id: string;
+  key: AgentRomKey;
+  revision: number;
+  schema_tag: string;
+  canonical_sexpr: string;
+  canonical_format_version: number;
+  content_hash: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+}
+export interface AgentRomCommandReceipt {
+  command_id: string;
+  actor_authority_id: string;
+  request_hash: string;
+  entry_id: string;
+  expected_revision: number;
+  committed_revision: number;
+  committed_at: string;
+}
+export type AgentRomMutation =
+  | { status: "committed"; record: AgentRomRecord; receipt: AgentRomCommandReceipt; duplicate: boolean }
+  | { status: "conflict"; current: AgentRomRecord | null }
+  | { status: "not_found" };
+export interface ThreadRomManifest {
+  thread_id: string;
+  agent_id: string;
+  initiating_principal_id: string | null;
+  manifest_hash: string;
+  compiler_hash: string;
+  bound_at: string;
+  entries: AgentRomRecord[];
+}
+
 export interface UpdateSessionInput {
   title?: string;
   status?: string;
@@ -171,6 +219,37 @@ export class MorphzClient {
       method: "POST",
       body: JSON.stringify(input),
     });
+  }
+
+  /** The trusted ingress supplies the authenticated assertion; no Session is created. */
+  ensureAuthenticatedPrincipal(principal?: MorphzPrincipal): Promise<{principal_id:string}> {
+    return this.call("/api/principal/self",principal,{method:"POST"});
+  }
+
+  /** Operator/trusted Host only. A principal Header is not ROM write authority. */
+  async listAgentRomAsOperator(agentId: string, principalScope?: string): Promise<AgentRomRecord[]> {
+    const query = principalScope === undefined ? "" : `?${new URLSearchParams({principal_scope: principalScope})}`;
+    const result = await this.call<{entries: AgentRomRecord[]}>(`/api/agents/${encodeURIComponent(agentId)}/rom${query}`, undefined);
+    return result.entries;
+  }
+
+  getAgentRomAsOperator(key: AgentRomKey): Promise<AgentRomRecord> {
+    return this.call(this.agentRomPath(key), undefined);
+  }
+
+  /** Conflict is a 409 MorphzHttpError; retries must reuse the same command_id. */
+  putAgentRomAsOperator(command: PutAgentRomCommand): Promise<AgentRomMutation> {
+    if (!Number.isSafeInteger(command.expected_revision) || command.expected_revision < 0) throw new Error("expected_revision must be a nonnegative safe integer");
+    return this.call(this.agentRomPath(command.key), undefined, {method:"PUT",body:JSON.stringify(command)});
+  }
+
+  threadRomAsOperator(threadId: string): Promise<ThreadRomManifest> {
+    return this.call(`/api/threads/${encodeURIComponent(threadId)}/rom`, undefined);
+  }
+
+  private agentRomPath(key: AgentRomKey): string {
+    const query = key.principal_scope === undefined ? "" : `?${new URLSearchParams({principal_scope:key.principal_scope})}`;
+    return `/api/agents/${encodeURIComponent(key.agent_id)}/rom/${encodeURIComponent(key.namespace)}${query}`;
   }
 
   async createSession(

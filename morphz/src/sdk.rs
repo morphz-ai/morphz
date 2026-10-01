@@ -5,6 +5,10 @@
 //! authenticate credentials before constructing a [`PrincipalAssertion`];
 //! message text is never accepted as identity evidence.
 
+pub use crate::agent_rom::{
+    AgentRomCommandReceipt, AgentRomKey, AgentRomMutation, AgentRomRecord, PutAgentRomCommand,
+    ThreadRomManifest,
+};
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     remove_managed_provider_accounts_at, save_managed_auth_account_at,
@@ -80,6 +84,15 @@ pub use api_connections::{ApiConnectionSettings, ApiConnectionUpdate};
 
 /// Version of the supported embedded application contract.
 pub const SDK_CONTRACT_VERSION: &str = "1";
+
+fn rom_sdk_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
+    let code = match error.downcast_ref::<crate::agent_rom::AgentRomError>() {
+        Some(crate::agent_rom::AgentRomError::Invalid(_)) => SdkErrorCode::InvalidArgument,
+        Some(crate::agent_rom::AgentRomError::CommandReuse) => SdkErrorCode::Conflict,
+        _ => SdkErrorCode::Internal,
+    };
+    SdkError::new(code, error.to_string())
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -854,6 +867,18 @@ impl MorphzSdk {
             assurance: "runtime-default".to_string(),
             display_name: None,
         }
+    }
+
+    /// Register an identity assertion already authenticated by a trusted
+    /// ingress. This creates no Session and never reads identity from content.
+    pub async fn ensure_authenticated_principal(
+        &self,
+        assertion: PrincipalAssertion,
+    ) -> SdkResult<crate::memory::PrincipalRecord> {
+        self.runtime
+            .ensure_principal(assertion)
+            .await
+            .map_err(|e| SdkError::new(SdkErrorCode::Conflict, e.to_string()))
     }
 
     /// Export a bounded, portable projection of authoritative Runtime facts.
@@ -2541,6 +2566,54 @@ impl MorphzSdk {
             .create_context(context)
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
+    }
+
+    /// Read only one exact scope. The adapter must authenticate its operator
+    /// and authorize private-scope disclosure before calling this trusted API.
+    pub async fn get_agent_rom_as_operator(
+        &self,
+        key: &AgentRomKey,
+    ) -> SdkResult<Option<AgentRomRecord>> {
+        crate::agent_rom::validate_key(key)
+            .map_err(|e| SdkError::new(SdkErrorCode::InvalidArgument, e.to_string()))?;
+        self.runtime
+            .get_agent_rom(key)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn list_agent_rom_as_operator(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> SdkResult<Vec<AgentRomRecord>> {
+        self.runtime
+            .list_agent_rom(agent_id, principal_scope)
+            .await
+            .map_err(rom_sdk_error)
+    }
+
+    /// `actor_authority_id` is supplied by the authenticated trusted adapter,
+    /// never accepted from model text or an untrusted JSON actor field.
+    pub async fn put_agent_rom_as_operator(
+        &self,
+        command: PutAgentRomCommand,
+        actor_authority_id: &str,
+    ) -> SdkResult<AgentRomMutation> {
+        self.runtime
+            .put_agent_rom_as_operator(command, actor_authority_id)
+            .await
+            .map_err(rom_sdk_error)
+    }
+
+    pub async fn thread_rom_as_operator(
+        &self,
+        thread_id: &str,
+    ) -> SdkResult<Option<ThreadRomManifest>> {
+        self.runtime
+            .thread_rom_as_operator(thread_id)
+            .await
+            .map_err(rom_sdk_error)
     }
 
     /// Compiles the same bounded Context Projection used by an Evaluation.

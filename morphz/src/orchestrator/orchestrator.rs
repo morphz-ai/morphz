@@ -2865,6 +2865,35 @@ fn prompt_cache_transport_contract_digest(
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
+fn prompt_cache_transport_contract_digest_with_rom(
+    model_alias: &str,
+    reasoning_effort: &str,
+    phase: &str,
+    system_message: &Message,
+    tools: &[ToolDefinition],
+    rom: Option<&crate::agent_rom::ThreadRomManifest>,
+) -> String {
+    let legacy = prompt_cache_transport_contract_digest(
+        model_alias,
+        reasoning_effort,
+        phase,
+        system_message,
+        tools,
+    );
+    let Some(rom) = rom.filter(|rom| !rom.entries.is_empty()) else {
+        return legacy;
+    };
+    // The structured transport can substitute an older Context message. A
+    // stable System/tools contract alone must never authorize a stale ROM seed.
+    let encoded = serde_json::to_vec(&json!({
+        "base": legacy,
+        "rom_manifest": rom.manifest_hash,
+        "rom_compiler": rom.compiler_hash,
+        "rom_versions": rom.entries.iter().map(|e| (&e.entry_id,e.revision,&e.content_hash)).collect::<Vec<_>>(),
+    })).expect("ROM cache contract serializes");
+    format!("sha256:{:x}", Sha256::digest(encoded))
+}
+
 fn prompt_cache_transport_seed(
     contract_digest: String,
     context_message: &Message,
@@ -11552,7 +11581,19 @@ impl Orchestrator {
         excluded_observation_ids: &HashSet<String>,
         model_alias: Option<&str>,
     ) -> Result<ContextView, DynError> {
-        if let Some(binding) = self
+        // Freeze configuration before the first Context compilation/token
+        // measurement. All rebuilds, continuations and recovery use this same
+        // durable Thread binding, never mutable latest heads.
+        let rom = if let Some(store) = &self.plan_store {
+            Some(
+                store
+                    .bind_thread_rom(&stable_thread_id(&activation.root_turn_id))
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let mut view = if let Some(binding) = self
             .objective_evaluations
             .get_for_activation(&activation.id)
         {
@@ -11565,7 +11606,7 @@ impl Orchestrator {
                     &binding.objective_id,
                     &binding.evaluation_id,
                 )
-                .await
+                .await?
         } else {
             self.context_engine
                 .build_context_encoding_for_activation_with_model(
@@ -11574,8 +11615,12 @@ impl Orchestrator {
                     excluded_observation_ids,
                     model_alias,
                 )
-                .await
+                .await?
+        };
+        if let Some(rom) = rom {
+            self.context_engine.mount_thread_rom(&mut view, rom)?;
         }
+        Ok(view)
     }
 
     fn run_attempt<'a>(
@@ -12400,6 +12445,14 @@ impl Orchestrator {
         );
         let prompt_prepare_started = Instant::now();
         let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let stable_system_prompt = if context.agent_rom.is_some() {
+            std::borrow::Cow::Owned(format!(
+                "{stable_system_prompt}\n\n{}",
+                crate::agent_rom::ROM_SYSTEM_RULE
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(stable_system_prompt)
+        };
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
         // First measure a candidate request with full work capability. Pressure answers whether the
@@ -12923,12 +12976,13 @@ impl Orchestrator {
                 initial_request_policy.model_alias.as_str(),
             ));
         if transport_shape_is_safe {
-            let contract_digest = prompt_cache_transport_contract_digest(
+            let contract_digest = prompt_cache_transport_contract_digest_with_rom(
                 &initial_request_policy.model_alias,
                 &initial_request_policy.reasoning_effort,
                 &effective_phase,
                 &messages[0],
                 &tools,
+                context.agent_rom.as_ref(),
             );
             let current_context_message = messages[1].clone();
             let current_seed = prompt_cache_transport_seed(
@@ -16723,7 +16777,7 @@ impl Orchestrator {
         let context_id = self.context_id_for_session(session_id)?;
         let mut route = Vec::new();
         self.append_activation_route(attempt_id, &mut route);
-        let attributes = vec![
+        let mut attributes = vec![
             ("phase".to_string(), json!(phase)),
             ("tool_count".to_string(), json!(tool_count)),
             ("pressure".to_string(), json!(context.pressure)),
@@ -16748,6 +16802,14 @@ impl Orchestrator {
                 json!(self.orchestrator_config.model_attempt_hard_timeout_secs),
             ),
         ];
+        if let Some(rom) = &context.agent_rom {
+            attributes.push(("agent_rom".into(), json!({
+                "thread_id":rom.thread_id,
+                "manifest_hash":rom.manifest_hash,
+                "compiler_hash":rom.compiler_hash,
+                "versions":rom.entries.iter().map(|e| json!({"entry_id":e.entry_id,"revision":e.revision,"content_hash":e.content_hash,"schema_tag":e.schema_tag})).collect::<Vec<_>>(),
+            })));
+        }
         persist_model_attempt_state(
             &self.bus,
             &context_id,
@@ -24379,6 +24441,128 @@ mod tests {
                 "execution",
                 &system,
                 &changed_tools,
+            )
+        );
+    }
+
+    #[test]
+    fn rom_cache_contract_preserves_empty_and_fences_versions_compiler_and_private_scope() {
+        use crate::agent_rom::*;
+        let system = Message {
+            role: "system".into(),
+            content: "unchanged system".into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        let baseline =
+            super::prompt_cache_transport_contract_digest("m", "low", "execution", &system, &[]);
+        assert_eq!(
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                None
+            ),
+            baseline
+        );
+        let mut manifest = ThreadRomManifest {
+            thread_id: "t".into(),
+            agent_id: "a".into(),
+            initiating_principal_id: Some("human-a".into()),
+            manifest_hash: manifest_hash(&[]),
+            compiler_hash: compiler_hash(),
+            bound_at: Utc::now(),
+            entries: vec![],
+        };
+        assert_eq!(
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&manifest)
+            ),
+            baseline
+        );
+        let command = PutAgentRomCommand {
+            command_id: "c".into(),
+            expected_revision: 0,
+            key: AgentRomKey {
+                agent_id: "a".into(),
+                namespace: "example.profile".into(),
+                principal_scope: Some("human-a".into()),
+            },
+            schema_tag: "profile/v1".into(),
+            body_sexpr: "(profile name)".into(),
+            enabled: true,
+        };
+        let (canonical_sexpr, content_hash, _) = prepare_command(&command, "host").unwrap();
+        manifest.entries.push(AgentRomRecord {
+            entry_id: stable_entry_id(&command.key),
+            key: command.key,
+            revision: 1,
+            schema_tag: command.schema_tag,
+            canonical_sexpr,
+            canonical_format_version: ROM_FORMAT_VERSION,
+            content_hash,
+            enabled: true,
+            created_by: "host".into(),
+            created_at: Utc::now(),
+        });
+        manifest.manifest_hash = manifest_hash(&manifest.entries);
+        let with_rom = super::prompt_cache_transport_contract_digest_with_rom(
+            "m",
+            "low",
+            "execution",
+            &system,
+            &[],
+            Some(&manifest),
+        );
+        assert_ne!(with_rom, baseline);
+        let old = manifest.clone();
+        manifest.entries[0].revision = 2;
+        manifest.manifest_hash = manifest_hash(&manifest.entries);
+        assert_ne!(
+            with_rom,
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&manifest)
+            ),
+            "Even unchanged bytes under a new exact version need a new transport fence"
+        );
+        manifest = old.clone();
+        manifest.compiler_hash = "different-compiler".into();
+        assert_ne!(
+            with_rom,
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&manifest)
+            )
+        );
+        manifest = old;
+        manifest.entries[0].key.principal_scope = Some("human-b".into());
+        manifest.manifest_hash = manifest_hash(&manifest.entries);
+        assert_ne!(
+            with_rom,
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&manifest)
             )
         );
     }

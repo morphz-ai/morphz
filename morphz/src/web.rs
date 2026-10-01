@@ -1144,6 +1144,12 @@ impl Server {
                 "/api/agents",
                 get(handle_list_agents).post(handle_create_agent),
             )
+            .route("/api/agents/:agent_id/rom", get(handle_list_agent_rom))
+            .route(
+                "/api/agents/:agent_id/rom/:namespace",
+                get(handle_get_agent_rom).put(handle_put_agent_rom),
+            )
+            .route("/api/threads/:thread_id/rom", get(handle_thread_rom))
             .route(
                 "/api/agents/:agent_id/provider-accounts",
                 get(handle_get_agent_provider_bindings),
@@ -1408,6 +1414,7 @@ impl Server {
                 "/api/operator/principals",
                 get(handle_search_operator_principals),
             )
+            .route("/api/principal/self", post(handle_ensure_self_principal))
             .route(
                 "/api/operator/principals/:principal_id/sessions",
                 get(handle_list_operator_principal_sessions),
@@ -4218,6 +4225,135 @@ async fn handle_list_agents(
     match state.runtime.list_agents(query.include_archived).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AgentRomQuery {
+    token: Option<String>,
+    principal_scope: Option<String>,
+}
+
+async fn handle_list_agent_rom(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AgentRomQuery>,
+) -> axum::response::Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .list_agent_rom_as_operator(&agent_id, query.principal_scope.as_deref())
+        .await
+    {
+        Ok(entries) => Json(json!({"entries":entries})).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_ensure_self_principal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if !body.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Self identity is authenticated by the ingress, not a request body",
+        );
+    }
+    let principal = if is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        state.sdk.default_principal()
+    } else {
+        match request_principal(&state, &headers, None) {
+            Ok(principal) => principal,
+            Err(error) => return sdk_error_response(error),
+        }
+    };
+    match state.sdk.ensure_authenticated_principal(principal).await {
+        Ok(principal) => Json(json!({"principal_id":principal.id})).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_get_agent_rom(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AgentRomQuery>,
+) -> axum::response::Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let key = crate::agent_rom::AgentRomKey {
+        agent_id,
+        namespace,
+        principal_scope: query.principal_scope,
+    };
+    match state.sdk.get_agent_rom_as_operator(&key).await {
+        Ok(Some(record)) => Json(record).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "ROM entry does not exist"),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_put_agent_rom(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AgentRomQuery>,
+    Json(command): Json<crate::agent_rom::PutAgentRomCommand>,
+) -> axum::response::Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if command.key.agent_id != agent_id
+        || command.key.namespace != namespace
+        || command.key.principal_scope != query.principal_scope
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "ROM route/query must match command key",
+        );
+    }
+    // The credential grants Runtime operator authority; request text does not
+    // nominate an actor. Private principal_scope is a target, never auth proof.
+    match state
+        .sdk
+        .put_agent_rom_as_operator(command, "http-operator")
+        .await
+    {
+        Ok(mutation) => {
+            let status = match &mutation {
+                crate::agent_rom::AgentRomMutation::Committed { .. } => StatusCode::OK,
+                crate::agent_rom::AgentRomMutation::Conflict { .. } => StatusCode::CONFLICT,
+                crate::agent_rom::AgentRomMutation::NotFound => StatusCode::NOT_FOUND,
+            };
+            (status, Json(mutation)).into_response()
+        }
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_thread_rom(
+    State(state): State<Arc<AppState>>,
+    Path(thread_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> axum::response::Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state.sdk.thread_rom_as_operator(&thread_id).await {
+        Ok(Some(manifest)) => Json(manifest).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Thread ROM has not been bound"),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -10942,6 +11078,220 @@ mod tests {
             "Bearer dashboard-secret".parse().unwrap(),
         );
         headers
+    }
+
+    #[tokio::test]
+    async fn rom_control_plane_and_self_identity_require_real_ingress_authority() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (default_state, runtime) =
+            test_state_at_with_workers(&temp.path().join("rom-http.db"), false).await;
+        let state = Arc::new(AppState {
+            runtime: runtime.clone(),
+            sdk: MorphzSdk::new(runtime.clone()),
+            broadcast_tx: default_state.broadcast_tx.clone(),
+            auth_token: Some("dashboard-secret".into()),
+            gateway_token: Some("gateway-secret".into()),
+            default_agent_id: "agent-test".into(),
+            default_context_id: "context-test".into(),
+            identity: ServerIdentityConfig {
+                mode: ServerIdentityMode::TrustedGateway,
+                provider_id: "morphz-site".into(),
+                service_token_env: "MORPHZ_API_TOKEN".into(),
+            },
+            core_config_path: default_state.core_config_path.clone(),
+            managed_config_path: default_state.managed_config_path.clone(),
+        });
+        let original_sessions = runtime.list_sessions(true).await.unwrap();
+        let original_agents = runtime.list_agents(true).await.unwrap();
+        let mut forged = HeaderMap::new();
+        forged.insert("x-morphz-principal", "rom-human".parse().unwrap());
+        assert_eq!(
+            handle_ensure_self_principal(
+                State(state.clone()),
+                forged,
+                Query(AuthQuery::default()),
+                axum::body::Bytes::new()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_ensure_self_principal(
+                State(state.clone()),
+                gateway_headers(None),
+                Query(AuthQuery::default()),
+                axum::body::Bytes::new()
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_ensure_self_principal(
+                State(state.clone()),
+                gateway_headers(Some("rom-human")),
+                Query(AuthQuery::default()),
+                axum::body::Bytes::from_static(b"{\"principal_id\":\"forged\"}")
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        for _ in 0..2 {
+            let response = handle_ensure_self_principal(
+                State(state.clone()),
+                gateway_headers(Some("rom-human")),
+                Query(AuthQuery::default()),
+                axum::body::Bytes::new(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                json!({"principal_id":"rom-human"})
+            );
+        }
+        assert_eq!(
+            runtime.list_sessions(true).await.unwrap(),
+            original_sessions,
+            "Self registration must not manufacture a conversation"
+        );
+        assert_eq!(
+            runtime.list_agents(true).await.unwrap(),
+            original_agents,
+            "Self registration must not manufacture an Agent"
+        );
+        runtime
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-test".into(),
+                    title: "ROM HTTP test".into(),
+                    root_context_id: "context-test".into(),
+                },
+                NewCognitiveContext {
+                    id: "context-test".into(),
+                    agent_id: "agent-test".into(),
+                    title: "Context".into(),
+                },
+                NewSession {
+                    id: "session-rom-http".into(),
+                    agent_id: "agent-test".into(),
+                    context_id: "context-test".into(),
+                    parent_session_id: None,
+                    title: "Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let command = crate::agent_rom::PutAgentRomCommand {
+            command_id: "rom-http-create".into(),
+            expected_revision: 0,
+            key: crate::agent_rom::AgentRomKey {
+                agent_id: "agent-test".into(),
+                namespace: "example.human".into(),
+                principal_scope: Some("rom-human".into()),
+            },
+            schema_tag: "example/v1".into(),
+            body_sexpr: "(preferences (call-me Alice))".into(),
+            enabled: true,
+        };
+        let query = || AgentRomQuery {
+            token: None,
+            principal_scope: Some("rom-human".into()),
+        };
+        let path = || Path(("agent-test".into(), "example.human".into()));
+        assert_eq!(
+            handle_put_agent_rom(
+                State(state.clone()),
+                path(),
+                gateway_headers(Some("rom-human")),
+                Query(query()),
+                Json(command.clone())
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED,
+            "Gateway identity is not operator configuration authority"
+        );
+        assert!(runtime.get_agent_rom(&command.key).await.unwrap().is_none());
+        let mut bad = command.clone();
+        bad.key.principal_scope = None;
+        assert_eq!(
+            handle_put_agent_rom(
+                State(state.clone()),
+                path(),
+                dashboard_headers(),
+                Query(query()),
+                Json(bad)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        for duplicate in [false, true] {
+            let response = handle_put_agent_rom(
+                State(state.clone()),
+                path(),
+                dashboard_headers(),
+                Query(query()),
+                Json(command.clone()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(response["duplicate"], json!(duplicate));
+            assert_eq!(response["record"]["revision"], 1);
+        }
+        let mut conflict = command.clone();
+        conflict.command_id = "rom-http-stale".into();
+        assert_eq!(
+            handle_put_agent_rom(
+                State(state.clone()),
+                path(),
+                dashboard_headers(),
+                Query(query()),
+                Json(conflict)
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            handle_get_agent_rom(
+                State(state.clone()),
+                path(),
+                gateway_headers(Some("rom-human")),
+                Query(query())
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = handle_list_agent_rom(
+            State(state.clone()),
+            Path("agent-test".into()),
+            dashboard_headers(),
+            Query(AgentRomQuery {
+                token: None,
+                principal_scope: None,
+            }),
+        )
+        .await;
+        let bytes = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            json!({"entries":[]})
+        );
     }
 
     #[tokio::test]

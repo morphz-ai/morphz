@@ -4735,6 +4735,44 @@ impl MorphzRuntime {
         self.inner.store.get_agent(id).await
     }
 
+    /// Trusted control-plane boundary. Network adapters must authenticate an
+    /// operator; ordinary model tools never receive this capability.
+    pub async fn get_agent_rom(
+        &self,
+        key: &crate::agent_rom::AgentRomKey,
+    ) -> Result<Option<crate::agent_rom::AgentRomRecord>, RuntimeError> {
+        self.inner.store.get_agent_rom(key).await
+    }
+
+    pub async fn list_agent_rom(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> Result<Vec<crate::agent_rom::AgentRomRecord>, RuntimeError> {
+        self.inner
+            .store
+            .list_agent_rom(agent_id, principal_scope)
+            .await
+    }
+
+    pub async fn put_agent_rom_as_operator(
+        &self,
+        command: crate::agent_rom::PutAgentRomCommand,
+        actor_authority_id: &str,
+    ) -> Result<crate::agent_rom::AgentRomMutation, RuntimeError> {
+        self.inner
+            .store
+            .put_agent_rom(command, actor_authority_id)
+            .await
+    }
+
+    pub async fn thread_rom_as_operator(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::agent_rom::ThreadRomManifest>, RuntimeError> {
+        self.inner.store.get_thread_rom(thread_id).await
+    }
+
     /// Return the Auth Accounts that this Agent's operator has made
     /// available. Principals are deliberately absent from this authority.
     pub async fn agent_provider_bindings(

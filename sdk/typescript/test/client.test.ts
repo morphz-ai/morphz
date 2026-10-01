@@ -2,6 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MorphzClient, MorphzHttpError } from "../src/index.ts";
 
+test("ROM operator SDK keeps exact private scope and command identity separate from caller authentication", async () => {
+  const calls: Array<{url:string;init?:RequestInit}> = [];
+  const client = new MorphzClient({baseUrl:"https://runtime.example",serviceToken:"operator-secret",fetch:async(url,init)=>{calls.push({url:String(url),init});return Response.json({entries:[],status:"committed"});}});
+  await client.listAgentRomAsOperator("agent one");
+  await client.listAgentRomAsOperator("agent one","human/@1");
+  const command={command_id:"save-1",expected_revision:0,key:{agent_id:"agent one",namespace:"example.profile",principal_scope:"human/@1"},schema_tag:"profile/v1",body_sexpr:"(profile (name Nora))",enabled:true};
+  await client.putAgentRomAsOperator(command);
+  await client.getAgentRomAsOperator(command.key);
+  await client.threadRomAsOperator("thread one");
+  await client.ensureAuthenticatedPrincipal({id:"human/@1"});
+  assert.equal(new URL(calls[0].url).search,"");
+  assert.equal(new URL(calls[1].url).searchParams.get("principal_scope"),"human/@1");
+  assert.equal(new URL(calls[2].url).searchParams.get("principal_scope"),"human/@1");
+  assert.equal(calls[2].init?.method,"PUT");assert.deepEqual(JSON.parse(String(calls[2].init?.body)),command);
+  assert.equal(new Headers(calls[2].init?.headers).get("x-morphz-principal"),null);
+  assert.equal(new Headers(calls[2].init?.headers).get("authorization"),"Bearer operator-secret");
+  assert.equal(calls[5].init?.body,undefined);assert.equal(new Headers(calls[5].init?.headers).get("x-morphz-principal"),"human/@1");
+  assert.throws(()=>client.putAgentRomAsOperator({...command,expected_revision:Number.MAX_SAFE_INTEGER+1}),/safe integer/);
+});
+
 test("Session approval methods use the same Principal and preserve the exact decision on retry", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const client = new MorphzClient({ baseUrl: "https://runtime.example", serviceToken: "test-gateway", fetch: async (url, init) => {
