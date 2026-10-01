@@ -134,8 +134,8 @@ export function ComposerExecutionSettings({
               />
             )}
           </section>
-          {/* The controller and grants stay mounted; Session policy reads only
-              occur while open, never creating or preparing an empty Session. */}
+          {/* The mounted controller reads the visible scope's preview once,
+              then reconciles on open, never creating an empty Session. */}
           <ComposerSessionPermissions
             scope={sessionScope}
             identityGeneration={sessionIdentity}

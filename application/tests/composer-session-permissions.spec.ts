@@ -38,7 +38,12 @@ const model = "isolated-project-conversation-model";
  * desktop IPC policy response is controlled presentation data. Dispatch is
  * stopped. These tests never grant a real Runtime or native-user permission.
  * `realRead` delegates to the real Host's missing-Session read path. */
-async function fixture(page: Page, host: Host, realRead = false) {
+async function fixture(
+  page: Page,
+  host: Host,
+  realRead = false,
+  previewMode?: Mode,
+) {
   const calls: ApplicationInvocation[] = [];
   const policies = new Map<string, Mode>();
   const revisions = new Map<string, number>();
@@ -72,7 +77,7 @@ async function fixture(page: Page, host: Host, realRead = false) {
     if (!state.globalConversationId)
       state.globalConversationId = scope.conversationId;
     const key = policyKey(scope, identityGeneration);
-    const mode = policies.get(key) ?? "request_approval";
+    const mode = policies.get(key) ?? previewMode ?? "request_approval";
     return sessionPermissionsSnapshotSchema.parse({
       scope: {
         projectId: scope.projectId,
@@ -292,10 +297,14 @@ async function fixture(page: Page, host: Host, realRead = false) {
     .getByRole("button", { name: "对话", exact: true })
     .click();
   const input = await openInput(page);
-  const settings = await openComposerSettings(page);
+  const settings = previewMode
+    ? page.locator(".composer-settings-menu")
+    : await openComposerSettings(page);
   const approval = settings.getByLabel("当前会话审批方式", { exact: true });
-  await expect(approval).toHaveValue("request_approval");
-  await expect(settings).not.toContainText("正在读取审批方式");
+  if (!previewMode) {
+    await expect(approval).toHaveValue("request_approval");
+    await expect(settings).not.toContainText("正在读取审批方式");
+  }
   return {
     state,
     input,
@@ -534,6 +543,33 @@ async function expectApprovalPresentation(page: Page, mode: Mode) {
   if (mode !== "request_approval")
     await expect(icons.row).toHaveCSS("color", colour);
   return { paths, colour };
+}
+
+for (const mode of [
+  "request_approval",
+  "auto_review",
+  "full_access",
+] as const) {
+  test(`未打开设置也主动读回 ${mode} 图标，刷新后不退回空盾牌`, async ({
+    page,
+    messageHost,
+  }, info) => {
+    const f = await fixture(page, messageHost, false, mode);
+    await expect(f.settings).not.toBeVisible();
+    await expect.poll(() => f.reads().length).toBeGreaterThan(0);
+    await expectApprovalPresentation(page, mode);
+    await page.screenshot({ path: info.outputPath(`closed-${mode}.png`) });
+    const before = await conversationState(page);
+    await page.reload();
+    await openInput(page);
+    await expect(f.settings).not.toBeVisible();
+    await expectApprovalPresentation(page, mode);
+    expect(f.updates()).toHaveLength(0);
+    expect(messageHost.deliveries()).toHaveLength(0);
+    expect((await conversationState(page)).conversations).toEqual(
+      before.conversations,
+    );
+  });
 }
 
 test("真实 Host 首次发送前只读安全默认：打开读取不创建 Session、输入或命名会话", async ({

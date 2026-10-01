@@ -115,10 +115,11 @@ export function ComposerSessionPermissions({
   }, [confirmFull]);
 
   useEffect(() => {
-    // The controller stays mounted, but never polls or prepares a write while
-    // hidden. Continuations retain their original work's authority unchanged.
+    // Read once for the visible composer even before its menu opens. Otherwise
+    // the mode icon stays an unread empty shield until the first click.
+    // Opening still reconciles external changes; closing a confirmed preview
+    // neither polls nor prepares a write. Continuations remain untouched.
     if (
-      !open ||
       !scope ||
       !identityGeneration ||
       disabled ||
@@ -126,6 +127,7 @@ export function ComposerSessionPermissions({
       mutation.current
     )
       return;
+    if (!open && current?.snapshot && !current.error) return;
     const sequence = ++readSequence.current;
     const controller = new AbortController();
     setView((old) => ({

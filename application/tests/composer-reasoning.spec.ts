@@ -70,6 +70,40 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("继承轻量仍显示默认：弹层、底栏、重开与刷新一致，只有明确选择才显示轻量", async ({
+  page,
+}) => {
+  const f = await prepare(page, (route) =>
+    route.fulfill({
+      json: { ...catalog, reasoning: { ...catalog.reasoning, current: "low" } },
+    }),
+  );
+  const summary = page.locator(
+    ".composer-settings-trigger .composer-settings-effort",
+  );
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
+  await expect(summary).toHaveText("默认");
+  await page.keyboard.press("Escape");
+  await expect(summary).toHaveText("默认");
+  await openComposerSettings(page);
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
+  await chooseReasoning(f.slider, "low");
+  await expect(summary).toHaveText("轻量");
+  await f.reset.click();
+  await expect(summary).toHaveText("默认");
+  await expect(f.input).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+  await f.input.fill("");
+  await page.reload();
+  await openInput(page);
+  await openComposerSettings(page);
+  await expect(
+    page.getByLabel("本次输入推理强度", { exact: true }),
+  ).toHaveAttribute("aria-valuetext", "默认");
+  await expect(summary).toHaveText("默认");
+  expect(f.writes).toEqual([]);
+});
+
 test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢复默认，不发消息或丢草稿", async ({
   page,
 }, info) => {

@@ -19,7 +19,7 @@ const catalog = {
   reasoning: { current: "high" as const, levels: ["low", "high"] as const },
 };
 
-test("底栏使用真实模型目录的物理模型与默认推理，不把逻辑线路冒充模型", () => {
+test("底栏使用真实物理模型；未指定强度始终显示默认，不冒充继承档位", () => {
   assert.deepEqual(
     composerSettingsSummary({
       catalog: {
@@ -32,9 +32,21 @@ test("底栏使用真实模型目录的物理模型与默认推理，不把逻�
     }),
     {
       model: "gpt-6.1-sol",
-      reasoning: "深入",
+      reasoning: "默认",
       explicit: false,
     },
+  );
+});
+
+test("模型默认为轻量也不把本次默认选择改为轻量", () => {
+  assert.equal(
+    composerSettingsSummary({
+      catalog: {
+        ...catalog,
+        reasoning: { current: "low", levels: ["low", "high"] },
+      },
+    }).reasoning,
+    "默认",
   );
 });
 
