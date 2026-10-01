@@ -4,7 +4,6 @@ import {
   ShieldCheck,
   Clock3,
   SlidersHorizontal,
-  Pin,
   ArrowLeft,
   Settings2,
   BookOpen,
@@ -34,8 +33,6 @@ export function SubjectSidebar({
   layout,
   onResize,
   onClose,
-  pinned,
-  onPin,
   detail,
   onBack,
   activity,
@@ -55,8 +52,6 @@ export function SubjectSidebar({
   layout: InspectorLayout;
   onResize(width: number): void;
   onClose(): void;
-  pinned: boolean;
-  onPin(): void;
   detail: boolean;
   onBack(): void;
   activity: ReactNode;
@@ -89,16 +84,6 @@ export function SubjectSidebar({
       layout={layout}
       onResize={onResize}
       onClose={onClose}
-      actions={
-        <button
-          className="icon-button"
-          aria-label={pinned ? "取消固定信息栏" : "固定信息栏"}
-          aria-pressed={pinned}
-          onClick={onPin}
-        >
-          <Pin />
-        </button>
-      }
       headerContent={
         <div
           className="subject-tabs"

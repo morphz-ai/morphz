@@ -165,7 +165,6 @@ type Preferences = InterfacePreferences & {
   subjectTab?: SubjectView;
   dockApplications?: string[];
   taskList?: TaskListOptions;
-  executionPinned?: boolean;
   executionWidth?: number;
   inspectorWidth?: number;
   view: View;
@@ -389,18 +388,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactId?: string;
       artifactRevision?: number;
     } | null>(null),
-    [executions, setExecutions] = useState<ExecutionScope | null>(() =>
-      prefs.executionPinned
-        ? {
-            projectId: state!.projects.find(
-              (p) =>
-                p.kind === "dialogue" &&
-                p.ownerPrincipalId === client.boot!.principalId,
-            )!.id,
-            artifactId: null,
-          }
-        : null,
-    ),
+    [executions, setExecutions] = useState<ExecutionScope | null>(null),
     [understandingOpen, setUnderstandingOpen] = useState(false),
     [searchOpen, setSearchOpen] = useState(false),
     [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null),
@@ -956,7 +944,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (generation !== navigationGeneration.current) return;
       setCreating(null);
       setWebsiteIntent(null);
-      if (!prefs.executionPinned) setExecutions(null);
+      setExecutions(null);
       current.index = index;
       restoring.current = true;
       setRestoredPlace(next);
@@ -1130,7 +1118,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
-    prefer({ collaboration: false, executionPinned: false });
+    prefer({ collaboration: false });
     requestAnimationFrame(() => {
       const trigger = document.querySelector<HTMLElement>(".inspector-toggle");
       if (trigger?.getClientRects().length) trigger.focus();
@@ -1631,7 +1619,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   function navigate(view: View) {
     setWebsiteIntent(null);
     setCreating(null);
-    if (!prefs.executionPinned) setExecutions(null);
+    setExecutions(null);
     prefer({ view, artifactId: null, projectOpen: false });
   }
   function selectContentScope(scope: string) {
@@ -1655,7 +1643,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ? workspaceId
         : id;
     setCreating(null);
-    if (!prefs.executionPinned) setExecutions(null);
+    setExecutions(null);
     prefer({
       view: "projects",
       projectId: workspaceId,
@@ -2333,7 +2321,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setSubjectView(null);
     setExecutions(null);
     setMobileCollaboration(false);
-    prefer({ collaboration: false, executionPinned: false });
+    prefer({ collaboration: false });
     setUnderstandingOpen(true);
   };
   const openCollaboration = () => {
@@ -2341,7 +2329,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(true);
-    prefer({ collaboration: true, executionPinned: false });
+    prefer({ collaboration: true });
   };
   const rememberedInspector = inspectorSelections.current.get(contextKey);
   const showInspector = () => {
@@ -2864,7 +2852,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 onClick={() => {
                   setUnderstandingOpen(false);
                   setExecutions(null);
-                  prefer({ executionPinned: false });
                   compact
                     ? setMobileCollaboration(!mobileCollaboration)
                     : prefer({ collaboration: !prefs.collaboration });
@@ -4039,8 +4026,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               layout={rightInspector}
               onResize={resizeInspector}
               onClose={closeInspector}
-              pinned={!!prefs.executionPinned}
-              onPin={() => prefer({ executionPinned: !prefs.executionPinned })}
               detail={!!(executions?.inputId || executions?.threadId)}
               onBack={() =>
                 setExecutions({
@@ -4085,12 +4070,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   client={client}
                   scope={activityScope}
                   viewOptions={inspectorViewOptions}
-                  pinned={!!prefs.executionPinned}
                   layout={rightInspector}
                   onResize={resizeInspector}
-                  onPin={() =>
-                    prefer({ executionPinned: !prefs.executionPinned })
-                  }
                   onClose={closeInspector}
                   onSelect={setExecutions}
                   onSupplement={

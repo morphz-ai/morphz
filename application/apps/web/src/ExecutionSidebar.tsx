@@ -9,8 +9,6 @@ import {
   CircleX,
   Clock3,
   Pause,
-  Pin,
-  PinOff,
   Square,
 } from "lucide-react";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
@@ -38,10 +36,8 @@ import "./execution-activity.css";
 export function ExecutionSidebar({
   client,
   scope,
-  pinned,
   layout,
   onResize,
-  onPin,
   onClose,
   onSelect,
   onSupplement,
@@ -54,10 +50,8 @@ export function ExecutionSidebar({
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
-  pinned: boolean;
   layout: InspectorLayout;
   onResize: (width: number) => void;
-  onPin: () => void;
   onClose: () => void;
   onSelect: (scope: ExecutionScope) => void;
   onSupplement?: (target: InputContinuation) => void;
@@ -543,19 +537,6 @@ export function ExecutionSidebar({
             <ArrowLeft />
           </button>
         )
-      }
-      actions={
-        <button
-          className="icon-button"
-          aria-label={pinned ? "取消固定活动面板" : "固定活动面板"}
-          aria-pressed={pinned}
-          title={
-            pinned ? "取消固定，跟随当前工作" : "固定当前执行，不随页面切换"
-          }
-          onClick={onPin}
-        >
-          {pinned ? <PinOff /> : <Pin />}
-        </button>
       }
     >
       {content}

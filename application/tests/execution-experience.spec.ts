@@ -477,11 +477,11 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     await expect(control).toBeInViewport();
     const header = panel.locator(".inspector-header");
     const toggle = (await control.boundingBox())!;
-    const pin = (await header
-      .getByLabel("固定信息栏", { exact: true })
+    const tabs = (await header
+      .getByRole("tablist", { name: "Morphz 信息分类", exact: true })
       .boundingBox())!;
     expect(
-      pin.x + pin.width <= toggle.x || toggle.x + toggle.width <= pin.x,
+      tabs.x + tabs.width <= toggle.x || toggle.x + toggle.width <= tabs.x,
     ).toBe(true);
     expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
       true,

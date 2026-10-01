@@ -77,25 +77,61 @@ test("主体栏默认活动，四个图标分类支持键盘并记住选择，�
   await expect(
     tabs.getByRole("tab", { name: "设定", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
+  const preferenceKey = `morphz:${fixture.client.boot.centerId}:${fixture.client.boot.principalId}:preferences`;
+  await page.evaluate((key) => {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "{}");
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...saved,
+        executionPinned: true,
+        inspectorWidth: 356,
+        dockApplications: ["preserve-dock-pin@1"],
+        pinnedInputs: { "preserve-input-pin": true },
+      }),
+    );
+  }, preferenceKey);
   await page.reload();
+  // A retired sidebar pin must not reopen an activity scope over the user's
+  // remembered settings view. Other pin preferences remain independent.
+  await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "显示右侧栏", exact: true }),
+  ).toBeVisible();
+  await expect(panel).toHaveCount(0);
   await openSubject(page);
   await expect(
     tabs.getByRole("tab", { name: "设定", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
+  const saved = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    preferenceKey,
+  );
+  expect(saved.inspectorWidth).toBe(356);
+  expect(saved.dockApplications).toEqual(["preserve-dock-pin@1"]);
+  expect(saved.pinnedInputs).toEqual({ "preserve-input-pin": true });
+  await expect(
+    panel.getByRole("button", { name: /固定信息栏|固定活动面板/ }),
+  ).toHaveCount(0);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 850 });
     await expect(tabs).toBeInViewport();
     const tabBounds = (await tabs
       .getByRole("tab", { name: "活动", exact: true })
       .boundingBox())!;
-    const pinBounds = (await panel
-      .getByRole("button", { name: "固定信息栏", exact: true })
+    const toggleBounds = (await page
+      .getByRole("button", { name: "隐藏右侧栏", exact: true })
       .boundingBox())!;
     expect(
       Math.abs(
-        tabBounds.y + tabBounds.height / 2 - pinBounds.y - pinBounds.height / 2,
+        tabBounds.y +
+          tabBounds.height / 2 -
+          toggleBounds.y -
+          toggleBounds.height / 2,
       ),
     ).toBeLessThanOrEqual(1);
+    const tabsBounds = (await tabs.boundingBox())!;
+    expect(tabsBounds.x + tabsBounds.width).toBeLessThanOrEqual(toggleBounds.x);
     expect(
       await panel.evaluate(
         (element) => element.scrollWidth <= element.clientWidth + 1,
@@ -184,6 +220,12 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     queries.push(new URL(route.request().url()).searchParams);
     return route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } });
   });
+  await page.addInitScript(({ centerId, principalId }) => {
+    localStorage.setItem(
+      `morphz:${centerId}:${principalId}:preferences`,
+      JSON.stringify({ view: "dialogue", executionPinned: true }),
+    );
+  }, fixture.client.boot);
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -250,10 +292,29 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     fixture.scope.conversationId,
   );
   await expect(await openInput(page)).toHaveValue(draft);
+  // Navigation clears an exact execution selection even if old storage
+  // contains executionPinned=true. The subject sidebar stays available.
   await panel
     .getByRole("button", { name: "返回活动列表", exact: true })
     .click();
   await expect(panel.locator(".execution-activity-row")).toHaveCount(4);
+  await panel.locator('[data-thread-id="subject-open"]').click();
+  await expect(
+    panel.getByRole("button", { name: "返回活动列表", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await expect(panel).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "返回活动列表", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await expect(await openInput(page)).toHaveValue(draft);
   await expect(page.locator(".human-message")).toHaveCount(1);
   threads[0]!.lifecycle = "completed";
   await fixture.refresh();
