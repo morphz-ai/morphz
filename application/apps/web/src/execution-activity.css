@@ -125,17 +125,6 @@
 .execution-activity-notice > span {
   flex: 1;
 }
-.execution-activity-completeness {
-  display: block;
-}
-.execution-activity-completeness summary {
-  cursor: pointer;
-}
-.execution-activity-completeness p {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
 .workspace .execution-activity-notice > button {
   flex-shrink: 0;
   font-size: 12px;

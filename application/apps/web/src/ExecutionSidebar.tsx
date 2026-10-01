@@ -262,13 +262,6 @@ export function ExecutionSidebar({
           )}
         </p>
       )}
-      {(runtime.activity?.truncated ||
-        runtime.activity?.objectivesTruncated) && (
-        <details className="execution-activity-notice execution-activity-completeness">
-          <summary>概览尚不完整</summary>
-          <p>当前概览未覆盖全部后台分支或目标，不能据此确认全部工作状态。</p>
-        </details>
-      )}
       {!detail && error && (
         <p className="delivery-error" role="alert">
           {error}

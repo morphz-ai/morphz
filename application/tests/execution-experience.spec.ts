@@ -16,6 +16,7 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
   page,
 }) => {
   let truncated = true,
+    objectivesTruncated = true,
     connected = true;
   const threads: NonNullable<
     PlatformHistory["runtime"]["activity"]
@@ -29,7 +30,7 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
       activity: {
         available: true,
         truncated,
-        objectivesTruncated: truncated,
+        objectivesTruncated,
         threads,
       },
       attention: { available: true, approvals: [] },
@@ -52,7 +53,16 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
   await expect(execution.locator(".execution-scope-count")).toHaveCount(0);
   await expect(
     execution.locator(".execution-activity-completeness"),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
+  await expect(
+    execution.getByText("概览尚不完整", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    execution.getByText(
+      "当前概览未覆盖全部后台分支或目标，不能据此确认全部工作状态。",
+      { exact: true },
+    ),
+  ).toHaveCount(0);
   await expect(
     execution.getByRole("heading", { name: "目标", exact: true }),
   ).toHaveCount(0);
@@ -82,6 +92,18 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
     ),
   ).toHaveAttribute("data-status", "running");
   await expect(quiet).toHaveCount(0);
+  truncated = false;
+  await fixture.refresh();
+  // An objective-only completeness flag must not restore the removed
+  // global notice. Retain the actual thread and its status unchanged.
+  await expect(
+    execution.getByText("概览尚不完整", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    execution.locator(
+      '[data-thread-id="incomplete-background"] .execution-activity-icon',
+    ),
+  ).toHaveAttribute("data-status", "running");
   connected = false;
   await fixture.refresh();
   await expect(activity).toHaveAttribute("title", "活动 · 暂未连接");
@@ -97,6 +119,7 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
   ).toBeVisible();
   connected = true;
   truncated = false;
+  objectivesTruncated = false;
   threads.length = 0;
   await fixture.refresh();
   await expect(activity).toHaveAttribute(
