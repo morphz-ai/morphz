@@ -1,15 +1,21 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openLibrary } from "./application-helpers.js";
-import { openInput } from "./interaction-helpers.js";
+import {
+  openInput,
+  openComposerSettings,
+  openComposerMedia,
+} from "./interaction-helpers.js";
+import { chooseReasoning } from "./reasoning-helpers.js";
 import { humanTask, seedLibraryArtifact } from "./artifact-fixtures.js";
 import type { Command } from "../packages/core/src/model.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
-test("模型列表按实际目录选择，只发送所选模型；失败保留输入与选择", async ({
+test("模型列表按实际目录选择；失败气泡保留冻结模型与推理，重开重试不覆盖新草稿", async ({
   page,
 }) => {
   let submitted: any = null;
+  const submissions: any[] = [];
   await page.route(
     /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
     async (route) => {
@@ -71,6 +77,7 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
   );
   await page.route("**/api/platform/messages", (route) => {
     submitted = route.request().postDataJSON();
+    submissions.push(structuredClone(submitted));
     return route.fulfill({
       status: 503,
       json: { message: "隔离测试发送失败" },
@@ -83,6 +90,7 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
     .click();
   const input = await openInput(page);
   await input.fill("指定下一次模型");
+  await openComposerSettings(page);
   const select = page.getByLabel("本次输入模型");
   await expect(select).toBeVisible();
   await expect(select).toBeEnabled();
@@ -91,27 +99,69 @@ test("模型列表按实际目录选择，只发送所选模型；失败保留�
   await expect(select).toContainText("模型 B · 备用");
   const effort = page.getByLabel("本次输入推理强度");
   await expect(effort).toBeEnabled();
-  await effort.selectOption("high");
+  await chooseReasoning(effort, "high");
   await expect(select).toHaveAttribute("title", /仅用于下一次发送/);
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect.poll(() => submitted?.operation?.model).toBe("model-b");
   await expect.poll(() => submitted?.operation?.reasoningEffort).toBe("high");
-  await expect(input).toHaveValue("指定下一次模型");
-  await expect(page.getByLabel("本次输入模型")).toHaveValue("model-b");
+  const original = structuredClone(submitted);
+  const bubble = page.locator(`[data-message-id="${original.commandId}"]`);
+  const retry = bubble.getByRole("button", {
+    name: "重新发送消息",
+    exact: true,
+  });
+  await expect(bubble).toHaveText(/指定下一次模型/);
+  await expect(bubble).toHaveAttribute("data-submission-state", "failed");
+  await expect(retry).toBeVisible();
+  await expect(retry).toHaveAttribute("title", /^发送失败：/);
+  // The staged input consumed its own draft and settings. Its immutable
+  // failed submission, not the next-input controls, owns the retry payload.
+  await expect(input).toHaveValue("");
   await page.reload();
-  await expect(effort).toHaveValue("high");
-  await expect(page.getByLabel("本次输入模型")).toHaveValue("model-b");
-  await expect(input).toHaveValue("指定下一次模型");
-  await page.screenshot({ path: "test-results/audit-model-picker.png" });
+  await openInput(page);
+  await openComposerSettings(page);
+  await expect(retry).toBeVisible();
+  expect(submissions).toHaveLength(1); // Reload must not silently resend.
+  await expect(effort).toHaveAttribute("aria-valuetext", "默认");
+  await expect(select).toHaveValue("");
+  await expect(input).toHaveValue("");
+  await page.keyboard.press("Escape");
+  const nextDraft = "TEST 后续草稿和选择不参与失败消息重试";
+  await input.fill(nextDraft);
+  await openComposerSettings(page);
+  await select.selectOption("model-b");
+  await chooseReasoning(effort, "high");
   await select.selectOption("model-c");
-  await expect(effort).toBeEnabled();
-  await expect(effort).toHaveValue("high");
+  await expect(effort).toBeDisabled();
+  await expect(effort).toHaveAttribute("aria-valuetext", "深入 · 不支持");
   await expect(
     page.getByText("请重新选择推理强度", { exact: true }),
   ).toBeVisible();
-  await effort.selectOption("");
+  await page
+    .getByRole("button", { name: "恢复默认推理强度", exact: true })
+    .click();
   await expect(effort).toBeDisabled();
-  await expect(effort).toContainText("模型自动");
+  await expect(page.locator(".composer-reasoning-value")).toHaveText(
+    "模型自动",
+  );
+  await page.keyboard.press("Escape");
+  await retry.click();
+  await expect.poll(() => submissions.length).toBe(2);
+  await expect(bubble).toHaveAttribute("data-submission-state", "failed");
+  expect(submissions[1]).toEqual(original);
+  expect(submissions[1].operation.model).toBe("model-b");
+  expect(submissions[1].operation.reasoningEffort).toBe("high");
+  await expect(input).toHaveValue(nextDraft);
+  await page.reload();
+  await openInput(page);
+  await expect(retry).toBeVisible();
+  expect(submissions).toHaveLength(2);
+  await expect(input).toHaveValue(nextDraft);
+  await openComposerSettings(page);
+  await expect(select).toHaveValue("model-c");
+  await expect(effort).toHaveAttribute("aria-valuetext", "模型自动");
+  await page.screenshot({ path: "test-results/audit-model-picker.png" });
 });
 
 async function command(page: Page, operation: Command["operation"]) {
@@ -285,9 +335,27 @@ test("Web 内容页不展示无法原位访问的文件入口，不再展示导�
   await expect(
     page.getByRole("button", { name: "打开文件", exact: true }),
   ).toHaveCount(0);
-  await page.getByLabel("工作空间选项").click();
+  // Input media is the current supported file path. It is an explicit message
+  // attachment, not a standalone original-file browser or content import.
+  await openInput(page);
+  const media = await openComposerMedia(page);
+  await expect(
+    media.getByRole("button", { name: "附加文件", exact: true }),
+  ).toBeVisible();
+  await expect(
+    media.getByRole("button", { name: "打开文件", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "资料导入与来源", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("工作空间选项", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  const settings = await openComposerSettings(page);
+  await expect(
+    settings.getByRole("button", { name: "授权 Agent 读写目录", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /导入资料|资料导入与来源|同步来源/ }),
   ).toHaveCount(0);
   const after = await (
     await page.request.get("/api/platform/content?limit=50")
@@ -567,6 +635,7 @@ test("推理设置区分加载、读取失败和旧服务缺少能力，不误�
     await page.goto("/");
     const input = await openInput(page);
     await input.fill("模型设置异常时保留草稿");
+    await openComposerSettings(page);
     const hint = page.locator(".composer-reasoning");
     const effort = page.getByLabel("本次输入推理强度");
     await expect(hint).toHaveAttribute("title", "正在读取模型设置…");
@@ -592,6 +661,7 @@ test("推理设置区分加载、读取失败和旧服务缺少能力，不误�
     reasoningSupported = true;
     await page.reload();
     await openInput(page);
+    await openComposerSettings(page);
     await expect(effort).toBeEnabled();
     await expect(hint).toHaveAttribute(
       "title",

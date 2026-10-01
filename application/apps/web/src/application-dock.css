@@ -73,6 +73,14 @@
   padding: 18px 14px 10px;
   border-radius: 20px;
 }
+.app .composer-options.application-dock-menu:focus {
+  outline: none;
+}
+.app
+  .composer-options.application-dock-menu[data-keyboard-navigation]:focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: 2px;
+}
 .application-dock-menu-1 {
   --launcher-columns: 1;
   --launcher-width: 136px;

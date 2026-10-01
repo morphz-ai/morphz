@@ -14,6 +14,7 @@ import type { SessionPermissionsSnapshot } from "../packages/core/src/session-pe
 import { test, expect } from "./project-conversation-fixture.js";
 import { platformMessageFixture } from "./platform-message-fixture.js";
 import { openInput, openComposerSettings } from "./interaction-helpers.js";
+import { chooseReasoning } from "./reasoning-helpers.js";
 
 const modelId = "isolated-project-conversation-model";
 const longModelName = "TEST 很长的真实目录授权回归模型名称 ".repeat(12);
@@ -356,9 +357,10 @@ test("模型推理绑定真实新输入；后续菜单与目录撤销不能修�
   await settings
     .getByLabel("本次输入模型", { exact: true })
     .selectOption(modelId);
-  await settings
-    .getByLabel("本次输入推理强度", { exact: true })
-    .selectOption("high");
+  await chooseReasoning(
+    settings.getByLabel("本次输入推理强度", { exact: true }),
+    "high",
+  );
   await expect(input).toHaveValue("TEST 使用深入推理和目录授权的新输入");
   await settings.locator("summary").click();
   await settings
@@ -382,9 +384,10 @@ test("模型推理绑定真实新输入；后续菜单与目录撤销不能修�
   const nextInput = await openInput(page);
   await nextInput.fill("TEST 下一条尚未发送的草稿");
   await openComposerSettings(page);
-  await settings
-    .getByLabel("本次输入推理强度", { exact: true })
-    .selectOption("low");
+  await chooseReasoning(
+    settings.getByLabel("本次输入推理强度", { exact: true }),
+    "low",
+  );
   const disclosure = settings.locator("details");
   if (
     !(await disclosure.evaluate(

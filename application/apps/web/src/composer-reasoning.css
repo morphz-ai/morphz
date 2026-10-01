@@ -1,0 +1,163 @@
+.app .composer-settings-menu .composer-setting-row.composer-reasoning-control {
+  display: block;
+  min-width: 0;
+  padding: 6px 8px 8px;
+  white-space: normal;
+}
+.composer-reasoning-control:focus {
+  outline: none;
+}
+.composer-reasoning-heading {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  min-width: 0;
+}
+.app .composer-reasoning-heading > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--text-secondary);
+}
+.composer-reasoning-value {
+  min-width: 0;
+  text-align: center;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+.composer-reasoning-control[data-state="explicit"] .composer-reasoning-value {
+  color: var(--accent);
+}
+.app .composer-reasoning-control .composer-reasoning-reset {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+}
+.app .composer-reasoning-reset svg {
+  width: 14px;
+  height: 14px;
+}
+.app .composer-reasoning-reset:hover:not(:disabled) {
+  color: var(--ink);
+}
+.composer-reasoning-rail {
+  position: relative;
+  margin: 6px 2px 0;
+}
+.app .composer-settings-menu .composer-reasoning-rail input {
+  display: block;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  outline: none;
+}
+.composer-reasoning-rail input::-webkit-slider-runnable-track {
+  height: 24px;
+  border-radius: 99px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 14%, var(--soft)),
+    color-mix(in srgb, var(--accent) 26%, var(--soft))
+  );
+}
+.composer-reasoning-rail[data-selected] input::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent) 70%, white),
+        var(--accent)
+      )
+      left / var(--reasoning-position) 100% no-repeat,
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 14%, var(--soft)),
+      color-mix(in srgb, var(--accent) 26%, var(--soft))
+    );
+}
+.composer-reasoning-rail input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, white);
+  background: #fff;
+  box-shadow: 0 1px 3px #0002;
+}
+.composer-reasoning-rail:not([data-selected]) input::-webkit-slider-thumb {
+  opacity: 0;
+}
+.app
+  .composer-settings-menu[data-keyboard-navigation]
+  .composer-reasoning-rail
+  input:focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: 1px;
+}
+.composer-reasoning-stops {
+  position: absolute;
+  inset: 0 12px auto;
+  pointer-events: none;
+}
+.composer-reasoning-stops > span {
+  position: absolute;
+  top: 15.5px;
+  display: block;
+  transform: translateX(-50%);
+  opacity: 0.42;
+}
+.composer-reasoning-stops i {
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.composer-reasoning-stops [data-selected] {
+  opacity: 0;
+}
+.composer-reasoning-rail[data-empty] {
+  display: none;
+}
+.app .composer-reasoning-control > small {
+  display: block;
+  max-width: none;
+  margin: 3px 0 0 26px;
+}
+@media (pointer: coarse) {
+  .app .composer-reasoning-control .composer-reasoning-reset {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    flex-basis: 32px;
+  }
+  .app .composer-settings-menu .composer-reasoning-rail input {
+    height: 44px;
+    min-height: 44px;
+  }
+  .composer-reasoning-stops > span {
+    top: 20.5px;
+  }
+}

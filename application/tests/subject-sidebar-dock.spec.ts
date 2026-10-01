@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { mockPlatformConversation } from "./platform-conversation-fixture.js";
@@ -13,6 +13,51 @@ async function openSubject(page: Page) {
     await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
   await expect(panel).toBeVisible();
   return panel;
+}
+
+async function expectLauncherCentered(panel: Locator, scale = 1) {
+  const geometry = () =>
+    panel.evaluate((element, zoom) => {
+      const bounds = element.getBoundingClientRect();
+      const dock = element
+        .closest(".application-dock-buttons")!
+        .getBoundingClientRect();
+      // Rects are rendered coordinates, including CSS zoom. The safe inset
+      // scales too; never compare these values with layout offsetWidth.
+      const inset = 8 * zoom;
+      const expectedLeft = Math.max(
+        inset,
+        Math.min(
+          (dock.left + dock.right - bounds.width) / 2,
+          innerWidth - bounds.width - inset,
+        ),
+      );
+      return {
+        error: Math.abs(bounds.left - expectedLeft),
+        left: bounds.left,
+        right: bounds.right,
+        viewport: innerWidth,
+        inset,
+        dockWidth: dock.width,
+        overflow: element.scrollWidth > element.clientWidth + 1,
+      };
+    }, scale);
+  await expect(panel).toBeVisible();
+  await expect
+    .poll(async () => (await geometry()).error)
+    .toBeLessThanOrEqual(1)
+    .catch(async (error) => {
+      console.error(
+        "Launcher rendered geometry",
+        JSON.stringify(await geometry()),
+      );
+      throw error;
+    });
+  const result = await geometry();
+  expect(result.left).toBeGreaterThanOrEqual(result.inset - 1);
+  expect(result.right).toBeLessThanOrEqual(result.viewport - result.inset + 1);
+  expect(result.overflow).toBe(false);
+  return result;
 }
 
 test("设定使用静态 Morphz 图形且不再提供项目摘要，保留配置入口和未发送草稿", async ({
@@ -562,6 +607,7 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
   // Programmatic opening focuses the panel, not the first app. Otherwise the
   // first entry's :focus-within falsely exposes its secondary pin at rest.
   await expect(catalog).toBeFocused();
+  await expect(catalog).toHaveCSS("outline-style", "none");
   const pins = catalog.locator(".application-dock-pin");
   await page.mouse.move(1, 1);
   for (const pin of await pins.all()) {
@@ -593,6 +639,18 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
   await launcher.focus();
   await page.keyboard.press("Enter");
   await expect(catalog).toBeFocused();
+  await expect(catalog).toHaveCSS("outline-style", "solid");
+  await expect(catalog).toHaveCSS("outline-width", "1px");
+  // The panel uses the same neutral token as its management label, not the
+  // browser's thick blue focus ring; no theme-specific colour is hardcoded.
+  expect(
+    await catalog.evaluate(
+      (element) =>
+        getComputedStyle(element).outlineColor ===
+        getComputedStyle(element.querySelector(".application-dock-manage")!)
+          .color,
+    ),
+  ).toBe(true);
   for (const pin of await pins.all())
     await expect(pin).toHaveCSS("opacity", "0");
   // Inspect rendered geometry, not just the presence of a Grid icon.
@@ -604,6 +662,10 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
     await page.setViewportSize({ width: width!, height: 850 });
     await expect(catalog).toBeInViewport();
     const geometry = await catalog.evaluate((element) => {
+      const panel = element.getBoundingClientRect();
+      const dock = element
+        .closest(".application-dock-buttons")!
+        .getBoundingClientRect();
       const grid = element.querySelector<HTMLElement>(
         ".application-dock-catalog",
       )!;
@@ -611,6 +673,15 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
         ...grid.querySelectorAll<HTMLElement>(".application-dock-entry"),
       ];
       return {
+        panelLeft: panel.left,
+        panelRight: panel.right,
+        expectedLeft: Math.max(
+          8,
+          Math.min(
+            (dock.left + dock.right - panel.width) / 2,
+            innerWidth - panel.width - 8,
+          ),
+        ),
         columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length,
         overflows: element.scrollWidth > element.clientWidth + 1,
         tiles: entries.map((entry) => {
@@ -636,6 +707,10 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
       };
     });
     expect(geometry.columns).toBe(Math.min(columns!, geometry.tiles.length));
+    expect(
+      Math.abs(geometry.panelLeft - geometry.expectedLeft),
+    ).toBeLessThanOrEqual(1);
+    expect(geometry.panelRight).toBeLessThanOrEqual(width! - 7);
     expect(geometry.overflows).toBe(false);
     expect(geometry.tiles.length).toBeGreaterThanOrEqual(3);
     for (const tile of geometry.tiles) {
@@ -653,7 +728,19 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
       path: `test-results/application-launcher-${width}.png`,
     });
   }
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await expectLauncherCentered(catalog, 2);
+  await page.screenshot({
+    path: "test-results/application-launcher-200-percent.png",
+  });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "";
+  });
   await page.setViewportSize({ width: 1440, height: 850 });
+  const beforePin = await expectLauncherCentered(catalog);
   // Pin stays unobtrusive at rest, but keyboard focus reveals it before action.
   const readerPin = catalog.getByRole("button", {
     name: "固定到 Dock：阅读",
@@ -672,6 +759,10 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
   await expect(
     catalog.getByRole("button", { name: "从 Dock 移除：阅读", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  // A live pin changes the entire shortcut-group width while the panel stays
+  // open. It must re-anchor to that group, not the old last-button position.
+  const afterPin = await expectLauncherCentered(catalog);
+  expect(afterPin.dockWidth).toBeGreaterThan(beforePin.dockWidth);
   await page.keyboard.press("Escape");
   await expect(
     dock.getByRole("button", { name: "全部应用", exact: true }),
@@ -685,12 +776,15 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
     dock.getByRole("button", { name: "打开阅读", exact: true }),
   ).toBeVisible();
   await dock.getByRole("button", { name: "全部应用", exact: true }).click();
+  const beforeUnpin = await expectLauncherCentered(catalog);
   await catalog
     .getByRole("button", { name: "打开浏览器", exact: true })
     .hover();
   await catalog
     .getByRole("button", { name: "从 Dock 移除：浏览器", exact: true })
     .click();
+  const afterUnpin = await expectLauncherCentered(catalog);
+  expect(afterUnpin.dockWidth).toBeLessThan(beforeUnpin.dockWidth);
   await page.keyboard.press("Escape");
   await expect(
     dock.getByRole("button", { name: "打开浏览器", exact: true }),

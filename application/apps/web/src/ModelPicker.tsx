@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Brain, Cpu } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
 import { composerSettingsSummary } from "./composer-settings-summary.js";
+import { ComposerReasoningControl } from "./ComposerReasoningControl.js";
 import {
   modelCatalogSchema,
   modelLabel,
@@ -88,6 +89,17 @@ export function ModelPicker({
     defaultName?.physical_models?.join(" / ") ||
     defaultName?.label ||
     defaultLabel;
+  const reasoningTitle = disabled
+    ? "连接智能体后可设置推理强度。"
+    : error
+      ? "暂时无法读取模型设置，请重试。"
+      : !catalog
+        ? "正在读取模型设置…"
+        : !catalog.reasoning
+          ? "当前运行服务不支持推理强度设置。"
+          : reasoning?.label
+            ? "用于这件事项的后续执行；默认沿用模型设置，不改变其他事项。"
+            : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。";
   useEffect(() => {
     onSummaryChange?.(
       composerSettingsSummary({
@@ -169,22 +181,28 @@ export function ModelPicker({
           </small>
         )}
       </div>
-      {reasoning && (
+      {reasoning && menu && (
+        <ComposerReasoningControl
+          value={reasoning.value}
+          onChange={reasoning.onChange}
+          levels={levels}
+          model={
+            selected?.physical_models?.join(" / ") ||
+            selected?.label ||
+            value ||
+            defaultMenuLabel
+          }
+          label={reasoning.label}
+          title={reasoningTitle}
+          disabled={disabled || !catalog?.reasoning}
+          automatic={!!catalog?.reasoning}
+          invalid={invalidEffort}
+        />
+      )}
+      {reasoning && !menu && (
         <label
           className={`composer-reasoning${menu ? " composer-setting-row" : ""}`}
-          title={
-            disabled
-              ? "连接智能体后可设置推理强度。"
-              : error
-                ? "暂时无法读取模型设置，请重试。"
-                : !catalog
-                  ? "正在读取模型设置…"
-                  : !catalog.reasoning
-                    ? "当前运行服务不支持推理强度设置。"
-                    : reasoning.label
-                      ? "用于这件事项的后续执行；默认沿用模型设置，不改变其他事项。"
-                      : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。"
-          }
+          title={reasoningTitle}
         >
           <Brain aria-hidden="true" />
           {menu ? (

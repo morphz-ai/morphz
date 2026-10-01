@@ -30,6 +30,7 @@ export function ComposerOptions({
   menuLabel = "输入选项",
   below = false,
   align = "end",
+  horizontalAnchorRef,
   placement = "vertical",
   modelControl,
   triggerIcon = <MoreHorizontal />,
@@ -50,7 +51,9 @@ export function ComposerOptions({
   menuLabel?: string;
   below?: boolean;
   /** Left-side input tools open towards the content, not over navigation. */
-  align?: "start" | "end";
+  align?: "start" | "center" | "end";
+  /** Launcher centres over its shortcut group, not the last trigger button. */
+  horizontalAnchorRef?: RefObject<HTMLElement | null>;
   /** Sidebar identity menus open beside their button into the content. */
   placement?: "vertical" | "right";
   modelControl?: ReactNode;
@@ -98,6 +101,8 @@ export function ComposerOptions({
           zoom *= Number.parseFloat(getComputedStyle(node).zoom) || 1;
       }
       const rect = trigger.current!.getBoundingClientRect();
+      const horizontalRect =
+        horizontalAnchorRef?.current?.getBoundingClientRect() ?? rect;
       const anchor = {
         left: rect.left / zoom,
         right: rect.right / zoom,
@@ -114,12 +119,30 @@ export function ComposerOptions({
         width: element.offsetWidth,
         height: element.offsetHeight,
       };
-      element.style.left = `${Math.max(8, Math.min(right ? anchor.right + 8 : align === "start" ? anchor.left : anchor.right - bounds.width, viewport.width - bounds.width - 8))}px`;
+      const left = right
+        ? anchor.right + 8
+        : align === "center"
+          ? (horizontalRect.left + horizontalRect.right) / (2 * zoom) -
+            bounds.width / 2
+          : align === "start"
+            ? anchor.left
+            : anchor.right - bounds.width;
+      element.style.left = `${Math.max(8, Math.min(left, viewport.width - bounds.width - 8))}px`;
       element.style.top = `${Math.max(8, Math.min(placement === "right" ? anchor.bottom - bounds.height : below ? anchor.bottom + 4 : anchor.top - bounds.height - 8, viewport.height - bounds.height - 8))}px`;
     };
     position();
     const resize = new ResizeObserver(position);
     resize.observe(element);
+    // The shortcut group has an intrinsic width: its position can move when
+    // a containing work surface resizes without changing the group itself.
+    // Observe that actual layout chain too (including CSS-zoom changes), not
+    // just the panel/group dimensions or an early window resize notification.
+    for (
+      let anchor = horizontalAnchorRef?.current ?? null;
+      anchor;
+      anchor = anchor.parentElement
+    )
+      resize.observe(anchor);
     if (initialFocus === "panel") element.focus({ preventScroll: true });
     else
       Array.from(
@@ -148,7 +171,7 @@ export function ComposerOptions({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open, below, align, placement, initialFocus]);
+  }, [open, below, align, horizontalAnchorRef, placement, initialFocus]);
 
   function closeToTrigger() {
     // Modal hooks capture the stable trigger, never a disappearing menu item.

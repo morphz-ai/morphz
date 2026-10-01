@@ -27,6 +27,7 @@ export function ApplicationDock({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const launching = useRef(false);
+  const shortcuts = useRef<HTMLDivElement>(null);
   const fixed = pinnedApplications(applications, pinned);
   // A project-local catalog can hide pins belonging to another work scene.
   // Editing one visible shortcut must not remove those saved preferences.
@@ -47,7 +48,7 @@ export function ApplicationDock({
   }
   return (
     <div className="application-dock" aria-label="应用 Dock">
-      <div className="application-dock-buttons">
+      <div className="application-dock-buttons" ref={shortcuts}>
         {fixed.map((app) => (
           <button
             className="application-dock-shortcut"
@@ -70,6 +71,8 @@ export function ApplicationDock({
           // Opening the Launcher does not select the first app or reveal its
           // secondary pin action. Tab enters the existing launch/pin sequence.
           initialFocus="panel"
+          align="center"
+          horizontalAnchorRef={shortcuts}
           options={[]}
           content={(close) => (
             <>
