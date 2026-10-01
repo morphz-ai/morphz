@@ -32,6 +32,7 @@ export function ComposerOptions({
   align = "end",
   horizontalAnchorRef,
   placement = "vertical",
+  matchTriggerWidth = false,
   modelControl,
   triggerIcon = <MoreHorizontal />,
   triggerClassName = "icon-button composer-more",
@@ -56,6 +57,8 @@ export function ComposerOptions({
   horizontalAnchorRef?: RefObject<HTMLElement | null>;
   /** Sidebar identity menus open beside their button into the content. */
   placement?: "vertical" | "right";
+  /** Expanded sidebar menus share both edges with their full-width trigger. */
+  matchTriggerWidth?: boolean;
   modelControl?: ReactNode;
   triggerIcon?: ReactNode;
   triggerClassName?: string;
@@ -112,6 +115,10 @@ export function ComposerOptions({
       const viewport = { width: innerWidth / zoom, height: innerHeight / zoom };
       const sideSpace = viewport.width - anchor.right - 16;
       const right = placement === "right" && sideSpace >= 160;
+      element.style.width = matchTriggerWidth
+        ? `${anchor.right - anchor.left}px`
+        : "";
+      element.style.minWidth = matchTriggerWidth ? "0" : "";
       element.style.maxWidth = `${Math.max(1, right ? sideSpace : viewport.width - 16)}px`;
       element.style.maxHeight = `${Math.max(80, (placement === "right" || below ? viewport.height : anchor.top) - 16)}px`;
       // Anchor using stable layout dimensions, independent of reveal effects.
@@ -133,6 +140,7 @@ export function ComposerOptions({
     position();
     const resize = new ResizeObserver(position);
     resize.observe(element);
+    if (matchTriggerWidth) resize.observe(trigger.current!);
     // The shortcut group has an intrinsic width: its position can move when
     // a containing work surface resizes without changing the group itself.
     // Observe that actual layout chain too (including CSS-zoom changes), not
@@ -171,7 +179,15 @@ export function ComposerOptions({
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };
-  }, [open, below, align, horizontalAnchorRef, placement, initialFocus]);
+  }, [
+    open,
+    below,
+    align,
+    horizontalAnchorRef,
+    placement,
+    matchTriggerWidth,
+    initialFocus,
+  ]);
 
   function closeToTrigger() {
     // Modal hooks capture the stable trigger, never a disappearing menu item.

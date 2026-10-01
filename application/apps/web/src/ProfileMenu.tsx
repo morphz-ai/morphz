@@ -14,6 +14,7 @@ export function ProfileMenu({
   status,
   connected,
   compact = false,
+  placement = compact ? "right" : "vertical",
   unreadNotifications = 0,
   onSearch,
   onAppearance,
@@ -25,6 +26,8 @@ export function ProfileMenu({
   status: string;
   connected: boolean;
   compact?: boolean;
+  /** Desktop rail state is independent of the mobile icon-only trigger. */
+  placement?: "vertical" | "right";
   unreadNotifications?: number;
   onSearch?: () => void;
   onAppearance?: () => void;
@@ -119,7 +122,8 @@ export function ProfileMenu({
         description={`${name} · ${status}${unreadNotifications ? ` · ${unreadNotifications} 项未读通知` : ""}`}
         menuLabel="用户菜单"
         below={compact}
-        placement="right"
+        placement={placement}
+        matchTriggerWidth={placement === "vertical" && !compact}
         triggerClassName={
           compact ? "icon-button profile-compact" : "profile-trigger"
         }

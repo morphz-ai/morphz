@@ -2705,7 +2705,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               officialUrl={import.meta.env.VITE_MORPHZ_OFFICIAL_PERSONA_URL}
             />
           )}
-          <ProfileMenu {...profileMenu} />
+          <ProfileMenu
+            {...profileMenu}
+            placement={leftSidebar.compact ? "right" : "vertical"}
+          />
         </div>
       </aside>
       {prefs.sidebar && !leftSidebar.mobile && !immersiveApplication && (
