@@ -149,7 +149,7 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       await expect(
         page.getByRole("button", { name, exact: true }),
       ).toBeInViewport();
-    await expect(page.locator(".composer-scope-label")).toBeInViewport();
+    await expect(page.locator(".composer-scope-label")).toHaveCount(0);
     await expect(page.locator(".send")).toBeInViewport();
     const adding = await openComposerMedia(page);
     for (const name of ["附加文件", "截图输入"])

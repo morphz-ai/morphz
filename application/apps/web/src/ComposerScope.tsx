@@ -9,12 +9,16 @@ export function ComposerScope({
   description,
   children,
   expandable = false,
+  showPlainScope = true,
 }: {
   label: string;
   description?: string;
   children?: ReactNode;
   expandable?: boolean;
+  /** An implicit personal desk is routing, not a visible association. */
+  showPlainScope?: boolean;
 }) {
+  if (!expandable && !showPlainScope) return null;
   if (!expandable)
     return (
       <span

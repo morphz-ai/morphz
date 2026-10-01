@@ -871,15 +871,6 @@ export function Conversation({
                         原文件：{item.localFile.name}
                       </small>
                     )}
-                    {!!item?.directories?.length && (
-                      <small
-                        className="message-local-file"
-                        title="发送时允许使用的目录；是否仍可访问以当前授权为准。"
-                      >
-                        目录读写：
-                        {item.directories.map((g) => g.name).join("、")}
-                      </small>
-                    )}
                     {item ? (
                       <>
                         {!!item.attachments?.length && (

@@ -2310,6 +2310,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     (activeInstance?.applicationId === browserApplication.id
       ? browserPage?.title || "浏览器"
       : project.title);
+  // A personal desk remains the real input owner, but is not an explicit
+  // project association. Named conversations already belong to a project.
+  const showPlainComposerScope = !!(
+    draft.continuation ||
+    artifact ||
+    deliveredScript ||
+    activeInstance?.applicationId === browserApplication.id ||
+    spaceKind(project) === "project"
+  );
+  const composerScopeTitle =
+    artifact?.title ??
+    deliveredScript?.production.title ??
+    (activeInstance?.applicationId === browserApplication.id
+      ? browserPage?.title || "浏览器"
+      : spaceKind(project) === "project"
+        ? project.title
+        : "无项目");
   const openExecutions = () => {
     setSubjectView("activity");
     prefer({ subjectTab: "activity" });
@@ -3624,6 +3641,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       <ComposerActionBar
                         scope={
                           <ComposerScope
+                            showPlainScope={showPlainComposerScope}
                             expandable={
                               !!(
                                 draft.scriptGeneration ||
@@ -3638,10 +3656,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 ? "补充原工作"
                                 : draft.taskResult
                                   ? "提交事项结果"
-                                  : contextTitle
+                                  : composerScopeTitle
                             }
                             description={
-                              contextTitle +
+                              composerScopeTitle +
                               (draft.revision ? " · v" + draft.revision : "")
                             }
                           >
@@ -3677,14 +3695,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 <span
                                   className="context-chip"
                                   title={
-                                    contextTitle +
+                                    composerScopeTitle +
                                     (draft.revision
                                       ? " · v" + draft.revision
                                       : "")
                                   }
                                 >
                                   <Link2 />
-                                  {contextTitle}
+                                  {composerScopeTitle}
                                   {draft.revision
                                     ? " · v" + draft.revision
                                     : ""}

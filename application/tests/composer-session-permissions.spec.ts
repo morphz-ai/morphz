@@ -602,6 +602,11 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
   await scopes.parent(scopes.a).click();
   const input = await openInput(page);
   await input.fill("TEST 全局草稿 A");
+  const projectAssociation = page.locator(".composer-scope-label");
+  await expect(projectAssociation).toContainText(scopes.a.title);
+  await expect(projectAssociation).not.toHaveAttribute("role", "button");
+  await expect(projectAssociation).not.toHaveAttribute("tabindex");
+  await expect(projectAssociation).toHaveAttribute("title", scopes.a.title);
   await openComposerSettings(page);
   await expect(f.approval).toBeEnabled();
   const firstRead = f.reads().at(-1)!;
@@ -645,6 +650,9 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
   await openInput(page);
   await openComposerSettings(page);
   await expect(f.approval).toHaveValue("request_approval");
+  await expect(page.locator(".composer-scope-label")).toContainText(
+    scopes.b.title,
+  );
   await expectApprovalPresentation(page, "request_approval");
   await expect(f.approval).toHaveAccessibleDescription(/仅当前会话持续生效/);
   await expect(f.approval).toHaveAttribute("title", /仅当前会话持续生效/);
@@ -1075,19 +1083,10 @@ test("390 窄窗和 200% 放大不溢出；键盘可抵达审批和目录，不�
   ).toBe(true);
   await page.keyboard.press("Escape");
   const association = page.locator(".composer-scope-label");
-  await expect(association).toBeInViewport();
+  await expect(association).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "输入关联", exact: true }),
   ).toHaveCount(0);
-  expect(await association.evaluate((el) => el.tagName)).toBe("SPAN");
-  await expect(association).not.toHaveAttribute("role", "button");
-  await expect(association).not.toHaveAttribute("tabindex");
-  await expect(association).toHaveAttribute("title", /.+/);
-  await expect(association).toHaveAttribute("aria-label", /^输入关联：.+/);
-  expect(
-    await association.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
-  ).toBe(true);
-  await association.click();
   await expect(
     page.getByRole("group", { name: "本次输入关联", exact: true }),
   ).not.toBeVisible();
@@ -1174,7 +1173,7 @@ test("补充工作沿用原授权，不因当前范围打开设置而读取或�
   expect(messageHost.deliveries()).toHaveLength(1);
 });
 
-test("真正可操作的事项关联仍可展开，移除意图后恢复静态范围而不发送草稿", async ({
+test("真正可操作的事项关联仍可展开，移除意图后隐藏空范围而不发送草稿", async ({
   page,
   messageHost,
 }) => {
@@ -1194,13 +1193,15 @@ test("真正可操作的事项关联仍可展开，移除意图后恢复静态�
     exact: true,
   });
   await expect(association).toBeVisible();
+  await expect(association.locator(".context-chip")).toHaveText("无项目");
+  await expect(association).not.toContainText("未归项目");
   await expect(
     association.getByRole("button", { name: "移除输入意图", exact: true }),
   ).toBeVisible();
   await association
     .getByRole("button", { name: "移除输入意图", exact: true })
     .click();
-  await expect(page.locator(".composer-scope-label")).toBeVisible();
+  await expect(page.locator(".composer-scope-label")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "输入关联", exact: true }),
   ).toHaveCount(0);

@@ -11,11 +11,11 @@ test("底栏仅一行；普通范围不弹空菜单，执行设置与媒体菜�
   await input.fill("TEST 单底栏草稿，不发送");
   const row = page.locator(".composer-action-bar");
   await expect(row).toBeVisible();
-  await expect(page.locator(".composer-scope-label")).toBeVisible();
+  await expect(page.locator(".composer-scope-label")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "输入关联", exact: true }),
   ).toHaveCount(0);
-  await expect(page.locator(".composer-scope-label svg")).toHaveCount(1);
+  await expect(row).not.toContainText("未归项目");
   await expect(
     page.getByRole("group", { name: "本次输入关联", exact: true }),
   ).toHaveCount(0);
