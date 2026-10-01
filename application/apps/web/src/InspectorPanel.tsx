@@ -48,6 +48,7 @@ export function InspectorPanel({
   footer,
   focusOnMount = true,
   viewOptions,
+  headerContent,
 }: {
   className: string;
   label: string;
@@ -63,6 +64,8 @@ export function InspectorPanel({
   footer?: ReactNode;
   focusOnMount?: boolean;
   viewOptions?: ComposerOption[];
+  /** A compact inspector can use its existing toolbar for view navigation. */
+  headerContent?: ReactNode;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -128,9 +131,11 @@ export function InspectorPanel({
       )}
       <header className="inspector-header">
         {leading}
-        <h2 ref={heading} tabIndex={-1}>
-          {title}
-        </h2>
+        {headerContent ?? (
+          <h2 ref={heading} tabIndex={-1}>
+            {title}
+          </h2>
+        )}
         {viewOptions && (
           <ComposerOptions
             label="切换右栏内容"

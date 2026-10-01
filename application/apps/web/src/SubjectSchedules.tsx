@@ -30,6 +30,7 @@ export function SubjectSchedules({
     setRows([]);
     setError("");
     setLoading(true);
+    setMore(false);
     if (!client.online || !client.boot!.runtime.connected) {
       setLoading(false);
       setError("连接中断，事项安排待核对。");
@@ -45,6 +46,7 @@ export function SubjectSchedules({
             { signal: controller.signal, identityGeneration: identity },
           ),
         );
+      if (controller.signal.aborted) return;
       const candidates = tasks.filter(
         (task) => task.headVersion.runRequested > 0,
       );
@@ -70,6 +72,13 @@ export function SubjectSchedules({
             })),
           )),
         );
+      }
+      for (const { task, runtime } of observations) {
+        const readError =
+          runtime.error ||
+          runtime.runs.find((run) => run.run === task.headVersion.runRequested)
+            ?.error;
+        if (readError) throw new Error(`事项安排读取失败：${readError}`);
       }
       if (!controller.signal.aborted)
         setRows(

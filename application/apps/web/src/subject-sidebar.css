@@ -1,23 +1,35 @@
 .app .subject-sidebar .inspector-header {
   gap: 8px;
 }
-.subject-presence {
+.app .subject-sidebar .inspector-header > .inspector-context {
+  display: none;
+}
+.app .subject-sidebar .inspector-header > .subject-tabs {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 3px;
+  position: static;
+  -webkit-app-region: no-drag;
+}
+.app .subject-sidebar .inspector-header .subject-tabs > button {
+  height: 30px;
+  min-width: 24px;
+  padding: 4px;
+}
+.app .subject-sidebar .subject-back {
   display: flex;
-  gap: 8px;
   align-items: center;
-  color: var(--muted);
+  gap: 6px;
+  padding: 4px 6px;
+  margin-bottom: 8px;
   font-size: 12px;
-  padding: 0 4px 16px;
+  background: transparent;
+  border: 0;
 }
-.subject-presence > span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--muted);
-  flex: none;
-}
-.subject-presence > span[data-connected] {
-  background: var(--accent);
+.subject-back svg {
+  width: 15px;
+  height: 15px;
 }
 .subject-tabs {
   position: sticky;

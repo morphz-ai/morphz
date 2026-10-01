@@ -4,6 +4,7 @@ import type { WorkspaceClient } from "./client.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { inConversation } from "../../../packages/core/src/model.js";
 import { objectiveStatus } from "./subject-sidebar-model.js";
+import { executionActivityScope } from "./execution-activity.js";
 
 export function SubjectObjectives({
   client,
@@ -72,13 +73,7 @@ export function SubjectObjectives({
                   <button
                     key={thread.id}
                     onClick={() =>
-                      onSelect({
-                        projectId: thread.projectId,
-                        conversationId: thread.conversationId,
-                        artifactId: null,
-                        ...(thread.inputId ? { inputId: thread.inputId } : {}),
-                        threadId: thread.id,
-                      })
+                      onSelect(executionActivityScope(thread, state))
                     }
                   >
                     {thread.title}

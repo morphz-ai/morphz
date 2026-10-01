@@ -89,17 +89,6 @@ export function SubjectSidebar({
       layout={layout}
       onResize={onResize}
       onClose={onClose}
-      leading={
-        detail && view === "activity" ? (
-          <button
-            className="icon-button"
-            aria-label="返回活动列表"
-            onClick={onBack}
-          >
-            <ArrowLeft />
-          </button>
-        ) : undefined
-      }
       actions={
         <button
           className="icon-button"
@@ -110,55 +99,67 @@ export function SubjectSidebar({
           <Pin />
         </button>
       }
+      headerContent={
+        <div
+          className="subject-tabs"
+          role="tablist"
+          aria-label="Morphz 信息分类"
+          ref={bar}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+              return;
+            event.preventDefault();
+            const index = tabs.findIndex((tab) => tab.id === view);
+            const next =
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? tabs.length - 1
+                  : (index +
+                      (event.key === "ArrowLeft" ? -1 : 1) +
+                      tabs.length) %
+                    tabs.length;
+            onView(tabs[next]!.id);
+            bar.current
+              ?.querySelector<HTMLButtonElement>(
+                `[data-view="${tabs[next]!.id}"]`,
+              )
+              ?.focus();
+          }}
+        >
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              data-view={id}
+              role="tab"
+              id={`subject-tab-${id}`}
+              aria-label={label}
+              title={
+                id === "activity"
+                  ? `${label} · ${subjectStatus(runtime, client.online)}`
+                  : label
+              }
+              aria-selected={view === id}
+              aria-controls={`subject-view-${id}`}
+              tabIndex={view === id ? 0 : -1}
+              onClick={() => onView(id)}
+            >
+              <Icon />
+            </button>
+          ))}
+        </div>
+      }
     >
-      <div className="subject-presence" role="status">
-        <span
-          data-connected={(client.online && runtime.connected) || undefined}
-        />
-        {subjectStatus(runtime, client.online)}
-      </div>
-      <div
-        className="subject-tabs"
-        role="tablist"
-        aria-label="Morphz 信息分类"
-        ref={bar}
-        onKeyDown={(event) => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
-            return;
-          event.preventDefault();
-          const index = tabs.findIndex((tab) => tab.id === view);
-          const next =
-            event.key === "Home"
-              ? 0
-              : event.key === "End"
-                ? tabs.length - 1
-                : (index + (event.key === "ArrowLeft" ? -1 : 1) + tabs.length) %
-                  tabs.length;
-          onView(tabs[next]!.id);
-          bar.current
-            ?.querySelector<HTMLButtonElement>(
-              `[data-view="${tabs[next]!.id}"]`,
-            )
-            ?.focus();
-        }}
-      >
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            data-view={id}
-            role="tab"
-            id={`subject-tab-${id}`}
-            aria-label={label}
-            title={label}
-            aria-selected={view === id}
-            aria-controls={`subject-view-${id}`}
-            tabIndex={view === id ? 0 : -1}
-            onClick={() => onView(id)}
-          >
-            <Icon />
-          </button>
-        ))}
-      </div>
+      {detail && view === "activity" && (
+        <button
+          className="subject-back"
+          aria-label="返回活动列表"
+          onClick={onBack}
+        >
+          <ArrowLeft />
+          活动
+        </button>
+      )}
       <div
         role="tabpanel"
         id={`subject-view-${view}`}
