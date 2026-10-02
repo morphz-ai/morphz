@@ -65,10 +65,10 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
         policyReadbacks >= 1,
         "The new Session's safe policy must be read back before input POST",
       );
-      assert.deepEqual(body.activation.harness, {
-        id: "morphz.script-studio",
-        version: "1.4.0",
-      });
+      assert.deepEqual(
+        body.activation.harness,
+        scriptStudioApplication.harness,
+      );
       sent.push(body.client_message_id);
       return send(200, { accepted: true, event_id: "synthetic-root" });
     }
@@ -118,6 +118,8 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       [{ id: "morphz.script-studio", version: "1.0.0" }],
       [{ id: "morphz.script-studio", version: "1.1.0" }],
       [{ id: "morphz.script-studio", version: "1.2.1" }],
+      [{ id: "morphz.script-studio", version: "1.4.0" }],
+      [{ id: "morphz.script-studio", version: "1.4.2" }],
     ]) {
       harnesses = loaded;
       if (outboxDelivery().state === "failed")
@@ -128,7 +130,7 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       assert.match(delivery.error!, /就绪检查|尚未加载/);
       assert.equal(sent.length, 0);
     }
-    harnesses = [{ id: "morphz.script-studio", version: "1.4.0" }];
+    harnesses = [scriptStudioApplication.harness!];
     await bridge.tick();
     assert.equal(
       sent.length,

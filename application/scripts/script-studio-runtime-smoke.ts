@@ -146,6 +146,11 @@ let scenario = fault
 let reviewCount = 0;
 let selectionStep = 0,
   preparationStep = 0;
+let createdChatProjectId = "",
+  createdChatProductionId = "",
+  createdChatContentId = "",
+  createdChatItemId = "",
+  createdChatActivityRevision = 0;
 const logicalModelCalls = new Map<
   string,
   { stage: string; round: number; attempts: number }
@@ -154,6 +159,7 @@ const branchEvidence: {
   scenario: string;
   stages: string[];
   candidateCount: number;
+  created?: { productionId: string; contentId: string; itemId: string };
 }[] = [];
 const delay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -181,7 +187,7 @@ const provider = createServer(async (req, res) => {
             /STAGE script-(discussion|intent|prepare|create|review|revise|delivery)/g,
           ),
         ].at(-1)?.[1]
-      : scenario === "chat" && tools.includes("harness_select")
+      : scenario.startsWith("chat") && tools.includes("harness_select")
         ? "select"
         : "relay";
     assert.ok(stage, "A provider request must identify its actual Yao stage");
@@ -225,9 +231,10 @@ const provider = createServer(async (req, res) => {
         tools.every(
           (name: string) =>
             name === "no_reply" ||
+            (stage === "relay" && name === "reply") ||
             (stage === "prepare" && name === "host_morphz"),
         ),
-        "Only preparation may use Host tools; creative steps cannot bypass the Plan",
+        `Only preparation may use Host tools; creative steps cannot bypass the Plan (stage=${stage}, tools=${tools.join(",")})`,
       );
     }
     if (internal)
@@ -326,6 +333,103 @@ const provider = createServer(async (req, res) => {
           ? JSON.parse(observation.result)
           : observation.result
         : observation;
+      if (scenario === "chat-create") {
+        if (step === 0)
+          return call("host_morphz", {
+            action: "script",
+            script: { action: "read-workflow" },
+          });
+        assert.equal(
+          result?.ok,
+          true,
+          JSON.stringify({ observation, hostErrors }),
+        );
+        if (step === 1) {
+          assert.equal(result.generating, false);
+          assert.equal(result.projectId, "first-project");
+          assert.ok(result.body.includes("新建"));
+          createdChatProjectId = result.projectId;
+          return call("host_morphz", {
+            action: "operations",
+            operations: {
+              action: "describe",
+              operationId: "script.create-production",
+            },
+          });
+        }
+        if (step === 2) {
+          assert.equal(result.operation.harness, undefined);
+          assert.ok(result.operation.parameters);
+          return call("host_morphz", {
+            action: "operations",
+            operations: {
+              action: "invoke",
+              operationId: "script.create-production",
+              parameters: {
+                projectId: createdChatProjectId,
+                title: "TEST 空书库聊天创建",
+              },
+            },
+          });
+        }
+        if (step === 3) {
+          createdChatProductionId = result.productionId;
+          createdChatContentId = result.contentId;
+          assert.equal(result.receipt.entityId, createdChatProductionId);
+          return call("host_morphz", {
+            action: "script",
+            script: {
+              action: "read-production",
+              productionId: createdChatProductionId,
+            },
+          });
+        }
+        if (step === 4) {
+          assert.equal(result.items.length, 0);
+          createdChatActivityRevision = result.activityRevision;
+          return call("host_morphz", {
+            action: "operations",
+            operations: {
+              action: "describe",
+              operationId: "script.create-item",
+            },
+          });
+        }
+        if (step === 5) {
+          assert.equal(result.operation.harness, undefined);
+          return call("host_morphz", {
+            action: "operations",
+            operations: {
+              action: "invoke",
+              operationId: "script.create-item",
+              parameters: {
+                productionId: createdChatProductionId,
+                expectedActivityRevision: createdChatActivityRevision,
+                kind: "episode",
+                draft: emptyScriptDraft("第一集"),
+              },
+            },
+          });
+        }
+        if (step === 6) {
+          createdChatItemId = result.itemId;
+          assert.equal(result.receipt.entityId, createdChatItemId);
+          return call("host_morphz", {
+            action: "script",
+            script: {
+              action: "read-production",
+              productionId: createdChatProductionId,
+            },
+          });
+        }
+        assert.equal(step, 7);
+        assert.equal(result.items.length, 1);
+        assert.equal(result.items[0].id, createdChatItemId);
+        return respond({
+          role: "assistant",
+          content: JSON.stringify("TEST 剧本和空的第一集已保存；不生成正文。"),
+        });
+      }
       if (step === 0)
         return call("host_morphz", {
           action: "script",
@@ -377,6 +481,9 @@ const provider = createServer(async (req, res) => {
         ? {
             execute: !["defer", "discussion"].includes(scenario),
             reply: "先讨论，不保存候选。",
+            task: ["defer", "discussion"].includes(scenario)
+              ? ""
+              : "TEST 合成当前任务范围，不是真实语义验收。",
           }
         : stage === "create" || stage === "revise"
           ? {
@@ -418,12 +525,26 @@ const provider = createServer(async (req, res) => {
                   (scenario === "second-review-blocked" && reviewCount === 2),
                 notes: "合成检查：仅用于验证实际分支与因果数据流。",
               }
-            : scenario === "discussion" || scenario === "defer"
-              ? "先讨论，不保存候选。"
-              : scenario.includes("blocked") || scenario === "malformed"
-                ? "工序已停止，没有提交。"
-                : "合成测试候选已提交，等待人工决定；未批准或锁稿。";
+            : scenario === "chat-create"
+              ? "TEST 剧本和空的第一集已创建，不生成正文。"
+              : scenario === "discussion" || scenario === "defer"
+                ? "先讨论，不保存候选。"
+                : scenario.includes("blocked") || scenario === "malformed"
+                  ? "工序已停止，没有提交。"
+                  : "合成测试候选已提交，等待人工决定；未批准或锁稿。";
     const content = internal ? JSON.stringify(value) : String(value);
+    // The Application's outer reply uses the real v2 terminal carrier. Typed
+    // creative infers still return their declared value, never a Host call.
+    if (stage === "relay" && tools.includes("reply"))
+      return call("reply", {
+        content,
+        annotations: {
+          execution: {
+            title: "验证剧本 Runtime 工序",
+            result: content,
+          },
+        },
+      });
     const message = { role: "assistant", content };
     respond(message);
   } catch (error) {
@@ -477,7 +598,10 @@ try {
   const configFile = join(runtimeDirectory, "morphz.toml");
   writeFileSync(
     configFile,
-    `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[models.test-model]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+    // This local synthetic Provider models fourteen Harness branches, not
+    // Context-maintenance. Bound the aggregate fixture Context explicitly;
+    // live-provider validation retains its real capacity and request limits.
+    `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[orchestrator]\ncontext_soft_token_limit=1500000\ncontext_hard_token_limit=2000000\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[models.test-model]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
     { mode: 0o600 },
   );
   // Only the test provider and Runtime API may use TCP. The actual embedded application must use Unix IPC.
@@ -1000,6 +1124,27 @@ try {
         ],
         writes: 1,
       },
+      {
+        name: "chat-create",
+        passes: null,
+        expected: [
+          "select",
+          "select",
+          "select",
+          "select",
+          "discussion",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "prepare",
+          "relay",
+        ],
+        writes: 0,
+      },
       { name: "defer", passes: 2, expected: ["intent", "relay"], writes: 0 },
       {
         name: "one-review",
@@ -1087,22 +1232,30 @@ try {
       preparationStep = 0;
       const before = (await production()).candidates.length;
       const start = stages.length;
+      // Branches are independent tests, not one growing creative conversation.
+      // Give each its real Session so earlier fixture replies do not force
+      // Context-maintenance requests that this stage Provider does not model.
+      const branchConversationId = randomUUID();
       const branchReceipt = (await host.connection.call(
         "platform.message",
         {
           commandId: randomUUID(),
           operation: {
             ...command.operation,
-            applicationInstanceId:
-              scenario === "chat" ? undefined : applicationInstanceId,
-            application:
-              scenario === "chat"
-                ? undefined
-                : { id: app.id, version: app.version },
+            conversationId: branchConversationId,
+            newConversation: { title: `TEST script ${scenario}` },
+            applicationInstanceId: scenario.startsWith("chat")
+              ? undefined
+              : applicationInstanceId,
+            application: scenario.startsWith("chat")
+              ? undefined
+              : { id: app.id, version: app.version },
             body:
-              scenario === "discussion" || scenario === "defer"
-                ? "只聊聊候车人的动机，先别生成。"
-                : `TEST 合成 ${scenario} 分支。`,
+              scenario === "chat-create"
+                ? "新建 TEST 空书库聊天创建剧本和空的第一集，不生成正文。"
+                : scenario === "discussion" || scenario === "defer"
+                  ? "只聊聊候车人的动机，先别生成。"
+                  : `TEST 合成 ${scenario} 分支。`,
             scriptGeneration:
               testCase.passes === null
                 ? undefined
@@ -1152,7 +1305,10 @@ try {
         );
         assert.equal(preparation?.inputId, branchReceipt.entityId);
         assert.equal(preparation?.generation.targetId, targetId);
-        const history = await client.history("first-project", "first-project");
+        const history = await client.history(
+          "first-project",
+          branchConversationId,
+        );
         assert.equal(
           history.scriptOutputs.filter(
             (o) =>
@@ -1160,6 +1316,31 @@ try {
           ).length,
           1,
         );
+      }
+      if (scenario === "chat-create") {
+        const source = pinnedInput(branchReceipt.entityId);
+        assert.equal(source.application, undefined);
+        assert.equal(source.scriptGeneration, undefined);
+        const created = await client.readScriptSnapshot(createdChatContentId);
+        assert.equal(created.id, createdChatProductionId);
+        assert.equal(created.title, "TEST 空书库聊天创建");
+        assert.equal(created.items.length, 1);
+        assert.equal(created.items[0]!.id, createdChatItemId);
+        assert.equal(currentScriptDraft(created.items[0]!).text, "");
+        assert.equal(created.candidates.length, 0);
+        assert.equal(created.brief.modelProcessingAllowed, false);
+        const domain = host.connection.application.options.platformScripts!;
+        const preparation = await domain.authority.withSession(
+          localAccess,
+          () => {},
+          (actor) =>
+            domain.studio.readPreparation({
+              credential: actor.credential,
+              productionId: createdChatProductionId,
+              inputId: branchReceipt.entityId,
+            }),
+        );
+        assert.equal(preparation, null);
       }
       if (scenario === "both-revisions")
         assert.equal(
@@ -1172,6 +1353,15 @@ try {
         scenario,
         stages: actual,
         candidateCount: (await production()).candidates.length - before,
+        ...(scenario === "chat-create"
+          ? {
+              created: {
+                productionId: createdChatProductionId,
+                contentId: createdChatContentId,
+                itemId: createdChatItemId,
+              },
+            }
+          : {}),
       });
     }
     const runtimeDb = new DatabaseSync(
@@ -1188,7 +1378,7 @@ try {
     runtimeDb.close();
     assert.equal(
       plans.length,
-      13,
+      14,
       "One durable root Plan per request, never redispatched on failure",
     );
     assert.ok(
@@ -1198,7 +1388,7 @@ try {
           p.harness_version === harnessRef.version,
       ),
     );
-    assert.equal(plans.filter((p) => p.status === "succeeded").length, 12);
+    assert.equal(plans.filter((p) => p.status === "succeeded").length, 13);
     assert.equal(
       plans.filter((p) => p.status === "failed").length,
       1,

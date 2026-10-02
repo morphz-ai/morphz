@@ -468,12 +468,14 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       );
     }
   }
+  const isScriptCreation = (op: Definition) =>
+    op.id === "script.create-production" || op.id === "script.create-item";
   const summary = (op: Definition) => ({
     id: op.id,
     domain: op.domain,
     title: op.title,
     effect: op.effect,
-    ...(op.domain === "script"
+    ...(op.domain === "script" && !isScriptCreation(op)
       ? { harness: scriptStudioApplication.harness }
       : {}),
   });
@@ -496,8 +498,9 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
           "由 Host 从真实输入推导身份、项目、权限；参数不能选择操作者或伪造用户。调用与按钮共用领域校验。",
         ...(op.domain === "script"
           ? {
-              workflow:
-                "明确要求生成/改写/检查时选择本应用 Harness，由 Yao 完成意图→工具查找/准备→创作→检查/修订→保存。不要求先打开工作室或点击按钮。讨论不保存；歧义才追问；资料未授权则说明缺口，不代替用户确认权利。",
+              workflow: isScriptCreation(op)
+                ? "用户明确要求新建时直接调用本操作，无需 Harness、已有剧本或先打开工作室。创建空对象并核对真实回执；生成正文另走编剧 Harness，创建不代表生成、采纳或权利确认。"
+                : "明确要求生成/改写/检查时选择本应用 Harness，由 Yao 完成意图→工具查找/准备→创作→检查/修订→保存。不要求先打开工作室或点击按钮。讨论不保存；歧义才追问；资料未授权则说明缺口，不代替用户确认权利。",
             }
           : {}),
       };

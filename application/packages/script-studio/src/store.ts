@@ -83,12 +83,24 @@ const scriptStudioV4Index =
 const scriptStudioV4ReviewColumn = "  command_id TEXT,\n";
 const scriptStudioV4Hash =
   "0abba0b4f79bf068515fb9761cf5de6eff78cacb53d19fd95658f906e41f2a7f";
-const scriptStudioV6IndexesSql = scriptStudioSchemaSql.slice(
-  scriptStudioSchemaSql.indexOf("-- Bounded editor reads:"),
+const scriptStudioV6Hash =
+  "c8eaf0cd6c5f75c86a49793b94bdba4039e3578f04083cbff2ce65839987dca7";
+const scriptStudioV7TaskColumn =
+  "  task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000),\n";
+const scriptStudioV7Indexes = [
+  "CREATE UNIQUE INDEX script_preparations_by_input_target ON script_preparations(tenant_id, input_id, target_item_id);",
+  "CREATE INDEX script_preparations_by_input_order ON script_preparations(tenant_id, input_id, collection_ordinal, preparation_id);",
+] as const;
+const scriptStudioV6Sql = scriptStudioV7Indexes.reduce(
+  (sql, statement) => sql.replace(statement + "\n", ""),
+  scriptStudioSchemaSql.replace(scriptStudioV7TaskColumn, ""),
+);
+const scriptStudioV6IndexesSql = scriptStudioV6Sql.slice(
+  scriptStudioV6Sql.indexOf("-- Bounded editor reads:"),
 );
 const scriptStudioV5Sql =
-  scriptStudioSchemaSql
-    .slice(0, scriptStudioSchemaSql.indexOf("-- Bounded editor reads:"))
+  scriptStudioV6Sql
+    .slice(0, scriptStudioV6Sql.indexOf("-- Bounded editor reads:"))
     .trimEnd() + "\n";
 const scriptStudioV5Hash = schemaHash(scriptStudioV5Sql);
 const scriptStudioV5ReportsSql = scriptStudioSchemaSql.slice(
@@ -268,6 +280,9 @@ export type ScriptPreparationReceipt = {
   preparationId: string;
   inputId: string;
   generation: ScriptGeneration;
+  generations: ScriptGeneration[];
+  /** Semantic task interpretation, never an input rewrite or authorization. */
+  task: string;
   receiptId: string;
 };
 
@@ -418,12 +433,15 @@ export class ScriptStudioStore {
     private readonly backend: Backend,
     private readonly authority?: ScriptStudioAuthority,
   ) {
-    this.sqlChanges = backend.kind === "sqlite"
-      ? sqliteChangeSource(backend.database)
-      : postgresChangeSource(backend.pool.options, backend.schema);
+    this.sqlChanges =
+      backend.kind === "sqlite"
+        ? sqliteChangeSource(backend.database)
+        : postgresChangeSource(backend.pool.options, backend.schema);
   }
 
-  changeSource(): SqlChangeSource { return this.sqlChanges; }
+  changeSource(): SqlChangeSource {
+    return this.sqlChanges;
+  }
 
   static async sqlite(
     filename: string,
@@ -583,9 +601,18 @@ export class ScriptStudioStore {
           version === 4 && installed.schema_sha256 === scriptStudioV4Hash;
         const priorV5 =
           version === 5 && installed.schema_sha256 === scriptStudioV5Hash;
+        const priorV6 =
+          version === 6 && installed.schema_sha256 === scriptStudioV6Hash;
         const currentSchema =
-          version === 6 && installed.schema_sha256 === schemaSha256;
-        if (!priorV2 && !priorV3 && !priorV4 && !priorV5 && !currentSchema)
+          version === 7 && installed.schema_sha256 === schemaSha256;
+        if (
+          !priorV2 &&
+          !priorV3 &&
+          !priorV4 &&
+          !priorV5 &&
+          !priorV6 &&
+          !currentSchema
+        )
           throw new Error("剧本工作室数据库结构与当前程序不一致。");
         if (priorV2) {
           if (schemaHash(scriptStudioV2Sql) !== scriptStudioV2Hash)
@@ -636,6 +663,21 @@ export class ScriptStudioStore {
           );
           await q.exec(scriptStudioV6IndexesSql);
         }
+        if (priorV2 || priorV3 || priorV4 || priorV5 || priorV6) {
+          if (schemaHash(scriptStudioV6Sql) !== scriptStudioV6Hash)
+            throw new Error("剧本工作室多目标升级定义与旧结构不一致。");
+          await verifySchemaObjects(
+            q,
+            this.backend.kind,
+            scriptStudioV6Sql,
+            ["script_schema_version"],
+            ["morphz_app_binding"],
+          );
+          await q.exec(
+            "ALTER TABLE script_preparations ADD COLUMN task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000);",
+          );
+          await q.exec(scriptStudioV7Indexes.join("\n"));
+        }
         await verifySchemaObjects(
           q,
           this.backend.kind,
@@ -646,9 +688,9 @@ export class ScriptStudioStore {
         await q.all(
           "SELECT task_run_event_id FROM script_command_receipts LIMIT 0",
         );
-        if (priorV2 || priorV3 || priorV4 || priorV5) {
+        if (priorV2 || priorV3 || priorV4 || priorV5 || priorV6) {
           const changed = await q.change(
-            "UPDATE script_schema_version SET version=6,schema_sha256=? WHERE version=? AND schema_sha256=?",
+            "UPDATE script_schema_version SET version=7,schema_sha256=? WHERE version=? AND schema_sha256=?",
             [schemaSha256, version, installed.schema_sha256],
           );
           if (changed !== 1) throw new Error("剧本工作室结构升级回执不一致。");
@@ -659,7 +701,7 @@ export class ScriptStudioStore {
         throw new Error("剧本工作室初始化未完成，拒绝重复建表。");
       await q.exec(scriptStudioSchemaSql);
       await q.change(
-        "INSERT INTO script_schema_version(version,schema_sha256) VALUES(6,?)",
+        "INSERT INTO script_schema_version(version,schema_sha256) VALUES(7,?)",
         [schemaSha256],
       );
     });
@@ -968,6 +1010,39 @@ export class ScriptStudioStore {
       throw new DomainError("invalid", "检查结果不允许提交。");
   }
 
+  /** Sources are facts about the frozen input, not citations self-reported by
+   * a model's output. Reuse the caller's transaction; never open a nested one. */
+  private async preparedInputSources(
+    q: SqlQuery,
+    tenantId: string,
+    productionId: string,
+    inputId: string,
+  ): Promise<LiveScriptDraft["sources"]> {
+    const rows = await q.all<Row>(
+      `SELECT DISTINCT s.source_app_id,s.source_instance_id,s.source_object_id,s.source_version_ref,s.quote_text
+       FROM (SELECT target_item_id AS item_id,base_item_revision AS revision FROM script_preparations WHERE tenant_id=? AND production_id=? AND input_id=?
+             UNION ALL SELECT r.item_id,r.revision FROM script_preparation_references r JOIN script_preparations p ON p.tenant_id=r.tenant_id AND p.preparation_id=r.preparation_id WHERE p.tenant_id=? AND p.production_id=? AND p.input_id=?) pinned
+       JOIN script_item_versions v ON v.tenant_id=? AND v.item_id=pinned.item_id AND v.revision=pinned.revision
+       JOIN script_draft_sources s ON s.tenant_id=v.tenant_id AND s.draft_id=v.draft_id`,
+      [
+        tenantId,
+        productionId,
+        inputId,
+        tenantId,
+        productionId,
+        inputId,
+        tenantId,
+      ],
+    );
+    return rows.map((source) => ({
+      appId: String(source.source_app_id),
+      instanceId: String(source.source_instance_id),
+      objectId: String(source.source_object_id),
+      versionRef: String(source.source_version_ref),
+      quote: String(source.quote_text),
+    }));
+  }
+
   /** Recheck execution, model consent and all pinned original-source grants
    * without loading the manuscript bodies. */
   async assertPreparedInputReadable(request: {
@@ -993,29 +1068,12 @@ export class ScriptStudioStore {
           throw new DomainError("not_found", "本次输入没有固定的剧本范围。");
         // Validate source grants without loading any manuscript bodies. Both
         // target and references are pinned by this app's preparation record.
-        const rows = await q.all<Row>(
-          `SELECT DISTINCT s.source_app_id,s.source_instance_id,s.source_object_id,s.source_version_ref,s.quote_text
-           FROM (SELECT target_item_id AS item_id,base_item_revision AS revision FROM script_preparations WHERE tenant_id=? AND production_id=? AND input_id=?
-                 UNION ALL SELECT r.item_id,r.revision FROM script_preparation_references r JOIN script_preparations p ON p.tenant_id=r.tenant_id AND p.preparation_id=r.preparation_id WHERE p.tenant_id=? AND p.production_id=? AND p.input_id=?) pinned
-           JOIN script_item_versions v ON v.tenant_id=? AND v.item_id=pinned.item_id AND v.revision=pinned.revision
-           JOIN script_draft_sources s ON s.tenant_id=v.tenant_id AND s.draft_id=v.draft_id`,
-          [
-            actor.tenantId,
-            productionId,
-            inputId,
-            actor.tenantId,
-            productionId,
-            inputId,
-            actor.tenantId,
-          ],
+        return this.preparedInputSources(
+          q,
+          actor.tenantId,
+          productionId,
+          inputId,
         );
-        return rows.map((source) => ({
-          appId: String(source.source_app_id),
-          instanceId: String(source.source_instance_id),
-          objectId: String(source.source_object_id),
-          versionRef: String(source.source_version_ref),
-          quote: String(source.quote_text),
-        }));
       },
       { modelData: true, sources: (sources) => sources },
     );
@@ -1800,53 +1858,61 @@ export class ScriptStudioStore {
     productionId: string,
     inputId: string,
   ): Promise<ScriptPreparationReceipt | null> {
-    const row = (
-      await q.all<Row>(
-        "SELECT * FROM script_preparations WHERE tenant_id=? AND production_id=? AND input_id=?",
-        [tenantId, productionId, inputId],
-      )
-    )[0];
-    if (!row) return null;
-    const refs = await q.all<Row>(
-      "SELECT item_id,revision FROM script_preparation_references WHERE tenant_id=? AND preparation_id=? ORDER BY ordinal",
-      [tenantId, row.preparation_id as string],
+    const rows = await q.all<Row>(
+      "SELECT * FROM script_preparations WHERE tenant_id=? AND production_id=? AND input_id=? ORDER BY collection_ordinal,preparation_id",
+      [tenantId, productionId, inputId],
     );
-    return {
-      preparationId: String(row.preparation_id),
-      inputId,
-      generation: scriptGenerationSchema.parse({
-        productionId,
-        targetId: row.target_item_id,
-        baseRevision: safeInteger(
-          row.base_item_revision as number | string,
-          "目标版本",
-        ),
-        contextRevision: safeInteger(
-          row.context_revision as number | string,
-          "创作要求版本",
-        ),
-        purpose: row.purpose,
-        references: refs.map((ref) => ({
-          itemId: String(ref.item_id),
-          revision: safeInteger(
-            ref.revision as number | string,
-            "固定资料版本",
+    if (!rows.length) return null;
+    if (rows.length > 12 || rows[0]!.preparation_id !== inputId)
+      throw new Error("剧本准备集合与根输入不一致。");
+    const generations: ScriptGeneration[] = [];
+    for (const row of rows) {
+      const refs = await q.all<Row>(
+        "SELECT item_id,revision FROM script_preparation_references WHERE tenant_id=? AND preparation_id=? ORDER BY ordinal",
+        [tenantId, row.preparation_id as string],
+      );
+      generations.push(
+        scriptGenerationSchema.parse({
+          productionId,
+          targetId: row.target_item_id,
+          baseRevision: safeInteger(
+            row.base_item_revision as number | string,
+            "目标版本",
           ),
-        })),
-        maxCandidates: safeInteger(
-          row.max_candidates as number | string,
-          "候选上限",
-        ),
-        maxOutputCharacters: safeInteger(
-          row.max_output_characters as number | string,
-          "输出上限",
-        ),
-        maxReviewPasses: safeInteger(
-          row.max_review_passes as number | string,
-          "检查轮数",
-        ),
-      }),
-      receiptId: String(row.preparation_id),
+          contextRevision: safeInteger(
+            row.context_revision as number | string,
+            "创作要求版本",
+          ),
+          purpose: row.purpose,
+          references: refs.map((ref) => ({
+            itemId: String(ref.item_id),
+            revision: safeInteger(
+              ref.revision as number | string,
+              "固定资料版本",
+            ),
+          })),
+          maxCandidates: safeInteger(
+            row.max_candidates as number | string,
+            "候选上限",
+          ),
+          maxOutputCharacters: safeInteger(
+            row.max_output_characters as number | string,
+            "输出上限",
+          ),
+          maxReviewPasses: safeInteger(
+            row.max_review_passes as number | string,
+            "检查轮数",
+          ),
+        }),
+      );
+    }
+    return {
+      preparationId: inputId,
+      inputId,
+      generation: generations[0]!,
+      generations,
+      task: String(rows[0]!.task_request),
+      receiptId: inputId,
     };
   }
 
@@ -1891,7 +1957,7 @@ export class ScriptStudioStore {
     const matches = await this.transaction(
       (q) =>
         q.all<{ production_id: string }>(
-          "SELECT production_id FROM script_preparations WHERE tenant_id=? AND input_id=? LIMIT 2",
+          "SELECT DISTINCT production_id FROM script_preparations WHERE tenant_id=? AND input_id=? LIMIT 2",
           [actor.tenantId, inputId],
         ),
       true,
@@ -3709,13 +3775,49 @@ export class ScriptStudioStore {
     inputId: string;
     generation: z.input<typeof scriptPreparationRequestSchema>;
   }): Promise<ScriptPreparationReceipt> {
+    const { generation, ...scope } = request;
+    return this.prepareGenerations({ ...scope, generations: [generation] });
+  }
+
+  /** Atomically freeze the entire requested delivery set. No later tool call
+   * may append another target or change its task interpretation. */
+  async prepareGenerations(request: {
+    credential: string;
+    commandId: string;
+    productionId: string;
+    inputId: string;
+    generations: z.input<typeof scriptPreparationRequestSchema>[];
+    task?: string;
+  }): Promise<ScriptPreparationReceipt> {
     if (!this.authority) throw new Error("剧本工作室尚未接入受信对象权限。");
     const commandId = requireDomainId(request.commandId, "命令 ID");
     const productionId = requireDomainId(request.productionId, "剧本 ID");
     const inputId = requireDomainId(request.inputId, "输入 ID");
-    const submitted = scriptPreparationRequestSchema.parse(request.generation);
-    if (submitted.productionId !== productionId)
+    const submitted = z
+      .array(scriptPreparationRequestSchema)
+      .min(1)
+      .max(12)
+      .parse(request.generations);
+    const task = z
+      .string()
+      .max(12000)
+      .parse(request.task ?? "");
+    if (
+      submitted.some((generation) => generation.productionId !== productionId)
+    )
       throw new Error("生成请求与剧本原件不一致。");
+    if (
+      new Set(submitted.map((generation) => generation.targetId)).size !==
+      submitted.length
+    )
+      throw new DomainError("invalid", "同一次准备不能包含重复目标。");
+    if (
+      submitted.some(
+        (generation) =>
+          generation.contextRevision !== submitted[0]!.contextRevision,
+      )
+    )
+      throw new DomainError("invalid", "同一次准备必须使用同一创作要求版本。");
     const authorize = () =>
       this.authority!.authorizeObject({
         credential: request.credential,
@@ -3738,7 +3840,9 @@ export class ScriptStudioStore {
           projectId: actor.projectId,
           productionId,
           inputId,
-          submitted,
+          // Preserve existing single-target receipt hashes byte for byte.
+          submitted: submitted.length === 1 && !task ? submitted[0] : submitted,
+          ...(submitted.length === 1 && !task ? {} : { task }),
         }),
       )
       .digest("hex");
@@ -3807,7 +3911,9 @@ export class ScriptStudioStore {
       );
       if (!production.brief.modelProcessingAllowed)
         throw new Error("剧本资料尚未获准交给当前模型处理。");
-      const generation = prepareScriptGeneration(production, submitted);
+      const generations = submitted.map((generation) =>
+        prepareScriptGeneration(production, generation),
+      );
       const current = await authorize();
       if (
         !current ||
@@ -3827,32 +3933,40 @@ export class ScriptStudioStore {
         )
       )[0]!;
       const now = new Date().toISOString();
-      await insert(q, "script_preparations", {
-        tenant_id: actor.tenantId,
-        preparation_id: inputId,
-        collection_ordinal: safeInteger(ordinalRow.next_ordinal, "准备顺序号"),
-        production_id: productionId,
-        input_id: inputId,
-        requested_project_id: actor.projectId,
-        target_item_id: generation.targetId,
-        base_item_revision: generation.baseRevision,
-        context_revision: generation.contextRevision,
-        purpose: generation.purpose,
-        max_candidates: generation.maxCandidates,
-        max_output_characters: generation.maxOutputCharacters,
-        max_review_passes: generation.maxReviewPasses,
-        created_by_principal_id: actor.principalId,
-        created_by_actant_id: actor.actantId,
-        created_at: now,
-      });
-      for (const [ordinal, ref] of generation.references.entries())
-        await insert(q, "script_preparation_references", {
+      for (const [index, generation] of generations.entries()) {
+        const preparationId =
+          index === 0
+            ? inputId
+            : `prepare_${createHash("sha256").update(`${inputId}\0${generation.targetId}`).digest("hex").slice(0, 40)}`;
+        await insert(q, "script_preparations", {
           tenant_id: actor.tenantId,
-          preparation_id: inputId,
-          ordinal,
-          item_id: ref.itemId,
-          revision: ref.revision,
+          preparation_id: preparationId,
+          collection_ordinal:
+            safeInteger(ordinalRow.next_ordinal, "准备顺序号") + index,
+          production_id: productionId,
+          input_id: inputId,
+          task_request: index === 0 ? task : "",
+          requested_project_id: actor.projectId,
+          target_item_id: generation.targetId,
+          base_item_revision: generation.baseRevision,
+          context_revision: generation.contextRevision,
+          purpose: generation.purpose,
+          max_candidates: generation.maxCandidates,
+          max_output_characters: generation.maxOutputCharacters,
+          max_review_passes: generation.maxReviewPasses,
+          created_by_principal_id: actor.principalId,
+          created_by_actant_id: actor.actantId,
+          created_at: now,
         });
+        for (const [ordinal, ref] of generation.references.entries())
+          await insert(q, "script_preparation_references", {
+            tenant_id: actor.tenantId,
+            preparation_id: preparationId,
+            ordinal,
+            item_id: ref.itemId,
+            revision: ref.revision,
+          });
+      }
       await insert(q, "script_command_receipts", {
         tenant_id: actor.tenantId,
         command_id: commandId,
@@ -3867,7 +3981,9 @@ export class ScriptStudioStore {
       return {
         preparationId: inputId,
         inputId,
-        generation,
+        generation: generations[0]!,
+        generations,
+        task,
         receiptId: commandId,
       };
     });
@@ -3881,6 +3997,7 @@ export class ScriptStudioStore {
     commandId: string;
     productionId: string;
     inputId: string;
+    targetId?: string;
     draft: LiveScriptDraft;
     explanation: string;
     workflowReport?: ScriptWorkflowReport;
@@ -3889,6 +4006,10 @@ export class ScriptStudioStore {
     const commandId = requireDomainId(request.commandId, "命令 ID");
     const productionId = requireDomainId(request.productionId, "剧本 ID");
     const inputId = requireDomainId(request.inputId, "输入 ID");
+    const targetId =
+      request.targetId === undefined
+        ? undefined
+        : requireDomainId(request.targetId, "目标 ID");
     const draft = liveScriptDraftSchema.parse(request.draft);
     const workflowReport =
       request.workflowReport === undefined
@@ -3920,6 +4041,7 @@ export class ScriptStudioStore {
           inputId,
           projectId: actor.projectId,
           productionId,
+          ...(targetId === undefined ? {} : { targetId }),
           draft,
           explanation: request.explanation,
           workflowReport,
@@ -3955,11 +4077,15 @@ export class ScriptStudioStore {
           throw new Error("相同命令 ID 对应不同候选请求。");
         const row = (
           await q.all<Row>(
-            "SELECT p.title,c.input_id FROM script_candidates c JOIN script_productions p ON p.tenant_id=c.tenant_id AND p.production_id=c.production_id JOIN script_outbox o ON o.tenant_id=c.tenant_id AND o.production_id=p.production_id AND o.event_id=? AND o.event_kind='script.candidate-submitted' WHERE c.tenant_id=? AND c.production_id=? AND c.candidate_id=? AND p.deleted_at IS NULL",
+            "SELECT p.title,c.input_id,c.target_item_id FROM script_candidates c JOIN script_productions p ON p.tenant_id=c.tenant_id AND p.production_id=c.production_id JOIN script_outbox o ON o.tenant_id=c.tenant_id AND o.production_id=p.production_id AND o.event_id=? AND o.event_kind='script.candidate-submitted' WHERE c.tenant_id=? AND c.production_id=? AND c.candidate_id=? AND p.deleted_at IS NULL",
             [receiptId, actor.tenantId, productionId, receiptId],
           )
         )[0];
-        if (!row || row.input_id !== inputId)
+        if (
+          !row ||
+          row.input_id !== inputId ||
+          (targetId !== undefined && row.target_item_id !== targetId)
+        )
           throw new Error("候选回执与原件不一致。");
         const activityRevision = safeInteger(
           prior.result_version_ref as number | string,
@@ -3993,12 +4119,20 @@ export class ScriptStudioStore {
         productionId,
         inputId,
       );
-      if (
-        !preparation ||
-        !["draft", "rewrite"].includes(preparation.generation.purpose)
-      )
-        throw new Error("本次输入没有固定的创作候选范围。");
-      const generation = preparation.generation;
+      if (!preparation) throw new Error("本次输入没有固定的创作候选范围。");
+      if (preparation.generations.length > 1 && targetId === undefined)
+        throw new DomainError(
+          "invalid",
+          "多目标候选必须明确指定本次固定的目标 ID。",
+        );
+      const generation =
+        targetId === undefined
+          ? preparation.generation
+          : preparation.generations.find(
+              (entry) => entry.targetId === targetId,
+            );
+      if (!generation || !["draft", "rewrite"].includes(generation.purpose))
+        throw new DomainError("forbidden", "目标不属于本次固定候选范围。");
       this.assertWorkflowReport(generation, workflowReport);
       const preparationRow = (
         await q.all<Row>(
@@ -4037,8 +4171,8 @@ export class ScriptStudioStore {
         throw new Error("候选内容超过本次输出上限。");
       const count = (
         await q.all<{ total: number | string }>(
-          "SELECT COUNT(*) AS total FROM script_candidates WHERE tenant_id=? AND production_id=? AND input_id=?",
-          [actor.tenantId, productionId, inputId],
+          "SELECT COUNT(*) AS total FROM script_candidates WHERE tenant_id=? AND production_id=? AND input_id=? AND target_item_id=?",
+          [actor.tenantId, productionId, inputId, generation.targetId],
         )
       )[0]!;
       if (safeInteger(count.total, "本次候选数量") >= generation.maxCandidates)
@@ -4121,7 +4255,24 @@ export class ScriptStudioStore {
         )
           throw new Error("候选原作引用超出本次固定资料。");
       }
-      const checks = draft.sources.map((source) => ({
+      // A generated draft may legitimately omit or shorten a citation. That
+      // cannot erase its prior access to any of this input's frozen material,
+      // including the other targets used by a shared multi-target inference.
+      const preparedSources = await this.preparedInputSources(
+        q,
+        actor.tenantId,
+        productionId,
+        inputId,
+      );
+      const sourceChecks = [
+        ...new Map(
+          [...preparedSources, ...draft.sources].map((source) => [
+            JSON.stringify(source),
+            source,
+          ]),
+        ).values(),
+      ];
+      const checks = sourceChecks.map((source) => ({
         credential: request.credential,
         tenantId: actor.tenantId,
         principalId: actor.principalId,
@@ -4350,6 +4501,8 @@ export class ScriptStudioStore {
           eventId: commandId,
         };
       }
+      // Saved receipts remain recoverable; cancellation only blocks new writes.
+      await this.assertActiveInput(actor);
       if (
         (
           await q.all(
@@ -5143,6 +5296,7 @@ export class ScriptStudioStore {
           eventId: commandId,
         };
       }
+      await this.assertActiveInput(actor);
       for (const check of sourceChecks)
         if (
           !this.authority!.verifySourceVersion ||

@@ -1,6 +1,160 @@
 # 剧本工作室 1.2：可执行 Yao 与自由创作讨论
 
-当前源码为 1.4.0：普通聊天通过工具准备真实目标和版本，继而进入同一 Yao 创作链；
+## 2026-10-03 修复设计：确认承接与多条目交付
+
+本节保留实施前的数据模型与语义审查；具体实现和验收证据见下面的验收记录。原失败场景是先提出
+《领证前夜》的两位主角设定与五场戏大纲，用户随后说“好的，你直接做”。
+实际意图子 infer 已返回 execute=true；准备子 infer 的共享 Context 也包含上条提案，
+却只浏览目录后要求再次确认。因此不能把问题归因为 captures 隔离了历史。
+
+### 语义与授权
+
+原输入 body、输入 ID、root、Session 和项目不改写。既有意图 infer 同时产出
+`task`：根据真实共享 Context，将当前指令与它明确确认的当前提案整理为本次任务。
+`task` 随类型化 intent 显式传入准备步骤，并作为固定准备的有界文本保存；它是模型
+解释的任务说明，不是新增授权凭证，不得覆盖原输入或 Runtime／Host 权限。
+执行授权来自本次真实输入：明确确认当前唯一提案可以执行；仅讨论、明确暂缓、
+无关旧任务、引用／素材内的命令不得沿用旧执行授权。多个未决提案不能可靠消歧时
+问一个具体问题。共享 Context 中不存在的约定不得凭空补齐。此修复不新增意图模型调用。
+
+### 生产数据模型与身份
+
+权威所有者仍是 Script Studio 应用领域库；Platform 只管理内容目录与授权，Runtime
+只管理真实执行与恢复。复用 `script_preparations`、其 references、候选、稿件版本、
+command receipts 和 outbox，不新增 Renderer 存储、工作空间快照或批次账本。
+单个 ScriptGeneration 保持原目标／版本语义；一次准备可包含同一剧本、同一创作
+上下文内至多 12 个互异目标，各自冻结 baseRevision 与依赖版本。
+
+完整集合一次原子入库：首条 preparation_id 保持 inputId，其他条目使用
+inputId＋targetId 稳定派生 ID；报告的既有 inputId 外键因此不改变。
+新增唯一 (tenant_id,input_id,target_item_id) 与按输入、有序读取索引。
+根准备行增加最长 12000 字符的 task_request 文本，旧数据默认空串。
+同一 input 的集合不可随后追加、替换或改写；幂等重试须匹配完整有序集合与任务说明。
+查询按已授权 tenant/input 取同一 production 的完整集合，不因多行而猜选目标。
+旧单目标请求及 preparation ID 原样保留，读取规范化为单元素集合。
+
+### 生成、提交与恢复
+
+准备、创作和有界自审各自可以一次处理完整集合，不按交付数额外发意图／总结请求。
+创作数组逐项包含真实 targetId、完整稿件和说明；所有目标与总输出上限必须匹配固定集合。
+多目标提交必须显式指定 targetId，并纳入请求哈希；候选额度按 input＋target 计算，
+避免相同人物正文被跨目标去重。单目标省略 targetId 继续采用原目标。
+
+每项目标用稳定派生子 command ID，依次复用原候选、receipt、outbox 事务和目录投影。
+这不是跨数据库原子提交：部分成功不撤销已保存候选，回执明确列出每项目标的成功或失败，
+最终回复不得把“部分保存”说成“全部完成”。同一内容重试先返回真实原回执；恢复继续使用
+read-results/read-result 与 Runtime 持久 Plan，不增加应用调度器或轮询。
+每项写入前后仍检查实际身份、输入活动性、取消、当前成员／对象权限、来源、锁稿、
+基准版本、创作上下文与目录归属。人工改稿、撤权、取消不得被迟到结果覆盖。
+
+交付为三份独立、非空、可审阅的 pending 候选，关联两个真实 character 条目和一个
+outline 条目。Agent 不自动采纳、批准或锁稿；人物候选不会改变正式条目 head，
+大纲不得伪造“刚生成角色的正式版本”。删除／恢复仍沿用剧本既有生命周期，不新增删除接口。
+
+### SQLite／PostgreSQL 与验收
+
+两种后端采用同一有界关系模型、事务、唯一约束和权限语义。Schema 升级保留旧 v6
+精确结构与哈希基线，默认值不改变旧输入、稿件、候选或回执。测试包括旧单目标、
+真实升级与冷重开、完整集合重试、重复目标／越界目标、相同正文不同目标、候选额度、
+部分成功后回执丢失重试、人工修改、取消和撤权；真实 PostgreSQL 跳过必须单独报告。
+
+端到端验收必须包含“当前提案→简短确认→两个人物＋五场大纲”的真实模型语义链，
+保留原 body 仅为简短确认，核对准备所见共享提案及 task，再检查三份实际领域候选、
+确切 input／target／版本及 Host 回执。合成 Provider 只验证机制和失败恢复，不能替代
+真实模型验收；原 Morphz 窗口查看同一中心的真实保存成果，不用空条目或回复正文冒充交付。
+
+### 实现、版本冻结与真实语义验收
+
+既有意图求值同时返回 `ScriptIntent.task`，准备步骤的真实 captures 显式取得该说明；
+原输入仍为短确认。Host 保存的是真实 `prepare-workflow.task` 原文，不承诺模型工具参数
+与 intent.task 字节相同：真实模型可等价缩写并结合当前已读 brief 约束，验收同时保留两者，
+检查当前提案、三个目标及限制一致，不能把字段传递说成逐字透传。工具参数不是授权凭证。
+
+真实 Rust＋Unix Host＋SQLite 的合成多目标验收通过：同 Session 的提案与短确认，
+一次准备冻结三个目标，一次创作数组、一次整体自审，三份 pending 候选与独立提交回执、
+目录交付逐一匹配；持久 infer captures 与 delivery receipt 也核对。12 次本机合成请求，
+没有付费模型调用。最终 1.4.3 证据在 `/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/morphz-script-multi-runtime-QUTauN/evidence.json`。
+旧单目标／普通聊天创建／暂缓／阻塞／修订等 14 分支均通过真实 Runtime 验收；
+合成 Provider 共 82 次请求，已适配外层注解 v2 的 reply carrier，不将内部创作开放给 Host 工具。
+最终 1.4.3 旧分支证据在同一临时目录的 `morphz-script-runtime-dMmKo5/result.json`；malformed
+分支的预期 typed Bool 拒绝是反向验收，不称业务成功，也不当成意外生产错误。
+
+最后审查发现交付提示的“批次 ok=false 不称已保存”与部分成果确实保存相冲突。
+1.4.3 仅消除这处歧义：单目标失败不声称保存，多目标逐项以真实 results 为准。
+原 Runtime 已安装 1.4.2，不可同版本替换字节，故升版而不是覆盖；1.4.0 和 1.4.2 原始
+文件已归档并冻结 raw hash，隔离 registry 同时安装三版本，1.4.2 artifact hash 仍精确为
+`sha256:617bfdd75a4c16e12b43dc15e00c1d62843c6ce4faab04ed4d9f09146743bdad`。
+新 1.4.3 artifact hash 为 `sha256:0ebecb9bbf0695fb42dfee82e3af9b80f5c08c7cb2a6bf0f4c2727caa61899c8`，
+区别于其 raw 文件 hash `b2539bab37bf101894bfba3542d4ebe75d82b58e6a5266d553ff158e43cdb9ff`。
+原输入／Plan 的绑定不改写，旧模型证据不冒称新包实测。
+
+独立审查发现准备来源已撤权时，候选省略 `sources` 仍可能提交的漏洞。现在从固定准备
+集合与 references 读取完整来源，在实际提交前和最终授权后双重复核，不依赖模型自报引用。
+已保存回执恢复保持原语义；部分保存后撤权不撤销既有候选、不将后续项误报为成功。
+真实 SQLite／PostgreSQL、v6→v7 迁移、单／多目标与 Host 回归共 82/82，零跳过，
+日志 `/private/tmp/morphz-script-v7-review-20261003.log`。唯一临时合成 PG 测试库已删除，
+不修改用户库。最终全应用 Node 1093 通过、161 条条件跳过、0 失败；未运行的条件不算通过。
+
+批次没有按目标数量新增意图／总结轮次，但输入材料可能增大；合成 create 请求
+177327 字符、review 请求 208972 字符，不是 token 数，也不能宣称零新增模型成本。
+
+真实 `gpt-6.1-sol` Native 原 1.4.2 三种干净验收均通过，同一实际安装包 hash 为
+`sha256:617bfdd75a4c16e12b43dc15e00c1d62843c6ce4faab04ed4d9f09146743bdad`：
+
+- 当前提案→“好的，你直接做”：12 次请求，保存两份人物与恰好五场的大纲；正文分别 242、258、774 字，三份回执及 Platform 目录版本逐一对应，原输入不变，正式稿仍空、未采纳／批准。证据目录 `morphz-script-confirmation-live-nzP8Of`。
+- “先别写，也不要保存，我们只聊聊”：4 次请求，零准备、候选和提交回执。证据目录 `morphz-script-confirmation-live-OCZR0N`。
+- 两个互斥提案＋简短确认：4 次请求，execute=false/task 为空，仅询问选 A 或 B，零写入。证据目录 `morphz-script-confirmation-live-MWIdL9`。
+
+上述目录均位于同一系统临时目录，含 `evidence.json`／只读复核 `verification.json`。
+首次实验 16 次 Native 请求中，测试转发器遗漏并行 tool_calls.index 造成两轮预检拒绝，
+模型改串行后仍保存三份；旧 gate 又误要求每条准备行都重复 task，原失败证据保留。
+已修转发器与根行断言后，重新完整通过正向及两个反向场景，不把旧失败改成通过。
+以上原 1.4.2 累计 36 次 Native 请求，total processed tokens 1,629,969，其中 input 1,615,303、
+cached input 25,472、output 14,666；不是 1,629,969 个新增输入 token。
+这些是真实模型／隔离中心证据，不代替原 Morphz 窗口验收，也不代表所有模型创作质量。
+
+1.4.3 正向新实验 `morphz-script-confirmation-live-qqAlhL` 失败并保留原证据：三目标准备
+真实成功，但第 7 次 Native 返回的规范化内容仅缺末尾 ASCII 引号，String 严格解码报
+EOF at column 548；没有进入 create/review/submit，候选为零，最终如实报告未交付。
+该请求 output 164 tokens、上限 8192，不能归因该输出预算；Native Response 不暴露
+finish reason，不能断言 stop/length。当前 Provider 的 schema 只是文本约束，不是 API
+structured-output 参数。部分保存轻量探针尚未执行，不冒称通过。
+
+原代理只保留该请求时间窗对应 HTTP 200／12.281 秒访问记录，没有该次原始 terminal SSE；
+Native 规范化原值缺尾不等于模型原始生成缺尾。零付费 Rust 回放已准确复现另一真实缺陷：
+partial text delta 后提供方 done/completed 有完整闭引号，适配器仍丢弃尾部。RED 保留；
+已修为按真实 output/content 索引核对、续齐提供方明确返回的尾部，重复不重发，冲突、
+截断和无索引无法消歧时拒绝，不猜索引 0，不自动修坏 JSON。8/8 新回放与完整 Provider
+74/74 均通过，含真实本机 HTTP SSE Client；原 String 严格解码契约 1/1 保持。
+Runtime binary 与 Native bridge 重建成功。最后独立审查又发现并补齐半索引 done 与
+message text 实际 content offset 的约束，重复未知字段不能覆盖已知索引；最终回放
+11/11、完整 Provider 77/77、零跳过／失败（`/tmp/morphz-responses-provider-half-index-final.log`）。
+最终 Runtime／Native bridge build 成功，binary `0d48ad83…`／`dbeb1c1e…` 对应源码 `4228ae37…`，原 String 严格解码
+再次 1/1；传输修复本地提交为 `48cfd917`，未重启用户原 Runtime 进程。
+本次失败增加 8 次请求，累计 44；processed input 1,945,933（cached 45,824）、output 17,507，
+total 1,963,440，reasoning 204 已包含在 output。不得将其写成当前 1.4.3 正向成功证据。
+
+第二次有界真实正向 `morphz-script-confirmation-live-Q4TPoO` 的原 evidence 与独立只读
+verification 均通过。实际 1.4.3 artifact hash 仍为 `sha256:0ebecb9bbf0695fb42dfee82e3af9b80f5c08c7cb2a6bf0f4c2727caa61899c8`。
+同一 Session／Context 提案→“好的，你直接做。”，原 body 未改、没有模拟 scriptGeneration。
+12 次 Native 请求保存三份 pending 候选：主角一 240 字、主角二 250 字、恰好五场的大纲
+744 字；三份 Host 提交回执、delivered outbox 与 Platform 目录版本 6／7／8 一一对应。
+正式目标仍第 1 版空正文，approval 为零，没有自动采纳、批准或锁稿；create／review 各一轮。
+证据为同一系统临时目录下 `morphz-script-confirmation-live-Q4TPoO/{evidence,verification,preflight}.json`。
+
+该 run preflight 固定的是首轮 prefix 修复 provider source `5246eb94…`，Runtime binary
+`dc90b562…`、Native bridge `dca7746f…`。后来的半索引边界补修另以零付费 SSE／Provider
+测试验收，不把本次模型证据改记成后生成 build，也不倒推旧 qqAlhL 的无原始 SSE 成因。
+本次没有追加 partial 探针或自动重跑，input 590311（cached 51840）、output 6134、
+total 596445，reasoning 135 已在 output 中。累计 56 次 Native 请求，processed input
+2536244（cached 97664、uncached 2438580）、output 23641、total 2559885，reasoning
+339 已在 output 中；processed 包含缓存输入，不是新增输入或供应商账单。
+以上为真实模型与隔离真实 Runtime／Host／SQLite 验证，仍不替代原 Morphz 窗口验收。
+
+当前源码为 1.4.3：普通聊天可直接使用现有创建操作建立空剧本和条目，无需已有剧本、
+打开工作室或选择创作流程；仅要求创建时不准备生成、不写正文、不代替 Human 确认权利。
+生成／改写／检查通过工具准备真实目标和版本，继而进入同一 Yao 创作链；其准备阶段
+也可按本次明确要求创建缺少的空目标，但不能以“解决查找歧义”为由自行新建。
 详见 [共享能力接口](./29-agent-operable-cognitive-applications.md#9-本轮实现共享操作发现与剧本准备)。
 1.3.0 改用类型化语义结果，移除手写 JSON 解包并补齐编写工具。下文旧版结果是历史证据，不改写为新版验收。
 
@@ -154,12 +308,12 @@ Host 仅增加材料读取与结果提交两个领域适配器，不调用模型
 也没有借重发输入、重建 Plan、修改数据库状态或缩短租约来绕开恢复问题。
 本轮只补自动化测试和证据记录，没有修改业务／Runtime 逻辑或不可变的 1.2.1 包。
 
-| 专项 | 结果 | 实际核对 |
-| --- | --- | --- |
-| 正常分支 | 12/12 通过 | 新增初稿阻塞、第一次修订阻塞、第二次检查阻塞、第二次修订阻塞、两轮均修订 |
-| 模型请求期间杀进程 | 9/9 通过 | 讨论、意图、初稿、两轮检查、两轮修订、交付与最终回复 |
-| Host 读取期间杀进程 | 0/5 通过 | 初始读取及两轮检查／修订前重读均不能接续 |
-| Host 提交期间杀进程 | 0/2 通过 | 提交前，以及已持久化候选但尚未返回成功回执 |
+| 专项                | 结果       | 实际核对                                                                 |
+| ------------------- | ---------- | ------------------------------------------------------------------------ |
+| 正常分支            | 12/12 通过 | 新增初稿阻塞、第一次修订阻塞、第二次检查阻塞、第二次修订阻塞、两轮均修订 |
+| 模型请求期间杀进程  | 9/9 通过   | 讨论、意图、初稿、两轮检查、两轮修订、交付与最终回复                     |
+| Host 读取期间杀进程 | 0/5 通过   | 初始读取及两轮检查／修订前重读均不能接续                                 |
+| Host 提交期间杀进程 | 0/2 通过   | 提交前，以及已持久化候选但尚未返回成功回执                               |
 
 正常分支使用真实 Runtime、Unix Host 和 SQLite，固定模型夹具共调用 55 次。
 12 个原始 Plan 中 11 个成功，错误 Bool 场景按预期失败；没有无限入口重派。
@@ -231,14 +385,14 @@ Host 仅增加材料读取与结果提交两个领域适配器，不调用模型
 
 最终证据均在系统临时目录（这些是本机工程验收，不是公开发布资产）：
 
-| 验证 | 结果 | 证据 |
-| --- | --- | --- |
-| 完整进程中断矩阵，第 1 轮 | 16/16 | `morphz-script-recovery-KMay1G/summary.json` |
-| 相同完整矩阵，第 2 轮 | 16/16 | `morphz-script-recovery-6Fyx8U/summary.json` |
-| 正常流程 12 分支 | 12/12，55 次合成模型调用 | `morphz-script-runtime-UNWxtp/result.json` |
-| 应用回归 | 336/336 | `/tmp/morphz-host-recovery-node-verified.log` |
-| Rust Host／Execution／Plan／周期恢复／Activation | 8 + 44 + 1 + 2 全通过 | `/tmp/morphz-host-recovery-{rust-final,execution-final,periodic-verified,activation}.log` |
-| CLI | 31/31 | `/tmp/morphz-host-recovery-cli.log` |
+| 验证                                             | 结果                     | 证据                                                                                      |
+| ------------------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------- |
+| 完整进程中断矩阵，第 1 轮                        | 16/16                    | `morphz-script-recovery-KMay1G/summary.json`                                              |
+| 相同完整矩阵，第 2 轮                            | 16/16                    | `morphz-script-recovery-6Fyx8U/summary.json`                                              |
+| 正常流程 12 分支                                 | 12/12，55 次合成模型调用 | `morphz-script-runtime-UNWxtp/result.json`                                                |
+| 应用回归                                         | 336/336                  | `/tmp/morphz-host-recovery-node-verified.log`                                             |
+| Rust Host／Execution／Plan／周期恢复／Activation | 8 + 44 + 1 + 2 全通过    | `/tmp/morphz-host-recovery-{rust-final,execution-final,periodic-verified,activation}.log` |
+| CLI                                              | 31/31                    | `/tmp/morphz-host-recovery-cli.log`                                                       |
 
 两轮矩阵都要求：同一输入、唯一原 Plan、完成的模型阶段不重跑，只有被中断的原
 Host Job 重复一次且 tool call ID 相同。提交后丢回执必须返回逐字相同的原回执，

@@ -272,6 +272,7 @@ CREATE TABLE script_preparations (
   collection_ordinal BIGINT NOT NULL CHECK (collection_ordinal >= 0),
   production_id TEXT NOT NULL,
   input_id TEXT NOT NULL,
+  task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000),
   requested_project_id TEXT NOT NULL,
   target_item_id TEXT NOT NULL,
   base_item_revision BIGINT NOT NULL CHECK (base_item_revision > 0),
@@ -286,6 +287,8 @@ CREATE TABLE script_preparations (
   PRIMARY KEY (tenant_id, preparation_id),
   FOREIGN KEY (tenant_id, production_id) REFERENCES script_productions(tenant_id, production_id)
 );
+CREATE UNIQUE INDEX script_preparations_by_input_target ON script_preparations(tenant_id, input_id, target_item_id);
+CREATE INDEX script_preparations_by_input_order ON script_preparations(tenant_id, input_id, collection_ordinal, preparation_id);
 CREATE TABLE script_preparation_references (
   tenant_id TEXT NOT NULL,
   preparation_id TEXT NOT NULL,

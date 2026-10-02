@@ -13,13 +13,26 @@ import { emptyScriptDraft } from "../packages/core/src/script-studio.js";
 
 const taskRunColumn =
   "  task_run_event_id TEXT CHECK (task_run_event_id IS NULL OR length(task_run_event_id) BETWEEN 1 AND 100),\n";
+const versionSixSql = scriptStudioSchemaSql
+  .replace(
+    "  task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000),\n",
+    "",
+  )
+  .replace(
+    "CREATE UNIQUE INDEX script_preparations_by_input_target ON script_preparations(tenant_id, input_id, target_item_id);\n",
+    "",
+  )
+  .replace(
+    "CREATE INDEX script_preparations_by_input_order ON script_preparations(tenant_id, input_id, collection_ordinal, preparation_id);\n",
+    "",
+  );
 const reportSql = scriptStudioSchemaSql.slice(
   scriptStudioSchemaSql.indexOf("-- Workflow reports"),
   scriptStudioSchemaSql.indexOf("CREATE TABLE script_outbox"),
 );
 const versionFiveSql =
-  scriptStudioSchemaSql
-    .slice(0, scriptStudioSchemaSql.indexOf("-- Bounded editor reads:"))
+  versionSixSql
+    .slice(0, versionSixSql.indexOf("-- Bounded editor reads:"))
     .trimEnd() + "\n";
 const versionFourSql = versionFiveSql.replace(reportSql, "");
 const versionFourHash =
@@ -120,6 +133,15 @@ for (const backend of ["sqlite", "postgres"] as const) {
           // This fixture reconstructs the exact installed prior schema, not a
           // workspace snapshot or a production downgrade operation.
           if (admin) {
+            await admin.query(
+              `DROP INDEX "${schema}".script_preparations_by_input_target`,
+            );
+            await admin.query(
+              `DROP INDEX "${schema}".script_preparations_by_input_order`,
+            );
+            await admin.query(
+              `ALTER TABLE "${schema}".script_preparations DROP COLUMN task_request`,
+            );
             for (const name of [
               "script_editor_items",
               "script_editor_candidates",
@@ -142,6 +164,9 @@ for (const backend of ["sqlite", "postgres"] as const) {
           } else {
             const db = new DatabaseSync(filename);
             try {
+              db.exec(
+                "DROP INDEX script_preparations_by_input_target; DROP INDEX script_preparations_by_input_order; ALTER TABLE script_preparations DROP COLUMN task_request;",
+              );
               for (const name of [
                 "script_editor_items",
                 "script_editor_candidates",
@@ -185,7 +210,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
                   )
                 ).rows[0].version,
               ),
-              6,
+              7,
             );
             assert.equal(
               Number(
@@ -213,7 +238,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
               assert.equal(
                 db.prepare("SELECT version FROM script_schema_version").get()
                   ?.version,
-                6,
+                7,
               );
               assert.equal(
                 db
@@ -270,7 +295,7 @@ test("SQLite 剧本私库 v3 补交付索引与审阅命令来源", async () => 
       assert.equal(
         upgraded.prepare("SELECT version FROM script_schema_version").get()
           ?.version,
-        6,
+        7,
       );
       assert.equal(
         upgraded.prepare("SELECT command_id FROM script_command_receipts").get()
@@ -333,7 +358,7 @@ test(
       const version = await admin.query(
         `SELECT version FROM "${schema}".script_schema_version`,
       );
-      assert.equal(Number(version.rows[0]?.version), 6);
+      assert.equal(Number(version.rows[0]?.version), 7);
       const receipt = await admin.query(
         `SELECT command_id FROM "${schema}".script_command_receipts`,
       );
@@ -381,7 +406,7 @@ test("SQLite 剧本私库 v2 升级领域结构，原回执和重复启动保持
       const version = upgraded
         .prepare("SELECT version,schema_sha256 FROM script_schema_version")
         .get();
-      assert.equal(version?.version, 6);
+      assert.equal(version?.version, 7);
       assert.equal(version?.schema_sha256, schemaHash(scriptStudioSchemaSql));
       assert.deepEqual(
         upgraded
@@ -486,7 +511,7 @@ test(
       const version = await admin.query(
         `SELECT version,schema_sha256 FROM "${schema}".script_schema_version`,
       );
-      assert.equal(Number(version.rows[0]?.version), 6);
+      assert.equal(Number(version.rows[0]?.version), 7);
       assert.equal(
         version.rows[0]?.schema_sha256,
         schemaHash(scriptStudioSchemaSql),

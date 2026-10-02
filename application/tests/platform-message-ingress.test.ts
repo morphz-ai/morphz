@@ -16,6 +16,7 @@ import { LocalApplicationConnection } from "../packages/application/src/local-co
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { localAccess } from "../packages/core/src/model.js";
+import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import {
   emptyScriptBrief,
   defaultScriptExportTemplate,
@@ -150,7 +151,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         resources: true,
         directed_input: true,
         client_metadata: clientMetadataAvailable,
-        harnesses: [{ id: "morphz.script-studio", version: "1.4.0" }],
+        harnesses: [scriptStudioApplication.harness],
         formats: [
           { definition: { id: "morphz.application.input", version: "4" } },
         ],
@@ -3134,7 +3135,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     );
     assert.deepEqual(
       (scriptRequest?.activation as { harness?: unknown }).harness,
-      { id: "morphz.script-studio", version: "1.4.0" },
+      scriptStudioApplication.harness,
       "the Host pins the installed app Harness instead of dropping Client app context",
     );
     assert.equal(

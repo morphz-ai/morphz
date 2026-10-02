@@ -274,6 +274,7 @@ export async function submitScriptCandidate(request: {
   commandId: string;
   productionId: string;
   inputId: string;
+  targetId?: string;
   draft: LiveScriptDraft;
   explanation: string;
   workflowReport?: ScriptWorkflowReport;
@@ -283,6 +284,7 @@ export async function submitScriptCandidate(request: {
     commandId: request.commandId,
     productionId: request.productionId,
     inputId: request.inputId,
+    ...(request.targetId === undefined ? {} : { targetId: request.targetId }),
     draft: request.draft,
     explanation: request.explanation,
     workflowReport: request.workflowReport,

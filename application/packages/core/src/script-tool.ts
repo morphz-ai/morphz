@@ -69,6 +69,22 @@ export const scriptToolSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("read-workflow") }).strict(),
   scriptPreparationRequestSchema.extend({
     action: z.literal("prepare-workflow"),
+    // The primary fields remain the exact legacy single-target request.
+    // A batch includes that primary target first and is frozen in one call.
+    targets: z
+      .array(
+        z
+          .object({
+            targetId: id,
+            baseRevision: z.number().int().positive(),
+            references: scriptPreparationRequestSchema.shape.references,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(12)
+      .optional(),
+    task: z.string().max(12000).optional(),
   }),
   z
     .object({

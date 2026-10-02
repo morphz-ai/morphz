@@ -1,6 +1,6 @@
 (manifest
   (id morphz.script-studio)
-  (version "1.4.3")
+  (version "1.4.2")
   (title "剧本工作室 · 编剧与审稿")
   (capabilities (tools host_morphz)))
 (contract
@@ -317,7 +317,7 @@ notes 是可公开的简短依据与修复清单，不是私有推理或认证�
             (captures receipt)
             (returns String)
             """STAGE script-delivery。
-仅根据 receipt 简短如实汇报真实结果类型、标识和已执行自审次数。单目标 ok=false 报告具体失败，不称已保存；多目标以逐项 results 为准，不根据批次 ok 推断各项是否保存。
+仅根据 receipt 简短如实汇报真实结果类型、标识和已执行自审次数；ok=false 报告具体失败，不称已保存。
 简述 receipt.explanation 中的实际成果与局限，结合 receipt.coverage 明确检查范围；impact.outOfScopeCount 大于0时必须说明尚有几项下游未检查，不猜未授权内容。
 零条意见表示未提交意见，不是认证通过。多条目逐项核对results：saved已保存，saved-projection-pending已写应用原件但目录待恢复，failed已核对未保存，unknown无法核对是否保存，not-run未执行；unknown不能称未保存或已保存，应保留原命令待回执恢复，有失败或未知不能称全部完成。不得自动采纳候选。
 候选待人工决定，未采纳、批准或锁稿。

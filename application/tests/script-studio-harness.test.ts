@@ -74,7 +74,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "1.4.0",
+    version: "1.4.3",
   });
   assert.equal(
     createHash("sha256")
@@ -102,7 +102,29 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "1\.4\.0"\)/);
+  assert.match(source, /\(version "1\.4\.3"\)/);
+  for (const [version, hash] of [
+    [
+      "1.4.0",
+      "707a8d5c619bc285a91543cd388f7c5fc596d4aa2a88625319378039664b9828",
+    ],
+    [
+      "1.4.2",
+      "4295fd7197f9c0b4a82c8aef946af199d82c5c66ab68d0d8f9278ade216b0224",
+    ],
+  ] as const) {
+    const archived = readFileSync(
+      new URL(
+        `../harnesses/legacy/script-studio-${version}.hns`,
+        import.meta.url,
+      ),
+    );
+    assert.equal(createHash("sha256").update(archived).digest("hex"), hash);
+    assert.match(
+      archived.toString("utf8"),
+      new RegExp(`\\(version "${version.replaceAll(".", "\\.")}"\\)`),
+    );
+  }
   assert.equal(
     createHash("sha256")
       .update(
@@ -144,7 +166,51 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   assert.ok(source.includes("不把结构通过、模型自评或来源方法论称为专业认证"));
 });
 
-test("新输入绑定 1.4.0；历史请求和回执重试保留原 Harness 版本", async () => {
+test("准备阶段允许明确新建空对象，未绑定目标不再被误当作创建限制", () => {
+  const source = readFileSync(
+    new URL("../harnesses/script-studio.hns", import.meta.url),
+    "utf8",
+  );
+  const prepare = source.slice(
+    source.indexOf("(fn prepare-script"),
+    source.indexOf("(fn initial-script"),
+  );
+  assert.match(source, /明确要求新建剧本或条目.*execute=true/);
+  assert.match(prepare, /create-production的projectId只用input.projectId/);
+  assert.match(
+    prepare,
+    /expectedActivityRevision来自最新read-production.activityRevision/,
+  );
+  assert.match(prepare, /只要求创建时.*不调用prepare-workflow/);
+  assert.match(prepare, /command只允许上述create-production\/create-item/);
+  assert.match(prepare, /只有明确新建意图才允许/);
+  assert.match(prepare, /不代替用户确认资料可交给模型/);
+  assert.doesNotMatch(prepare, /不能调用command或submit-workflow/);
+});
+
+test("交付提示按逐项事实汇报部分保存，不用批次失败推断所有项目未保存", () => {
+  const source = readFileSync(
+    new URL("../harnesses/script-studio.hns", import.meta.url),
+    "utf8",
+  );
+  const delivery = source.slice(
+    source.indexOf("STAGE script-delivery。"),
+    source.indexOf("(eval"),
+  );
+  assert.match(delivery, /单目标 ok=false.*不称已保存/);
+  assert.match(
+    delivery,
+    /多目标以逐项 results 为准，不根据批次 ok 推断各项是否保存/,
+  );
+  assert.match(
+    delivery,
+    /saved已保存，saved-projection-pending已写应用原件但目录待恢复/,
+  );
+  assert.match(delivery, /unknown不能称未保存或已保存/);
+  assert.doesNotMatch(delivery, /已执行自审次数；ok=false/);
+});
+
+test("新输入绑定 1.4.3；历史请求和回执重试保留原 Harness 版本", async () => {
   const f = await platformRuntimeHostFixture();
   try {
     const command = {
@@ -200,6 +266,8 @@ test("新输入绑定 1.4.0；历史请求和回执重试保留原 Harness 版�
       "1.2.0",
       "1.2.1",
       "1.3.0",
+      "1.4.0",
+      "1.4.2",
     ]) {
       const historical = structuredClone(input);
       historical.application!.harness = { id: "morphz.script-studio", version };

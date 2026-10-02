@@ -10,25 +10,38 @@
 两项都完成实现与验收后才结束本轮目标。剧本的生产数据模型／语义设计见
 `28-script-studio-executable-yao.md` 顶部；活动沿用真实父子关系与授权事实，不以同 Session／输入猜归组，不增加 LLM 请求、健康轮询或第二份执行账本。
 
-两项实现、隔离真实 Runtime／模型与实际组件回归均已通过；最终应用全量 Node 为
-1091 通过、161 条条件跳过、0 失败（共 1252，`/tmp/morphz-two-problems-source-verified-node.log`），生产构建退出 0。
+子 Thread 实现、隔离真实 Runtime 与实际组件回归已通过。剧本 1.4.2 三组真实模型场景通过；
+1.4.3 首次新正向模型验收失败，修复独立证实的输出传输缺陷后，第二次有界真实链通过。
+原失败证据与新 build 的验收边界分别保留，详见下面的输出传输边界。
+最终 1.4.3 应用全量 Node 为 1093 通过、161 条条件跳过、0 失败（共 1254，
+`/tmp/morphz-two-problems-v143-frozen-node.log`），最终生产构建／类型退出 0（`/tmp/morphz-two-problems-v143-frozen-build.log`）。
 条件跳过不算通过，专项 PostgreSQL 另有真实执行证据。原窗口验收仍待系统解锁，不把隔离截图或新安装包当成原窗口已验收。
 
 ### 剧本确认承接与多条目交付
 
-Harness 1.4.2 在既有意图求值中同时产生本次 `task`，共享 Context 的当前唯一提案可以被短确认承接；原输入不改写，明确暂缓与歧义不能转成授权。一次准备原子冻结同剧本的多目标集合，复用既有 preparations、候选、版本、回执与 outbox，各目标独立保存 pending 候选，不自动采纳或批准。v7 SQLite／PostgreSQL 升级保留 v6 精确基线和旧单目标回执。
+Harness 1.4.3 在既有意图求值中同时产生本次 `task`，共享 Context 的当前唯一提案可以被短确认承接；原输入不改写，明确暂缓与歧义不能转成授权。一次准备原子冻结同剧本的多目标集合，复用既有 preparations、候选、版本、回执与 outbox，各目标独立保存 pending 候选，不自动采纳或批准。v7 SQLite／PostgreSQL 升级保留 v6 精确基线和旧单目标回执。最后消除批次失败与部分保存的交付提示冲突，已安装的 1.4.2 不覆写，原文件归档且三版本并存。
 
 独立审查发现并修复遗漏来源撤权复核：不能靠候选省略 `sources` 绕过准备时的来源权限；整批固定来源在提交前和最终授权后复核，已保存回执恢复不重写候选。真实 SQLite、PostgreSQL、迁移与 Host 专项 82/82、零跳过（`/private/tmp/morphz-script-v7-review-20261003.log`）；唯一合成 PG 测试库已删除，用户库未改。真实 Rust 多目标闭环及旧 14 分支通过，后者 82 次合成 Provider 请求、零付费调用。
 
-真实 `gpt-6.1-sol` 的唯一提案确认保存两人物和五场大纲、明确不写零提交、两个互斥提案仅追问三组均通过。详细回执、失败实验保留和模型请求计数见 `28-script-studio-executable-yao.md`。没有按交付数额外发意图／总结请求，但批次材料扩大输入，不能宣称零新增模型成本；合成 create/review 请求分别实测 177327/208972 字符，不是 token 数。
+真实 `gpt-6.1-sol` 在 1.4.2 的唯一提案确认保存两人物和五场大纲、明确不写零提交、两个互斥提案仅追问三组均通过。详细回执、失败实验保留和模型请求计数见 `28-script-studio-executable-yao.md`。没有按交付数额外发意图／总结请求，但批次材料扩大输入，不能宣称零新增模型成本；合成 create/review 请求分别实测 177327/208972 字符，不是 token 数。
 
-原 Runtime 已安装相同 1.4.2 包（`sha256:617bfdd75a4c16e12b43dc15e00c1d62843c6ce4faab04ed4d9f09146743bdad`），未重启 Runtime、未重放旧任务。原 12 库、240 表与私有配置已在线备份到 `/tmp/morphz-two-problems-backup.OtLfGi`；App 正常重开、新 Host 迁移与原窗口交付查看尚未验收。
+1.4.3 新正向实验 `morphz-script-confirmation-live-qqAlhL` 的三个目标已准备，但第 7 次 Native 的规范化正文缺末尾 JSON String 闭合引号，严格解码失败，未创作／提交、零候选；共 8 次请求，失败原证据保留。现有代理只有对应 HTTP 200 访问记录，无该次原始 SSE 完成文本，不能归罪模型生成或声称已证明当次传输漏尾。零付费回放另证实 Runtime Responses 适配器有独立缺陷：已有部分 delta 时忽略提供方完整 done 文本，可丢失相同尾字符。
+
+该独立传输缺陷已修复：按真实 output/content 索引核对完整文本，只追加提供方明确返回的尾部；相等终值不重复输出，重写、截断、冲突及无法消歧的无索引终值均拒绝，不猜索引 0、不修补模型坏 JSON。首轮新增回放 8/8、完整 Provider 74/74、原 String 严格解码契约 1/1 均通过，含真实本机 HTTP SSE Client；Runtime 与真实模型验证使用的 Native bridge 均重建成功。RED 保留在 `/tmp/morphz-responses-authoritative-red.log`，GREEN 与完整组分别为 `/tmp/morphz-responses-authoritative-green.log`、`/tmp/morphz-responses-provider-suite-final.log`。最后独立审查又补齐半索引 done 与 message 内容 offset 的已知约束，未知字段不得覆盖已知值；最终新增回放 11/11、完整 Provider 77/77、零跳过／失败（`/tmp/morphz-responses-provider-half-index-final.log`），半索引原 RED 也保留。不倒称真实模型先用了之后才生成的 build。
+
+1.4.3 第二次真实正向 `morphz-script-confirmation-live-Q4TPoO` 与独立只读复核均通过：12 次 Native 请求，原 body 仍为“好的，你直接做。”，三份 pending 候选正文分别 240／250／744 字，大纲恰好五场；三个持久 Host 回执、outbox 与目录版本 6／7／8 对应，正式稿仍第 1 版空正文、未采纳／批准。实际包仍为下列 1.4.3 hash。该 run 的 preflight 留存首轮 prefix 修复 source `5246eb94…` 与 Runtime／bridge 二进制 `dc90b562…`／`dca7746f…`；不冒称已检验之后的半索引补修 build，也不倒推 qqAlhL 原始失败原因。未额外执行 partial 模型探针、未自动重跑。
+
+Runtime 传输修复已聚焦本地提交 `48cfd917`；半索引最终源码 `4228ae37…` 对应 Runtime binary `0d48ad83…`、Native bridge `dbeb1c1e…`，两份构建退出 0，原 String 严格契约再次 1/1，均为零付费验证。用户原 Runtime 进程仍未重启，不把重建 binary 说成已部署到运行中的旧进程。
+
+原 Runtime 已安装新 1.4.3 包（`sha256:0ebecb9bbf0695fb42dfee82e3af9b80f5c08c7cb2a6bf0f4c2727caa61899c8`），未重启 Runtime、未重放旧任务。原 12 库、240 表与私有配置已在线备份到 `/tmp/morphz-two-problems-backup.OtLfGi`；只读检查原 v6 preparations 没有阻碍新唯一约束的重复分组，原候选仍为零。App 正常重开、新 Host 迁移与原窗口交付查看尚未验收。
 
 ### 主活动汇总真实子 Thread
 
 活动列表按同 Session／Context 的真实 parent 链收拢子任务；详情保留每个 Thread 的独立 root、标题、步骤、状态、进度与结果。父 Thread 已结束而子任务仍开放时，主活动明确显示子任务状态。逻辑 spawn 不伪造物理 Job。子 root 查看与 Host 调用沿真实父链核验原输入；聚合读取不扩大停止／审批权限，写操作必须显式选择准确 Thread，并在 POST 前重新验证当前授权。
 
 隔离真实 Rust 1/1：父、两个子与一个孙 Thread，4 个独立 root、4 个成功 Host Jobs，各自 v2 注解／结果不串线。Provider 请求 16 次，包括 4 次 Profile read、2 次 schedule_tx、6 次正常 wait/wake、4 次 reply；注解随既有工具产生，未另发注解生成请求，付费调用为 0。机械调度上限保留，不使用不成立的固定 ≤14 假设。证据：`/tmp/morphz-nested-thread-activity-runtime-final.log`。
+首轮 prefix 修复的新 Runtime 上同一真链再跑 1/1，4 Thread／4 root／4 succeeded Jobs 与 16 次确定性调度请求保持，零付费；日志 `/tmp/morphz-nested-thread-activity-runtime-new-provider.log`。
+最终半索引 Runtime binary 上再跑同链 1/1、零跳过／失败，Thread／root／Job／请求数保持；日志 `/tmp/morphz-nested-thread-activity-runtime-half-index.log`。活动实现已聚焦本地提交 `f4541b7b`。
 
 最终实际挂载 UI 6/6：主活动归组、孙层级、各自状态与结果、准确子任务停止目标、变化通知更新、窄屏与 200%；补修仅逻辑 Thread、零 Jobs／审批的 embedded 详情也显示真实截断提示，完整回读后移除。旧运动、完成对勾及时间顺序回归保持。旧 SSR 18/18，权限／执行专项 43/43，另有准确子 scope 及读取期间撤权禁止 POST 的正反例；补修相关 Node 35/35、构建／类型通过。共享旧 fixtures 补真实 Context Thread DTO，未降低生产核验；共享相关单测 19 通过、4 条 PostgreSQL 条件跳过。最终 UI／单测／构建证据：`/tmp/morphz-nested-zero-job-{ui,unit,build}.log`；原专项见 `/tmp/morphz-nested-thread-ssr.log`、`/tmp/morphz-nested-thread-unit.log`、`/tmp/morphz-nested-final-targeted.log`，组间可能重叠，不相加。
 
