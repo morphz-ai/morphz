@@ -67,6 +67,16 @@
     hsl(from var(--accent) h 90% 88%),
     color-mix(in srgb, var(--accent) 25%, var(--paper))
   );
+  --human-message-hover: color-mix(
+    in srgb,
+    var(--accent-strong) 12%,
+    var(--human-message-fill)
+  );
+  --human-message-pressed: color-mix(
+    in srgb,
+    var(--accent-strong) 16%,
+    var(--human-message-fill)
+  );
   /* The mark is a brand shape, not a text/link foreground. Keep the active
      hue vivid on white without changing readable interaction colors. */
   --brand-mark-fill: light-dark(
@@ -917,6 +927,16 @@
   background: var(--human-message-fill);
   border-radius: 14px 14px 5px 14px;
   box-shadow: none;
+}
+/* Quote feedback belongs to the colored message surface, not neutral chrome. */
+.app .human-message .sent-text-quote:is(:hover, :focus-visible) {
+  background: var(--human-message-hover);
+}
+.app .human-message .sent-text-quote:active:not(:disabled) {
+  background: var(--human-message-pressed);
+}
+.app .human-message .sent-text-quote:active:not(:disabled) small {
+  color: var(--ink);
 }
 .conversation .human-message .sent-text-quote small {
   color: light-dark(var(--text-secondary), var(--ink));
