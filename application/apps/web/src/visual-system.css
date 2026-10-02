@@ -928,12 +928,24 @@
   border-radius: 14px 14px 5px 14px;
   box-shadow: none;
 }
-/* Quote feedback belongs to the colored message surface, not neutral chrome. */
-.app .human-message .sent-text-quote:is(:hover, :focus-visible) {
+.app .human-message .message-execution-link {
+  color: light-dark(var(--text-secondary), var(--ink));
+}
+/* Feedback inside a colored message belongs to its surface, not neutral chrome. */
+.app
+  .human-message
+  :is(.sent-text-quote, .message-execution-link):is(:hover, :focus-visible) {
   background: var(--human-message-hover);
 }
-.app .human-message .sent-text-quote:active:not(:disabled) {
+.app
+  .human-message
+  :is(.sent-text-quote, .message-execution-link):active:not(:disabled) {
   background: var(--human-message-pressed);
+}
+.app
+  .human-message
+  .message-execution-link:is(:hover, :focus-visible, :active) {
+  color: var(--ink);
 }
 .app .human-message .sent-text-quote:active:not(:disabled) small {
   color: var(--ink);
