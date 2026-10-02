@@ -108,7 +108,7 @@ impl MorphzRuntime {
         let ids = snapshots
             .iter()
             .filter(|snapshot| {
-                snapshot.thread.response_annotations == Protocol::V1
+                !snapshot.thread.response_annotations.is_off()
                     && snapshot.thread.context_id == context_id
                     && snapshot.thread.executor_kind != "plan_infer"
             })
@@ -153,6 +153,9 @@ impl MorphzRuntime {
                 generation: snapshot.thread.generation,
             };
             if let Ok(Some(bundle)) = annotations_from_authorized_event(source, &scope) {
+                if bundle.protocol != snapshot.thread.response_annotations {
+                    continue;
+                }
                 if let Some(revision) = &bundle.title_input_revision {
                     evidence_ids.insert(revision.event_id.clone());
                     revision_event_ids.insert(revision.event_id.clone());
@@ -274,6 +277,9 @@ impl MorphzRuntime {
                 else {
                     continue;
                 };
+                if bundle.protocol != thread.response_annotations {
+                    continue;
+                }
                 let Some(manifest) =
                     source
                         .payload
@@ -446,7 +452,7 @@ impl MorphzRuntime {
             };
             let projection = project_execution(&fact, &records);
             snapshot.response_annotations = Some(ThreadResponseAnnotations {
-                protocol: Protocol::V1,
+                protocol: thread.response_annotations,
                 scope,
                 title: (!truncated).then_some(projection.title).flatten(),
                 progress: projection.progress,

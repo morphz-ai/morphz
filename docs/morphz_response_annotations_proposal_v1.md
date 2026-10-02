@@ -1,6 +1,6 @@
 # Morphz Runtime 可选响应注解 Proposal
 
-状态：隔离机制门槛通过后完成 Runtime 核心、Platform 读取与 Application 活动展示，并通过本地生产链及原桌面窗口的定向注解验收。新增原窗口自然多活动测试发现结果摘要覆盖不足、旧工具失败状态误判和详情步骤倒序，日常展示尚未达到预期。支持范围和未修复问题见本文末尾，不代表所有 Provider 已通过。
+状态：显式 v2 严格最终交付先通过隔离真实模型等请求数验证，再接入 Runtime、Store 和 Platform；生产链及旧库升级回归已通过。原安装窗口的八个新自然任务均已生成有效标题和结果，真实读取失败也已正确落库。界面细节、变化通知和执行中补充的最终复验仍在进行。以下保留修复前基线，不将旧缺陷、定向样本或隔离测试当作整体验收；也不代表所有 Provider 已通过。
 
 日期：2026 年 10 月 2 日。
 
@@ -18,23 +18,23 @@
 
 Runtime 默认关闭整个机制。关闭时必须保持原工具定义、提示词、回复边界、流式正文、请求数量和执行参数不变；不添加保留参数，不注册特殊回复入口，也不抽取名称碰巧相同的业务字段。
 
-以 HTTP API 和 SDK 在提交执行输入时显式指定为主，不要求启动参数或重启进程。Request.activation 路由选项经 HTTP、SDK 和 SessionHandle 共用接收链。activation.response_annotations 取值 off 或 v1，缺省继承 orchestrator.response_annotations 配置默认值 off。用版本枚举而非布尔值，既能显式关闭，也能持久识别已采用的协议版本。进程配置仅提供默认值，不替代请求选择。同一个 Runtime 可以服务不同调用方和不同 Execution 的选择。
+以 HTTP API 和 SDK 在提交执行输入时显式指定为主，不要求启动参数或重启进程。Request.activation 路由选项经 HTTP、SDK 和 SessionHandle 共用接收链。activation.response_annotations 取值 off、v1 或 v2，缺省继承 orchestrator.response_annotations 配置默认值 off。用版本枚举而非布尔值，既能显式关闭，也能持久识别已采用的协议版本。进程配置仅提供默认值，不替代请求选择。同一个 Runtime 可以服务不同调用方和不同 Execution 的选择。
 
 ```json
 {
   "activation": {
-    "response_annotations": "v1"
+    "response_annotations": "v2"
   }
 }
 ```
 
 选择在接收输入时解析，写入 Accepted Event 的有效协议并冻结为 Thread.response_annotations；AcceptedInput.binding.execution 回传有效选择。后续工具轮次与重启恢复沿用它，不受后来配置开关变化影响。不允许运行中的 Execution 因全局配置变化而更换输出契约。Directed supplement 继承原 Execution 的选择，禁止以补充输入覆盖该路由选项；follow-up 新执行可另行选择。AcceptedInput 的原请求与幂等指纹不能被事后默认值变化改写：只将调用方显式选择计入指纹，缺省请求仍使用原指纹。启用不是模型自行决定的事，也不是“看到某个字段就隐式启用”。
 
-现有尚未读取的普通输入可能合批到同一 DialogueTurn；有效响应注解版本必须成为合批兼容条件。off 与 v1 不得静默采用第一条或最后一条请求的设置，必须沿已有独立执行路径处理。
+现有尚未读取的普通输入可能合批到同一 DialogueTurn；有效响应注解版本必须成为合批兼容条件。off、v1 与 v2 不得静默采用第一条或最后一条请求的设置，必须沿已有独立执行路径处理。
 
-底层 Runtime 的默认值保持 off。Morphz Application 对本次 Platform 适配之后新接收的普通输入、follow-up 和事项准入显式选择 v1；已持久化的旧请求保持原来的缺省或 off 字节，投递、重试和重开不能将其升级。Directed supplement 不传覆盖值，继承原执行。事项来源变化建立新的 follow-up 时，只继承原准入已经冻结的显式选择，旧准入仍保持缺省。
+底层 Runtime 的默认值保持 off。Morphz Application 本轮修复后新接收的普通输入、follow-up 和事项准入显式选择 v2；已持久化的旧请求保持原来的缺省、off 或 v1 字节，投递、重试和重开不能将其升级。Directed supplement 不传覆盖值，继承原执行。事项来源变化建立新的 follow-up 时，只继承原准入已经冻结的显式选择，旧准入仍保持缺省。
 
-启用后所有注解字段仍可缺省。旧纯正文和原 no_reply 形式仍合法；typed infer 的严格返回值不自动挂载注解回复协议。工具名 reply 或顶层参数 _annotations 已被调用方占用时，启用预检必须报告冲突，不覆盖业务能力。接收链在任何原子落库、Thread 或 Job 创建之前以 422、invalid_response_annotation_contract 和静态冲突原因拒绝；不能误报为暂时不可用而诱导重试。已有 AcceptedInput 的同请求重试仍返回原冻结绑定，不重新根据今日默认值检查新契约。
+v1 启用后所有注解字段仍可缺省，旧纯正文和原 no_reply 形式仍合法。v2 的工作注解仍可缺省，但普通最终交付必须使用独占 reply，携带有效的 execution.title 与 execution.result。typed infer 的严格返回值不自动挂载注解回复协议。工具名 reply 或顶层参数 _annotations 已被调用方占用时，启用预检必须报告冲突，不覆盖业务能力。接收链在任何原子落库、Thread 或 Job 创建之前以 422、invalid_response_annotation_contract 和静态冲突原因拒绝；不能误报为暂时不可用而诱导重试。已有 AcceptedInput 的同请求重试仍返回原冻结绑定，不重新根据今日默认值检查新契约。
 
 ## 逻辑结构
 
@@ -95,13 +95,13 @@ Runtime 只抽出顶层保留字段，原业务参数仍按原 schema 和权限�
 
 ## 最终响应的承载
 
-候选方案为一个可选的保留 reply 响应形式：
+v1 提供可选的保留 reply 响应形式；v2 在普通最终交付时要求它：
 
 ```json
 {
   "content": "检查完成，系统为 Linux，架构为 ARM64。",
   "annotations": {
-    "execution": { "result": "已确认系统类型与处理器架构" },
+    "execution": { "title": "核对运行环境", "result": "已确认系统类型与处理器架构" },
     "observations": [{ "ref": "@e124", "result": "处理器架构为 ARM64" }]
   }
 }
@@ -110,6 +110,8 @@ Runtime 只抽出顶层保留字段，原业务参数仍按原 schema 和权限�
 通过 Function Calling 承载时，Runtime 在普通工具调度之前识别 reply，将其规范化为既有正文交付决定与可选注解；它不是物理工具、Job 或新的结束生命周期，不返回一个工具结果后再要求模型继续。
 
 reply 必须独占工具调用边界，不能与物理工具或 no_reply 混批。正文合法性沿用原交付要求；文案错误可降级，但非法执行控制不能伪装成成功。后台工作未结束时仍沿用既有等待与终结检查，result 字段不能强制结束 Execution。
+
+v2 在模型可见 schema 中将 annotations、execution、title 和 result 逐层设为必填。Runtime 仍必须验证实际有效记录，不能只相信 schema：缺失、null、空白、超限或不能绑定的必需标题/结果均是 ResponseProtocolError。普通纯文本终轮也不能成为 v2 成功交付。该错误沿现有明确失败边界结束，不执行 reply Job、不隐式重试、不追加补摘要请求；此前流出的正文仍是未通过最终校验的草稿。progress、intent 和 observations 的无效字段继续局部降级。no_reply 的 wait/silent、取消、无收尾和 typed infer 不要求生成标题或结果。调用方是否采用这个更严格契约由显式版本决定，旧 v1 不改义。
 
 原 no_reply(mode=wait) 不代表 Execution 已结束。首版不扩展 no_reply 的参数；silent、wait 和独占语义严格保持。等待和无消息结束由真实 Runtime 状态展示，不为其补齐文案增加请求。后续扩展必须单独验证，不能默默给 no_reply 增加新状态机。
 
@@ -155,11 +157,11 @@ Runtime 在 SchedulerThreadSnapshot 的外层提供可选 response_annotations �
 
 活动列表复用已有 Scheduler 批量读取，不逐项增加 HTTP 请求，也不新建 Platform 活动数据库。详情通过 GET /api/sessions/{session_id}/threads/{thread_id}/annotations 或 SDK session_thread_annotations 读取确切执行；先验证 Session 参与权限，再验证 Thread 归属。旧 Runtime 没有该端点、坏元数据或旧 generation 时只回退展示，不隐藏真实 Job，也不重跑工具。
 
-SQLite 和 PostgreSQL 只对选中的 v1 Threads 批量读取每项最近 128 个来源与一个截断见证。标题输入修订只查询这些来源实际引用的 Signal 与 Event，按 Context、Thread、generation、Principal 和当前来源 ContextViewManifest 验证。步骤意图绑定实际来源 Activation、call_id、工具名及完整业务参数；只忽略顶层注解载体和已知 Runtime 注入的路由参数，嵌套同名业务字段仍须一致。结果解读绑定真实 Job.result_event_id。超过来源窗口时不假装证明首标题规则，标题回退原 intent；truncated 明确保留。返回行数有界不代表 SQL 分窗扫描成本与历史长度无关，仍不能据此声称所有读取都是常数成本。
+SQLite 和 PostgreSQL 只对选中的非 Off Threads 批量读取每项最近 128 个来源与一个截断见证，来源 bundle 版本必须与 Thread 冻结版本相同。标题输入修订只查询这些来源实际引用的 Signal 与 Event，按 Context、Thread、generation、Principal 和当前来源 ContextViewManifest 验证。步骤意图绑定实际来源 Activation、call_id、工具名及完整业务参数；只忽略顶层注解载体和已知 Runtime 注入的路由参数，嵌套同名业务字段仍须一致。结果解读绑定真实 Job.result_event_id。超过来源窗口时不假装证明首标题规则，标题回退原 intent；truncated 明确保留。返回行数有界不代表 SQL 分窗扫描成本与历史长度无关，仍不能据此声称所有读取都是常数成本。
 
 活动显示短标题和一行当前阶段或最终解读；断线不把缓存阶段冒充最新进度。结束仍按真实 Runtime 状态显示，不由注解宣称成功。步骤保留实际状态、错误、退出码、原请求与完整返回，解读作为普通文字展示；没有真实回执时不显示结果解读。注解不完整或完全缺省都不触发补写 LLM 请求。
 
-Runtime 的可选契约和 Application 的默认展示目标必须分别验收。字段可缺省不意味着 Application 可以仅凭一次明确要求注解的用户输入，就认定自然任务能稳定产生标题与结果。Application 的工作流指令应优先引导模型在既有工作响应携带标题、步骤意图，在既有最后交付响应通过 reply 携带结果摘要；这是调用方指令，不将 Runtime 字段改为必填，不影响 Off 或 typed infer，也不为缺失文案增加模型请求。该指令改进尚未实施；复测应使用不特别要求注解的自然输入，统计覆盖率并检查缺省时的真实回退展示。
+Runtime 的可选契约和 Application 的默认展示目标必须分别验收。旧 v1 字段可缺省，不意味着自然任务能稳定产生标题与结果。Application 的新执行显式选择 v2，要求末轮 reply 同时携带标题和结果；工作轮次仍引导生成标题与步骤意图，不额外调用模型。v2 缺少必需字段是协议错误，不是静默成功；Off、旧 v1、no_reply 或 typed infer 不受这一要求影响。复测使用不特别要求注解的自然输入，核对实际请求 schema、冻结版本、有效来源、覆盖率及明确失败边界。
 
 ## 隔离验证计划
 
@@ -240,7 +242,17 @@ JavaScript 隔离机制扩展至 20 项通过，Rust 机制 18 项及原生 brid
 
 ## 原窗口自然多活动验证
 
-2026 年 10 月 2 日，在原安装窗口和原中心的隔离合成目录中发起九个测试输入，并向一个执行中的活动补充一次要求。输入覆盖单文件摘要、串行比较、数字计算、不存在文件、失败后查找恢复、并行读取、文字检查、多步骤审阅和新文件核对，没有要求模型生成注解。全部输入已结束，其中一个文字检查输入复用已有可见材料、没有工具 Job，不计入工具活动覆盖率。其余八个活动共有十七个真实只读 Host Job；没有创建新的 Session，没有修改 Profile、业务对象、原定时任务或权限策略。
+### 本轮修复计划（实施前修订）
+
+原 v1 允许纯正文终轮，与 Application 的稳定摘要需求不符。采用显式 v2 严格最终交付，不增加另一个可变策略字段；Off 默认和旧 v1 请求完整保留。先验证隔离严格 schema、缺失字段直接失败和真实模型等请求数，再改生产 Runtime。
+
+SQLite 旧表已有 off/v1 CHECK，仅修改新建表 SQL 不会升级旧库，须在启动迁移中用公开事务式表重建或现有安全迁移设施保留数据、索引、外键及不可变 Thread 修订。PostgreSQL 必须新增独立 migration，不能编辑已经记录的旧 migration 期待重跑。两种 Store 都需实测旧库保留、v2 冻结、重开恢复及旧 v1 行不升级。读投影返回实际冻结的非 Off 版本，并核对来源 bundle 的协议相同。
+
+另外修复真实 read 的 System error: 分类和详情最近窗口的正序阅读；不改旧回执，不在 UI 根据报错文字推断状态。正常结束仍保留用户认可的对勾，失败步骤以真实 Failed Job 表达，不能从对勾推断所有工具调用均成功。以下自然测试记录是修复前基线，不代表本轮通过。
+
+严格契约隔离验证已完成：Node 22 项通过，真实现有 gpt-6.1-sol 原生流入口 Off/v2 串行各 3 次、失败重试各 4 次，总计 14 Client 请求。末轮有效标题、结果和正文同时返回，业务参数不携带注解，串流正文拼接精确一致。证据保存为 experiments/response-annotations/live-evidence-v2.json，没有覆盖旧证据；代理内部 HTTP 重试仍不在观测范围。这是本轮修改 Runtime 的机制门槛，不代替生产 Store 迁移和原窗口自然任务验收。
+
+2026 年 10 月 2 日，修复前在原安装窗口和原中心的隔离合成目录中发起九个测试输入，并向一个执行中的活动补充一次要求。输入覆盖单文件摘要、串行比较、数字计算、不存在文件、失败后查找恢复、并行读取、文字检查、多步骤审阅和新文件核对，没有要求模型生成注解。全部输入已结束，其中一个文字检查输入复用已有可见材料、没有工具 Job，不计入工具活动覆盖率。其余八个活动共有十七个真实只读 Host Job；没有创建新的 Session，没有修改 Profile、业务对象、原定时任务或权限策略。
 
 八个工具活动中七个有有效标题，十五个 Job 有步骤意图，全部八个都没有 execution.result，也没有观察结果解读。并行读取样本的工作响应和最终正文均没有注解，列表回退到包含长绝对路径的原输入。其他样本虽有标题和意图，终轮均选择旧式纯正文，因此列表没有结果摘要。实际来源与授权 API 投影一致；不能将模型没有产生字段写成 Platform 丢失字段，也不能用定向样本代替自然覆盖率结论。该结果证明当前日常展示不足，前述调用方指令改进仍需实施和重新验证。
 
@@ -248,9 +260,33 @@ JavaScript 隔离机制扩展至 20 项通过，Rust 机制 18 项及原生 brid
 
 中途补充沿同一 Thread 和 generation 接续，标题从“逐步只读审阅合成测试目录”更新为“比较三个 JSON 文件的数量与格式”，真实最终正文按缩小后的目标说明数量差异与格式问题。刷新后更新标题及八个活动仍在。该执行只有六个 Job，不应按原始六个文件加目录推算成七个；right.json 没有在本执行重读，另一合成比较活动的真实回执确实包含在调整响应及最终响应的 ContextViewManifest 中，malformed.json 则有本执行的新读取回执。Job 数量和文件是否本次读取必须以真实回执为准，不把复用已知观察伪装成新步骤。
 
-同时复现了两项与注解文案无关的既有问题，均尚未修复：
+修复前同时复现了两项与注解文案无关的既有问题：
 
 - 不存在文件的 read 返回“System error: …”，但 Runtime 的 infer_tool_status 只识别旧中文报错前缀及其他失败前缀，最终持久化为 tool_status=success、Job succeeded。真实正文如实说明读取失败，详情却显示“已完成”；这是生产者和分类器不一致，不能解释成业务失败但工具成功。后续修复应在 Runtime 权威状态链覆盖真实报错，不由 UI 解析文案，也不修改已经持久化的旧回执。
 - 多步骤详情沿 newest-first Job 查询顺序直接排列，失败后查找再读取的活动从上到下显示“读取正确文件、查找目录、初次错误路径读取”，与实际发生顺序相反。列表又以圈勾表示 completed，虽然其语义是“已结束”，视觉容易被误读为工作成功。后续应分别修正步骤的阅读顺序和中性结束状态，不用注解决定成功或将所有正常报告失败的执行强制改成 failed。
 
-本轮补充验证与设计记录，生产 Runtime、Application 指令及 UI 未改动。Profile 仍为 revision 80，Session 数仍为十七，原已排队定时任务仍为 pending。下一轮应在保留可选协议和不增加注解补写请求的前提下，复测自然文案覆盖、真实失败状态、补充后的同活动更新及刷新展示。
+上述基线轮只补充验证与设计记录，未改生产 Runtime、Application 指令及 UI。其检查时 Profile 为 revision 80，Session 数十七，原已排队定时任务为 pending。后续修复和复验记录见下一节，不能把该基线快照当作后续运行中的状态。
+
+### v2 生产修复与分层验证
+
+严格最终交付已经接入生产。Runtime 默认仍 Off；新 Application 输入、follow-up 和事项准入显式选 v2，旧持久准入与定向 supplement 不升级。有效普通最终交付在原末轮同时提供正文、标题和结果；模型违反该请求时，沿现有 typed failure 边界结束一次，不自动补写、不增加修复请求。此契约不承诺每个 Provider 永不违规，也不为 no_reply、typed infer 或取消伪造交付。
+
+SQLite 启动迁移以事务内完整表重建扩大旧 CHECK，保留全部可写列、rowid、生成列、显式索引、trigger、view 与引用关系，并执行双向 EXCEPT 及前后 FK 检查。仅在未发布 Store 的启动连接上暂改 PRAGMA；恢复成功后返池，取消或恢复失败则关闭脏连接，单连接 :memory: 不丢库。PostgreSQL 使用独立迁移记录，在 ACCESS EXCLUSIVE 锁下以同一事务扩大已验证 CHECK，不搬表或重写旧行。
+
+生产确定性验证已通过：Rust 注解相关单元 35/35；真实 Runtime、steer、ingress 与 read 状态链合计 34/34。非法 v2 最终响应实际落入 Failed、protocol_invalid 与 typed failure，零补写请求；合法串行、等待、取消、typed infer 和同 Execution 补充均保留既有边界。旧库 Store 回归 4/4，包含实际运行的 PostgreSQL 15 隔离 UTF8 数据库，非跳过；SQLite 包含真实旧 CHECK、全列和关联保留、单连接内存及失败回滚验证。
+
+Platform 单测 14/14，覆盖新 v2、旧缺省/Off/v1 原字节重试、lost response、授权投影和版本守门。真实 TypeScript Application → Rust Runtime → 确定性 Provider → Host 物理工具链与 Agent Profile 组合 9 项通过、1 项 PostgreSQL 条件跳过；三种缺失终轮字段分别是单次请求、零物理 Job 的真实失败，合法两工具任务维持原三次模型请求。这里的条件跳过不当作 PostgreSQL 验证，数据库证据来自前述真实 Store 回归；确定性 Provider 也不代替原窗口真实模型。
+
+UI 将最近有界 Job 窗口按真实创建时间正序阅读，不改变后端最近 100 项的选取范围。曾试用正常结束的中性空心圆，用户指出完成对勾消失，因此撤回该视觉方案；正常结束仍保留对勾，真实失败按 Runtime 状态显示。正在执行的图标采用沿波形路径推进的流动信号与轻微呼吸，仅依据新鲜真实状态播放；等待、结束、断线与减少动画时静止。完整正文与消息细节的最终复验尚未完成，不提前声称整体验收通过。
+
+### 原窗口 v2 自然任务复验
+
+同一原安装窗口、原 Profile 和中心通过已有 gpt-6.1-sol Responses 路由完成八个新自然输入，没有在输入中要求注解。覆盖单文件摘要、两文件比较、CSV 计算、不存在文件、失败后查找和恢复、并行读取、Unicode 核对与顺序四文件检查。八个 Execution 均正常结束且有授权来源可验证的 v2 标题和结果，未发生终轮缺少摘要的静默成功。
+
+实际共十四项只读 Host Job，其中十二项 succeeded、两项 failed。不存在文件和拼错文件名的两项 read 均保存 tool_status=error 与 Failed Job；前者最终结果如实报告未读到文件，后者的目录查找及正确文件读取成功后，结果说明恢复过程。正常报告业务失败的 Execution 仍可 completed，不把完成对勾解释成所有步骤成功，也不改写修复前的旧错误回执。
+
+Unicode 核对样本复用了此前同一会话已可见的读取回执，没有新 Job；仍在原有纯最终响应里生成有效标题、结果和正文。其余七个 Execution 的十四个 Job 均有步骤意图。顺序四文件样本完成了真实四次读取；这次执行中补充尚未成功操作，不能以它替代新协议的原窗口 steer 端到端验收。
+
+原窗口模型请求诊断只保存请求 schema、消息数量及哈希，不保存正文、私有 Context 或凭据。两个限时观察窗口并未覆盖每一次请求，不能由已捕获数推算该批完整物理请求数，也不能把注解来源数当作模型请求数。本批自然任务没有 Off 对照；等请求数门槛仍由前述隔离真实模型的十四次 A/B Client 请求独立证明，代理内部 HTTP 重试保持未知。
+
+检查时 Profile revision 仍为 80，原中心 Session 数为十八，既有已排队定时任务保持 pending。十八与修复前基线的十七属于不同时间点；没有回滚用户期间新增的 Session。迁移和必要重启前已保存原中心数据库及停止后的原桌面 Profile；原先 5600 条 Event 逐项比较为零缺失、零修改。新模型输入、实际 Job 和 Runtime 恢复事件是允许新增的验收状态，不声称整个数据库未变化。

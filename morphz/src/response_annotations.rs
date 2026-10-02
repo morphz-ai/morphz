@@ -29,12 +29,29 @@ reply is a response form, not a work tool. It does not override background work,
 Legacy plain text and no_reply remain valid. Do not annotate or change no_reply's silent/wait grammar. Typed-infer results are not this protocol.
 Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
 
+/// V2 adds a strict ordinary-delivery boundary, not additional work or repair
+/// requests. V1 is kept byte-for-byte separate for frozen legacy executions.
+pub const CONTRACT_V2: &str = r#"Response annotations v2 (explicit display metadata contract):
+Work tools may carry optional top-level _annotations. Business parameters and permissions remain unchanged.
+_annotations may contain execution {title,progress,result}, intent, observations [{ref,result}].
+execution.title names the ENTIRE current Execution/request, never a step. Supply it once for the current input revision; subsequent steps must not rename the task. When the user supplements or adjusts this same task and Runtime has included that new instruction in the current model input, you may supply an updated whole-task title. Only Runtime determines the input revision; do not invent an identity or revision field.
+execution.progress describes the current stage based on observations already received. intent describes the imminent purpose of its carrier tool call, not its result.
+Submit execution metadata in only one call per response. Each work call may supply its own intent.
+Interpret only exact observation refs provided by Runtime for this Execution and generation. Do not invent refs or describe another same-batch call's unavailable result.
+title, progress and intent: at most 256 Unicode characters. result: at most 512. At most 16 observations per response; refs: at most 128 ASCII characters.
+Work responses cannot establish execution.result. Work annotations remain optional; do not add calls or inference rounds just for metadata.
+To deliver ordinary final text you MUST use reply({content,annotations}) as the SOLE call with no other tools or ordinary content. In that SAME reply include nonempty annotations.execution.title naming the whole current task and annotations.execution.result describing the outcome, including failure, partial work or unexecuted parts. An earlier work title does not replace the required final title. Plain final text, missing or invalid required metadata fails the response protocol without a repair request.
+reply is a response form, not a work tool. It does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
+no_reply remains valid. Do not annotate or change no_reply's silent/wait grammar. Typed-infer results are not this protocol.
+Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     #[default]
     Off,
     V1,
+    V2,
 }
 impl Protocol {
     pub const fn is_off(&self) -> bool {
@@ -44,13 +61,22 @@ impl Protocol {
         match self {
             Self::Off => "off",
             Self::V1 => "v1",
+            Self::V2 => "v2",
         }
     }
     pub fn from_str(value: &str) -> Result<Self, ProtocolError> {
         match value {
             "off" => Ok(Self::Off),
             "v1" => Ok(Self::V1),
+            "v2" => Ok(Self::V2),
             _ => Err(error("Unknown response annotations protocol")),
+        }
+    }
+    pub const fn contract(&self) -> Option<&'static str> {
+        match self {
+            Self::Off => None,
+            Self::V1 => Some(CONTRACT_V1),
+            Self::V2 => Some(CONTRACT_V2),
         }
     }
 }
@@ -159,11 +185,25 @@ pub fn augment_tools(
             .unwrap()
             .insert("_annotations".into(), annotation_schema());
     }
+    let mut reply_parameters = json!({"type":"object", "additionalProperties":false, "required":["content"],
+        "properties":{"content":{"type":"string","minLength":1},"annotations":annotation_schema()}});
+    if protocol == Protocol::V2 {
+        reply_parameters["required"] = json!(["content", "annotations"]);
+        reply_parameters["properties"]["annotations"]["required"] = json!(["execution"]);
+        let execution = &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
+        execution["required"] = json!(["title", "result"]);
+        for field in ["title", "result"] {
+            execution["properties"][field]["minLength"] = json!(1);
+        }
+    }
     augmented.push(ToolDefinition {
         name: "reply".into(),
-        description: "Deliver the final user-facing response. Use alone. Optional annotations do not change execution state; this is not a work tool.".into(),
-        parameters: json!({"type":"object", "additionalProperties":false, "required":["content"],
-            "properties":{"content":{"type":"string","minLength":1},"annotations":annotation_schema()}}),
+        description: if protocol == Protocol::V2 {
+            "Deliver the final user-facing response. Use alone with valid execution.title and execution.result in annotations. These display fields do not change execution state; this is not a work tool."
+        } else {
+            "Deliver the final user-facing response. Use alone. Optional annotations do not change execution state; this is not a work tool."
+        }.into(),
+        parameters: reply_parameters,
     });
     Ok(augmented)
 }
@@ -368,7 +408,11 @@ pub fn annotations_from_authorized_event(
         .ok_or_else(|| error("Annotation source Event is not persisted"))?;
     let mut bundle: PersistedAnnotations = serde_json::from_value(value.clone())
         .map_err(|_| error("Malformed persisted annotation bundle"))?;
-    if bundle.protocol != Protocol::V1
+    if bundle.protocol.is_off()
+        || (bundle.protocol == Protocol::V2 && !event.payload.contains_key("response_annotations"))
+        || event.payload.get("response_annotations").is_some_and(|value| {
+            value.as_str() != Some(bundle.protocol.as_str())
+        })
         || bundle.scope != *scope
         || event
             .payload
@@ -644,7 +688,7 @@ impl<'a> Extraction<'a> {
         .to_string();
         self.records.push(AnnotationRecord {
             identity,
-            protocol: Protocol::V1,
+            protocol: self.context.protocol,
             kind,
             value,
             source: source.clone(),
@@ -875,13 +919,22 @@ pub fn normalize_response(
         }
     }
     let terminal_decision = terminal(&execution_response)?;
+    if context.protocol == Protocol::V2
+        && matches!(terminal_decision, Some(TerminalDecision::Deliver(_)))
+        && (reply.is_none()
+            || ![AnnotationKind::Title, AnnotationKind::Result]
+                .iter()
+                .all(|kind| extraction.records.iter().any(|record| record.kind == *kind)))
+    {
+        return Err(error("Required final reply title and result annotations are absent or invalid"));
+    }
     let dispatch_allowed = !context.execution_fact.as_ref().is_some_and(|fact| {
         Some(&fact.scope) == context.scope.as_ref() && fact.status == "cancelled"
     });
     Ok(NormalizedResponse {
         raw_response: response.clone(),
         execution_response,
-        protocol: Protocol::V1,
+        protocol: context.protocol,
         records: extraction.records,
         diagnostics: extraction.diagnostics,
         omitted_diagnostics: extraction.omitted_diagnostics,
@@ -1361,7 +1414,7 @@ mod tests {
         assert_eq!(Protocol::default(), Protocol::Off);
         assert!(Protocol::Off.is_off());
         assert!(!Protocol::V1.is_off());
-        for protocol in [Protocol::Off, Protocol::V1] {
+        for protocol in [Protocol::Off, Protocol::V1, Protocol::V2] {
             assert_eq!(Protocol::from_str(protocol.as_str()).unwrap(), protocol);
             assert_eq!(protocol.as_str().parse::<Protocol>().unwrap(), protocol);
             assert_eq!(
@@ -1373,7 +1426,10 @@ mod tests {
                 protocol
             );
         }
-        assert!(Protocol::from_str("v2").is_err());
+        assert!(Protocol::from_str("v3").is_err());
+        assert_eq!(Protocol::Off.contract(), None);
+        assert_eq!(Protocol::V1.contract(), Some(CONTRACT_V1));
+        assert_eq!(Protocol::V2.contract(), Some(CONTRACT_V2));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
         assert!(CONTRACT_V1.contains("ENTIRE current Execution"));
         assert!(CONTRACT_V1.contains("do not add calls or inference rounds"));
@@ -1680,6 +1736,103 @@ mod tests {
         assert!(normalized.terminal_decision.is_none());
         assert!(normalized.records.is_empty());
     }
+    #[test]
+    fn v2_requires_valid_same_response_title_and_result_not_prior_metadata() {
+        let mut ctx = context();
+        ctx.protocol = Protocol::V2;
+        for annotations in [
+            None,
+            Some(Value::Null),
+            Some(json!({})),
+            Some(json!({"execution":null})),
+            Some(json!({"execution":{"title":"整项工作"}})),
+            Some(json!({"execution":{"result":"完成"}})),
+            Some(json!({"execution":{"title":" ","result":"完成"}})),
+            Some(json!({"execution":{"title":"整项工作","result":null}})),
+            Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})),
+            Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})),
+        ] {
+            let mut args = json!({"content":"已流出的草稿"});
+            if let Some(annotations) = annotations {
+                args["annotations"] = annotations;
+            }
+            let raw = response(vec![call("r", "reply", args)]);
+            assert!(normalize_response(&raw, &ctx).is_err());
+            assert!(normalize_response(&raw, &context()).is_ok(), "V1 remains optional");
+        }
+        let plain = Response {content:"正文".into(),tool_calls:vec![]};
+        assert!(normalize_response(&plain, &ctx).is_err());
+        assert!(normalize_response(&plain, &context()).is_ok());
+        let valid = response(vec![call("r", "reply", json!({"content":"正文",
+            "annotations":{"execution":{"title":"整项工作","result":"完成"},
+            "progress":null,"observations":[{"ref":"@other","result":"越界"}]}}))]);
+        let normalized = normalize_response(&valid, &ctx).unwrap();
+        assert_eq!(normalized.protocol, Protocol::V2);
+        assert!(normalized.records.iter().all(|record| record.protocol == Protocol::V2));
+        assert_eq!(normalized.records.len(), 2);
+        assert!(!normalized.diagnostics.is_empty(), "optional bad fields still downgrade locally");
+        assert_eq!(normalized.execution_response.content, "正文");
+        assert!(normalized.execution_response.tool_calls.is_empty());
+        for missing_scope in [true, false] {
+            let mut unbound = ctx.clone();
+            if missing_scope { unbound.scope = None; } else { unbound.producer = None; }
+            assert!(normalize_response(&valid, &unbound).is_err(), "required records must actually bind");
+        }
+    }
+
+    #[test]
+    fn v2_schema_keeps_work_optional_but_terminal_metadata_required() {
+        let original = tool();
+        let augmented = augment_tools(&[original.clone()], Protocol::V2, false).unwrap();
+        assert_eq!(augmented[0].parameters["required"], original.parameters["required"]);
+        let terminal = &augmented[1].parameters;
+        assert_eq!(terminal["required"], json!(["content", "annotations"]));
+        let annotations = &terminal["properties"]["annotations"];
+        assert_eq!(annotations["required"], json!(["execution"]));
+        let execution = &annotations["properties"]["execution"];
+        assert_eq!(execution["required"], json!(["title", "result"]));
+        assert_eq!(execution["properties"]["title"]["minLength"], 1);
+        assert_eq!(execution["properties"]["result"]["minLength"], 1);
+        assert_eq!(serde_json::to_value(augment_tools(&[original.clone()], Protocol::V2, true).unwrap()).unwrap(), serde_json::to_value(vec![original]).unwrap());
+    }
+
+    #[test]
+    fn v2_optional_work_no_reply_and_typed_infer_keep_existing_boundaries() {
+        let mut ctx = context();
+        ctx.protocol = Protocol::V2;
+        let work = response(vec![call("w", "exec", json!({"command":"unchanged"}))]);
+        let normalized = normalize_response(&work, &ctx).unwrap();
+        assert_eq!(normalized.protocol, Protocol::V2);
+        assert_eq!(serde_json::to_value(normalized.execution_response).unwrap(), serde_json::to_value(work).unwrap());
+        assert!(normalized.records.is_empty() && normalized.terminal_decision.is_none());
+        for args in [json!({"mode":"silent"}),json!({"mode":"wait","wait_secs":u64::MAX})] {
+            let control = response(vec![call("n", "no_reply", args)]);
+            assert_eq!(serde_json::to_value(normalize_response(&control, &ctx).unwrap().execution_response).unwrap(), serde_json::to_value(control).unwrap());
+        }
+        ctx.typed_infer = true;
+        let raw = Response {content:"{\"business\":true}".into(),tool_calls:vec![]};
+        let typed = normalize_response(&raw, &ctx).unwrap();
+        assert_eq!(typed.protocol, Protocol::Off);
+        assert_eq!(serde_json::to_value(typed.execution_response).unwrap(), serde_json::to_value(raw).unwrap());
+    }
+
+    #[test]
+    fn v2_persisted_records_keep_actual_protocol_and_reject_source_mismatch() {
+        let mut event = persisted_event(12, json!({"title":"完整工作","progress":"阶段"}), false);
+        event.payload.insert("response_annotations".into(), json!("v2"));
+        let value = event.payload.get_mut(BUNDLE_PAYLOAD_KEY).unwrap();
+        value["protocol"] = json!("v2");
+        for record in value["records"].as_array_mut().unwrap() { record["protocol"] = json!("v2"); }
+        let scope = context().scope.unwrap();
+        let bundle = annotations_from_authorized_event(&event, &scope).unwrap().unwrap();
+        assert_eq!(bundle.protocol, Protocol::V2);
+        assert!(bundle.records.iter().all(|record| record.protocol == Protocol::V2));
+        event.payload.insert("response_annotations".into(), json!("v1"));
+        assert!(annotations_from_authorized_event(&event, &scope).is_err());
+        event.payload.remove("response_annotations");
+        assert!(annotations_from_authorized_event(&event, &scope).is_err());
+    }
+
     #[test]
     fn reply_same_response_terminal_mapping_and_control_failures() {
         let raw = response(vec![call(

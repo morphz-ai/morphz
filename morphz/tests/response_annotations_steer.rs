@@ -67,7 +67,7 @@ struct ScriptClient {
 impl ScriptClient {
     fn work(&self, id: &str, part: &str, title: &str) -> ToolCallRepr {
         let mut arguments = json!({"part":part});
-        if self.protocol == Protocol::V1 {
+        if !self.protocol.is_off() {
             arguments["_annotations"] = json!({
                 "execution":{"title":title,"progress":"读取合成环境"},
                 "intent":format!("读取{part}的合成事实")
@@ -156,7 +156,7 @@ impl Client for ScriptClient {
                 assert!(messages.iter().any(|message| message.content.contains(STEER_TEXT)),
                     "the steering instruction must actually enter the work response before its first title");
                 let mut call = self.work("steer-architecture-call", "architecture", STEP_TITLE);
-                if self.protocol == Protocol::V1 {
+                if !self.protocol.is_off() {
                     let mut arguments: Value = serde_json::from_str(&call.arguments).unwrap();
                     arguments["_annotations"]["execution"]
                         .as_object_mut()
@@ -172,7 +172,7 @@ impl Client for ScriptClient {
             1 | 2 => {
                 assert!(messages.iter().any(|message| message.content.contains(STEER_TEXT)),
                     "accepted steering text must be in the actual next model request, not just queued in SQL");
-                if self.protocol == Protocol::V1 {
+                if !self.protocol.is_off() {
                     assert!(tools.iter().any(|tool| tool.name == "reply"));
                     Response {
                         content: String::new(),
@@ -397,7 +397,7 @@ impl Fixture {
         assert_eq!(owner.root_turn_id, initial.id);
         assert_eq!(owner.response_annotations, protocol);
         let before = self.events(&initial.id).await;
-        if protocol == Protocol::V1 {
+        if !protocol.is_off() {
             let work = before
                 .iter()
                 .find(|event| {
@@ -457,11 +457,11 @@ impl Fixture {
                 .is_none(),
             "caller must not explicitly override the owner protocol"
         );
-        if protocol == Protocol::V1 {
-            assert_eq!(directed.payload["response_annotations"], "v1");
+        if !protocol.is_off() {
+            assert_eq!(directed.payload["response_annotations"], protocol.as_str());
             assert_eq!(
                 directed.payload["session_io"]["binding"]["execution"]["response_annotations"],
-                "v1"
+                protocol.as_str()
             );
         } else {
             assert!(directed.payload.get("response_annotations").is_none());
@@ -499,7 +499,7 @@ impl Fixture {
         assert_eq!(current.lifecycle, ThreadLifecycle::Completed);
         let display = self.runtime.session_thread_annotations(&owner.context_id,&owner.session_id,&owner.id)
             .await.unwrap().unwrap();
-        if protocol == Protocol::V1 {
+        if !protocol.is_off() {
             assert_eq!(display.unwrap().title.as_deref(),Some(UPDATED_TITLE),
                 "the authorized Runtime read projection follows the real accepted steering input revision");
         } else { assert!(display.is_none()); }
@@ -698,4 +698,31 @@ async fn accepted_steer_updates_whole_task_title_without_extra_inference_or_repe
         .all(|event| !event.payload.contains_key(BUNDLE_PAYLOAD_KEY)));
     assert_eq!(enabled.client.calls.load(Ordering::SeqCst), off.client.calls.load(Ordering::SeqCst),
         "annotations and steer title updates must reuse ordinary requests, not add an inference round");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_accepted_steer_keeps_generation_and_required_final_title_result_without_extra_calls() {
+    for scenario in [Scenario::DirectTitle, Scenario::DeferredTitle] {
+        let fixture = Fixture::with_scenario(Protocol::V2, scenario).await;
+        let (_, directed, owner, events) = fixture.exercise(Protocol::V2).await;
+        let projection = fixture.runtime.session_thread_annotations(
+            &owner.context_id, &owner.session_id, &owner.id,
+        ).await.unwrap().unwrap().unwrap();
+        assert_eq!(projection.protocol, Protocol::V2);
+        assert_eq!(projection.scope.generation, owner.generation);
+        assert_eq!(projection.title.as_deref(), Some(UPDATED_TITLE));
+        assert_eq!(projection.result.as_deref(), Some("已读取合成系统与架构，并提供中文摘要"));
+        let bundle: PersistedAnnotations = events.iter()
+            .find(|event| event.topic == "chat/assistant_call" && event.payload.get("terminal_outcome") == Some(&json!(true)))
+            .map(|event| serde_json::from_value(event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap())
+            .unwrap();
+        assert_eq!(bundle.protocol, Protocol::V2);
+        assert_eq!(bundle.title_input_revision.unwrap().event_id, directed.id);
+        assert!(bundle.records.iter().all(|record| record.protocol == Protocol::V2));
+        for kind in [AnnotationKind::Title, AnnotationKind::Result] {
+            assert!(bundle.records.iter().any(|record| record.kind == kind));
+        }
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), scenario.request_count());
+        assert_eq!(fixture.jobs().await.len(), 2);
+    }
 }

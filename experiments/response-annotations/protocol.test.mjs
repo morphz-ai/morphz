@@ -16,6 +16,25 @@ const options = () => ({ enabled: true, scope: executionScope(), producer: { eve
   ['@denied', { eventId: 'denied-event', executionId: 'execution-1', generation: 3, provided: true, allowed: false }],
 ]) });
 
+test('v2 terminal requirements are schema-visible, validated and never repaired', () => {
+  const schema = augmentTools([tool], { enabled: true, requiredTerminal: true }).at(-1).parameters;
+  assert.deepEqual(schema.required, ['content', 'annotations']);
+  assert.deepEqual(schema.properties.annotations.properties.execution.required, ['title', 'result']);
+  const strict = { ...options(), requiredTerminal: true, executionFact: hostFact() };
+  const ordinary = { content: '完成', tool_calls: [] };
+  assert.equal(normalizeResponse(ordinary, options()).terminalDecision.kind, 'deliver');
+  assert.throws(() => normalizeResponse(ordinary, strict), /Required terminal/);
+  for (const execution of [undefined, { title: '标题' }, { title: '标题', result: null }, { title: '标题', result: '  ' }, { title: '标题', result: '🧠'.repeat(513) }, { title: '🧠'.repeat(257), result: '结果' }]) {
+    assert.throws(() => normalizeResponse(response(call('final', { content: '完成', annotations: { execution } }, 'reply')), strict), /Required terminal/);
+  }
+  const valid = normalizeResponse(response(call('final', { content: '完成', annotations: { execution: { title: '核对', result: '结果' } } }, 'reply')), strict);
+  assert.equal(valid.executionResponse.tool_calls.length, 0);
+  assert.equal(valid.terminalDecision.kind, 'deliver');
+  assert.equal(normalizeResponse(response(call('work', { command: 'read' })), strict).terminalDecision, null);
+  assert.equal(normalizeResponse(response(call('silent', { mode: 'silent' }, 'no_reply')), strict).terminalDecision.mode, 'silent');
+  assert.equal(normalizeResponse(ordinary, { ...strict, typedInfer: true }).executionResponse, ordinary);
+});
+
 test('disabled and typed infer are exactly untouched, even with occupied reserved names', () => {
   const tools = [{ ...tool, name: 'reply' }];
   assert.equal(augmentTools(tools), tools);

@@ -19,6 +19,7 @@ use morphz::{
         normalize_response, records_from_authorized_event, AnnotationKind, ExecutionScope,
         NormalizationContext, PersistedAnnotations, Producer, Protocol, BUNDLE_PAYLOAD_KEY,
         CONTRACT_V1,
+        CONTRACT_V2,
     },
     runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle},
     session_io::{Limits, Request},
@@ -58,6 +59,8 @@ enum Scenario {
     Recovery,
     BadMixedReply,
     BadDuplicateReply,
+    StrictWorkReply,
+    StrictBadFinal(u8),
 }
 
 #[derive(Clone)]
@@ -341,9 +344,27 @@ impl Client for ScriptClient {
                 content: "\"Linux\"".into(),
                 tool_calls: vec![],
             },
-            (Scenario::Infer, 3) => Self::reply(
-                json!({"content":FINAL_TEXT,"annotations":{"execution":{"result":"合成检查已完成"}}}),
-            ),
+            (Scenario::Infer, 3) => {
+                let mut args = json!({"content":FINAL_TEXT,"annotations":{"execution":{"result":"合成检查已完成"}}});
+                if tools.iter().any(|tool| tool.name == "reply" && tool.parameters["required"].as_array().is_some_and(|required| required.iter().any(|field| field == "annotations"))) {
+                    args["annotations"]["execution"]["title"] = json!("检查合成环境");
+                }
+                Self::reply(args)
+            }
+            (Scenario::StrictBadFinal(case), 0) => {
+                let mut args = json!({"content":FINAL_TEXT,"annotations":{"execution":{"title":"检查合成环境","result":"检查完成"}}});
+                match case {
+                    0 => { args.as_object_mut().unwrap().remove("annotations"); }
+                    1 => args["annotations"] = Value::Null,
+                    2 => args["annotations"]["execution"] = Value::Null,
+                    3 => { args["annotations"]["execution"].as_object_mut().unwrap().remove("title"); }
+                    4 => args["annotations"]["execution"]["title"] = json!(" \t"),
+                    5 => args["annotations"]["execution"]["result"] = Value::Null,
+                    6 => args["annotations"]["execution"]["result"] = json!("长".repeat(513)),
+                    _ => panic!("unknown strict fixture case"),
+                }
+                Self::reply(args)
+            }
             (Scenario::Plain, 0) => Response {
                 content: FINAL_TEXT.into(),
                 tool_calls: vec![],
@@ -359,11 +380,11 @@ impl Client for ScriptClient {
                 Self::assert_lifecycle_receipt(&messages, &tools, false);
                 Response {content:FINAL_TEXT.into(),tool_calls:vec![]}
             }
-            (Scenario::WorkReply | Scenario::WorkYield(true) | Scenario::InvalidObservation, 0) => Self::work(RAW_WORK),
+            (Scenario::WorkReply | Scenario::StrictWorkReply | Scenario::WorkYield(true) | Scenario::InvalidObservation, 0) => Self::work(RAW_WORK),
             (Scenario::ReplyOnly, 0) => Self::reply(
                 json!({"content":FINAL_TEXT,"annotations":{"execution":{"title":"检查合成环境","result":"合成检查已完成"}}}),
             ),
-            (Scenario::WorkReply | Scenario::WorkYield(true) | Scenario::InvalidObservation | Scenario::Recovery, 1) => {
+            (Scenario::WorkReply | Scenario::StrictWorkReply | Scenario::WorkYield(true) | Scenario::InvalidObservation | Scenario::Recovery, 1) => {
                 assert!(tools.iter().any(|t| t.name == "reply"));
                 let marker = messages
                     .iter()
@@ -412,10 +433,14 @@ impl Client for ScriptClient {
                         );
                     }
                 }
-                Self::reply(json!({"content":FINAL_TEXT,"annotations":{
+                let mut args = json!({"content":FINAL_TEXT,"annotations":{
                     "execution":{"result":if matches!(self.scenario, Scenario::WorkYield(_)) {
                         "已确认合成系统为 Linux；后续任务保持排队" } else { "已确认合成系统为 Linux" }},"observations":observations,
-                }}))
+                }});
+                if matches!(self.scenario, Scenario::StrictWorkReply) {
+                    args["annotations"]["execution"]["title"] = json!("检查合成环境");
+                }
+                Self::reply(args)
             }
             _ => panic!("unexpected scripted completion"),
         };
@@ -448,6 +473,7 @@ impl Client for ScriptClient {
             && matches!(
                 self.scenario,
                 Scenario::WorkReply
+                    | Scenario::StrictWorkReply
                     | Scenario::WorkYield(_)
                     | Scenario::InvalidObservation
                     | Scenario::NoReplySilent(_)
@@ -2456,12 +2482,13 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
     };
     use morphz::response_annotations::{project_authorized_events, ExecutionFact};
 
-    for annotated in [true, false] {
+    for protocol in [Protocol::V1, Protocol::Off, Protocol::V2] {
+        let annotated = !protocol.is_off();
         let fixture = Fixture::new(Scenario::NoReplyWait(annotated), Protocol::Off).await;
         let accepted = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(annotated.then_some(Protocol::V1)),
+                Fixture::input(annotated.then_some(protocol)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -2578,9 +2605,10 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
                 )
             );
             assert_eq!(timer.payload["thread_generation"], thread.generation);
-            assert_eq!(timer.payload["response_annotations"], "v1");
+            assert_eq!(timer.payload["response_annotations"], protocol.as_str());
             let bundle: PersistedAnnotations =
                 serde_json::from_value(waiting.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+            assert_eq!(bundle.protocol, protocol);
             assert_eq!(bundle.raw_response.tool_calls[0].func_name, "no_reply");
             assert_eq!(
                 serde_json::from_str::<Value>(&bundle.raw_response.tool_calls[0].arguments)
@@ -2647,12 +2675,13 @@ async fn actual_operator_cancel_drops_native_request_without_model_final_or_extr
     };
     use morphz::response_annotations::{project_execution, ExecutionFact};
 
-    for annotated in [true, false] {
+    for protocol in [Protocol::V1, Protocol::Off, Protocol::V2] {
+        let annotated = !protocol.is_off();
         let fixture = Fixture::new(Scenario::CancelModel(annotated), Protocol::Off).await;
         let accepted = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(annotated.then_some(Protocol::V1)),
+                Fixture::input(annotated.then_some(protocol)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -2706,14 +2735,7 @@ async fn actual_operator_cancel_drops_native_request_without_model_final_or_extr
         };
         assert_eq!(updated.lifecycle, ThreadLifecycle::Cancelled);
         assert_eq!(updated.generation, thread.generation + 1);
-        assert_eq!(
-            updated.response_annotations,
-            if annotated {
-                Protocol::V1
-            } else {
-                Protocol::Off
-            }
-        );
+        assert_eq!(updated.response_annotations, protocol);
         let detail = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 let detail = fixture.runtime.thread_detail(&thread.context_id, &thread.id).await.unwrap().unwrap();
@@ -3196,6 +3218,147 @@ async fn v1_accepts_legacy_unannotated_plain_final_text_without_an_extra_request
         fixture.events(&accepted.id, Some("chat/reply")).await.len(),
         1
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_final_reply_persists_required_metadata_in_original_requests_and_native_stream() {
+    for (scenario, expected_calls, expected_jobs) in [
+        (Scenario::ReplyOnly, 1, 0),
+        (Scenario::StrictWorkReply, 2, 1),
+    ] {
+        let fixture = Fixture::new(scenario, Protocol::Off).await;
+        let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
+        let (accepted, reply) = fixture.submit(Some(Protocol::V2)).await;
+        assert_eq!(reply.payload["text"], FINAL_TEXT);
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls);
+        assert_eq!(fixture.jobs().await.len(), expected_jobs, "reply is never a physical Job");
+        let thread = fixture.runtime.session_thread_by_root("annotations-session", &accepted.id)
+            .await.unwrap().unwrap();
+        assert_eq!(thread.response_annotations, Protocol::V2);
+        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
+        let projection = fixture.runtime.session_thread_annotations("annotations-context", "annotations-session", &thread.id)
+            .await.unwrap().unwrap().unwrap();
+        assert_eq!(projection.protocol, Protocol::V2);
+        assert_eq!(projection.title.as_deref(), Some("检查合成环境"));
+        assert!(projection.result.is_some());
+        let events = fixture.events(&accepted.id, Some("chat/assistant_call")).await;
+        assert_eq!(events.len(), expected_calls);
+        let final_source = events.iter().find(|event| event.payload.get("terminal_outcome") == Some(&json!(true))).unwrap();
+        let scope = ExecutionScope { execution_id:thread.id.clone(), generation:thread.generation };
+        let bundle: PersistedAnnotations = serde_json::from_value(final_source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        assert_eq!(bundle.protocol, Protocol::V2);
+        assert!(bundle.records.iter().all(|record| record.protocol == Protocol::V2));
+        assert!(bundle.records.iter().any(|record| record.kind == AnnotationKind::Title));
+        assert!(bundle.records.iter().any(|record| record.kind == AnnotationKind::Result));
+        assert_eq!(bundle.raw_response.tool_calls[0].func_name, "reply");
+        assert!(records_from_authorized_event(final_source, &scope).unwrap().iter()
+            .all(|record| record.source.sequence == final_source.sequence));
+        for request in fixture.client.captured.lock().unwrap().iter() {
+            assert!(request.messages.iter().any(|message| message.role == "system" && message.content.contains(CONTRACT_V2)));
+            let schema = &request.tools.iter().find(|tool| tool.name == "reply").unwrap().parameters;
+            assert_eq!(schema["required"], json!(["content","annotations"]));
+            assert_eq!(schema["properties"]["annotations"]["properties"]["execution"]["required"], json!(["title","result"]));
+        }
+        let mut public_text = String::new();
+        let mut increments = 0;
+        while let Ok(event) = stream.try_recv() {
+            let value = event.payload["stream"].clone();
+            assert!(!value.to_string().contains("annotations"));
+            if let Ok(ModelStreamEvent::TextDelta {text}) = serde_json::from_value(value) {
+                public_text.push_str(&text); increments += 1;
+            }
+        }
+        assert_eq!(public_text, FINAL_TEXT);
+        assert!(increments > 1);
+        let reopened = SqliteStore::new(fixture.temp.path().join("annotations.db").to_str().unwrap()).await.unwrap();
+        assert_eq!(reopened.get_thread(&thread.id).await.unwrap().unwrap().response_annotations, Protocol::V2);
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls, "reading projection does not ask a model");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_audit() {
+    for scenario in std::iter::once(Scenario::Plain)
+        .chain((0..=6).map(Scenario::StrictBadFinal))
+        .chain(std::iter::once(Scenario::WorkReply))
+    {
+        let expected_calls = if matches!(scenario, Scenario::WorkReply) {2} else {1};
+        let fixture = Fixture::new(scenario, Protocol::Off).await;
+        let root = fixture.session.send_io_as_principal(Fixture::input(Some(Protocol::V2)),
+            &fixture.runtime.identity().principal_id).await.unwrap();
+        let (thread, failure) = tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                if let Some(thread) = fixture.runtime.session_thread_by_root("annotations-session", &root.id).await.unwrap() {
+                    if thread.lifecycle.is_terminal() {
+                        if let Some(failure) = fixture.events(&root.id, None).await.into_iter().find(|event| {
+                            matches!(event.topic.as_str(), "chat/reply" | "session/io_state")
+                                && event.payload.get("terminal_kind") == Some(&json!("failed"))
+                        }) { break (thread, failure); }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("invalid final must produce the existing durable typed failure outcome");
+        assert_eq!(failure.payload["terminal_kind"], "failed");
+        assert_eq!(failure.payload["runtime_failure_kind"], "response_annotations_protocol");
+        assert_ne!(failure.payload["text"], FINAL_TEXT, "a public draft is not a valid final delivery");
+        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Failed);
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls);
+        assert_eq!(fixture.jobs().await.len(), expected_calls - 1, "invalid reply never dispatches or retries work");
+        let fused = fixture.events(&root.id, Some("runtime/response_protocol_fused")).await;
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].payload["invalid_responses"], 1);
+        let errors = fixture.events(&root.id, Some("runtime/response_protocol_error")).await;
+        assert_eq!(errors.len(), 1);
+        let states = fixture.events(&root.id, Some("runtime/model_attempt_state")).await;
+        let invalid = states.iter().filter(|event| event.payload["state"] == "protocol_invalid").collect::<Vec<_>>();
+        assert_eq!(invalid.len(), 1, "full-response normalization and stream failures use the same Attempt audit");
+        assert_eq!(invalid[0].payload["terminal"], true);
+        assert_eq!(invalid[0].payload["response_annotations"], "v2");
+        assert!(states.iter().filter(|event| event.payload["attempt_id"] == invalid[0].payload["attempt_id"])
+            .all(|event| event.payload["state"] != "completed"));
+        assert!(fixture.events(&root.id, Some("chat/assistant_call")).await.iter()
+            .all(|event| event.payload.get("terminal_outcome") != Some(&json!(true))), "invalid final source is not stored as a successful reply");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_parent_does_not_augment_typed_infer_or_change_typed_result() {
+    let fixture = Fixture::new(Scenario::Infer, Protocol::Off).await;
+    let (root, reply) = fixture.submit(Some(Protocol::V2)).await;
+    assert_eq!(reply.payload["text"], FINAL_TEXT);
+    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 4);
+    let captured = fixture.client.captured.lock().unwrap().clone();
+    for request in &captured[1..3] {
+        assert!(!request.tools.iter().any(|tool| tool.name == "reply"));
+        assert!(request.tools.iter().all(|tool| tool.parameters["properties"].get("_annotations").is_none()));
+        assert!(request.messages.iter().filter(|message| message.role == "system")
+            .all(|message| !message.content.contains(CONTRACT_V1) && !message.content.contains(CONTRACT_V2)));
+    }
+    let outputs = fixture.events(&root.id, Some("chat/tool_output")).await;
+    assert!(outputs.iter().any(|event| event.payload["tool_name"] == "eval" && event.payload["text"] == "\"Linux\""));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_no_reply_silent_preserves_grammar_without_required_final_metadata() {
+    let fixture = Fixture::new(Scenario::NoReplySilent(true), Protocol::Off).await;
+    let accepted = fixture.session.send_io_as_principal(Fixture::input(Some(Protocol::V2)), "principal-default").await.unwrap();
+    let thread = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            if let Some(thread) = fixture.runtime.session_thread_by_root("annotations-session", &accepted.id).await.unwrap() {
+                if thread.lifecycle.is_terminal() { break thread; }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(thread.response_annotations, Protocol::V2);
+    assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
+    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.jobs().await.len(), 1);
+    assert!(fixture.events(&accepted.id, Some("runtime/response_protocol_error")).await.is_empty());
+    let projected = fixture.runtime.session_thread_annotations("annotations-context", "annotations-session", &thread.id).await.unwrap().unwrap().unwrap();
+    assert_eq!(projected.protocol, Protocol::V2);
+    assert!(projected.result.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

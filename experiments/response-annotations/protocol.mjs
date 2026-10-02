@@ -58,7 +58,7 @@ export const replyTool = {
 
 /** Disabled means exact identity. An enabled schema is only a candidate schema:
  * provider strict/nullable/schema conversion still needs provider-specific proof. */
-export function augmentTools(tools, { enabled = false, typedInfer = false } = {}) {
+export function augmentTools(tools, { enabled = false, typedInfer = false, requiredTerminal = false } = {}) {
   if (!enabled || typedInfer) return tools;
   for (const tool of tools) {
     if (tool.name === 'reply') throw new Error('Reserved reply tool name is already occupied');
@@ -70,6 +70,13 @@ export function augmentTools(tools, { enabled = false, typedInfer = false } = {}
       throw new Error(`Composite root schema requires an explicit provider/integration decision: ${tool.name}`);
     }
   }
+  const terminal = structuredClone(replyTool);
+  if (requiredTerminal) {
+    terminal.parameters.required = ['content', 'annotations'];
+    terminal.parameters.properties.annotations.required = ['execution'];
+    terminal.parameters.properties.annotations.properties.execution.required = ['title', 'result'];
+    for (const field of ['title', 'result']) terminal.parameters.properties.annotations.properties.execution.properties[field].minLength = 1;
+  }
   return [
     ...tools.map(tool => tool.name === 'no_reply' ? structuredClone(tool) : {
       ...structuredClone(tool),
@@ -78,7 +85,7 @@ export function augmentTools(tools, { enabled = false, typedInfer = false } = {}
         properties: { ...structuredClone(tool.parameters.properties ?? {}), _annotations: structuredClone(annotationSchema) },
       },
     }),
-    structuredClone(replyTool),
+    terminal,
   ];
 }
 
@@ -242,6 +249,11 @@ export function normalizeResponse(response, options = {}) {
     });
     executionResponse = { ...response, tool_calls: executionCalls };
     terminalDecision = terminalFromLegacy(executionResponse);
+  }
+  if (options.requiredTerminal && terminalDecision?.kind === 'deliver') {
+    if (!replyCalls.length || !['execution.title', 'execution.result'].every(kind => annotationRecords.some(record => record.kind === kind))) {
+      protocolError('Required terminal title and result annotations are absent or invalid');
+    }
   }
   return { rawResponse, executionResponse, annotationRecords, diagnostics, terminalDecision, protocolEnabled: true,
     omittedDiagnostics, dispatchAllowed: executionFact?.status !== 'cancelled' };

@@ -469,6 +469,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20261002_02_thread_response_annotations_v2",
+                    store.migrate_thread_response_annotations_v2(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260730_01_thread_groups",
                     thread_group::migrate(&store.pool),
                 )
@@ -1448,6 +1454,54 @@ impl PostgresStore {
         .bind(now_text())
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Unlike SQLite, PostgreSQL can replace the column's CHECK in place.
+    /// Hold the table lock throughout validation, constraint replacement and
+    /// migration recording; rows, revisions, dependencies and indexes never
+    /// move. The outer initialization already holds the schema advisory lock.
+    async fn migrate_thread_response_annotations_v2(&self) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("LOCK TABLE threads IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await?;
+        let constraints = sqlx::query(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'threads'::regclass AND contype = 'c' AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'threads'::regclass AND attname = 'response_annotations')]::smallint[]",
+        ).fetch_all(&mut *tx).await?;
+        const OLD: &str = "CHECK ((response_annotations = ANY (ARRAY['off'::text, 'v1'::text])))";
+        const NEW: &str =
+            "CHECK ((response_annotations = ANY (ARRAY['off'::text, 'v1'::text, 'v2'::text])))";
+        if constraints.is_empty() {
+            return Err("Thread response-annotation CHECK is missing".into());
+        }
+        let mut widened = false;
+        for constraint in &constraints {
+            let definition: String = constraint.try_get("definition")?;
+            if definition == NEW {
+                widened = true;
+            } else if definition != OLD {
+                return Err("Unknown Thread response-annotation CHECK; refusing to guess".into());
+            }
+        }
+        for constraint in constraints {
+            if constraint.try_get::<String, _>("definition")? == OLD {
+                let name: String = constraint.try_get("conname")?;
+                let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+                sqlx::query(&format!("ALTER TABLE threads DROP CONSTRAINT {quoted}"))
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        if !widened {
+            sqlx::query("ALTER TABLE threads ADD CONSTRAINT threads_response_annotations_protocol_v2 CHECK(response_annotations IN ('off', 'v1', 'v2'))")
+                .execute(&mut *tx).await?;
+        }
+        // Record atomically with DDL. The common outer helper's final insert
+        // is idempotent, including recovery after a committed migration.
+        sqlx::query("INSERT INTO schema_migrations(version, applied_at) VALUES ('20261002_02_thread_response_annotations_v2', $1) ON CONFLICT(version) DO NOTHING")
+            .bind(now_text()).execute(&mut *tx).await?;
+        tx.commit().await?;
         Ok(())
     }
 

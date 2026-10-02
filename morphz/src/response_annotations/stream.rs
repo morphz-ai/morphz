@@ -282,7 +282,7 @@ pub struct ModelStreamNormalizer {
 impl ModelStreamNormalizer {
     pub fn new(protocol: Protocol, typed_infer: bool) -> Self {
         Self {
-            enabled: protocol == Protocol::V1 && !typed_infer,
+            enabled: !protocol.is_off() && !typed_infer,
             tools: HashMap::new(),
             ordinary_text_seen: false,
             reply_started: false,
@@ -464,7 +464,7 @@ mod tests {
             ModelStreamEvent::ToolCallCompleted { index: 0 },
             ModelStreamEvent::Completed,
         ];
-        for protocol in [Protocol::Off, Protocol::V1] {
+        for protocol in [Protocol::Off, Protocol::V1, Protocol::V2] {
             let mut stream = ModelStreamNormalizer::new(protocol, false);
             let mut normalized = vec![];
             for event in events.clone() {

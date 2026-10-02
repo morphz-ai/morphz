@@ -1660,7 +1660,7 @@ fn stamp_response_annotation_route(
     payload: &mut serde_json::Map<String, serde_json::Value>,
     route: &ActivationRoute,
 ) {
-    if route.response_annotations == ResponseAnnotationProtocol::V1 {
+    if !route.response_annotations.is_off() {
         payload.insert(
             "response_annotations".into(),
             json!(route.response_annotations),
@@ -4487,7 +4487,7 @@ impl Orchestrator {
         });
         if let Some(route) = self
             .activation_route(activation_id)
-            .filter(|route| route.response_annotations == ResponseAnnotationProtocol::V1)
+            .filter(|route| !route.response_annotations.is_off())
         {
             payload["response_annotations"] = json!(route.response_annotations);
             payload["thread_generation"] = json!(route.thread_generation);
@@ -4578,7 +4578,7 @@ impl Orchestrator {
                 ),
             ]),
         );
-        if thread.response_annotations == ResponseAnnotationProtocol::V1 {
+        if !thread.response_annotations.is_off() {
             event.payload.insert(
                 "response_annotations".into(),
                 json!(thread.response_annotations),
@@ -7913,7 +7913,7 @@ impl Orchestrator {
         ];
         if let Some(parent) = parent_thread
             .as_ref()
-            .filter(|parent| parent.response_annotations == ResponseAnnotationProtocol::V1)
+            .filter(|parent| !parent.response_annotations.is_off())
         {
             start_payload.push((
                 "response_annotations".to_string(),
@@ -8213,7 +8213,7 @@ impl Orchestrator {
             if let Some(parent) = session_store
                 .get_thread(&route.thread_id)
                 .await?
-                .filter(|parent| parent.response_annotations == ResponseAnnotationProtocol::V1)
+                .filter(|parent| !parent.response_annotations.is_off())
             {
                 result_payload.insert(
                     "response_annotations".to_string(),
@@ -9219,8 +9219,7 @@ impl Orchestrator {
         // Startup redispatch of an already owned input is not a fresh signal.
         // In particular it must not cancel the fallback clock durably armed
         // by that same Activation immediately before the process exited.
-        let recovering_owned_input = if thread.response_annotations
-            == ResponseAnnotationProtocol::V1
+        let recovering_owned_input = if !thread.response_annotations.is_off()
         {
             if let Some(recovery_id) = event
                 .payload
@@ -10243,6 +10242,9 @@ impl Orchestrator {
                 else {
                     continue;
                 };
+                if bundle.protocol != thread.response_annotations {
+                    continue;
+                }
                 let Some(revision) = bundle.title_input_revision else {
                     continue;
                 };
@@ -11742,7 +11744,7 @@ impl Orchestrator {
         };
 
         if let Some(route) = self.activation_route(&activation.id).filter(|route| {
-            route.response_annotations == ResponseAnnotationProtocol::V1
+            !route.response_annotations.is_off()
                 && (assistant_call.payload.contains_key("model_attempt_id")
                     || assistant_call
                         .payload
@@ -11761,7 +11763,10 @@ impl Orchestrator {
             };
             let bundle =
                 response_annotations::annotations_from_authorized_event(assistant_call, &scope)?
-                    .ok_or("V1 recovery boundary lacks source annotations")?;
+                    .ok_or("Annotated recovery boundary lacks source annotations")?;
+            if bundle.protocol != route.response_annotations {
+                return Err("source annotation bundle differs from frozen Execution protocol".into());
+            }
             let store = self
                 .context_engine
                 .session_store()
@@ -11832,7 +11837,7 @@ impl Orchestrator {
             let route = self
                 .activation_route(&activation.id)
                 .ok_or("annotated wait recovery lacks its Execution route")?;
-            if route.response_annotations != ResponseAnnotationProtocol::V1
+            if route.response_annotations.is_off()
                 || !assistant_call
                     .payload
                     .contains_key(response_annotations::BUNDLE_PAYLOAD_KEY)
@@ -13076,10 +13081,10 @@ impl Orchestrator {
         } else {
             std::borrow::Cow::Borrowed(stable_system_prompt)
         };
-        let stable_system_prompt = if response_annotations == ResponseAnnotationProtocol::V1 {
+        let stable_system_prompt = if let Some(contract) = response_annotations.contract() {
             std::borrow::Cow::Owned(format!(
                 "{stable_system_prompt}\n\n{}",
-                response_annotations::CONTRACT_V1,
+                contract,
             ))
         } else {
             stable_system_prompt
@@ -13383,20 +13388,20 @@ impl Orchestrator {
             });
             allowed_tools.retain(|tool| {
                 tool.name == NO_REPLY_TOOL_NAME
-                    || (response_annotations == ResponseAnnotationProtocol::V1
+                    || (!response_annotations.is_off()
                         && tool.name == "reply")
             });
         }
         if schedule_receipt {
             allowed_tools.retain(|tool| {
                 tool.name == NO_REPLY_TOOL_NAME
-                    || (response_annotations == ResponseAnnotationProtocol::V1
+                    || (!response_annotations.is_off()
                         && tool.name == "reply")
             });
         }
         // Reply is a protocol form, not a Harness work capability. Preserve it
         // across admission narrowing only when this Execution opted in.
-        if response_annotations == ResponseAnnotationProtocol::V1
+        if !response_annotations.is_off()
             && !allowed_tools.iter().any(|tool| tool.name == "reply")
         {
             if let Some(reply) = stable_work_tools.iter().find(|tool| tool.name == "reply") {
@@ -14024,7 +14029,7 @@ impl Orchestrator {
                     provider_continuation,
                 }) => {
                     let annotation_bundle =
-                        if response_annotations == ResponseAnnotationProtocol::V1 {
+                        if !response_annotations.is_off() {
                             let terminal_carrier = response.tool_calls.is_empty()
                                 || response.tool_calls.iter().any(|call| {
                                     matches!(call.func_name.as_str(), "reply" | "no_reply")
@@ -14062,7 +14067,14 @@ impl Orchestrator {
                                 Ok(normalized) => normalized,
                                 Err(error) => {
                                     // Bad display fields downgrade inside the normalizer.
-                                    // Bad execution-control syntax fails without a repair request.
+                                    // V2 required metadata and bad control fail without repair.
+                                    self.record_model_attempt_terminal_state(
+                                        session_id,
+                                        &model_attempt_id,
+                                        "protocol_invalid",
+                                        Some("Invalid response annotation contract"),
+                                    )
+                                    .await?;
                                     self.record_response_protocol_error(
                                         session_id,
                                         &model_attempt_id,
@@ -14118,7 +14130,7 @@ impl Orchestrator {
                     (response, provider_continuation, annotation_bundle)
                 }
                 Err(error)
-                    if response_annotations == ResponseAnnotationProtocol::V1
+                    if !response_annotations.is_off()
                         && error.source.is::<response_annotations::ProtocolError>() =>
                 {
                     self.record_model_attempt_terminal_state(
@@ -14789,7 +14801,7 @@ impl Orchestrator {
                         effective_phase = "objective-finalization".to_string();
                         tools.retain(|tool| {
                             tool.name == NO_REPLY_TOOL_NAME
-                                || (response_annotations == ResponseAnnotationProtocol::V1
+                                || (!response_annotations.is_off()
                                     && tool.name == "reply")
                         });
                         allowed_tool_names = HashSet::from([NO_REPLY_TOOL_NAME.to_string()]);
@@ -17096,7 +17108,7 @@ impl Orchestrator {
             return Err(format!("Thread '{}' does not exist", route.thread_id).into());
         };
         if current.lifecycle.is_terminal()
-            || (route.response_annotations == ResponseAnnotationProtocol::V1
+            || (!route.response_annotations.is_off()
                 && current.generation != route.thread_generation)
         {
             return Ok(());
@@ -21395,7 +21407,7 @@ impl Orchestrator {
         ]);
         // Off leaves the legacy Event bytes unchanged. V1 carries the frozen
         // execution/generation contract through tool outputs and recovery.
-        if route.response_annotations == ResponseAnnotationProtocol::V1 {
+        if !route.response_annotations.is_off() {
             payload.extend([
                 (
                     "response_annotations".to_string(),
@@ -23151,6 +23163,7 @@ fn context_tx_output_succeeded(event: &Event) -> bool {
 fn infer_tool_status(text: &str) -> &'static str {
     if text.starts_with("Tool execution failed:")
         || text.starts_with("Execution failed:")
+        || text.starts_with("System error:")
         // Legacy persisted output compatibility. New producers emit English.
         || text.starts_with("执行失败:")
         || text.starts_with("系统报错:")
@@ -24787,7 +24800,11 @@ mod tests {
         for text in [
             "Tool execution failed: invalid input",
             "Execution failed: invalid input",
+            "System error: read failed because the file does not exist",
+            "System error: the permission policy rejected the read path",
+            "System error: permission denied while reading file",
             "执行失败: historical value",
+            "系统报错: historical value",
             "系统报错：historical value",
         ] {
             assert_eq!(infer_tool_status(text), "error");

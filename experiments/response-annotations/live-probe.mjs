@@ -13,6 +13,7 @@ import { ReplyStreamNormalizer } from './stream-content.mjs';
 const binary = process.env.MORPHZ_ANNOTATIONS_BRIDGE ?? fileURLToPath(new URL('../../target/debug/response-annotations-probe', import.meta.url));
 const output = process.env.MORPHZ_ANNOTATIONS_EVIDENCE ?? fileURLToPath(new URL('./live-evidence.json', import.meta.url));
 const bridgeArgs = process.argv.slice(2);
+const requiredTerminal = process.env.MORPHZ_ANNOTATIONS_REQUIRED_TERMINAL === '1';
 const child = spawn(binary, bridgeArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 const lines = createInterface({ input: child.stdout });
 const pending = new Map();
@@ -82,16 +83,16 @@ In that same reply supply execution.result as a short Chinese factual result sum
 Annotations are optional; never spend another request just to fill or fix them. Do not set status, permissions, identity or guessed percentages.`;
 
 async function runCase({ enabled, retry }) {
-  const name = `${retry ? 'retry' : 'serial'}-${enabled ? 'v1' : 'off'}`;
+  const name = `${retry ? 'retry' : 'serial'}-${enabled ? requiredTerminal ? 'v2' : 'v1' : 'off'}`;
   const scope = { executionId: `synthetic-${name}`, generation: 1 };
-  const tools = augmentTools([workTool], { enabled });
+  const tools = augmentTools([workTool], { enabled, requiredTerminal });
   const messages = [{
     role: 'system',
     content: `You are validating a low-level response protocol with synthetic facts only.
 Complete the user request by calling probe_read with key system first, then in a later response call probe_read with key architecture, then deliver a Chinese final answer.
 Use exactly one work call per work response. Do not combine the two reads into one response. Do not fabricate facts or use other tools.
 If a read returns a retryable error, retry the same read once; otherwise do not repeat successful reads.
-${enabled ? annotationContract : 'When all reads are finished, deliver ordinary final text without tool calls.'}`,
+${enabled ? requiredTerminal ? annotationContract.replace('optional response annotations v1', 'explicit response annotations v2').replace('Annotations are optional;', 'Work annotations remain optional. For final delivery you MUST use reply with nonempty execution.title (the whole current task) and execution.result;') : annotationContract : 'When all reads are finished, deliver ordinary final text without tool calls.'}`,
   }, {
     role: 'user', content: 'TEST_RESPONSE_ANNOTATIONS：请核对合成环境的操作系统与处理器架构，并用中文告诉我结果。',
   }];
@@ -126,7 +127,7 @@ ${enabled ? annotationContract : 'When all reads are finished, deliver ordinary 
     const raw = result.response;
     const likelyTerminal = got.size === 2 && (raw.tool_calls.length === 0 || raw.tool_calls.every(call => call.func_name === 'reply'));
     const normalized = normalizeResponse(raw, {
-      enabled, scope, observations,
+      enabled, requiredTerminal, scope, observations,
       producer: { eventId: `assistant-${name}-${turn}`, attemptId: `attempt-${name}-${turn}`, sequence: turn * 100 },
       executionFact: { scope, terminal: likelyTerminal, status: likelyTerminal ? 'completed' : 'running' },
     });
@@ -206,7 +207,7 @@ ${enabled ? annotationContract : 'When all reads are finished, deliver ordinary 
   throw new Error(`Run exceeded existing request count: ${name}`);
 }
 
-const evidence = { syntheticOnly: true, originalRuntimeModified: false, originalDataUsed: false, modelGate: false, runs: [] };
+const evidence = { syntheticOnly: true, originalRuntimeModified: false, originalDataUsed: false, requiredTerminal, modelGate: false, runs: [] };
 let previousClientRequests = 0;
 try {
   const route = await ready;
