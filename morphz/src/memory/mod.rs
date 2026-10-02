@@ -7404,6 +7404,14 @@ pub trait ThreadGroupStore: Send + Sync {
     }
 }
 
+/// A consistent, bounded selection of one Thread and its same-Session/Context
+/// descendants. This boundary says nothing about unrelated Context history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadFamilyRead {
+    pub threads: Vec<ThreadRecord>,
+    pub has_more: bool,
+}
+
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
@@ -7419,6 +7427,18 @@ pub trait ThreadStore: Send + Sync {
         &self,
         root_turn_id: &str,
     ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Selected Thread first, followed by FIFO descendants through the actual
+    /// parent column. Production stores read one stable snapshot and use the
+    /// parent index; unsupported stores must never substitute a Context scan.
+    async fn read_thread_family_bounded(
+        &self,
+        _context_id: &str,
+        _session_id: &str,
+        _thread_id: &str,
+        _limit: usize,
+    ) -> Result<Option<ThreadFamilyRead>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Thread family reads are not supported by this store".into())
+    }
     /// Exact parent rows for an already-selected scheduler aggregate.
     async fn list_threads_by_ids(
         &self,

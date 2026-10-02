@@ -43,12 +43,51 @@ const rawThread = (
     ...extra,
   },
 });
+function familyResponse(
+  values: ReturnType<typeof rawThread>[],
+  selectedId: string,
+  hasMore = false,
+) {
+  const selected = values.find((value) => value.thread.id === selectedId)!;
+  const threads = [selected.thread];
+  for (let offset = 0; offset < threads.length; offset++)
+    threads.push(
+      ...values
+        .filter(
+          (value) =>
+            value.thread.supervision.parent_thread_id === threads[offset]!.id &&
+            value.thread.session_id === selected.thread.session_id &&
+            value.thread.context_id === selected.thread.context_id,
+        )
+        .map((value) => value.thread),
+    );
+  return {
+    session_id: selected.thread.session_id,
+    context_id: selected.thread.context_id,
+    selected_thread_id: selectedId,
+    limit: 64,
+    has_more: hasMore || threads.length > 64,
+    threads: threads
+      .slice(0, 64)
+      .map((thread) => ({
+        ...thread,
+        parent_thread_id: thread.supervision.parent_thread_id,
+      })),
+  };
+}
 function peer(values: ReturnType<typeof rawThread>[]) {
   const calls: string[] = [];
   return {
     calls,
     request: async (path: string) => {
       calls.push(path);
+      if (path.includes("/family?"))
+        return familyResponse(
+          values,
+          decodeURIComponent(
+            new URL(path, "http://test.invalid").pathname.split("/").at(-2)!,
+          ),
+        );
       if (path.includes("/scheduler?"))
         return {
           threads: values,
@@ -129,7 +168,7 @@ test("不能只放宽child root equality；无父锚点、循环、跨Context父
   );
 });
 
-test("有界Thread历史与截断不伪造完整性，annotation必须属于每个Thread自己的generation", async () => {
+test("family有界读取独立于Context历史，annotation必须属于每个Thread自己的generation", async () => {
   const own = rawThread("TEST-main", binding.inputRootId),
     child = rawThread("TEST-child", undefined, "TEST-main");
   Object.assign(own, {
@@ -157,11 +196,8 @@ test("有界Thread历史与截断不伪造完整性，annotation必须属于每�
   const f = peer([own, child]);
   const tree = await authorizedExecutionThreadTree(
     async (path) =>
-      path.includes("/scheduler?")
-        ? {
-            threads: [own, child],
-            detail_bounds: { limit: 2, has_more_threads: false },
-          }
+      path.includes("/family?")
+        ? familyResponse([own, child], binding.threadId, true)
         : f.request(path),
     binding,
     true,
@@ -170,6 +206,47 @@ test("有界Thread历史与截断不伪造完整性，annotation必须属于每�
   assert.equal(tree.selected.title, "主工作");
   assert.equal(tree.threads[1]!.title, child.intent);
   assert.equal(tree.threads[1]!.summary, undefined);
+});
+
+test("Context历史超过200也不污染完整family2；exact snapshot的root/parent/scope不得偏离membership", async () => {
+  const values = [
+    rawThread("TEST-main", binding.inputRootId),
+    rawThread("TEST-child", undefined, "TEST-main"),
+    ...Array.from({ length: 295 }, (_, index) =>
+      rawThread(`TEST-unrelated-${index}`),
+    ),
+  ];
+  const f = peer(values);
+  const tree = await authorizedExecutionThreadTree(f.request, binding, true);
+  assert.equal(tree.threads.length, 2);
+  assert.equal(tree.truncated, false);
+  assert.ok(
+    !f.calls.some((path) => path.includes("/scheduler")),
+    "No Context history is read for family membership",
+  );
+  for (const changed of [
+    { root_turn_id: "forged-root" },
+    { supervision: { parent_thread_id: "forged-parent" } },
+    { session_id: "private" },
+    { context_id: "private" },
+  ])
+    await assert.rejects(
+      authorizedExecutionThreadTree(
+        async (path) => {
+          const value = await f.request(path);
+          if (!path.includes("/family?") && path.endsWith("/TEST-child"))
+            return {
+              snapshot: {
+                ...values[1],
+                thread: { ...values[1]!.thread, ...changed },
+              },
+            };
+          return value;
+        },
+        binding,
+        true,
+      ),
+    );
 });
 
 const job = (id: string, threadId: string) =>
@@ -361,6 +438,11 @@ test("真实Platform read grant＋Host原始Input：child独立root可打开，�
         writes++;
         throw new Error("TEST revoked grant must never write");
       }
+      if (path.includes("/family?"))
+        return familyResponse(
+          values,
+          new URL(path, "http://test.invalid").pathname.split("/").at(-2)!,
+        );
       if (path.includes("/scheduler?"))
         return {
           threads: values,

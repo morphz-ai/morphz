@@ -746,6 +746,29 @@ pub struct ThreadDetail {
     pub model_attempt_events: Vec<Event>,
 }
 
+/// Minimal immutable lineage facts, not Thread bodies or physical Job data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadFamilyMember {
+    pub id: String,
+    pub session_id: String,
+    pub context_id: String,
+    pub root_turn_id: String,
+    pub parent_thread_id: Option<String>,
+    pub revision: u64,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadFamily {
+    pub session_id: String,
+    pub context_id: String,
+    pub selected_thread_id: String,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub threads: Vec<ThreadFamilyMember>,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
 /// Transport-neutral Event History query. Payload identity/causal filters are kept in
 /// this public contract even while a backend may satisfy them through a
 /// bounded post-filter; the response makes that scan boundary explicit.
@@ -9324,6 +9347,47 @@ impl MorphzRuntime {
     ) -> Result<Option<crate::memory::ThreadRecord>, RuntimeError> {
         let thread = self.inner.store.get_thread(thread_id).await?;
         Ok(thread.filter(|thread| thread.session_id == session_id))
+    }
+
+    /// The ingress/SDK must authorize this Session before and after this read.
+    /// Selection and every descendant are fenced by its exact Session/Context.
+    pub async fn session_thread_family(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        limit: usize,
+    ) -> Result<Option<ThreadFamily>, RuntimeError> {
+        let generated_at = chrono::Utc::now();
+        let Some(family) = self
+            .inner
+            .store
+            .read_thread_family_bounded(context_id, session_id, thread_id, limit)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ThreadFamily {
+            session_id: session_id.to_string(),
+            context_id: context_id.to_string(),
+            selected_thread_id: thread_id.to_string(),
+            generated_at,
+            threads: family
+                .threads
+                .into_iter()
+                .map(|thread| ThreadFamilyMember {
+                    id: thread.id,
+                    session_id: thread.session_id,
+                    context_id: thread.context_id,
+                    root_turn_id: thread.root_turn_id,
+                    parent_thread_id: thread.supervision.parent_thread_id,
+                    revision: thread.revision,
+                    generation: thread.generation,
+                })
+                .collect(),
+            limit,
+            has_more: family.has_more,
+        }))
     }
 
     pub async fn thread_detail(

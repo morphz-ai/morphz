@@ -15,7 +15,23 @@
 原失败证据与新 build 的验收边界分别保留，详见下面的输出传输边界。
 最终 1.4.3 应用全量 Node 为 1093 通过、161 条条件跳过、0 失败（共 1254，
 `/tmp/morphz-two-problems-v143-frozen-node.log`），最终生产构建／类型退出 0（`/tmp/morphz-two-problems-v143-frozen-build.log`）。
-条件跳过不算通过，专项 PostgreSQL 另有真实执行证据。原窗口验收仍待系统解锁，不把隔离截图或新安装包当成原窗口已验收。
+条件跳过不算通过，专项 PostgreSQL 另有真实执行证据。原 Mac 曾解锁，同一个原 App 正常退出、完成 desktop 停止态备份后重开；新 Host 的 v7 迁移已实际发生。后续 family 修复验证完成后，原 Runtime 已正常更新到下述新 binary。原窗口已实看主活动与等待中的真实子 Thread，尚未验收新的剧本交付；准备明确命名的 TEST 项目时系统再次锁屏，已请求手动解锁，不绕过锁屏、不将隔离截图或后端 API 验收当成原窗口完整验收。
+
+原中心重开后的只读一致性核对见 `/tmp/morphz-two-problems-backup.OtLfGi/after-audit-ycBuqJ/audit.json`：240 张原表均保留，234 张旧列字节和规范化摘要相同；原 Profile、Session、已有剧本与未来提醒的旧内容未变。其他变化为正常启动元数据、schema 6→7，以及 153 项既有 Thread 投影新增真实 `contextId`，逐项与 Runtime 持久范围相符；未添加／删除这些 Thread、未重放旧任务。原 preparations 为零，因此本次原库只能证明迁移 DDL，旧行迁移语义由 SQLite／PostgreSQL 专项验证，不混作原库旧行验收。
+
+原活动详情发现并修复一个误报：Context 有 295 条历史，而 scheduler 页只载入 200 条，旧 family 聚合把全局历史 `has_more` 误作选中活动缺少子记录。该活动实际两项 Thread 均已载入，旧实现刷新仍误报。现已改为有界、精确、经 Session／Context 授权的真实 parent-family 读取；不靠清除提示掩盖真实截断，不扫描整个 Context、不增加 LLM 请求或轮询。原 App 新 family 读取模块仍需解锁后正常重开载入，完成两项原窗口验收前不结束目标。
+
+本次精确读取的生产设计：Thread 及 `parent_thread_id` 继续由 Runtime 的现有 `threads` 表权威保存；不复制关系、不把可变 Supervisor 当成真实 parent。只增加 `(context_id, session_id, parent_thread_id, created_at, id)` 查询索引，SQLite／PostgreSQL 正常启动迁移幂等创建，旧行、版本、生命周期及删除规则不变。新增 Session-scoped `GET /api/sessions/:session_id/threads/:thread_id/family?limit=64` 与对应 SDK 读取；Session 授权在前后复核，选中 Thread 及所有返回成员固定于该 Session 的真实 Context。响应仅为 lineage 元数据，不包含消息、工具正文或 Jobs，也不授权停止／审批。
+
+Store 在同一个只读快照内，以真实 parent 索引 FIFO 遍历，最多 64 个返回成员、一个超限哨兵及 65 次定向 SQL；精确到 64 个成员仍逐个检查叶子，不因“满页”就声称缺失。`has_more` 仅表示此 family 超过上限，跨范围成员排除、重复 cycle 失败关闭；不提供全 Session 扫描 fallback。Application 仍先核原 input 的祖先来源，再对成员有界并发读取 exact snapshot、核对 lineage 与最新 Grant。成员读取失败、新 API 不可用均不能被当成已完整载入。
+
+补修验证：真实 SQLite／PostgreSQL 2/2（`/tmp/morphz-thread-family-store-93bd16a7.log`）、Rust SDK／真实 HTTP 3/3（`/tmp/morphz-thread-family-sdk-http-authorized.log`），包含成功读取后的实际 Session 撤权。唯一 PG 测试库核对 owner 后删除并确认不存在，仅删除可重建测试数据。TypeScript SDK 新增相同只读契约，15/15、严格类型及 JS/d.ts 编译通过。实际 mounted UI 2/2，App 全量 1255 条、1094 通过／161 条条件跳过／零失败（`/tmp/morphz-thread-family-app-fullnode-final.log`），生产构建／类型与 remote-store feature 编译通过。首轮旧假 Runtime 缺新增 family DTO 与重负载通知等待超时保留证据；补齐 exact fixture、限并发完整重跑，未删断言或放松权限。编译磁盘不足另仅清理本次失败的精确 working cache 1.7 GiB，可由源码重建，不清原数据、证据或已验证 binary。
+
+新 Runtime binary `4239c5a1…` 的父＋双子＋孙真链 1/1，4 个独立 Thread/root、4 个成功 Job；16 次普通确定性 Provider 响应、零付费调用（`/tmp/morphz-thread-family-runtime-nested.log`），不为注解另起求值。前后真实 Session 授权编排由 SDK／HTTP 公开入口复用，无公开 reader hook。
+
+原 Runtime 在核对无活动 Jobs／Plans／Activations、outbox 空且唯一提醒仍在未来后正常 SIGTERM 88551，再用既有 launcher、私有配置、模型凭据与同一 root/18089 启动 40122；未建立第二个手工中心／App。原中心 API 实读验证：295 条 Context 历史仍有 `has_more=true`，精确 family 仅两项、`has_more=false`；原 Jobs／Plans／Activations 的状态数量、未来提醒 ID／到期时间，以及模型 attempt／output／usage 计数均保持。证据 `/tmp/morphz-original-family-acceptance.c2sTKi/verification-after-reads.json`。该 binary 编译于本次 family 提交之前，内置 git 元数据仍为 `4215e885…`，不以旧元数据冒称未部署，也不冒称已包含后续无关代码；SHA 与新增端点共同确认实际运行功能。
+
+更新 Runtime 后的 12 库审计见 `/tmp/morphz-two-problems-backup.OtLfGi/after-audit-9Dvl01/audit.json`：原 240 表保留，232 表旧列摘要完全相同，原事件零删除／修改。差异为此前 schema／contextId 投影及正常启动事件、心跳、一个 Session 的时间戳和对应恢复游标；未新增 Session，Profile、未来提醒、已有剧本草稿仍逐字节相同。模型配置变化控制事件不是 LLM 请求，已单独核对真实 attempt／output／usage，不用泛匹配 model 主题误作调用次数。原窗口两项交付验收仍待解锁，不标目标完成。
 
 ### 剧本确认承接与多条目交付
 
@@ -31,9 +47,9 @@ Harness 1.4.3 在既有意图求值中同时产生本次 `task`，共享 Context
 
 1.4.3 第二次真实正向 `morphz-script-confirmation-live-Q4TPoO` 与独立只读复核均通过：12 次 Native 请求，原 body 仍为“好的，你直接做。”，三份 pending 候选正文分别 240／250／744 字，大纲恰好五场；三个持久 Host 回执、outbox 与目录版本 6／7／8 对应，正式稿仍第 1 版空正文、未采纳／批准。实际包仍为下列 1.4.3 hash。该 run 的 preflight 留存首轮 prefix 修复 source `5246eb94…` 与 Runtime／bridge 二进制 `dc90b562…`／`dca7746f…`；不冒称已检验之后的半索引补修 build，也不倒推 qqAlhL 原始失败原因。未额外执行 partial 模型探针、未自动重跑。
 
-Runtime 传输修复已聚焦本地提交 `48cfd917`；半索引最终源码 `4228ae37…` 对应 Runtime binary `0d48ad83…`、Native bridge `dbeb1c1e…`，两份构建退出 0，原 String 严格契约再次 1/1，均为零付费验证。用户原 Runtime 进程仍未重启，不把重建 binary 说成已部署到运行中的旧进程。
+Runtime 传输修复已聚焦本地提交 `48cfd917`；半索引最终源码 `4228ae37…` 对应当时 Runtime binary `0d48ad83…`、Native bridge `dbeb1c1e…`，两份构建退出 0，原 String 严格契约再次 1/1，均为零付费验证。当时原进程尚未重启；本轮后续已用包含传输与 family 修复的新 binary 正常更新原 Runtime，见本节开头的实际部署记录。
 
-原 Runtime 已安装新 1.4.3 包（`sha256:0ebecb9bbf0695fb42dfee82e3af9b80f5c08c7cb2a6bf0f4c2727caa61899c8`），未重启 Runtime、未重放旧任务。原 12 库、240 表与私有配置已在线备份到 `/tmp/morphz-two-problems-backup.OtLfGi`；只读检查原 v6 preparations 没有阻碍新唯一约束的重复分组，原候选仍为零。App 正常重开、新 Host 迁移与原窗口交付查看尚未验收。
+原 Runtime 已安装新 1.4.3 包（`sha256:0ebecb9bbf0695fb42dfee82e3af9b80f5c08c7cb2a6bf0f4c2727caa61899c8`）；安装当时未重启、不重放旧任务，后续正常部署如上。原 12 库、240 表与私有配置已在线备份到 `/tmp/morphz-two-problems-backup.OtLfGi`；只读检查原 v6 preparations 没有阻碍新唯一约束的重复分组，原候选仍为零。原 App 正常重开与新 Host v7 迁移已确认；原窗口新剧本交付查看尚未验收，未把隔离候选复制到用户剧本冒充真实执行。
 
 ### 主活动汇总真实子 Thread
 
@@ -45,7 +61,7 @@ Runtime 传输修复已聚焦本地提交 `48cfd917`；半索引最终源码 `42
 
 最终实际挂载 UI 6/6：主活动归组、孙层级、各自状态与结果、准确子任务停止目标、变化通知更新、窄屏与 200%；补修仅逻辑 Thread、零 Jobs／审批的 embedded 详情也显示真实截断提示，完整回读后移除。旧运动、完成对勾及时间顺序回归保持。旧 SSR 18/18，权限／执行专项 43/43，另有准确子 scope 及读取期间撤权禁止 POST 的正反例；补修相关 Node 35/35、构建／类型通过。共享旧 fixtures 补真实 Context Thread DTO，未降低生产核验；共享相关单测 19 通过、4 条 PostgreSQL 条件跳过。最终 UI／单测／构建证据：`/tmp/morphz-nested-zero-job-{ui,unit,build}.log`；原专项见 `/tmp/morphz-nested-thread-ssr.log`、`/tmp/morphz-nested-thread-unit.log`、`/tmp/morphz-nested-final-targeted.log`，组间可能重叠，不相加。
 
-边界：跨 Session delegate 未纳入本轮；200 条历史和 64 项家族读取达到上限时提示截断。原中心备份只读检查找到“可以，设置提醒吧”的真实父子活动，父已结束、一个子仍开放、各自独立 root，无物理 Jobs；它可验原窗口归组与子状态，不能代表原窗口多子步骤验收，也不得停止或修改原提醒。证据：`/tmp/morphz-nested-original-readonly-evidence.md`。隔离窄屏截图已复看，不称用户审美已认可。
+边界：跨 Session delegate 未纳入本轮；200 条全局历史仅限制活动目录，详情的精确 family 独立有界读取最多 64 项，并以实际超限哨兵提示截断。原中心备份只读检查找到“可以，设置提醒吧”的真实父子活动，父已结束、一个子仍开放、各自独立 root，无物理 Jobs；本轮原窗口已实看归组与子状态，随后原中心新 API 证实两项完整，不把该样本当作原窗口多子步骤验收，也不得停止或修改原提醒。证据：`/tmp/morphz-nested-original-readonly-evidence.md` 及本节开头的新 API 记录。隔离窄屏截图已复看，不称用户审美已认可。
 
 ## 2026-10-03 剩余页面健康轮询改为变化通知
 

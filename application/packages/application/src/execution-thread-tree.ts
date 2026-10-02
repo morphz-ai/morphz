@@ -106,80 +106,81 @@ export async function authorizedExecutionThreadTree(
       truncated: false,
     };
 
-  // Reuse the Runtime's existing bounded open/history inventory. A full page
-  // is not proof of complete historical descendants; never synthesize missing
-  // branches from tool text or require a second persistent index.
-  const inventory = z.object({
-    threads: z.array(z.unknown()),
-    detail_bounds: z
-      .object({
-        limit: z.number(),
-        has_more_threads: z.boolean(),
-      })
-      .optional(),
-  });
-  const views = await Promise.all(
-    [false, true].map(async (terminal) =>
-      inventory.parse(
-        await request(
-          `/api/contexts/${encodeURIComponent(binding.contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
-        ),
+  // Membership is proven independently from the Context's recent-history
+  // window. The Runtime reads only this selected Thread's indexed parent
+  // closure; a large unrelated history cannot make a two-node family partial.
+  const family = z
+    .object({
+      session_id: z.literal(binding.sessionId),
+      context_id: z.literal(binding.contextId),
+      selected_thread_id: z.literal(binding.threadId),
+      limit: z.literal(runtimeThreadAncestryLimit),
+      has_more: z.boolean(),
+      threads: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            session_id: z.literal(binding.sessionId),
+            context_id: z.literal(binding.contextId),
+            root_turn_id: z.string().min(1),
+            parent_thread_id: z.string().min(1).nullable(),
+            revision: z.number().int().positive().safe(),
+            generation: z.number().int().nonnegative().safe(),
+          }),
+        )
+        .min(1)
+        .max(runtimeThreadAncestryLimit),
+    })
+    .parse(
+      await request(
+        `/api/sessions/${encodeURIComponent(binding.sessionId)}/threads/${encodeURIComponent(binding.threadId)}/family?limit=${runtimeThreadAncestryLimit}`,
       ),
-    ),
-  );
-  const known = new Map<string, RuntimeThreadSnapshot>();
-  for (const view of views)
-    for (const raw of view.threads) {
-      const parsed = runtimeThreadSnapshot.safeParse(raw);
-      if (!parsed.success) continue;
-      const value = parsed.data,
-        t = value.thread;
-      if (
-        t.session_id !== binding.sessionId ||
-        t.context_id !== binding.contextId
-      )
-        continue;
-      const previous = known.get(t.id);
-      if (
-        !previous ||
-        t.revision > previous.thread.revision ||
-        (t.revision === previous.thread.revision &&
-          t.updated_at > previous.thread.updated_at)
-      )
-        known.set(t.id, value);
-    }
-  // The exact endpoint is the newest selected-Thread proof, including when its
-  // historical position lies outside the bounded scheduler page.
-  known.set(selected.thread.id, selected);
-  const threads = [selected];
-  const descendants = new Set([selected.thread.id]);
-  let changed = true;
-  let truncated = views.some(
-    (view, i) =>
-      view.detail_bounds?.has_more_threads !== false ||
-      (i === 1 && view.threads.length >= (view.detail_bounds?.limit ?? 200)),
-  );
-  while (changed) {
-    changed = false;
-    for (const value of known.values()) {
-      if (
-        descendants.has(value.thread.id) ||
-        !value.thread.supervision?.parent_thread_id ||
-        !descendants.has(value.thread.supervision.parent_thread_id)
-      )
-        continue;
-      if (threads.length >= runtimeThreadAncestryLimit) {
-        truncated = true;
-        continue;
-      }
-      descendants.add(value.thread.id);
-      threads.push(value);
-      changed = true;
-    }
+    );
+  const members = new Set<string>();
+  for (const [index, member] of family.threads.entries()) {
+    if (
+      members.has(member.id) ||
+      (index === 0
+        ? member.id !== binding.threadId
+        : !member.parent_thread_id || !members.has(member.parent_thread_id))
+    )
+      throw new DomainError("forbidden", "无法核验执行的子任务归属。");
+    members.add(member.id);
   }
+  const threads: RuntimeThreadSnapshot[] = [];
+  for (let offset = 0; offset < family.threads.length; offset += 4)
+    threads.push(
+      ...(await Promise.all(
+        family.threads.slice(offset, offset + 4).map(async (member) => {
+          const value = await read(member.id);
+          const t = value.thread;
+          if (
+            t.root_turn_id !== member.root_turn_id ||
+            (t.supervision?.parent_thread_id ?? null) !==
+              member.parent_thread_id ||
+            t.revision < member.revision
+          )
+            throw new DomainError(
+              "conflict",
+              "执行的子任务来源已变化，请刷新后查看。",
+            );
+          return value;
+        }),
+      )),
+    );
+  const currentSelected = threads[0]!;
+  if (
+    currentSelected.thread.root_turn_id !== selected.thread.root_turn_id ||
+    (currentSelected.thread.supervision?.parent_thread_id ?? null) !==
+      (selected.thread.supervision?.parent_thread_id ?? null)
+  )
+    throw new DomainError(
+      "conflict",
+      "执行的原始工作来源已变化，请刷新后查看。",
+    );
   return {
-    selected: project(selected),
+    selected: project(currentSelected),
     threads: threads.map(project),
-    truncated,
+    truncated: family.has_more,
   };
 }

@@ -44,6 +44,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON threads(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_supervisor
            ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_family_parent
+           ON threads(context_id, session_id, parent_thread_id, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_group
            ON threads(thread_group_id, status, updated_at DESC)"#,
         r#"ALTER TABLE signal_outbox ADD COLUMN IF NOT EXISTS signal_id TEXT"#,
@@ -334,6 +336,64 @@ impl ThreadStore for PostgresStore {
             .as_ref()
             .map(thread_from_row)
             .transpose()
+    }
+
+    async fn read_thread_family_bounded(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        limit: usize,
+    ) -> Result<Option<crate::memory::ThreadFamilyRead>, StoreError> {
+        if !(1..=64).contains(&limit) {
+            return Err("Thread family limit must be between 1 and 64".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let row = sqlx::query(
+            "SELECT * FROM threads WHERE id = $1 AND context_id = $2 AND session_id = $3",
+        )
+        .bind(thread_id)
+        .bind(context_id)
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut threads = vec![thread_from_row(&row)?];
+        let mut seen = std::collections::HashSet::from([thread_id.to_string()]);
+        let mut offset = 0;
+        while offset < threads.len() {
+            let remaining = limit + 1 - threads.len();
+            let parent_id = threads[offset].id.clone();
+            let rows = sqlx::query("SELECT * FROM threads WHERE context_id = $1 AND session_id = $2 AND parent_thread_id = $3 ORDER BY created_at, id LIMIT $4")
+                .bind(context_id).bind(session_id).bind(&parent_id).bind(remaining as i64)
+                .fetch_all(&mut *tx).await?;
+            for row in rows {
+                let child = thread_from_row(&row)?;
+                if !seen.insert(child.id.clone()) {
+                    return Err("Thread family contains a parent cycle".into());
+                }
+                threads.push(child);
+                if threads.len() > limit {
+                    threads.truncate(limit);
+                    tx.commit().await?;
+                    return Ok(Some(crate::memory::ThreadFamilyRead {
+                        threads,
+                        has_more: true,
+                    }));
+                }
+            }
+            offset += 1;
+        }
+        tx.commit().await?;
+        Ok(Some(crate::memory::ThreadFamilyRead {
+            threads,
+            has_more: false,
+        }))
     }
 
     async fn list_threads_by_ids(

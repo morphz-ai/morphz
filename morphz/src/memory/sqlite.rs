@@ -1758,6 +1758,8 @@ impl SqliteStore {
             mark_sqlite_migration(&pool, LEGACY_OBJECTIVE_THREAD_KIND_MIGRATION).await?;
         }
         migrate_thread_supervisor_kind_domain(&pool).await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_threads_family_parent ON threads(context_id, session_id, parent_thread_id, created_at, id)")
+            .execute(&pool).await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_threads_supervisor
                ON threads(supervisor_kind, supervisor_id, status, updated_at DESC)"#,
@@ -15736,6 +15738,65 @@ impl ThreadStore for SqliteStore {
             .as_ref()
             .map(thread_from_row)
             .transpose()
+    }
+
+    async fn read_thread_family_bounded(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        limit: usize,
+    ) -> Result<Option<crate::memory::ThreadFamilyRead>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if !(1..=64).contains(&limit) {
+            return Err("Thread family limit must be between 1 and 64".into());
+        }
+        // SQLite's deferred read transaction pins the WAL snapshot at this
+        // first SELECT. No writes or compatibility migrations occur here.
+        let mut tx = self.pool.begin().await?;
+        let row =
+            sqlx::query("SELECT * FROM threads WHERE id = ? AND context_id = ? AND session_id = ?")
+                .bind(thread_id)
+                .bind(context_id)
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut threads = vec![thread_from_row(&row)?];
+        let mut seen = HashSet::from([thread_id.to_string()]);
+        let mut offset = 0;
+        while offset < threads.len() {
+            // Even when exactly limit nodes have been returned, every pending
+            // node must be probed with LIMIT 1 to prove its children are empty.
+            let remaining = limit + 1 - threads.len();
+            let parent_id = threads[offset].id.clone();
+            let rows = sqlx::query("SELECT * FROM threads WHERE context_id = ? AND session_id = ? AND parent_thread_id = ? ORDER BY created_at, id LIMIT ?")
+                .bind(context_id).bind(session_id).bind(&parent_id).bind(remaining as i64)
+                .fetch_all(&mut *tx).await?;
+            for row in rows {
+                let child = thread_from_row(&row)?;
+                if !seen.insert(child.id.clone()) {
+                    return Err("Thread family contains a parent cycle".into());
+                }
+                threads.push(child);
+                if threads.len() > limit {
+                    threads.truncate(limit);
+                    tx.commit().await?;
+                    return Ok(Some(crate::memory::ThreadFamilyRead {
+                        threads,
+                        has_more: true,
+                    }));
+                }
+            }
+            offset += 1;
+        }
+        tx.commit().await?;
+        Ok(Some(crate::memory::ThreadFamilyRead {
+            threads,
+            has_more: false,
+        }))
     }
 
     async fn list_threads_by_ids(

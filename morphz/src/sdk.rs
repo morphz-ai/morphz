@@ -68,7 +68,7 @@ use crate::runtime::{
     ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, EventHistoryPage, EventHistoryQuery,
     MessageIngressError, MessageIngressErrorKind, MessageReceipt, ModelUsagePage, ModelUsageQuery,
     MorphzRuntime, RuntimeEventStream, RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus,
-    SchedulerQuery, SchedulerSnapshot, SessionMessageOptions, ThreadDetail,
+    SchedulerQuery, SchedulerSnapshot, SessionMessageOptions, ThreadDetail, ThreadFamily,
 };
 use crate::trajectory::{
     derive_training_episode, verify_bundle, verify_training_episode, AgentTrajectoryExporter,
@@ -1162,6 +1162,60 @@ impl MorphzSdk {
                     format!("Thread '{thread_id}' does not exist in Context '{context_id}'"),
                 )
             })
+    }
+
+    /// Read selected Thread and its true same-Session descendants, independent
+    /// of the Context scheduler's bounded recent history.
+    pub async fn session_thread_family(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        limit: usize,
+    ) -> SdkResult<ThreadFamily> {
+        self.session_thread_family_read(principal_id, session_id, limit, |context_id| async move {
+            self.runtime
+                .session_thread_family(&context_id, session_id, thread_id, limit)
+                .await
+        })
+        .await
+    }
+
+    // Keep authorization on both sides of the actual read, including a read
+    // which yields while participation is revoked. The reader is private;
+    // callers cannot inject a different data source through the SDK contract.
+    async fn session_thread_family_read<F, Fut>(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        limit: usize,
+        read: F,
+    ) -> SdkResult<ThreadFamily>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+            Output = Result<Option<ThreadFamily>, crate::runtime::RuntimeError>,
+        >,
+    {
+        if !(1..=64).contains(&limit) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Thread family limit must be between 1 and 64",
+            ));
+        }
+        let session = self.get_session(principal_id, session_id).await?;
+        let family = read(session.context_id.clone())
+            .await
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Session Thread not found"))?;
+        let current = self.get_session(principal_id, session_id).await?;
+        if current.context_id != session.context_id {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                "Session scope changed during Thread family read",
+            ));
+        }
+        Ok(family)
     }
 
     /// Session participation is proven before an exact display metadata read.
@@ -4887,6 +4941,150 @@ mod tests {
             assurance: "trusted-gateway".to_string(),
             display_name: Some(id.to_string()),
         }
+    }
+
+    async fn thread_family_sdk_fixture() -> (NamedTempFile, MorphzSdk) {
+        use crate::memory::{NewThread, ThreadKind, ThreadStore, ThreadSupervision};
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
+            .database_path(database.path().to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: "family-sdk-agent".into(),
+                title: "Family SDK".into(),
+                root_context_id: "family-sdk-context".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: "family-sdk-context".into(),
+                agent_id: "family-sdk-agent".into(),
+                title: "Family SDK".into(),
+            })
+            .await
+            .unwrap();
+        let sdk = MorphzSdk::new(runtime);
+        for (session, owner) in [
+            ("family-sdk-a", "family-owner-a"),
+            ("family-sdk-b", "family-owner-b"),
+        ] {
+            sdk.create_session(
+                principal(owner),
+                NewSession {
+                    id: session.into(),
+                    agent_id: "family-sdk-agent".into(),
+                    context_id: "family-sdk-context".into(),
+                    parent_session_id: None,
+                    title: session.into(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let store = crate::memory::sqlite::SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for (id, parent) in [
+            ("family-sdk-parent", None),
+            ("family-sdk-child", Some("family-sdk-parent")),
+        ] {
+            store
+                .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    id: id.into(),
+                    agent_id: "family-sdk-agent".into(),
+                    context_id: "family-sdk-context".into(),
+                    session_id: "family-sdk-a".into(),
+                    initiating_principal_id: None,
+                    root_turn_id: format!("root-{id}"),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: parent.map_or_else(ThreadSupervision::legacy, |parent| {
+                        ThreadSupervision::attached(parent, 1, "family-sdk-evaluation")
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+        (database, sdk)
+    }
+
+    #[tokio::test]
+    async fn thread_family_sdk_checks_exact_session_scope_and_limits() {
+        let (_database, sdk) = thread_family_sdk_fixture().await;
+        let family = sdk
+            .session_thread_family("family-owner-a", "family-sdk-a", "family-sdk-parent", 64)
+            .await
+            .unwrap();
+        assert_eq!(
+            family
+                .threads
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["family-sdk-parent", "family-sdk-child"]
+        );
+        assert!(!family.has_more);
+        assert_eq!(
+            sdk.session_thread_family("family-owner-b", "family-sdk-a", "family-sdk-parent", 64)
+                .await
+                .unwrap_err()
+                .code,
+            SdkErrorCode::Forbidden
+        );
+        assert_eq!(
+            sdk.session_thread_family("family-owner-b", "family-sdk-b", "family-sdk-parent", 64)
+                .await
+                .unwrap_err()
+                .code,
+            SdkErrorCode::NotFound
+        );
+        for limit in [0, 65] {
+            assert_eq!(
+                sdk.session_thread_family(
+                    "family-owner-a",
+                    "family-sdk-a",
+                    "family-sdk-parent",
+                    limit
+                )
+                .await
+                .unwrap_err()
+                .code,
+                SdkErrorCode::InvalidArgument
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn thread_family_sdk_rechecks_real_participation_after_read() {
+        let (database, sdk) = thread_family_sdk_fixture().await;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()))
+            .await
+            .unwrap();
+        let read_runtime = &sdk.runtime;
+        let read_pool = &pool;
+        let error = sdk.session_thread_family_read("family-owner-a", "family-sdk-a", 64, |context_id| async move {
+            let family = read_runtime.session_thread_family(&context_id, "family-sdk-a", "family-sdk-parent", 64).await?;
+            assert_eq!(family.as_ref().unwrap().threads.len(), 2);
+            let revoked = sqlx::query("UPDATE session_principal_bindings SET unbound_at = ? WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL")
+                .bind(chrono::Utc::now().to_rfc3339()).bind("family-sdk-a").bind("family-owner-a")
+                .execute(read_pool).await?;
+            assert_eq!(revoked.rows_affected(), 1);
+            Ok(family)
+        }).await.unwrap_err();
+        assert_eq!(error.code, SdkErrorCode::Forbidden);
+        pool.close().await;
     }
 
     #[test]

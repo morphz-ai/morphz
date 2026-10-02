@@ -361,6 +361,39 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             : null,
       });
     }
+    const familyPath =
+      /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/family$/.exec(path);
+    if (request.method === "GET" && familyPath) {
+      const threadId = decodeURIComponent(familyPath[2]!);
+      const inputId = threadId.startsWith("thread-")
+        ? threadId.slice("thread-".length)
+        : "";
+      const sourceSessionId = sentSessions.get(inputId);
+      if (sourceSessionId !== familyPath[1])
+        return send(404, { error: "Session Thread not found" });
+      return send(200, {
+        session_id: sourceSessionId,
+        context_id: sessions.get(sourceSessionId)?.context_id,
+        selected_thread_id: threadId,
+        generated_at: "2026-10-03T00:00:00.000Z",
+        limit: Number(
+          new URL(request.url!, "http://localhost").searchParams.get("limit") ??
+            64,
+        ),
+        has_more: false,
+        threads: [
+          {
+            id: threadId,
+            session_id: sourceSessionId,
+            context_id: sessions.get(sourceSessionId)?.context_id,
+            root_turn_id: `root-${inputId}`,
+            parent_thread_id: null,
+            revision: 1,
+            generation: 1,
+          },
+        ],
+      });
+    }
     if (request.method === "GET" && path.includes("/threads/")) {
       const threadId = decodeURIComponent(path.split("/").at(-1)!);
       const inputId = threadId.startsWith("thread-")

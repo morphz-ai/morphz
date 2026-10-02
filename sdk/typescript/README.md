@@ -46,5 +46,16 @@ authorization, CAS and command-receipt boundary. Persisted keys and command wire
 fields are unchanged; selecting a legacy method is explicit compatibility, not
 automatic fallback.
 
+`sessionThreadFamily(principal, sessionId, threadId, limit = 64)` performs one
+read-only Session-scoped GET using the same service token and trusted Principal
+headers as other Session methods. Its `ThreadFamily` response contains the
+selected Thread followed by its real same-Session/Context descendants in
+breadth-first order, without ancestors, siblings, Thread bodies or Job data.
+The limit is an integer from 1 to 64, including the selected Thread. Check
+`has_more` before treating the result as complete; unrelated Context history
+does not affect this flag. Each member keeps its own `root_turn_id`, parent,
+revision and generation. This read does not grant execution control, poll,
+retry, or fall back to recent Context history when the Runtime lacks the API.
+
 Run the SDK tests with `npm test` from this directory (Node.js with native
 TypeScript type stripping).

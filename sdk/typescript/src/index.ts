@@ -138,6 +138,30 @@ export interface SessionRecord {
   [key: string]: unknown;
 }
 
+/** Runtime-owned lineage facts, without Thread bodies or physical Job data. */
+export interface ThreadFamilyMember {
+  id: string;
+  session_id: string;
+  context_id: string;
+  root_turn_id: string;
+  parent_thread_id: string | null;
+  revision: number;
+  generation: number;
+}
+
+export interface ThreadFamily {
+  session_id: string;
+  context_id: string;
+  selected_thread_id: string;
+  generated_at: string;
+  /** Selected Thread first, then its real descendants in breadth-first order. */
+  threads: ThreadFamilyMember[];
+  /** Counts the selected Thread as well as descendants; between 1 and 64. */
+  limit: number;
+  /** True only when this bounded family omits further descendants. */
+  has_more: boolean;
+}
+
 export interface MorphzEvent {
   id: string;
   topic: string;
@@ -386,6 +410,31 @@ export class MorphzClient {
     return this.call(
       `/api/sessions/${encodeURIComponent(sessionId)}`,
       principal,
+    );
+  }
+
+  /** Read exact same-Session/Context descendants, not recent Context history.
+   * This never includes ancestors or siblings, grants control authority,
+   * retries a request, or falls back when an older Runtime lacks the endpoint.
+   */
+  sessionThreadFamily(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    threadId: string,
+    limit = 64,
+  ): Promise<ThreadFamily> {
+    if (!principal?.id) throw new Error("principal.id is required");
+    if (!sessionId) throw new Error("sessionId is required");
+    if (!threadId) throw new Error("threadId is required");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64)
+      throw new RangeError(
+        "Thread family limit must be an integer between 1 and 64",
+      );
+    const query = new URLSearchParams({ limit: String(limit) });
+    return this.call(
+      `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}/family?${query}`,
+      principal,
+      { method: "GET" },
     );
   }
 

@@ -150,6 +150,13 @@ struct AuthQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct ThreadFamilyHttpQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct AttentionAcknowledgementsQuery {
     token: Option<String>,
     after_sequence: Option<u64>,
@@ -1497,6 +1504,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/threads/:thread_id/annotations",
                 get(handle_get_session_thread_annotations),
+            )
+            .route(
+                "/api/sessions/:session_id/threads/:thread_id/family",
+                get(handle_get_session_thread_family),
             )
             .route(
                 "/api/sessions/:session_id/observation-snapshot",
@@ -8503,6 +8514,81 @@ async fn handle_get_session_thread(
         .into_response(),
         Ok(Some(_)) | Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_thread_family(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<ThreadFamilyHttpQuery>,
+) -> Response {
+    let runtime = state.runtime.clone();
+    let read_session_id = session_id.clone();
+    read_session_thread_family_response(
+        &state,
+        &session_id,
+        &headers,
+        &query,
+        |context_id, limit| async move {
+            runtime
+                .session_thread_family(&context_id, &read_session_id, &thread_id, limit)
+                .await
+        },
+    )
+    .await
+}
+
+// This private orchestration also makes read-during-revocation deterministic
+// in tests without a public hook or a race against the storage scheduler.
+async fn read_session_thread_family_response<F, Fut>(
+    state: &AppState,
+    session_id: &str,
+    headers: &HeaderMap,
+    query: &ThreadFamilyHttpQuery,
+    read: F,
+) -> Response
+where
+    F: FnOnce(String, usize) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<Option<crate::runtime::ThreadFamily>, crate::runtime::RuntimeError>,
+    >,
+{
+    if !is_authorized(state, headers, query.auth.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let limit = query.limit.unwrap_or(64);
+    if !(1..=64).contains(&limit) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Thread family limit must be between 1 and 64",
+        );
+    }
+    let authorize = || {
+        authorize_session_read(
+            state,
+            headers,
+            query.auth.token.as_deref(),
+            query.auth.principal_id.as_deref(),
+            session_id,
+        )
+    };
+    let session = match authorize().await {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    let family = match read(session.context_id.clone(), limit).await {
+        Ok(Some(family)) => family,
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    match authorize().await {
+        Ok(current) if current.context_id == session.context_id => Json(family).into_response(),
+        Ok(_) => error_response(
+            StatusCode::CONFLICT,
+            "Session scope changed during Thread family read",
+        ),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -17723,6 +17809,238 @@ account = "xai-account"
         let mut operator = HeaderMap::new();
         operator.insert(header::AUTHORIZATION,"Bearer annotation-operator".parse().unwrap());
         assert_eq!(request(operator,"missing-session").await.status(),StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn thread_family_http_scopes_gateway_operator_and_rechecks_revocation() {
+        use crate::memory::{NewThread, ThreadKind, ThreadSupervision};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("family-http.sqlite");
+        let (mut state, runtime) = test_state_at_with_workers(&path, false).await;
+        let mutable = Arc::get_mut(&mut state).unwrap();
+        mutable.auth_token = Some("family-http-operator".into());
+        mutable.gateway_token = Some("family-http-gateway".into());
+        mutable.identity.mode = ServerIdentityMode::TrustedGateway;
+        runtime
+            .ensure_agent(crate::memory::NewAgent {
+                id: runtime.identity().agent_id.clone(),
+                title: "Family HTTP".into(),
+                root_context_id: runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: runtime.identity().context_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Family HTTP".into(),
+            })
+            .await
+            .unwrap();
+        for (session, owner) in [
+            ("family-http-a", "family-http-owner-a"),
+            ("family-http-b", "family-http-owner-b"),
+        ] {
+            runtime
+                .create_session_for_principal(
+                    NewSession {
+                        id: session.into(),
+                        agent_id: runtime.identity().agent_id.clone(),
+                        context_id: runtime.identity().context_id.clone(),
+                        parent_session_id: None,
+                        title: session.into(),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                    PrincipalAssertion {
+                        principal_id: owner.into(),
+                        provider_id: "test".into(),
+                        assurance: "test".into(),
+                        display_name: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let store = crate::memory::sqlite::SqliteStore::new(path.to_str().unwrap())
+            .await
+            .unwrap();
+        for (id, parent) in [
+            ("family-http-parent", None),
+            ("family-http-child", Some("family-http-parent")),
+        ] {
+            store
+                .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    id: id.into(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "family-http-a".into(),
+                    initiating_principal_id: None,
+                    root_turn_id: format!("root-{id}"),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: parent.map_or_else(ThreadSupervision::legacy, |parent| {
+                        ThreadSupervision::attached(parent, 1, "family-http-evaluation")
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+        // Exercise actual HTTP extraction and the production endpoint, not a
+        // fake transport response or a separately reimplemented authorizer.
+        let app = Router::new()
+            .route(
+                "/api/sessions/:session_id/threads/:thread_id/family",
+                get(handle_get_session_thread_family),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        let url = format!(
+            "http://{address}/api/sessions/family-http-a/threads/family-http-parent/family"
+        );
+        assert_eq!(
+            client.get(&url).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .get(&url)
+                .bearer_auth("family-http-gateway")
+                .header("x-morphz-principal", "family-http-owner-b")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            client
+                .get(&url)
+                .bearer_auth("family-http-gateway")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let own = client
+            .get(&url)
+            .bearer_auth("family-http-gateway")
+            .header("x-morphz-principal", "family-http-owner-a")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(own.status(), StatusCode::OK);
+        let family: serde_json::Value = own.json().await.unwrap();
+        assert_eq!(family["has_more"], json!(false));
+        assert_eq!(
+            family["threads"][1]["parent_thread_id"],
+            json!("family-http-parent")
+        );
+        assert_eq!(family["threads"].as_array().unwrap().len(), 2);
+        assert!(family["threads"][0].get("result_text").is_none());
+        assert_eq!(
+            client
+                .get(&url)
+                .bearer_auth("family-http-operator")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            client
+                .get(format!("{url}?principal_id=family-http-owner-b"))
+                .bearer_auth("family-http-operator")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let crossed = url.replace("/family-http-a/", "/family-http-b/");
+        assert_eq!(
+            client
+                .get(&crossed)
+                .bearer_auth("family-http-gateway")
+                .header("x-morphz-principal", "family-http-owner-b")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            client
+                .get(&crossed)
+                .bearer_auth("family-http-operator")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        for limit in [0, 65] {
+            assert_eq!(
+                client
+                    .get(format!("{url}?limit={limit}"))
+                    .bearer_auth("family-http-operator")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let bounded: serde_json::Value = client
+            .get(format!("{url}?limit=1"))
+            .bearer_auth("family-http-operator")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(bounded["has_more"], json!(true));
+        assert_eq!(bounded["threads"].as_array().unwrap().len(), 1);
+        server.abort();
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer family-http-gateway".parse().unwrap(),
+        );
+        headers.insert("x-morphz-principal", "family-http-owner-a".parse().unwrap());
+        let read_runtime = &runtime;
+        let read_pool = &pool;
+        let response = read_session_thread_family_response(&state, "family-http-a", &headers, &ThreadFamilyHttpQuery { auth: AuthQuery::default(), limit: None }, |context_id, limit| async move {
+            let family = read_runtime.session_thread_family(&context_id, "family-http-a", "family-http-parent", limit).await?;
+            assert_eq!(family.as_ref().unwrap().threads.len(), 2);
+            let revoked = sqlx::query("UPDATE session_principal_bindings SET unbound_at = ? WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL")
+                .bind(chrono::Utc::now().to_rfc3339()).bind("family-http-a").bind("family-http-owner-a")
+                .execute(read_pool).await?;
+            assert_eq!(revoked.rows_affected(), 1);
+            Ok(family)
+        }).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("family-http-child"));
+        pool.close().await;
     }
 
     #[tokio::test]

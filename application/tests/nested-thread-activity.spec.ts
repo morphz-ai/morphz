@@ -13,18 +13,20 @@ import {
 } from "./platform-conversation-fixture.js";
 import { openExecutionPanel } from "./interaction-helpers.js";
 
-test("embedded 逻辑 family 没有 Jobs 或审批时仍展示真实截断提示，完整回读后移除", async ({
+test("embedded 逻辑 family 无 Jobs/审批时按真实 family 截断显示，不被 Context 历史截断污染", async ({
   page,
 }, info) => {
   const threads: ExecutionActivity["threads"] = [];
-  let truncated = true;
+  let familyTruncated = true;
   const fixture = await mockPlatformConversation(page, () => ({
     inputs: [],
     runtime: {
       ...disconnectedRuntime,
       configured: true,
       connected: true,
-      activity: { available: true, truncated, threads },
+      // Unrelated recent Context history stays bounded even when this exact
+      // selected family is fully loaded after the refresh below.
+      activity: { available: true, truncated: true, threads },
       attention: { available: true, approvals: [] },
     },
   }));
@@ -53,7 +55,7 @@ test("embedded 逻辑 family 没有 Jobs 或审批时仍展示真实截断提示
         jobs: [],
         approvals: [],
         limit: 100,
-        threadsTruncated: truncated,
+        threadsTruncated: familyTruncated,
         threads: threads.map((thread) => ({
           id: thread.id,
           parentThreadId: thread.parentThreadId ?? null,
@@ -90,12 +92,17 @@ test("embedded 逻辑 family 没有 Jobs 或审批时仍展示真实截断提示
   await panel.screenshot({
     path: info.outputPath("logical-family-no-jobs-truncated.png"),
   });
-  truncated = false;
+  familyTruncated = false;
   threads[0]!.revision++;
   await fixture.refresh();
   await expect(hint).toHaveCount(0);
   await expect(panel.locator(".execution-dialog-toolbar")).toHaveCount(0);
   await expect(panel.locator(".execution-thread-group")).toHaveCount(2);
+  await panel.screenshot({
+    path: info.outputPath(
+      "logical-family-complete-despite-context-history.png",
+    ),
+  });
 });
 
 // Synthetic transport verifies production mounted UI only. The corresponding

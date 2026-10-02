@@ -1623,6 +1623,454 @@ where
     );
 }
 
+async fn assert_thread_family_read_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    const CONTEXT: &str = "family-conformance-context";
+    const SESSION: &str = "family-conformance-session";
+    for (agent, context, session) in [
+        ("family-conformance-agent", CONTEXT, SESSION),
+        (
+            "family-conformance-other-agent",
+            "family-conformance-other-context",
+            "family-conformance-other-context-session",
+        ),
+    ] {
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: agent.to_string(),
+                    title: "Family store conformance".to_string(),
+                    root_context_id: context.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context.to_string(),
+                    agent_id: agent.to_string(),
+                    title: "Family store conformance".to_string(),
+                },
+                NewSession {
+                    id: session.to_string(),
+                    agent_id: agent.to_string(),
+                    context_id: context.to_string(),
+                    parent_session_id: None,
+                    title: "Family store conformance".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .create_session(NewSession {
+            id: "family-conformance-other-session".to_string(),
+            agent_id: "family-conformance-agent".to_string(),
+            context_id: CONTEXT.to_string(),
+            parent_session_id: Some(SESSION.to_string()),
+            title: "Other Session".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_principal(NewPrincipal {
+            id: "family-conformance-principal".to_string(),
+            provider_id: "conformance".to_string(),
+            assurance: "verified".to_string(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+    let make_thread = |id: &str, parent: Option<&str>| NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
+        model_alias: None,
+        reasoning_effort: None,
+        id: id.to_string(),
+        agent_id: "family-conformance-agent".to_string(),
+        context_id: CONTEXT.to_string(),
+        session_id: SESSION.to_string(),
+        initiating_principal_id: None,
+        root_turn_id: format!("root-{id}"),
+        kind: ThreadKind::Execution,
+        executor_kind: "runtime".to_string(),
+        executor_id: None,
+        target_id: None,
+        supervision: parent.map_or_else(ThreadSupervision::legacy, |parent| {
+            ThreadSupervision::attached(parent, 1, format!("evaluation-{id}"))
+        }),
+    };
+    let ids = |family: &morphz::memory::ThreadFamilyRead| {
+        family
+            .threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let parent = store
+        .ensure_thread(make_thread("family-small-parent", None))
+        .await
+        .unwrap();
+    let mut child_spec = make_thread("family-small-child", Some(&parent.id));
+    child_spec.initiating_principal_id = Some("family-conformance-principal".to_string());
+    let child = store.ensure_thread(child_spec).await.unwrap();
+    let mut other_session = make_thread("family-other-session-child", Some(&parent.id));
+    other_session.session_id = "family-conformance-other-session".to_string();
+    store.ensure_thread(other_session).await.unwrap();
+    let mut other_context = make_thread("family-other-context-child", Some(&parent.id));
+    other_context.agent_id = "family-conformance-other-agent".to_string();
+    other_context.context_id = "family-conformance-other-context".to_string();
+    other_context.session_id = "family-conformance-other-context-session".to_string();
+    store.ensure_thread(other_context).await.unwrap();
+    for index in 0..201 {
+        store
+            .ensure_thread(make_thread(&format!("family-unrelated-{index:03}"), None))
+            .await
+            .unwrap();
+    }
+    let recent = store
+        .list_context_threads_bounded(CONTEXT, true, 200)
+        .await
+        .unwrap();
+    assert_eq!(recent.len(), 200);
+    assert!(recent
+        .iter()
+        .all(|thread| thread.id != parent.id && thread.id != child.id));
+    let small = store
+        .read_thread_family_bounded(CONTEXT, SESSION, &parent.id, 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ids(&small), vec![parent.id.clone(), child.id.clone()]);
+    assert!(
+        !small.has_more,
+        "unrelated Context history cannot truncate a two-node family"
+    );
+    assert_eq!(small.threads[0].initiating_principal_id, None);
+    assert_eq!(
+        small.threads[1].initiating_principal_id,
+        child.initiating_principal_id
+    );
+    assert_eq!(small.threads[1].agent_id, child.agent_id);
+    let one = store
+        .read_thread_family_bounded(CONTEXT, SESSION, &parent.id, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ids(&one), vec![parent.id.clone()]);
+    assert!(one.has_more);
+    for (context, session, selected) in [
+        (
+            "family-conformance-other-context",
+            SESSION,
+            parent.id.as_str(),
+        ),
+        (
+            CONTEXT,
+            "family-conformance-other-session",
+            parent.id.as_str(),
+        ),
+        (CONTEXT, SESSION, "family-missing-selected"),
+    ] {
+        assert!(store
+            .read_thread_family_bounded(context, session, selected, 64)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    for limit in [0, 65, usize::MAX] {
+        assert!(store
+            .read_thread_family_bounded(CONTEXT, SESSION, &parent.id, limit)
+            .await
+            .is_err());
+    }
+
+    // Parent FIFO, not a global chronological sort: the first grandchild is
+    // created before the second direct child but must remain behind it.
+    for (id, parent) in [
+        ("family-order-root", None),
+        ("family-order-z-first", Some("family-order-root")),
+        (
+            "family-order-first-grandchild",
+            Some("family-order-z-first"),
+        ),
+        ("family-order-a-second", Some("family-order-root")),
+        (
+            "family-order-second-grandchild",
+            Some("family-order-a-second"),
+        ),
+    ] {
+        store.ensure_thread(make_thread(id, parent)).await.unwrap();
+    }
+    let ordered = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-order-root", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ids(&ordered),
+        vec![
+            "family-order-root",
+            "family-order-z-first",
+            "family-order-a-second",
+            "family-order-first-grandchild",
+            "family-order-second-grandchild"
+        ]
+    );
+    assert!(!ordered.has_more);
+    let repeated = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-order-root", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated.threads, ordered.threads);
+    assert_eq!(repeated.has_more, ordered.has_more);
+    let selected_child = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-order-z-first", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ids(&selected_child),
+        vec!["family-order-z-first", "family-order-first-grandchild"]
+    );
+    assert!(
+        !selected_child.has_more,
+        "selected descendants must not include ancestors or siblings"
+    );
+    let leaf = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-order-first-grandchild", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ids(&leaf), vec!["family-order-first-grandchild"]);
+    assert!(!leaf.has_more);
+
+    let objective = store
+        .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
+            id: "family-conformance-objective".to_string(),
+            agent_id: "family-conformance-agent".to_string(),
+            context_id: CONTEXT.to_string(),
+            coordinator_session_id: SESSION.to_string(),
+            delivery_session_id: SESSION.to_string(),
+            parent_objective_id: None,
+            source_event_id: "family-objective-source".to_string(),
+            initiating_principal_id: None,
+            stated_objective: "Preserve the actual parent after Objective supervision".to_string(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_thread(make_thread("family-objective-parent", None))
+        .await
+        .unwrap();
+    let mut objective_child =
+        make_thread("family-objective-child", Some("family-objective-parent"));
+    objective_child.supervision = ThreadSupervision::objective(
+        objective.id,
+        "family-objective-origin",
+        objective.generation,
+        Some("family-objective-parent".to_string()),
+    );
+    store.ensure_thread(objective_child).await.unwrap();
+    let promoted = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-objective-parent", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ids(&promoted),
+        vec!["family-objective-parent", "family-objective-child"]
+    );
+    assert!(!promoted.has_more);
+
+    store
+        .ensure_thread(make_thread("family-wide-root", None))
+        .await
+        .unwrap();
+    for index in 0..63 {
+        store
+            .ensure_thread(make_thread(
+                &format!("family-wide-child-{index:02}"),
+                Some("family-wide-root"),
+            ))
+            .await
+            .unwrap();
+    }
+    let exactly_64 = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-wide-root", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(exactly_64.threads.len(), 64);
+    assert!(
+        !exactly_64.has_more,
+        "a full page is not itself proof of a 65th family node"
+    );
+    store
+        .ensure_thread(make_thread(
+            "family-wide-child-63",
+            Some("family-wide-root"),
+        ))
+        .await
+        .unwrap();
+    let over_64 = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-wide-root", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(over_64.threads.len(), 64);
+    assert!(
+        over_64.has_more,
+        "an actual 65th node must mark the bounded family incomplete"
+    );
+    assert_eq!(ids(&over_64), ids(&exactly_64));
+
+    // The last included node also needs a child probe. Checking only the
+    // selected root's immediate siblings misses a 65th node in a deep chain.
+    for index in 0..64 {
+        let id = format!("family-chain-{index:02}");
+        let parent = (index > 0).then(|| format!("family-chain-{:02}", index - 1));
+        store
+            .ensure_thread(make_thread(&id, parent.as_deref()))
+            .await
+            .unwrap();
+    }
+    let exact_chain = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-chain-00", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(exact_chain.threads.len(), 64);
+    assert!(!exact_chain.has_more);
+    store
+        .ensure_thread(make_thread("family-chain-64", Some("family-chain-63")))
+        .await
+        .unwrap();
+    let long_chain = store
+        .read_thread_family_bounded(CONTEXT, SESSION, "family-chain-00", 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ids(&long_chain), ids(&exact_chain));
+    assert!(
+        long_chain.has_more,
+        "the last included node's actual child is the sentinel"
+    );
+
+    for (id, parent) in [
+        ("family-self-cycle", "family-self-cycle"),
+        ("family-cycle-a", "family-cycle-b"),
+        ("family-cycle-b", "family-cycle-a"),
+    ] {
+        store
+            .ensure_thread(make_thread(id, Some(parent)))
+            .await
+            .unwrap();
+    }
+    for selected in ["family-self-cycle", "family-cycle-a"] {
+        assert!(
+            store
+                .read_thread_family_bounded(CONTEXT, SESSION, selected, 64)
+                .await
+                .is_err(),
+            "real parent cycles must fail instead of silently reporting a complete family"
+        );
+    }
+}
+
+async fn assert_thread_family_created_at_tie<S: ThreadStore>(store: &S) {
+    let family = store
+        .read_thread_family_bounded(
+            "family-conformance-context",
+            "family-conformance-session",
+            "family-order-root",
+            64,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        family.threads.iter().map(|thread| thread.id.as_str()).collect::<Vec<_>>(),
+        vec!["family-order-root", "family-order-a-second", "family-order-z-first", "family-order-second-grandchild", "family-order-first-grandchild"],
+        "equal creation timestamps must use stable IDs, preserving parent FIFO below the tied siblings"
+    );
+    assert!(!family.has_more);
+}
+
+#[tokio::test]
+async fn sqlite_thread_family_read_satisfies_bounded_scoped_conformance() {
+    let database = NamedTempFile::new().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let inspection = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()),
+    )
+    .await
+    .unwrap();
+    let index_columns = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_index_info('idx_threads_family_parent') ORDER BY seqno",
+    )
+    .fetch_all(&inspection)
+    .await
+    .unwrap();
+    assert_eq!(
+        index_columns,
+        vec![
+            "context_id",
+            "session_id",
+            "parent_thread_id",
+            "created_at",
+            "id"
+        ]
+    );
+    assert_thread_family_read_conformance(Arc::clone(&store)).await;
+    sqlx::query("UPDATE threads SET created_at = (SELECT created_at FROM threads WHERE id = 'family-order-root') WHERE id IN ('family-order-z-first', 'family-order-a-second')")
+        .execute(&inspection).await.unwrap();
+    assert_thread_family_created_at_tie(store.as_ref()).await;
+    inspection.close().await;
+}
+
+#[tokio::test]
+async fn postgres_thread_family_read_satisfies_bounded_scoped_conformance_when_configured() {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap();
+    let schema = format!("morphz_family_{}_{suffix}", std::process::id());
+    let administration = sqlx::PgPool::connect(&database_url).await.unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&administration)
+        .await
+        .unwrap();
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    let index_definition = sqlx::query_scalar::<_, String>(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_pg_threads_family_parent'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert!(index_definition.contains("(context_id, session_id, parent_thread_id, created_at, id)"));
+    assert_thread_family_read_conformance(Arc::clone(&store)).await;
+    sqlx::query("UPDATE threads SET created_at = (SELECT created_at FROM threads WHERE id = 'family-order-root') WHERE id IN ('family-order-z-first', 'family-order-a-second')")
+        .execute(store.pool()).await.unwrap();
+    assert_thread_family_created_at_tie(store.as_ref()).await;
+    store.pool().close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await
+        .unwrap();
+    administration.close().await;
+}
+
 async fn assert_activation_store_conformance<S>(store: Arc<S>)
 where
     S: ActivationStore
