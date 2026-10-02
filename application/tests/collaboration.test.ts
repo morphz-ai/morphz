@@ -376,6 +376,9 @@ async function collaborationFixture(
         (item) => item.thread_id === sourceThread[1],
       );
       if (!thread) return send(404, {});
+      const event = [...sourceEvents.values()].find(
+        (item) => item.id === thread.root_turn_id,
+      )!;
       return send(200, {
         snapshot: {
           thread: {
@@ -383,6 +386,15 @@ async function collaborationFixture(
             session_id: "collaboration-session",
             context_id: contextId,
             root_turn_id: thread.root_turn_id,
+            initiating_principal_id: (event.payload as Record<string, unknown>)
+              .principal_id,
+            agent_id: "morphz-agent",
+            executor_kind: "agent",
+            executor_id: null,
+            supervision: { parent_thread_id: null },
+            revision: thread.revision,
+            lifecycle: thread.lifecycle,
+            updated_at: "2026-10-03T00:00:00Z",
           },
         },
       });
@@ -427,6 +439,10 @@ async function collaborationFixture(
             session_id: "collaboration-session",
             context_id: contextId,
             initiating_principal_id: schedulePrincipals.get(threadPath[1]!),
+            agent_id: "morphz-agent",
+            executor_kind: "agent",
+            executor_id: null,
+            supervision: { parent_thread_id: null },
             target_id: "original-target",
             root_turn_id: `client-schedule-${threadPath[1]}`,
             generation: 1,

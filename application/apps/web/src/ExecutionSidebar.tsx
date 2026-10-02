@@ -27,38 +27,15 @@ import {
   executionActivityClock,
   executionActivityDateGroups,
   executionActivityScope,
-  executionActivityStatus,
   executionActivitySummary,
   executionActivityThreads,
+  executionActivityRoots,
+  executionActivityDescendants,
+  executionActivityGroupStatus,
   type ActivityThread,
 } from "./execution-activity.js";
-import "./execution-activity.css";
 import { projectDisplayLabel } from "./project-display-label.js";
-
-function RunningActivityIcon() {
-  // Same Activity silhouette, traced from left to right. The static path stays
-  // visible while one short signal traverses it; reduced motion uses it alone.
-  const path =
-    "M2 12h2.49a2 2 0 0 0 1.92-1.46l2.35-8.36a.25.25 0 0 1 .48 0l5.52 19.64a.25.25 0 0 0 .48 0l2.35-8.36A2 2 0 0 1 19.52 12H22";
-  return (
-    <svg
-      className="execution-running-signal"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path className="execution-signal-base" d={path} />
-      <path className="execution-signal-flow" d={path} pathLength="100" />
-    </svg>
-  );
-}
+import { RunningActivityIcon } from "./RunningActivityIcon.js";
 
 export function ExecutionSidebar({
   client,
@@ -112,7 +89,9 @@ export function ExecutionSidebar({
     currentThread ??
     (initialThread?.id === scope.threadId ? initialThread : undefined);
   const detail = !!(scope.inputId || scope.threadId);
-  const branches = threads.filter((t) => t.inputId === scope.inputId);
+  const branches = executionActivityRoots(
+    threads.filter((t) => t.inputId === scope.inputId),
+  );
   const supplementThreads = activeExecutionThreads(runtime).filter(
     (t) => t.inputId === scope.inputId && t.continuation,
   );
@@ -143,9 +122,15 @@ export function ExecutionSidebar({
     allWork,
     !client.boot!.capabilities.teamAuthentication,
   );
-  const active = activityThreads.filter((t) => t.lifecycle === "open");
+  const groupedActivities = executionActivityRoots(activityThreads);
+  const hasOpenWork = (t: ActivityThread) =>
+    t.lifecycle === "open" ||
+    executionActivityDescendants(t, activityThreads).some(
+      (child) => child.lifecycle === "open",
+    );
+  const active = groupedActivities.filter(hasOpenWork);
   const recent = executionActivityDateGroups(
-    activityThreads.filter((t) => t.lifecycle !== "open"),
+    groupedActivities.filter((t) => !hasOpenWork(t)),
   );
   const activeCount = active.length;
   const activityAvailable =
@@ -212,7 +197,12 @@ export function ExecutionSidebar({
     }
   }
   const row = (t: ActivityThread) => {
-    const status = executionActivityStatus(t, activityAvailable);
+    const status = executionActivityGroupStatus(
+      t,
+      activityThreads,
+      activityAvailable,
+    );
+    const children = executionActivityDescendants(t, activityThreads);
     const summary = executionActivitySummary(t, activityAvailable);
     const Icon = {
       running: Activity,
@@ -274,6 +264,7 @@ export function ExecutionSidebar({
                 {projectDisplayLabel(project)}
               </span>
             )}
+            {children.length > 0 && <span>{children.length} 个子任务</span>}
           </span>
         </span>
         <ChevronRight size={14} aria-hidden="true" />
@@ -380,8 +371,9 @@ export function ExecutionSidebar({
               <div>
                 <small>
                   {thread
-                    ? executionActivityStatus(
+                    ? executionActivityGroupStatus(
                         thread,
+                        activityThreads,
                         activityAvailable && !!currentThread,
                       ).label
                     : "此分支不在当前快照中"}

@@ -113,7 +113,15 @@ export async function localInputFixture(
     if (path.includes("/threads/")) {
       const inputId = path.split("/").at(-1)!.slice("thread-".length);
       const input = accepted.get(inputId);
-      if (input?.sessionId !== sessionId) {
+      const threadSession = input && sessions.get(input.sessionId);
+      const contextRead = path.startsWith("/api/contexts/");
+      if (
+        !input ||
+        !threadSession ||
+        (contextRead
+          ? threadSession.context_id !== sessionId
+          : input.sessionId !== sessionId)
+      ) {
         response.statusCode = 404;
         return send({});
       }
@@ -121,13 +129,17 @@ export async function localInputFixture(
         snapshot: {
           thread: {
             id: `thread-${inputId}`,
-            session_id: sessionId,
-            context_id: sessions.get(sessionId)!.context_id,
+            session_id: input.sessionId,
+            context_id: threadSession.context_id,
             root_turn_id: `root-${inputId}`,
             initiating_principal_id: "fixture-human",
             agent_id: "fixture-agent",
             executor_kind: "agent",
             executor_id: null,
+            supervision: { parent_thread_id: null },
+            revision: 1,
+            lifecycle: "open",
+            updated_at: "2026-10-03T00:00:00Z",
           },
         },
       });

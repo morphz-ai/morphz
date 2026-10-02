@@ -12,6 +12,8 @@ import "./browser-bookmarks.css";
 import "./text-quotes.css";
 import "./profile-avatar.css";
 import "./personality-profile.css";
+import "./execution-activity.css";
+import "./execution-thread-groups.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

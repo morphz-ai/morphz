@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { HostInvocation } from "./agent-tools.js";
 import { workInputFormats } from "./session-io.js";
+import {
+  runtimeThreadAncestryLimit,
+  runtimeThreadSupervisionSchema,
+} from "./runtime-thread-provenance.js";
 import type { TaskRunAdmission } from "../../platform/src/task-run-admission.js";
 import {
   matchesTaskSourceRequest,
@@ -30,6 +34,7 @@ const threadSchema = z.object({
       agent_id: z.string(),
       executor_kind: z.string(),
       executor_id: z.string().nullable(),
+      supervision: runtimeThreadSupervisionSchema.optional(),
     }),
   }),
 });
@@ -72,7 +77,11 @@ const scheduleSchema = z.object({
  * by (session ID, event ID), never a bounded scan of recent history.
  */
 export type RuntimeInputEvidenceReader = {
-  readThread(sessionId: string, threadId: string): Promise<unknown>;
+  readThread(
+    sessionId: string,
+    threadId: string,
+    contextId?: string,
+  ): Promise<unknown>;
   readSessionEvent(sessionId: string, eventId: string): Promise<unknown>;
   readSessionSchedule?(sessionId: string, scheduleId: string): Promise<unknown>;
 };
@@ -84,9 +93,11 @@ export function runtimeHttpInputEvidenceReader(
   request: (path: string) => Promise<unknown>,
 ): RuntimeInputEvidenceReader {
   return {
-    readThread: (sessionId, threadId) =>
+    readThread: (sessionId, threadId, contextId) =>
       request(
-        `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}`,
+        contextId
+          ? `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`
+          : `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}`,
       ),
     async readSessionEvent(sessionId, eventId) {
       const result = z
@@ -128,11 +139,11 @@ async function resolveRuntimeRoot(
   let threadId = route.thread_id;
   let rootId: string | null = null;
   let rootThreadId: string | null = null;
-  for (let depth = 0; depth < 32; depth++) {
+  for (let depth = 0; depth < runtimeThreadAncestryLimit; depth++) {
     if (seen.has(threadId)) invalid();
     seen.add(threadId);
     const parsed = threadSchema.safeParse(
-      await reader.readThread(route.session_id, threadId),
+      await reader.readThread(route.session_id, threadId, route.context_id),
     );
     if (!parsed.success) invalid();
     const thread = parsed.data.snapshot.thread;
@@ -146,6 +157,14 @@ async function resolveRuntimeRoot(
     )
       invalid();
     if (thread.executor_kind !== "plan_infer") {
+      // schedule_tx spawn creates a distinct root with no Session input event.
+      // Its real, freshly read supervision chain inherits provenance only
+      // within the exact Session/Context/Agent/initiating principal above.
+      const parent = thread.supervision?.parent_thread_id;
+      if (parent) {
+        threadId = parent;
+        continue;
+      }
       rootId = thread.root_turn_id;
       rootThreadId = thread.id;
       break;
@@ -170,7 +189,12 @@ async function resolveRuntimeRoot(
     )
       invalid();
     const parent = field(infer, "parent_thread_id");
-    if (!parent) invalid();
+    if (
+      !parent ||
+      (thread.supervision?.parent_thread_id &&
+        thread.supervision.parent_thread_id !== parent)
+    )
+      invalid();
     threadId = parent;
   }
   if (!rootId || !rootThreadId) invalid();

@@ -31,7 +31,7 @@ export function executionActivitySummary(
 
 /** Lifecycle is authoritative. A completed Thread is not proof that its task succeeded. */
 export function executionActivityStatus(
-  thread: ActivityThread,
+  thread: Pick<ActivityThread, "lifecycle" | "phase" | "controlState">,
   available: boolean,
 ): ActivityStatus {
   if (thread.lifecycle === "failed")
@@ -49,6 +49,87 @@ export function executionActivityStatus(
   if (thread.phase === "waiting") return { kind: "waiting", label: "等待中" };
   if (thread.phase === "idle") return { kind: "waiting", label: "等待唤醒" };
   return { kind: "unknown", label: "状态待核对" };
+}
+
+const sameActivityDomain = (a: ActivityThread, b: ActivityThread) =>
+  a.sessionId === b.sessionId &&
+  a.projectId === b.projectId &&
+  a.conversationId === b.conversationId &&
+  ((!a.contextId && !b.contextId) || a.contextId === b.contextId);
+
+export function executionActivityDescendants(
+  thread: ActivityThread,
+  threads: readonly ActivityThread[],
+): ActivityThread[] {
+  const found = new Set([thread.id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const child of threads) {
+      if (
+        found.has(child.id) ||
+        !child.parentThreadId ||
+        !found.has(child.parentThreadId) ||
+        !sameActivityDomain(thread, child)
+      )
+        continue;
+      found.add(child.id);
+      changed = true;
+    }
+  }
+  return threads.filter(
+    (child) => child.id !== thread.id && found.has(child.id),
+  );
+}
+
+/** Hide only children of an actually loaded, authorized same-domain parent.
+ * Bounded history may omit a parent; its child remains discoverable on its own. */
+export function executionActivityRoots(
+  threads: readonly ActivityThread[],
+): ActivityThread[] {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  return threads.filter((thread) => {
+    const visited = new Set([thread.id]);
+    let current = thread;
+    while (current.parentThreadId) {
+      const parent = byId.get(current.parentThreadId);
+      if (!parent || !sameActivityDomain(thread, parent))
+        return current.id === thread.id;
+      if (visited.has(parent.id)) return true;
+      visited.add(parent.id);
+      current = parent;
+    }
+    return current.id === thread.id;
+  });
+}
+
+export function executionActivityGroupStatus(
+  thread: ActivityThread,
+  threads: readonly ActivityThread[],
+  available: boolean,
+): ActivityStatus {
+  const children = executionActivityDescendants(thread, threads);
+  const open = [thread, ...children].filter(
+    (value) => value.lifecycle === "open",
+  );
+  if (open.length) {
+    const statuses = open.map((value) =>
+      executionActivityStatus(value, available),
+    );
+    const status =
+      statuses.find((value) => value.kind === "running") ??
+      statuses.find((value) => value.kind === "waiting") ??
+      statuses[0]!;
+    return thread.lifecycle !== "open" && status.kind !== "unknown"
+      ? { ...status, label: `子任务${status.label}` }
+      : status;
+  }
+  if (
+    children.some((value) => value.lifecycle === "failed") &&
+    thread.lifecycle === "completed"
+  )
+    return { kind: "failed", label: "子任务执行失败" };
+  return executionActivityStatus(thread, available);
 }
 
 export function executionActivityTime(thread: ActivityThread): string {

@@ -86,6 +86,11 @@ async function port() {
 }
 export async function profileActualTransportFixture(
   options: {
+    /** Optional controlled provider script for parallel real-Thread tests.
+     * Never consulted for realProvider; existing default replies stay intact. */
+    deterministicTool?: (
+      request: CapturedRequest,
+    ) => { name: string; arguments: unknown } | undefined;
     realProvider?: {
       model: string;
       baseUrl: string;
@@ -128,7 +133,8 @@ export async function profileActualTransportFixture(
     const selectedTool =
       providedTool ??
       (transaction === undefined
-        ? profileFixtureReplyCarrier(request)
+        ? (options.deterministicTool?.(request) ??
+          profileFixtureReplyCarrier(request))
         : undefined);
     const call =
       transaction || selectedTool

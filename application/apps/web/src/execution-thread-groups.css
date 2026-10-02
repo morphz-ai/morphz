@@ -1,0 +1,65 @@
+.execution-thread-group {
+  min-width: 0;
+  padding: 12px 0;
+}
+.execution-thread-group + .execution-thread-group {
+  border-top: 1px solid var(--line);
+}
+.execution-thread-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px;
+}
+.execution-thread-heading > div {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+.execution-thread-heading strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.execution-thread-heading small,
+.execution-thread-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-thread-status {
+  flex-shrink: 0;
+}
+.execution-thread-state {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.execution-thread-state[data-status="running"] {
+  color: var(--accent-strong);
+}
+.execution-thread-state[data-status="failed"] {
+  color: var(--danger);
+}
+.execution-thread-summary {
+  margin: 0 2px 8px 34px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.execution-thread-timeline {
+  border-left: 1px solid var(--line);
+  margin-left: 14px;
+  padding-left: 10px;
+}
+.execution-thread-group[data-thread-depth="0"] .execution-thread-timeline {
+  border-left: 0;
+  margin-left: 0;
+  padding-left: 0;
+}

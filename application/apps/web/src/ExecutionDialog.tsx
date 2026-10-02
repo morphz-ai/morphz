@@ -5,7 +5,23 @@ import {
   executionResultSummary,
 } from "./execution-presentation.js";
 import { useEffect, useRef, useState } from "react";
-import { X, RefreshCw, Square, Check, FileText } from "lucide-react";
+import {
+  X,
+  RefreshCw,
+  Square,
+  Check,
+  FileText,
+  CircleCheck,
+  CircleX,
+  CircleSlash,
+  Clock3,
+  Activity,
+  Pause,
+  CircleHelp,
+} from "lucide-react";
+import { executionThreadGroups } from "./execution-thread-groups.js";
+import { executionActivityStatus } from "./execution-activity.js";
+import { RunningActivityIcon } from "./RunningActivityIcon.js";
 import { ApprovalDetails } from "./ApprovalCard.js";
 import {
   jobStatusLabel,
@@ -82,7 +98,10 @@ export function ExecutionDialog({
       mounted.current = false;
     };
   }, [observationScope]);
-  async function control(action: ExecutionControl["action"]) {
+  async function control(
+    action: ExecutionControl["action"],
+    threadId?: string,
+  ) {
     const origin = observationScope;
     const current = () => mounted.current && currentScope.current === origin;
     setBusy(
@@ -94,7 +113,10 @@ export function ExecutionDialog({
     );
     setNotice("");
     try {
-      await api.current.controlExecution({ scope, action });
+      await api.current.controlExecution({
+        scope: threadId ? { ...scope, threadId } : scope,
+        action,
+      });
       if (current())
         setNotice(action.type === "cancel-job" ? "已请求停止" : "已提交决定");
     } catch (error) {
@@ -148,6 +170,8 @@ export function ExecutionDialog({
   }
   const jobs = executionJobsInReadingOrder(snapshot?.jobs ?? []);
   const branchIds = [...new Set(jobs.map((job) => job.thread_id))];
+  const groups = executionThreadGroups(snapshot);
+  const grouped = !!snapshot?.threads && groups.length > 1;
   const atReadLimit =
     !!snapshot && snapshot.limit > 0 && jobs.length >= snapshot.limit;
   const content = (
@@ -179,7 +203,8 @@ export function ExecutionDialog({
       {(!embedded ||
         error ||
         !!snapshot?.jobs.length ||
-        !!snapshot?.approvals.length) && (
+        !!snapshot?.approvals.length ||
+        snapshot?.threadsTruncated) && (
         <div className="execution-dialog-toolbar">
           <span className="muted">
             {!!snapshot?.approvals.length && "单次授权"}
@@ -187,6 +212,11 @@ export function ExecutionDialog({
           {embedded && atReadLimit && (
             <small className="execution-history-bound">
               当前为最近 {snapshot!.limit} 项执行
+            </small>
+          )}
+          {snapshot?.threadsTruncated && (
+            <small className="execution-history-bound">
+              部分子任务记录尚未载入
             </small>
           )}
           <button aria-label="刷新执行记录" onClick={() => void refresh()}>
@@ -214,11 +244,14 @@ export function ExecutionDialog({
                   )
                 }
                 onClick={() =>
-                  void control({
-                    type: "deny",
-                    approvalId: approval.request.approval_id,
-                    fingerprint: approval.fingerprint,
-                  })
+                  void control(
+                    {
+                      type: "deny",
+                      approvalId: approval.request.approval_id,
+                      fingerprint: approval.fingerprint,
+                    },
+                    grouped ? approval.request.thread_id : undefined,
+                  )
                 }
               >
                 拒绝
@@ -235,11 +268,14 @@ export function ExecutionDialog({
                   )
                 }
                 onClick={() =>
-                  void control({
-                    type: "allow-once",
-                    approvalId: approval.request.approval_id,
-                    fingerprint: approval.fingerprint,
-                  })
+                  void control(
+                    {
+                      type: "allow-once",
+                      approvalId: approval.request.approval_id,
+                      fingerprint: approval.fingerprint,
+                    },
+                    grouped ? approval.request.thread_id : undefined,
+                  )
                 }
               >
                 <Check />
@@ -248,121 +284,225 @@ export function ExecutionDialog({
             </div>
           </section>
         ))}
-        {snapshot && !snapshot.jobs.length && !snapshot.approvals.length && (
-          <p className="muted execution-empty">
-            {hideEmpty ? null : "暂无工具执行记录。"}
-          </p>
-        )}
-        {jobs.map((job) => {
-          const presentation = executionJobPresentation(
-            job,
-            client.boot!.workspace,
-          );
+        {snapshot &&
+          !snapshot.jobs.length &&
+          !snapshot.approvals.length &&
+          !grouped && (
+            <p className="muted execution-empty">
+              {hideEmpty ? null : "暂无工具执行记录。"}
+            </p>
+          )}
+        {groups.map((group) => {
+          const status = group.thread
+            ? executionActivityStatus(group.thread, client.online && !error)
+            : undefined;
+          const Icon = status
+            ? {
+                running: Activity,
+                waiting: Clock3,
+                paused: Pause,
+                ended: CircleCheck,
+                failed: CircleX,
+                cancelled: CircleSlash,
+                unknown: CircleHelp,
+              }[status.kind]
+            : CircleHelp;
           return (
             <section
-              key={job.id}
-              className="execution-job"
-              data-job-id={job.id}
+              key={group.id}
+              className={grouped ? "execution-thread-group" : undefined}
+              data-execution-thread={group.thread?.id}
+              data-thread-depth={group.depth}
+              style={
+                grouped
+                  ? { paddingInlineStart: Math.min(group.depth, 3) * 8 }
+                  : undefined
+              }
             >
-              <header>
-                <strong title={presentation.title}>{presentation.title}</strong>
-                <span className={`job-status ${job.status}`}>
-                  {job.cancel_requested_at &&
-                  ["queued", "waiting_approval", "running"].includes(job.status)
-                    ? "正在停止"
-                    : jobStatusLabel[job.status]}
-                </span>
-              </header>
-              {presentation.detail && (
-                <p className="execution-object">{presentation.detail}</p>
+              {grouped && group.thread && (
+                <header className="execution-thread-heading">
+                  <span
+                    className="execution-thread-state"
+                    data-status={status?.kind}
+                    title={status?.label}
+                  >
+                    {status?.kind === "running" ? (
+                      <RunningActivityIcon />
+                    ) : (
+                      <Icon size={18} aria-hidden="true" />
+                    )}
+                  </span>
+                  <div>
+                    <small>{group.depth > 0 ? "子任务" : "主执行"}</small>
+                    <strong title={group.thread.title}>
+                      {group.thread.title ||
+                        (group.depth > 0 ? "子任务" : "本次执行")}
+                    </strong>
+                  </div>
+                  <span className="execution-thread-status">
+                    {status?.label}
+                  </span>
+                </header>
               )}
-              <small className="muted">
-                {branchIds.length > 1 && (
-                  <>分支 {branchIds.indexOf(job.thread_id) + 1} · </>
-                )}
-                {new Date(job.created_at).toLocaleString("zh-CN")}
-              </small>
-              {job.error && <p className="delivery-error">{job.error}</p>}
-              {presentation.result && (
-                <p
-                  className="execution-step-result"
-                  aria-label="返回结果解读"
-                  title={presentation.result}
-                >
-                  {presentation.result}
+              {grouped && group.thread?.summary && (
+                <p className="execution-thread-summary">
+                  {group.thread.summary}
                 </p>
               )}
-              <details>
-                <summary>技术详情</summary>
-                <pre>{JSON.stringify(job.request, null, 2)}</pre>
-                <small>执行目标：{job.target_id} · </small>
-                <small>执行 ID：{job.id}</small>
-              </details>
-              <div className="execution-actions">
-                {job.result_event_id && (
-                  <button
-                    disabled={!!busy}
-                    onClick={() => void readResult(job.id)}
-                  >
-                    查看结果
-                  </button>
-                )}
-                {["queued", "waiting_approval", "running"].includes(
-                  job.status,
-                ) && (
-                  <button
-                    disabled={!!busy || !!error || !!job.cancel_requested_at}
-                    onClick={() =>
-                      void control({
-                        type: "cancel-job",
-                        jobId: job.id,
-                        revision: job.revision,
-                      })
-                    }
-                  >
-                    <Square />
-                    停止此项执行
-                  </button>
-                )}
-                {job.exit_code !== null && (
-                  <small className="muted">退出码 {job.exit_code}</small>
-                )}
-              </div>
-              {result?.id === job.id && (
-                <div className="execution-result">
-                  {executionResultSummary(result.text) && (
-                    <p>{executionResultSummary(result.text)}</p>
-                  )}
-                  {producedId && (
+              {grouped &&
+                group.depth > 0 &&
+                group.thread?.lifecycle === "open" && (
+                  <div className="execution-actions">
                     <button
-                      onClick={() => {
-                        onOpen(producedId!);
-                        onClose();
-                      }}
+                      disabled={!!busy || !!error || !client.online}
+                      onClick={() =>
+                        void control(
+                          {
+                            type: "cancel-thread",
+                            threadId: group.thread!.id,
+                            revision: group.thread!.revision,
+                          },
+                          group.thread!.id,
+                        )
+                      }
                     >
-                      <FileText />
-                      {client.boot?.workspace.artifacts.find(
-                        (a) => a.id === producedId,
-                      )?.title ??
-                        client.contentCatalog.find(
-                          (entry) => entry.id === producedId,
-                        )?.title ??
-                        "打开成果"}
+                      <Square />
+                      停止此子任务
                     </button>
-                  )}
-                  <details>
-                    <summary>完整返回内容</summary>
-                    <pre>
-                      {result.available
-                        ? result.text || "执行返回了空内容。"
-                        : "尚无最终结果。"}
-                    </pre>
-                  </details>
-                  {result.truncated && (
-                    <small>结果较长，当前显示前 64,000 个字符。</small>
-                  )}
-                </div>
-              )}
+                  </div>
+                )}
+              <div
+                className={grouped ? "execution-thread-timeline" : undefined}
+              >
+                {group.jobs.map((job) => {
+                  const presentation = executionJobPresentation(
+                    job,
+                    client.boot!.workspace,
+                  );
+                  return (
+                    <section
+                      key={job.id}
+                      className="execution-job"
+                      data-job-id={job.id}
+                    >
+                      <header>
+                        <strong title={presentation.title}>
+                          {presentation.title}
+                        </strong>
+                        <span className={`job-status ${job.status}`}>
+                          {job.cancel_requested_at &&
+                          ["queued", "waiting_approval", "running"].includes(
+                            job.status,
+                          )
+                            ? "正在停止"
+                            : jobStatusLabel[job.status]}
+                        </span>
+                      </header>
+                      {presentation.detail && (
+                        <p className="execution-object">
+                          {presentation.detail}
+                        </p>
+                      )}
+                      <small className="muted">
+                        {!grouped && branchIds.length > 1 && (
+                          <>分支 {branchIds.indexOf(job.thread_id) + 1} · </>
+                        )}
+                        {new Date(job.created_at).toLocaleString("zh-CN")}
+                      </small>
+                      {job.error && (
+                        <p className="delivery-error">{job.error}</p>
+                      )}
+                      {presentation.result && (
+                        <p
+                          className="execution-step-result"
+                          aria-label="返回结果解读"
+                          title={presentation.result}
+                        >
+                          {presentation.result}
+                        </p>
+                      )}
+                      <details>
+                        <summary>技术详情</summary>
+                        <pre>{JSON.stringify(job.request, null, 2)}</pre>
+                        <small>执行节点：{job.target_id} · </small>
+                        <small>执行 ID：{job.id}</small>
+                      </details>
+                      <div className="execution-actions">
+                        {job.result_event_id && (
+                          <button
+                            disabled={!!busy}
+                            onClick={() => void readResult(job.id)}
+                          >
+                            查看结果
+                          </button>
+                        )}
+                        {["queued", "waiting_approval", "running"].includes(
+                          job.status,
+                        ) && (
+                          <button
+                            disabled={
+                              !!busy || !!error || !!job.cancel_requested_at
+                            }
+                            onClick={() =>
+                              void control(
+                                {
+                                  type: "cancel-job",
+                                  jobId: job.id,
+                                  revision: job.revision,
+                                },
+                                grouped ? job.thread_id : undefined,
+                              )
+                            }
+                          >
+                            <Square />
+                            停止此项执行
+                          </button>
+                        )}
+                        {job.exit_code !== null && (
+                          <small className="muted">
+                            退出码 {job.exit_code}
+                          </small>
+                        )}
+                      </div>
+                      {result?.id === job.id && (
+                        <div className="execution-result">
+                          {executionResultSummary(result.text) && (
+                            <p>{executionResultSummary(result.text)}</p>
+                          )}
+                          {producedId && (
+                            <button
+                              onClick={() => {
+                                onOpen(producedId!);
+                                onClose();
+                              }}
+                            >
+                              <FileText />
+                              {client.boot?.workspace.artifacts.find(
+                                (a) => a.id === producedId,
+                              )?.title ??
+                                client.contentCatalog.find(
+                                  (entry) => entry.id === producedId,
+                                )?.title ??
+                                "打开成果"}
+                            </button>
+                          )}
+                          <details>
+                            <summary>完整返回内容</summary>
+                            <pre>
+                              {result.available
+                                ? result.text || "执行返回了空内容。"
+                                : "尚无最终结果。"}
+                            </pre>
+                          </details>
+                          {result.truncated && (
+                            <small>结果较长，当前显示前 64,000 个字符。</small>
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
             </section>
           );
         })}

@@ -40,6 +40,7 @@ import {
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import { RuntimeProfileClient } from "./runtime-profile-client.js";
 import { activityAnnotationFields } from "./response-annotations.js";
+import { authorizedExecutionThreadTree } from "./execution-thread-tree.js";
 import {
   DomainError,
   browserReferenceSchema,
@@ -2334,8 +2335,9 @@ export class RuntimeBridge {
           if (
             !thread ||
             thread.sessionId !== delivery.sessionId ||
-            thread.rootId !== delivery.rootId ||
-            thread.inputId !== delivery.inputId
+            thread.inputId !== delivery.inputId ||
+            thread.projectId !== source.projectId ||
+            thread.conversationId !== source.conversationId
           )
             return false;
         }
@@ -2343,6 +2345,25 @@ export class RuntimeBridge {
       });
       if ((scope.inputId || scope.threadId) && selected.length !== 1)
         throw new DomainError("forbidden", "执行不属于当前工作对话。");
+      if (scope.threadId && selected[0]?.rootId) {
+        const delivery = selected[0];
+        const session = this.state.sessions[delivery.sessionId];
+        if (!session?.platform)
+          throw new DomainError("forbidden", "执行不属于当前工作对话。");
+        // A spawned child has its own root. This is a fresh parent-chain proof
+        // to the authorized input root, not a relaxed cached root comparison.
+        await authorizedExecutionThreadTree(
+          (path, method, body) =>
+            this.request(path, method, body, access, undefined),
+          {
+            sessionId: delivery.sessionId,
+            contextId: this.contextId(session.projectId),
+            inputRootId: delivery.rootId!,
+            threadId: scope.threadId,
+          },
+          false,
+        );
+      }
       return selected.filter((delivery) => !!delivery.rootId);
     };
     const deliveries = await readable();
@@ -2366,6 +2387,9 @@ export class RuntimeBridge {
     }
     const request = async (path: string, method?: string, body?: unknown) => {
       try {
+        // Physical reads may await remote Runtime state. A grant revoked while
+        // reading a Job/approval must not authorize the subsequent mutation.
+        if (method === "POST") await readable();
         return await this.request(path, method, body, access, undefined);
       } catch (error) {
         if (error instanceof UpstreamError)
@@ -2380,15 +2404,41 @@ export class RuntimeBridge {
         throw error;
       }
     };
+    const selectedTree =
+      scope.threadId && deliveries[0]?.rootId
+        ? await authorizedExecutionThreadTree(
+            request,
+            {
+              sessionId: deliveries[0].sessionId,
+              contextId: this.contextId(
+                this.state.sessions[deliveries[0].sessionId]!.projectId,
+              ),
+              inputRootId: deliveries[0].rootId,
+              threadId: scope.threadId,
+            },
+            true,
+          )
+        : undefined;
     const controls = [...grouped.values()].map((entry) => ({
       ...entry,
       viewer: new ExecutionControls(request, () => ({
         sessionId: entry.sessionId,
         contextId: entry.contextId,
         ...(scope.inputId || scope.threadId
-          ? { rootId: [...entry.roots][0] }
+          ? { rootId: selectedTree?.selected.rootId ?? [...entry.roots][0] }
           : { rootsBySession: { [entry.sessionId]: [...entry.roots] } }),
         ...(scope.threadId ? { threadId: scope.threadId } : {}),
+        ...(selectedTree
+          ? {
+              threadIds: async () =>
+                selectedTree.threads.map((thread) => thread.id),
+              additionalRoot: async (rootId: string, threadId: string) =>
+                selectedTree.threads.some(
+                  (thread) =>
+                    thread.id === threadId && thread.rootId === rootId,
+                ),
+            }
+          : {}),
       })),
     }));
     const recheck = async () => {
@@ -2433,6 +2483,12 @@ export class RuntimeBridge {
           .sort((a, b) => b.requested_at.localeCompare(a.requested_at))
           .slice(0, 100),
         limit: 100,
+        ...(selectedTree
+          ? {
+              threads: selectedTree.threads,
+              threadsTruncated: selectedTree.truncated,
+            }
+          : {}),
       };
     };
     const viewerFor = async (target: {
@@ -4442,6 +4498,7 @@ export class RuntimeBridge {
             inputId: route!.inputId,
             rootId: t.root_turn_id,
             sessionId: t.session_id,
+            contextId: t.context_id,
             title: value.intent?.trim() || source.body || "后台执行",
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,

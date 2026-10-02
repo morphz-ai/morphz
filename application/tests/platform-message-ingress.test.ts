@@ -374,6 +374,8 @@ test("Platform-only project sends a durable Runtime input without a legacy works
                 session_id: sourceSessionId,
                 context_id: sessions.get(sourceSessionId)?.context_id,
                 root_turn_id: `root-${inputId}`,
+                revision: 1,
+                updated_at: "2026-10-03T00:00:00.000Z",
                 initiating_principal_id: "runtime-local-human",
                 generation: 1,
                 control_state: "active",

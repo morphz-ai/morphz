@@ -53,10 +53,30 @@ export const approvalSchema = z.object({
     requested: z.record(z.string(), z.unknown()),
   }),
 });
+/** Authorized read projection of real Runtime Threads, not another activity
+ * ledger. Roots and parent links retain each execution's original identity. */
+export const executionThreadSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  contextId: z.string(),
+  rootId: z.string(),
+  parentThreadId: z.string().nullable(),
+  title: z.string(),
+  summary: z.string().optional(),
+  phase: z.string(),
+  lifecycle: z.string(),
+  controlState: z.string().optional(),
+  revision: z.number(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string(),
+});
+export type ExecutionThread = z.infer<typeof executionThreadSchema>;
 export const executionSnapshotSchema = z.object({
   jobs: z.array(jobSchema),
   approvals: z.array(approvalSchema.extend({ fingerprint: z.string() })),
   limit: z.number(),
+  threads: z.array(executionThreadSchema).optional(),
+  threadsTruncated: z.boolean().optional(),
 });
 export const executionAttentionSchema = z.object({
   available: z.boolean(),

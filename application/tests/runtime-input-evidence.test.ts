@@ -42,7 +42,10 @@ const inputEvent = {
               value: {
                 input_id: { type: "string", value: "input-1" },
                 workspace_id: { type: "string", value: "project-1" },
-                author_actant_id: { type: "string", value: "claimed-human-actant" },
+                author_actant_id: {
+                  type: "string",
+                  value: "claimed-human-actant",
+                },
                 text: { type: "string", value: "创建剧本" },
               },
             },
@@ -113,7 +116,10 @@ test("只接受 Runtime 签发的类型化输入，不把旧扁平 JSON 当成�
     },
   };
   await assert.rejects(
-    resolveRuntimeInputEvidence(route, evidence(undefined, { "event-1": flat })),
+    resolveRuntimeInputEvidence(
+      route,
+      evidence(undefined, { "event-1": flat }),
+    ),
     /未绑定/,
   );
 });
@@ -129,11 +135,75 @@ test("受信 Runtime 传输按事件 ID 精确读取，不再扫描最近消息�
   await reader.readThread("session/one", "thread?one");
   await reader.readSessionEvent("session/one", "event?one");
   await reader.readSessionSchedule?.("session/one", "schedule?one");
+  await reader.readThread("session/one", "thread?one", "context/one");
   assert.deepEqual(paths, [
     "/api/sessions/session%2Fone/threads/thread%3Fone",
     "/api/sessions/session%2Fone/events/event%3Fone",
     "/api/sessions/session%2Fone/schedules/schedule%3Fone",
+    "/api/contexts/context%2Fone/threads/thread%3Fone",
   ]);
+});
+
+test("真实 spawn 父链继承原始输入，跨域身份、循环、缺失祖先与超预算均失败关闭", async () => {
+  const child = {
+    ...parentThread,
+    id: "child",
+    root_turn_id: "distinct-child-root",
+    supervision: { parent_thread_id: parentThread.id },
+  };
+  const grand = {
+    ...child,
+    id: "grand",
+    root_turn_id: "distinct-grand-root",
+    supervision: { parent_thread_id: child.id },
+  };
+  const branchRoute = { ...route, thread_id: grand.id };
+  const family = {
+    [parentThread.id]: parentThread,
+    [child.id]: child,
+    [grand.id]: grand,
+  };
+  assert.equal(
+    (await resolveRuntimeInputEvidence(branchRoute, evidence(family)))
+      .runtimeEventId,
+    inputEvent.id,
+  );
+  for (const patch of [
+    { context_id: "private-context" },
+    { session_id: "other-session" },
+    { agent_id: "other-agent" },
+    { initiating_principal_id: "other-human" },
+    { id: "forged-response-id" },
+    { supervision: { parent_thread_id: grand.id } },
+    { supervision: { parent_thread_id: "missing" } },
+  ])
+    await assert.rejects(
+      resolveRuntimeInputEvidence(
+        branchRoute,
+        evidence({ ...family, [child.id]: { ...child, ...patch } }),
+      ),
+      /未绑定/,
+    );
+  await assert.rejects(
+    resolveRuntimeInputEvidence(branchRoute, evidence(family, {})),
+    /未绑定/,
+  );
+  const long: Record<string, unknown> = { [parentThread.id]: parentThread };
+  for (let i = 0; i < 64; i++)
+    long[`deep-${i}`] = {
+      ...child,
+      id: `deep-${i}`,
+      supervision: {
+        parent_thread_id: i === 63 ? parentThread.id : `deep-${i + 1}`,
+      },
+    };
+  await assert.rejects(
+    resolveRuntimeInputEvidence(
+      { ...route, thread_id: "deep-0" },
+      evidence(long),
+    ),
+    /未绑定/,
+  );
 });
 
 test("后台事项只凭精确 Runtime Schedule、Thread 与已提交准入回溯来源", async () => {

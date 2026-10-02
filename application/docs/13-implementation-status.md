@@ -1,5 +1,39 @@
 # 桌面能力实施记录
 
+## 2026-10-03 两项修复范围与验收门槛（进行中，非完成声明）
+
+用户所指的两个问题分别是：
+
+1. 剧本任务：简短确认承接当前已约定范围；一次任务分别生成、保存两个人物设定与五场戏大纲。
+2. 活动记录：一项工作汇总实际派生的子 Thread，按分支展示各自步骤、状态与结果，并修复子活动详情的 root 授权归属。
+
+两项都完成实现与验收后才结束本轮目标。剧本的生产数据模型／语义设计见
+`28-script-studio-executable-yao.md` 顶部；活动沿用真实父子关系与授权事实，不以同 Session／输入猜归组，不增加 LLM 请求、健康轮询或第二份执行账本。
+
+两项实现、隔离真实 Runtime／模型与实际组件回归均已通过；最终应用全量 Node 为
+1091 通过、161 条条件跳过、0 失败（共 1252，`/tmp/morphz-two-problems-source-verified-node.log`），生产构建退出 0。
+条件跳过不算通过，专项 PostgreSQL 另有真实执行证据。原窗口验收仍待系统解锁，不把隔离截图或新安装包当成原窗口已验收。
+
+### 剧本确认承接与多条目交付
+
+Harness 1.4.2 在既有意图求值中同时产生本次 `task`，共享 Context 的当前唯一提案可以被短确认承接；原输入不改写，明确暂缓与歧义不能转成授权。一次准备原子冻结同剧本的多目标集合，复用既有 preparations、候选、版本、回执与 outbox，各目标独立保存 pending 候选，不自动采纳或批准。v7 SQLite／PostgreSQL 升级保留 v6 精确基线和旧单目标回执。
+
+独立审查发现并修复遗漏来源撤权复核：不能靠候选省略 `sources` 绕过准备时的来源权限；整批固定来源在提交前和最终授权后复核，已保存回执恢复不重写候选。真实 SQLite、PostgreSQL、迁移与 Host 专项 82/82、零跳过（`/private/tmp/morphz-script-v7-review-20261003.log`）；唯一合成 PG 测试库已删除，用户库未改。真实 Rust 多目标闭环及旧 14 分支通过，后者 82 次合成 Provider 请求、零付费调用。
+
+真实 `gpt-6.1-sol` 的唯一提案确认保存两人物和五场大纲、明确不写零提交、两个互斥提案仅追问三组均通过。详细回执、失败实验保留和模型请求计数见 `28-script-studio-executable-yao.md`。没有按交付数额外发意图／总结请求，但批次材料扩大输入，不能宣称零新增模型成本；合成 create/review 请求分别实测 177327/208972 字符，不是 token 数。
+
+原 Runtime 已安装相同 1.4.2 包（`sha256:617bfdd75a4c16e12b43dc15e00c1d62843c6ce4faab04ed4d9f09146743bdad`），未重启 Runtime、未重放旧任务。原 12 库、240 表与私有配置已在线备份到 `/tmp/morphz-two-problems-backup.OtLfGi`；App 正常重开、新 Host 迁移与原窗口交付查看尚未验收。
+
+### 主活动汇总真实子 Thread
+
+活动列表按同 Session／Context 的真实 parent 链收拢子任务；详情保留每个 Thread 的独立 root、标题、步骤、状态、进度与结果。父 Thread 已结束而子任务仍开放时，主活动明确显示子任务状态。逻辑 spawn 不伪造物理 Job。子 root 查看与 Host 调用沿真实父链核验原输入；聚合读取不扩大停止／审批权限，写操作必须显式选择准确 Thread，并在 POST 前重新验证当前授权。
+
+隔离真实 Rust 1/1：父、两个子与一个孙 Thread，4 个独立 root、4 个成功 Host Jobs，各自 v2 注解／结果不串线。Provider 请求 16 次，包括 4 次 Profile read、2 次 schedule_tx、6 次正常 wait/wake、4 次 reply；注解随既有工具产生，未另发注解生成请求，付费调用为 0。机械调度上限保留，不使用不成立的固定 ≤14 假设。证据：`/tmp/morphz-nested-thread-activity-runtime-final.log`。
+
+最终实际挂载 UI 6/6：主活动归组、孙层级、各自状态与结果、准确子任务停止目标、变化通知更新、窄屏与 200%；补修仅逻辑 Thread、零 Jobs／审批的 embedded 详情也显示真实截断提示，完整回读后移除。旧运动、完成对勾及时间顺序回归保持。旧 SSR 18/18，权限／执行专项 43/43，另有准确子 scope 及读取期间撤权禁止 POST 的正反例；补修相关 Node 35/35、构建／类型通过。共享旧 fixtures 补真实 Context Thread DTO，未降低生产核验；共享相关单测 19 通过、4 条 PostgreSQL 条件跳过。最终 UI／单测／构建证据：`/tmp/morphz-nested-zero-job-{ui,unit,build}.log`；原专项见 `/tmp/morphz-nested-thread-ssr.log`、`/tmp/morphz-nested-thread-unit.log`、`/tmp/morphz-nested-final-targeted.log`，组间可能重叠，不相加。
+
+边界：跨 Session delegate 未纳入本轮；200 条历史和 64 项家族读取达到上限时提示截断。原中心备份只读检查找到“可以，设置提醒吧”的真实父子活动，父已结束、一个子仍开放、各自独立 root，无物理 Jobs；它可验原窗口归组与子状态，不能代表原窗口多子步骤验收，也不得停止或修改原提醒。证据：`/tmp/morphz-nested-original-readonly-evidence.md`。隔离窄屏截图已复看，不称用户审美已认可。
+
 ## 2026-10-03 剩余页面健康轮询改为变化通知
 
 通知列表／偏好、执行详情、事项详情与列表上游批量状态读取、阅读器 OCR 状态、浏览器 guest 状态与 Agent 动作交换不再按健康间隔拉取。首次读取、明确操作后的读取、前台恢复与失败退避保留；事项的本地日期时钟、语音计时、OAuth 设备授权协议及 Runtime 执行／交付调度不因本轮被删除，不称整个系统没有定时器。共享观察器合并变化，废弃迟到读数与旧身份结果；读取取消不会停止业务执行。无新持久表或第二份执行账本。

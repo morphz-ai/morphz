@@ -72,6 +72,7 @@ export const activitySchema = z.object({
       inputId: z.string().nullable(),
       rootId: z.string(),
       sessionId: z.string(),
+      contextId: z.string().optional(),
       title: z.string(),
       /** Display-only Runtime projection, never a separate activity state. */
       summary: z.string().optional(),

@@ -379,6 +379,10 @@ export class ExecutionControls {
     }
     if (action.type === "cancel-job") {
       const job = await this.job(binding, action.jobId);
+      // Descendant aggregation is read-only. A mutation must explicitly select
+      // that exact Thread and pass its fresh input/parent provenance again.
+      if (binding.threadId && job.thread_id !== binding.threadId)
+        throw new DomainError("forbidden", "停止目标与选中的执行不一致。");
       if (job.revision !== action.revision)
         throw new DomainError("conflict", "执行状态已变化，请刷新后重新决定。");
       const updated = jobSchema.parse(
@@ -402,6 +406,8 @@ export class ExecutionControls {
     );
     if (!approval || approval.fingerprint !== action.fingerprint)
       throw new DomainError("conflict", "审批已结束或内容已变化，请重新查看。");
+    if (binding.threadId && approval.request.thread_id !== binding.threadId)
+      throw new DomainError("forbidden", "审批目标与选中的执行不一致。");
     const receipt = z.object({ accepted: z.literal(true) }).parse(
       await this.request(
         `/api/approvals/${encodeURIComponent(action.approvalId)}`,
