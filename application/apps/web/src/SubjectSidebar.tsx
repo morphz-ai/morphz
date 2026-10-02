@@ -32,7 +32,7 @@ import {
 const tabs = [
   { id: "activity", label: "活动", icon: List },
   { id: "permissions", label: "授权", icon: ShieldCheck },
-  { id: "schedules", label: "安排", icon: Clock3 },
+  { id: "schedules", label: "定时任务", icon: Clock3 },
   { id: "settings", label: "设定", icon: BrandMark },
 ] as const;
 

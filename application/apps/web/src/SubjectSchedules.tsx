@@ -56,7 +56,7 @@ export function SubjectSchedules({
     setMore(false);
     if (!client.online || !client.boot!.runtime.connected) {
       setLoading(false);
-      setError("连接中断，事项安排待核对。");
+      setError("连接中断，定时任务待核对。");
       return () => controller.abort();
     }
     void (async () => {
@@ -114,7 +114,7 @@ export function SubjectSchedules({
           runtime.error ||
           runtime.runs.find((run) => run.run === task.headVersion.runRequested)
             ?.error;
-        if (readError) throw new Error(`事项安排读取失败：${readError}`);
+        if (readError) throw new Error(`定时任务读取失败：${readError}`);
       }
       if (!controller.signal.aborted)
         setRows(
@@ -125,7 +125,7 @@ export function SubjectSchedules({
     })()
       .catch((e) => {
         if (!controller.signal.aborted)
-          setError(e instanceof Error ? e.message : "事项安排暂时无法读取。");
+          setError(e instanceof Error ? e.message : "定时任务暂时无法读取。");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -133,12 +133,12 @@ export function SubjectSchedules({
     return () => controller.abort();
   }, [identity, attempt, client.online, client.boot!.runtime.connected]);
   return (
-    <section className="subject-section" aria-label="事项安排">
+    <section className="subject-section" aria-label="定时任务">
       <div className="subject-section-heading">
-        <h3>事项安排</h3>
+        <h3>定时任务</h3>
         <button
           className="icon-button"
-          aria-label="刷新事项安排"
+          aria-label="刷新定时任务"
           disabled={loading || !client.online}
           onClick={() => {
             setAttempt((n) => n + 1);
@@ -149,7 +149,7 @@ export function SubjectSchedules({
       </div>
       {(nativeError || error) && (
         <p role="alert" className="muted">
-          {[nativeError ? "原生安排暂时无法读取。" : "", error]
+          {[nativeError ? "部分定时任务暂时无法读取。" : "", error]
             .filter(Boolean)
             .join(" ")}
         </p>
@@ -201,7 +201,7 @@ export function SubjectSchedules({
         );
       })}
       {activity?.schedulesTruncated && !nativeError && (
-        <p className="muted">安排概览有界，部分来源尚未核验。</p>
+        <p className="muted">部分定时任务来源尚未核验。</p>
       )}
       {error ? null : loading ? (
         <p className="muted">读取中…</p>
@@ -242,10 +242,10 @@ export function SubjectSchedules({
       ) : !nativeRows.length &&
         !nativeError &&
         !activity?.schedulesTruncated ? (
-        <p className="muted">暂无可确认的事项安排</p>
+        <p className="muted">暂无可确认的定时任务</p>
       ) : null}
       {more && (
-        <p className="muted">此处为有界事项概览，请到事项查看其余工作。</p>
+        <p className="muted">事项绑定的定时任务未全部读取，请到事项查看。</p>
       )}
     </section>
   );

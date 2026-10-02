@@ -2120,6 +2120,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           throw new Error(
             "当前版本不支持新建会话，请更新应用；草稿已保留，现有会话仍可使用。",
           );
+        // A new root binds the latest confirmed Profile. Drain debounced text
+        // and uncertain receipts before staging its immutable input; directed
+        // supplements above keep their existing Thread's frozen version.
+        await profile.flush();
+        profile.assertCurrentScope();
+        if (currentContext.current !== key)
+          throw new Error("工作范围已切换，草稿已保留，请回到原处发送。");
         await client.execute(
           {
             type: "record-input",

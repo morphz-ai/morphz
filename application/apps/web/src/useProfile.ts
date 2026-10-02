@@ -14,18 +14,33 @@ import {
 } from "../../../packages/core/src/profile.js";
 import { applicationCall, RequestError } from "./application-transport.js";
 import type { WorkspaceClient } from "./client.js";
+import {
+  ProfileAutosave,
+  ProfileAutosaveConflictError,
+} from "./profile-autosave.js";
 
 type AvatarUrls = { original: string; poster: string };
-type ProfileDraft<T> = {
-  data: T;
-  enabled: boolean;
-  revision: number;
-  pending?: { fingerprint: string; command: ProfileUpdate };
-};
 export function useProfile(client: WorkspaceClient) {
   const key = `${client.boot?.centerId}:${client.boot?.principalId}:${client.boot?.csrfToken}`;
+  // Bootstrap updates transport before React necessarily renders the new
+  // client. Never let this scope's delayed edit borrow the next identity.
+  const identityGeneration = client.boot?.csrfToken ?? "";
   const current = useRef(key);
   current.current = key;
+  const mounted = useRef(true);
+  const [, renderAutosave] = useState(0);
+  const auto = useRef<{ key: string; controller: ProfileAutosave } | null>(
+    null,
+  );
+  // Presentation-only intent for an enabled empty text control. It survives
+  // editor unmounts, but never supplies Profile data or persistence authority.
+  const textActivation = useRef<{
+    key: string;
+    agent: Set<string>;
+    human: Set<string>;
+  }>({ key, agent: new Set(), human: new Set() });
+  if (textActivation.current.key !== key)
+    textActivation.current = { key, agent: new Set(), human: new Set() };
   const [state, setState] = useState<{
     key: string;
     snapshot?: ProfileSnapshot;
@@ -44,12 +59,6 @@ export function useProfile(client: WorkspaceClient) {
   const [mediaAttempt, retryMedia] = useState(0);
   const mediaFailed = useRef(false);
   const sequence = useRef(0);
-  const drafts = useRef<{
-    key: string;
-    human?: ProfileDraft<ProfileSnapshot["human"]["data"]>;
-    agent?: ProfileDraft<ProfileSnapshot["agent"]["data"]>;
-  }>({ key });
-  if (drafts.current.key !== key) drafts.current = { key };
   const refresh = useCallback(async () => {
     const requestKey = key,
       request = ++sequence.current;
@@ -62,7 +71,7 @@ export function useProfile(client: WorkspaceClient) {
     }));
     try {
       const snapshot = profileSnapshotSchema.parse(
-        await applicationCall("profile.read", {}),
+        await applicationCall("profile.read", {}, { identityGeneration }),
       );
       if (current.current !== requestKey || request !== sequence.current)
         return;
@@ -87,7 +96,7 @@ export function useProfile(client: WorkspaceClient) {
       if (accessDenied) setMedia({ key: requestKey });
       throw error;
     }
-  }, [key, client.online]);
+  }, [key, identityGeneration, client.online]);
   useEffect(() => {
     setState({ key, loading: true, error: "" });
     if (client.online) void refresh().catch(() => {});
@@ -111,11 +120,15 @@ export function useProfile(client: WorkspaceClient) {
       const values = await Promise.all(
         (["original", "poster"] as const).map(async (variant) => {
           return profileAvatarBytesSchema.parse(
-            await applicationCall("profile.avatar.read", {
-              subject,
-              revision: avatar.revision,
-              variant,
-            }),
+            await applicationCall(
+              "profile.avatar.read",
+              {
+                subject,
+                revision: avatar.revision,
+                variant,
+              },
+              { identityGeneration },
+            ),
           );
         }),
       );
@@ -152,9 +165,9 @@ export function useProfile(client: WorkspaceClient) {
       cancelled = true;
       created.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [key, avatarSignature, client.online, mediaAttempt]);
+  }, [key, identityGeneration, avatarSignature, client.online, mediaAttempt]);
   const assertScope = (requestKey: string) => {
-    if (current.current !== requestKey)
+    if (current.current !== requestKey || !mounted.current)
       throw new DOMException("身份已切换，旧操作结果已丢弃。", "AbortError");
   };
   async function save(command: ProfileUpdate) {
@@ -165,8 +178,9 @@ export function useProfile(client: WorkspaceClient) {
       command.data = normalizeHumanProfileData(command.data);
     else command.data = normalizeAgentProfileData(command.data);
     const requestKey = key;
+    assertScope(requestKey);
     const receipt = profileUpdateResultSchema.parse(
-      await applicationCall("profile.update", command),
+      await applicationCall("profile.update", command, { identityGeneration }),
     );
     assertScope(requestKey);
     if (
@@ -189,9 +203,44 @@ export function useProfile(client: WorkspaceClient) {
         JSON.stringify(command.data) ||
       actual[command.subject].enabled !== receipt.enabled
     )
-      throw new Error("资料已再次变化，请重新读取后确认。");
+      throw new ProfileAutosaveConflictError(
+        "资料已再次变化，请重新读取后确认。",
+      );
     return actual;
   }
+  // Indirection keeps one queue for the authenticated scope, rather than one
+  // queue per editor mount or render. Each RPC still checks the captured scope.
+  const transport = useRef({ save, refresh });
+  transport.current = { save, refresh };
+  if (auto.current?.key !== key) {
+    auto.current?.controller.dispose();
+    const requestKey = key;
+    auto.current = {
+      key,
+      controller: new ProfileAutosave({
+        assertScope: () => assertScope(requestKey),
+        save: (command) => transport.current.save(command),
+        read: () => transport.current.refresh(),
+        changed: () => {
+          if (mounted.current && current.current === requestKey)
+            renderAutosave((value) => value + 1);
+        },
+        isConflict: (error) =>
+          error instanceof RequestError && error.status === 409,
+      }),
+    };
+  }
+  const autosave = auto.current.controller;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      autosave.cancelScheduled();
+    };
+  }, [autosave]);
+  useEffect(() => {
+    if (snapshot) autosave.hydrate(snapshot);
+  }, [snapshot, autosave]);
   async function setAvatar(
     subject: ProfileSubject,
     file: File,
@@ -202,12 +251,16 @@ export function useProfile(client: WorkspaceClient) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     assertScope(requestKey);
     const receipt = profileAvatarSnapshotSchema.parse(
-      await applicationCall("profile.avatar.set", {
-        subject,
-        commandId,
-        expectedRevision,
-        data: bytes,
-      }),
+      await applicationCall(
+        "profile.avatar.set",
+        {
+          subject,
+          commandId,
+          expectedRevision,
+          data: bytes,
+        },
+        { identityGeneration },
+      ),
     );
     assertScope(requestKey);
     const actual = await refresh();
@@ -225,12 +278,17 @@ export function useProfile(client: WorkspaceClient) {
     expectedRevision: number,
   ) {
     const requestKey = key;
+    assertScope(requestKey);
     const receipt = profileAvatarSnapshotSchema.parse(
-      await applicationCall("profile.avatar.clear", {
-        subject,
-        commandId,
-        expectedRevision,
-      }),
+      await applicationCall(
+        "profile.avatar.clear",
+        {
+          subject,
+          commandId,
+          expectedRevision,
+        },
+        { identityGeneration },
+      ),
     );
     assertScope(requestKey);
     const actual = await refresh();
@@ -246,7 +304,14 @@ export function useProfile(client: WorkspaceClient) {
   return {
     scope: key,
     snapshot,
-    drafts,
+    textActivation: textActivation.current,
+    autosave: autosave.state,
+    edit: autosave.edit.bind(autosave),
+    flush: autosave.flush.bind(autosave),
+    retry: autosave.retry.bind(autosave),
+    discard: autosave.discard.bind(autosave),
+    resolveConflict: autosave.resolveConflict.bind(autosave),
+    assertCurrentScope: () => assertScope(key),
     loading: state.key !== key || state.loading,
     error: state.key === key ? state.error : "",
     accessDenied: state.key === key && state.accessDenied === true,

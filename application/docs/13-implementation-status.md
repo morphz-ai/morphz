@@ -1,5 +1,21 @@
 # 桌面能力实施记录
 
+## 2026-10-02 Profile 自动生效、安静操作与定时任务分类修复
+
+用户实际把名字旁「已设置」理解为已经生效，但当时它只是手动保存表单的草稿：原 Runtime 没有 ROM head，Echo 尚未写入。旧验收点击了保存，没有覆盖改名后直接提问。现将设定改成 App 生命周期、身份范围内的自动保存队列：整份「使用设定」置于名字和偏好之前，有效首次选择会启用，关闭保留字段，编辑已停用值不暗中再启用。开关／单选立即提交；文本停顿、失焦或 Enter，滑杆停顿或手势结束提交。名字编辑中的暂时空白不删除旧已确认名字；空控件与全空首态不建立 ROM，0 与 null 保持不同。去掉常驻「未启用／不设置／已设置／待保存」清单及手动保存区，真实取消风格仍保留「不设置」。成功静默；未确认、权限错误、冲突及重试可见，网络未知结果使用中文，不冒称保存成功。
+
+连续修改在确切修订下串行，旧回执不覆盖新输入。丢回执后冻结原 command，必须显式同命令重试，后续编辑排在它之后；CAS 继续由本人选最新或覆盖。队列跨编辑器关闭／重开仍存在，身份切换取消旧定时提交并丢弃迟到结果。普通新输入在 staging 前确认 Agent／Human 全部待提交意图，失败保留消息草稿且不执行；同一长期 Session 的新 root 使用最新有效 head，无需新建 Session。旧 Thread continuation 的 manifest 和绑定版本不变。Runtime、Host 数据模型、权限与 prefix-cache 边界未改，不将本轮称为上游 cache 命中率或人格表现质量验收。
+
+身份仍为 64px／18px 圆角底座和 40px 默认 Logo，更换头像按钮在桌面悬停或键盘进入时显示，移开隐藏；触控直接可用，不变上传授权、媒体或 CAS。32×20px 胶囊开关不继承全局输入框的鼠标焦点外圈，键盘 Tab 仍有焦点。时钟页签、标题、刷新及错误文案统一为「定时任务」；来源仍为实际 Runtime Schedule，不把人的待办日期、未启动的事项或不存在的 Runtime 记录算作定时任务，原权限、去重及有界读取保持。
+
+最终构建、TypeScript、格式和差异检查通过。自动保存单测 **19／19**；最终 Profile／Dock UI **37／37**（28.9 秒、零跳过），含 Agent／Human 的闲置／悬停／移开／实际 Tab 聚焦、触控 file chooser、鼠标无外圈与键盘外圈、连续修改、中文未知回执、真实读取／权限／CAS／身份竞态及明暗、390px、200% CSS 缩放守门。CSS 缩放不是 Electron 原生缩放。最新截图 `/tmp/morphz-profile-hover-focus-ui.zjEKom/verified` 已实看，日志 `/tmp/morphz-profile-hover-focus-verified-ui.log`。保留失败记录：初次 30／33 的问题是未暂停的假时钟及滚回顶部后的旧焦点；后续键盘自定义风格开启会自动聚焦，旧测试多按 Tab；悬停专项首轮 36／37 的旧用例用程序 focus 期待键盘外圈，改为真实 Shift+Tab／Tab 并保留原断言。没有删除保存确认、媒体、权限或冲突断言。
+
+实际 UI → typed HTTP Host → 隔离持久 SQL → 实际 Rust Runtime → Provider 请求链 **5／5**（11.9 秒），新增 Echo 后不点保存立即发送，故意阻塞 Profile 持久化时没有输入提前入站，放行后请求含 `(name Echo)`；之后 Nova 新 head 不改变旧 Echo continuation，停用后新请求无 ROM。另做 **2 次**隔离真实 `gpt-6.1-sol` 请求：同一 Session、改 Echo 后立即提问回答「我叫 Echo。」；关闭后回答「当前只读 Profile 未设置我的名字。」，实际请求没有 Profile。凭据仅在内存传给既有本机代理，未写入文件或原用户资料／对话。真实回应不代替表现质量评估。日志 `/tmp/morphz-profile-actual-final.MI9sPo/deterministic-final.log` 和 `/tmp/morphz-profile-actual-check.NvbNIq/profile-real-model-probe.sanitized.log`。定时任务／投影单测 **13／13**，定时任务与 compact 菜单浏览器 **16／16**（12.3 秒）通过；不是应用全量回归，也不补称 PostgreSQL 已验收。
+
+提交前交叉检查发现一处窄身份风险：全局 transport 已观察新 bootstrap，但旧 hook 尚未重绘的间隙，隐式 generation 可能借新身份发起旧操作。Profile read／update、头像 read／set／clear 现在全部显式捕获本 hook 的 generation。新增真实 React hook／applicationCall 隔离桥接回归，故意先把全局切 B 而保持 A hook：旧 timer、显式 flush 及五种 RPC 均带 A，被 B 权威拒绝，新身份 head 零变化；真正重绘 B 后仅新 B 意图成功。两个子场景及父项 **3／3**、零跳过，日志 `/tmp/morphz-profile-identity-generation-verified.log`；这是桥接边界测试，不补称额外实际 Host 验收。最后构建日志 `/tmp/morphz-profile-identity-final-build.log`，Profile／Dock 最新复跑 **37／37**（30.0 秒），真实 Host 链 **5／5**（11.3 秒），定时任务与 compact **16／16**（12.6 秒），已有 transport 与自动保存单测合跑 **25／25**，全类型／格式／差异检查通过。最新日志分别为 `/tmp/morphz-profile-identity-final-ui.log`、`/tmp/morphz-profile-actual-scope.4qqzkd/deterministic-scope-final.log`、`/tmp/morphz-timed-tasks-final-ui.log`、`/tmp/morphz-profile-scope-unit.log`；没有再次付费调用。新测试初次类型检查的 Window 声明缺少全局类型已修复，最终类型检查通过，没有修改权限或删去行为断言。
+
+原同一 Morphz 窗口切换前先保留用户已经填写的 Echo-only 选择：在旧页只保存这份实际意图，读回已启用且仅名字有值，没有添加默认特性；较当时基线仅三个 ROM 表发生这次预期修改。后续用户继续修改设定，以临近最终刷新前状态建立新只读基线，不把旧 Echo 快照盖回去。发现输入区仍有待发送截图时取消刷新；待输入与附件为空、听写关闭后，通过 View → Reload 正常载入最终构建。原窗口实看默认无相机、开关无鼠标遗留外圈、使用设定在名字之前，以及定时任务正确标题和原未来提醒；未代用户切换特性、头像、审批、主题或目录授权，未发送验收消息。只读检查后恢复刷新前收起的右栏和设定页签。最后身份补丁也在空输入时正常刷新并实看读回正确；每次临近刷新建立的基线前后均 **240／240** 数据表逻辑摘要一致，Runtime 仍为进程 11395，未重启。此为当前问题的实现与验收，不代表用户已认可审美或此前整个人格化目标已经完成。
+
 ## 2026-10-02 Profile 设定页层级与圆角身份重设计
 
 按个人助手的身份与表达偏好组织设定页，替换等权的原生复选框清单：身份区先展示 64px、18px 圆角头像底座与同行名字，既有 Logo 内缩到 40px，上传图片与 Human 首字使用相同外框；相机操作为 32px。总开关与逐项开关保留真实 checkbox／键盘语义，视觉改为统一胶囊开关，默认不设置不展示数值。四项表达偏好共用一个紧凑分组；选中时描述和准确 0–5 值收进标题同一行，再显示滑杆和两端短标签。模型与账号、智能体连接及已安装执行方式组成独立「能力与连接」操作组，不新增角色预览、长说明或假能力。Human 沿用同一身份组件；修复旧 `.create-dialog footer` 样式泄漏到内嵌保存区而产生 42px 多余空白、窄窗初开只露半个保存按钮的问题，只覆盖该内嵌页脚，不改其他对话框。

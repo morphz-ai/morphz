@@ -201,7 +201,14 @@ for (const appearance of ["light", "dark"] as const) {
           menu.getByRole("button", { name: "退出当前身份", exact: true }),
         ).toHaveCount(Number(source.boot!.capabilities.teamAuthentication));
         // Human/client settings never become a second Morphz configuration menu.
-        for (const name of ["活动", "授权", "安排", "设定", "SOUL", "记忆"]) {
+        for (const name of [
+          "活动",
+          "授权",
+          "定时任务",
+          "设定",
+          "SOUL",
+          "记忆",
+        ]) {
           await expect(
             menu.getByRole("button", { name, exact: true }),
           ).toHaveCount(0);

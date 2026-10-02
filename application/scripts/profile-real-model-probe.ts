@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { profileActualTransportFixture } from "../tests/profile-actual-transport-fixture.js";
 import { defaultAgentProfile } from "../packages/core/src/profile.js";
+import { openInput } from "../tests/interaction-helpers.js";
 
 const key = process.env.MORPHZ_PROFILE_LIVE_KEY;
 const model = process.env.MORPHZ_PROFILE_LIVE_MODEL;
@@ -31,7 +32,7 @@ assert.ok(
 const protocol = process.env.MORPHZ_PROFILE_LIVE_PROTOCOL ?? "openai-responses";
 assert.ok(protocol === "openai-chat" || protocol === "openai-responses");
 const fixture = await profileActualTransportFixture({
-  realProvider: { key, model, baseUrl, protocol },
+  realProvider: { key, model, baseUrl, protocol, maximumCalls: 2 },
 });
 let browser: Browser | undefined;
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -65,10 +66,10 @@ function outputText(raw: string) {
 async function ask(page: Page, marker: string) {
   const first = fixture.requests.length,
     reply = fixture.modelReplies.length;
-  const input = page.getByRole("textbox", { name: "AI 输入内容", exact: true });
+  const input = await openInput(page);
   await input.fill(
     marker +
-      "：仅按当前已安装的只读 Profile 回答幽默的配置。已设置就报告准确的数字/5，没设置就说‘未设置’，不要推测默认值；它不是模型参数。不调用工具。",
+      "：你叫什么名字？只按当前已安装的只读 Profile 回答；未设置就说明未设置名字，不推测姓名。只用一句话，不调用工具。",
   );
   await input.press("Enter");
   const request = await fixture.waitRequest(marker, first);
@@ -102,44 +103,34 @@ try {
   const initial = await fixture.read();
   assert.deepEqual(initial.agent.data, defaultAgentProfile);
   assert.equal(initial.agent.enabled, false);
-  const unset = await ask(page, "TEST_PROFILE_LIVE_UNSET");
-  assert.ok(
-    !unset.messages.includes("(agent-profile ") &&
-      !unset.messages.includes(
-        "Installed agent-rom is caller-owned read-only configuration",
-      ),
-  );
   const panel = page.locator(".subject-sidebar");
   if (!(await panel.isVisible()))
     await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
-  await editor.getByRole("checkbox", { name: "设置幽默", exact: true }).check();
-  const slider = editor.getByRole("slider", { name: "幽默程度", exact: true });
-  await slider.press("End");
   await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
     .check();
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".personality-save-state")
-      ?.textContent?.startsWith("已保存"),
-  );
+  await editor
+    .getByRole("textbox", { name: "智能体的名字", exact: true })
+    .fill("Echo");
+  // No Save click, Enter in the Profile field, or debounce delay. The actual
+  // App send path must flush the edited Profile before Runtime admits input.
+  const configured = await ask(page, "TEST_PROFILE_LIVE_IMMEDIATE_NAME");
   const actual = await fixture.read();
-  assert.equal(actual.agent.data.traits.humor, 5);
+  assert.equal(actual.agent.data.name, "Echo");
   assert.equal(actual.agent.enabled, true);
-  const configured = await ask(page, "TEST_PROFILE_LIVE_CONFIGURED");
-  assert.ok(configured.messages.includes("(humor 5)"));
+  assert.ok(configured.messages.includes("(name Echo)"));
+  assert.match(configured.text, /\bEcho\b/i);
+  const sessions = fixture.sql<{ id: string }>("SELECT id FROM sessions");
+  assert.equal(sessions.length, 1);
   await editor
     .getByRole("checkbox", { name: "使用 Profile", exact: true })
     .uncheck();
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".personality-save-state")
-      ?.textContent?.startsWith("已保存"),
-  );
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (!(await fixture.read()).agent.enabled) break;
+    await pause(50);
+  }
   assert.equal((await fixture.read()).agent.enabled, false);
   assert.equal(
     await editor
@@ -154,19 +145,19 @@ try {
         "Installed agent-rom is caller-owned read-only configuration",
       ),
   );
-  // These are observed real-model answers, not subjective humor quality scores.
+  assert.deepEqual(fixture.sql("SELECT id FROM sessions"), sessions);
+  // Only synthetic identity answers; no original Profile or conversation.
   const evidence = {
     realModel: true,
     realUiHostRust: true,
     model,
     provider: endpoint.origin,
-    requests: fixture.requests.length,
-    initial: unset.text,
+    requests: fixture.realCalls,
+    sameSession: true,
     configured: configured.text,
     disabled: disabled.text,
-    exactScaleReported: /5\s*\/\s*5/.test(configured.text),
-    initialUnsetReported: /未设置|not set/i.test(unset.text),
-    disabledUnsetReported: /未设置|not set/i.test(disabled.text),
+    profileNameReported: /\bEcho\b/i.test(configured.text),
+    disabledRomAbsent: !disabled.messages.includes("(agent-profile "),
   };
   // Even synthetic model output must never echo the supplied credential.
   const serialized = JSON.stringify(evidence);
@@ -176,10 +167,8 @@ try {
   );
   console.log(serialized);
   assert.ok(
-    evidence.exactScaleReported &&
-      evidence.initialUnsetReported &&
-      evidence.disabledUnsetReported,
-    "Real model did not accurately report configured/unset Profile; see synthetic response evidence",
+    evidence.profileNameReported && evidence.disabledRomAbsent,
+    "Real model identity or disabled ROM verification failed",
   );
 } finally {
   await browser?.close();

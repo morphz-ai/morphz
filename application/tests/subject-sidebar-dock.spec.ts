@@ -168,7 +168,7 @@ test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项�
     "d",
     "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z",
   );
-  for (const name of ["设定", "活动", "授权", "安排", "设定"]) {
+  for (const name of ["设定", "活动", "授权", "定时任务", "设定"]) {
     await tabs.getByRole("tab", { name, exact: true }).click();
     await expect(tabs.getByRole("tab", { name, exact: true })).toHaveAttribute(
       "aria-selected",
@@ -253,7 +253,7 @@ test("主体栏默认活动，四个图标分类支持键盘并记住选择，�
   await expect(
     tabs.getByRole("tab", { name: "活动", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
-  for (const name of ["活动", "授权", "安排", "设定"]) {
+  for (const name of ["活动", "授权", "定时任务", "设定"]) {
     const tab = tabs.getByRole("tab", { name, exact: true });
     await expect(tab.locator("svg")).toHaveCount(1);
     await expect(tab).toHaveText("");

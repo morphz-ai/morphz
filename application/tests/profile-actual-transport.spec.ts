@@ -5,6 +5,9 @@ import {
   defaultAgentProfile,
   profileUpdateSchema,
   profilePreferenceContract,
+  normalizeAgentProfileData,
+  normalizeHumanProfileData,
+  profileHasConfiguredFields,
   type ProfileUpdate,
 } from "../packages/core/src/profile.js";
 import { openInput } from "./interaction-helpers.js";
@@ -56,15 +59,78 @@ async function level(editor: Locator, label: string, value: number) {
   for (let index = 0; index < value; index++) await range.press("ArrowRight");
   await expect(range).toHaveValue(String(value));
 }
-async function save(editor: Locator, expectedEnabled = true) {
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(editor.locator(".personality-save-state")).toHaveText(
-    expectedEnabled ? "已保存" : "已保存 · 未启用",
+async function settled(editor: Locator, expectedEnabled = true) {
+  const subject =
+    (await editor.getAttribute("aria-label")) === "智能体资料"
+      ? "agent"
+      : "human";
+  // Match the current form to the real typed Host readback, so a previous
+  // optimistic save label cannot satisfy the next automatic write.
+  const intent = await editor.evaluate((element) => {
+    const checked = (name: string) =>
+      element.querySelector<HTMLInputElement>(`input[aria-label="${name}"]`)
+        ?.checked === true;
+    const text = (name: string) =>
+      element.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        `[aria-label="${name}"]`,
+      )?.value ?? "";
+    return element.getAttribute("aria-label") === "智能体资料"
+      ? {
+          name: checked("设置智能体名字") ? text("智能体的名字") : null,
+          traits: Object.fromEntries(
+            [
+              ["humor", "幽默"],
+              ["rigor", "严谨"],
+              ["warmth", "亲和"],
+              ["verbosity", "详略"],
+            ].map(([key, label]) => [
+              key,
+              checked(`设置${label}`) ? Number(text(`${label}程度`)) : null,
+            ]),
+          ),
+          speechStyle: null,
+          customStyle: checked("设置自定义风格")
+            ? text("自定义讲话风格")
+            : null,
+        }
+      : {
+          name: checked("设置你的名字") ? text("你的名字") : null,
+          preferredAddress: checked("设置称呼")
+            ? text("Agent 对你的称呼")
+            : null,
+        };
+  });
+  const data =
+    subject === "agent"
+      ? normalizeAgentProfileData(intent)
+      : normalizeHumanProfileData(intent);
+  expect(expectedEnabled && profileHasConfiguredFields(data)).toBe(
+    expectedEnabled,
   );
+  await editor.evaluate((element) => {
+    if (element.contains(document.activeElement))
+      (document.activeElement as HTMLElement | null)?.blur();
+  });
+  await expect
+    .poll(async () => (await fixture.read())[subject].data)
+    .toEqual(data);
+  await expect
+    .poll(async () => (await fixture.read())[subject].enabled)
+    .toBe(expectedEnabled);
+  await expect(editor.getByRole("alert")).toHaveCount(0);
+  await expect(editor.locator(".personality-save-state")).toHaveText(
+    "资料已保存",
+  );
+  // An empty optional control retains the user's raw master choice while its
+  // canonical Host value is disabled. Only configured fields can mount ROM.
+  if (profileHasConfiguredFields(data))
+    await expect(
+      editor.getByRole("checkbox", { name: "使用 Profile", exact: true }),
+    ).toBeChecked({ checked: expectedEnabled });
   await expect(
-    editor.getByRole("checkbox", { name: "使用 Profile", exact: true }),
-  ).toBeChecked({ checked: expectedEnabled });
-  expect((await fixture.read()).agent.enabled).toBe(expectedEnabled);
+    editor.getByRole("button", { name: "保存", exact: true }),
+  ).toHaveCount(0);
+  return (await fixture.read())[subject];
 }
 async function send(page: Page, marker: string) {
   const since = fixture.requests.length;
@@ -97,7 +163,7 @@ function assertEmptyRom(text: string) {
       `No active ROM marker: ${marker.slice(0, 80)}`,
     ).toBe(false);
 }
-test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零ROM，旧Thread继续固定旧版本", async ({
+test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thread零ROM，旧Thread继续固定旧版本", async ({
   page,
 }, testInfo) => {
   const writes: ProfileUpdate[] = [];
@@ -135,7 +201,7 @@ test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零R
   await editor
     .getByRole("checkbox", { name: "使用 Profile", exact: true })
     .check();
-  await save(editor);
+  await settled(editor);
   const saved = await fixture.read();
   await editor.screenshot({
     path: testInfo.outputPath("actual-host-saved-humor5-rigor0.png"),
@@ -146,7 +212,6 @@ test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零R
   });
   expect(saved.agent).toMatchObject({
     enabled: true,
-    revision: 1,
     data: {
       name: null,
       traits: { humor: 5, rigor: 0, warmth: null, verbosity: null },
@@ -187,19 +252,22 @@ test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零R
     "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
   );
   expect(bindings).toHaveLength(1);
-  expect(bindings[0]!.revision).toBe(1);
+  expect(bindings[0]!.revision).toBe(saved.agent.revision);
 
   await editor
     .getByRole("checkbox", { name: "使用 Profile", exact: true })
     .uncheck();
-  await save(editor, false);
+  await settled(editor, false);
   expect((await fixture.read()).agent).toMatchObject({
     enabled: false,
-    revision: 2,
+    revision: saved.agent.revision + 1,
     data: saved.agent.data,
   });
   const disabled = await fixture.rom("agent");
-  expect(disabled.body).toMatchObject({ revision: 2, enabled: false });
+  expect(disabled.body).toMatchObject({
+    revision: saved.agent.revision + 1,
+    enabled: false,
+  });
   expect(disabled.body.canonical_sexpr).toContain("(humor 5)");
   expect(
     fixture.sql(
@@ -226,10 +294,9 @@ test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零R
   await editor
     .getByRole("checkbox", { name: "设置严谨", exact: true })
     .uncheck();
-  await save(editor, false);
+  await settled(editor, false);
   expect((await fixture.read()).agent).toMatchObject({
     enabled: false,
-    revision: 3,
     data: defaultAgentProfile,
   });
   expect((await fixture.rom("agent")).body.canonical_sexpr).toBe(
@@ -242,7 +309,12 @@ test("真实 UI 保存稀疏0/5、空值不默认注入；停用后新Thread零R
     ),
   ).toEqual(bindings);
   expect(fixture.sql("SELECT thread_id FROM thread_rom_mounts").length).toBe(4);
-  expect(writes.map((write) => write.enabled)).toEqual([true, false, false]);
+  expect(writes.some((write) => write.enabled === true)).toBe(true);
+  expect(writes.at(-1)?.enabled).toBe(false);
+  expect(new Set(writes.map((write) => write.commandId)).size).toBe(
+    writes.length,
+  );
+  expect((await fixture.read()).agent.revision).toBe(writes.length);
 });
 
 test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关闭后新Thread无HumanProfile", async ({
@@ -270,8 +342,7 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
   await editor
     .getByRole("checkbox", { name: "使用 Profile", exact: true })
     .check();
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(editor.locator(".personality-save-state")).toHaveText("已保存");
+  await settled(editor);
   const saved = await fixture.read();
   await editor.screenshot({
     path: testInfo.outputPath("actual-host-private-human-address.png"),
@@ -281,7 +352,6 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
     contentType: "image/png",
   });
   expect(saved.human).toMatchObject({
-    revision: 1,
     enabled: true,
     data: { name: null, preferredAddress: "测试同学" },
   });
@@ -327,12 +397,9 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
   await editor
     .getByRole("checkbox", { name: "使用 Profile", exact: true })
     .uncheck();
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(editor.locator(".personality-save-state")).toHaveText(
-    "已保存 · 未启用",
-  );
+  await settled(editor, false);
   expect((await fixture.read()).human).toMatchObject({
-    revision: 2,
+    revision: saved.human.revision + 1,
     enabled: false,
     data: { name: null, preferredAddress: "测试同学" },
   });
@@ -345,10 +412,6 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
 }) => {
   await enter(page);
   const editor = await agentEditor(page);
-  await level(editor, "幽默", 5);
-  await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
-    .check();
   const attempts: ProfileUpdate[] = [];
   let loseReceipt = true;
   await page.route(fixture.origin + "/api/profile", async (route) => {
@@ -364,15 +427,24 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
     }
     return route.continue();
   });
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
+  await editor
+    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
+    .check();
+  const name = editor.getByRole("textbox", {
+    name: "智能体的名字",
+    exact: true,
+  });
+  await name.fill("ReceiptName");
+  await name.press("Enter");
   await expect(
-    editor.getByRole("button", { name: "保存", exact: true }),
+    editor.getByRole("button", { name: "重试保存", exact: true }),
   ).toBeEnabled();
   await expect(editor.locator(".personality-save-state")).not.toHaveText(
-    "已保存",
+    "资料已保存",
   );
   expect((await fixture.read()).agent.revision).toBe(1);
-  await save(editor);
+  await editor.getByRole("button", { name: "重试保存", exact: true }).click();
+  await settled(editor);
   expect(attempts).toHaveLength(2);
   expect(attempts[1]).toEqual(attempts[0]);
   expect(
@@ -380,7 +452,6 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
   ).toHaveLength(1);
   expect((await fixture.read()).agent.revision).toBe(1);
 
-  await level(editor, "严谨", 0);
   await fixture.update({
     subject: "agent",
     commandId: randomUUID(),
@@ -397,11 +468,9 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
       response.request().method() === "POST" &&
       response.status() === 409,
   );
-  await editor.getByRole("button", { name: "保存", exact: true }).click();
+  await level(editor, "严谨", 0);
   await conflict;
-  await expect(
-    editor.getByRole("slider", { name: "幽默程度", exact: true }),
-  ).toHaveValue("5");
+  await expect(name).toHaveValue("ReceiptName");
   await expect(
     editor.getByRole("slider", { name: "严谨程度", exact: true }),
   ).toHaveValue("0");
@@ -435,20 +504,21 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   await expect(
     agent.getByRole("textbox", { name: "自定义讲话风格", exact: true }),
   ).toHaveValue("");
+  expect((await fixture.read()).agent.revision).toBe(0);
   await agent
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
-    .check();
-  await save(agent, false);
-  await expect(
-    agent.getByRole("checkbox", { name: "设置自定义风格", exact: true }),
-  ).not.toBeChecked();
+    .getByRole("textbox", { name: "自定义讲话风格", exact: true })
+    .fill("TEST 待清空风格");
+  await settled(agent);
+  await agent
+    .getByRole("textbox", { name: "自定义讲话风格", exact: true })
+    .fill("");
+  await settled(agent, false);
   expect((await fixture.read()).agent).toMatchObject({
-    revision: 1,
     enabled: false,
     data: defaultAgentProfile,
   });
   expect((await fixture.rom("agent")).body).toMatchObject({
-    revision: 1,
+    revision: (await fixture.read()).agent.revision,
     enabled: false,
     canonical_sexpr: "(agent-profile (version 2))",
   });
@@ -468,38 +538,149 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   await expect(
     human.getByRole("textbox", { name: "Agent 对你的称呼", exact: true }),
   ).toHaveValue("");
+  expect((await fixture.read()).human.revision).toBe(0);
   await human
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
-    .check();
-  await human.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(human.locator(".personality-save-state")).toHaveText(
-    "已保存 · 未启用",
-  );
-  await expect(
-    human.getByRole("checkbox", { name: "使用 Profile", exact: true }),
-  ).not.toBeChecked();
-  await expect(
-    human.getByRole("checkbox", { name: "设置称呼", exact: true }),
-  ).not.toBeChecked();
+    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
+    .fill("TEST 待清空称呼");
+  await settled(human);
+  await human
+    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
+    .fill("");
+  await settled(human, false);
   expect((await fixture.read()).human).toMatchObject({
-    revision: 1,
     enabled: false,
     data: { name: null, preferredAddress: null },
   });
   await expect(
     page.getByText("资料已再次变化，请重新读取后确认。", { exact: true }),
   ).toHaveCount(0);
-  expect(writes).toHaveLength(2);
-  expect(writes[0]).toMatchObject({
+  expect(
+    writes.filter((write) => write.subject === "agent").at(-1),
+  ).toMatchObject({
     subject: "agent",
-    enabled: true,
+    enabled: false,
     data: { customStyle: null },
   });
-  expect(writes[1]).toMatchObject({
+  expect(
+    writes.filter((write) => write.subject === "human").at(-1),
+  ).toMatchObject({
     subject: "human",
-    enabled: true,
+    enabled: false,
     data: { preferredAddress: null },
   });
   expect(fixture.sql("SELECT id FROM sessions")).toHaveLength(0);
   expect(fixture.requests).toHaveLength(0);
+});
+
+test("同一长期Session改Echo后立即发送等待自动保存；旧Thread续跑固定Echo，停用后新请求零ROM", async ({
+  page,
+}) => {
+  await enter(page);
+  const editor = await agentEditor(page);
+  assertEmptyRom(modelText(await send(page, "PROFILE_IMMEDIATE_UNSET")));
+  const sessions = fixture.sql<{ id: string }>("SELECT id FROM sessions");
+  expect(sessions).toHaveLength(1);
+  expect(fixture.sql("SELECT thread_id FROM thread_rom_bindings")).toHaveLength(
+    0,
+  );
+
+  let permitWrite!: () => void;
+  const writeGate = new Promise<void>((done) => (permitWrite = done));
+  let echoWriteSeen = false;
+  const submittedInputs: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/platform/messages")
+    )
+      submittedInputs.push(request.postData() ?? "");
+  });
+  await page.route(fixture.origin + "/api/profile", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const command = profileUpdateSchema.parse(route.request().postDataJSON());
+    if (command.subject === "agent" && command.data.name === "Echo") {
+      echoWriteSeen = true;
+      // Hold before the real Host commits. Sending must flush the debounce and
+      // await durable confirmation before admitting the new Runtime input.
+      await writeGate;
+    }
+    return route.continue();
+  });
+  const input = await openInput(page);
+  await editor
+    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
+    .check();
+  const name = editor.getByRole("textbox", {
+    name: "智能体的名字",
+    exact: true,
+  });
+  await name.fill("Echo");
+  const configuredStart = fixture.requests.length;
+  fixture.hold("PROFILE_IMMEDIATE_ECHO");
+  // There is no Save click or settling delay between the edit and submit.
+  await input.fill("PROFILE_IMMEDIATE_ECHO：你叫什么？");
+  await input.press("Enter");
+  try {
+    await expect.poll(() => echoWriteSeen).toBe(true);
+    // Deliberately keep the durable write blocked long enough for a leaking
+    // Session ingress to arrive; this is fault injection, not UI synchronization.
+    await page.waitForTimeout(150);
+    expect((await fixture.read()).agent.data.name).toBeNull();
+    expect(submittedInputs).toHaveLength(0);
+    expect(fixture.requests).toHaveLength(configuredStart);
+  } finally {
+    permitWrite();
+  }
+  const configured = modelText(
+    await fixture.waitRequest("PROFILE_IMMEDIATE_ECHO", configuredStart),
+  );
+  expect(configured).toContain("(name Echo)");
+  const savedEcho = await settled(editor);
+  expect(savedEcho.data.name).toBe("Echo");
+  expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
+  expect(
+    fixture.sql<{ session_id: string }>(
+      "SELECT DISTINCT session_id FROM session_message_requests",
+    ),
+  ).toEqual([{ session_id: sessions[0]!.id }]);
+  const echoBindings = fixture.sql<{
+    thread_id: string;
+    entry_id: string;
+    revision: number;
+  }>(
+    "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+  );
+  expect(echoBindings).toHaveLength(1);
+  expect(echoBindings[0]!.revision).toBe(savedEcho.revision);
+
+  await name.fill("Nova");
+  await name.press("Enter");
+  const savedNova = await settled(editor);
+  expect(savedNova.data.name).toBe("Nova");
+  expect(savedNova.revision).toBe(savedEcho.revision + 1);
+  expect(
+    fixture.sql(
+      "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+    ),
+  ).toEqual(echoBindings);
+  const continuationStart = fixture.requests.length;
+  await fixture.continueHeld("PROFILE_IMMEDIATE_ECHO");
+  const continued = modelText(
+    await fixture.waitRequest("PROFILE_IMMEDIATE_ECHO", continuationStart),
+  );
+  expect(continued).toContain("(name Echo)");
+  expect(continued).not.toContain("(name Nova)");
+
+  await editor
+    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .uncheck();
+  const disabled = await settled(editor, false);
+  expect(disabled.data.name).toBe("Nova");
+  assertEmptyRom(modelText(await send(page, "PROFILE_IMMEDIATE_DISABLED")));
+  expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
+  expect(
+    fixture.sql(
+      "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+    ),
+  ).toEqual(echoBindings);
 });

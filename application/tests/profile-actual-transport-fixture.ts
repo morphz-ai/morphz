@@ -44,6 +44,7 @@ export async function profileActualTransportFixture(
       baseUrl: string;
       protocol: "openai-chat" | "openai-responses";
       key: string;
+      maximumCalls?: number;
     };
   } = {},
 ) {
@@ -127,13 +128,14 @@ export async function profileActualTransportFixture(
         messages: messages as CapturedRequest["messages"],
       });
       if (options.realProvider) {
-        // At most six real outbound calls even if Runtime retries failures.
-        if (++liveCalls > 6) {
+        // Bound actual upstream usage even if Runtime retries a rejected call.
+        if (liveCalls >= (options.realProvider.maximumCalls ?? 2)) {
           response
             .writeHead(429)
             .end("Isolated live probe usage limit reached");
           return;
         }
+        liveCalls++;
         const target = options.realProvider;
         const upstream = await fetch(
           target.baseUrl.replace(/\/$/, "") +
@@ -313,6 +315,9 @@ export async function profileActualTransportFixture(
       origin,
       requests,
       modelReplies,
+      get realCalls() {
+        return liveCalls;
+      },
       sql,
       runtime,
       client,

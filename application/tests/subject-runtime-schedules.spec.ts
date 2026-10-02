@@ -151,8 +151,8 @@ async function fixture(page: Page) {
       await page
         .getByRole("button", { name: "显示右侧栏", exact: true })
         .click();
-    await panel.getByRole("tab", { name: "安排", exact: true }).click();
-    return panel.getByRole("region", { name: "事项安排", exact: true });
+    await panel.getByRole("tab", { name: "定时任务", exact: true }).click();
+    return panel.getByRole("region", { name: "定时任务", exact: true });
   }
   return {
     platform,
@@ -192,12 +192,12 @@ test("无事项的原生提醒显示实际时间与等待，事项读取失败�
   await expect(row).not.toContainText(/正在执行|进行中/);
   f.failList();
   await section
-    .getByRole("button", { name: "刷新事项安排", exact: true })
+    .getByRole("button", { name: "刷新定时任务", exact: true })
     .click();
   await expect(section.getByRole("alert")).toContainText("TEST 事项目录失败");
   await expect(row).toBeVisible();
   await expect(
-    section.getByText("暂无可确认的事项安排", { exact: true }),
+    section.getByText("暂无可确认的定时任务", { exact: true }),
   ).toHaveCount(0);
   expect(writes).toEqual([]);
   expect(explicitReads).toHaveLength(1);
@@ -215,7 +215,7 @@ test("平台安排仅以真实scheduleId去重，标题或Thread相同不能合�
   await expect(section.locator("[data-schedule-id]")).toHaveCount(0);
   f.useTask("TEST-another-schedule");
   await section
-    .getByRole("button", { name: "刷新事项安排", exact: true })
+    .getByRole("button", { name: "刷新定时任务", exact: true })
     .click();
   await expect(section.locator("[data-schedule-id]")).toHaveCount(1);
   await expect(section.locator(".subject-record")).toHaveCount(2);
@@ -226,20 +226,20 @@ test("Runtime读取失败及有界空安排不伪报暂无", async ({ page }) =>
   f.runtime.activity!.available = false;
   const section = await f.open();
   await expect(section.getByRole("alert")).toContainText(
-    "原生安排暂时无法读取",
+    "部分定时任务暂时无法读取",
   );
   await expect(section.locator("[data-schedule-id]")).toHaveCount(0);
   await expect(
-    section.getByText("暂无可确认的事项安排", { exact: true }),
+    section.getByText("暂无可确认的定时任务", { exact: true }),
   ).toHaveCount(0);
   f.runtime.activity!.available = true;
   f.runtime.activity!.schedules = [];
   f.runtime.activity!.schedulesTruncated = true;
   await f.platform.refresh();
   await expect(
-    section.getByText("安排概览有界，部分来源尚未核验。", { exact: true }),
+    section.getByText("部分定时任务来源尚未核验。", { exact: true }),
   ).toBeVisible();
   await expect(
-    section.getByText("暂无可确认的事项安排", { exact: true }),
+    section.getByText("暂无可确认的定时任务", { exact: true }),
   ).toHaveCount(0);
 });

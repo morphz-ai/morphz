@@ -1,14 +1,20 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
-import { Camera, Check, ChevronRight, RotateCcw } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react";
+import { Camera, ChevronRight } from "lucide-react";
 import {
   defaultAgentProfile,
   defaultHumanProfile,
-  profileUpdateSchema,
   avatarMaximumBytes,
+  profileHasConfiguredFields,
   type AgentProfileData,
   type HumanProfileData,
   type ProfileSubject,
-  type ProfileUpdate,
 } from "../../../packages/core/src/profile.js";
 import { ProfileAvatar, type ProfileAvatarState } from "./ProfileAvatar.js";
 import { HumanAvatar } from "./HumanAvatar.js";
@@ -89,26 +95,19 @@ export function ProfileEditor({
   onBusy?: (busy: boolean) => void;
 }) {
   const actual = profile.snapshot?.[subject];
-  const savedDraft = profile.drafts.current[subject];
-  const [data, setData] = useState<AgentProfileData | HumanProfileData>(
-    savedDraft?.data ??
-      actual?.data ??
-      (subject === "agent" ? defaultAgentProfile : defaultHumanProfile),
-  );
-  const [revision, setRevision] = useState(
-    savedDraft?.revision ?? actual?.revision ?? 0,
-  );
-  const [enabled, setEnabled] = useState(
-    savedDraft?.enabled ?? actual?.enabled ?? false,
-  );
-  const [dirty, setDirty] = useState(!!savedDraft);
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [saved, setSaved] = useState(false);
-  const [conflict, setConflict] = useState<"profile" | "avatar">();
-  const pending = useRef<
-    { fingerprint: string; command: ProfileUpdate } | undefined
-  >(savedDraft?.pending);
+  const auto = profile.autosave[subject];
+  const data: AgentProfileData | HumanProfileData =
+    auto.data ??
+    actual?.data ??
+    (subject === "agent" ? defaultAgentProfile : defaultHumanProfile);
+  const enabled = auto.enabled ?? actual?.enabled ?? false;
+  const [avatarBusy, setBusy] = useState(false);
+  const [avatarError, setError] = useState("");
+  const [avatarConflict, setConflict] = useState<"avatar">();
+  const busy = avatarBusy || auto.saving;
+  const conflict = avatarConflict || auto.conflict;
+  const error = avatarError || auto.error;
+  const activateText = profile.textActivation[subject];
   const avatarPending = useRef<
     | {
         file: File;
@@ -122,17 +121,13 @@ export function ProfileEditor({
   >(undefined);
   const fileInput = useRef<HTMLInputElement>(null);
   const id = useId();
-  const editable = !!actual?.available && actual.editable && !busy && !conflict;
+  // An in-flight save must not interrupt typing or a slider gesture. Avatar
+  // writes still have their independent, versioned permission boundary.
+  const editable =
+    !!actual?.available && actual.editable && !avatarBusy && !conflict;
   const urls = profile.media[subject];
   const avatar = actual?.avatar;
   const animated = (avatar?.media?.frames ?? 1) > 1;
-  useEffect(() => {
-    if (actual && !dirty) {
-      setData(actual.data);
-      setEnabled(actual.enabled);
-      setRevision(actual.revision);
-    }
-  }, [actual?.revision, actual?.available, dirty]);
   useEffect(() => {
     onBusy?.(busy);
     return () => onBusy?.(false);
@@ -140,81 +135,53 @@ export function ProfileEditor({
   const change = (
     next: AgentProfileData | HumanProfileData,
     nextEnabled = enabled,
+    delay = 0,
+    allowEmpty = false,
   ) => {
-    setData(next);
-    setEnabled(nextEnabled);
-    setDirty(true);
-    setSaved(false);
     setError("");
-    if (subject === "agent")
-      profile.drafts.current.agent = {
-        data: next as AgentProfileData,
-        enabled: nextEnabled,
-        revision,
-      };
-    else
-      profile.drafts.current.human = {
-        data: next as HumanProfileData,
-        enabled: nextEnabled,
-        revision,
-      };
+    const configured = profileHasConfiguredFields({
+      ...next,
+      name: next.name?.trim() || null,
+    });
+    profile.edit(
+      subject,
+      next,
+      configured || allowEmpty ? nextEnabled : false,
+      delay,
+    );
   };
-  async function save() {
-    setBusy(true);
-    setError("");
-    setSaved(false);
-    try {
-      if (data.name !== null && !data.name.trim())
-        throw new Error("请填写名字，或选择不设置。");
-      const candidate = profileUpdateSchema.parse({
-        subject,
-        commandId: "pending",
-        expectedRevision: revision,
-        data,
-        enabled,
+  const textChange = (
+    field: "name" | "preferredAddress" | "customStyle",
+    value: string,
+  ) => {
+    const firstValue = activateText.has(field) && !!value.trim();
+    if (firstValue) activateText.delete(field);
+    change({ ...data, [field]: value }, firstValue ? true : enabled, 450, true);
+  };
+  const flushText = () => void profile.flush(subject).catch(() => {});
+  const selectText = (
+    field: "name" | "preferredAddress" | "customStyle",
+    checked: boolean,
+  ) => {
+    if (checked) activateText.add(field);
+    else activateText.delete(field);
+    change(
+      { ...data, [field]: checked ? "" : null },
+      enabled,
+      0,
+      checked && enabled,
+    );
+    if (checked)
+      requestAnimationFrame(() => {
+        document.getElementById(`${id}-${field}`)?.focus();
       });
-      const fingerprint = JSON.stringify(candidate);
-      if (pending.current?.fingerprint !== fingerprint)
-        pending.current = {
-          fingerprint,
-          command: { ...candidate, commandId: crypto.randomUUID() },
-        };
-      // Closing a failed form must not invent a new command for an ambiguous
-      // write. This is a scoped in-memory intent, never another profile store.
-      if (candidate.subject === "agent")
-        profile.drafts.current.agent = {
-          data: candidate.data,
-          enabled: candidate.enabled === true,
-          revision: candidate.expectedRevision,
-          pending: pending.current,
-        };
-      else
-        profile.drafts.current.human = {
-          data: candidate.data,
-          enabled: candidate.enabled === true,
-          revision: candidate.expectedRevision,
-          pending: pending.current,
-        };
-      const result = await profile.save(pending.current.command);
-      setData(result[subject].data);
-      setEnabled(result[subject].enabled);
-      setRevision(result[subject].revision);
-      delete profile.drafts.current[subject];
-      pending.current = undefined;
-      setDirty(false);
-      setSaved(true);
-    } catch (e) {
-      if (
-        e instanceof RequestError &&
-        e.status === 409 &&
-        e.code === "conflict"
-      )
-        setConflict("profile");
-      setError(e instanceof Error ? e.message : "保存失败，请重试。");
-    } finally {
-      setBusy(false);
+  };
+  const textKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      flushText();
     }
-  }
+  };
   async function upload(file?: File) {
     clearPending.current = undefined;
     if (file)
@@ -278,37 +245,17 @@ export function ProfileEditor({
     }
   }
   async function resolveConflict(keepChanges: boolean) {
+    if (!avatarConflict) {
+      await profile
+        .resolveConflict(subject, keepChanges ? "overwrite" : "reload")
+        .catch(() => {});
+      return;
+    }
     setBusy(true);
-    setSaved(false);
     try {
       const latest = await profile.refresh();
       if (!latest) throw new Error("资料暂时无法读取，请重试。");
-      if (conflict === "profile") {
-        const fresh = latest[subject];
-        pending.current = undefined;
-        setRevision(fresh.revision);
-        if (keepChanges) {
-          if (subject === "agent")
-            profile.drafts.current.agent = {
-              data: data as AgentProfileData,
-              enabled,
-              revision: fresh.revision,
-            };
-          else
-            profile.drafts.current.human = {
-              data: data as HumanProfileData,
-              enabled,
-              revision: fresh.revision,
-            };
-          setDirty(true);
-        } else {
-          setData(fresh.data);
-          setEnabled(fresh.enabled);
-          delete profile.drafts.current[subject];
-          setDirty(false);
-        }
-        setError("");
-      } else {
+      {
         const fresh = latest[subject].avatar;
         if (keepChanges && avatarPending.current)
           avatarPending.current = {
@@ -363,6 +310,25 @@ export function ProfileEditor({
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
     >
+      <label
+        className="personality-master"
+        title="把名字和表达偏好用于对话；关闭时保留设置"
+      >
+        <span>使用设定</span>
+        <span className="personality-master-state profile-visually-hidden">
+          {actual?.enabled ? "已启用" : "未启用"}
+        </span>
+        <input
+          type="checkbox"
+          aria-label="使用 Profile"
+          checked={enabled}
+          disabled={!editable}
+          onChange={(e) => {
+            activateText.clear();
+            change(data, e.target.checked, 0, e.target.checked);
+          }}
+        />
+      </label>
       <div className="personality-identity">
         <div className="personality-portrait">
           {subject === "agent" ? (
@@ -393,7 +359,9 @@ export function ProfileEditor({
               subject === "agent" ? "上传智能体头像" : "上传自己的头像"
             }
             title="PNG、JPEG、GIF 或 WebP，最多 4 MB"
-            disabled={!editable || !profile.snapshot?.avatarUploadAvailable}
+            disabled={
+              !editable || busy || !profile.snapshot?.avatarUploadAvailable
+            }
             onClick={() => fileInput.current?.click()}
           >
             <Camera size={16} />
@@ -409,7 +377,9 @@ export function ProfileEditor({
         <div className="personality-name">
           <label className="personality-optional" htmlFor={`${id}-name-set`}>
             <span>{subject === "agent" ? "名字" : "你的名字"}</span>
-            <span>{data.name === null ? "不设置" : "已设置"}</span>
+            <span className="profile-visually-hidden">
+              {data.name === null ? "不设置" : "已设置"}
+            </span>
             <input
               id={`${id}-name-set`}
               type="checkbox"
@@ -418,9 +388,7 @@ export function ProfileEditor({
               }
               checked={data.name !== null}
               disabled={!editable}
-              onChange={(e) =>
-                change({ ...data, name: e.target.checked ? "" : null })
-              }
+              onChange={(e) => selectText("name", e.target.checked)}
             />
           </label>
           <input
@@ -430,12 +398,14 @@ export function ProfileEditor({
             value={data.name ?? ""}
             disabled={!editable || data.name === null}
             placeholder={subject === "agent" ? "Morphz" : "你的名字"}
-            onChange={(e) => change({ ...data, name: e.target.value })}
+            onChange={(e) => textChange("name", e.target.value)}
+            onBlur={flushText}
+            onKeyDown={textKey}
           />
           {avatar?.media && (
             <button
               className="personality-text-action"
-              disabled={!editable}
+              disabled={!editable || busy}
               onClick={() => void clearAvatar()}
             >
               移除头像
@@ -443,46 +413,31 @@ export function ProfileEditor({
           )}
         </div>
       </div>
-      <label className="personality-master">
-        <span>{subject === "agent" ? "个性设定" : "个人设定"}</span>
-        <span className="personality-master-state">
-          {dirty ? "待保存" : actual?.enabled ? "已启用" : "未启用"}
-        </span>
-        <input
-          type="checkbox"
-          aria-label="使用 Profile"
-          checked={enabled}
-          disabled={!editable}
-          onChange={(e) => change(data, e.target.checked)}
-        />
-      </label>
       {human && (
         <div className="personality-field">
           <label className="personality-optional">
             <span>希望我怎么称呼你</span>
-            <span>{human.preferredAddress === null ? "不设置" : "已设置"}</span>
+            <span className="profile-visually-hidden">
+              {human.preferredAddress === null ? "不设置" : "已设置"}
+            </span>
             <input
               type="checkbox"
               aria-label="设置称呼"
               checked={human.preferredAddress !== null}
               disabled={!editable}
-              onChange={(e) =>
-                change({
-                  ...human,
-                  preferredAddress: e.target.checked ? "" : null,
-                })
-              }
+              onChange={(e) => selectText("preferredAddress", e.target.checked)}
             />
           </label>
           <input
+            id={`${id}-preferredAddress`}
             aria-label="Agent 对你的称呼"
             maxLength={40}
             value={human.preferredAddress ?? ""}
             placeholder="称呼"
             disabled={!editable || human.preferredAddress === null}
-            onChange={(e) =>
-              change({ ...human, preferredAddress: e.target.value })
-            }
+            onChange={(e) => textChange("preferredAddress", e.target.value)}
+            onBlur={flushText}
+            onKeyDown={textKey}
           />
         </div>
       )}
@@ -509,20 +464,25 @@ export function ProfileEditor({
                       </span>
                     )}
                     <label className="personality-optional">
-                      <span>{level === null ? "不设置" : "已设置"}</span>
+                      <span className="profile-visually-hidden">
+                        {level === null ? "不设置" : "已设置"}
+                      </span>
                       <input
                         type="checkbox"
                         aria-label={`设置${trait.label}`}
                         checked={level !== null}
                         disabled={!editable}
                         onChange={(e) =>
-                          change({
-                            ...agent,
-                            traits: {
-                              ...agent.traits,
-                              [trait.key]: e.target.checked ? 0 : null,
+                          change(
+                            {
+                              ...agent,
+                              traits: {
+                                ...agent.traits,
+                                [trait.key]: e.target.checked ? 0 : null,
+                              },
                             },
-                          })
+                            e.target.checked ? true : enabled,
+                          )
                         }
                       />
                     </label>
@@ -545,14 +505,20 @@ export function ProfileEditor({
                           } as CSSProperties
                         }
                         onChange={(e) =>
-                          change({
-                            ...agent,
-                            traits: {
-                              ...agent.traits,
-                              [trait.key]: Number(e.target.value),
+                          change(
+                            {
+                              ...agent,
+                              traits: {
+                                ...agent.traits,
+                                [trait.key]: Number(e.target.value),
+                              },
                             },
-                          })
+                            enabled,
+                            300,
+                          )
                         }
+                        onPointerUp={flushText}
+                        onBlur={flushText}
                       />
                       <span className="personality-trait-ends">
                         <span>{trait.low}</span>
@@ -584,7 +550,10 @@ export function ProfileEditor({
                     value={style.value}
                     checked={agent.speechStyle === style.value}
                     onChange={() =>
-                      change({ ...agent, speechStyle: style.value })
+                      change(
+                        { ...agent, speechStyle: style.value },
+                        agent.speechStyle === null ? true : enabled,
+                      )
                     }
                   />
                   <span>{style.label}</span>
@@ -598,30 +567,27 @@ export function ProfileEditor({
               <ChevronRight size={14} />
             </summary>
             <label className="personality-optional">
-              <span>{agent.customStyle === null ? "不设置" : "已设置"}</span>
+              <span className="profile-visually-hidden">
+                {agent.customStyle === null ? "不设置" : "已设置"}
+              </span>
               <input
                 type="checkbox"
                 aria-label="设置自定义风格"
                 checked={agent.customStyle !== null}
                 disabled={!editable}
-                onChange={(e) =>
-                  change({
-                    ...agent,
-                    customStyle: e.target.checked ? "" : null,
-                  })
-                }
+                onChange={(e) => selectText("customStyle", e.target.checked)}
               />
             </label>
             <textarea
+              id={`${id}-customStyle`}
               aria-label="自定义讲话风格"
               maxLength={500}
               rows={3}
               disabled={!editable || agent.customStyle === null}
               value={agent.customStyle ?? ""}
               placeholder="例如：先给结论，再聊细节。"
-              onChange={(e) =>
-                change({ ...agent, customStyle: e.target.value })
-              }
+              onChange={(e) => textChange("customStyle", e.target.value)}
+              onBlur={flushText}
             />
           </details>
         </div>
@@ -642,59 +608,19 @@ export function ProfileEditor({
           </button>
         </div>
       )}
-      <footer className="personality-actions">
-        <span
-          className="personality-save-state"
-          role="status"
-          aria-live="polite"
-        >
-          {busy ? (
-            "保存中…"
-          ) : saved ? (
-            <>
-              <Check size={14} />
-              {enabled ? "已保存" : "已保存 · 未启用"}
-            </>
-          ) : dirty ? (
-            "未保存"
-          ) : (
-            ""
-          )}
-        </span>
-        {dirty && (
-          <button
-            className="personality-reset"
-            aria-label="恢复已保存资料"
-            disabled={busy || !!conflict}
-            onClick={() => {
-              if (!actual) return;
-              setData(actual.data);
-              setEnabled(actual.enabled);
-              setRevision(actual.revision);
-              setDirty(false);
-              setError("");
-              pending.current = undefined;
-              delete profile.drafts.current[subject];
-            }}
-          >
-            <RotateCcw size={14} />
-          </button>
-        )}
-        <button
-          className="button primary personality-save"
-          disabled={
-            !editable || !!conflict || (!dirty && actual?.revision !== 0)
-          }
-          title={
-            subject === "agent"
-              ? "保存后用于新工作，已开始的工作保持原设定"
-              : "只设置你的个人资料"
-          }
-          onClick={() => void save()}
-        >
-          保存
-        </button>
-      </footer>
+      <span
+        className="personality-save-state profile-visually-hidden"
+        role="status"
+        aria-live="polite"
+      >
+        {busy
+          ? "正在保存资料"
+          : auto.dirty
+            ? "资料修改尚未确认"
+            : actual?.revision
+              ? "资料已保存"
+              : ""}
+      </span>
       {error && (
         <div className="personality-error" role="alert">
           {error}
@@ -722,6 +648,14 @@ export function ProfileEditor({
           {!conflict && clearPending.current && (
             <button disabled={busy} onClick={() => void clearAvatar()}>
               重试移除
+            </button>
+          )}
+          {!conflict && auto.error && (
+            <button
+              disabled={busy}
+              onClick={() => void profile.retry(subject).catch(() => {})}
+            >
+              重试保存
             </button>
           )}
         </div>

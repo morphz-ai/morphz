@@ -110,17 +110,17 @@ async function fixture(page: Page) {
         .click();
     await expect(panel).toBeVisible();
     const tabs = panel.getByRole("tablist", { name: "Morphz 信息分类" });
-    await tabs.getByRole("tab", { name: "安排", exact: true }).click();
+    await tabs.getByRole("tab", { name: "定时任务", exact: true }).click();
     return {
       panel,
       tabs,
-      section: panel.getByRole("region", { name: "事项安排", exact: true }),
+      section: panel.getByRole("region", { name: "定时任务", exact: true }),
     };
   }
   return { task, routeList, open };
 }
 
-test("事项安排只查询 Agent 的有界目录，并按真实 run 排除停止、取消与终态", async ({
+test("定时任务只查询 Agent 的有界目录，并按真实 run 排除停止、取消与终态", async ({
   page,
 }) => {
   const f = await fixture(page);
@@ -216,7 +216,65 @@ test("事项安排只查询 Agent 的有界目录，并按真实 run 排除停�
   expect(reads.sort()).toEqual(cases.map(([id]) => id).sort());
 });
 
-test("事项安排读取 HTTP、Runtime 或确切 run 错误时不宣称暂无安排", async ({
+test("人的待办日期、未启动事项日期和缺失的Runtime记录不能变成定时任务", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  const dueDate = "2026-10-03";
+  const human = f.task("human-due-date", "TEST 人的未来待办", 0);
+  human.assigneeId = human.createdByActantId;
+  human.dueDate = dueDate;
+  human.headVersion.assigneeId = human.createdByActantId;
+  human.headVersion.assignment = "human";
+  human.headVersion.dueDate = dueDate;
+  const unrequested = f.task("agent-dates", "TEST 只有事项日期", 0);
+  unrequested.dueDate = dueDate;
+  unrequested.headVersion.dueDate = dueDate;
+  unrequested.headVersion.notBefore = "2026-10-03T05:30:00.000Z";
+  unrequested.headVersion.everySeconds = 120;
+  const noRecord = f.task("missing-record", "TEST 未确认Runtime安排");
+  noRecord.dueDate = dueDate;
+  noRecord.headVersion.dueDate = dueDate;
+  const timer = f.task("runtime-timer", "TEST 真实Runtime定时任务");
+  const reads: string[] = [];
+  await f.routeList((route) =>
+    route.fulfill({ json: [human, unrequested, noRecord, timer] }),
+  );
+  await page.route(/\/api\/tasks\/[^/]+\/runtime$/, async (route) => {
+    const id = decodeURIComponent(
+      new URL(route.request().url()).pathname.split("/")[3]!,
+    );
+    reads.push(id);
+    if (id === noRecord.id)
+      await route.fulfill({ json: observation({ record: null }) });
+    else if (id === timer.id)
+      await route.fulfill({
+        json: observation({
+          record: {
+            id: "TEST-runtime-schedule",
+            revision: 1,
+            status: "queued",
+            interval_seconds: null,
+            not_before: "2026-10-03T05:30:00.000Z",
+          },
+        }),
+      });
+    else throw new Error(`Unexpected task snapshot: ${id}`);
+  });
+  const { section } = await f.open();
+  await expect(
+    section.getByRole("heading", { name: "定时任务" }),
+  ).toBeVisible();
+  await expect(section.locator(".subject-record")).toHaveCount(1);
+  await expect(
+    section.getByRole("button", { name: /TEST 真实Runtime定时任务/ }),
+  ).toContainText(/2026.*10.*3/);
+  for (const task of [human, unrequested, noRecord])
+    await expect(section.getByText(task.title, { exact: true })).toHaveCount(0);
+  expect(reads.sort()).toEqual([noRecord.id, timer.id].sort());
+});
+
+test("定时任务读取 HTTP、Runtime 或确切 run 错误时不宣称暂无任务", async ({
   page,
 }) => {
   const f = await fixture(page);
@@ -241,12 +299,12 @@ test("事项安排读取 HTTP、Runtime 或确切 run 错误时不宣称暂无�
     if (next !== "http") {
       failure = next;
       await section
-        .getByRole("button", { name: "刷新事项安排", exact: true })
+        .getByRole("button", { name: "刷新定时任务", exact: true })
         .click();
     }
     await expect(section.getByRole("alert")).toBeVisible();
     await expect(
-      section.getByText("暂无可确认的事项安排", { exact: true }),
+      section.getByText("暂无可确认的定时任务", { exact: true }),
     ).toHaveCount(0);
     await expect(
       section.getByRole("button", { name: /TEST 不可核验安排/ }),
@@ -271,7 +329,7 @@ test("有界安排最多读取 16 个已提交快照，并明确并非完整目�
   await expect(section.locator(".subject-record")).toHaveCount(16);
   expect(reads).toHaveLength(16);
   await expect(
-    section.getByText("此处为有界事项概览，请到事项查看其余工作。", {
+    section.getByText("事项绑定的定时任务未全部读取，请到事项查看。", {
       exact: true,
     }),
   ).toBeVisible();
@@ -334,12 +392,12 @@ for (const delayed of ["list", "snapshot"] as const)
     ).toBeVisible();
     generation = 1;
     await section
-      .getByRole("button", { name: "刷新事项安排", exact: true })
+      .getByRole("button", { name: "刷新定时任务", exact: true })
       .click();
     await entered.promise;
     await tabs.getByRole("tab", { name: "设定", exact: true }).click();
     generation = 2;
-    await tabs.getByRole("tab", { name: "安排", exact: true }).click();
+    await tabs.getByRole("tab", { name: "定时任务", exact: true }).click();
     await expect(
       section.getByRole("button", { name: /TEST 第 2 代安排/ }),
     ).toBeVisible();
@@ -351,11 +409,11 @@ for (const delayed of ["list", "snapshot"] as const)
     ).toBeVisible();
     await expect(section.getByText(/TEST (旧安排|第 1 代安排)/)).toHaveCount(0);
     await expect(
-      section.getByText("此处为有界事项概览，请到事项查看其余工作。", {
+      section.getByText("事项绑定的定时任务未全部读取，请到事项查看。", {
         exact: true,
       }),
     ).toHaveCount(0);
     await expect(
-      section.getByRole("button", { name: "刷新事项安排", exact: true }),
+      section.getByRole("button", { name: "刷新定时任务", exact: true }),
     ).toBeEnabled();
   });
