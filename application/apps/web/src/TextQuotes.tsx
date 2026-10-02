@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -549,23 +550,195 @@ export function SentTextQuotes({
       aria-label="引用与评论"
     >
       {quotes.map((q, index) => (
-        <div key={q.id}>
-          <button
-            className="sent-text-quote"
-            title="查看原文"
-            aria-label={`查看引用 ${index + 1} 的原文`}
-            onClick={() => onOpen(q)}
-          >
-            <span className="text-quote-number">{index + 1}</span>
-            <span>
-              <small>{quoteSourceLabel(q.source)}</small>
-              <span>{q.text}</span>
-            </span>
-            <ArrowUpLeft size={14} />
-          </button>
-          {q.comment && <p className="text-quote-comment">{q.comment}</p>}
-        </div>
+        <SentTextQuote key={q.id} quote={q} index={index} onOpen={onOpen} />
       ))}
+    </div>
+  );
+}
+
+/** Truncate only the presentation; the source locator and submitted text stay whole. */
+function SentTextQuote({
+  quote,
+  index,
+  onOpen,
+}: {
+  quote: TextQuote;
+  index: number;
+  onOpen: (quote: TextQuote) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const entry = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  function cancelClose() {
+    clearTimeout(closeTimer.current);
+  }
+  function show() {
+    cancelClose();
+    setOpen(true);
+  }
+  function deferClose() {
+    cancelClose();
+    // Allow the pointer to cross the small gap into the readable/scrollable panel.
+    closeTimer.current = setTimeout(() => {
+      if (!entry.current?.contains(document.activeElement)) setOpen(false);
+    }, 160);
+  }
+  function closeToTrigger() {
+    cancelClose();
+    trigger.current?.focus({ preventScroll: true });
+    setOpen(false);
+  }
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+  useLayoutEffect(() => {
+    const element = panel.current;
+    const anchor = trigger.current;
+    if (!open || !element || !anchor) return;
+    element.showPopover();
+    function position() {
+      if (!element || !anchor) return;
+      // Top-layer rects include CSS zoom; left/top and offset dimensions do not.
+      let zoom = (element as HTMLElement & { currentCSSZoom?: number })
+        .currentCSSZoom;
+      if (!zoom) {
+        zoom = 1;
+        for (
+          let node: HTMLElement | null = element;
+          node;
+          node = node.parentElement
+        )
+          zoom *= Number.parseFloat(getComputedStyle(node).zoom) || 1;
+      }
+      const viewport = { width: innerWidth / zoom, height: innerHeight / zoom };
+      const rect = anchor.getBoundingClientRect();
+      const top = rect.top / zoom,
+        bottom = rect.bottom / zoom;
+      const below = viewport.height - bottom - 16;
+      const above = top - 16;
+      const placeBelow =
+        below >= Math.min(240, viewport.height / 2) || below >= above;
+      element.style.maxWidth = `${Math.max(1, viewport.width - 16)}px`;
+      element.style.maxHeight = `${Math.max(1, Math.min(viewport.height - 16, placeBelow ? below : above))}px`;
+      const width = element.offsetWidth,
+        height = element.offsetHeight;
+      element.style.left = `${Math.max(8, Math.min(rect.left / zoom, viewport.width - width - 8))}px`;
+      element.style.top = `${Math.max(8, Math.min(placeBelow ? bottom + 6 : top - height - 6, viewport.height - height - 8))}px`;
+    }
+    position();
+    const resize = new ResizeObserver(position);
+    resize.observe(element);
+    for (let node: HTMLElement | null = anchor; node; node = node.parentElement)
+      resize.observe(node);
+    const outside = (event: Event) => {
+      if (!entry.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeToTrigger();
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("focusin", outside);
+    document.addEventListener("keydown", escape, true);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      element.hidePopover();
+      resize.disconnect();
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("focusin", outside);
+      document.removeEventListener("keydown", escape, true);
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [open]);
+  return (
+    <div className="sent-text-quote-entry" ref={entry}>
+      <div
+        className="sent-text-quote-card"
+        onPointerEnter={(event) => {
+          if (event.pointerType !== "touch") show();
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType !== "touch") deferClose();
+        }}
+        onFocus={show}
+        onBlur={(event) => {
+          if (!entry.current?.contains(event.relatedTarget)) deferClose();
+        }}
+      >
+        <button
+          type="button"
+          className="sent-text-quote"
+          ref={trigger}
+          title="查看原文"
+          aria-label={`查看引用 ${index + 1} 的原文`}
+          aria-controls={open ? id : undefined}
+          onClick={() => {
+            cancelClose();
+            setOpen(false);
+            onOpen(quote);
+          }}
+        >
+          <span className="text-quote-number">{index + 1}</span>
+          <span>
+            <small>{quoteSourceLabel(quote.source)}</small>
+            <span>{quote.text}</span>
+          </span>
+          <ArrowUpLeft size={14} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="sent-text-quote-preview-toggle"
+          aria-label={`阅读引用 ${index + 1} 的全文`}
+          aria-expanded={open}
+          aria-controls={id}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            cancelClose();
+            setOpen(!open);
+          }}
+        >
+          全文
+        </button>
+      </div>
+      <div
+        id={id}
+        className="sent-text-quote-preview"
+        ref={panel}
+        popover="manual"
+        inert={!open}
+        role="region"
+        aria-label={`引用 ${index + 1} 全文`}
+        tabIndex={0}
+        data-quote-ignore="true"
+        onPointerEnter={cancelClose}
+        onPointerLeave={(event) => {
+          if (event.pointerType !== "touch") deferClose();
+        }}
+        onFocus={cancelClose}
+        onBlur={(event) => {
+          if (!entry.current?.contains(event.relatedTarget)) deferClose();
+        }}
+      >
+        <header>
+          <small>{quoteSourceLabel(quote.source)}</small>
+          <button
+            type="button"
+            aria-label="关闭引用全文"
+            onClick={closeToTrigger}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </header>
+        <div className="sent-text-quote-preview-text">{quote.text}</div>
+      </div>
+      {quote.comment && <p className="text-quote-comment">{quote.comment}</p>}
     </div>
   );
 }

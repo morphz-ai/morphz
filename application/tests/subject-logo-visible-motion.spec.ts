@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 import {
   conversationRuntimeSchema,
   type ConversationRuntime,
@@ -7,7 +7,10 @@ import {
   LiveConversationProjection,
   type StreamEvent,
 } from "../packages/core/src/live-conversation.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { openInput } from "./interaction-helpers.js";
 

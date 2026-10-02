@@ -1,9 +1,12 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });

@@ -135,8 +135,17 @@ import type { MessageAttachmentService } from "./message-attachment-service.js";
 import type { UiPackageService } from "./ui-package-service.js";
 import type { ProfileService } from "./profile-service.js";
 import { profileAvatarCommandSchema } from "../../core/src/profile.js";
+import { observeSqlChanges, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
+import type { WorkspaceChange } from "../../core/src/workspace-changes.js";
 
 export type ApplicationOptions = {
+  /** Trusted Host capabilities, never accepted from a Client/Agent request. */
+  workspaceChanges?: {
+    sources: readonly SqlChangeSource[];
+    readVersion: (access: AccessContext, assertActive: () => void) => Promise<{
+      version: string; accessVersion: string; projectIds: string[];
+    }>;
+  };
   profiles?: { authority: HumanPlatformAuthority; service: ProfileService };
   readerOcr?: import("./reader-ocr.js").ReaderOcr;
   runtime?: RuntimeBridge;
@@ -3234,21 +3243,141 @@ export class ApplicationSession {
       ? this.options.browser.exchange(data, key, this.access)
       : this.options.browser.register(data, key, this.access);
   }
+  async observeWorkspaceChanges(
+    emit: (value: WorkspaceChange) => void,
+    onClose: () => void,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    this.active();
+    signal?.throwIfAborted();
+    const domain = this.options.workspaceChanges;
+    if (!domain) throw new ApplicationUnavailable("工作区变化通知尚未接入。");
+    let closed = false,
+      ready = false,
+      draining = false,
+      dirty = false,
+      forceResync = true,
+      sequence = 0,
+      version: string | undefined,
+      accessVersion: string | undefined;
+    const subscriptions: ReturnType<typeof observeSqlChanges>[] = [];
+    let disposeRuntime: (() => void) | undefined;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      signal?.removeEventListener("abort", close);
+      disposeRuntime?.();
+      for (const subscription of subscriptions)
+        void subscription.close().catch(() => {});
+      onClose();
+    };
+    // Register before awaiting listener readiness: a disconnected PostgreSQL
+    // listener must remain cancellable even before a disposer can be returned.
+    signal?.addEventListener("abort", close, { once: true });
+    const drain = async () => {
+      if (!ready || closed || draining) return;
+      draining = true;
+      try {
+        while (dirty && !closed) {
+          dirty = false;
+          const resync = forceResync;
+          forceResync = false;
+          this.active();
+          const current = await domain.readVersion(this.access, () =>
+            this.active(),
+          );
+          if (closed) break;
+          this.active();
+          const runtime = this.options.runtime?.platformNavigationSnapshot(
+            this.access,
+            current.projectIds,
+          );
+          // checkedAt is freshness bookkeeping, not a visible domain change.
+          const next = createHash("sha256")
+            .update(
+              JSON.stringify(
+                {
+                  version: current.version,
+                  runtime,
+                },
+                (key, value) => (key === "checkedAt" ? undefined : value),
+              ),
+            )
+            .digest("hex");
+          const accessChanged =
+            accessVersion !== undefined &&
+            accessVersion !== current.accessVersion;
+          if (resync || version !== next || accessChanged) {
+            version = next;
+            accessVersion = current.accessVersion;
+            emit({
+              kind: "workspace",
+              sequence: ++sequence,
+              reason: resync ? "resync" : "changed",
+              accessChanged,
+            });
+          }
+        }
+      } catch {
+        close();
+      } finally {
+        draining = false;
+        if (dirty && !closed) void drain();
+      }
+    };
+    const wake = (resync = false) => {
+      if (closed) return;
+      dirty = true;
+      forceResync ||= resync;
+      void drain();
+    };
+    try {
+      const sources = new Map(
+        domain.sources.map((source) => [
+          source.driver + source.identity,
+          source,
+        ]),
+      );
+      for (const source of sources.values())
+        subscriptions.push(
+          observeSqlChanges(source, (hint) => wake(hint.reason === "resync")),
+        );
+      disposeRuntime = this.options.runtime?.observeWorkspaceChanges(() =>
+        wake(),
+      );
+      await Promise.all(
+        subscriptions.map((subscription) => subscription.ready),
+      );
+      if (closed) return close;
+      this.active();
+      ready = true;
+      wake(true);
+      return close;
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
+
   async observePlatformConversation(
     raw: unknown,
     emit: (value: ConversationStream) => void,
     onClose: () => void,
+    signal?: AbortSignal,
   ): Promise<() => void> {
     const scope = conversationScope.parse(raw);
     this.active();
+    signal?.throwIfAborted();
     let closed = false;
     let dispose: (() => void) | undefined;
     const close = () => {
       if (closed) return;
       closed = true;
+      signal?.removeEventListener("abort", close);
       dispose?.();
       onClose();
     };
+    signal?.addEventListener("abort", close, { once: true });
     try {
       dispose = await this.runtime().observePlatformConversation(
         scope,
@@ -3263,11 +3392,14 @@ export class ApplicationSession {
           }
         },
         close,
+        this.options.workspaceChanges
+          ? (wake) => this.observeWorkspaceChanges(() => wake(), close, signal)
+          : undefined,
       );
       if (closed) dispose();
       return close;
     } catch (error) {
-      dispose?.();
+      close();
       throw error;
     }
   }

@@ -137,6 +137,7 @@ export async function openEmbeddedApplication(
       messageAttachments: domains.messageAttachments,
       images: domains.images,
       profiles: domains.profiles,
+      workspaceChanges: domains.workspaceChanges,
       uiPackages: domains.uiPackages,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(runtime),

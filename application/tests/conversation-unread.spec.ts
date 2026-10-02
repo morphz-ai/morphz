@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import {
   PlatformClient,
@@ -7,7 +7,10 @@ import {
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { openInput, composerAction } from "./interaction-helpers.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import {
   LiveConversationProjection,
   type StreamEvent,

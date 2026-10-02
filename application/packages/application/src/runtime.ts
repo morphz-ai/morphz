@@ -1006,6 +1006,7 @@ export class RuntimeBridge {
     access: AccessContext,
     changed: (value: ConversationStream) => void,
     failed: () => void,
+    observeChanges?: (wake: () => void) => Promise<() => void>,
   ): Promise<() => void> {
     const authorizeRead = this.authorizePlatformRead;
     if (!authorizeRead)
@@ -1106,6 +1107,7 @@ export class RuntimeBridge {
       return pendingAuthorization;
     };
     let closed = false;
+    let disposeChanges: (() => void) | undefined;
     let feed: ConversationFeed | undefined;
     let pendingPublication = Promise.resolve();
     const publish = (value: ConversationStream) => {
@@ -1196,6 +1198,7 @@ export class RuntimeBridge {
       failed: () => {
         if (closed) return;
         closed = true;
+        disposeChanges?.();
         if (feed) this.feeds.delete(feed);
         failed();
       },
@@ -1235,8 +1238,17 @@ export class RuntimeBridge {
       }),
     });
     this.feeds.add(feed);
+    try {
+      disposeChanges = await observeChanges?.(() => void feed?.sync());
+      if (closed) disposeChanges?.();
+    } catch (error) {
+      this.feeds.delete(feed);
+      feed.close();
+      throw error;
+    }
     return () => {
       closed = true;
+      disposeChanges?.();
       this.feeds.delete(feed!);
       feed?.close();
     };
@@ -2002,7 +2014,7 @@ export class RuntimeBridge {
     );
   }
   readonly modelSettings = new RuntimeModelSettings(() => this.config);
-  readonly profiles = new RuntimeProfileClient(() => this.config);
+  readonly profiles = new RuntimeProfileClient(() => this.config, undefined, () => this.publishWorkspaceChange());
   private state: z.infer<typeof storedSchema>;
   private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
@@ -2022,6 +2034,30 @@ export class RuntimeBridge {
     }
   >();
   private busy = false;
+  private workspaceChangeListeners = new Set<() => void>();
+  private workspaceChangeFingerprint = "";
+  /** Host-only wake-up for actual public Runtime projection changes. */
+  observeWorkspaceChanges(listener: () => void): () => void {
+    this.workspaceChangeListeners.add(listener);
+    return () => { this.workspaceChangeListeners.delete(listener); };
+  }
+  private notifyWorkspaceChanges() {
+    const next = createHash("sha256").update(JSON.stringify({
+      status: this.platformStatus(),
+      activity: this.state.activity,
+      attention: this.attention,
+      sessions: Object.values(this.state.sessions).filter(session => session.platform).map(session => [session.id, session.cursor]),
+      deliveries: this.state.deliveries.filter(delivery => delivery.platformSource).map(delivery => [delivery.inputId, delivery.state, delivery.rootId, delivery.acceptedEventId, delivery.error, delivery.cancelRequested, delivery.platformHeld, delivery.lastActivityAt]),
+    }, (key, value) => key === "checkedAt" ? undefined : value)).digest("hex");
+    if (next === this.workspaceChangeFingerprint) return;
+    this.workspaceChangeFingerprint = next;
+    this.publishWorkspaceChange();
+  }
+  private publishWorkspaceChange() {
+    for (const listener of this.workspaceChangeListeners) queueMicrotask(() => {
+      if (this.workspaceChangeListeners.has(listener)) listener();
+    });
+  }
   private busyCompletion: Promise<void> | null = null;
   private stopped = false;
   private authorizePlatformInput?: (
@@ -2104,6 +2140,7 @@ export class RuntimeBridge {
     // Keep the dirty set if SQLite fails; a later save retries the same queue
     // records together with their Event and connection cursors.
     this.dirtyDeliveries.clear();
+    this.notifyWorkspaceChanges();
   }
   bindPlatformInputAuthority(
     authorize?: (
@@ -4463,6 +4500,7 @@ export class RuntimeBridge {
         openWorkComplete: false,
       };
     }
+    this.notifyWorkspaceChanges();
   }
   private async refreshAttention() {
     try {

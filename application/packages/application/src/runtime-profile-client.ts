@@ -52,6 +52,7 @@ export class RuntimeProfileClient {
     private readonly configuration: () => RuntimeConfig,
     private readonly request: typeof fetch = (...args) =>
       globalThis.fetch(...args),
+    private readonly changed?: () => void,
   ) {}
   private recordData(
     subject: "human" | "agent",
@@ -363,6 +364,7 @@ export class RuntimeProfileClient {
     const data = this.recordData(request.subject, result.record);
     if (JSON.stringify(data) !== JSON.stringify(request.data))
       throw new Error("Runtime Profile 内容回执与请求不匹配。");
+    if (!result.duplicate) this.changed?.();
     return {
       subject: request.subject,
       revision: result.record.revision,

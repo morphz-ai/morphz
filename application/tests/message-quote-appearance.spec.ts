@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 

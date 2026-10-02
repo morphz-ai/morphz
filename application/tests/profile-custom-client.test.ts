@@ -182,6 +182,29 @@ async function fixture(team = false, supported = true) {
   };
 }
 
+test("Profile真实提交唤醒workspace；幂等重放、冲突和已取消listener不伪造变化", async () => {
+  const f = await fixture();
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const runtime = new RuntimeBridge(store, f.config);
+  let signals = 0;
+  const dispose = runtime.observeWorkspaceChanges(() => signals++);
+  const request = { subject: "agent", commandId: randomUUID(), expectedRevision: 0,
+    enabled: true, data: { ...defaultAgentProfile, name: "Echo" } };
+  try {
+    await runtime.profiles.update(localAccess, request);
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    assert.equal(signals, 1);
+    await runtime.profiles.update(localAccess, request);
+    await assert.rejects(runtime.profiles.update(localAccess, { ...request, commandId: randomUUID() }));
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    assert.equal(signals, 1);
+    dispose();
+    await runtime.profiles.update(localAccess, { ...request, commandId: randomUUID(), expectedRevision: 1, enabled: false });
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    assert.equal(signals, 1);
+  } finally { dispose(); await runtime.stop(); store.close(); await f.close(); }
+});
+
 test("Custom Host Client 使用实际kernel Agent/Principal，保存、冲突和同command回执不复制到Host", async () => {
   const f = await fixture();
   try {

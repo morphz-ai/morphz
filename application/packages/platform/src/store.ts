@@ -50,10 +50,13 @@ import {
   verifySchemaObjects,
   sqliteQuery,
   withSqliteWriteGate,
+  prepareSqlCommit,
+  publishSqlCommit,
   type SqlQuery as Query,
   type SqlRow as Row,
   type SqlScalar as Scalar,
 } from "../../storage/src/sql.js";
+import { sqliteChangeSource, postgresChangeSource, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
 
 type Backend =
   | { kind: "sqlite"; database: DatabaseSync; writeGateKey: string | null }
@@ -599,10 +602,20 @@ function personalSpaceId(
 /** Platform-owned relations only. No App body, user file bytes or Runtime Session. */
 export class PlatformStore {
   private gate: Promise<unknown> = Promise.resolve();
+  private readonly sqlChanges: SqlChangeSource;
   private constructor(
     private readonly backend: Backend,
     private readonly capabilities: PlatformAuthorityVerifier,
-  ) {}
+  ) {
+    this.sqlChanges =
+      backend.kind === "sqlite"
+        ? sqliteChangeSource(backend.database)
+        : postgresChangeSource(backend.pool.options, backend.schema);
+  }
+
+  changeSource(): SqlChangeSource {
+    return this.sqlChanges;
+  }
 
   private async authorize(access: PlatformActor): Promise<ResolvedActor> {
     if (!access.credential || access.credential.length > 4096)
@@ -763,8 +776,10 @@ export class PlatformStore {
         try {
           database.exec(mode === "read" ? "BEGIN" : "BEGIN IMMEDIATE");
           try {
-            const result = await work(sqliteQuery(database));
+            const q = sqliteQuery(database);
+            const result = await work(q);
             database.exec("COMMIT");
+            publishSqlCommit(q, this.sqlChanges);
             return result;
           } catch (error) {
             database.exec("ROLLBACK");
@@ -795,7 +810,9 @@ export class PlatformStore {
       await client.query(
         `SET LOCAL search_path TO "${this.backend.schema}", pg_catalog`,
       );
-      const result = await work(postgresQuery(client));
+      const q = postgresQuery(client);
+      const result = await work(q);
+      await prepareSqlCommit(q, this.sqlChanges);
       await client.query("COMMIT");
       return result;
     } catch (error) {
@@ -2747,7 +2764,7 @@ export class PlatformStore {
           intent: request.intent,
           model_alias: request.modelAlias ?? null,
           reasoning_effort: request.reasoningEffort ?? null,
-          response_annotations: "v1",
+          response_annotations: "v2",
           not_before: request.notBefore,
           interval_seconds: request.intervalSeconds ?? null,
           dependency_thread_ids: [],
@@ -5093,6 +5110,150 @@ export class PlatformStore {
       return {
         personalDefault: true,
         projectIds: memberships.map((row) => row.project_id),
+      };
+    }, "read");
+  }
+
+  /** Host-only invalidation proof. Hash only currently readable metadata, not
+   * tenant-wide counters: a private project's commit is not a visible change.
+   * No object body, credential or hash is published by the workspace stream. */
+  async workspaceChangeVersion(access: PlatformActor) {
+    const actor = await this.authorize(access);
+    if (actor.kind !== "human")
+      throw new PlatformStorageError("forbidden", "工作区通知需要用户身份。");
+    // Optional Runtime presentation must not close the entire workspace while
+    // Runtime is offline. An unresolved Agent avatar is not readable metadata.
+    let agent:
+      | Awaited<
+          ReturnType<
+            NonNullable<PlatformAuthorityVerifier["resolveProfileAgent"]>
+          >
+        >
+      | undefined;
+    try {
+      agent = await this.capabilities.resolveProfileAgent?.({
+        tenantId: actor.tenantId,
+        principalId: actor.principalId,
+      });
+    } catch {
+      agent = undefined;
+    }
+    return this.transaction(async (q) => {
+      const args = [actor.tenantId, actor.principalId];
+      const projects = await q.all<{
+        project_id: string;
+        deleted_at: string | null;
+      }>(
+        "SELECT p.project_id,p.revision,p.archived_at,p.deleted_at,m.joined_at FROM projects p JOIN project_members m ON m.tenant_id=p.tenant_id AND m.project_id=p.project_id WHERE p.tenant_id=? AND m.principal_id=? ORDER BY p.project_id",
+        args,
+      );
+      const members = await q.all(
+        "SELECT x.project_id,x.principal_id FROM project_members x JOIN project_members mine ON mine.tenant_id=x.tenant_id AND mine.project_id=x.project_id WHERE x.tenant_id=? AND mine.principal_id=? ORDER BY x.project_id,x.principal_id",
+        args,
+      );
+      const scope =
+        " JOIN project_members m ON m.tenant_id=x.tenant_id AND m.project_id=x.project_id WHERE x.tenant_id=? AND m.principal_id=?";
+      const conversations = await q.all(
+        "SELECT x.conversation_id,x.project_id,x.revision,x.archived_at FROM conversations x" +
+          scope +
+          " ORDER BY x.conversation_id",
+        args,
+      );
+      const tasks = await q.all(
+        "SELECT x.task_id,x.project_id,x.revision,x.order_rank,x.deleted_at FROM tasks x" +
+          scope +
+          " ORDER BY x.task_id",
+        args,
+      );
+      const content = await q.all<{
+        app_id: string;
+        app_object_id: string;
+        availability: string;
+        deleted_at: string | null;
+      }>(
+        "SELECT x.content_id,x.project_id,x.app_id,x.instance_id,x.app_object_id,x.revision,x.observed_version_ref,x.availability,x.deleted_at FROM content_entries x" +
+          scope +
+          " ORDER BY x.content_id",
+        args,
+      );
+      const runs = await q.all(
+        "SELECT r.task_id,r.run_number,r.observed_schedule_revision,r.observed_schedule_status,r.observed_thread_status,r.bridge_control_revision,r.bridge_error FROM task_run_links r JOIN tasks x ON x.tenant_id=r.tenant_id AND x.task_id=r.task_id" +
+          scope +
+          " ORDER BY r.task_id,r.run_number",
+        args,
+      );
+      const views = await q.all(
+        "SELECT x.view_id,x.project_id,x.revision,x.status FROM app_view_instances x" +
+          scope +
+          " AND x.owner_principal_id=? ORDER BY x.view_id",
+        [...args, actor.principalId],
+      );
+      const installations = await q.all(
+        "SELECT app_id,installation_id,state FROM app_installations WHERE tenant_id=? ORDER BY app_id",
+        [actor.tenantId],
+      );
+      const routes = await q.all(
+        "SELECT instance_id,revision,state FROM app_instances WHERE tenant_id=? ORDER BY instance_id",
+        [actor.tenantId],
+      );
+      const packages = await q.all(
+        "SELECT app_id,package_version,sha256 FROM app_ui_packages WHERE tenant_id=? AND installed_by_principal_id=? ORDER BY app_id,package_version",
+        args,
+      );
+      const notifications = await q.all(
+        "SELECT mode,revision FROM notification_preferences WHERE tenant_id=? AND principal_id=?",
+        args,
+      );
+      const reads = await q.all(
+        "SELECT notification_id,read_order FROM notification_reads WHERE tenant_id=? AND principal_id=? ORDER BY read_order",
+        args,
+      );
+      const avatars = await q.all(
+        "SELECT subject_kind,subject_id,revision FROM profile_avatar_heads WHERE tenant_id=? AND ((subject_kind='human' AND subject_id=?) OR (subject_kind='agent' AND subject_id=?)) ORDER BY subject_kind,subject_id",
+        [actor.tenantId, actor.principalId, agent?.agentId ?? ""],
+      );
+      const understanding = await q.all(
+        "SELECT x.project_id,MAX(x.revision) AS revision FROM project_understanding_versions x" +
+          scope +
+          " GROUP BY x.project_id ORDER BY x.project_id",
+        args,
+      );
+      const digest = (value: unknown) =>
+        createHash("sha256").update(JSON.stringify(value)).digest("hex");
+      return {
+        version: digest({
+          projects,
+          conversations,
+          tasks,
+          content,
+          runs,
+          views,
+          installations,
+          routes,
+          packages,
+          notifications,
+          reads,
+          avatars,
+          understanding,
+        }),
+        accessVersion: digest({
+          actor: [actor.tenantId, actor.principalId, actor.actantId],
+          projects: projects.map((p) => [p.project_id, p.deleted_at]),
+          members,
+          routes,
+        }),
+        projectIds: projects
+          .filter((p) => p.deleted_at === null)
+          .map((p) => p.project_id),
+        contentRefs: content
+          .filter(
+            (c) => c.deleted_at === null && c.availability === "available",
+          )
+          .map((c) => ({
+            appId: c.app_id,
+            instanceId: String((c as Record<string, unknown>).instance_id),
+            objectId: c.app_object_id,
+          })),
       };
     }, "read");
   }

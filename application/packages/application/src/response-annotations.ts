@@ -14,7 +14,7 @@ const displayText = (maximum: number) =>
 /** This is the Runtime's verified projection, NOT the model's raw bundle.
  * It contains no state mutations, percentages, authorizations or raw output. */
 export const runtimeResponseAnnotationsSchema = z.object({
-  protocol: z.literal("v1"),
+  protocol: z.enum(["v1", "v2"]),
   scope: z.object({
     execution_id: z.string().min(1),
     generation: z.number().int().nonnegative().safe(),
@@ -83,7 +83,7 @@ export function activityAnnotationFields(
       ? { title: annotations.title }
       : {}),
     ...(summary ? { summary } : {}),
-    annotationProtocol: "v1",
+    annotationProtocol: annotations.protocol,
     annotationsTruncated: annotations.truncated,
   };
 }

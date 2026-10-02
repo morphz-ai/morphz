@@ -49,7 +49,12 @@ import {
   savedInputOperation,
   type LocalSavedInput,
 } from "./local-saved-inputs.js";
-import { applicationCall, RequestError } from "./application-transport.js";
+import {
+  applicationCall,
+  RequestError,
+  subscribeWorkspaceChanges,
+} from "./application-transport.js";
+import { createRefreshDrain } from "./refresh-drain.js";
 import {
   PlatformClient,
   scriptLibraryEntrySchema,
@@ -832,6 +837,10 @@ export function useWorkspace() {
       import("./platform-client.js").PlatformTaskCount[]
     >([]),
     [contentCatalogVersion, setContentCatalogVersion] = useState(0),
+    [workspaceChangeRevision, setWorkspaceChangeRevision] = useState(0),
+    [workspaceConnection, setWorkspaceConnection] = useState<
+      "connecting" | "connected" | "reconnecting"
+    >("connecting"),
     [online, setOnline] = useState(false),
     [error, setError] = useState(""),
     [authenticationRequired, setAuthenticationRequired] = useState(false);
@@ -853,6 +862,7 @@ export function useWorkspace() {
     epoch = useRef(0),
     snapshotText = useRef(""),
     refreshing = useRef<Promise<boolean> | null>(null),
+    refreshDrain = useRef<ReturnType<typeof createRefreshDrain> | null>(null),
     loadingEarlier = useRef<Promise<void> | null>(null);
   function sendingInputIds(
     identity: Pick<Boot, "centerId" | "principalId" | "actantId">,
@@ -880,7 +890,7 @@ export function useWorkspace() {
       localInputSubmissions: projection.submissions,
     };
     current.current = value;
-    // A poll must not consider its pre-submit display snapshot current.
+    // A background read must not consider its pre-submit snapshot current.
     snapshotText.current = "";
     setBoot(value);
   }
@@ -903,16 +913,26 @@ export function useWorkspace() {
     setTaskCounts([]);
     setContentCatalogVersion(0);
   }
-  async function refresh() {
-    if (refreshing.current) return refreshing.current;
+  function refresh() {
+    refreshDrain.current ??= createRefreshDrain(refreshOnce);
+    const pending = refreshDrain.current.request();
+    refreshing.current = pending;
+    const settled = () => {
+      if (refreshing.current === pending) refreshing.current = null;
+    };
+    void pending.then(settled, settled);
+    return pending;
+  }
+  async function refreshOnce() {
     const version = epoch.current;
-    refreshing.current = (async () => {
+    return (async () => {
       try {
         const signal = AbortSignal.timeout(15000);
         const source = await PlatformClient.connect(
           { call: applicationCall },
           signal,
         );
+        if (version !== epoch.current) return false;
         if (
           current.current &&
           (current.current.centerId !== source.boot.centerId ||
@@ -1032,7 +1052,7 @@ export function useWorkspace() {
             "目录在读取期间已更新，请重试。",
             "navigation_changed",
           );
-        // Read at publication time: a poll may have started before the user
+        // Read at publication time: a refresh may have started before the user
         // clicked Send. Only an authoritative same-ID input removes its overlay.
         const latestSaved = readSavedInputs(
           localStorage,
@@ -1219,11 +1239,8 @@ export function useWorkspace() {
           e instanceof Error ? e.message : "暂时无法读取应用数据，请重试。",
         );
         return false;
-      } finally {
-        refreshing.current = null;
       }
     })();
-    return refreshing.current;
   }
   async function listContentPage(
     options: Parameters<PlatformClient["content"]>[0],
@@ -1251,7 +1268,7 @@ export function useWorkspace() {
     return source.contentCounts(options, signal);
   }
   async function refreshAfterMutation() {
-    // A poll started before a mutation or navigation can finish with an older
+    // A read started before a mutation or navigation can finish with an older
     // view. Let it settle, then read the latest state and local selection once.
     if (refreshing.current) await refreshing.current;
     return refresh();
@@ -2076,18 +2093,61 @@ export function useWorkspace() {
   }
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, 5000);
-    const wake = () => void refresh();
+    // Startup and foregrounding reconcile authoritative state after sleep or
+    // best-effort filesystem hints. Healthy idle windows do no periodic reads.
+    const wake = () => {
+      if (document.visibilityState === "visible") {
+        // Independent domains (Profile, reading marks, bookmarks, annotations)
+        // also reconcile after best-effort SQLite hints were lost during sleep.
+        setWorkspaceChangeRevision((value) => value + 1);
+        void refresh();
+      }
+    };
     window.addEventListener("focus", wake);
     document.addEventListener("visibilitychange", wake);
     return () => {
-      clearInterval(timer);
       window.removeEventListener("focus", wake);
       document.removeEventListener("visibilitychange", wake);
     };
   }, []);
+  useEffect(() => {
+    const expected = boot?.csrfToken;
+    if (!expected || authenticationRequired) return;
+    setWorkspaceConnection("connecting");
+    return subscribeWorkspaceChanges(
+      (change) => {
+        if (current.current?.csrfToken !== expected) return;
+        if (change.accessChanged) {
+          // Invalidate in-flight publication as well as mounted private data.
+          // Drafts and unsent input are deliberately not part of this clear.
+          epoch.current++;
+          clearProtectedProjection();
+        }
+        // This is only a local invalidation token, never a database revision
+        // or authority. Profile/Reader projections have their own read APIs.
+        setWorkspaceChangeRevision((value) => value + 1);
+        void refresh();
+      },
+      {
+        onConnected: () => {
+          if (current.current?.csrfToken !== expected) return;
+          setWorkspaceConnection("connected");
+        },
+        onClosed: () => {
+          if (current.current?.csrfToken !== expected) return;
+          // Losing change hints does not mean the authoritative RPC channel
+          // is unavailable. Keep drafts and usable commands available while
+          // the transport reconnects and requests its resync snapshot.
+          setWorkspaceConnection("reconnecting");
+        },
+      },
+    );
+  }, [
+    boot?.centerId,
+    boot?.principalId,
+    boot?.csrfToken,
+    authenticationRequired,
+  ]);
   async function submitSavedInput(
     identity: Boot,
     entry: LocalSavedInput,
@@ -2972,6 +3032,8 @@ export function useWorkspace() {
     getSnapshot: () => current.current,
     online,
     error,
+    workspaceConnection,
+    workspaceChangeRevision,
     refresh,
     refreshView: refreshAfterMutation,
     selectHistoryScope,

@@ -1,11 +1,14 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 import {
   conversationRuntimeSchema,
   type ConversationRuntime,
   type ExecutionActivity,
 } from "../packages/core/src/conversation.js";
 import { subjectLogoState } from "../apps/web/src/subject-sidebar-model.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 
 const stamp = "2026-10-01T12:00:00.000Z";

@@ -1,7 +1,10 @@
-import { test, expect, type Page, type Locator } from "@playwright/test";
+import { expect, type Page, type Locator } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openInput } from "./interaction-helpers.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { commandSchema } from "../packages/core/src/model.js";
 import type {
@@ -675,7 +678,7 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
 });
 
 test("切换命名对话不带入另一 Session 的评论草稿", async ({ page }) => {
-  const { reply, client } = await fixture(page);
+  const { reply, client, refresh } = await fixture(page);
   await selectText(
     reply.locator("[data-quotable]"),
     "先理解问题，再选择工具。",
@@ -685,6 +688,8 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
   await page.keyboard.press("Escape");
   const title = "TEST 独立引用 " + Date.now();
   await client.createProject(title, randomUUID(), randomUUID());
+  // This suite controls invalidations as well as Runtime presentation data.
+  await refresh();
   await page
     .getByRole("button", { name: "新建项目对话：" + title, exact: true })
     .click();

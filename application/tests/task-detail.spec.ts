@@ -143,7 +143,11 @@ test("普通补充不完成事项；提交结果明确完成，失败及旧版�
     },
   });
   expect(revised.ok()).toBeTruthy();
-  await expect(page.getByLabel("事项说明")).toContainText("检查范围已更新");
+  // Concurrent writes reach the open reader through its 5 s background poll.
+  // Allow the poll and its version read to finish, without reloading the page.
+  await expect(page.getByLabel("事项说明")).toContainText("检查范围已更新", {
+    timeout: 10_000,
+  });
   await page
     .getByRole("button", { name: "提交结果并完成事项", exact: true })
     .click();

@@ -1139,8 +1139,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         conversationId: "new-platform-project",
       },
       desktopBoot.csrfToken,
-      (value) =>
-        desktopFrames.push(value.messages.map((message) => message.text)),
+      (value) => {
+        assert.ok("messages" in value);
+        desktopFrames.push(value.messages.map((message) => message.text));
+      },
       () => {},
     );
     const desktopDeadline = Date.now() + 4000;

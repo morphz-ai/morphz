@@ -1,8 +1,11 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { Operation } from "../packages/core/src/model.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 
 type Command = {

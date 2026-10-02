@@ -1,10 +1,4 @@
-import {
-  test,
-  expect,
-  type Page,
-  type Route,
-  type Locator,
-} from "@playwright/test";
+import { expect, type Page, type Route, type Locator } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,7 +20,10 @@ import {
 } from "../packages/core/src/profile.js";
 import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
 import { applicationStoragePrefix } from "../packages/core/src/application-names.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { platformBootSchema } from "../apps/web/src/platform-client.js";
 import { openInput } from "./interaction-helpers.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";

@@ -37,7 +37,7 @@ declare global {
             projectId: string;
             conversationId: string;
             kind?: "platform";
-          },
+          } | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope,
           generation: string,
         ): Promise<void>;
         unsubscribe(id: string): void;
@@ -45,7 +45,7 @@ declare global {
           callback: (event: {
             id: string;
             closed?: boolean;
-            value?: import("../../../packages/core/src/live-conversation.js").ConversationStream;
+            value?: import("../../../packages/core/src/live-conversation.js").ConversationStream | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange;
           }) => void,
         ): () => void;
       };

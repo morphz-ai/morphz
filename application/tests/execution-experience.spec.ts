@@ -1,8 +1,11 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 
 async function openAllWork(page: Page) {
   await openExecutionPanel(page);
@@ -193,10 +196,9 @@ test("all-work overview includes authorized work whose source message is not loa
   await nav.getByRole("button", { name: "对话", exact: true }).click();
   const composer = await openInput(page);
   await composer.fill("TEST 当前输入范围不能被活动概览改变");
-  await expect(
-    page.getByRole("button", { name: "执行记录与审批", exact: true }),
-  ).toContainText("2 进行中");
-  await openAllWork(page);
+  const control = page.locator(".sidebar .wordmark.agent-presence");
+  await expect(control).toHaveAttribute("data-state", "working");
+  await control.click();
   const execution = page.getByRole("complementary", {
     name: "Morphz 信息",
     exact: true,
@@ -217,7 +219,7 @@ test("all-work overview includes authorized work whose source message is not loa
   await expect(page.locator(".human-message")).toHaveCount(1);
 });
 
-test("whole-message halo requires a live execution thread; status navigation stays separate from the fixed sidebar toggle", async ({
+test("live execution status stays outside the bubble without a halo; status navigation stays separate from the fixed sidebar toggle", async ({
   page,
 }) => {
   let kind: string | undefined = "dialogue_turn";
@@ -279,10 +281,7 @@ test("whole-message halo requires a live execution thread; status navigation sta
   const composer = await openInput(page);
   await composer.fill("未发送的原草稿");
   const message = page.locator('[data-message-id="halo-fixture"]');
-  const control = page.getByRole("button", {
-    name: "执行记录与审批",
-    exact: true,
-  });
+  const control = page.locator(".sidebar .wordmark.agent-presence");
   await expect(message).toBeVisible();
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
@@ -307,16 +306,31 @@ test("whole-message halo requires a live execution thread; status navigation sta
     subject.getByRole("tab", { name: "设定", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
-  await expect(control).toContainText("1");
-  const haloBefore = await message.evaluate(
-    (el) => getComputedStyle(el, "::before").backgroundImage,
-  );
+  await expect(control).toHaveAttribute("data-state", "working");
+  const status = message.getByRole("button", {
+    name: "后台执行中",
+    exact: true,
+  });
+  await expect(status).toHaveAttribute("data-status", "running");
+  await expect(status).toBeVisible();
+  const bubbleBefore = (await message.boundingBox())!;
+  const halo = await message.evaluate((el) => {
+    const style = getComputedStyle(el, "::before");
+    return { content: style.content, animation: style.animationName };
+  });
+  expect(halo).toEqual({ content: "none", animation: "none" });
   await page.waitForTimeout(130);
-  const haloAfter = await message.evaluate(
-    (el) => getComputedStyle(el, "::before").backgroundImage,
+  expect((await message.boundingBox())!.height).toBe(bubbleBefore.height);
+  const statusBounds = (await status.boundingBox())!;
+  const bubbleBounds = (await message.boundingBox())!;
+  expect(statusBounds.y).toBeGreaterThanOrEqual(
+    bubbleBounds.y + bubbleBounds.height - 1,
   );
-  expect(haloBefore).not.toBe(haloAfter);
-  await page.screenshot({ path: "test-results/execution-halo-light.png" });
+  expect(statusBounds.height).toBeGreaterThanOrEqual(24);
+  await expect(status.locator("svg")).toBeVisible();
+  await page.screenshot({
+    path: "test-results/execution-running-status-light.png",
+  });
   const toggle = page.locator(".inspector-toggle");
   for (const width of [1440, 1000, 760, 390, 320]) {
     await page.setViewportSize({ width, height: 800 });
@@ -353,7 +367,7 @@ test("whole-message halo requires a live execution thread; status navigation sta
     .toBe("none");
   await expect(message).toHaveAttribute("data-background-execution", "true");
   await page.screenshot({
-    path: "test-results/execution-halo-dark-reduced-motion.png",
+    path: "test-results/execution-running-status-dark-reduced-motion.png",
   });
   available = false;
   await fixture.refresh();
@@ -382,8 +396,10 @@ test("whole-message halo requires a live execution thread; status navigation sta
     "data-background-execution",
     "true",
   );
-  // A running delivery still warrants a status entry, never an execution halo.
-  await expect(control).toContainText("1 进行中");
+  // A running delivery still warrants input-processing presence, not execution.
+  await expect(control).toHaveAttribute("data-state", "processing");
+  await expect(control).toHaveAttribute("data-working", "false");
+  await expect(control).toHaveAttribute("data-processing", "true");
 });
 
 test("pending approvals remain visible across work surfaces; inline decisions use exact scope and stay locked on an uncertain response", async ({
@@ -466,14 +482,14 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     .click();
   const composer = await openInput(page);
   await composer.fill("保持我的输入草稿");
-  const control = page.getByRole("button", {
-    name: "执行记录与审批",
-    exact: true,
-  });
+  const control = page.locator(".sidebar .wordmark.agent-presence");
   const card = page.locator(
     '.conversation [data-approval-id="inline-approval"]',
   );
-  await expect(control).toContainText("1 待审批");
+  await expect(control).toHaveAttribute("data-state", "approval");
+  await expect(control).toHaveAccessibleName(
+    "Morphz · 有操作等待你的批准 · 查看授权",
+  );
   await expect(page.locator(".workspace-inspector")).toHaveCount(0);
   await expect(composer).toBeFocused();
   await expect(card).toContainText("读取：/fixture/private");
@@ -483,7 +499,10 @@ test("pending approvals remain visible across work surfaces; inline decisions us
   await expect(
     card.getByRole("button", { name: "仅允许这一次" }),
   ).toBeDisabled();
-  await expect(control).toContainText("待确认");
+  await expect(control).toHaveAttribute("data-state", "unknown");
+  await expect(control).toHaveAccessibleName(
+    "Morphz · 工作状态待核对 · 查看活动",
+  );
   available = true;
   await fixture.refresh();
   await expect(
@@ -499,12 +518,15 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     await page.setViewportSize({ width, height: 800 });
     await expect(control).toBeInViewport();
     const header = panel.locator(".inspector-header");
-    const toggle = (await control.boundingBox())!;
+    const toggle = (await page.locator(".inspector-toggle").boundingBox())!;
     const tabs = (await header
       .getByRole("tablist", { name: "Morphz 信息分类", exact: true })
       .boundingBox())!;
     expect(
-      tabs.x + tabs.width <= toggle.x || toggle.x + toggle.width <= tabs.x,
+      tabs.x + tabs.width <= toggle.x ||
+        toggle.x + toggle.width <= tabs.x ||
+        tabs.y + tabs.height <= toggle.y ||
+        toggle.y + toggle.height <= tabs.y,
     ).toBe(true);
     expect(await panel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
       true,
@@ -557,7 +579,7 @@ test("pending approvals remain visible across work surfaces; inline decisions us
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
-  await expect(control).toContainText("1 待审批");
+  await expect(control).toHaveAttribute("data-state", "approval");
   await control.click();
   await expect(panel.getByLabel("待审批操作")).toBeVisible();
   await expect(
@@ -565,7 +587,8 @@ test("pending approvals remain visible across work surfaces; inline decisions us
   ).toBeDisabled();
   pending = false;
   await fixture.refresh();
-  await expect(control).toHaveCount(0);
+  await expect(control).toHaveAttribute("data-state", "unknown");
+  await expect(control).not.toHaveAttribute("data-state", "approval");
   await expect(panel.getByLabel("待审批操作")).toHaveCount(0);
   expect(calls).toHaveLength(1);
 });

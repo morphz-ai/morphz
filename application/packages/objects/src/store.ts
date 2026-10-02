@@ -46,9 +46,12 @@ import {
   schemaHash,
   verifySchemaObjects,
   sqliteQuery,
+  prepareSqlCommit,
+  publishSqlCommit,
   type SqlQuery,
   type SqlScalar,
 } from "../../storage/src/sql.js";
+import { sqliteChangeSource, postgresChangeSource, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
 import { objectsSchemaSql } from "./schema.js";
 
 const imageDigestIndexSql =
@@ -228,10 +231,17 @@ async function insert(
 /** Objects-app originals, separate from Platform's catalog and byte providers. */
 export class ObjectsStore {
   private gate: Promise<unknown> = Promise.resolve();
+  private readonly sqlChanges: SqlChangeSource;
   private constructor(
     private readonly backend: Backend,
     private readonly authority?: ObjectsAuthority,
-  ) {}
+  ) {
+    this.sqlChanges = backend.kind === "sqlite"
+      ? sqliteChangeSource(backend.database)
+      : postgresChangeSource(backend.pool.options, backend.schema);
+  }
+
+  changeSource(): SqlChangeSource { return this.sqlChanges; }
 
   static async sqlite(
     filename: string,
@@ -306,8 +316,10 @@ export class ObjectsStore {
         try {
           database.exec(readOnly ? "BEGIN" : "BEGIN IMMEDIATE");
           try {
-            const value = await work(sqliteQuery(database));
+            const q = sqliteQuery(database);
+            const value = await work(q);
             database.exec("COMMIT");
+            publishSqlCommit(q, this.sqlChanges);
             return value;
           } catch (error) {
             database.exec("ROLLBACK");
@@ -327,7 +339,9 @@ export class ObjectsStore {
       await client.query(
         `SET LOCAL search_path TO "${this.backend.schema}", pg_catalog`,
       );
-      const value = await work(postgresQuery(client));
+      const q = postgresQuery(client);
+      const value = await work(q);
+      await prepareSqlCommit(q, this.sqlChanges);
       await client.query("COMMIT");
       return value;
     } catch (error) {
@@ -1887,6 +1901,20 @@ export class ObjectsStore {
       );
       return rows.length > 0;
     }, true);
+  }
+
+  /** Exact authorized metadata only; annotations need not advance object head. */
+  async workspaceChangeVersion(request: { credential: string; objectId: string }) {
+    if (!this.authority) throw new Error("Objects 尚未接入受信权限。");
+    const objectId = requireDomainId(request.objectId, "对象 ID");
+    const actor = await this.authority.authorizeObjectRead(request);
+    this.requireActor(actor);
+    const metadata = await this.transaction(async q => ({
+      head: await q.all("SELECT kind,head_revision,deleted_at FROM objects WHERE tenant_id=? AND object_id=? AND kind=?", [actor.tenantId, objectId, actor.objectKind]),
+      annotations: await q.all("SELECT annotation_id,object_revision,collection_ordinal FROM object_annotations WHERE tenant_id=? AND object_id=? ORDER BY collection_ordinal", [actor.tenantId, objectId]),
+    }), true);
+    await this.confirmObjectRead(request.credential, objectId, actor);
+    return createHash("sha256").update(JSON.stringify(metadata)).digest("hex");
   }
 
   /** Small app-authoritative head for source watches; never load the payload. */

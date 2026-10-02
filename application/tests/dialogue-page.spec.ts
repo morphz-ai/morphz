@@ -1,9 +1,12 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openInput } from "./interaction-helpers.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import {
   isolatedCenterDirectory,
   seedAgentOriginal,

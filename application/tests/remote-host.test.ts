@@ -279,6 +279,7 @@ test("远端桥实际 HTTP：私有身份、幂等回执、二进制资源、订
       },
       boot.csrfToken,
       (value) => {
+        assert.ok("messages" in value);
         assert.deepEqual(value.messages, []);
         first();
       },

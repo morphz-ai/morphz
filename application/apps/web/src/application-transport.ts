@@ -11,6 +11,10 @@ import {
   type LiveMessage,
 } from "../../../packages/core/src/live-conversation.js";
 import type {} from "./desktop.js";
+import {
+  workspaceChangeSchema,
+  type WorkspaceChange,
+} from "../../../packages/core/src/workspace-changes.js";
 
 export { ApplicationRequestError as RequestError };
 const http = new HttpApplicationClient();
@@ -76,8 +80,7 @@ export async function applicationCall(
           id,
           method,
           params,
-          ...(method !== "platform.bootstrap" &&
-          method !== "login"
+          ...(method !== "platform.bootstrap" && method !== "login"
             ? { identityGeneration: requestOptions.identityGeneration }
             : {}),
         });
@@ -97,8 +100,7 @@ export async function applicationCall(
     options.signal?.throwIfAborted();
     if (epoch !== connectionEpoch)
       throw new DOMException("身份已切换，旧响应已丢弃。", "AbortError");
-    if (method === "platform.bootstrap")
-      observeIdentity(value);
+    if (method === "platform.bootstrap") observeIdentity(value);
     if (method === "login" || method === "logout") {
       identity = "disconnected";
       generation = "";
@@ -212,6 +214,99 @@ export function subscribeConversation(
         },
         value.removed,
       );
+    } catch {
+      lost();
+    }
+  };
+  stream.onerror = lost;
+  return () => {
+    closed = true;
+    stream.close();
+  };
+}
+
+/** Invalidations carry no objects or authority. A new connection's first valid
+ * frame requests a fresh authorized snapshot; its sequence is connection-local. */
+export function subscribeWorkspaceChanges(
+  update: (value: WorkspaceChange) => void,
+  lifecycle: { onConnected?: () => void; onClosed?: () => void } = {},
+) {
+  const bridge = window.morphzDesktop?.application;
+  const expected = generation,
+    epoch = connectionEpoch;
+  let closed = false,
+    connected = false,
+    sequence = 0;
+  const validIdentity = () =>
+    !closed &&
+    !identityTransition &&
+    epoch === connectionEpoch &&
+    expected === generation;
+  const lost = () => {
+    connected = false;
+    if (validIdentity()) lifecycle.onClosed?.();
+  };
+  const receive = (raw: unknown) => {
+    if (!validIdentity()) return;
+    const value = workspaceChangeSchema.parse(raw);
+    if (value.sequence <= sequence) return;
+    sequence = value.sequence;
+    if (!connected) {
+      connected = true;
+      lifecycle.onConnected?.();
+    }
+    update(value);
+  };
+  if (bridge) {
+    let activeId = "",
+      retry: ReturnType<typeof setTimeout> | undefined,
+      delay = 1000;
+    const reconnect = () => {
+      lost();
+      if (!validIdentity() || retry) return;
+      retry = setTimeout(() => {
+        retry = undefined;
+        if (validIdentity()) subscribe();
+      }, delay);
+      delay = Math.min(8000, delay * 2);
+    };
+    const subscribe = () => {
+      if (activeId) bridge.unsubscribe(activeId);
+      activeId = crypto.randomUUID();
+      sequence = 0;
+      const id = activeId;
+      void bridge.subscribe(id, { kind: "workspace" }, expected).catch(() => {
+        if (id === activeId) reconnect();
+      });
+    };
+    const dispose = bridge.onStream((event) => {
+      if (event.id !== activeId || !validIdentity()) return;
+      if (event.closed) reconnect();
+      else if (event.value) {
+        try {
+          receive(event.value);
+          delay = 1000;
+        } catch {
+          reconnect();
+        }
+      }
+    });
+    subscribe();
+    return () => {
+      closed = true;
+      clearTimeout(retry);
+      bridge.unsubscribe(activeId);
+      dispose();
+    };
+  }
+  const stream = new EventSource("/api/platform/workspace/stream");
+  stream.onopen = () => {
+    sequence = 0;
+    connected = false;
+  };
+  stream.onmessage = (event) => {
+    try {
+      receive(JSON.parse(event.data));
     } catch {
       lost();
     }

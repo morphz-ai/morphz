@@ -1,7 +1,10 @@
-import { test, expect, type Page, type Route } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { ModelCatalog } from "../packages/core/src/inference.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { openComposerSettings, openInput } from "./interaction-helpers.js";
 import { chooseReasoning } from "./reasoning-helpers.js";
 
@@ -367,7 +370,7 @@ test("加载、失败、旧服务与未声明模型能力分别保留，重试�
     await expect(f.slider).toBeEnabled();
     await expect(f.control).toHaveAttribute(
       "title",
-      "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。",
+      "用于后续新输入，不改变已提交工作；默认沿用模型设置。实际支持以所选模型为准。",
     );
     await expect(f.input).toHaveValue(f.draft);
     expect(f.writes).toEqual([]);

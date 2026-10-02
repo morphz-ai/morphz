@@ -572,7 +572,7 @@ function ReadingBook({
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [artifact.id, version.revision, active, retry]);
+  }, [artifact.id, version.revision, active, retry, client.workspaceChangeRevision]);
   useEffect(() => {
     if (!active || !readerReady) return;
     const abort = new AbortController();
@@ -733,6 +733,7 @@ function ReadingBook({
     focusedMarkRange?.end,
     active,
     marksRefresh,
+    client.workspaceChangeRevision,
   ]);
   useEffect(() => {
     const view = marksPanel.current;
@@ -798,7 +799,7 @@ function ReadingBook({
       sizes.disconnect();
       view.removeEventListener("scroll", check);
     };
-  }, [artifact.id, version.revision, panel, active, marksRefresh]);
+  }, [artifact.id, version.revision, panel, active, marksRefresh, client.workspaceChangeRevision]);
   function refreshMarks() {
     markReadGeneration.current++;
     pendingMarkPoint.current = null;

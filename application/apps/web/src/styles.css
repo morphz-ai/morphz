@@ -898,7 +898,7 @@ kbd {
   font-weight: 550;
   overflow-wrap: anywhere;
 }
-.task-description {
+.task-row .task-description {
   display: block;
   color: var(--muted);
   font-size: 11px;

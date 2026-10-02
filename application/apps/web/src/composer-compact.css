@@ -37,6 +37,7 @@
   overflow: auto;
 }
 .app .composer-actions.composer-action-bar {
+  --composer-control-size: 32px;
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
@@ -55,8 +56,112 @@
 .composer-action-leading {
   flex: 1 1 0;
 }
+.composer-action-leading:has(.composer-status-slot) {
+  /* A shrinking flex group must not spill its persistent hit targets into
+     settings. Model/status text can shrink; media and notice targets cannot. */
+  min-width: calc(var(--composer-control-size) * 2 + 4px);
+}
+.composer-action-leading:has(.composer-status-slot):has(
+    > .composer-scope-trigger,
+    > .composer-scope-label
+  ) {
+  min-width: calc(var(--composer-control-size) * 3 + 8px);
+}
 .composer-action-trailing {
   flex: 0 1 auto;
+}
+.composer-status-slot {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.app .composer-status-slot > .model-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: normal;
+}
+.model-status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.app .composer-status-slot > .model-status > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px;
+  border-radius: 7px;
+  text-decoration: none;
+}
+.app .model-status > button > svg {
+  width: 14px;
+  height: 14px;
+}
+.app .composer-error-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  min-width: 32px;
+  max-width: 100%;
+  padding: 5px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+  background: transparent;
+}
+.app .composer-error-notice > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.app .composer-error-notice > .composer-error {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+.app
+  :is(
+    .composer-error-notice,
+    .composer-status-slot > .model-status > button
+  ):hover {
+  background: var(--soft);
+}
+.app .composer-error-details {
+  width: 360px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.composer-error-details > p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app .composer-error-details > .model-status {
+  display: block;
+  max-width: none;
+  margin: 10px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.composer-error-details .model-status-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .app
   :is(
@@ -446,6 +551,14 @@
   padding: 4px 2px 2px;
 }
 @container exchange (max-width: 540px) {
+  .composer-status-slot > .model-status:has(> button) > .model-status-label,
+  .composer-status-slot > .model-status > button > span {
+    display: none;
+  }
+  .app .composer-status-slot > .model-status > button {
+    width: 32px;
+    justify-content: center;
+  }
   .composer-settings-summary {
     max-width: 98px;
   }
@@ -479,6 +592,14 @@
   }
 }
 @media (pointer: coarse) {
+  .app .composer-actions.composer-action-bar {
+    --composer-control-size: 44px;
+  }
+  .app .composer-error-notice,
+  .app .composer-status-slot > .model-status > button {
+    min-height: 44px;
+    min-width: 44px;
+  }
   .app .composer-settings-menu .composer-setting-row.composer-approval-choice,
   .app .composer-settings-menu .composer-directory-settings > summary,
   .app .composer-settings-menu .composer-model-selector select {

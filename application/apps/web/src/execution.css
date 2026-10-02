@@ -145,6 +145,11 @@
 .execution-details .execution-dialog-toolbar > span {
   display: none;
 }
+.execution-history-bound {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
 .workspace .execution-details .execution-job,
 .workspace .execution-details .execution-approval {
   border: 0;
@@ -333,6 +338,36 @@
   text-align: left;
   overflow: hidden;
 }
+/* A quiet, fixed Activity silhouette with a short left-to-right signal.
+   Only the authoritative live running state renders this SVG. */
+.execution-activity-icon > .execution-running-signal {
+  width: 24px;
+  height: 24px;
+}
+.execution-running-signal .execution-signal-base {
+  opacity: 0.38;
+}
+.execution-running-signal .execution-signal-flow {
+  stroke: var(--accent-strong);
+  stroke-width: 2.4;
+  stroke-dasharray: 18 100;
+  stroke-dashoffset: 18;
+  animation: execution-signal-travel 2.4s linear infinite;
+}
+@keyframes execution-signal-travel {
+  0% {
+    stroke-dashoffset: 18;
+    opacity: 0;
+  }
+  8%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
 @keyframes work-pulse {
   0%,
   100% {
@@ -343,8 +378,26 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .execution-running-signal .execution-signal-flow,
   .execution-work-mark[data-active],
   .conversation .human-message[data-background-execution]::before {
     animation: none;
   }
+  .execution-running-signal .execution-signal-flow {
+    opacity: 0;
+  }
+  .execution-running-signal .execution-signal-base {
+    opacity: 1;
+  }
+}
+:root[data-app-motion="reduce"]
+  .execution-running-signal
+  .execution-signal-flow {
+  animation: none;
+  opacity: 0;
+}
+:root[data-app-motion="reduce"]
+  .execution-running-signal
+  .execution-signal-base {
+  opacity: 1;
 }

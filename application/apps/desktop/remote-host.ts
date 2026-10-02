@@ -14,6 +14,11 @@ import {
 } from "../../packages/core/src/live-conversation.js";
 import { applicationFailure } from "../../packages/application/src/application.js";
 import { maxReadingFileBytes } from "../../packages/core/src/reader.js";
+import {
+  workspaceChangeScopeSchema,
+  workspaceChangeSchema,
+  type WorkspaceChange,
+} from "../../packages/core/src/workspace-changes.js";
 
 const requestSchema = z
   .object({
@@ -350,18 +355,22 @@ export class RemoteApplicationConnection {
     rawId: unknown,
     rawScope: unknown,
     generation: unknown,
-    emit: (value: ConversationStream) => void,
+    emit: (value: ConversationStream | WorkspaceChange) => void,
     close: () => void,
   ) {
     this.assertOpen();
     const id = z.string().uuid().parse(rawId),
-      platform = z
-        .object({
-          kind: z.literal("platform"),
-          projectId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
-          conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
-        })
-        .strict()
+      scope = z
+        .union([
+          workspaceChangeScopeSchema,
+          z
+            .object({
+              kind: z.literal("platform"),
+              projectId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+              conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+            })
+            .strict(),
+        ])
         .parse(rawScope);
     if (
       this.identityTransition ||
@@ -381,7 +390,10 @@ export class RemoteApplicationConnection {
       }
     };
     const run = async () => {
-      const streamPath = `/api/platform/projects/${encodeURIComponent(platform.projectId)}/conversations/${encodeURIComponent(platform.conversationId)}/stream`;
+      const streamPath =
+        scope.kind === "workspace"
+          ? "/api/platform/workspace/stream"
+          : `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`;
       const response = await this.request(this.origin + streamPath, {
         credentials: "include",
         redirect: "error",
@@ -390,7 +402,8 @@ export class RemoteApplicationConnection {
       if (!response.ok || !response.body) throw new Error("远端订阅不可用。");
       const reader = response.body.getReader(),
         decoder = new TextDecoder();
-      let buffer = "";
+      let buffer = "",
+        workspaceSequence = 0;
       const messages = new Map<
         string,
         ConversationStream["messages"][number]
@@ -413,6 +426,15 @@ export class RemoteApplicationConnection {
               .map((line) => line.slice(6))
               .join("\n");
             if (!data) continue;
+            if (scope.kind === "workspace") {
+              const parsed = workspaceChangeSchema.parse(JSON.parse(data));
+              if (epoch !== this.epoch || controller.signal.aborted) break;
+              if (parsed.sequence <= workspaceSequence)
+                throw new Error("远端工作区通知顺序无效。");
+              workspaceSequence = parsed.sequence;
+              emit(parsed);
+              continue;
+            }
             const parsed = conversationFrameSchema.parse(JSON.parse(data));
             if (parsed.reset) messages.clear();
             for (const id of parsed.removed) messages.delete(id);

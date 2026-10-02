@@ -941,6 +941,46 @@ export async function openApplicationDomainsHost(
     );
     const notifications = new Notifications(platform, human);
     return {
+      workspaceChanges: {
+        sources: [platform.changeSource(), contentObjects.changeSource(), contentBrowser.changeSource(), contentReader.changeSource(),
+          contentStudio.changeSource()],
+        async readVersion(access: AccessContext, assertActive: () => void) {
+          return human.withSession(access, assertActive, async actor => {
+            const before = await platform.workspaceChangeVersion(actor);
+            const readable = async (read: () => Promise<unknown>) => {
+              try { return await read(); } catch { assertActive(); return "unavailable"; }
+            };
+            const originals = await Promise.all(before.contentRefs.map(async ref => [ref.appId, ref.objectId,
+              ref.appId === "morphz.objects"
+                ? await readable(() => contentObjects.workspaceChangeVersion({ credential: actor.credential, objectId: ref.objectId }))
+                : ref.appId === "morphz.script-studio"
+                  ? await readable(() => contentStudio.readProductionHead({ credential: actor.credential, productionId: ref.objectId }))
+                  : ref.appId === "morphz.reader"
+                    ? await readable(() => contentReader.readBookHead({ credential: actor.credential, bookId: ref.objectId })) : null,
+              await readable(() => contentReader.workspaceChangeVersion({ credential: actor.credential, ...ref })),
+            ]));
+            const bookmarks = await readable(() => contentBrowser.workspaceChangeVersion(actor));
+            const profile = await readable(async () => {
+              const snapshot = await profiles.read(actor, assertActive);
+              return [snapshot.human.revision, snapshot.human.available, snapshot.agent.id, snapshot.agent.revision, snapshot.agent.available];
+            });
+            assertActive();
+            // A grant removed during an app read never re-publishes its old proof.
+            // Frames contain only invalidation, so a changed grant clears Client
+            // protected projections before any independent re-read.
+            const after = await platform.workspaceChangeVersion(actor);
+            assertActive();
+            return {
+              version: createHash("sha256").update(JSON.stringify({
+                platform: after.version,
+                ...(before.accessVersion === after.accessVersion ? { originals, bookmarks, profile } : {}),
+              })).digest("hex"),
+              accessVersion: after.accessVersion,
+              projectIds: after.projectIds,
+            };
+          });
+        },
+      },
       work: { authority: human, service: work },
       content: {
         authority: human,

@@ -32,7 +32,7 @@ export const taskRunAdmissionSchema = z.strictObject({
     model_alias: z.string().trim().min(1).max(200).nullable(),
     reasoning_effort: z.string().trim().min(1).max(100).nullable(),
     // Omission on an old durable admission must remain omission on retries.
-    response_annotations: z.enum(["off", "v1"]).optional(),
+    response_annotations: z.enum(["off", "v1", "v2"]).optional(),
     not_before: timestamp,
     interval_seconds: z.number().int().min(60).max(31_536_000).nullable(),
     dependency_thread_ids: z.array(runtimeId).max(100),

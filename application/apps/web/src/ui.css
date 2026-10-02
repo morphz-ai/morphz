@@ -997,6 +997,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   position: relative;
+  container-type: inline-size;
 }
 .primary-panel[data-interaction="history"] > .exchange-surface,
 .primary-panel[data-interaction="history"] .exchange-surface > .conversation {
@@ -1226,7 +1227,7 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .message-meta {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 4px 10px;
   margin-top: 5px;
   color: var(--muted);
@@ -1244,6 +1245,91 @@ body:has(dialog[open]) .cognitive-application-frame {
   top: 100%;
   right: 0;
   white-space: nowrap;
+}
+/* Work belongs to the same footer as copy/stop, never the message body. The
+   available reading column, not a short bubble, bounds wrapped controls. */
+.conversation .human-message .message-meta[data-work-actions] {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: max-content;
+  max-width: calc(100cqw - 24px);
+  margin-top: 2px;
+  gap: 0 8px;
+}
+.conversation .human-message .message-meta[data-work-actions] .message-peek {
+  position: static;
+}
+.conversation .human-message:has(.message-meta[data-work-actions]) {
+  margin-bottom: 44px;
+}
+.message-work-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.app .conversation .message-meta .message-execution-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+  background: transparent;
+  color: light-dark(var(--text-secondary), var(--ink));
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.app
+  .conversation
+  .human-message
+  .message-execution-link:is(:hover, :focus-visible) {
+  background: var(--human-message-hover);
+  color: var(--ink);
+}
+.app
+  .conversation
+  .human-message
+  .message-execution-link:active:not(:disabled) {
+  background: var(--human-message-pressed);
+  color: var(--ink);
+}
+.app .conversation .message-execution-link:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+.conversation .message-work-actions svg {
+  flex: 0 0 auto;
+}
+/* The factual status in the footer replaces the decorative running halo. */
+.app .conversation .human-message[data-background-execution]::before {
+  content: none;
+  animation: none;
+}
+.app .conversation .human-message[data-background-execution] {
+  box-shadow: none;
+}
+@container (max-width: 340px) {
+  .conversation .human-message .message-meta[data-work-actions] {
+    /* Keep the persistent work controls next to the body when the optional
+       time/copy group wraps; its hidden footprint must not leave a blank row. */
+    flex-wrap: wrap-reverse;
+  }
+  .conversation .human-message:has(.message-meta[data-work-actions]) {
+    margin-bottom: 72px;
+  }
+}
+@media (any-pointer: coarse) {
+  .app .conversation .message-meta .message-execution-link {
+    min-height: 44px;
+  }
+  .conversation .human-message:has(.message-meta[data-work-actions]) {
+    margin-bottom: 88px;
+  }
 }
 .message-peek {
   display: inline-flex;
@@ -3330,6 +3416,7 @@ summary:focus-visible {
   border: 0;
 }
 .object-paper.task-paper {
+  min-width: 0;
   max-width: none;
   margin: 0;
   padding: 12px 24px 20px;
@@ -3364,8 +3451,13 @@ summary:focus-visible {
   padding: 5px 8px;
 }
 .task-description {
+  min-width: 0;
+  max-width: 100%;
   font-size: 15px;
   line-height: 1.8;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
   overflow-wrap: anywhere;
   user-select: text;
 }

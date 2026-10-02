@@ -37,9 +37,16 @@ import {
   schemaHash,
   verifySchemaObjects,
   sqliteQuery,
+  prepareSqlCommit,
+  publishSqlCommit,
   type SqlQuery,
   type SqlScalar,
 } from "../../storage/src/sql.js";
+import {
+  sqliteChangeSource,
+  postgresChangeSource,
+  type SqlChangeSource,
+} from "../../storage/src/commit-notifications.js";
 import { scriptStudioSchemaSql } from "./schema.js";
 import {
   scriptEditorPageRequestSchema,
@@ -406,10 +413,17 @@ function draftIdentity(productionId: string, owner: string) {
 /** App-owned relation store. Import is for an offline, unactivated migration target. */
 export class ScriptStudioStore {
   private gate: Promise<unknown> = Promise.resolve();
+  private readonly sqlChanges: SqlChangeSource;
   private constructor(
     private readonly backend: Backend,
     private readonly authority?: ScriptStudioAuthority,
-  ) {}
+  ) {
+    this.sqlChanges = backend.kind === "sqlite"
+      ? sqliteChangeSource(backend.database)
+      : postgresChangeSource(backend.pool.options, backend.schema);
+  }
+
+  changeSource(): SqlChangeSource { return this.sqlChanges; }
 
   static async sqlite(
     filename: string,
@@ -491,8 +505,10 @@ export class ScriptStudioStore {
         try {
           database.exec(readOnly ? "BEGIN" : "BEGIN IMMEDIATE");
           try {
-            const value = await work(sqliteQuery(database));
+            const q = sqliteQuery(database);
+            const value = await work(q);
             database.exec("COMMIT");
+            publishSqlCommit(q, this.sqlChanges);
             return value;
           } catch (error) {
             database.exec("ROLLBACK");
@@ -514,7 +530,9 @@ export class ScriptStudioStore {
       await client.query(
         `SET LOCAL search_path TO "${this.backend.schema}", pg_catalog`,
       );
-      const value = await work(postgresQuery(client));
+      const q = postgresQuery(client);
+      const value = await work(q);
+      await prepareSqlCommit(q, this.sqlChanges);
       await client.query("COMMIT");
       return value;
     } catch (error) {

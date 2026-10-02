@@ -1,11 +1,14 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import {
   disconnectedRuntime,
   type ConversationRuntime,
 } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { openInput } from "./interaction-helpers.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });

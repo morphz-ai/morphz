@@ -46,6 +46,7 @@ import {
 } from "./client.js";
 import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ComposerActionBar } from "./ComposerActionBar.js";
+import { ComposerStatus } from "./ComposerStatus.js";
 import { ComposerScope } from "./ComposerScope.js";
 import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
@@ -65,6 +66,7 @@ import {
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
 import {
+  consumeComposerDraft,
   replaceComposerSurface,
   updateComposerDraft,
 } from "./composer-drafts.js";
@@ -1109,6 +1111,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     collaborationVisible,
     annotationRefresh,
     client.boot?.csrfToken,
+    client.workspaceChangeRevision,
   ]);
   const { ref: inspectorWorkspace, layout: rightInspector } =
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
@@ -1250,9 +1253,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       replaceComposerSurface(previous, key, emptyDraft, value),
     );
   }
-  function updateDraft(key: string, update: (value: InputDraft) => InputDraft) {
+  function updateDraft(
+    key: string,
+    update: (value: InputDraft) => InputDraft,
+    initial: InputDraft = emptyDraft,
+  ) {
     writeDrafts((previous) =>
-      updateComposerDraft(previous, key, emptyDraft, update),
+      updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
   }
   function writeDrafts(
@@ -1999,7 +2006,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     let staged = false;
     const onInputStaged = (inputId: string) => {
       staged = true;
-      updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
+      updateDraft(key, (current) => consumeComposerDraft(current, emptyDraft));
       setRevealedInputs((old) => ({ ...old, [conversationId]: inputId }));
       if (currentContext.current === key) {
         setMobileCollaboration(false);
@@ -2201,7 +2208,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         );
       }
       // The acknowledged input consumed this conversation's references.
-      if (!staged) updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
+      if (!staged)
+        updateDraft(key, (current) => consumeComposerDraft(current, emptyDraft));
       if (!staged && currentContext.current === key) {
         if (asAnnotation) {
           openCollaboration();
@@ -3624,11 +3632,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           }}
                         />
                       </div>
-                      {inputErrors[contextKey] && (
-                        <p className="composer-error" role="alert">
-                          {inputErrors[contextKey]}
-                        </p>
-                      )}
                       {draft.continuationFailure === "closed" &&
                         draft.continuation && (
                           <div className="continuation-follow-up">
@@ -3661,31 +3664,39 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           正在核对原投递；确认前保留这份草稿，请勿另发一遍。
                         </small>
                       )}
-                      {(!client.online ||
-                        (draft.taskResult && !draft.continuation) ||
-                        (!draft.annotation &&
-                          !client.boot!.runtime.connected)) && (
-                        <small className="model-status">
-                          {!client.online
-                            ? "应用连接中断"
-                            : draft.taskResult && !draft.continuation
-                              ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
-                              : client.boot!.runtime.configured
-                                ? client.boot!.runtime.error
-                                  ? "智能体连接异常 · 消息已保留"
-                                  : "正在连接智能体"
-                                : "尚未连接智能体 · 输入只会保存"}
-                          {(!client.online || !draft.taskResult) && (
-                            <button
-                              className="text-button"
-                              onClick={() => setConnectionOpen(true)}
-                            >
-                              连接详情
-                            </button>
-                          )}
-                        </small>
-                      )}
                       <ComposerActionBar
+                        status={
+                          <ComposerStatus error={inputErrors[contextKey]}>
+                            {(!client.online ||
+                              (draft.taskResult && !draft.continuation) ||
+                              (!draft.annotation &&
+                                !client.boot!.runtime.connected)) && (
+                              <small className="model-status">
+                                <span className="model-status-label">
+                                  {!client.online
+                                    ? "应用连接中断"
+                                    : draft.taskResult && !draft.continuation
+                                      ? `${actorName(state, client.boot!.actantId)} · 提交事项结果`
+                                      : client.boot!.runtime.configured
+                                        ? client.boot!.runtime.error
+                                          ? "智能体连接异常 · 消息已保留"
+                                          : "正在连接智能体"
+                                        : "尚未连接智能体 · 输入只会保存"}
+                                </span>
+                                {(!client.online || !draft.taskResult) && (
+                                  <button
+                                    className="text-button"
+                                    aria-label="连接详情"
+                                    onClick={() => setConnectionOpen(true)}
+                                  >
+                                    <Link2 aria-hidden="true" />
+                                    <span>连接详情</span>
+                                  </button>
+                                )}
+                              </small>
+                            )}
+                          </ComposerStatus>
+                        }
                         scope={
                           <ComposerScope
                             showPlainScope={showPlainComposerScope}
@@ -3958,16 +3969,24 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                               !!draft.taskResult
                             }
                             onModelChange={(model) =>
-                              setDraft(contextKey, {
-                                ...draft,
-                                model: model || undefined,
-                              })
+                              updateDraft(
+                                contextKey,
+                                (current) => ({
+                                  ...current,
+                                  model: model || undefined,
+                                }),
+                                surfaceDraft,
+                              )
                             }
                             onReasoningChange={(reasoningEffort) =>
-                              setDraft(contextKey, {
-                                ...draft,
-                                reasoningEffort,
-                              })
+                              updateDraft(
+                                contextKey,
+                                (current) => ({
+                                  ...current,
+                                  reasoningEffort,
+                                }),
+                                surfaceDraft,
+                              )
                             }
                             permissionControls={
                               canAuthorizeDirectories ? (

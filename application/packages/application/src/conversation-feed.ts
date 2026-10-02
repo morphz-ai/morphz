@@ -28,7 +28,10 @@ type Connection = {
 export class ConversationFeed {
   private connections = new Map<string, Connection>();
   private disposed = false;
-  private timer: ReturnType<typeof setInterval>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private catchupTimer?: ReturnType<typeof setTimeout>;
+  private synchronizing?: Promise<void>;
+  private syncAgain = false;
   private notifyTimer?: ReturnType<typeof setTimeout>;
   constructor(
     private options: {
@@ -48,8 +51,30 @@ export class ConversationFeed {
       failed: () => void;
     },
   ) {
-    this.timer = setInterval(() => void this.sync(), 1200);
     void this.sync();
+  }
+  private active(id: string, connection: Connection) {
+    return (
+      !this.disposed &&
+      this.connections.get(id) === connection &&
+      this.options.sessions().includes(id)
+    );
+  }
+  private scheduleRetry() {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    if (this.disposed) return;
+    const retryAt = [...this.connections.entries()]
+      .filter(([id, c]) => this.active(id, c) && !c.ready && !c.loading)
+      .map(([, c]) => c.retryAt);
+    if (!retryAt.length) return;
+    this.retryTimer = setTimeout(
+      () => {
+        this.retryTimer = undefined;
+        void this.sync();
+      },
+      Math.max(0, Math.min(...retryAt) - Date.now()),
+    );
   }
   private notify() {
     if (this.disposed || this.notifyTimer) return;
@@ -59,19 +84,22 @@ export class ConversationFeed {
       try {
         await this.options.authorize();
         if (this.disposed) return;
-        const messages = [...this.connections.entries()].flatMap(
-          ([sessionId, c]) =>
-            c.projection.snapshot().map((message) => ({
-              ...message,
-              id: message.id.startsWith("tool:")
-                ? `tool:${sessionId}:${message.id.slice(5)}`
-                : message.id.startsWith("stream:")
-                  ? `stream:${sessionId}:${message.id.slice(7)}`
-                  : message.id,
-            })),
+        const authorized = new Set(this.options.sessions());
+        const current = [...this.connections.entries()].filter(([id]) =>
+          authorized.has(id),
+        );
+        const messages = current.flatMap(([sessionId, c]) =>
+          c.projection.snapshot().map((message) => ({
+            ...message,
+            id: message.id.startsWith("tool:")
+              ? `tool:${sessionId}:${message.id.slice(5)}`
+              : message.id.startsWith("stream:")
+                ? `stream:${sessionId}:${message.id.slice(7)}`
+                : message.id,
+          })),
         );
         this.options.changed({
-          connected: [...this.connections.values()].every((c) => c.ready),
+          connected: current.every(([, c]) => c.ready),
           messages: this.options.messageLimit
             ? messages
                 .sort(
@@ -88,6 +116,28 @@ export class ConversationFeed {
     }, 50);
   }
   async sync() {
+    if (this.disposed) return;
+    if (this.synchronizing) {
+      this.syncAgain = true;
+      return this.synchronizing;
+    }
+    this.synchronizing = Promise.resolve().then(async () => {
+      try {
+        do {
+          this.syncAgain = false;
+          await this.synchronizeOnce();
+        } while (this.syncAgain && !this.disposed);
+      } finally {
+        // Clear in the same continuation as the last dirty check. An outer
+        // .finally leaves a microtask gap where a new hint joins a finished
+        // drain and is never read once healthy polling has been removed.
+        this.synchronizing = undefined;
+        this.scheduleRetry();
+      }
+    });
+    return this.synchronizing;
+  }
+  private async synchronizeOnce() {
     if (this.disposed) return;
     try {
       await this.options.authorize();
@@ -127,6 +177,7 @@ export class ConversationFeed {
     this.notify();
   }
   private accept(id: string, c: Connection, raw: unknown) {
+    if (!this.active(id, c)) return;
     const parsed = eventSchema.safeParse(raw);
     if (!parsed.success) return;
     const event = parsed.data;
@@ -137,10 +188,11 @@ export class ConversationFeed {
   }
   private async update(id: string, c: Connection) {
     try {
+      if (!this.active(id, c)) return;
       if (!c.socket && Date.now() >= c.retryAt) {
         // The existing HTTP principal-claim path must succeed before subscribing.
         await this.options.request(`/api/sessions/${encodeURIComponent(id)}`);
-        if (this.disposed) return;
+        if (!this.active(id, c)) return;
         const url = new URL("/ws", this.options.url);
         url.protocol = "ws:";
         url.searchParams.set("session_id", id);
@@ -151,10 +203,10 @@ export class ConversationFeed {
         });
         c.socket = ws;
         ws.on("message", async (data) => {
-          if (!this.disposed && c.socket === ws) {
+          if (this.active(id, c) && c.socket === ws) {
             try {
               await this.options.authorize();
-              if (this.disposed || c.socket !== ws) return;
+              if (!this.active(id, c) || c.socket !== ws) return;
               this.accept(id, c, JSON.parse(data.toString()));
             } catch {
               this.close();
@@ -173,6 +225,7 @@ export class ConversationFeed {
           c.retryAt = Date.now() + 2000;
           c.projection.reconnect();
           this.notify();
+          this.scheduleRetry();
         });
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, 1600);
@@ -181,6 +234,11 @@ export class ConversationFeed {
             resolve();
           };
           ws.once("open", () => {
+            if (!this.active(id, c)) {
+              ws.terminate();
+              done();
+              return;
+            }
             c.ready = true;
             done();
             this.notify();
@@ -190,7 +248,7 @@ export class ConversationFeed {
       }
       // Subscribe before history; use the durable cursor, never transient sequences.
       // Yield between pages so long histories do not delay sending new input.
-      if (this.disposed) return;
+      if (!this.active(id, c)) return;
       const data = z
         .object({ events: z.array(eventSchema) })
         .parse(
@@ -198,6 +256,7 @@ export class ConversationFeed {
             `/api/sessions/${encodeURIComponent(id)}/events?after_sequence=${c.cursor}&limit=1000`,
           ),
         );
+      if (!this.active(id, c)) return;
       for (const event of data.events.sort(
         (a, b) => (a.sequence ?? 0) - (b.sequence ?? 0),
       )) {
@@ -205,17 +264,24 @@ export class ConversationFeed {
         this.accept(id, c, event);
         c.cursor = Math.max(c.cursor, event.sequence ?? 0);
       }
-      if (data.events.length === 1000 && !this.disposed)
-        setTimeout(() => void this.sync(), 0);
+      c.ready = c.socket?.readyState === WebSocket.OPEN;
+      if (data.events.length === 1000 && !this.disposed && !this.catchupTimer)
+        this.catchupTimer = setTimeout(() => {
+          this.catchupTimer = undefined;
+          void this.sync();
+        }, 0);
     } catch {
+      if (!this.active(id, c)) return;
       c.ready = false;
+      c.retryAt = Date.now() + 2000;
       this.notify();
     }
   }
   close() {
     if (this.disposed) return;
     this.disposed = true;
-    clearInterval(this.timer);
+    clearTimeout(this.retryTimer);
+    clearTimeout(this.catchupTimer);
     clearTimeout(this.notifyTimer);
     for (const c of this.connections.values()) c.socket?.terminate();
     this.connections.clear();

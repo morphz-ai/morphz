@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
+  consumeComposerDraft,
   replaceComposerSurface,
   updateComposerDraft,
 } from "../apps/web/src/composer-drafts.js";
@@ -11,6 +12,8 @@ type Draft = {
   body: string;
   selection: string;
   textQuotes?: TextQuote[];
+  model?: string;
+  reasoningEffort?: import("../packages/core/src/inference.js").ReasoningEffort;
 };
 const empty: Draft = { body: "", selection: "" };
 const conversation = "conversation-1";
@@ -78,4 +81,80 @@ test("连续跨页面输入只更新正文；显式编辑和移除引用仍然�
     textQuotes: [],
   }));
   assert.deepEqual(sent[quotesKey]!.textQuotes, []);
+});
+
+test("接收输入只消费正文和来源，保留最高推理与模型供后续输入", () => {
+  const admitted = {
+    ...empty,
+    body: "已接收的输入",
+    selection: "已经消费的选区",
+    textQuotes: [quote(1)],
+    model: "my-route",
+    reasoningEffort: "max" as const,
+    attachments: [{ id: "consumed-attachment" }],
+    continuation: { inputId: "old-input" },
+  };
+  const next = consumeComposerDraft(admitted, empty);
+  assert.deepEqual(next, {
+    ...empty,
+    textQuotes: [],
+    model: "my-route",
+    reasoningEffort: "max",
+  });
+  assert.equal(admitted.body, "已接收的输入");
+  assert.equal(admitted.reasoningEffort, "max");
+});
+
+test("发送回执不从旧输入恢复effort；显式默认和独立surface仍保留", () => {
+  const admitted = {
+    ...empty,
+    model: "my-route",
+    reasoningEffort: "max" as const,
+  };
+  const current = { ...admitted, reasoningEffort: undefined };
+  const next = consumeComposerDraft(current, empty);
+  assert.equal(next.reasoningEffort, undefined);
+  assert.equal(next.model, "my-route");
+  const other = {
+    ...empty,
+    body: "另一范围草稿",
+    reasoningEffort: "low" as const,
+  };
+  const surfaces = { [surface]: admitted, [otherSurface]: other };
+  const sent = updateComposerDraft(surfaces, surface, empty, (draft) =>
+    consumeComposerDraft(draft, empty),
+  );
+  assert.equal(sent[surface]!.reasoningEffort, "max");
+  assert.deepEqual(sent[otherSurface], other);
+  assert.equal(admitted.reasoningEffort, "max");
+});
+
+test("首次设置承接legacy草稿，随后functional设置不覆盖更新正文或共享引用", () => {
+  const legacy = { ...empty, body: "迁移前未发送的正文", model: "my-route" };
+  const quotes = [quote(1)];
+  const first = updateComposerDraft(
+    { [quotesKey]: { ...empty, textQuotes: quotes } },
+    surface,
+    empty,
+    (current) => ({ ...current, reasoningEffort: "max" as const }),
+    legacy,
+  );
+  assert.equal(first[surface]!.body, legacy.body);
+  assert.equal(first[surface]!.model, "my-route");
+  assert.equal(first[surface]!.reasoningEffort, "max");
+  assert.deepEqual(first[quotesKey]!.textQuotes, quotes);
+  const edited = {
+    ...first,
+    [surface]: { ...first[surface]!, body: "新正文" },
+  };
+  const changed = updateComposerDraft(
+    edited,
+    surface,
+    empty,
+    (current) => ({ ...current, model: "new-route" }),
+    legacy,
+  );
+  assert.equal(changed[surface]!.body, "新正文");
+  assert.equal(changed[surface]!.reasoningEffort, "max");
+  assert.equal(changed[surface]!.model, "new-route");
 });

@@ -5,12 +5,14 @@ import "./composer-compact.css";
 export function ComposerActionBar({
   media,
   scope,
+  status,
   settings,
   microphone,
   send,
 }: {
   media: ReactNode;
   scope?: ReactNode;
+  status?: ReactNode;
   settings?: ReactNode;
   microphone: ReactNode;
   send: ReactNode;
@@ -20,6 +22,7 @@ export function ComposerActionBar({
       <div className="composer-action-leading">
         {media}
         {scope}
+        {status}
       </div>
       <div className="composer-action-trailing">
         {settings}

@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import {
   openInput,
   composerAction,
@@ -10,7 +10,10 @@ import {
 } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import {
   platformInputState,
   platformContentState,

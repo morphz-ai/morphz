@@ -70,7 +70,7 @@ export function ComposerExecutionSettings({
       : "未添加额外目录";
   const description = continuation
     ? "补充沿用原工作模型与权限；此处不改变正在执行的工作"
-    : `${summary.model} · ${summary.reasoning} · ${approvalLabel(permission?.permissionMode)} · ${permissionLabel}；模型与推理用于下一次新输入${permission ? (permission.scope.kind === "global" ? "；审批在当前全局会话持续生效，跨项目" : "；审批仅当前会话持续生效") : ""}`;
+    : `${summary.model} · ${summary.reasoning} · ${approvalLabel(permission?.permissionMode)} · ${permissionLabel}；模型与推理用于后续新输入，不改变已提交工作${permission ? (permission.scope.kind === "global" ? "；审批在当前全局会话持续生效，跨项目" : "；审批仅当前会话持续生效") : ""}`;
   return (
     <ComposerOptions
       label="执行设置"

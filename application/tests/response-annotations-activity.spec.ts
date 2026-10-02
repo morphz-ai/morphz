@@ -1,10 +1,13 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import {
   disconnectedRuntime,
   type ExecutionActivity,
 } from "../packages/core/src/conversation.js";
 import type { ExecutionSnapshot } from "../packages/core/src/execution.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 import { openExecutionPanel, openInput } from "./interaction-helpers.js";
 
 type Thread = ExecutionActivity["threads"][number];

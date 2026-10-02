@@ -1,6 +1,7 @@
 import { useModal } from "./useModal.js";
 import {
   executionJobPresentation,
+  executionJobsInReadingOrder,
   executionResultSummary,
 } from "./execution-presentation.js";
 import { useEffect, useRef, useState } from "react";
@@ -130,6 +131,10 @@ export function ExecutionDialog({
       /* Ordinary tool output need not be JSON. */
     }
   }
+  const jobs = executionJobsInReadingOrder(snapshot?.jobs ?? []);
+  const branchIds = [...new Set(jobs.map((job) => job.thread_id))];
+  const atReadLimit =
+    !!snapshot && snapshot.limit > 0 && jobs.length >= snapshot.limit;
   const content = (
     <>
       {!embedded && (
@@ -164,6 +169,11 @@ export function ExecutionDialog({
           <span className="muted">
             {!!snapshot?.approvals.length && "单次授权"}
           </span>
+          {embedded && atReadLimit && (
+            <small className="execution-history-bound">
+              当前为最近 {snapshot!.limit} 项执行
+            </small>
+          )}
           <button aria-label="刷新执行记录" onClick={() => void refresh()}>
             <RefreshCw />
           </button>
@@ -228,7 +238,7 @@ export function ExecutionDialog({
             {hideEmpty ? null : "暂无工具执行记录。"}
           </p>
         )}
-        {snapshot?.jobs.map((job) => {
+        {jobs.map((job) => {
           const presentation = executionJobPresentation(
             job,
             client.boot!.workspace,
@@ -252,14 +262,8 @@ export function ExecutionDialog({
                 <p className="execution-object">{presentation.detail}</p>
               )}
               <small className="muted">
-                {new Set(snapshot.jobs.map((j) => j.thread_id)).size > 1 && (
-                  <>
-                    分支{" "}
-                    {[
-                      ...new Set(snapshot.jobs.map((j) => j.thread_id)),
-                    ].indexOf(job.thread_id) + 1}{" "}
-                    ·{" "}
-                  </>
+                {branchIds.length > 1 && (
+                  <>分支 {branchIds.indexOf(job.thread_id) + 1} · </>
                 )}
                 {new Date(job.created_at).toLocaleString("zh-CN")}
               </small>

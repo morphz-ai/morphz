@@ -1,9 +1,12 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { openInput, openExecutionPanel } from "./interaction-helpers.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 
 test("并发交付按时间追加，运行入口打开精确详情，固定与调宽不改变会话", async ({
   page,

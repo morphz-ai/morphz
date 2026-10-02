@@ -1,8 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { mockPlatformConversation } from "./platform-conversation-fixture.js";
+import {
+  mockPlatformConversation,
+  test,
+} from "./platform-conversation-fixture.js";
 
 test("已完成的人类消息不为隐藏操作留出空行，悬停操作在气泡外且不撑高正文", async ({
   page,

@@ -232,6 +232,7 @@ const server = createAppServer(store, {
   messageAttachments: domains.messageAttachments,
   images: domains.images,
   profiles: domains.profiles,
+  workspaceChanges: domains.workspaceChanges,
   uiPackages: domains.uiPackages,
   notifications: domains.notifications,
   platformTaskRuns: domains.taskRuns(runtime),

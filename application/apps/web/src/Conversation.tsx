@@ -42,6 +42,11 @@ import {
   Film,
   RotateCcw,
   LoaderCircle,
+  Activity,
+  Clock3,
+  CircleHelp,
+  MessageSquarePlus,
+  Pause,
 } from "lucide-react";
 import {
   scriptOutputKey,
@@ -54,6 +59,7 @@ import { AttachmentPreview } from "./AttachmentPreview.js";
 import { conversationDate } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { executionPresentation } from "./execution-presentation.js";
+import { executionActivityStatus } from "./execution-activity.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
 export type ExchangePosition = {
@@ -714,12 +720,29 @@ export function Conversation({
                   : "Morphz",
                 createdAt: (item ?? reply)!.createdAt,
               });
-              const activeBranch =
-                item &&
-                client.online &&
-                activeExecutionThreads(runtime).some(
-                  (t) => t.inputId === item.id,
-                );
+              const activeBranches =
+                item && client.online
+                  ? activeExecutionThreads(runtime).filter(
+                      (t) => t.inputId === item.id,
+                    )
+                  : [];
+              const activeBranch = activeBranches.length > 0;
+              const branchStatuses = activeBranches.map((thread) =>
+                executionActivityStatus(thread, true),
+              );
+              const workStatus =
+                branchStatuses.find((s) => s.kind === "running") ??
+                branchStatuses.find((s) => s.kind === "unknown") ??
+                branchStatuses.find((s) => s.kind === "paused") ??
+                branchStatuses[0];
+              const WorkStatusIcon =
+                workStatus?.kind === "running"
+                  ? Activity
+                  : workStatus?.kind === "paused"
+                    ? Pause
+                    : workStatus?.kind === "waiting"
+                      ? Clock3
+                      : CircleHelp;
               const approvals = item
                 ? (runtime.attention?.approvals.filter(
                     (a) => a.scope.inputId === item.id,
@@ -935,37 +958,15 @@ export function Conversation({
                       </div>
                     )}
                     {reply?.kind !== "tool" && (
-                      <div className="message-meta">
-                        {item && onSupplement && targets.length > 0 && (
-                          <button
-                            className="message-execution-link"
-                            title="给这项后台工作追加要求"
-                            onClick={() =>
-                              targets.length === 1
-                                ? onSupplement(targets[0]!.continuation!)
-                                : onInspect?.(item.id)
-                            }
-                          >
-                            {targets.length === 1 ? "补充要求" : "选择补充分支"}
-                          </button>
-                        )}
-                        {item && activeBranch && onInspect && (
-                          <button
-                            className="message-execution-link"
-                            onClick={() => onInspect(item.id)}
-                          >
-                            后台执行中
-                          </button>
-                        )}
-                        {reply?.incomplete && <span>未完成的回复</span>}
-                        {reply?.truncated && <span>仅保留部分内容</span>}
-                        {item &&
-                          item.author.actantId !== client.boot?.actantId && (
-                            <span>
-                              {actorName(state, item.author.actantId)}
-                            </span>
-                          )}
-                        {item && status && <span>{status}</span>}
+                      <div
+                        className="message-meta"
+                        data-work-actions={
+                          Boolean(item &&
+                            ((onSupplement && targets.length > 0) ||
+                              (activeBranch && onInspect))) ||
+                          undefined
+                        }
+                      >
                         <MessageActions
                           createdAt={createdAt}
                           control={item ? stopControl : undefined}
@@ -975,6 +976,77 @@ export function Conversation({
                               : reply!.text
                           }
                         />
+                        {item &&
+                          ((onSupplement && targets.length > 0) ||
+                            (activeBranch && onInspect)) && (
+                            <span className="message-work-actions">
+                              {onSupplement && targets.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="message-execution-link message-supplement"
+                                  aria-label={
+                                    targets.length === 1
+                                      ? "补充要求"
+                                      : "选择补充分支"
+                                  }
+                                  title={
+                                    targets.length === 1
+                                      ? "给这项后台工作追加要求"
+                                      : "选择要补充的执行分支"
+                                  }
+                                  onClick={() =>
+                                    targets.length === 1
+                                      ? onSupplement(targets[0]!.continuation!)
+                                      : onInspect?.(item.id)
+                                  }
+                                >
+                                  <MessageSquarePlus
+                                    size={14}
+                                    aria-hidden="true"
+                                  />
+                                  <span>补充</span>
+                                  {targets.length > 1 && (
+                                    <ChevronRight
+                                      size={12}
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                </button>
+                              )}
+                              {activeBranch && onInspect && workStatus && (
+                                <button
+                                  type="button"
+                                  className="message-execution-link message-work-status"
+                                  data-status={workStatus.kind}
+                                  aria-label={
+                                    workStatus.kind === "running"
+                                      ? "后台执行中"
+                                      : "后台工作" + workStatus.label
+                                  }
+                                  title={
+                                    workStatus.label +
+                                    " · 查看这条消息的执行记录"
+                                  }
+                                  onClick={() => onInspect(item.id)}
+                                >
+                                  <WorkStatusIcon
+                                    size={14}
+                                    aria-hidden="true"
+                                  />
+                                  <span>{workStatus.label}</span>
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        {reply?.incomplete && <span>未完成的回复</span>}
+                        {reply?.truncated && <span>仅保留部分内容</span>}
+                        {item &&
+                          item.author.actantId !== client.boot?.actantId && (
+                            <span>
+                              {actorName(state, item.author.actantId)}
+                            </span>
+                          )}
+                        {item && status && <span>{status}</span>}
                       </div>
                     )}
                     {delivery?.error && (

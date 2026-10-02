@@ -29,6 +29,53 @@ type CapturedRequest = {
   messages: Array<{ role: string; content: unknown }>;
   [key: string]: unknown;
 };
+
+/** Only the normal deterministic final response adapts to the offered control
+ * schema. Explicit scripted tools (including invalid replies) bypass this.
+ * Off/typed-infer requests with no annotation carrier retain plain text. */
+export function profileFixtureReplyCarrier(
+  request: CapturedRequest,
+): { name: string; arguments: unknown } | undefined {
+  if (!Array.isArray(request.tools)) return undefined;
+  const carrier = request.tools.find((value: unknown) => {
+    if (!value || typeof value !== "object") return false;
+    const tool = value as {
+      function?: {
+        name?: string;
+        parameters?: { properties?: Record<string, unknown> };
+      };
+      name?: string;
+      parameters?: { properties?: Record<string, unknown> };
+    };
+    const definition = tool.function ?? tool;
+    const annotations = definition.parameters?.properties?.annotations as
+      | {
+          properties?: { execution?: { properties?: Record<string, unknown> } };
+        }
+      | undefined;
+    const execution = annotations?.properties?.execution?.properties;
+    return (
+      definition.name === "reply" &&
+      !!definition.parameters?.properties?.content &&
+      !!execution?.title &&
+      !!execution?.result
+    );
+  });
+  if (!carrier) return undefined;
+  return {
+    name: "reply",
+    arguments: {
+      content: "TEST deterministic provider: request accepted.",
+      annotations: {
+        execution: {
+          title: "处理合成测试请求",
+          result: "合成测试请求已处理；未调用付费模型",
+        },
+      },
+    },
+  };
+}
+
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 async function port() {
   const server = createServer();
@@ -78,16 +125,21 @@ export async function profileActualTransportFixture(
     transaction?: string,
     providedTool?: { name: string; arguments: unknown },
   ) => {
+    const selectedTool =
+      providedTool ??
+      (transaction === undefined
+        ? profileFixtureReplyCarrier(request)
+        : undefined);
     const call =
-      transaction || providedTool
+      transaction || selectedTool
         ? {
             index: 0,
             id: randomUUID(),
             type: "function",
             function: {
-              name: providedTool?.name ?? "context_tx",
+              name: selectedTool?.name ?? "context_tx",
               arguments: JSON.stringify(
-                providedTool?.arguments ?? { transaction },
+                selectedTool?.arguments ?? { transaction },
               ),
             },
           }
@@ -298,6 +350,7 @@ export async function profileActualTransportFixture(
       uiPackages: domains.uiPackages,
       bookmarkDomain: domains.browser,
       notifications: domains.notifications,
+      workspaceChanges: domains.workspaceChanges,
       platformTaskRuns: domains.taskRuns(runtime),
       agentTools: runtimeAgentTools(runtime, manifest.token, {
         authority: bindingAuthority.authority,

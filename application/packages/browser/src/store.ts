@@ -14,9 +14,12 @@ import {
   safeInteger,
   schemaHash,
   sqliteQuery,
+  prepareSqlCommit,
+  publishSqlCommit,
   verifySchemaObjects,
   type SqlQuery,
 } from "../../storage/src/sql.js";
+import { sqliteChangeSource, postgresChangeSource, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
 import { browserSchemaSql } from "./schema.js";
 
 type Backend =
@@ -121,10 +124,17 @@ function likePattern(value: string) {
 /** Browser-app relation store. Bookmarks never become Platform content rows. */
 export class BrowserStore {
   private gate: Promise<unknown> = Promise.resolve();
+  private readonly sqlChanges: SqlChangeSource;
   private constructor(
     private readonly backend: Backend,
     private readonly authority?: BrowserBookmarkAuthority,
-  ) {}
+  ) {
+    this.sqlChanges = backend.kind === "sqlite"
+      ? sqliteChangeSource(backend.database)
+      : postgresChangeSource(backend.pool.options, backend.schema);
+  }
+
+  changeSource(): SqlChangeSource { return this.sqlChanges; }
 
   static async sqlite(filename: string, authority?: BrowserBookmarkAuthority) {
     if (filename !== ":memory:")
@@ -196,8 +206,10 @@ export class BrowserStore {
         try {
           database.exec(readOnly ? "BEGIN" : "BEGIN IMMEDIATE");
           try {
-            const result = await work(sqliteQuery(database));
+            const q = sqliteQuery(database);
+            const result = await work(q);
             database.exec("COMMIT");
+            publishSqlCommit(q, this.sqlChanges);
             return result;
           } catch (error) {
             database.exec("ROLLBACK");
@@ -217,7 +229,9 @@ export class BrowserStore {
       await client.query(
         `SET LOCAL search_path TO "${this.backend.schema}", pg_catalog`,
       );
-      const result = await work(postgresQuery(client));
+      const q = postgresQuery(client);
+      const result = await work(q);
+      await prepareSqlCommit(q, this.sqlChanges);
       await client.query("COMMIT");
       return result;
     } catch (error) {
@@ -333,6 +347,16 @@ export class BrowserStore {
         "浏览器与 Platform 的当前操作身份不一致。",
       );
     return actor;
+  }
+
+  /** Host-only personal metadata proof, without URLs or bookmark text. */
+  async workspaceChangeVersion(request: { credential: string }) {
+    const actor = await this.actor(request.credential, null);
+    if (actor.kind !== "human") throw new BrowserStorageError("forbidden", "收藏通知需要用户身份。");
+    const rows = await this.transaction(q => q.all("SELECT bookmark_id,revision,deleted_at FROM bookmarks WHERE tenant_id=? AND owner_principal_id=? ORDER BY bookmark_id", [actor.tenantId, actor.ownerPrincipalId]), true);
+    const current = await this.actor(request.credential, null);
+    if (current.tenantId !== actor.tenantId || current.ownerPrincipalId !== actor.ownerPrincipalId) throw new BrowserStorageError("forbidden", "收藏身份已变化。");
+    return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
   }
 
   async listBookmarkPage(request: BookmarkListRequest) {

@@ -13,6 +13,7 @@ import {
   type ProfileUpdate,
 } from "../../../packages/core/src/profile.js";
 import { applicationCall, RequestError } from "./application-transport.js";
+import { createRefreshDrain } from "./refresh-drain.js";
 import type { WorkspaceClient } from "./client.js";
 import {
   ProfileAutosave,
@@ -59,43 +60,62 @@ export function useProfile(client: WorkspaceClient) {
   const [mediaAttempt, retryMedia] = useState(0);
   const mediaFailed = useRef(false);
   const sequence = useRef(0);
-  const refresh = useCallback(async () => {
+  const reads = useRef<{ key: string; tail: Promise<void> }>({
+    key,
+    tail: Promise.resolve(),
+  });
+  if (reads.current.key !== key)
+    reads.current = { key, tail: Promise.resolve() };
+  const refresh = useCallback(() => {
     const requestKey = key,
-      request = ++sequence.current;
-    if (!client.online) return;
-    setState((s) => ({
-      ...(s.key === requestKey ? s : {}),
-      key: requestKey,
-      loading: true,
-      error: "",
-    }));
-    try {
-      const snapshot = profileSnapshotSchema.parse(
-        await applicationCall("profile.read", {}, { identityGeneration }),
-      );
-      if (current.current !== requestKey || request !== sequence.current)
-        return;
-      setState({ key: requestKey, snapshot, loading: false, error: "" });
-      if (mediaFailed.current) retryMedia((value) => value + 1);
-      return snapshot;
-    } catch (error) {
-      if (current.current !== requestKey || request !== sequence.current)
-        return;
-      const accessDenied =
-        error instanceof RequestError &&
-        (error.status === 401 || error.status === 403);
+      queue = reads.current;
+    const pending = queue.tail.then(async () => {
+      if (current.current !== requestKey) return;
+      const request = ++sequence.current;
+      if (!client.online) return;
       setState((s) => ({
-        ...(accessDenied ? {} : s),
+        ...(s.key === requestKey ? s : {}),
         key: requestKey,
-        loading: false,
-        // A transport failure is not proof that revoked access was restored.
-        // Only a successful authorized read may reveal the cached editor again.
-        accessDenied: accessDenied || s.accessDenied === true,
-        error: error instanceof Error ? error.message : "资料暂时无法读取。",
+        loading: true,
+        error: "",
       }));
-      if (accessDenied) setMedia({ key: requestKey });
-      throw error;
-    }
+      try {
+        const snapshot = profileSnapshotSchema.parse(
+          await applicationCall(
+            "profile.read",
+            {},
+            { identityGeneration, signal: AbortSignal.timeout(15_000) },
+          ),
+        );
+        if (current.current !== requestKey || request !== sequence.current)
+          return;
+        setState({ key: requestKey, snapshot, loading: false, error: "" });
+        if (mediaFailed.current) retryMedia((value) => value + 1);
+        return snapshot;
+      } catch (error) {
+        if (current.current !== requestKey || request !== sequence.current)
+          return;
+        const accessDenied =
+          error instanceof RequestError &&
+          (error.status === 401 || error.status === 403);
+        setState((s) => ({
+          ...(accessDenied ? {} : s),
+          key: requestKey,
+          loading: false,
+          // A transport failure is not proof that revoked access was restored.
+          // Only a successful authorized read may reveal the cached editor again.
+          accessDenied: accessDenied || s.accessDenied === true,
+          error: error instanceof Error ? error.message : "资料暂时无法读取。",
+        }));
+        if (accessDenied) setMedia({ key: requestKey });
+        throw error;
+      }
+    });
+    queue.tail = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
   }, [key, identityGeneration, client.online]);
   useEffect(() => {
     setState({ key, loading: true, error: "" });
@@ -215,6 +235,33 @@ export function useProfile(client: WorkspaceClient) {
   // queue per editor mount or render. Each RPC still checks the captured scope.
   const transport = useRef({ save, refresh });
   transport.current = { save, refresh };
+  const invalidation = useRef<{
+    key: string;
+    revision: number;
+    drain: ReturnType<typeof createRefreshDrain>;
+  } | null>(null);
+  if (invalidation.current?.key !== key) {
+    const requestKey = key;
+    invalidation.current = {
+      key,
+      revision: client.workspaceChangeRevision,
+      drain: createRefreshDrain(async () => {
+        if (current.current !== requestKey) return false;
+        await transport.current.refresh();
+        return current.current === requestKey;
+      }),
+    };
+  }
+  useEffect(() => {
+    const pending = invalidation.current!;
+    if (!client.online || pending.revision === client.workspaceChangeRevision)
+      return;
+    pending.revision = client.workspaceChangeRevision;
+    // A hint never supplies Profile data. Re-read its live authority and let
+    // autosave retain local intent; serialize with write read-back so a
+    // background refresh cannot supersede confirmation of a real save.
+    void pending.drain.request().catch(() => {});
+  }, [key, client.online, client.workspaceChangeRevision]);
   if (auto.current?.key !== key) {
     auto.current?.controller.dispose();
     const requestKey = key;

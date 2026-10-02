@@ -10,6 +10,7 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
+import { preserveMarkdownLineBreaks } from "./markdown-line-breaks.js";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import type { PlatformContent } from "./platform-client.js";
@@ -297,6 +298,7 @@ const MarkdownBody = memo(function MarkdownBody({
       ]}
       rehypePlugins={[
         [streamingTextPlugin, { source: children, ranges: next.ranges }],
+        preserveMarkdownLineBreaks,
       ]}
       urlTransform={(url) =>
         webURL(url) ||

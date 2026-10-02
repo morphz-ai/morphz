@@ -71,7 +71,7 @@ export function BrowserBookmarks({
     return () => {
       active = false;
     };
-  }, [managed, identityGeneration, currentURL, savedRevision]);
+  }, [managed, identityGeneration, currentURL, savedRevision, client.workspaceChangeRevision]);
   const currentSaved =
     remoteSaved?.identityGeneration === identityGeneration &&
     remoteSaved?.url === currentURL &&
@@ -201,7 +201,7 @@ function BookmarkDialog({
   const listKey = useRef("");
   useModal(dialog);
   const identityGeneration = client.boot?.csrfToken;
-  listKey.current = `${identityGeneration ?? ""}:${query}:${listRevision}`;
+  listKey.current = `${identityGeneration ?? ""}:${query}:${listRevision}:${client.workspaceChangeRevision}`;
   useEffect(() => {
     if (!identityGeneration) return;
     let active = true;
@@ -229,7 +229,7 @@ function BookmarkDialog({
       active = false;
       clearTimeout(timer);
     };
-  }, [identityGeneration, query, listRevision]);
+  }, [identityGeneration, query, listRevision, client.workspaceChangeRevision]);
   async function loadMore() {
     if (loading || busy || !hasMore) return;
     const key = listKey.current;

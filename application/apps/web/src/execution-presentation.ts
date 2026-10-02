@@ -14,6 +14,36 @@ const text = (value: unknown) =>
   typeof value === "string" ? value.trim() : "";
 const short = (value: string) => value.replace(/\s+/g, " ").slice(0, 160);
 
+/** Read the bounded recent Job window chronologically, without changing which
+ * Jobs were retrieved. Updated/completion times do not reorder earlier steps. */
+export function executionJobsInReadingOrder(
+  jobs: readonly ExecutionSnapshot["jobs"][number][],
+): ExecutionSnapshot["jobs"] {
+  return jobs
+    .map((job) => {
+      const milliseconds = Date.parse(job.created_at);
+      const valid = Number.isFinite(milliseconds);
+      // Runtime timestamps can distinguish two creations inside one millisecond.
+      // Date.parse normalizes timezones but drops these remaining nanoseconds.
+      const fraction =
+        /\.(\d+)(?:Z|[+-]\d{2}:?\d{2})$/i.exec(job.created_at)?.[1] ?? "";
+      return {
+        job,
+        milliseconds: valid ? milliseconds : Number.POSITIVE_INFINITY,
+        nanoseconds: valid
+          ? Number(fraction.slice(3).padEnd(6, "0").slice(0, 6))
+          : 0,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.milliseconds - b.milliseconds ||
+        a.nanoseconds - b.nanoseconds ||
+        a.job.id.localeCompare(b.job.id),
+    )
+    .map(({ job }) => job);
+}
+
 /** The adapter has already bound these strings to the exact Job and returned
  * receipt. Never recover an annotation from raw request JSON or a nearby step. */
 export function executionJobPresentation(

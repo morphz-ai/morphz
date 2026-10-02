@@ -21,9 +21,12 @@ import {
   schemaHash,
   verifySchemaObjects,
   sqliteQuery,
+  prepareSqlCommit,
+  publishSqlCommit,
   type SqlQuery,
   type SqlScalar,
 } from "../../storage/src/sql.js";
+import { sqliteChangeSource, postgresChangeSource, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
 import { readerSchemaSql } from "./schema.js";
 
 type Backend =
@@ -271,10 +274,17 @@ function originalFromRow(row: Row): ReaderOriginal {
 /** Reader-owned metadata and annotations; it never takes ownership of external originals. */
 export class ReaderStore {
   private gate: Promise<unknown> = Promise.resolve();
+  private readonly sqlChanges: SqlChangeSource;
   private constructor(
     private readonly backend: Backend,
     private readonly authority: ReaderAuthorityVerifier,
-  ) {}
+  ) {
+    this.sqlChanges = backend.kind === "sqlite"
+      ? sqliteChangeSource(backend.database)
+      : postgresChangeSource(backend.pool.options, backend.schema);
+  }
+
+  changeSource(): SqlChangeSource { return this.sqlChanges; }
 
   static async sqlite(
     filename: string,
@@ -348,8 +358,10 @@ export class ReaderStore {
         try {
           database.exec(readOnly ? "BEGIN" : "BEGIN IMMEDIATE");
           try {
-            const result = await work(sqliteQuery(database));
+            const q = sqliteQuery(database);
+            const result = await work(q);
             database.exec("COMMIT");
+            publishSqlCommit(q, this.sqlChanges);
             return result;
           } catch (error) {
             database.exec("ROLLBACK");
@@ -369,7 +381,9 @@ export class ReaderStore {
       await client.query(
         `SET LOCAL search_path TO "${this.backend.schema}", pg_catalog`,
       );
-      const result = await work(postgresQuery(client));
+      const q = postgresQuery(client);
+      const result = await work(q);
+      await prepareSqlCommit(q, this.sqlChanges);
       await client.query("COMMIT");
       return result;
     } catch (error) {
@@ -1266,6 +1280,23 @@ export class ReaderStore {
         createdAt: String(row.created_at),
       };
     }, true);
+  }
+
+  /** Current owning-app grant plus this Human's reading metadata; no text. */
+  async workspaceChangeVersion(request: { credential: string; appId: string; instanceId: string; objectId: string }) {
+    const actor = await this.authority.resolveActor({ credential: request.credential });
+    if (!actor || actor.kind !== "human") throw new ReaderStorageError("forbidden", "阅读通知需要用户身份。");
+    const sources = await this.transaction(q => q.all<Row>("SELECT tenant_id,reading_source_id,source_app_id,source_instance_id,source_object_id,source_version_ref FROM reading_sources WHERE tenant_id=? AND source_app_id=? AND source_instance_id=? AND source_object_id=? ORDER BY reading_source_id", [actor.tenantId, request.appId, request.instanceId, request.objectId]), true);
+    const authorize = async () => {
+      for (const source of sources) await this.authority.verifyAccess({ credential: request.credential, original: originalFromRow(source), principalId: actor.principalId, action: "read" });
+    };
+    await authorize();
+    const metadata = await this.transaction(async q => ({
+      positions: await q.all("SELECT p.reading_source_id,p.revision FROM reading_positions p JOIN reading_sources s ON s.tenant_id=p.tenant_id AND s.reading_source_id=p.reading_source_id WHERE p.tenant_id=? AND p.principal_id=? AND s.source_app_id=? AND s.source_instance_id=? AND s.source_object_id=? ORDER BY p.reading_source_id", [actor.tenantId, actor.principalId, request.appId, request.instanceId, request.objectId]),
+      marks: await q.all("SELECT m.mark_id,m.revision,m.deleted_at FROM reading_marks m JOIN reading_sources s ON s.tenant_id=m.tenant_id AND s.reading_source_id=m.reading_source_id WHERE m.tenant_id=? AND m.principal_id=? AND s.source_app_id=? AND s.source_instance_id=? AND s.source_object_id=? ORDER BY m.mark_id", [actor.tenantId, actor.principalId, request.appId, request.instanceId, request.objectId]),
+    }), true);
+    await authorize();
+    return createHash("sha256").update(JSON.stringify({ sources, metadata })).digest("hex");
   }
 
   /** App-authoritative book head; text/bytes are never read for a watch baseline. */

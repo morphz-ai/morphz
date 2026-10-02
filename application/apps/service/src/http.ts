@@ -9,6 +9,7 @@ import { resolve, relative, isAbsolute, extname } from "node:path";
 import { z, ZodError } from "zod";
 import { DomainError, localAccess } from "../../../packages/core/src/model.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
+import type { WorkspaceChange } from "../../../packages/core/src/workspace-changes.js";
 import { maxPdfBytes } from "../../../packages/core/src/pdf.js";
 import { maxReadingFileBytes } from "../../../packages/core/src/reader.js";
 import { maxSpeechSegmentBytes } from "../../../packages/core/src/audio.js";
@@ -1149,12 +1150,64 @@ export function createAppServer(
           res.end(file.bytes);
           return;
         }
+        if (url.pathname === "/api/platform/workspace/stream") {
+          platformQuery(url, []);
+          const controller = new AbortController();
+          let closed = false,
+            dispose: (() => void) | undefined;
+          const close = () => {
+            if (closed) return;
+            closed = true;
+            controller.abort();
+            clearInterval(heartbeat);
+            streams.delete(close);
+            dispose?.();
+            if (!res.destroyed && !res.writableEnded) {
+              if (res.headersSent) res.end();
+              else json(res, 503, { code: "unavailable", message: "变化通知暂不可用，请重新连接。" });
+            }
+          };
+          // Transport keepalive only: no query, snapshot or state polling.
+          const heartbeat = setInterval(() => {
+            if (!closed && res.headersSent) res.write(": keepalive\n\n");
+          }, 15_000);
+          res.on("close", close);
+          streams.add(close);
+          const send = (value: WorkspaceChange) => {
+            if (closed) return;
+            if (!res.headersSent) {
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "X-Accel-Buffering": "no",
+                Connection: "keep-alive",
+              });
+              res.flushHeaders();
+            }
+            if (res.writableLength > 64 * 1024) {
+              close();
+              return;
+            }
+            res.write(`data: ${JSON.stringify(value)}\n\n`);
+          };
+          try {
+            dispose = await business.observeWorkspaceChanges(send, close, controller.signal);
+            if (closed) dispose();
+          } catch (error) {
+            clearInterval(heartbeat);
+            streams.delete(close);
+            res.off("close", close);
+            if (res.headersSent || res.writableEnded) close();
+            else throw error;
+          }
+          return;
+        }
         const platformStream =
           /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations\/([a-zA-Z0-9_-]+)\/stream$/.exec(
             url.pathname,
           );
         if (platformStream) {
           platformQuery(url, []);
+          const controller = new AbortController();
           let closed = false,
             dispose: (() => void) | undefined;
           let previous = new Map<string, string>(),
@@ -1162,6 +1215,7 @@ export function createAppServer(
           const close = () => {
             if (closed) return;
             closed = true;
+            controller.abort();
             clearInterval(heartbeat);
             streams.delete(close);
             dispose?.();
@@ -1213,6 +1267,7 @@ export function createAppServer(
               },
               send,
               close,
+              controller.signal,
             );
             if (closed) dispose();
           } catch (error) {

@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { PoolClient } from "pg";
+import {
+  postgresCommitChannel,
+  publishSqliteCommit,
+  sqlChangeSchema,
+  type SqlChangeSource,
+} from "./commit-notifications.js";
 
 export type SqlScalar = string | number | null;
 export type SqlRow = Record<string, unknown>;
@@ -9,6 +15,39 @@ export type SqlQuery = {
   change(sql: string, values?: SqlScalar[]): Promise<number>;
   exec(sql: string): Promise<void>;
 };
+const mutations = new WeakMap<
+  SqlQuery,
+  { changed: boolean; prepared: boolean; published: boolean }
+>();
+
+/** Row changes are an invalidation hint, not proof that a user-visible field
+ * differs. Idempotent replay/zero affected rows do not request a refresh.
+ * Business writes use change(); exec() is schema/control SQL, not domain data. */
+export function hasSqlChanges(query: SqlQuery): boolean {
+  return mutations.get(query)?.changed ?? false;
+}
+
+export async function prepareSqlCommit(
+  query: SqlQuery,
+  source: SqlChangeSource,
+): Promise<void> {
+  const state = mutations.get(query);
+  if (!state?.changed || state.prepared || source.driver !== "postgres") return;
+  const schema = sqlChangeSchema(source)!;
+  // NOTIFY becomes visible only if the enclosing transaction actually commits.
+  await query.all("SELECT pg_notify(?, '')", [postgresCommitChannel(schema)]);
+  state.prepared = true;
+}
+
+export function publishSqlCommit(
+  query: SqlQuery,
+  source: SqlChangeSource,
+): void {
+  const state = mutations.get(query);
+  if (!state?.changed || state.published || source.driver !== "sqlite") return;
+  publishSqliteCommit(source);
+  state.published = true;
+}
 
 /** `node:sqlite` blocks the JS thread while waiting for a writer. When two
  * connections to the same file share this process, a blocking busy wait can
@@ -93,37 +132,54 @@ export function postgresSql(sql: string, valuesCount: number) {
 }
 
 export function sqliteQuery(database: DatabaseSync): SqlQuery {
-  return {
+  const state = { changed: false, prepared: false, published: false };
+  const query: SqlQuery = {
     async all<T extends SqlRow>(sql: string, values: SqlScalar[] = []) {
       return database.prepare(sql).all(...(values as SQLInputValue[])) as T[];
     },
     async change(sql: string, values: SqlScalar[] = []) {
-      return Number(
+      const changed = Number(
         database.prepare(sql).run(...(values as SQLInputValue[])).changes,
       );
+      if (changed > 0) state.changed = true;
+      return changed;
     },
     async exec(sql: string) {
       database.exec(sql);
     },
   };
+  mutations.set(query, state);
+  return query;
 }
 
 export function postgresQuery(client: PoolClient): SqlQuery {
-  return {
+  const state = { changed: false, prepared: false, published: false };
+  const query: SqlQuery = {
     async all<T extends SqlRow>(sql: string, values: SqlScalar[] = []) {
-      return (await client.query<T>(postgresSql(sql, values.length), values))
-        .rows;
+      const result = await client.query<T>(
+        postgresSql(sql, values.length),
+        values,
+      );
+      if (
+        ["INSERT", "UPDATE", "DELETE", "MERGE"].includes(result.command) &&
+        (result.rowCount ?? 0) > 0
+      )
+        state.changed = true;
+      return result.rows;
     },
     async change(sql: string, values: SqlScalar[] = []) {
-      return (
+      const changed =
         (await client.query(postgresSql(sql, values.length), values))
-          .rowCount ?? 0
-      );
+          .rowCount ?? 0;
+      if (changed > 0) state.changed = true;
+      return changed;
     },
     async exec(sql: string) {
       await client.query(sql);
     },
   };
+  mutations.set(query, state);
+  return query;
 }
 
 export function safeInteger(value: number | string, label: string) {

@@ -9,7 +9,7 @@ import type {
   ApplicationInvocation,
   ApplicationReply,
 } from "../packages/core/src/application-api.js";
-import { localAccess } from "../packages/core/src/model.js";
+import { localAccess, operationSchema } from "../packages/core/src/model.js";
 import type { SessionPermissionsSnapshot } from "../packages/core/src/session-permissions.js";
 import { test, expect } from "./project-conversation-fixture.js";
 import { platformMessageFixture } from "./platform-message-fixture.js";
@@ -515,6 +515,90 @@ test("模型推理绑定真实新输入；后续菜单与目录撤销不能修�
   expect(messageHost.deliveries()[0]).toEqual(frozen);
   await expect(nextInput).toHaveValue("TEST 下一条尚未发送的草稿");
   expect(messageHost.deliveries()).toHaveLength(1);
+});
+
+test("最高推理在刷新和连续输入后保持；真实Host冻结参数一致，只有显式恢复默认才取消", async ({
+  page,
+  messageHost,
+}) => {
+  const { input, settings, state } = await desktopFixture(page, messageHost);
+  const model = settings.getByLabel("本次输入模型", { exact: true });
+  const effort = settings.getByLabel("本次输入推理强度", { exact: true });
+  const summary = page.locator(
+    ".composer-settings-trigger .composer-settings-effort",
+  );
+  await model.selectOption(modelId);
+  await chooseReasoning(effort, "max");
+  await page.keyboard.press("Escape");
+  await input.fill("TEST 最高推理的持久草稿");
+  // Both catalog and authoritative workspace refreshes are reads. Neither is
+  // an instruction to clear the locally selected execution parameters.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("morphz:models-changed"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await expect(summary).toHaveText("最高");
+  await expect(input).toHaveValue("TEST 最高推理的持久草稿");
+  await page.reload();
+  const nextInput = await openInput(page);
+  await expect(nextInput).toHaveValue("TEST 最高推理的持久草稿");
+  await openComposerSettings(page);
+  await expect(model).toHaveValue(modelId);
+  await expect(effort).toHaveAttribute("aria-valuetext", "最高");
+  await page.keyboard.press("Escape");
+  for (const [index, body] of [
+    "TEST 第一次最高输入只记录不调用LLM",
+    "TEST 第二次最高输入不需要重选",
+  ].entries()) {
+    await nextInput.fill(body);
+    await nextInput.press("Enter");
+    await expect.poll(() => messageHost.deliveries().length).toBe(index + 1);
+    await expect(nextInput).toBeEmpty();
+    // This assertion reproduces the previous bug after local staging: the
+    // empty content draft used to erase both model and reasoningEffort.
+    await expect(summary).toHaveText("最高");
+    const frozen = messageHost.deliveries()[index]!;
+    const submitted = state.calls
+      .filter((call) => call.method === "platform.message")
+      .map((call) =>
+        operationSchema.parse(
+          (call.params as { operation: unknown }).operation,
+        ),
+      )
+      .find(
+        (operation) =>
+          operation.type === "record-input" && operation.body === body,
+      );
+    expect(submitted?.type).toBe("record-input");
+    if (submitted?.type !== "record-input") throw new Error("没有实际输入请求");
+    expect(submitted.model).toBe(modelId);
+    expect(submitted.reasoningEffort).toBe("max");
+    expect(frozen.request.activation.model_alias).toBe(modelId);
+    expect(frozen.request.activation.reasoning_effort).toBe("max");
+    if (index === 0) {
+      await page.reload();
+      await openInput(page);
+      await expect(nextInput).toBeEmpty();
+      await expect(summary).toHaveText("最高");
+    }
+  }
+  const admitted = structuredClone(messageHost.deliveries());
+  await openComposerSettings(page);
+  await settings
+    .getByRole("button", { name: "恢复默认推理强度", exact: true })
+    .click();
+  await expect(summary).toHaveText("默认");
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await openInput(page);
+  await expect(summary).toHaveText("默认");
+  await nextInput.fill("TEST 主动恢复默认后的输入");
+  await nextInput.press("Enter");
+  await expect.poll(() => messageHost.deliveries().length).toBe(3);
+  const restored = messageHost.deliveries()[2]!;
+  expect(restored.request.activation.reasoning_effort).toBeUndefined();
+  expect(restored.request.activation.model_alias).toBe(modelId);
+  expect(messageHost.deliveries().slice(0, 2)).toEqual(admitted);
 });
 
 test("目录 details 和执行弹层关闭不卸载授权控制器、不额外读取或调用原生选择器", async ({

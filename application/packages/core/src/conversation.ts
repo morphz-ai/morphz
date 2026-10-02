@@ -75,7 +75,7 @@ export const activitySchema = z.object({
       title: z.string(),
       /** Display-only Runtime projection, never a separate activity state. */
       summary: z.string().optional(),
-      annotationProtocol: z.literal("v1").optional(),
+      annotationProtocol: z.enum(["v1", "v2"]).optional(),
       annotationsTruncated: z.boolean().optional(),
       phase: z.string(),
       lifecycle: z.string(),

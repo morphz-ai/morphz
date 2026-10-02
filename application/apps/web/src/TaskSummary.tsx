@@ -1,4 +1,5 @@
 import Markdown from "react-markdown";
+import { preserveMarkdownLineBreaks } from "./markdown-line-breaks.js";
 import {
   CircleCheck,
   CircleDashed,
@@ -129,6 +130,7 @@ export function TaskSummary({
         {value.description ? (
           <Markdown
             skipHtml
+            rehypePlugins={[preserveMarkdownLineBreaks]}
             components={{
               a: ({ children }) => <span>{children}</span>,
               img: ({ alt }) => <span>[图片：{alt}]</span>,

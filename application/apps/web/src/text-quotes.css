@@ -123,8 +123,25 @@
 }
 .sent-text-quotes {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+  margin-bottom: 0;
+  min-width: 0;
+}
+/* A following body needs a gap; quote/comment-only messages have no empty tail. */
+.sent-text-quotes:has(
+  ~ p,
+  ~ .message-object-link,
+  ~ .message-local-file,
+  ~ .message-attachments
+) {
   margin-bottom: 8px;
+}
+.sent-text-quote-card {
+  display: flex;
+  min-width: 0;
+}
+.sent-text-quote-entry {
   min-width: 0;
 }
 .app .sent-text-quote {
@@ -150,22 +167,90 @@
 }
 .sent-text-quote small {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 11px;
 }
 .sent-text-quote > span > span {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: block;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .text-quote-comment {
-  margin: 5px 8px 8px;
+  margin: 5px 8px 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 13px;
+}
+.app .sent-text-quote-preview-toggle {
+  display: none;
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+  font-size: 12px;
+}
+.app .sent-text-quote-preview {
+  position: fixed;
+  inset: auto;
+  box-sizing: border-box;
+  width: 420px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--popup-line);
+  border-radius: 10px;
+  background: var(--popup-solid);
+  color: var(--ink);
+  box-shadow: var(--elevation-popover);
+  font-size: 13px;
+  line-height: 1.65;
+  text-align: left;
+}
+.sent-text-quote-preview header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+.sent-text-quote-preview header small {
+  overflow-wrap: anywhere;
+}
+.app .sent-text-quote-preview header button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+.app .sent-text-quote-preview header button:hover {
+  background: var(--hover);
+}
+.sent-text-quote-preview-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (hover: none), (pointer: coarse) {
+  .app .sent-text-quote-preview-toggle {
+    display: inline-flex;
+  }
 }
 .app .text-quote-select:hover,
 .app .text-quote-chip button:hover,

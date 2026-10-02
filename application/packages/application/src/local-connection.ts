@@ -10,6 +10,10 @@ import {
 } from "../../core/src/application-api.js";
 import type { ConversationStream } from "../../core/src/live-conversation.js";
 import {
+  workspaceChangeScopeSchema,
+  type WorkspaceChange,
+} from "../../core/src/workspace-changes.js";
+import {
   Application,
   applicationFailure,
   invokeApplication,
@@ -181,7 +185,7 @@ export class LocalApplicationConnection {
     id: unknown,
     scope: unknown,
     generation: unknown,
-    emit: (value: ConversationStream) => void,
+    emit: (value: ConversationStream | WorkspaceChange) => void,
     onClose: () => void,
   ) {
     const key = z.string().uuid().parse(id);
@@ -190,9 +194,11 @@ export class LocalApplicationConnection {
       throw new DomainError("invalid", "订阅过多或标识重复。");
     let disposed = false;
     let dispose: (() => void) | undefined;
+    const controller = new AbortController();
     const close = () => {
       if (disposed) return;
       disposed = true;
+      controller.abort();
       this.subscriptions.delete(key);
       onClose();
     };
@@ -202,6 +208,11 @@ export class LocalApplicationConnection {
     });
     try {
       const session = this.session(expected).session;
+      if (workspaceChangeScopeSchema.safeParse(scope).success) {
+        dispose = await session.observeWorkspaceChanges(emit, close, controller.signal);
+        if (disposed) dispose();
+        return;
+      }
       const platform = z
         .object({
           kind: z.literal("platform"),
@@ -217,6 +228,7 @@ export class LocalApplicationConnection {
         },
         emit,
         close,
+        controller.signal,
       );
       if (disposed) dispose();
     } catch (error) {
