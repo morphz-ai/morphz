@@ -16,6 +16,20 @@
 
 原 UI 提案请求已于本地 02:55 实际发送，保存了原正文、轻量 effort，进入 Script discussion；候选仍为零。内部模型请求认证失败，尚未收到唯一提案，因此尚未发送简短确认，不把新 TEST Session 的创建当作剧本交付完成。原窗口四节点工具活动验收仍未开始；两项完整验收前目标保持进行中。
 
+随后认证问题已确诊为本次重启的部署失误：launcher 误选既有 `DOUBAO_API_KEY`，与 8317 本机代理的已配置 key 不同；成功 Native 的明确既有私有源则与代理 key 相同，比较仅在内存输出布尔值、不记录凭据。没有归因于 Harness 或 `infer` 上下文。正常 TERM 40122 后，原 launcher／binary／root／18089／配置均保持，只改为该明确既有源，54199 就绪；同一个 pending TEST 自动恢复，未重发原输入。原 future timer `schedule_048bc5bac5e022eb04a8a1d4` 仍在 2026-10-23T01:00:00Z。401 期间 Runtime 自动 health probe 会发模型 POST，未进入 Session attempt 账本；其数量不可从业务计数反推，不宣称测试是硬请求上限或零探针。
+
+本地 03:04 原 UI 收到唯一提案，零 preparation／candidate／receipt 已由原库复核；恢复的 discussion 与外层回复两次业务请求使用既有 `gpt-6.1-sol/low`，usage 为 input 355197、output 444、cached 0（处理 token，不是账单）。03:05 原 UI 在同一命名对话只发送“好的，你直接做。”，原 body 与 input 没改写、没有脚本生成参数，继续验证三目标交付；证据存于 `morphz-original-script-observation.El8aHx5N7u` 的原失败及恢复文件。新的活动已在原窗口真实显示标题和摘要，前述未知状态提示消失，但不据此推定旧提示唯一故障来源。
+
+03:08 原剧本交付完整通过：两次 input 均 completed，两份真实 1.4.3 Plan succeeded；三目标各一份 pending 候选，正文 223／236／704 字、五场标题齐。三个精确 Host 回执、Script outbox、Platform `appReceiptId`／`versionRef` 及目录最终版本 8 对应；正式三稿仍 v1 空正文，无自动采纳／批准，准备、生成、自审、交付各一次。原窗口已逐项打开候选并滚动实看第五场及正文尾部，没有点击采纳／拒绝；图片在 `/tmp/morphz-original-final-window.L2NOIY/original-{character-one-pending,character-two-pending,five-scenes-pending,five-scenes-tail}.jpeg`。独立只读验收 25 项全真，报告 `/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/morphz-original-script-observation.El8aHx5N7u/verification.json`。原失败和恢复快照保留。
+
+本次原 Session 共 12 次业务请求（11 成功、1 部署 401），成功 usage input 2177422／cached 88448／output 4107／reasoning 99（包含于 output），无额外语义实验重跑，不与无法统计的自动 health probe／HTTP 内部 retry 混算。03:13 已切原 TEST 项目应用启动台，在新命名对话经真实 UI 发起父＋双子＋孙的普通 Runtime 只读验收，无 Script Harness；活动验收仍在进行，不能因剧本已通过提前结束两项目标。
+
+四节点首次原 UI 验收失败证据保留于 `/tmp/morphz-original-four-node-observer.YSajwt/verification.json`：实际输入三来源相同、无 Harness，精确 family 只有一个 completed Dialogue Thread、零 Job／子 Thread／group。实际模型请求及回复 phase 为 `critical-maintenance`，不是认证或 family 读取失败，也不是默认仅有 Yao 工具。普通工作估算 244156，超过 critical 229376（hard 262144、reserve 32768）；维护分支暂时移除 `schedule_tx` 与物理工具。模型按本次明确“没有 schedule_tx 则停止”的条件结束，不能冒称四节点验收通过或改用 par／infer 替代。原 API 授权读取均成功，没有改 Context 或提高预算；正在评估是否能仅维护本轮自己新增的可退休 TEST 内部记录，不能以测试为由整理全部旧用户内容。
+
+有界恢复的只读评估已完成：六项 `@e5900 @e5935 @e5946 @e5982 @e5994 @e6006` 都是本轮真实 Script 父 Thread／Plan 下已消费的内部 infer 请求，未保护、无 Frame 来源依赖，预计从当前视窗释放 21426 tokens；Human 输入、唯一提案、三候选 Host 保存结果／交付回值、最终回复及旧用户资料／提醒必须保留。该数字来自当前精确 S-expression spans 的同算法 dry-run，不能代替随后真实 full-work 请求。现有 `context_tx` 可通过精确 retire 事务退出视窗，durable events 留存且可 restore；没有 TEST-ID 权限白名单，LogicalInline 不经过物理审批，因此不允许借机让模型自由整理全部旧 Mind。提交前需核 retiring=0、版本 26，后核六项以外的 Frame 内容／来源／版本、relations、protected、checkpoints、retired 集及原事件原文不变，不能要求包含合法版本／退休元数据的整 Mind hash 不变。证据 `/tmp/morphz-original-four-node-observer.YSajwt/context-pressure-audit.json`。
+
+继续原窗口前，Computer Use 再次明确返回 Mac locked，已请求手动解锁；尚未发送维护事务或第二次四节点输入，不绕过 UI 注入 Human 消息，不改锁屏设置。当前边界：剧本完整原窗验收通过；嵌套活动实现、隔离真链和实际组件测试通过，原窗完整四节点验收仍待完成。目标包含两项且保持 active，不能只凭剧本通过关闭。
+
 子 Thread 实现、隔离真实 Runtime 与实际组件回归已通过。剧本 1.4.2 三组真实模型场景通过；
 1.4.3 首次新正向模型验收失败，修复独立证实的输出传输缺陷后，第二次有界真实链通过。
 原失败证据与新 build 的验收边界分别保留，详见下面的输出传输边界。
