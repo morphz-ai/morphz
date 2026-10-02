@@ -79,6 +79,14 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
+.execution-activity-body > .execution-activity-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .execution-activity-meta {
   display: flex;
   flex-wrap: wrap;

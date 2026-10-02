@@ -5796,6 +5796,29 @@ pub trait EventStore: Send + Sync {
         filter: QueryFilter,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
 
+    /// Bounded display-only source read for selected, already authorized
+    /// Threads. Durable stores override this with a single partitioned query;
+    /// the caller still validates each source's Session/generation/producer.
+    async fn list_thread_annotation_sources(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        per_thread_limit: usize,
+    ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut events = Vec::new();
+        for thread_id in thread_ids.iter().take(2_000) {
+            events.extend(self.query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                thread_id: Some(thread_id.clone()),
+                types: vec![crate::event::TYPE_AGENT_CALL.into()],
+                topics: vec!["chat/assistant_call".into(), "runtime/thread_waiting".into()],
+                latest_k: Some(per_thread_limit.clamp(1, 129)),
+                ..Default::default()
+            }).await?);
+        }
+        Ok(events)
+    }
+
     /// Lazily materialize causal route columns for legacy Events of one
     /// Dashboard Thread. This mutates only a rebuildable query projection,
     /// never the immutable Event payload. The default keeps lightweight test
@@ -6822,6 +6845,19 @@ pub trait ActivationStore: Send + Sync {
             .into_iter()
             .filter(|signal| thread_ids.contains(&signal.thread_id))
             .collect())
+    }
+    /// Exact host title-revision witnesses for a bounded authorized source
+    /// page. Unlike the general mailbox projection, durable implementations
+    /// never materialize the whole Thread Signal history for this read.
+    async fn list_annotation_revision_signals(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() || event_ids.is_empty() { return Ok(Vec::new()); }
+        Ok(self.list_context_thread_signals_for_threads(context_id,thread_ids,None).await?
+            .into_iter().filter(|signal| event_ids.contains(&signal.event_id)).collect())
     }
     async fn list_activation_signals(
         &self,

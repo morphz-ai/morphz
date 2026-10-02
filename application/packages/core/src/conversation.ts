@@ -73,6 +73,10 @@ export const activitySchema = z.object({
       rootId: z.string(),
       sessionId: z.string(),
       title: z.string(),
+      /** Display-only Runtime projection, never a separate activity state. */
+      summary: z.string().optional(),
+      annotationProtocol: z.literal("v1").optional(),
+      annotationsTruncated: z.boolean().optional(),
       phase: z.string(),
       lifecycle: z.string(),
       controlState: z.string().optional(),

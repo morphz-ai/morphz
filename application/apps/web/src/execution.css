@@ -53,6 +53,21 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.execution-origin > .execution-origin-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.execution-origin > .execution-activity-summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .execution-origin > div {
   display: flex;
   justify-content: space-between;
@@ -149,6 +164,27 @@
 .execution-details h3 {
   font-size: 13px;
   margin: 0;
+}
+.execution-job header strong {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.execution-job header > .job-status {
+  flex-shrink: 0;
+}
+.execution-job > .execution-step-result {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .execution-job > .execution-object {
   margin: 3px 0 6px;

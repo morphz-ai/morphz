@@ -1,6 +1,6 @@
 # Morphz Runtime 可选响应注解 Proposal
 
-状态：隔离机制门槛通过后完成 Runtime 核心实施及本地生产链验收。支持范围见本文末尾，不代表所有 Provider 已通过。
+状态：隔离机制门槛通过后完成 Runtime 核心、Platform 读取与 Application 活动展示，并完成本地生产链和原桌面窗口验收。支持范围见本文末尾，不代表所有 Provider 已通过。
 
 日期：2026 年 10 月 2 日。
 
@@ -32,7 +32,7 @@ Runtime 默认关闭整个机制。关闭时必须保持原工具定义、提示
 
 现有尚未读取的普通输入可能合批到同一 DialogueTurn；有效响应注解版本必须成为合批兼容条件。off 与 v1 不得静默采用第一条或最后一条请求的设置，必须沿已有独立执行路径处理。
 
-Morphz 应用可以选择默认启用，但底层 Runtime 的默认值不得因此改变。此次目标不包含默认改变现有应用行为。
+底层 Runtime 的默认值保持 off。Morphz Application 对本次 Platform 适配之后新接收的普通输入、follow-up 和事项准入显式选择 v1；已持久化的旧请求保持原来的缺省或 off 字节，投递、重试和重开不能将其升级。Directed supplement 不传覆盖值，继承原执行。事项来源变化建立新的 follow-up 时，只继承原准入已经冻结的显式选择，旧准入仍保持缺省。
 
 启用后所有注解字段仍可缺省。旧纯正文和原 no_reply 形式仍合法；typed infer 的严格返回值不自动挂载注解回复协议。工具名 reply 或顶层参数 _annotations 已被调用方占用时，启用预检必须报告冲突，不覆盖业务能力。接收链在任何原子落库、Thread 或 Job 创建之前以 422、invalid_response_annotation_contract 和静态冲突原因拒绝；不能误报为暂时不可用而诱导重试。已有 AcceptedInput 的同请求重试仍返回原冻结绑定，不重新根据今日默认值检查新契约。
 
@@ -149,6 +149,16 @@ title 按当前 generation 内的可信输入修订选择。初始修订为 0；
 
 typed infer 的返回类型、普通业务 JSON 和现有 Yao 语法保持不变。本 Proposal 不创建新的 Yao 方言。
 
+## Platform 读取与展示
+
+Runtime 在 SchedulerThreadSnapshot 的外层提供可选 response_annotations 读模型，包含 protocol、execution_id 与 generation、title、progress、result、按真实 job_id 绑定的 steps，以及 source_count 和 truncated。关闭协议的旧快照省略此字段。该读模型不返回 raw_response 或原始注解记录，不替代原 phase、lifecycle、outcome、审批与物理回执。
+
+活动列表复用已有 Scheduler 批量读取，不逐项增加 HTTP 请求，也不新建 Platform 活动数据库。详情通过 GET /api/sessions/{session_id}/threads/{thread_id}/annotations 或 SDK session_thread_annotations 读取确切执行；先验证 Session 参与权限，再验证 Thread 归属。旧 Runtime 没有该端点、坏元数据或旧 generation 时只回退展示，不隐藏真实 Job，也不重跑工具。
+
+SQLite 和 PostgreSQL 只对选中的 v1 Threads 批量读取每项最近 128 个来源与一个截断见证。标题输入修订只查询这些来源实际引用的 Signal 与 Event，按 Context、Thread、generation、Principal 和当前来源 ContextViewManifest 验证。步骤意图绑定实际来源 Activation、call_id、工具名及完整业务参数；只忽略顶层注解载体和已知 Runtime 注入的路由参数，嵌套同名业务字段仍须一致。结果解读绑定真实 Job.result_event_id。超过来源窗口时不假装证明首标题规则，标题回退原 intent；truncated 明确保留。返回行数有界不代表 SQL 分窗扫描成本与历史长度无关，仍不能据此声称所有读取都是常数成本。
+
+活动显示短标题和一行当前阶段或最终解读；断线不把缓存阶段冒充最新进度。结束仍按真实 Runtime 状态显示，不由注解宣称成功。步骤保留实际状态、错误、退出码、原请求与完整返回，解读作为普通文字展示；没有真实回执时不显示结果解读。注解不完整或完全缺省都不触发补写 LLM 请求。
+
 ## 隔离验证计划
 
 在 experiments/response-annotations 中建立独立协议原型；首次机制验收前不编辑 morphz/src。原型只运行无副作用合成任务，真实模型只读取本实验的合成回执，不读取用户对话、Profile、业务文件或凭据内容。
@@ -212,4 +222,16 @@ JavaScript 隔离机制扩展至 20 项通过，Rust 机制 18 项及原生 brid
 
 启用 remote-store 的跨进程审批回归实际暴露了默认 Tokio worker 栈溢出：首轮为 2 通过、16 失败，普通恢复与 Objective 创建路径均受影响。仅将下层执行器放到堆上仍不足以修复；将恢复与新模型评估分成同任务内分别等待的 Future，并隔离新增协议失败交付 Future 后，原 18 项跨进程用例全部通过。没有调大线程栈、改 fixture 的环境清理、改超时或放宽断言。当前 macOS debug binary 的恢复函数 poll 栈帧从约 860 KB 降至约 84 KB；该尺寸是本次编译的观测值，不作为其他平台的保证。补齐互动提前交付及限定 Off 来源 ID 修复后，当前 remote-store binary 再次通过跨进程审批 18/18、执行循环串行 79/79、Plan infer handoff 5/5、terminal handoff 1/1；审批子进程 fixture 本身的 ignored 标记不是未执行，18 个父用例实际调用它。8 项原 PostgreSQL 审批回归此前已在独立 schema 中实际通过且清理完成，不把默认忽略项算作已执行。全目标 cargo check 已通过；另有 9 项 HTTP Custom 授权、Steer、指纹、旧 SQLite 和等待 Timer 的单元回归实际通过。macOS lib-test 链接器仍提示异常 unwind 段过大，此为构建警告，不冒充日志零异常。
 
-目前验证范围是本地工具执行、指定真实模型 Responses 路由与上述 SQL Store。未据此声明所有 Provider strict-schema、Edge 回执、在线 opaque continuation 签名或 Muse 内部协议已验证。Title 继承只查询最近 32 个来源响应，但当前 Thread Signal 校验仍读取该 Thread 的历史信箱；32 不是整个查询链的数量上界。Application 活动卡片消费、产品默认启用和 Yao 内部 leaf 语义注解不属于此次 Runtime 契约实施。
+上述核心阶段验证范围是本地工具执行、指定真实模型 Responses 路由与上述 SQL Store。未据此声明所有 Provider strict-schema、Edge 回执、在线 opaque continuation 签名或 Muse 内部协议已验证。该阶段 Title 继承读取最近 32 个来源响应，但 Thread Signal 校验仍读取该 Thread 的历史信箱；32 不是整个查询链的数量上界。后续 Platform 展示投影改用前述有界来源与精确修订证据查询，不据此声称所有生产者恢复路径都已改为有界查询。Application 消费在下述阶段接入；Yao 内部 leaf 语义注解仍不在本次实施范围。
+
+## Platform 与原窗口验收记录
+
+本次新增读取和绑定验收通过 Runtime 20 项、Steer 2 项、Store 3 项及库单元 2 项。Store 实际运行 SQLite 和独立 PostgreSQL schema，包含最近来源窗口、截断见证与精确 Context/Thread 修订查询；库单元覆盖业务参数匹配和 HTTP 的未鉴权、跨 Principal、缺失对象及 Off 返回 null。Application 全量测试为 1132 项中的 984 项通过、0 失败、148 项按环境条件跳过，不将跳过项算作已验证。相关扩展测试另有 79 项通过，含 4 项实际 PostgreSQL 用例。
+
+真实 Runtime 加 Platform HTTP 的隔离贯通用例使用确定性原生工具流 Provider：一个执行、两项实际只读 Host Job、三次原有模型响应，最后 reply 不产生第三项 Job；回执解读精确绑定两项实际结果，顶层注解不进入业务参数，刷新后的投影一致。该用例不是上游模型质量测试。浏览器 3 项通过，覆盖标题和摘要更新、实际步骤与无注解回退、长文及 HTML 普通文字、明暗主题和窄屏；使用本机已有 Chromium 实际执行，并检查截图。
+
+原安装的 Morphz 窗口另通过已有 gpt-6.1-sol Responses 路由完成一次只读验收。真实模型产生整项标题、执行阶段、两步意图和最终摘要；同一活动包含两项成功的 Host Job，三份既有模型响应载有注解，刷新后标题和摘要保留。未专门请求注解补写。该真实模型样本未提供逐回执结果解读，不将隔离 Provider 对该字段的验证冒充真实模型覆盖。Profile 仍为 revision 80，原 Session 数和已排队定时任务保持不变。只检查完成与绑定，不公开 Profile 字段值。
+
+补充执行的 Runtime 请求链、Platform 投影及界面标题更新分别已有验证；尚不声称它们组成的所有 steer 场景已端到端验收。额外试验在原生模型响应仍悬挂时发送 Human steer，错误地要求新 Activation 的原生工具续接信封必须包含上一 Activation 的回执。实际新评估沿既有规则重建输入，已落库结果仍以 Context 观察可见，并不借用旧原生信封；该断言不成立，不能为满足测试修改生产续接语义，也不能把这个试验记为全链通过。
+
+全量测试发现的 5 项失败在改动前的 HEAD 同样复现：Harness 和 Reader 的旧 fake Session 不持久化既有 permission_mode 更新，影响 3 项用例；一个活动 fixture 缺少既有不可变输入来源；一个 Node SSR 用例在执行原范围断言前被浏览器 CSS 导入阻断。修复仅补齐真实前置条件和测试加载环境，保留授权、读取范围、幂等和隐藏内容断言；没有放松生产权限或移除失败测试。

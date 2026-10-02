@@ -28,6 +28,7 @@ import {
   executionActivityDateGroups,
   executionActivityScope,
   executionActivityStatus,
+  executionActivitySummary,
   executionActivityThreads,
   type ActivityThread,
 } from "./execution-activity.js";
@@ -125,6 +126,9 @@ export function ExecutionSidebar({
   const activityAvailable =
     runtime.connected && runtime.activity?.available === true;
   const activityComplete = activityAvailable && !runtime.activity?.truncated;
+  const threadSummary = thread
+    ? executionActivitySummary(thread, activityAvailable && !!currentThread)
+    : "";
   const activitySummary = !activityAvailable
     ? "工作状态待核对"
     : runtime.activity?.truncated
@@ -184,6 +188,7 @@ export function ExecutionSidebar({
   }
   const row = (t: ActivityThread) => {
     const status = executionActivityStatus(t, activityAvailable);
+    const summary = executionActivitySummary(t, activityAvailable);
     const Icon = {
       running: Activity,
       waiting: Clock3,
@@ -201,7 +206,14 @@ export function ExecutionSidebar({
         key={t.id}
         data-thread-id={t.id}
         data-root-id={t.rootId}
-        aria-label={`${t.title || "执行事项"} · ${status.label} · ${executionActivityClock(t)}`}
+        aria-label={[
+          t.title || "执行事项",
+          status.label,
+          summary,
+          executionActivityClock(t),
+        ]
+          .filter(Boolean)
+          .join(" · ")}
         onClick={() => onSelect(executionActivityScope(t, state))}
       >
         <span
@@ -213,6 +225,11 @@ export function ExecutionSidebar({
         </span>
         <span className="execution-activity-body">
           <strong title={t.title}>{t.title || "执行事项"}</strong>
+          {summary && (
+            <span className="execution-activity-summary" title={summary}>
+              {summary}
+            </span>
+          )}
           <span className="execution-activity-meta">
             <time
               dateTime={
@@ -323,7 +340,14 @@ export function ExecutionSidebar({
           )}
           {scope.threadId && (
             <section className="execution-origin">
-              <p>{thread?.title ?? "执行分支"}</p>
+              <p className="execution-origin-title" title={thread?.title}>
+                {thread?.title ?? "执行分支"}
+              </p>
+              {threadSummary && (
+                <p className="execution-activity-summary" title={threadSummary}>
+                  {threadSummary}
+                </p>
+              )}
               <div>
                 <small>
                   {thread

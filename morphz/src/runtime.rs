@@ -6,6 +6,8 @@ use crate::approval::{
 };
 
 mod session_approval;
+mod response_annotation_projection;
+pub use response_annotation_projection::{ThreadResponseAnnotations, ThreadStepAnnotation};
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
@@ -3807,8 +3809,13 @@ impl MorphzRuntime {
             // current model/depth may have legitimately changed via reschedule.
             return Ok(existing);
         }
+        let response_annotations = request.response_annotations
+            .unwrap_or(self.inner.config.orchestrator.response_annotations);
+        if !response_annotations.is_off() {
+            self.inner.orchestrator.validate_response_annotations_protocol(response_annotations)?;
+        }
         let thread = NewThread {
-            response_annotations: self.inner.config.orchestrator.response_annotations,
+            response_annotations,
             model_alias: request.model_alias.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
             id: thread_id.clone(),
@@ -8214,6 +8221,7 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                response_annotations: None,
                 intent: root_intents
                     .get(&thread.root_turn_id)
                     .cloned()
@@ -8242,6 +8250,7 @@ impl MorphzRuntime {
                 schedules,
             });
         }
+        self.attach_response_annotations(context_id, &mut threads).await?;
         orphan_activations.extend(activations_by_thread.into_values().flatten());
         orphan_signals.extend(pending_signals_by_thread.into_values().flatten());
         orphan_approvals.extend(
@@ -9498,10 +9507,11 @@ impl MorphzRuntime {
             None
         };
 
-        Ok(Some(ThreadDetail {
+        let mut detail = ThreadDetail {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                response_annotations: None,
                 intent: self
                     .query_events(QueryFilter {
                         context_id: Some(context_id.to_string()),
@@ -9525,7 +9535,9 @@ impl MorphzRuntime {
                 schedules,
             },
             model_attempt_events,
-        }))
+        };
+        self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot)).await?;
+        Ok(Some(detail))
     }
 
     /// Applies an operator control command to one exact Thread revision.

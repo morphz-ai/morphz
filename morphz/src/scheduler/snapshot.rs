@@ -60,6 +60,10 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// Runtime-validated display metadata; lifecycle/phase/outcome below
+    /// remain the only execution facts. Legacy/Off snapshots omit this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_annotations: Option<crate::runtime::ThreadResponseAnnotations>,
     /// Original work assignment from a durable root Event or Schedule, not
     /// a model-generated summary of whatever tool happens to run now.
     #[serde(default)]

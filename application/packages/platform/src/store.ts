@@ -2747,6 +2747,7 @@ export class PlatformStore {
           intent: request.intent,
           model_alias: request.modelAlias ?? null,
           reasoning_effort: request.reasoningEffort ?? null,
+          response_annotations: "v1",
           not_before: request.notBefore,
           interval_seconds: request.intervalSeconds ?? null,
           dependency_thread_ids: [],

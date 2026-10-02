@@ -497,6 +497,12 @@ impl Fixture {
         assert_eq!(current.root_turn_id, initial.id);
         assert_eq!(current.response_annotations, protocol);
         assert_eq!(current.lifecycle, ThreadLifecycle::Completed);
+        let display = self.runtime.session_thread_annotations(&owner.context_id,&owner.session_id,&owner.id)
+            .await.unwrap().unwrap();
+        if protocol == Protocol::V1 {
+            assert_eq!(display.unwrap().title.as_deref(),Some(UPDATED_TITLE),
+                "the authorized Runtime read projection follows the real accepted steering input revision");
+        } else { assert!(display.is_none()); }
         let jobs = self.jobs().await;
         assert_eq!(
             jobs.len(),

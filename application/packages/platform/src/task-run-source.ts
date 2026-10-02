@@ -94,6 +94,10 @@ export function taskSourceRequest(
         destination.kind === "follow-up"
           ? admission.request.reasoning_effort
           : null,
+      ...(destination.kind === "follow-up" &&
+      admission.request.response_annotations !== undefined
+        ? { response_annotations: admission.request.response_annotations }
+        : {}),
       target_id: destination.kind === "follow-up" ? destination.targetId : null,
       harness: null,
       input_destination:

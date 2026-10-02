@@ -1740,6 +1740,26 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(signal_from_row).collect()
     }
 
+    async fn list_annotation_revision_signals(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, StoreError> {
+        if thread_ids.is_empty() || event_ids.is_empty() { return Ok(Vec::new()); }
+        let mut query = QueryBuilder::<Postgres>::new(
+            "SELECT signals.* FROM thread_signals signals JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = "
+        );
+        query.push_bind(context_id).push(" AND signals.thread_id IN (");
+        let mut values = query.separated(", ");
+        for id in thread_ids.iter().take(2_000) { values.push_bind(id); }
+        query.push(") AND signals.event_id IN (");
+        let mut values = query.separated(", ");
+        for id in event_ids.iter().take(256) { values.push_bind(id); }
+        query.push(") ORDER BY signals.sequence, signals.id");
+        query.build().fetch_all(&self.pool).await?.iter().map(signal_from_row).collect()
+    }
+
     async fn list_activation_signals(
         &self,
         activation_id: &str,

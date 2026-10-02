@@ -694,6 +694,10 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
             .unwrap()
             .unwrap();
         assert_eq!(thread.response_annotations, Protocol::Off);
+        assert!(fixture.runtime.session_thread_annotations("annotations-context","annotations-session",&thread.id)
+            .await.unwrap().unwrap().is_none());
+        let detail = fixture.runtime.thread_detail("annotations-context",&thread.id).await.unwrap().unwrap();
+        assert!(serde_json::to_value(&detail.snapshot).unwrap().get("response_annotations").is_none());
         for event in fixture.events(&root.id, Some("chat/assistant_call")).await {
             assert!(event.payload.get(BUNDLE_PAYLOAD_KEY).is_none());
             assert!(event.payload.get("response_annotations").is_none());
@@ -743,6 +747,28 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
         .unwrap()
         .unwrap();
     assert_eq!(thread.response_annotations, Protocol::V1);
+    let sdk = morphz::sdk::MorphzSdk::new(fixture.runtime.clone());
+    let projected = sdk.session_thread_annotations("principal-default", "annotations-session", &thread.id)
+        .await.unwrap().unwrap();
+    assert_eq!(projected.title.as_deref(),Some("检查合成环境"));
+    assert!(projected.progress.is_none(), "terminal facts hide stage text");
+    assert_eq!(projected.result.as_deref(),Some("已确认合成系统为 Linux"));
+    assert_eq!(projected.steps.len(),1);
+    assert_eq!(projected.steps[0].job_id,jobs[0].id);
+    assert_eq!(projected.steps[0].intent.as_deref(),Some("读取合成系统"));
+    assert_eq!(projected.steps[0].result.as_deref(),Some("合成系统为 Linux"));
+    assert_eq!(projected.source_count,2);
+    assert!(!projected.truncated);
+    let public_projection = serde_json::to_value(&projected).unwrap();
+    assert!(public_projection.get("raw_response").is_none() && public_projection.get("records").is_none());
+    let board = fixture.runtime.scheduler_snapshot("annotations-context",morphz::runtime::SchedulerQuery {include_terminal:true,limit:200}).await.unwrap();
+    assert_eq!(board.threads.iter().find(|snapshot| snapshot.thread.id == thread.id).unwrap()
+        .response_annotations.as_ref(),Some(&projected));
+    let forbidden = sdk.session_thread_annotations("foreign-principal","annotations-session",&thread.id).await.unwrap_err();
+    assert_eq!(forbidden.code,morphz::sdk::SdkErrorCode::Forbidden);
+    assert!(fixture.runtime.session_thread_annotations("annotations-context","foreign-session",&thread.id).await.unwrap().is_none());
+    assert!(fixture.runtime.session_thread_annotations("foreign-context","annotations-session",&thread.id).await.unwrap().is_none());
+    assert_eq!(fixture.client.calls.load(Ordering::SeqCst),2,"projection never asks a model");
     let scope = ExecutionScope {
         execution_id: thread.id.clone(),
         generation: thread.generation,
@@ -1538,6 +1564,9 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
     assert_eq!(updated.id, thread.id);
     assert_eq!(updated.generation, thread.generation + 1);
     assert_eq!(updated.response_annotations, Protocol::V1);
+    let display = fixture.runtime.session_thread_annotations("annotations-context","annotations-session",&updated.id)
+        .await.unwrap().unwrap().unwrap();
+    assert!(display.title.is_none() && display.progress.is_none() && display.result.is_none() && display.steps.is_empty());
     let new_scope = ExecutionScope {
         execution_id: updated.id.clone(),
         generation: updated.generation,
@@ -2839,6 +2868,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
             &session,
             &fixture.runtime.identity().principal_id,
             morphz::sdk::SessionScheduleRequest {
+                response_annotations: None,
                 id: "annotations-noninteractive-start".into(),
                 intent: "Read the synthetic system on a real scheduled wake".into(),
                 model_alias: None,
@@ -2950,6 +2980,12 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     .await
     .expect("genuine noninteractive delivery did not select and durably settle normal yield");
     assert_eq!(detail.snapshot.thread.lifecycle, ThreadLifecycle::Open);
+    let display = detail.snapshot.response_annotations.as_ref().unwrap();
+    assert_eq!(display.title.as_deref(),Some("检查合成环境"));
+    assert_eq!(display.progress.as_deref(),Some("读取系统"));
+    assert!(display.result.is_none(),"a delivered candidate while waiting cannot establish a terminal result");
+    assert_eq!(display.steps.len(),1);
+    assert_eq!(display.steps[0].job_id,jobs[0].id);
     assert_eq!(detail.snapshot.thread.generation, thread.generation);
     assert!(detail.snapshot.outcome.is_none());
     assert!(
@@ -3160,4 +3196,44 @@ async fn v1_accepts_legacy_unannotated_plain_final_text_without_an_extra_request
         fixture.events(&accepted.id, Some("chat/reply")).await.len(),
         1
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fingerprint() {
+    let fixture = Fixture::construct(Scenario::Plain,Protocol::Off,false).await;
+    let session = fixture.runtime.get_session("annotations-session").await.unwrap().unwrap();
+    let request = morphz::sdk::SessionScheduleRequest {
+        response_annotations: None, id:"annotation-schedule-legacy".into(),intent:"Synthetic future work".into(),
+        model_alias:None,reasoning_effort:None,not_before:chrono::Utc::now()+chrono::Duration::days(1),
+        interval_seconds:None,dependency_thread_ids:vec![],
+    };
+    assert!(serde_json::to_value(&request).unwrap().get("response_annotations").is_none());
+    let legacy = fixture.runtime.create_session_schedule(&session,"principal-default",request.clone()).await.unwrap();
+    assert_eq!(fixture.store.get_thread(&legacy.thread_id).await.unwrap().unwrap().response_annotations,Protocol::Off);
+    let mut explicit = request.clone();
+    explicit.id = "annotation-schedule-v1".into();
+    explicit.response_annotations = Some(Protocol::V1);
+    let enabled = fixture.runtime.create_session_schedule(&session,"principal-default",explicit.clone()).await.unwrap();
+    let owner = fixture.store.get_thread(&enabled.thread_id).await.unwrap().unwrap();
+    assert_eq!(owner.response_annotations,Protocol::V1);
+    assert_eq!(fixture.runtime.create_session_schedule(&session,"principal-default",explicit.clone()).await.unwrap(),enabled);
+    explicit.response_annotations = Some(Protocol::Off);
+    assert!(fixture.runtime.create_session_schedule(&session,"principal-default",explicit).await.is_err());
+    assert_eq!(fixture.store.get_thread(&enabled.thread_id).await.unwrap().unwrap(),owner);
+    // Restore the real durable store under a changed new-execution default.
+    // An accepted None request must still resolve its original immutable owner.
+    let mut config = fixture.runtime.config().clone();
+    config.orchestrator.response_annotations = Protocol::V1;
+    let restored = MorphzRuntime::builder(config,fixture.client.clone() as Arc<dyn Client>)
+        .identity(fixture.runtime.identity().clone())
+        .store("sqlite:annotations-schedule-restored",fixture.store.clone() as Arc<dyn RuntimeStore>)
+        .extra_tool(Arc::new(ProbeTool {arguments:fixture.arguments.clone(),business_reserved:false}))
+        .build().await.unwrap();
+    assert_eq!(restored.create_session_schedule(&session,"principal-default",request.clone()).await.unwrap(),legacy);
+    assert_eq!(fixture.store.get_thread(&legacy.thread_id).await.unwrap().unwrap().response_annotations,Protocol::Off);
+    let mut fresh = request;
+    fresh.id = "annotation-schedule-new-default".into();
+    let admitted = restored.create_session_schedule(&session,"principal-default",fresh).await.unwrap();
+    assert_eq!(fixture.store.get_thread(&admitted.thread_id).await.unwrap().unwrap().response_annotations,Protocol::V1);
+    assert_eq!(fixture.client.calls.load(Ordering::SeqCst),0,"future admission, retries and projection never infer");
 }

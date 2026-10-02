@@ -18,6 +18,17 @@ export type ActivityStatus = {
   label: string;
 };
 
+/** Annotation prose describes the work; Runtime lifecycle remains authoritative.
+ * Terminal summaries stay readable offline, but a cached open-work progress
+ * must not look current after its execution snapshot becomes unavailable. */
+export function executionActivitySummary(
+  thread: ActivityThread,
+  available: boolean,
+): string {
+  if (thread.lifecycle === "open" && !available) return "";
+  return thread.summary?.trim() ?? "";
+}
+
 /** Lifecycle is authoritative. A completed Thread is not proof that its task succeeded. */
 export function executionActivityStatus(
   thread: ActivityThread,

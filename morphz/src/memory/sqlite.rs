@@ -12720,6 +12720,26 @@ impl ActivationStore for SqliteStore {
         rows.iter().map(thread_signal_from_row).collect()
     }
 
+    async fn list_annotation_revision_signals(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        event_ids: &[String],
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() || event_ids.is_empty() { return Ok(Vec::new()); }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT signals.* FROM thread_signals signals JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = "
+        );
+        query.push_bind(context_id).push(" AND signals.thread_id IN (");
+        let mut values = query.separated(", ");
+        for id in thread_ids.iter().take(2_000) { values.push_bind(id); }
+        query.push(") AND signals.event_id IN (");
+        let mut values = query.separated(", ");
+        for id in event_ids.iter().take(256) { values.push_bind(id); }
+        query.push(") ORDER BY signals.sequence, signals.id");
+        query.build().fetch_all(&self.pool).await?.iter().map(thread_signal_from_row).collect()
+    }
+
     async fn list_activation_signals(
         &self,
         activation_id: &str,
@@ -26660,6 +26680,40 @@ impl EventStore for SqliteStore {
         }
 
         Ok(events)
+    }
+
+    async fn list_thread_annotation_sources(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+        per_thread_limit: usize,
+    ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() { return Ok(Vec::new()); }
+        let mut builder = QueryBuilder::new(
+            "SELECT event_sequence,id,timestamp,actor,type,topic,payload FROM (SELECT rowid AS event_sequence,id,timestamp,actor,type,topic,payload,ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY rowid DESC) AS source_rank FROM events WHERE context_id = "
+        );
+        builder.push_bind(context_id)
+            .push(" AND type = ").push_bind(crate::event::TYPE_AGENT_CALL)
+            .push(" AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (");
+        let mut selected = builder.separated(", ");
+        for id in thread_ids.iter().take(2_000) { selected.push_bind(id); }
+        builder.push(")) AS bounded_sources WHERE source_rank <= ")
+            .push_bind(per_thread_limit.clamp(1,129) as i64)
+            .push(" ORDER BY event_sequence ASC");
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter().map(|row| {
+            let payload: String = row.get("payload");
+            let timestamp: String = row.get("timestamp");
+            Ok(Event {
+                id: row.get("id"),
+                sequence: u64::try_from(row.get::<i64,_>("event_sequence")).ok(),
+                timestamp: parse_time(&timestamp),
+                actor: row.get("actor"),
+                event_type: row.get("type"),
+                topic: row.get("topic"),
+                payload: serde_json::from_str(&payload)?,
+            })
+        }).collect()
     }
 
     async fn backfill_causal_projection_for_thread(

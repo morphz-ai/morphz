@@ -764,6 +764,8 @@ impl SessionEventStream {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionScheduleRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_annotations: Option<crate::response_annotations::Protocol>,
     pub id: String,
     pub intent: String,
     #[serde(default, alias = "model")]
@@ -1160,6 +1162,21 @@ impl MorphzSdk {
                     format!("Thread '{thread_id}' does not exist in Context '{context_id}'"),
                 )
             })
+    }
+
+    /// Session participation is proven before an exact display metadata read.
+    pub async fn session_thread_annotations(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        thread_id: &str,
+    ) -> SdkResult<Option<crate::runtime::ThreadResponseAnnotations>> {
+        let session = self.get_session(principal_id, session_id).await?;
+        let projection = self.runtime.session_thread_annotations(&session.context_id, session_id, thread_id)
+            .await.map_err(SdkError::internal)?
+            .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Session Thread not found"))?;
+        self.get_session(principal_id,session_id).await?;
+        Ok(projection)
     }
 
     pub async fn control_thread(

@@ -553,6 +553,54 @@ async fn conformance<S: RuntimeStore>(
     queued_batches(store, require_fresh_proof).await?;
     claim_merge_batches(store).await?;
     retry_and_supersede(store).await?;
+    annotation_source_windows(store).await?;
+    Ok(())
+}
+
+async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
+    let route = create_route(store, "source-window").await?;
+    let ids = [format!("{}-long", route.context), format!("{}-short", route.context)];
+    for (owner, count) in [(&ids[0], 140), (&ids[1], 2)] {
+        for number in 0..count {
+            store.append(Event::new(format!("{owner}-source-{number}"), "Synthetic-Host".into(),
+                morphz::event::TYPE_AGENT_CALL.into(), "chat/assistant_call".into(),
+                json!({"context_id":route.context,"session_id":route.session,"thread_id":owner,"number":number})
+                    .as_object().unwrap().clone())).await?;
+        }
+    }
+    // Newer unrelated Context Events cannot starve an older selected Thread.
+    store.append(Event::new("window-foreign-context".into(),"Synthetic-Host".into(),
+        morphz::event::TYPE_AGENT_CALL.into(),"chat/assistant_call".into(),
+        json!({"context_id":"foreign-context","session_id":route.session,"thread_id":ids[0]})
+            .as_object().unwrap().clone())).await?;
+    store.append(Event::new("window-unrelated-topic".into(),"Synthetic-Host".into(),
+        morphz::event::TYPE_AGENT_CALL.into(),"chat/reply".into(),
+        json!({"context_id":route.context,"session_id":route.session,"thread_id":ids[0]})
+            .as_object().unwrap().clone())).await?;
+    let selected = store.list_thread_annotation_sources(&route.context,&ids,129).await?;
+    let long = selected.iter().filter(|event| event.payload["thread_id"] == ids[0]).collect::<Vec<_>>();
+    let short = selected.iter().filter(|event| event.payload["thread_id"] == ids[1]).collect::<Vec<_>>();
+    assert_eq!(long.len(),129);
+    assert_eq!(short.len(),2);
+    assert_eq!(long[0].payload["number"],11);
+    assert_eq!(long[128].payload["number"],139);
+    assert!(long.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+    assert!(selected.iter().all(|event| event.payload["context_id"] == route.context && event.topic == "chat/assistant_call"));
+    assert!(store.list_thread_annotation_sources(&route.context,&[],129).await?.is_empty());
+    let first = ingress(store,&route,"revision-source-one",Protocol::V1).await?;
+    let second = ingress(store,&route,"revision-source-two",Protocol::V1).await?;
+    let first_signal = signal_for(store,&first).await?;
+    let second_signal = signal_for(store,&second).await?;
+    let owners = [first_signal.thread_id.clone(),second_signal.thread_id.clone()];
+    let exact = store.list_annotation_revision_signals(&route.context,&owners,&[first.id.clone()]).await?;
+    assert_eq!(exact,vec![first_signal.clone()],"only the exact requested immutable revision witness may be read");
+    // Interrupt ingress may legitimately coalesce both inputs into the same
+    // open Thread. Use a real distinct owner, not a guessed second Thread.
+    let unrelated = store.ensure_thread(thread(&route,"unrelated-revision-owner",ThreadKind::Execution,Protocol::V1)).await?;
+    assert_ne!(unrelated.id,first_signal.thread_id);
+    assert!(store.list_annotation_revision_signals(&route.context,&[unrelated.id],&[first.id.clone()]).await?.is_empty());
+    assert!(store.list_annotation_revision_signals("foreign-context",&owners,&[first.id]).await?.is_empty());
+    assert!(store.list_annotation_revision_signals(&route.context,&owners,&[]).await?.is_empty());
     Ok(())
 }
 

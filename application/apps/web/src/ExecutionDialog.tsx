@@ -1,6 +1,6 @@
 import { useModal } from "./useModal.js";
 import {
-  executionPresentation,
+  executionJobPresentation,
   executionResultSummary,
 } from "./execution-presentation.js";
 import { useEffect, useRef, useState } from "react";
@@ -229,15 +229,18 @@ export function ExecutionDialog({
           </p>
         )}
         {snapshot?.jobs.map((job) => {
-          const presentation = executionPresentation(
-            job.tool_name,
-            job.request,
+          const presentation = executionJobPresentation(
+            job,
             client.boot!.workspace,
           );
           return (
-            <section key={job.id} className="execution-job">
+            <section
+              key={job.id}
+              className="execution-job"
+              data-job-id={job.id}
+            >
               <header>
-                <strong>{presentation.title}</strong>
+                <strong title={presentation.title}>{presentation.title}</strong>
                 <span className={`job-status ${job.status}`}>
                   {job.cancel_requested_at &&
                   ["queued", "waiting_approval", "running"].includes(job.status)
@@ -261,6 +264,15 @@ export function ExecutionDialog({
                 {new Date(job.created_at).toLocaleString("zh-CN")}
               </small>
               {job.error && <p className="delivery-error">{job.error}</p>}
+              {presentation.result && (
+                <p
+                  className="execution-step-result"
+                  aria-label="返回结果解读"
+                  title={presentation.result}
+                >
+                  {presentation.result}
+                </p>
+              )}
               <details>
                 <summary>技术详情</summary>
                 <pre>{JSON.stringify(job.request, null, 2)}</pre>

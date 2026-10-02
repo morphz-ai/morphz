@@ -35,6 +35,10 @@ export const jobSchema = z.object({
   exit_code: z.number().nullable().default(null),
   request: z.unknown(),
   result_event_id: z.string().nullable().default(null),
+  /** Runtime-verified display metadata; actual Job facts remain unchanged. */
+  annotation: z
+    .object({ intent: z.string().optional(), result: z.string().optional() })
+    .optional(),
 });
 export const approvalSchema = z.object({
   requested_at: z.string(),

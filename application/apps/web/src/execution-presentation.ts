@@ -1,4 +1,5 @@
 import { isObjectToolName } from "../../../packages/core/src/application-names.js";
+import type { ExecutionSnapshot } from "../../../packages/core/src/execution.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import {
   currentScriptDraft,
@@ -12,6 +13,20 @@ const record = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown) =>
   typeof value === "string" ? value.trim() : "";
 const short = (value: string) => value.replace(/\s+/g, " ").slice(0, 160);
+
+/** The adapter has already bound these strings to the exact Job and returned
+ * receipt. Never recover an annotation from raw request JSON or a nearby step. */
+export function executionJobPresentation(
+  job: ExecutionSnapshot["jobs"][number],
+  state: Workspace,
+) {
+  const fallback = executionPresentation(job.tool_name, job.request, state);
+  return {
+    ...fallback,
+    title: text(job.annotation?.intent) || fallback.title,
+    result: job.result_event_id ? text(job.annotation?.result) || null : null,
+  };
+}
 
 /** Describe the observed request, not an invented outcome or a model summary.
  * Only allowlisted display fields are used; route metadata and credentials stay out. */

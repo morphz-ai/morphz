@@ -1495,6 +1495,10 @@ impl Server {
                 get(handle_get_session_thread),
             )
             .route(
+                "/api/sessions/:session_id/threads/:thread_id/annotations",
+                get(handle_get_session_thread_annotations),
+            )
+            .route(
                 "/api/sessions/:session_id/observation-snapshot",
                 get(handle_get_session_observation_snapshot),
             )
@@ -8498,6 +8502,24 @@ async fn handle_get_session_thread(
         }))
         .into_response(),
         Ok(Some(_)) | Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_thread_annotations(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) { return unauthorized_response(); }
+    let session = match authorize_session_read(&state, &headers, query.token.as_deref(),
+        query.principal_id.as_deref(), &session_id).await {
+        Ok(session) => session, Err(error) => return sdk_error_response(error),
+    };
+    match state.runtime.session_thread_annotations(&session.context_id, &session_id, &thread_id).await {
+        Ok(Some(projection)) => Json(projection).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -17561,6 +17583,7 @@ account = "xai-account"
             .await
             .unwrap();
         let request = crate::sdk::SessionScheduleRequest {
+            response_annotations: None,
             reasoning_effort: Some("high".into()),
             id: "work-once".into(),
             intent: "execute one persisted work request".into(),
@@ -17667,6 +17690,39 @@ account = "xai-account"
                 .status,
             crate::memory::ScheduleStatus::Dispatched
         );
+    }
+
+    #[tokio::test]
+    async fn session_annotations_endpoint_authorizes_before_reading_and_keeps_off_nullable() {
+        let (base,runtime) = test_state().await;
+        runtime.ensure_session(NewSession {
+            id:"annotations-http-own".into(),agent_id:runtime.identity().agent_id.clone(),
+            context_id:runtime.identity().context_id.clone(),parent_session_id:None,
+            title:"Synthetic annotation read".into(),mount_kind:SessionMountKind::ExistingContext,
+        }).await.unwrap();
+        let accepted = runtime.session("annotations-http-own").send("Synthetic ordinary request","Synthetic-Human",Some("annotations-http-request".into())).await.unwrap();
+        let thread = runtime.session_thread_by_root("annotations-http-own",&accepted.event_id).await.unwrap().unwrap();
+        let state = Arc::new(AppState {
+            runtime:runtime.clone(),sdk:MorphzSdk::new(runtime.clone()),broadcast_tx:base.broadcast_tx.clone(),
+            auth_token:Some("annotation-operator".into()),gateway_token:Some("annotation-gateway".into()),
+            default_agent_id:base.default_agent_id.clone(),default_context_id:base.default_context_id.clone(),
+            identity:ServerIdentityConfig {mode:ServerIdentityMode::TrustedGateway,provider_id:"annotation-test".into(),service_token_env:"SYNTHETIC_UNUSED_TOKEN".into()},
+            core_config_path:base.core_config_path.clone(),managed_config_path:base.managed_config_path.clone(),
+        });
+        let request = |headers: HeaderMap,session: &str| handle_get_session_thread_annotations(
+            State(state.clone()),Path((session.into(),thread.id.clone())),headers,Query(AuthQuery::default()));
+        assert_eq!(request(HeaderMap::new(),"annotations-http-own").await.status(),StatusCode::UNAUTHORIZED);
+        let mut gateway = HeaderMap::new();
+        gateway.insert(header::AUTHORIZATION,"Bearer annotation-gateway".parse().unwrap());
+        gateway.insert("x-morphz-principal","foreign-principal".parse().unwrap());
+        assert_eq!(request(gateway.clone(),"annotations-http-own").await.status(),StatusCode::FORBIDDEN);
+        gateway.insert("x-morphz-principal","principal-web-test".parse().unwrap());
+        let own = request(gateway,"annotations-http-own").await;
+        assert_eq!(own.status(),StatusCode::OK);
+        assert_eq!(axum::body::to_bytes(own.into_body(),1024).await.unwrap().as_ref(),b"null");
+        let mut operator = HeaderMap::new();
+        operator.insert(header::AUTHORIZATION,"Bearer annotation-operator".parse().unwrap());
+        assert_eq!(request(operator,"missing-session").await.status(),StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

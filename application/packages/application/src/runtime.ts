@@ -39,6 +39,7 @@ import {
 } from "../../../packages/core/src/inference.js";
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import { RuntimeProfileClient } from "./runtime-profile-client.js";
+import { activityAnnotationFields } from "./response-annotations.js";
 import {
   DomainError,
   browserReferenceSchema,
@@ -4033,6 +4034,7 @@ export class RuntimeBridge {
           .optional(),
         threads: z.array(
           z.object({
+            response_annotations: z.unknown().optional(),
             intent: z.string().nullable().optional(),
             phase: z.string(),
             schedules: z.array(scheduleLink).optional(),
@@ -4053,6 +4055,7 @@ export class RuntimeBridge {
                 context_id: z.string(),
                 root_turn_id: z.string(),
                 lifecycle: z.string(),
+                generation: z.unknown().optional(),
                 control_state: z.string().optional(),
                 created_at: z.string().optional(),
                 supervision: z
@@ -4272,6 +4275,7 @@ export class RuntimeBridge {
             rootId: t.root_turn_id,
             sessionId: t.session_id,
             title: value.intent?.trim() || source.body || "后台执行",
+            ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
             lifecycle: t.lifecycle,
             controlState: t.control_state,
@@ -4904,6 +4908,16 @@ export class RuntimeBridge {
         throw new DomainError("conflict", "操作标识已用于另一条输入。");
       if (retained === undefined) delete activation.dispatch_mode;
       else activation.dispatch_mode = retained;
+      const retainedAnnotations =
+        previous.request.io_version === "1"
+          ? (previous.request.activation as Record<string, unknown> | undefined)
+              ?.response_annotations
+          : previous.request.response_annotations;
+      // Upgrading the client must not alter an admitted envelope/fingerprint,
+      // including the historical absence of this optional selection.
+      if (retainedAnnotations === undefined)
+        delete activation.response_annotations;
+      else activation.response_annotations = retainedAnnotations;
     }
     const typed = {
       ...prepared,

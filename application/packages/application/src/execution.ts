@@ -8,6 +8,7 @@ import {
   type ExecutionScope,
   type ExecutionSnapshot,
 } from "../../../packages/core/src/execution.js";
+import { jobsWithRuntimeAnnotations } from "./response-annotations.js";
 
 export type RuntimeRequest = (
   path: string,
@@ -27,6 +28,12 @@ type Binding = {
 const sessionIds = (binding: NonNullable<Binding>) => [
   ...new Set([binding.sessionId, ...(binding.legacySessionIds ?? [])]),
 ];
+// The Job API supplies physical facts. Display annotations are only accepted
+// from the separately verified exact-Thread Runtime projection below.
+const runtimeJobSchema = jobSchema.omit({ annotation: true });
+type ThreadProofs = Map<string, { generation?: number }>;
+const proofKey = (sessionId: string, threadId: string) =>
+  `${sessionId}\u0000${threadId}`;
 export const approvalFingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 /** Uses only scoped Runtime reads and control APIs, never its database. */
@@ -85,7 +92,7 @@ export class ExecutionControls {
     return binding ? (await this.approvals(binding)).length : 0;
   }
   private async job(binding: NonNullable<Binding>, jobId: string) {
-    const job = jobSchema.parse(
+    const job = runtimeJobSchema.parse(
       await this.request(`/api/execution-jobs/${encodeURIComponent(jobId)}`),
     );
     if (
@@ -100,6 +107,7 @@ export class ExecutionControls {
   private async belongsToRoot(
     binding: NonNullable<Binding>,
     job: z.infer<typeof jobSchema>,
+    proofs?: ThreadProofs,
   ) {
     if (
       binding.threadId &&
@@ -108,6 +116,8 @@ export class ExecutionControls {
     )
       return false;
     const roots = binding.rootsBySession?.[job.session_id];
+    // Legacy whole-Session inspectors keep their existing factual read; the
+    // new display projection is restricted to an exact proven work root.
     if (!binding.rootId && !roots) return true;
     const data = z
       .object({
@@ -117,6 +127,7 @@ export class ExecutionControls {
             session_id: z.literal(job.session_id),
             context_id: z.literal(binding.contextId),
             root_turn_id: z.string(),
+            generation: z.unknown().optional(),
           }),
         }),
       })
@@ -125,19 +136,75 @@ export class ExecutionControls {
           `/api/contexts/${encodeURIComponent(binding.contextId)}/threads/${encodeURIComponent(job.thread_id)}`,
         ),
       );
-    const rootId = data.snapshot.thread.root_turn_id;
+    const thread = data.snapshot.thread;
+    const rootId = thread.root_turn_id;
     const original =
       (!binding.threadId || binding.threadId === job.thread_id) &&
-      (binding.rootId ? rootId === binding.rootId : roots!.includes(rootId));
-    return (
+      (binding.rootId
+        ? rootId === binding.rootId
+        : !roots || roots.includes(rootId));
+    const allowed =
       original ||
       (!!binding.additionalRoot &&
-        (await binding.additionalRoot(rootId, job.thread_id)))
-    );
+        (await binding.additionalRoot(rootId, job.thread_id)));
+    if (allowed && proofs) {
+      const generation = z
+        .number()
+        .int()
+        .nonnegative()
+        .safe()
+        .safeParse(thread.generation);
+      proofs.set(proofKey(job.session_id, job.thread_id), {
+        ...(generation.success ? { generation: generation.data } : {}),
+      });
+    }
+    return allowed;
+  }
+  private async annotatedJobs(
+    binding: NonNullable<Binding>,
+    jobs: ExecutionSnapshot["jobs"],
+    proofs: ThreadProofs,
+  ): Promise<ExecutionSnapshot["jobs"]> {
+    const groups = new Map<string, ExecutionSnapshot["jobs"]>();
+    for (const job of jobs) {
+      const key = proofKey(job.session_id, job.thread_id);
+      const group = groups.get(key) ?? [];
+      group.push(job);
+      groups.set(key, group);
+    }
+    const annotated = new Map<string, ExecutionSnapshot["jobs"][number]>();
+    const entries = [...groups.entries()];
+    for (let offset = 0; offset < entries.length; offset += 4)
+      await Promise.all(
+        entries.slice(offset, offset + 4).map(async ([key, group]) => {
+          const job = group[0]!;
+          const proof = proofs.get(key);
+          // Older Runtime responses have no generation or projection endpoint.
+          // Their factual inspector remains usable, without guessed annotations.
+          if (proof?.generation === undefined) return;
+          try {
+            const raw = await this.request(
+              `/api/sessions/${encodeURIComponent(job.session_id)}/threads/${encodeURIComponent(job.thread_id)}/annotations`,
+            );
+            for (const value of jobsWithRuntimeAnnotations(group, raw, {
+              sessionId: job.session_id,
+              contextId: binding.contextId,
+              threadId: job.thread_id,
+              generation: proof.generation,
+            }))
+              annotated.set(value.id, value);
+          } catch {
+            // A failed optional read cannot hide Jobs, invent success, or cause
+            // tool/model replay. The next explicit refresh can read it again.
+          }
+        }),
+      );
+    return jobs.map((job) => annotated.get(job.id) ?? job);
   }
   async snapshot(scope: ExecutionScope): Promise<ExecutionSnapshot> {
     const binding = this.binding(scope);
     if (!binding) return { jobs: [], approvals: [], limit: 100 };
+    const proofs: ThreadProofs = new Map();
     if (binding.threadIds) {
       const threadIds = [...new Set(await binding.threadIds())];
       let jobs: z.infer<typeof jobSchema>[] = [];
@@ -145,7 +212,7 @@ export class ExecutionControls {
       for (let offset = 0; offset < threadIds.length; offset += 4) {
         const batch = await Promise.all(
           threadIds.slice(offset, offset + 4).map(async (threadId) => {
-            const result = z.object({ jobs: z.array(jobSchema) }).parse(
+            const result = z.object({ jobs: z.array(runtimeJobSchema) }).parse(
               await this.request(
                 "/api/execution-jobs?" +
                   new URLSearchParams({
@@ -167,7 +234,7 @@ export class ExecutionControls {
             // Every selected job names this same exact immutable Thread/root;
             // one fresh provenance proof applies to all its returned job IDs.
             return !scoped.length ||
-              (await this.belongsToRoot(binding, scoped[0]!))
+              (await this.belongsToRoot(binding, scoped[0]!, proofs))
               ? scoped
               : [];
           }),
@@ -180,7 +247,11 @@ export class ExecutionControls {
           )
           .slice(0, 100);
       }
-      return { jobs, approvals, limit: 100 };
+      return {
+        jobs: await this.annotatedJobs(binding, jobs, proofs),
+        approvals,
+        limit: 100,
+      };
     }
     const [data, approvals] = await Promise.all([
       Promise.all(
@@ -200,7 +271,8 @@ export class ExecutionControls {
       this.approvals(binding),
     ]);
     const jobs = data.flatMap(
-      (value) => z.object({ jobs: z.array(jobSchema) }).parse(value).jobs,
+      (value) =>
+        z.object({ jobs: z.array(runtimeJobSchema) }).parse(value).jobs,
     );
     const scoped = jobs.filter(
       (j) =>
@@ -208,17 +280,21 @@ export class ExecutionControls {
         j.context_id === binding.contextId,
     );
     const matches = await Promise.all(
-      scoped.map((j) => this.belongsToRoot(binding, j)),
+      scoped.map((j) => this.belongsToRoot(binding, j, proofs)),
     );
     return {
-      jobs: scoped
-        .filter((_, i) => matches[i])
-        .sort(
-          (a, b) =>
-            b.created_at.localeCompare(a.created_at) ||
-            b.id.localeCompare(a.id),
-        )
-        .slice(0, 100),
+      jobs: await this.annotatedJobs(
+        binding,
+        scoped
+          .filter((_, i) => matches[i])
+          .sort(
+            (a, b) =>
+              b.created_at.localeCompare(a.created_at) ||
+              b.id.localeCompare(a.id),
+          )
+          .slice(0, 100),
+        proofs,
+      ),
       approvals,
       limit: 100,
     };
