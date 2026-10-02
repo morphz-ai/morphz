@@ -125,7 +125,7 @@ try {
   const sessions = fixture.sql<{ id: string }>("SELECT id FROM sessions");
   assert.equal(sessions.length, 1);
   await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .getByRole("checkbox", { name: "使用人格设定", exact: true })
     .uncheck();
   for (let attempt = 0; attempt < 100; attempt++) {
     if (!(await fixture.read()).agent.enabled) break;
@@ -134,7 +134,7 @@ try {
   assert.equal((await fixture.read()).agent.enabled, false);
   assert.equal(
     await editor
-      .getByRole("checkbox", { name: "使用 Profile", exact: true })
+      .getByRole("checkbox", { name: "使用人格设定", exact: true })
       .isChecked(),
     false,
   );

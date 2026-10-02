@@ -25,9 +25,20 @@
   cursor: pointer;
 }
 .personality-master {
-  padding: 0 2px;
+  flex: none;
+  min-width: 32px;
+}
+.personality-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+}
+.app .personality-heading > :is(h2, h3) {
+  margin: 0;
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .personality-optional {
   min-width: 32px;
@@ -448,6 +459,10 @@
   }
   .personality-optional {
     min-width: 44px;
+  }
+  .personality-master {
+    min-width: 44px;
+    justify-content: center;
   }
 }
 @media (prefers-reduced-motion: reduce) {

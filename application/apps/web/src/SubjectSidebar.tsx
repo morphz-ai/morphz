@@ -236,7 +236,7 @@ export function SubjectSidebar({
         )}
         {view === "settings" && (
           <section className="subject-section subject-settings">
-            <h3>设定</h3>
+            {!profile && <h3>设定</h3>}
             {profile && (
               <ProfileEditor
                 key={profile.scope}

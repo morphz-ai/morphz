@@ -43,7 +43,7 @@ async function agentEditor(page: Page) {
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
   await expect(
-    editor.getByRole("checkbox", { name: "使用 Profile", exact: true }),
+    editor.getByRole("checkbox", { name: "设置智能体名字", exact: true }),
   ).toBeEnabled();
   return editor;
 }
@@ -121,12 +121,18 @@ async function settled(editor: Locator, expectedEnabled = true) {
   await expect(editor.locator(".personality-save-state")).toHaveText(
     "资料已保存",
   );
-  // An empty optional control retains the user's raw master choice while its
-  // canonical Host value is disabled. Only configured fields can mount ROM.
+  const usage = editor.getByRole("checkbox", {
+    name: subject === "agent" ? "使用人格设定" : "使用个人资料",
+    exact: true,
+  });
+  // Usage is a secondary positive control; empty settings remain optional and
+  // cannot manufacture a configured ROM merely by toggling the control.
   if (profileHasConfiguredFields(data))
-    await expect(
-      editor.getByRole("checkbox", { name: "使用 Profile", exact: true }),
-    ).toBeChecked({ checked: expectedEnabled });
+    await expect(usage).toBeChecked({ checked: expectedEnabled });
+  else {
+    await expect(usage).not.toBeChecked();
+    await expect(usage).toBeDisabled();
+  }
   await expect(
     editor.getByRole("button", { name: "保存", exact: true }),
   ).toHaveCount(0);
@@ -177,8 +183,11 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
   await enter(page);
   const editor = await agentEditor(page);
   await expect(
-    editor.getByRole("checkbox", { name: "使用 Profile", exact: true }),
+    editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
   ).not.toBeChecked();
+  await expect(
+    editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
+  ).toBeDisabled();
   await expect(editor.getByRole("slider")).toHaveCount(0);
   for (const label of ["幽默", "严谨", "亲和", "详略"])
     await expect(
@@ -198,9 +207,6 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
 
   await level(editor, "幽默", 5);
   await level(editor, "严谨", 0);
-  await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
-    .check();
   await settled(editor);
   const saved = await fixture.read();
   await editor.screenshot({
@@ -255,7 +261,7 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
   expect(bindings[0]!.revision).toBe(saved.agent.revision);
 
   await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .getByRole("checkbox", { name: "使用人格设定", exact: true })
     .uncheck();
   await settled(editor, false);
   expect((await fixture.read()).agent).toMatchObject({
@@ -339,9 +345,6 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
   await editor
     .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
     .fill("测试同学");
-  await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
-    .check();
   await settled(editor);
   const saved = await fixture.read();
   await editor.screenshot({
@@ -395,7 +398,7 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
     .getByRole("button", { name: "个人资料", exact: true })
     .click();
   await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .getByRole("checkbox", { name: "使用个人资料", exact: true })
     .uncheck();
   await settled(editor, false);
   expect((await fixture.read()).human).toMatchObject({
@@ -572,7 +575,7 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   expect(fixture.requests).toHaveLength(0);
 });
 
-test("同一长期Session改Echo后立即发送等待自动保存；旧Thread续跑固定Echo，停用后新请求零ROM", async ({
+test("同一Session即时Echo与旧Thread固定版本；不使用人格时新增字段无ROM，启用后name和新字段同时生效", async ({
   page,
 }) => {
   await enter(page);
@@ -672,10 +675,17 @@ test("同一长期Session改Echo后立即发送等待自动保存；旧Thread续
   expect(continued).not.toContain("(name Nova)");
 
   await editor
-    .getByRole("checkbox", { name: "使用 Profile", exact: true })
+    .getByRole("checkbox", { name: "使用人格设定", exact: true })
     .uncheck();
   const disabled = await settled(editor, false);
   expect(disabled.data.name).toBe("Nova");
+  await level(editor, "幽默", 5);
+  const editedWhileDisabled = await settled(editor, false);
+  expect(editedWhileDisabled.data).toMatchObject({
+    name: "Nova",
+    traits: { humor: 5 },
+  });
+  expect(editedWhileDisabled.revision).toBeGreaterThan(disabled.revision);
   assertEmptyRom(modelText(await send(page, "PROFILE_IMMEDIATE_DISABLED")));
   expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
   expect(
@@ -683,4 +693,30 @@ test("同一长期Session改Echo后立即发送等待自动保存；旧Thread续
       "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
     ),
   ).toEqual(echoBindings);
+  await editor
+    .getByRole("checkbox", { name: "使用人格设定", exact: true })
+    .check();
+  const restored = await settled(editor);
+  expect(restored.data).toEqual(editedWhileDisabled.data);
+  expect(restored.revision).toBe(editedWhileDisabled.revision + 1);
+  const restoredRequest = modelText(
+    await send(page, "PROFILE_IMMEDIATE_RESTORED"),
+  );
+  expect(restoredRequest).toContain("(name Nova)");
+  expect(restoredRequest).toContain("(humor 5)");
+  expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
+  const restoredBindings = fixture.sql<{
+    thread_id: string;
+    entry_id: string;
+    revision: number;
+  }>(
+    "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+  );
+  expect(restoredBindings).toHaveLength(2);
+  expect(restoredBindings).toContainEqual(echoBindings[0]);
+  expect(restoredBindings).toContainEqual({
+    thread_id: expect.any(String),
+    entry_id: echoBindings[0]!.entry_id,
+    revision: restored.revision,
+  });
 });

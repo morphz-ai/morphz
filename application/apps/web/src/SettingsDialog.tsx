@@ -157,9 +157,6 @@ export function SettingsDialog({
               hidden={active !== "profile"}
               aria-label="个人资料设置面板"
             >
-              <header>
-                <h2>个人资料</h2>
-              </header>
               <ProfileEditor
                 key={profile.scope}
                 subject="human"

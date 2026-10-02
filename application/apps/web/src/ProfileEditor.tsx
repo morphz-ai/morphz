@@ -108,6 +108,22 @@ export function ProfileEditor({
   const conflict = avatarConflict || auto.conflict;
   const error = avatarError || auto.error;
   const activateText = profile.textActivation[subject];
+  // Like the save queue, an intermediate empty name retains the last
+  // confirmed name; only the name checkbox explicitly clears it.
+  const hasConfiguration = (next: AgentProfileData | HumanProfileData) =>
+    profileHasConfiguredFields({
+      ...next,
+      name:
+        next.name === null
+          ? null
+          : next.name.trim() || actual?.data.name || null,
+    });
+  const configured = hasConfiguration(data);
+  // Retained choices with enabled=false are an explicit opt-out, not a
+  // request to activate the whole Profile when another field is selected.
+  const canActivate = enabled || !configured;
+  const Heading = subject === "agent" ? "h3" : "h2";
+  const headingText = subject === "agent" ? "设定" : "个人资料";
   const avatarPending = useRef<
     | {
         file: File;
@@ -139,10 +155,7 @@ export function ProfileEditor({
     allowEmpty = false,
   ) => {
     setError("");
-    const configured = profileHasConfiguredFields({
-      ...next,
-      name: next.name?.trim() || null,
-    });
+    const configured = hasConfiguration(next);
     profile.edit(
       subject,
       next,
@@ -154,8 +167,9 @@ export function ProfileEditor({
     field: "name" | "preferredAddress" | "customStyle",
     value: string,
   ) => {
-    const firstValue = activateText.has(field) && !!value.trim();
-    if (firstValue) activateText.delete(field);
+    const firstValue =
+      !!value.trim() && canActivate && (activateText.has(field) || !configured);
+    if (value.trim()) activateText.delete(field);
     change({ ...data, [field]: value }, firstValue ? true : enabled, 450, true);
   };
   const flushText = () => void profile.flush(subject).catch(() => {});
@@ -163,7 +177,7 @@ export function ProfileEditor({
     field: "name" | "preferredAddress" | "customStyle",
     checked: boolean,
   ) => {
-    if (checked) activateText.add(field);
+    if (checked && canActivate) activateText.add(field);
     else activateText.delete(field);
     change(
       { ...data, [field]: checked ? "" : null },
@@ -293,6 +307,9 @@ export function ProfileEditor({
         className="personality-profile"
         aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       >
+        <div className="personality-heading">
+          <Heading>{headingText}</Heading>
+        </div>
         <div className="personality-read-error" role="status">
           {profile.error || "当前资料访问已被撤回。"}
           <button
@@ -310,25 +327,31 @@ export function ProfileEditor({
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
     >
-      <label
-        className="personality-master"
-        title="把名字和表达偏好用于对话；关闭时保留设置"
-      >
-        <span>使用设定</span>
-        <span className="personality-master-state profile-visually-hidden">
-          {actual?.enabled ? "已启用" : "未启用"}
-        </span>
-        <input
-          type="checkbox"
-          aria-label="使用 Profile"
-          checked={enabled}
-          disabled={!editable}
-          onChange={(e) => {
-            activateText.clear();
-            change(data, e.target.checked, 0, e.target.checked);
-          }}
-        />
-      </label>
+      <div className="personality-heading">
+        <Heading>{headingText}</Heading>
+        <label
+          className="personality-master"
+          title={
+            subject === "agent"
+              ? "使用人格设定；关闭后不加入自定义名字和表达偏好，选值保留"
+              : "使用个人资料；关闭后不提供名字和称呼，选值保留"
+          }
+        >
+          <span className="profile-visually-hidden">
+            {subject === "agent" ? "使用人格设定" : "使用个人资料"}
+          </span>
+          <input
+            type="checkbox"
+            aria-label={subject === "agent" ? "使用人格设定" : "使用个人资料"}
+            checked={configured && enabled}
+            disabled={!editable || !configured}
+            onChange={(e) => {
+              activateText.clear();
+              change(data, e.target.checked);
+            }}
+          />
+        </label>
+      </div>
       <div className="personality-identity">
         <div className="personality-portrait">
           {subject === "agent" ? (
@@ -481,7 +504,7 @@ export function ProfileEditor({
                                 [trait.key]: e.target.checked ? 0 : null,
                               },
                             },
-                            e.target.checked ? true : enabled,
+                            e.target.checked ? canActivate : enabled,
                           )
                         }
                       />
@@ -552,7 +575,7 @@ export function ProfileEditor({
                     onChange={() =>
                       change(
                         { ...agent, speechStyle: style.value },
-                        agent.speechStyle === null ? true : enabled,
+                        agent.speechStyle === null ? canActivate : enabled,
                       )
                     }
                   />
