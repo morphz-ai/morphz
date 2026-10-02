@@ -54,6 +54,7 @@ pub mod permission;
 pub mod plan_execution;
 pub mod provider;
 pub mod recovery;
+pub mod response_annotations;
 pub mod runtime;
 pub mod sandbox;
 pub mod scheduler;

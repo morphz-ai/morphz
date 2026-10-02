@@ -267,6 +267,7 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                     AND queued_thread.kind = 'dialogue_turn'
                     AND queued_thread.status = 'open'
                     AND queued_thread.control_state = 'active'
+                    AND queued_thread.response_annotations = candidate.response_annotations
                     AND queued.initiating_principal_id IS NOT DISTINCT FROM p_principal_id
                     AND (
                       SELECT COUNT(*) FROM activation_signals links
@@ -885,6 +886,7 @@ impl ActivationStore for PostgresStore {
                        WHERE links.activation_id = queued.id
                      ) < $2
                      AND queued.initiating_principal_id IS NOT DISTINCT FROM $3
+                     AND thread.response_annotations = $4
                    ORDER BY queued.trigger_sequence, queued.id
                    LIMIT 1
                    FOR UPDATE OF queued, thread"#,
@@ -892,6 +894,7 @@ impl ActivationStore for PostgresStore {
             .bind(&activation.session_id)
             .bind(max_signals)
             .bind(&signal.principal_id)
+            .bind(candidate_thread.response_annotations.as_str())
             .fetch_optional(&mut *tx)
             .await?
             {

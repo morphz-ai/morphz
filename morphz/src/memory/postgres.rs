@@ -463,6 +463,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20261002_01_thread_response_annotations",
+                    thread::migrate_response_annotations(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260730_01_thread_groups",
                     thread_group::migrate(&store.pool),
                 )
@@ -546,6 +552,14 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration("20260718_06_schedules", schedule::migrate(&store.pool))
+                .await?;
+            // Replace the existing PL/pgSQL admission function, not only its
+            // source used when bootstrapping a new database.
+            store
+                .run_versioned_migration(
+                    "20261002_02_annotation_protocol_batch_isolation",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
                 .await?;
             store
                 .run_versioned_migration(

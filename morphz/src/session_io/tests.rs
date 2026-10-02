@@ -8,6 +8,27 @@ fn enabled() -> Registry {
 }
 
 #[test]
+fn response_annotation_selection_is_raw_optional_and_fingerprinted() {
+    use crate::response_annotations::Protocol;
+    let original = request("null");
+    let fingerprint = original.fingerprint("human");
+    let value = serde_json::to_value(&original).unwrap();
+    assert!(value["activation"].get("response_annotations").is_none());
+    let round_trip: Request = serde_json::from_value(value).unwrap();
+    assert_eq!(round_trip.fingerprint("human"), fingerprint);
+    let mut explicit = original.clone();
+    explicit.activation.response_annotations = Some(Protocol::Off);
+    assert_ne!(explicit.fingerprint("human"), fingerprint);
+    let disabled = explicit.fingerprint("human");
+    explicit.activation.response_annotations = Some(Protocol::V1);
+    assert_ne!(explicit.fingerprint("human"), disabled);
+    assert!(serde_json::from_value::<Activation>(
+        serde_json::json!({"response_annotations":"bogus"})
+    )
+    .is_err());
+}
+
+#[test]
 fn directed_typed_input_is_bound_without_overriding_the_original_route() {
     let registry = enabled();
     assert_eq!(registry.capabilities()["directed_input"], true);

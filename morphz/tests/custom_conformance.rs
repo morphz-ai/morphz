@@ -88,6 +88,7 @@ async fn thread<S: RuntimeStore>(
     let id = format!("{}-{suffix}", ids.0);
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: id.clone(),

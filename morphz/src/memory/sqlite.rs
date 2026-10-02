@@ -898,6 +898,7 @@ impl SqliteStore {
 
         CREATE TABLE IF NOT EXISTS threads (
             id TEXT PRIMARY KEY,
+            response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1')),
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
             agent_id TEXT NOT NULL,
@@ -1720,6 +1721,7 @@ impl SqliteStore {
             .await?;
         }
         for (column, definition) in [
+            ("response_annotations", "TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1'))"),
             (
                 "lifetime",
                 "TEXT NOT NULL DEFAULT 'durable' CHECK(lifetime IN ('attached', 'durable', 'disposable'))",
@@ -6117,9 +6119,26 @@ impl StorageMaintenanceStore for SqliteStore {
 /// Replace the pre-release Thread discriminator and state vocabulary in one
 /// transaction. Public and persistence layers intentionally share the same
 /// canonical values; old spellings exist only as migration input.
+async fn ensure_thread_response_annotations_column(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let columns = sqlx::query("PRAGMA table_info(threads)")
+        .fetch_all(pool)
+        .await?;
+    if !columns.is_empty()
+        && !columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "response_annotations")
+    {
+        sqlx::query("ALTER TABLE threads ADD COLUMN response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1'))").execute(pool).await?;
+    }
+    Ok(())
+}
+
 async fn migrate_threads_to_canonical_domain(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ensure_thread_response_annotations_column(pool).await?;
     let table_sql = sqlx::query_scalar::<_, String>(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
     )
@@ -6167,6 +6186,7 @@ async fn migrate_threads_to_canonical_domain(
         sqlx::query(
             r#"CREATE TABLE threads_canonical_migration (
                 id TEXT PRIMARY KEY,
+                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1')),
                 revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
                 agent_id TEXT NOT NULL,
                 context_id TEXT NOT NULL,
@@ -6189,11 +6209,11 @@ async fn migrate_threads_to_canonical_domain(
         .await?;
         sqlx::query(
             r#"INSERT INTO threads_canonical_migration
-               (id, revision, agent_id, context_id, session_id, root_turn_id,
+               (response_annotations, id, revision, agent_id, context_id, session_id, root_turn_id,
                 kind, status, executor_kind, executor_id, result_text,
                 result_event_id, delivery_status, delivery_event_id,
                 created_at, updated_at)
-               SELECT id, revision, agent_id, context_id, session_id, root_turn_id,
+               SELECT response_annotations, id, revision, agent_id, context_id, session_id, root_turn_id,
                       CASE kind
                           WHEN 'dialogue' THEN 'dialogue_turn'
                           WHEN 'work' THEN 'execution'
@@ -6242,6 +6262,7 @@ async fn migrate_threads_to_canonical_domain(
 async fn migrate_thread_supervisor_kind_domain(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ensure_thread_response_annotations_column(pool).await?;
     let table_sql = sqlx::query_scalar::<_, String>(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
     )
@@ -6276,6 +6297,7 @@ async fn migrate_thread_supervisor_kind_domain(
         sqlx::query(
             r#"CREATE TABLE threads_supervisor_migration (
                 id TEXT PRIMARY KEY,
+                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1')),
                 revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
                 generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
                 agent_id TEXT NOT NULL,
@@ -6314,14 +6336,14 @@ async fn migrate_thread_supervisor_kind_domain(
         .await?;
         sqlx::query(
             r#"INSERT INTO threads_supervisor_migration
-               (id, revision, generation, agent_id, context_id, session_id,
+               (response_annotations, id, revision, generation, agent_id, context_id, session_id,
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, executor_id, target_id, lifetime, supervisor_kind,
                 supervisor_id, supervision_generation, origin_evaluation_id,
                 parent_thread_id, thread_group_id, completion_contract_json,
                 result_text, result_event_id, delivery_status, delivery_event_id,
                 created_at, updated_at)
-               SELECT id, revision, generation, agent_id, context_id, session_id,
+               SELECT response_annotations, id, revision, generation, agent_id, context_id, session_id,
                       initiating_principal_id, root_turn_id, kind, status, control_state,
                       executor_kind, executor_id, target_id, lifetime, supervisor_kind,
                       supervisor_id, supervision_generation, origin_evaluation_id,
@@ -7161,6 +7183,7 @@ fn thread_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
     Ok(ThreadRecord {
+        response_annotations: row.get::<String, _>("response_annotations").parse()?,
         model_alias: row.get("model_alias"),
         reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
@@ -7209,13 +7232,14 @@ async fn ensure_thread_in_transaction(
     let completion_contract_json = serde_json::to_string(&thread.supervision.completion_contract)?;
     sqlx::query(
         r#"INSERT OR IGNORE INTO threads
-           (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+           (response_annotations, model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
             kind, status, executor_kind, executor_id, target_id,
             lifetime, supervisor_kind, supervisor_id, supervision_generation,
             origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
             delivery_status, created_at, updated_at)
-           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
+           VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
     )
+    .bind(thread.response_annotations.as_str())
     .bind(&thread.model_alias)
     .bind(&thread.reasoning_effort)
     .bind(&thread.id)
@@ -7246,6 +7270,7 @@ async fn ensure_thread_in_transaction(
         .await?;
     let existing = thread_from_row(&row)?;
     if existing.context_id != thread.context_id
+        || existing.response_annotations != thread.response_annotations
         || existing.session_id != thread.session_id
         || existing.agent_id != thread.agent_id
         || existing.initiating_principal_id != thread.initiating_principal_id
@@ -8287,6 +8312,7 @@ async fn append_dialogue_signal_in_transaction(
         .get("principal_id")
         .and_then(JsonValue::as_str);
     let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
+    let response_annotations = crate::memory::response_annotations_from_payload(&event.payload)?;
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
 
@@ -8326,6 +8352,7 @@ async fn append_dialogue_signal_in_transaction(
              AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
              AND json_extract(root_event.payload, '$.model_alias') IS ?
              AND json_extract(root_event.payload, '$.reasoning_effort') IS ?
+             AND thread.response_annotations = ?
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1"#,
         )
@@ -8342,6 +8369,7 @@ async fn append_dialogue_signal_in_transaction(
                 .get("reasoning_effort")
                 .and_then(JsonValue::as_str),
         )
+        .bind(response_annotations.as_str())
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -8384,6 +8412,7 @@ async fn append_dialogue_signal_in_transaction(
                  AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
                  AND json_extract(root_event.payload, '$.model_alias') IS ?
                  AND json_extract(root_event.payload, '$.reasoning_effort') IS ?
+                 AND thread.response_annotations = ?
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -8407,6 +8436,7 @@ async fn append_dialogue_signal_in_transaction(
                     .get("reasoning_effort")
                     .and_then(JsonValue::as_str),
             )
+            .bind(response_annotations.as_str())
             .bind(batch_limit)
             .fetch_optional(&mut **tx)
             .await?
@@ -8427,10 +8457,10 @@ async fn append_dialogue_signal_in_transaction(
                     initiating_principal_id, root_turn_id, kind, status, control_state,
                     executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
-                    created_at, updated_at, model_alias, reasoning_effort)
+                    created_at, updated_at, model_alias, reasoning_effort, response_annotations)
                    VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
                            'self', ?, 'durable', 'runtime', 'dialogue-router', 1, '{}',
-                           'none', ?, ?, ?, ?)"#,
+                           'none', ?, ?, ?, ?, ?)"#,
             )
             .bind(&thread_id)
             .bind(&session.agent_id)
@@ -8448,6 +8478,7 @@ async fn append_dialogue_signal_in_transaction(
                     .get("reasoning_effort")
                     .and_then(JsonValue::as_str),
             )
+            .bind(response_annotations.as_str())
             .execute(&mut **tx)
             .await?;
             (thread_id, 1, None)
@@ -8707,10 +8738,10 @@ async fn interrupt_dialogue_turn_in_transaction(
             initiating_principal_id, root_turn_id, kind, status, control_state,
             executor_kind, lifetime, supervisor_kind, supervisor_id,
             supervision_generation, completion_contract_json, delivery_status,
-            created_at, updated_at, model_alias, reasoning_effort)
+            created_at, updated_at, model_alias, reasoning_effort, response_annotations)
            VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
                    'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
-                   'none', ?, ?, ?, ?)"#,
+                   'none', ?, ?, ?, ?, ?)"#,
     )
     .bind(&replacement_thread_id)
     .bind(&session.agent_id)
@@ -8727,6 +8758,7 @@ async fn interrupt_dialogue_turn_in_transaction(
             .get("reasoning_effort")
             .and_then(JsonValue::as_str),
     )
+    .bind(crate::memory::response_annotations_from_payload(&event.payload)?.as_str())
     .execute(&mut **tx)
     .await?;
 
@@ -11782,6 +11814,7 @@ impl ActivationStore for SqliteStore {
                      AND thread.kind = 'dialogue_turn'
                      AND thread.status = 'open'
                      AND thread.control_state = 'active'
+                     AND thread.response_annotations = ?
                      AND (
                        SELECT COUNT(*)
                        FROM activation_signals links
@@ -11798,6 +11831,7 @@ impl ActivationStore for SqliteStore {
                    LIMIT 1"#,
                 )
                 .bind(&activation.session_id)
+                .bind(candidate_thread.response_annotations.as_str())
                 .bind(max_signals)
                 .bind(&signal.principal_id)
                 .bind(&signal.principal_id)
@@ -15433,13 +15467,14 @@ impl ThreadStore for SqliteStore {
             serde_json::to_string(&thread.supervision.completion_contract)?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
-               (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+               (response_annotations, model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                 delivery_status, created_at, updated_at)
-               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
+               VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)"#,
         )
+        .bind(thread.response_annotations.as_str())
         .bind(&thread.model_alias)
         .bind(&thread.reasoning_effort)
         .bind(&thread.id)
@@ -15469,6 +15504,18 @@ impl ThreadStore for SqliteStore {
             .fetch_one(&self.pool)
             .await?;
         let mut existing = thread_from_row(&row)?;
+        // Validate the immutable route before legacy Principal backfill. A
+        // rejected protocol/route must not silently change authoring scope.
+        if existing.context_id != thread.context_id
+            || existing.response_annotations != thread.response_annotations
+            || existing.session_id != thread.session_id
+            || existing.agent_id != thread.agent_id
+        {
+            return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
+        }
+        if existing.kind != thread.kind || existing.supervision != thread.supervision {
+            return Err(format!("Root Turn '{}' 已被不同监督契约占用", thread.root_turn_id).into());
+        }
         if existing.initiating_principal_id.is_none() && thread.initiating_principal_id.is_some() {
             sqlx::query(
                 "UPDATE threads SET initiating_principal_id = ? WHERE id = ? AND initiating_principal_id IS NULL",
@@ -15482,12 +15529,6 @@ impl ThreadStore for SqliteStore {
                 .await?
                 .and_then(|record| record.initiating_principal_id);
         }
-        if existing.context_id != thread.context_id
-            || existing.session_id != thread.session_id
-            || existing.agent_id != thread.agent_id
-        {
-            return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
-        }
         if thread.initiating_principal_id.is_some()
             && existing.initiating_principal_id != thread.initiating_principal_id
         {
@@ -15496,9 +15537,6 @@ impl ThreadStore for SqliteStore {
                 thread.root_turn_id
             )
             .into());
-        }
-        if existing.kind != thread.kind || existing.supervision != thread.supervision {
-            return Err(format!("Root Turn '{}' 已被不同监督契约占用", thread.root_turn_id).into());
         }
         Ok(existing)
     }
@@ -17550,14 +17588,15 @@ impl ScheduleStore for SqliteStore {
                 serde_json::to_string(&thread.supervision.completion_contract)?;
             sqlx::query(
                 r#"INSERT OR IGNORE INTO threads
-                   (model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
+                   (response_annotations, model_alias, reasoning_effort, id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                     kind, status, executor_kind, executor_id, target_id,
                     lifetime, supervisor_kind, supervisor_id, supervision_generation,
                     origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
                     delivery_status, created_at, updated_at)
-                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            'none', ?, ?)"#,
             )
+            .bind(thread.response_annotations.as_str())
             .bind(&thread.model_alias)
             .bind(&thread.reasoning_effort)
             .bind(&thread.id)
@@ -18946,9 +18985,37 @@ impl DeliveryIngressStore for SqliteStore {
                     _ => None,
                 };
                 let thread = if let Some(objective) = objective.as_ref() {
+                    let root = crate::memory::objective_primary_execution_root_id(
+                        &objective.id,
+                        objective.generation,
+                    );
+                    let response_annotations = if let Some(protocol) =
+                        sqlx::query_scalar::<_, String>(
+                            "SELECT response_annotations FROM threads WHERE root_turn_id = ?",
+                        )
+                        .bind(&root)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                    {
+                        protocol.parse()?
+                    } else if let Some(payload) =
+                        sqlx::query_scalar::<_, String>("SELECT payload FROM events WHERE id = ?")
+                            .bind(&objective.source_event_id)
+                            .fetch_optional(&mut *tx)
+                            .await?
+                    {
+                        crate::memory::response_annotations_from_payload(&serde_json::from_str(
+                            &payload,
+                        )?)?
+                    } else {
+                        crate::response_annotations::Protocol::Off
+                    };
                     ensure_thread_in_transaction(
                         &mut tx,
-                        &crate::steering::objective_thread(objective),
+                        &crate::steering::objective_thread_with_annotations(
+                            objective,
+                            response_annotations,
+                        ),
                     )
                     .await?
                 } else {
@@ -19797,10 +19864,10 @@ impl DeliveryIngressStore for SqliteStore {
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at)
+                created_at, updated_at, response_annotations)
                VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
                        'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
-                       'none', ?, ?)"#,
+                       'none', ?, ?, ?)"#,
         )
         .bind(&thread_id)
         .bind(&target.agent_id)
@@ -19810,6 +19877,7 @@ impl DeliveryIngressStore for SqliteStore {
         .bind(&event.id)
         .bind(&now)
         .bind(&now)
+        .bind(crate::memory::response_annotations_from_payload(&event.payload)?.as_str())
         .execute(&mut *tx)
         .await?;
         let sequence = sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
@@ -20288,6 +20356,9 @@ impl DelegationStore for SqliteStore {
         let thread = ensure_thread_in_transaction(
             &mut tx,
             &NewThread {
+                response_annotations: crate::memory::response_annotations_from_payload(
+                    &event.payload,
+                )?,
                 model_alias: None,
                 reasoning_effort: None,
                 id: stable_thread_id(&event.id),
@@ -23692,10 +23763,10 @@ impl ExecutionJobStore for SqliteStore {
                 root_turn_id, kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
-                delivery_status, created_at, updated_at)
+                delivery_status, created_at, updated_at, response_annotations)
                VALUES (?, 1, ?, ?, ?, ?, ?, 'execution', 'open',
                        'artifact_transfer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       'none', ?, ?)"#,
+                       'none', ?, ?, ?)"#,
         )
         .bind(&execution.thread.id)
         .bind(&execution.thread.agent_id)
@@ -23715,6 +23786,7 @@ impl ExecutionJobStore for SqliteStore {
         .bind(&completion_contract_json)
         .bind(&now)
         .bind(&now)
+        .bind(execution.thread.response_annotations.as_str())
         .execute(&mut *tx)
         .await?;
         let thread_row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
@@ -23723,6 +23795,7 @@ impl ExecutionJobStore for SqliteStore {
             .await?;
         let thread = thread_from_row(&thread_row)?;
         if thread.id != execution.thread.id
+            || thread.response_annotations != execution.thread.response_annotations
             || thread.agent_id != execution.thread.agent_id
             || thread.context_id != execution.thread.context_id
             || thread.session_id != execution.thread.session_id
@@ -28876,7 +28949,32 @@ mod tests {
         .await
         .unwrap();
 
+        ensure_thread_response_annotations_column(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT response_annotations FROM threads WHERE id = 'legacy-thread'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "off"
+        );
+        sqlx::query("UPDATE threads SET response_annotations = 'v1' WHERE id = 'legacy-thread'")
+            .execute(&pool)
+            .await
+            .unwrap();
         migrate_thread_supervisor_kind_domain(&pool).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT response_annotations FROM threads WHERE id = 'legacy-thread'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "v1"
+        );
 
         let table_sql: String = sqlx::query_scalar(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
@@ -28925,6 +29023,7 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "attached-migration-parent".to_string(),
@@ -29404,6 +29503,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "identity-thread".to_string(),
@@ -29456,6 +29556,7 @@ mod tests {
 
         let conflict = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "identity-thread-conflict".to_string(),
@@ -30789,6 +30890,7 @@ mod tests {
         ] {
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: thread_id.clone(),
@@ -30853,6 +30955,7 @@ mod tests {
             threads.push(
                 store
                     .ensure_thread(NewThread {
+                        response_annotations: crate::response_annotations::Protocol::Off,
                         model_alias: None,
                         reasoning_effort: None,
                         id: format!("delivery-thread-{suffix}-{index}"),
@@ -31459,6 +31562,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.clone(),
@@ -33808,6 +33912,7 @@ mod tests {
         );
         event.timestamp = pending_at;
         let delivery_thread = NewThread {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: stable_thread_id(&event.id),
@@ -34919,6 +35024,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "retry-thread".to_string(),
@@ -34987,6 +35093,7 @@ mod tests {
         attached_supervision.thread_group_id = Some("retry-attached-group".to_string());
         let attached = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "retry-attached-child".to_string(),
@@ -35449,6 +35556,7 @@ mod tests {
         store.append(root.clone()).await.unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "target-retry-thread".to_string(),
@@ -35869,6 +35977,7 @@ mod tests {
                 .unwrap();
             let thread = store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("admission-thread-{name}"),
@@ -36142,6 +36251,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "signal-thread".to_string(),
@@ -36521,6 +36631,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "contention-thread".to_string(),
@@ -36656,6 +36767,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "binding-contention-thread".to_string(),
@@ -36822,6 +36934,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "terminal-replay-thread".to_string(),
@@ -36924,6 +37037,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_annotations_are_frozen_and_isolate_ingress_batches() {
+        use crate::response_annotations::Protocol;
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "annotations-context".into(),
+                agent_id: "annotations-agent".into(),
+                title: "annotations".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "annotations-session".into(),
+                agent_id: "annotations-agent".into(),
+                context_id: "annotations-context".into(),
+                parent_session_id: None,
+                title: "annotations".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        bind_message_test_principal(&store, "annotations-session", "annotations-principal").await;
+        for (index, protocol) in [(1, Protocol::Off), (2, Protocol::V1), (3, Protocol::V1)] {
+            let mut payload = serde_json::json!({
+                "context_id": "annotations-context", "session_id": "annotations-session", "principal_id": "annotations-principal",
+                "text": format!("message {index}"), "dispatch_mode": "interrupt"
+            }).as_object().unwrap().clone();
+            if !protocol.is_off() {
+                payload.insert("response_annotations".into(), serde_json::json!(protocol));
+            }
+            let event = Event::new(
+                format!("annotations-event-{index}"),
+                "User".into(),
+                crate::event::TYPE_USER_MESSAGE.into(),
+                "chat/user_message".into(),
+                payload,
+            );
+            assert!(matches!(
+                store
+                    .claim_message(
+                        "annotations-session",
+                        &format!("annotations-client-{index}"),
+                        &event,
+                        MessageDispatchMode::Interrupt
+                    )
+                    .await
+                    .unwrap(),
+                MessageClaim::Accepted { .. }
+            ));
+        }
+        let signals = sqlx::query("SELECT event_id, thread_id FROM thread_signals WHERE event_id LIKE 'annotations-event-%' ORDER BY event_id")
+            .fetch_all(&store.pool).await.unwrap();
+        assert_eq!(signals.len(), 3);
+        assert_ne!(
+            signals[0].get::<String, _>("thread_id"),
+            signals[1].get::<String, _>("thread_id")
+        );
+        assert_eq!(
+            signals[1].get::<String, _>("thread_id"),
+            signals[2].get::<String, _>("thread_id")
+        );
+        let thread = store
+            .get_thread(&signals[1].get::<String, _>("thread_id"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(thread.response_annotations, Protocol::V1);
+        let mut request = NewThread {
+            response_annotations: Protocol::V1,
+            model_alias: thread.model_alias.clone(),
+            reasoning_effort: thread.reasoning_effort.clone(),
+            id: thread.id.clone(),
+            agent_id: thread.agent_id.clone(),
+            context_id: thread.context_id.clone(),
+            session_id: thread.session_id.clone(),
+            initiating_principal_id: thread.initiating_principal_id.clone(),
+            root_turn_id: thread.root_turn_id.clone(),
+            kind: thread.kind,
+            executor_kind: thread.executor_kind.clone(),
+            executor_id: thread.executor_id.clone(),
+            target_id: thread.target_id.clone(),
+            supervision: thread.supervision.clone(),
+        };
+        assert_eq!(
+            store
+                .ensure_thread(request.clone())
+                .await
+                .unwrap()
+                .response_annotations,
+            Protocol::V1
+        );
+        request.response_annotations = Protocol::Off;
+        assert!(
+            store.ensure_thread(request).await.is_err(),
+            "an existing root's protocol cannot be overwritten"
+        );
+        let mut disabled = thread.clone();
+        disabled.response_annotations = Protocol::Off;
+        assert!(serde_json::to_value(&disabled)
+            .unwrap()
+            .get("response_annotations")
+            .is_none());
+        let legacy: ThreadRecord =
+            serde_json::from_value(serde_json::to_value(&disabled).unwrap()).unwrap();
+        assert_eq!(legacy.response_annotations, Protocol::Off);
+        drop(store);
+        let reopened = SqliteStore::new(path).await.unwrap();
+        assert_eq!(
+            reopened
+                .get_thread(&thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .response_annotations,
+            Protocol::V1
+        );
+    }
+
+    #[tokio::test]
     async fn consecutive_unread_user_messages_share_the_next_dialogue_turn() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
@@ -36952,6 +37187,7 @@ mod tests {
         for index in 1..=3 {
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("dialogue-batch-thread-{index}"),
@@ -37238,6 +37474,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "control-thread".to_string(),
@@ -37375,6 +37612,7 @@ mod tests {
         supervision.thread_group_id = Some("group-control".to_string());
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "group-control-thread".to_string(),
@@ -37508,6 +37746,7 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "attached-barrier-parent".to_string(),
@@ -37532,6 +37771,7 @@ mod tests {
         child_supervision.thread_group_id = Some("attached-barrier-group".to_string());
         let child = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "attached-barrier-child".to_string(),
@@ -37638,6 +37878,7 @@ mod tests {
             .unwrap();
         let parent = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "orphaned-group-parent".to_string(),
@@ -37671,6 +37912,7 @@ mod tests {
             children.push(
                 store
                     .ensure_thread(NewThread {
+                        response_annotations: crate::response_annotations::Protocol::Off,
                         model_alias: None,
                         reasoning_effort: None,
                         id: format!("orphaned-group-child-{ordinal}"),
@@ -37753,6 +37995,7 @@ mod tests {
             assert!(matches!(
                 closed,
                 ThreadMutation::Updated(ThreadRecord {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     lifecycle: ThreadLifecycle::Cancelled,
                     ..
                 })
@@ -39586,6 +39829,7 @@ mod tests {
         };
         let continuation = event("objective-continuation-event", "objective-evaluation");
         let continuation_thread = NewThread {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: stable_thread_id(&continuation_root),
@@ -39628,6 +39872,7 @@ mod tests {
 
         let stale = event("stale-objective-continuation", "stale-evaluation");
         let stale_thread = NewThread {
+            response_annotations: crate::response_annotations::Protocol::Off,
             ..continuation_thread.clone()
         };
         assert!(matches!(
@@ -42735,6 +42980,7 @@ mod tests {
         create_sql_performance_fixture(&store, "plan-kind").await;
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "perf-thread-plan-kind".to_string(),

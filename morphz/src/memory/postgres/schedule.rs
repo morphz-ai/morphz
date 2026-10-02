@@ -431,9 +431,9 @@ impl ScheduleStore for PostgresStore {
                     kind, status, executor_kind, executor_id, target_id,
                     lifetime, supervisor_kind, supervisor_id, supervision_generation,
                     origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
-                    delivery_status, created_at, updated_at)
+                    delivery_status, created_at, updated_at, response_annotations)
                    VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
-                           $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
+                           $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21, $22)
                    ON CONFLICT DO NOTHING"#,
             )
             .bind(&thread.model_alias)
@@ -457,6 +457,7 @@ impl ScheduleStore for PostgresStore {
             .bind(&thread.supervision.thread_group_id)
             .bind(&thread.supervision.completion_contract)
             .bind(&now)
+            .bind(thread.response_annotations.as_str())
             .execute(&mut *tx)
             .await?;
             if thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective {

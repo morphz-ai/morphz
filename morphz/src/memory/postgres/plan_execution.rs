@@ -806,6 +806,7 @@ impl PlanExecutionStore for PostgresStore {
         let child_thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: request_event
                     .payload
                     .get("model_alias")

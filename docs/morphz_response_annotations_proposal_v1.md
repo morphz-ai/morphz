@@ -1,6 +1,6 @@
 # Morphz Runtime 可选响应注解 Proposal
 
-状态：隔离机制门槛已通过，进入 Runtime 实施。原型通过不代表生产持久化、恢复或所有 Provider 已通过。
+状态：隔离机制门槛通过后完成 Runtime 核心实施及本地生产链验收。支持范围见本文末尾，不代表所有 Provider 已通过。
 
 日期：2026 年 10 月 2 日。
 
@@ -18,7 +18,7 @@
 
 Runtime 默认关闭整个机制。关闭时必须保持原工具定义、提示词、回复边界、流式正文、请求数量和执行参数不变；不添加保留参数，不注册特殊回复入口，也不抽取名称碰巧相同的业务字段。
 
-以 HTTP API 和 SDK 在提交执行输入时显式指定为主，不要求启动参数或重启进程。已核对的入口是 Request.activation 路由选项，经 HTTP、SDK 和 SessionHandle 共用接收链。建议增加 activation.response_annotations，取值 off 或 v1，缺省继承 Runtime 配置默认值 off。用版本枚举而非布尔值，既能显式关闭，也能持久识别已采用的协议版本。进程配置仅提供默认值，不替代请求选择。同一个 Runtime 可以服务不同调用方和不同 Execution 的选择。
+以 HTTP API 和 SDK 在提交执行输入时显式指定为主，不要求启动参数或重启进程。Request.activation 路由选项经 HTTP、SDK 和 SessionHandle 共用接收链。activation.response_annotations 取值 off 或 v1，缺省继承 orchestrator.response_annotations 配置默认值 off。用版本枚举而非布尔值，既能显式关闭，也能持久识别已采用的协议版本。进程配置仅提供默认值，不替代请求选择。同一个 Runtime 可以服务不同调用方和不同 Execution 的选择。
 
 ```json
 {
@@ -28,13 +28,13 @@ Runtime 默认关闭整个机制。关闭时必须保持原工具定义、提示
 }
 ```
 
-选择在接收输入时解析并持久绑定当前 Execution 使用的协议版本，后续工具轮次与重启恢复沿用它，不受后来配置开关变化影响。不允许运行中的 Execution 因全局配置变化而更换输出契约。Directed supplement 继承原 Execution 的选择，禁止以补充输入覆盖该路由选项；follow-up 新执行可另行选择。确切持久字段位置须在机制验证后的集成审查中核对，AcceptedInput 的原请求与幂等指纹不能被事后默认值变化改写。启用不是模型自行决定的事，也不是“看到某个字段就隐式启用”。
+选择在接收输入时解析，写入 Accepted Event 的有效协议并冻结为 Thread.response_annotations；AcceptedInput.binding.execution 回传有效选择。后续工具轮次与重启恢复沿用它，不受后来配置开关变化影响。不允许运行中的 Execution 因全局配置变化而更换输出契约。Directed supplement 继承原 Execution 的选择，禁止以补充输入覆盖该路由选项；follow-up 新执行可另行选择。AcceptedInput 的原请求与幂等指纹不能被事后默认值变化改写：只将调用方显式选择计入指纹，缺省请求仍使用原指纹。启用不是模型自行决定的事，也不是“看到某个字段就隐式启用”。
 
 现有尚未读取的普通输入可能合批到同一 DialogueTurn；有效响应注解版本必须成为合批兼容条件。off 与 v1 不得静默采用第一条或最后一条请求的设置，必须沿已有独立执行路径处理。
 
 Morphz 应用可以选择默认启用，但底层 Runtime 的默认值不得因此改变。此次目标不包含默认改变现有应用行为。
 
-启用后所有注解字段仍可缺省。旧纯正文和原 no_reply 形式仍合法；typed infer 的严格返回值不自动挂载注解回复协议。工具名 reply 或顶层参数 _annotations 已被调用方占用时，启用预检必须报告冲突，不覆盖业务能力。
+启用后所有注解字段仍可缺省。旧纯正文和原 no_reply 形式仍合法；typed infer 的严格返回值不自动挂载注解回复协议。工具名 reply 或顶层参数 _annotations 已被调用方占用时，启用预检必须报告冲突，不覆盖业务能力。接收链在任何原子落库、Thread 或 Job 创建之前以 422、invalid_response_annotation_contract 和静态冲突原因拒绝；不能误报为暂时不可用而诱导重试。已有 AcceptedInput 的同请求重试仍返回原冻结绑定，不重新根据今日默认值检查新契约。
 
 ## 逻辑结构
 
@@ -58,7 +58,7 @@ Morphz 应用可以选择默认启用，但底层 Runtime 的默认值不得因�
 
 | 字段 | 对象 | 语义 |
 | --- | --- | --- |
-| execution.title | 当前 Execution | 整次工作做什么，首次有效标题用于展示；后续重复留审计，不替换为步骤名 |
+| execution.title | 当前 Execution 的输入修订 | 整次工作做什么；同一输入修订采用首个有效标题，用户补充或调整任务后可更新，不能漂移成步骤名 |
 | execution.progress | 当前 Execution | 基于已观察结果的阶段说明，不是数字百分比或状态枚举 |
 | execution.result | 当前 Execution | 最终结果短述，包含失败、部分完成和未执行部分 |
 | intent | 承载它的当前调用 | 即将执行这一步的目的，不宣称结果已经发生 |
@@ -127,11 +127,19 @@ Runtime 是生产者、绑定与事实记录的权威。优先将验证过的注
 
 优先复用已有 Event 存储与授权查询以保持 SQLite 和 PostgreSQL 一致；注解是有界结构化 Event payload，不是全工作区 JSON 快照。删除与保留跟随既有 Event 生命周期。若索引或展示查询不能仅靠现有模型实现，须修订本文的数据模型与迁移说明后再落地。
 
-协议启用绑定的候选生产模型是 Thread 上写入一次的类型化版本字段，旧行默认 off，SQLite 与 PostgreSQL 统一迁移，并由 AcceptedInput.binding.execution 回传。原位 retry 与 supersede 保持原工作身份，仅增加 generation，因此只继承协议，不提供可变 setter；新用户执行使用新的根 Event 与 Thread。每个来源响应 Event 另存当时的协议与 generation，旧代恢复先经过既有 generation fence，再按来源快照解码。注解内容则优先保存在来源响应 Event 中。两者职责不同：前者决定这次执行的输出契约，后者记录该次响应确实产生了哪些展示解释。不得只把开关放进临时 ModelRequestOptions 后在下一次 Activation 丢失。
+协议启用绑定采用 Thread 上写入一次的类型化版本字段，旧行默认 off，SQLite 与 PostgreSQL 分别有可重入迁移；Off 字段不进入旧序列化输出。原位 retry 与 supersede 保持原工作身份，仅增加 generation，因此只继承协议，不提供可变 setter；新用户执行使用新的根 Event 与 Thread。每个来源响应 Event 另存当时的协议与 generation，旧代恢复先经过既有 generation fence，再按来源快照解码。注解内容保存在 response_annotation_bundle 中，与来源响应 Event 同次原子写入。两者职责不同：前者决定这次执行的输出契约，后者记录该次响应确实产生了哪些展示解释。不得只把开关放进临时 ModelRequestOptions 后在下一次 Activation 丢失。
+
+工作调用来源沿用实际 model attempt 身份；V1 的终结或等待来源使用 call_{activation}_final，避免同一 Activation 内的工作响应、失败的完成控制回执与最终正文争用同一个来源 ID。验收发现 Off 原逻辑也有完成控制被拒后同 Activation 争用 ID 的缺陷：只有当再次请求且已有非终态工作来源实际占用原 ID 时，最终来源改用 _final；普通 Off 来源 ID、载荷和交付不变。这是原有错误路径的限定修复，不是启用注解协议。等待保留候选 result，但不将其标为生效。恢复复验确切 manifest、原始调用、注解绑定与原 owner-bound Timer；它不重新请求模型、不重新发布正文，也不重设等待时钟。已拥有输入的启动恢复不是新 Signal，不应取消原 Activation 刚持久化的等待 Timer。
+
+未来 Schedule 排队不必然表示当前用户回复仍在等待。既有 Runtime 在互动输入根收到合法交付时可以提交真实终态，而非互动定时任务根仍按既有条件报告 progress 并等待。V1 仅跟随实际选择保存终态或等待来源，不能由 result 文案改变该选择。互动提前交付分支必须先保存来源响应与注解，再沿原交付流程提交 Outcome；不能因为后续 yield_thread 看到 Thread 已完成而漏存来源。
 
 Application 只读取授权后的投影。执行中显示 title 与 progress；终结后显示 title 与 result。取消、崩溃或没有模型收尾时显示 Runtime 事实和回执。迟到 progress 不得使终态倒退。数字进度只在执行事实存在可靠分母时计算。
 
-title 从当前 generation 的可信事件顺序中选首个有效值；progress 与 result 各按适用事实边界选最新有效值。阶段描述不得更换整次工作的标题。首版不另加标题修正推理或主动改名接口。
+title 按当前 generation 内的可信输入修订选择。初始修订为 0；同一修订按真实响应事件顺序选首个有效标题，防止普通步骤改掉整次工作标题。用户补充或调整当前任务时，既有 steer 输入真正进入后续模型请求后，允许该轮随原有工作调用或回复提供更新后的标题，不另加标题推理请求。
+
+输入修订不是模型参数，也不等于全局 Context version 或事件上界。Runtime 核对补充 Event 的当前 Thread、generation、Session、发起 Principal、实际请求可见范围及已 Claimed 或 Acknowledged 的持久 Signal，以真实补充 Event ID 和 sequence 生成 host-only title_input_revision，并与来源响应的 manifest、注解一起原子保存。后续 Activation 可以从已验证来源继承修订，包括补充出现时尚未产生标题的情况，不能依赖补充 Signal 仍属于新 Activation 或仍驻留压缩后的 Context。恢复只复验保存的输入证据，不能扫描今日所有 Signal 而把旧响应升级为新修订。
+
+展示选择最新已验证输入修订中的首个有效标题；若新修订没有有效标题，沿用已有标题。旧响应迟到或重放不得覆盖更新后的标题。阶段描述仍不能直接改名，补充输入也不自动新建活动、重跑已提交 Job 或扩大权限。progress 与 result 各按适用事实边界选最新有效值。
 
 ## Yao 和 typed infer 的边界
 
@@ -187,3 +195,21 @@ JavaScript 隔离机制扩展至 20 项通过，Rust 机制 18 项及原生 brid
 配置别名、路由初始化、未鉴权的 401 或兼容流事件都不能冒充对应能力已验证。上游代理内部 HTTP 重试次数在该 Client 边界仍不可见；记录未知，不写成零。始终不读取或记录用户对话、Profile 或凭据内容。
 
 后续记录需写明实际问题、修订以及重测结果，不能把设计预期写成已实现能力。
+
+生产实施复核发现普通工具回执走独立执行器写入，不能只在 Orchestrator 的通用事件函数增加 generation；遗漏会使实际已返回、已提供的合法引用被拒绝。已补本次本地执行链回执的冻结协议/代际快照，重测后合法引用及跨执行拒绝场景通过。等待来源事件进入独立恢复分支，保存准确 manifest、model attempt、原始调用与提供时的 native continuation，复验已持久化的 owner-bound Timer，不能当作普通 assistant_call 或重问模型。补充验收又发现互动提前交付分支遗漏注解；测试原先把未来 Schedule 错当成必然等待，已按真实 Runtime 行为拆分互动终态与非互动等待场景，不修改执行事实来满足错误预期。
+
+调用方另提供 Muse 在任务补充后同步更新活动标题并接续执行的观察。据此修订了此前“整个 generation 永远只取首标题”的设计：同输入修订稳定，新可信 steer 输入可更新。真实 Runtime 与 SQLite 的两个 Steer 用例已通过，分别比较正常两请求及延迟命名三请求的 Off/V1 路径，验证同一 Execution、输入真正进入请求、跨 Activation 修订继承、Job 不重跑与迟到标题保护。这验证的是 Morphz 的行为，不推断 Muse 的内部协议。
+
+## Runtime 验收记录
+
+当前已完成的核心验收为 57 项：30 项协议、流式与入口单元测试；真实 SQLite Runtime 的 19 项工具、正文、typed infer、跨作用域引用、代际、持久边界恢复及真实生命周期测试；2 项真实 Steer 请求链；3 项 SQLite 与隔离 PostgreSQL 协议生命周期、混合输入合批及迁移测试；3 项真实 API 接收与拒绝预检测试。PostgreSQL 用例实际执行，不计跳过为通过。Runtime 测试使用 native bound-with-options 的合成 Client 和真实持久 Job，不是上游模型质量测试；真实模型机制门槛仍由前述 14 请求证据单独证明。
+
+新增验收比较了 Off/V1 的实际 silent、wait、operator cancel 和互动提前交付，均维持原有两次业务请求、真实物理回执及 Lifecycle；取消实际销毁了未返回最终响应的原生模型 Future，没有请求模型补写结语。真实 create_session_schedule 经 Scheduler Timer 产生非互动 schedule_due、运行物理 Job，再正常选择 progress 与 waiting，候选 result 保留但不生效；测试未伪造等待事件、Timer 或终态。另一项 V1 旧式纯正文验收为一次请求、零 Job、空注解，正文仍完整交付。完成控制被拒后的 V1 与 Off 同 Activation 两来源均独立持久，未增加请求。入口测试核对冲突拒绝发生于 AcceptedInput、Thread、Job、模型请求之前；切回 Off 保留完整 Registry 业务 schema 和原参数，缺省旧请求重启后保持原 Off 绑定，缺省/显式 Off/显式 V1 指纹彼此可区分。
+
+实际发现并修复了跨 Activation 后补充标题修订丢失、已拥有输入在恢复时误取消等待时钟、导入 Thread 的 Custom 绑定错误地重新计算稳定 ID，以及不兼容 ensure_thread 在拒绝之前先写入 Principal 的问题。测试读取 EventStore 的真实持久 sequence 后再绑定 Signal，不能将接收接口返回对象尚无 sequence 误认为未落库，也不能伪造序号使恢复测试通过。
+
+执行循环首次默认并行运行是 77 通过、2 失败；两项都在第二输入发送前的固定 800 毫秒首工具启动门槛失败。保持原代码、预算和断言，同一 binary 的交替复测为 20/20、完整串行为 79/79。该证据支持并行负载敏感，不记为原并行运行全绿。串行日志另有 HangingClient 两次和 BlockingClient 一次测试 worker 的预设 unreachable 异常；主 deadline 断言通过，但日志不是全无异常。
+
+启用 remote-store 的跨进程审批回归实际暴露了默认 Tokio worker 栈溢出：首轮为 2 通过、16 失败，普通恢复与 Objective 创建路径均受影响。仅将下层执行器放到堆上仍不足以修复；将恢复与新模型评估分成同任务内分别等待的 Future，并隔离新增协议失败交付 Future 后，原 18 项跨进程用例全部通过。没有调大线程栈、改 fixture 的环境清理、改超时或放宽断言。当前 macOS debug binary 的恢复函数 poll 栈帧从约 860 KB 降至约 84 KB；该尺寸是本次编译的观测值，不作为其他平台的保证。补齐互动提前交付及限定 Off 来源 ID 修复后，当前 remote-store binary 再次通过跨进程审批 18/18、执行循环串行 79/79、Plan infer handoff 5/5、terminal handoff 1/1；审批子进程 fixture 本身的 ignored 标记不是未执行，18 个父用例实际调用它。8 项原 PostgreSQL 审批回归此前已在独立 schema 中实际通过且清理完成，不把默认忽略项算作已执行。全目标 cargo check 已通过；另有 9 项 HTTP Custom 授权、Steer、指纹、旧 SQLite 和等待 Timer 的单元回归实际通过。macOS lib-test 链接器仍提示异常 unwind 段过大，此为构建警告，不冒充日志零异常。
+
+目前验证范围是本地工具执行、指定真实模型 Responses 路由与上述 SQL Store。未据此声明所有 Provider strict-schema、Edge 回执、在线 opaque continuation 签名或 Muse 内部协议已验证。Title 继承只查询最近 32 个来源响应，但当前 Thread Signal 校验仍读取该 Thread 的历史信箱；32 不是整个查询链的数量上界。Application 活动卡片消费、产品默认启用和 Yao 内部 leaf 语义注解不属于此次 Runtime 契约实施。

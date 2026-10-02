@@ -2596,6 +2596,14 @@ impl BackgroundTaskScheduler {
             return Ok(TimerDisposition::Complete);
         };
         prepare_background_session_wake_payload(&mut payload);
+        if let Some(owner) = sessions.get_thread(&job.thread_id).await? {
+            if !owner.response_annotations.is_off() {
+                payload.insert(
+                    "response_annotations".into(),
+                    serde_json::json!(owner.response_annotations),
+                );
+            }
+        }
         payload.insert("session_id".to_string(), serde_json::json!(job.session_id));
         payload.insert("context_id".to_string(), serde_json::json!(job.context_id));
         payload.insert(
@@ -2967,6 +2975,7 @@ mod wake_route_tests {
 
     fn thread(lifecycle: ThreadLifecycle, supervision: ThreadSupervision) -> ThreadRecord {
         ThreadRecord {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "thread-wake".into(),
@@ -3424,6 +3433,7 @@ impl ThreadScheduler {
             owner.root_turn_id.clone()
         };
         let occurrence_thread = current.interval_seconds.map(|_| NewThread {
+            response_annotations: owner.response_annotations,
             model_alias: current
                 .model_alias
                 .clone()
@@ -5034,6 +5044,7 @@ impl Tool for ScheduleTxTool {
                 prepared_supervisions.push(Some(supervision));
                 prepared_required.push(completion.required);
                 threads.push(NewThread {
+                    response_annotations: current_thread.response_annotations,
                     model_alias,
                     reasoning_effort,
                     id: thread_id.clone(),
@@ -11064,6 +11075,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: parent.thread_id.clone(),
@@ -11403,6 +11415,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-current".to_string(),
@@ -11525,6 +11538,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-model-batch-current".to_string(),
@@ -11745,6 +11759,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-objective-schedule-current".to_string(),
@@ -11923,6 +11938,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-existing-objective-current".to_string(),
@@ -12151,6 +12167,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-thread-promotion-parent".to_string(),
@@ -12431,6 +12448,7 @@ Body
         for (thread_id, root_turn_id) in thread_ids {
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: (*thread_id).to_string(),
@@ -12554,6 +12572,7 @@ Body
         let thread_id = stable_thread_id(&root);
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.clone(),
@@ -12623,6 +12642,7 @@ Body
             .unwrap();
         let child = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-stale-child".to_string(),
@@ -12779,6 +12799,7 @@ Body
         let thread_id = "thread-objective-paused-schedule";
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.to_string(),
@@ -17278,6 +17299,7 @@ Body
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "wait-rearm-thread".to_string(),

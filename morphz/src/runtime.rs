@@ -3808,6 +3808,7 @@ impl MorphzRuntime {
             return Ok(existing);
         }
         let thread = NewThread {
+            response_annotations: self.inner.config.orchestrator.response_annotations,
             model_alias: request.model_alias.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
             id: thread_id.clone(),
@@ -5559,6 +5560,7 @@ impl MorphzRuntime {
             .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
                 request_event: request_event.clone(),
                 thread: NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: identity.thread_id.clone(),
@@ -10246,6 +10248,8 @@ pub struct MessageReceipt {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionMessageOptions {
+    /// One-shot request choice, resolved once and frozen on the resulting Thread.
+    pub response_annotations: Option<crate::response_annotations::Protocol>,
     pub input_destination: Option<crate::steering::InputDestination>,
     pub requested_harness: Option<crate::harness::ExactHarnessRef>,
     pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
@@ -10435,6 +10439,7 @@ impl SessionHandle {
         }
         let activation = &accepted.request.activation;
         let options = SessionMessageOptions {
+            response_annotations: activation.response_annotations,
             requested_harness: activation.harness.clone(),
             dispatch_mode: Some(
                 activation
@@ -10460,6 +10465,14 @@ impl SessionHandle {
             )
             .await
             .map_err(|error| {
+                if let Some(error) =
+                    error.downcast_ref::<crate::response_annotations::ProtocolError>()
+                {
+                    // This preflight precedes atomic acceptance. Report the
+                    // static contract conflict, not a transient dispatch error
+                    // that would incorrectly invite retries of the same input.
+                    return IoError::new("invalid_response_annotation_contract", error.to_string());
+                }
                 let code = match error
                     .downcast_ref::<MessageIngressError>()
                     .map(|error| error.kind)
@@ -10564,6 +10577,7 @@ impl SessionHandle {
             principal_id,
             client_message_id,
             SessionMessageOptions {
+                response_annotations: None,
                 requested_harness,
                 ..SessionMessageOptions::default()
             },
@@ -10600,6 +10614,7 @@ impl SessionHandle {
         mut io: Option<crate::session_io::AcceptedInput>,
     ) -> Result<MessageReceipt, RuntimeError> {
         let SessionMessageOptions {
+            response_annotations,
             input_destination,
             requested_harness,
             attachments,
@@ -10614,9 +10629,10 @@ impl SessionHandle {
             && (model_alias.is_some()
                 || reasoning_effort.is_some()
                 || target_id.is_some()
-                || requested_harness.is_some())
+                || requested_harness.is_some()
+                || response_annotations.is_some())
         {
-            return Err("Directed input inherits the existing work route; model, reasoning, Target and Harness overrides are not allowed".into());
+            return Err("Directed input inherits the existing work route; model, reasoning, Target, Harness and response annotation overrides are not allowed".into());
         }
         let session = self
             .runtime
@@ -10655,6 +10671,23 @@ impl SessionHandle {
         // read on every accepted message.
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
+        let effective_annotations = response_annotations
+            .unwrap_or(self.runtime.inner.config.orchestrator.response_annotations);
+        if input_destination.is_none()
+            && !effective_annotations.is_off()
+            && self
+                .runtime
+                .inner
+                .store
+                .message_event_id(&self.id, &client_message_id)
+                .await?
+                .is_none()
+        {
+            self.runtime
+                .inner
+                .orchestrator
+                .validate_response_annotations_protocol(effective_annotations)?;
+        }
         let staged_attachments = self
             .runtime
             .inner
@@ -10928,6 +10961,14 @@ impl SessionHandle {
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
             ("coordination_mode".to_string(), json!(coordination_mode)),
         ]);
+        if let Some(protocol) = response_annotations {
+            payload.insert("requested_response_annotations".into(), json!(protocol));
+        }
+        // Freeze the resolved default in the accepted Event, never in the raw
+        // Request fingerprint. Directed input is rebound by its locked owner.
+        if input_destination.is_none() && !effective_annotations.is_off() {
+            payload.insert("response_annotations".into(), json!(effective_annotations));
+        }
         if input_destination.is_none() {
             // An ordinary input begins its own Turn. Directed steering joins
             // existing work and must not advertise itself as that Turn's root.
@@ -11016,6 +11057,9 @@ impl SessionHandle {
                 "harness_id":payload.get("requested_harness_id"), "harness_version":payload.get("requested_harness_version"),
                 "harness_hash":payload.get("requested_harness_artifact_hash"),
             });
+            if let Some(protocol) = payload.get("response_annotations") {
+                input.binding.execution["response_annotations"] = protocol.clone();
+            }
             payload.insert("session_io".into(), serde_json::to_value(input)?);
         }
         let event = Event::new(
@@ -12063,6 +12107,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-model-configuration-provider-wake".to_string(),
@@ -12285,6 +12330,7 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-model-switch-{suffix}"),
@@ -12796,6 +12842,7 @@ mod tests {
                         runtime.identity().principal_id.clone(),
                         Some("follow-up".into()),
                         SessionMessageOptions {
+                            response_annotations: None,
                             dispatch_mode: Some(crate::memory::MessageDispatchMode::FollowUp),
                             ..Default::default()
                         },
@@ -12813,6 +12860,7 @@ mod tests {
                 runtime.identity().principal_id.clone(),
                 Some("correction".into()),
                 SessionMessageOptions {
+                    response_annotations: None,
                     input_destination: Some(crate::steering::InputDestination::Thread {
                         thread_id: thread.id.clone(),
                         generation: thread.generation,
@@ -13343,6 +13391,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-live-schedule".to_string(),
@@ -13424,6 +13473,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-live-recurring-template".to_string(),
@@ -13514,6 +13564,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-live-signal-recovery".to_string(),
@@ -13617,6 +13668,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&event.id),
@@ -13727,6 +13779,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&wake.id),
@@ -14296,6 +14349,7 @@ mod tests {
                 runtime.identity().principal_id.clone(),
                 Some("client-dialogue-interruption-a".to_string()),
                 SessionMessageOptions {
+                    response_annotations: None,
                     attachments: vec![MessageAttachmentInput {
                         name: "interrupted-image.png".to_string(),
                         media_type: "image/png".to_string(),
@@ -14502,6 +14556,7 @@ mod tests {
                 runtime.identity().principal_id.clone(),
                 Some("client-one-shot-model".to_string()),
                 SessionMessageOptions {
+                    response_annotations: None,
                     model_alias: Some("one-shot-route".to_string()),
                     reasoning_effort: Some("high".to_string()),
                     ..SessionMessageOptions::default()
@@ -14547,6 +14602,7 @@ mod tests {
                 runtime.identity().principal_id.clone(),
                 Some("client-unknown-one-shot-model".to_string()),
                 SessionMessageOptions {
+                    response_annotations: None,
                     model_alias: Some("missing-route".to_string()),
                     ..SessionMessageOptions::default()
                 },
@@ -15000,6 +15056,7 @@ mod tests {
                     principal_id.clone(),
                     Some(format!("client-target-rejection-{index}")),
                     SessionMessageOptions {
+                        response_annotations: None,
                         target_id: Some(target_id.to_string()),
                         ..SessionMessageOptions::default()
                     },
@@ -17311,6 +17368,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-scheduler-snapshot".to_string(),
@@ -17606,6 +17664,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-scheduler-pagination".to_string(),
@@ -17768,6 +17827,7 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-scheduler-bounds-{index}"),
@@ -17874,6 +17934,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-scheduler-orphan".to_string(),
@@ -18092,6 +18153,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-orphaned-approved-job".to_string(),
@@ -20450,6 +20512,7 @@ mod tests {
                 .unwrap();
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: "cancel-gate-thread".to_string(),
@@ -20835,6 +20898,7 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-{session_id}-{index}"),
@@ -21111,6 +21175,7 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-delivery-recovery-{index}"),
@@ -21243,6 +21308,7 @@ mod tests {
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-delivery-snapshot-{index}"),
@@ -21297,6 +21363,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-delivery-snapshot-late".to_string(),
@@ -21688,6 +21755,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-live-activation-recovery".to_string(),
@@ -21875,6 +21943,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-activation-recovery".to_string(),
@@ -22325,6 +22394,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: crate::memory::stable_thread_id(&second.id),
@@ -23808,6 +23878,7 @@ mod tests {
         let store = &runtime.inner.store;
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-periodic-job-recovery".into(),
@@ -24011,6 +24082,7 @@ mod tests {
             .inner
             .store
             .ensure_thread(crate::memory::NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-objective-wait-task".to_string(),
@@ -24368,6 +24440,7 @@ mod tests {
             ]),
         );
         let thread = NewThread {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: crate::memory::stable_thread_id(&root_turn_id),
@@ -25435,6 +25508,7 @@ mod tests {
             .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
                 request_event,
                 thread: NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: identity.thread_id.clone(),

@@ -79,6 +79,11 @@ impl TimerEngine {
         Ok(timer)
     }
 
+    /// Exact immutable owner-boundary recovery, including already-fired rows.
+    pub(crate) async fn get(&self, id: &str) -> Result<Option<RuntimeTimerRecord>, DynError> {
+        self.store.get_runtime_timer(id).await
+    }
+
     /// Wake the dispatcher after a Timer row was committed directly to the
     /// Store by an owner-side composite transaction instead of `schedule`.
     /// Without this the engine keeps sleeping on its previously computed

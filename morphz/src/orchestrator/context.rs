@@ -14633,6 +14633,7 @@ mod tests {
 
         let now = Utc::now();
         let mut thread = ThreadRecord {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "thread-delivered".to_string(),
@@ -14905,6 +14906,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread:b".to_string(),
@@ -15002,6 +15004,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread:legacy-unattributed".to_string(),
@@ -15264,6 +15267,7 @@ mod tests {
         ] {
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: thread_id.to_string(),
@@ -15464,6 +15468,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "scheduled-causal-thread".to_string(),
@@ -19551,6 +19556,7 @@ mod tests {
             let thread_id = format!("retirement-thread-{tick}");
             store
                 .ensure_thread(crate::memory::NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: thread_id.clone(),
@@ -20714,6 +20720,7 @@ mod tests {
         let thread_id = crate::memory::stable_thread_id(root);
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 id: thread_id.clone(),
                 agent_id: agent.into(),
                 context_id: context.into(),

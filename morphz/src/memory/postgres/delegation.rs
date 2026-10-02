@@ -461,6 +461,9 @@ impl DelegationStore for PostgresStore {
         let thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
+                response_annotations: crate::memory::response_annotations_from_payload(
+                    &event.payload,
+                )?,
                 model_alias: None,
                 reasoning_effort: None,
                 id: stable_thread_id(&event.id),

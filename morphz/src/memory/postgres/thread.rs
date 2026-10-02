@@ -17,6 +17,7 @@ use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
+    migrate_response_annotations(pool).await?;
     for statement in [
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS control_state TEXT NOT NULL DEFAULT 'active'"#,
@@ -52,6 +53,12 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+    Ok(())
+}
+
+pub(super) async fn migrate_response_annotations(pool: &PgPool) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1'))")
+        .execute(pool).await?;
     Ok(())
 }
 
@@ -113,16 +120,9 @@ fn parse_delivery(value: &str) -> Result<DeliveryStatus, StoreError> {
     }
 }
 
-fn is_unique_violation(error: &sqlx::Error) -> bool {
-    matches!(
-        error,
-        sqlx::Error::Database(database_error)
-            if database_error.code().as_deref() == Some("23505")
-    )
-}
-
 pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     Ok(ThreadRecord {
+        response_annotations: row.get::<String, _>("response_annotations").parse()?,
         model_alias: row.get("model_alias"),
         reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
@@ -170,9 +170,9 @@ pub(super) async fn ensure_thread_in_tx(
             kind, status, executor_kind, executor_id, target_id,
             lifetime, supervisor_kind, supervisor_id, supervision_generation,
             origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
-            delivery_status, created_at, updated_at)
+            delivery_status, created_at, updated_at, response_annotations)
            VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
-                   $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
+                   $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21, $22)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(&thread.model_alias)
@@ -196,6 +196,7 @@ pub(super) async fn ensure_thread_in_tx(
     .bind(&thread.supervision.thread_group_id)
     .bind(&thread.supervision.completion_contract)
     .bind(now)
+    .bind(thread.response_annotations.as_str())
     .execute(&mut **tx)
     .await?;
     let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1")
@@ -204,6 +205,7 @@ pub(super) async fn ensure_thread_in_tx(
         .await?;
     let existing = thread_from_row(&row)?;
     if existing.context_id != thread.context_id
+        || existing.response_annotations != thread.response_annotations
         || existing.session_id != thread.session_id
         || existing.agent_id != thread.agent_id
         || existing.initiating_principal_id != thread.initiating_principal_id
@@ -233,14 +235,10 @@ impl ThreadStore for PostgresStore {
                 kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
-                delivery_status, created_at, updated_at)
+                delivery_status, created_at, updated_at, response_annotations)
                VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $12,
-                       $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21)
-               ON CONFLICT (root_turn_id) DO UPDATE SET
-                 initiating_principal_id = COALESCE(
-                   threads.initiating_principal_id,
-                   EXCLUDED.initiating_principal_id
-                 )
+                       $13, $14, $15, $16, $17, $18, $19, $20, 'none', $21, $21, $22)
+               ON CONFLICT DO NOTHING
                RETURNING *"#,
         )
         .bind(&thread.model_alias)
@@ -264,38 +262,44 @@ impl ThreadStore for PostgresStore {
         .bind(&thread.supervision.thread_group_id)
         .bind(&thread.supervision.completion_contract)
         .bind(now)
-        .fetch_one(&self.pool)
-        .await;
+        .bind(thread.response_annotations.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
         let row = match insert {
-            Ok(row) => row,
+            Some(row) => row,
             // `threads` is idempotent by `root_turn_id`, but callers also
             // normally derive the same primary `id` for that root. Two
             // concurrent first writers may therefore race on either unique
-            // constraint. PostgreSQL only lets one `ON CONFLICT DO UPDATE`
-            // target be named, so recover the primary-key race after the
-            // winning statement commits and re-read the canonical root.
-            Err(error) if is_unique_violation(&error) => sqlx::query(
-                r#"UPDATE threads
-                       SET initiating_principal_id = COALESCE(
-                         threads.initiating_principal_id,
-                         $2
-                       )
-                       WHERE root_turn_id = $1
-                       RETURNING *"#,
-            )
-            .bind(&thread.root_turn_id)
-            .bind(&thread.initiating_principal_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| format!("Thread id '{}' 已被不同 Root Turn 占用", thread.id))?,
-            Err(error) => return Err(error.into()),
+            // constraint. DO NOTHING covers both; read and validate the winner
+            // before performing any legacy Principal backfill.
+            None => sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1")
+                .bind(&thread.root_turn_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| format!("Thread id '{}' 已被不同 Root Turn 占用", thread.id))?,
         };
-        let existing = thread_from_row(&row)?;
+        let mut existing = thread_from_row(&row)?;
         if existing.context_id != thread.context_id
+            || existing.response_annotations != thread.response_annotations
             || existing.session_id != thread.session_id
             || existing.agent_id != thread.agent_id
         {
             return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
+        }
+        if existing.kind != thread.kind || existing.supervision != thread.supervision {
+            return Err(format!("Root Turn '{}' 已被不同监督契约占用", thread.root_turn_id).into());
+        }
+        if existing.initiating_principal_id.is_none() && thread.initiating_principal_id.is_some() {
+            // A concurrent valid backfill may win; re-read its immutable
+            // decision and retain the existing Principal-conflict behavior.
+            sqlx::query("UPDATE threads SET initiating_principal_id = $2 WHERE id = $1 AND initiating_principal_id IS NULL")
+                .bind(&existing.id)
+                .bind(&thread.initiating_principal_id)
+                .execute(&self.pool).await?;
+            existing.initiating_principal_id = self
+                .get_thread(&existing.id)
+                .await?
+                .and_then(|record| record.initiating_principal_id);
         }
         if thread.initiating_principal_id.is_some()
             && existing.initiating_principal_id != thread.initiating_principal_id
@@ -305,9 +309,6 @@ impl ThreadStore for PostgresStore {
                 thread.root_turn_id
             )
             .into());
-        }
-        if existing.kind != thread.kind || existing.supervision != thread.supervision {
-            return Err(format!("Root Turn '{}' 已被不同监督契约占用", thread.root_turn_id).into());
         }
         Ok(existing)
     }

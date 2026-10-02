@@ -5734,6 +5734,7 @@ async fn submit_prompt(
         .send_message(
             &principal,
             SendMessageCommand {
+                response_annotations: None,
                 input_destination: None,
                 session_id: session.id().to_string(),
                 text: prompt,

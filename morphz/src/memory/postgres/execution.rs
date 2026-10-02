@@ -507,10 +507,10 @@ impl ExecutionJobStore for PostgresStore {
                 root_turn_id, kind, status, executor_kind, executor_id, target_id,
                 lifetime, supervisor_kind, supervisor_id, supervision_generation,
                 origin_evaluation_id, parent_thread_id, thread_group_id, completion_contract_json,
-                delivery_status, created_at, updated_at)
+                delivery_status, created_at, updated_at, response_annotations)
                VALUES ($1, 1, $2, $3, $4, $5, $6, 'execution', 'open',
                        'artifact_transfer', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                       'none', $17, $17)
+                       'none', $17, $17, $18)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&execution.thread.id)
@@ -530,6 +530,7 @@ impl ExecutionJobStore for PostgresStore {
         .bind(&execution.thread.supervision.thread_group_id)
         .bind(&execution.thread.supervision.completion_contract)
         .bind(&now)
+        .bind(execution.thread.response_annotations.as_str())
         .execute(&mut *tx)
         .await?;
         let thread_row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1")
@@ -538,6 +539,7 @@ impl ExecutionJobStore for PostgresStore {
             .await?;
         let thread = thread_from_row(&thread_row)?;
         if thread.id != execution.thread.id
+            || thread.response_annotations != execution.thread.response_annotations
             || thread.agent_id != execution.thread.agent_id
             || thread.context_id != execution.thread.context_id
             || thread.session_id != execution.thread.session_id

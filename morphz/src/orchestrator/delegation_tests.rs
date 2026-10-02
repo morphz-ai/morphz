@@ -224,6 +224,7 @@ impl Fixture {
         self.store.append(root.clone()).await.unwrap();
         self.store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: stable_thread_id(id),

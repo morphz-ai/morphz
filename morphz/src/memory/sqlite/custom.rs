@@ -377,6 +377,7 @@ mod tests {
     async fn create_thread(store: &SqliteStore, id: &str) {
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: id.into(),

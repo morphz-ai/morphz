@@ -1942,6 +1942,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: morphz::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: format!("recovery-thread-{index}"),
@@ -2045,6 +2046,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "recovery-orphan-thread".to_string(),
@@ -2130,6 +2132,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "recovery-active-background-job-thread".to_string(),
@@ -2622,6 +2625,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "plan-recovery-thread".to_string(),
@@ -2979,6 +2983,7 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "context-tx-recovery-thread".to_string(),
@@ -7027,6 +7032,7 @@ async fn startup_recovers_legacy_attached_result_misrouted_to_a_detached_thread(
         .unwrap();
     let return_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "legacy-attached-return-thread".to_string(),

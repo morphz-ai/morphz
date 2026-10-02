@@ -376,6 +376,7 @@ async fn approval_runtime_child() {
                 runtime.identity().principal_id.clone(),
                 Some("queued-correction".into()),
                 SessionMessageOptions {
+                    response_annotations: None,
                     input_destination: Some(destination),
                     ..Default::default()
                 },

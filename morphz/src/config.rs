@@ -314,6 +314,10 @@ pub(crate) fn host_state_path(filename: &str) -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OrchestratorConfig {
+    /// Default for newly accepted ordinary executions only. Existing Threads
+    /// retain their frozen protocol; typed infer remains unwrapped.
+    #[serde(skip_serializing_if = "crate::response_annotations::Protocol::is_off")]
+    pub response_annotations: crate::response_annotations::Protocol,
     /// Maximum number of concurrent physical model-provider requests.
     ///
     /// This constrains model calls, not activations waiting on tools, timers, or approval.
@@ -415,6 +419,7 @@ pub struct OrchestratorConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_provider_max_in_flight: 4,
             event_bus: EventBusConfig::default(),
             event_writer: EventWriterConfig::default(),
@@ -3619,6 +3624,11 @@ impl AppConfig {
     /// layers. These are process-local operator choices and therefore outrank
     /// project preferences without mutating any configuration file.
     pub fn apply_runtime_env_overrides(&mut self) -> Result<(), String> {
+        if let Ok(value) = std::env::var("MORPHZ_RESPONSE_ANNOTATIONS") {
+            self.orchestrator.response_annotations = value
+                .parse()
+                .map_err(|_| format!("MORPHZ_RESPONSE_ANNOTATIONS must be off or v1: {value}"))?;
+        }
         if let Ok(value) = std::env::var("MORPHZ_STORAGE_BACKEND") {
             self.storage.backend = parse_storage_backend_env(&value)?;
         }
@@ -3938,6 +3948,24 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn response_annotations_default_off_is_omitted_and_opt_in_is_strict() {
+        use crate::response_annotations::Protocol;
+        let legacy: OrchestratorConfig = toml::from_str("").unwrap();
+        assert_eq!(legacy.response_annotations, Protocol::Off);
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("response_annotations")
+            .is_none());
+        let enabled: OrchestratorConfig = toml::from_str("response_annotations = 'v1'").unwrap();
+        assert_eq!(enabled.response_annotations, Protocol::V1);
+        assert_eq!(
+            serde_json::to_value(&enabled).unwrap()["response_annotations"],
+            "v1"
+        );
+        assert!(toml::from_str::<OrchestratorConfig>("response_annotations = 'true'").is_err());
+    }
 
     #[test]
     fn reviewer_route_and_dialogue_interruption_are_explicit_toml_controls() {

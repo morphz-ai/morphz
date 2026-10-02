@@ -489,6 +489,7 @@ impl CognitiveEvaluationTransport for SdkEvaluationTransport {
             .send_message(
                 &self.principal,
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: assignment.participant.session_id.clone(),
                     text: prompt,

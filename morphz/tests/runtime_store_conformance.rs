@@ -1273,6 +1273,7 @@ where
     S: morphz::memory::RuntimeStore + 'static,
 {
     let thread = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: "conformance-thread".to_string(),
@@ -1333,6 +1334,7 @@ where
 
     let cas_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-thread-cas".to_string(),
@@ -1450,6 +1452,7 @@ where
         .clone(),
     );
     let delivery_thread = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: "conformance-delivery-thread".to_string(),
@@ -1507,6 +1510,7 @@ where
     // supervision route which owns the eventual outcome.
     let supersede_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-supersede-thread".to_string(),
@@ -1632,6 +1636,7 @@ where
 {
     let thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-signal-thread".to_string(),
@@ -1897,6 +1902,7 @@ where
 
     let successor_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-dialogue-successor-thread".to_string(),
@@ -2010,6 +2016,7 @@ where
 
     let outcome_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-outcome-thread".to_string(),
@@ -2117,6 +2124,7 @@ where
     // backends cannot silently acquire different cancellation semantics.
     let race_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-control-outcome-race-thread".to_string(),
@@ -4083,6 +4091,7 @@ where
     ] {
         store
             .ensure_thread(NewThread {
+                response_annotations: morphz::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: id.to_string(),
@@ -4321,6 +4330,7 @@ where
         .unwrap();
     let occurrence_root = "root-conformance-schedule-occurrence";
     let occurrence = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: stable_thread_id(occurrence_root),
@@ -4381,6 +4391,7 @@ where
             &[],
             &[],
             &[NewThread {
+                response_annotations: morphz::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "conformance-schedule-rolled-back-thread".to_string(),
@@ -4453,6 +4464,7 @@ where
     assert_ne!(objective.revision, objective.generation);
     let children = (0..2)
         .map(|index| NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: format!("conformance-objective-generation-child-{index}"),
@@ -4489,6 +4501,7 @@ where
     }
     let objective_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-schedule-objective-thread".to_string(),
@@ -5114,6 +5127,7 @@ where
 
     let delivery_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-ingress-delivery-thread".to_string(),
@@ -5801,6 +5815,7 @@ where
         .unwrap();
     let return_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-attached-return-thread".to_string(),
@@ -6910,6 +6925,7 @@ where
         .collect(),
     );
     let amendment_thread = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: stable_thread_id(&amendment_root),
@@ -7183,6 +7199,7 @@ where
 
     let primary_root = objective_primary_execution_root_id(&finished.id, finished.generation);
     let continuation_thread = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: stable_thread_id(&primary_root),
@@ -9075,6 +9092,7 @@ where
     // clear without consuming the Session-fallback fixture below.
     let direct_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-wake-direct-thread".to_string(),
@@ -9471,6 +9489,7 @@ where
         .unwrap();
     let archived_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "conformance-wake-archived-thread".to_string(),
@@ -10105,6 +10124,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
     let thread_id = format!("multi-worker-thread-{suffix}");
     first
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: thread_id.clone(),

@@ -377,6 +377,8 @@ pub enum MessageReferenceInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SendMessageCommand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_annotations: Option<crate::response_annotations::Protocol>,
     #[serde(default)]
     pub input_destination: Option<crate::steering::InputDestination>,
     pub session_id: String,
@@ -4576,6 +4578,7 @@ impl MorphzSdk {
                 principal.principal_id.clone(),
                 command.client_message_id,
                 SessionMessageOptions {
+                    response_annotations: command.response_annotations,
                     input_destination: command.input_destination,
                     requested_harness: command.harness,
                     attachments: command.attachments,
@@ -5051,6 +5054,7 @@ mod tests {
             .send_message(
                 &principal("principal-reference"),
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: "session-reference-a".to_string(),
                     text: "Coordinate with @Research".to_string(),
@@ -5116,6 +5120,7 @@ mod tests {
             .send_message(
                 &principal("principal-private"),
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: "session-reference-a".to_string(),
                     text: "Attempt unbound ingress".to_string(),
@@ -5148,6 +5153,7 @@ mod tests {
             .send_message(
                 &principal("principal-reference"),
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: "session-reference-a".to_string(),
                     text: "Reference private".to_string(),
@@ -5188,6 +5194,7 @@ mod tests {
             .send_message(
                 &principal("principal-reference"),
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: "session-reference-a".to_string(),
                     text: "Reference archived".to_string(),

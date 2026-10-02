@@ -479,6 +479,7 @@ async fn objective_update_resolves_only_its_own_finished_thread_group() {
             &[],
             &[],
             &[NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "group-member".into(),

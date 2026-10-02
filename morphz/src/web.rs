@@ -316,6 +316,8 @@ where
 #[serde(deny_unknown_fields)]
 struct SendMessageRequest {
     #[serde(default)]
+    response_annotations: Option<crate::response_annotations::Protocol>,
+    #[serde(default)]
     input_destination: Option<crate::steering::InputDestination>,
     text: String,
     client_message_id: Option<String>,
@@ -7941,6 +7943,7 @@ async fn handle_send_message(
         .send_message(
             &principal,
             SendMessageCommand {
+                response_annotations: request.response_annotations,
                 input_destination: request.input_destination,
                 session_id,
                 text: request.text,
@@ -11906,6 +11909,7 @@ mod tests {
                 .unwrap();
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: "gateway-provenance-thread".into(),
@@ -12014,6 +12018,7 @@ mod tests {
             gateway_headers(Some("site-user-2")),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
@@ -12636,6 +12641,7 @@ mod tests {
                 ..Default::default()
             }),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "operator must not impersonate".to_string(),
                 client_message_id: Some("operator-impersonation-message".to_string()),
@@ -16064,6 +16070,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "evaluate this through the Mesh".to_string(),
                 client_message_id: Some("coordination-required-message".to_string()),
@@ -16272,6 +16279,7 @@ account = "xai-account"
                 HeaderMap::new(),
                 Query(AuthQuery::default()),
                 Json(SendMessageRequest {
+                    response_annotations: None,
                     input_destination: None,
                     text: String::new(),
                     client_message_id: Some("attachment-client-message-1".to_string()),
@@ -16443,6 +16451,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "too many".to_string(),
                 client_message_id: Some("client-message-too-many".to_string()),
@@ -16478,6 +16487,7 @@ account = "xai-account"
                 HeaderMap::new(),
                 Query(AuthQuery::default()),
                 Json(SendMessageRequest {
+                    response_annotations: None,
                     input_destination: None,
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
@@ -16515,6 +16525,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "different request".to_string(),
                 client_message_id: Some("client-message-1".to_string()),
@@ -16674,6 +16685,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
@@ -16894,6 +16906,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                response_annotations: None,
                 input_destination: None,
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
@@ -17369,6 +17382,7 @@ account = "xai-account"
         for suffix in ["a", "b"] {
             store
                 .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: format!("thread-{suffix}"),
@@ -17580,6 +17594,7 @@ account = "xai-account"
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "api-schedule-thread".to_string(),
@@ -17674,6 +17689,7 @@ account = "xai-account"
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "api-supersede-thread".to_string(),

@@ -4342,6 +4342,7 @@ async fn run_once(
         .send_message(
             &principal,
             SendMessageCommand {
+                response_annotations: None,
                 input_destination: None,
                 session_id: session_id.clone(),
                 text: prompt,
@@ -4724,6 +4725,7 @@ async fn run_interactive(
             if let Err(error) = rt.block_on(sdk.send_message(
                 &principal,
                 SendMessageCommand {
+                    response_annotations: None,
                     input_destination: None,
                     session_id: console_session.id().to_string(),
                     text,

@@ -59,6 +59,10 @@ use crate::plan_execution::{
     pending_infer_request_event, PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt,
     PlanExecutionCoordinator, PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
 };
+use crate::response_annotations::{
+    self, AnnotationKind, ExecutionFact, ExecutionScope, NormalizationContext,
+    PersistedAnnotations, Producer, Protocol as ResponseAnnotationProtocol, TrustedObservation,
+};
 use crate::scheduler::{
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
     SchedulerDependencyStatus, SchedulerInvariantViolation,
@@ -1583,6 +1587,9 @@ fn safety_refusal_recovery_state(
 
 #[derive(Debug)]
 struct ToolExecutionOptions {
+    /// Optional, bounded display metadata committed atomically with its source
+    /// assistant_call; never an execution permission or a separate model turn.
+    response_annotation_bundle: Option<PersistedAnnotations>,
     context_tx_allowed: bool,
     wake_on_output: bool,
     /// The owning deterministic Plan, when this is an internal `(call ...)`
@@ -1610,6 +1617,56 @@ struct ToolExecutionOptions {
     harness_functions: Option<Arc<Vec<String>>>,
     /// Nominal type declarations shared by those exact HNS functions.
     harness_types: Option<Arc<Vec<String>>>,
+}
+
+fn annotation_raw_tool_calls(bundle: &PersistedAnnotations) -> Vec<crate::llm::ToolCall> {
+    response_tool_calls(&bundle.raw_response)
+}
+
+fn response_tool_calls(response: &crate::llm::Response) -> Vec<crate::llm::ToolCall> {
+    response
+        .tool_calls
+        .iter()
+        .map(|call| crate::llm::ToolCall {
+            id: call.id.clone(),
+            r#type: call.r#type.clone(),
+            function: crate::llm::FunctionCall {
+                name: call.func_name.clone(),
+                arguments: call.arguments.clone(),
+            },
+        })
+        .collect()
+}
+
+fn append_response_annotation_bundle(
+    payload: &mut Vec<(String, serde_json::Value)>,
+    bundle: &PersistedAnnotations,
+    terminal: bool,
+) {
+    let mut bundle = bundle.clone();
+    for record in &mut bundle.records {
+        if record.kind == AnnotationKind::Result {
+            record.effective = terminal;
+        }
+    }
+    payload.push(("raw_text".to_string(), json!(&bundle.raw_response.content)));
+    payload.push((
+        response_annotations::BUNDLE_PAYLOAD_KEY.to_string(),
+        json!(bundle),
+    ));
+}
+
+fn stamp_response_annotation_route(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    route: &ActivationRoute,
+) {
+    if route.response_annotations == ResponseAnnotationProtocol::V1 {
+        payload.insert(
+            "response_annotations".into(),
+            json!(route.response_annotations),
+        );
+        payload.insert("thread_generation".into(), json!(route.thread_generation));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1839,6 +1896,8 @@ async fn active_objective_scope_id(
 #[derive(Debug, Clone)]
 struct ActivationRoute {
     thread_id: String,
+    thread_generation: u64,
+    response_annotations: ResponseAnnotationProtocol,
     activation_id: String,
     root_turn_id: String,
     trigger_event_id: String,
@@ -3650,6 +3709,15 @@ fn interrupted_text_continuation_prompt() -> &'static str {
 }
 
 impl Orchestrator {
+    /// Fresh opt-in ingress validates reserved names before accepting a new
+    /// execution. Existing idempotent ingress must retain its frozen binding.
+    pub fn validate_response_annotations_protocol(
+        &self,
+        protocol: ResponseAnnotationProtocol,
+    ) -> Result<(), DynError> {
+        response_annotations::augment_tools(&self.tool_definitions, protocol, false)?;
+        Ok(())
+    }
     pub fn activation_admission_snapshot(
         &self,
     ) -> crate::activation_admission::ActivationAdmissionSnapshot {
@@ -4408,6 +4476,22 @@ impl Orchestrator {
             .checked_add_signed(duration)
             .ok_or("no_reply.wait_secs exceeds the Runtime clock range")?;
         let generation = next_thread_wait_generation();
+        let mut payload = json!({
+            "context_id": context_id,
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "activation_id": activation_id,
+            "wait_secs": wait_secs,
+            "wait_source": if explicitly_requested { "model" } else { "runtime_default" },
+            "armed_at": now,
+        });
+        if let Some(route) = self
+            .activation_route(activation_id)
+            .filter(|route| route.response_annotations == ResponseAnnotationProtocol::V1)
+        {
+            payload["response_annotations"] = json!(route.response_annotations);
+            payload["thread_generation"] = json!(route.thread_generation);
+        }
         self.timer_engine
             .schedule(NewRuntimeTimer {
                 id: thread_wait_timer_id(thread_id),
@@ -4415,15 +4499,7 @@ impl Orchestrator {
                 kind: RuntimeTimerKind::ThreadWait,
                 owner_id: thread_id.to_string(),
                 due_at,
-                payload: json!({
-                    "context_id": context_id,
-                    "session_id": session_id,
-                    "thread_id": thread_id,
-                    "activation_id": activation_id,
-                    "wait_secs": wait_secs,
-                    "wait_source": if explicitly_requested { "model" } else { "runtime_default" },
-                    "armed_at": now,
-                }),
+                payload,
             })
             .await
     }
@@ -4448,6 +4524,16 @@ impl Orchestrator {
         };
         if thread.lifecycle.is_terminal()
             || thread.control_state != crate::memory::ThreadControlState::Active
+            || (timer
+                .payload
+                .get("response_annotations")
+                .and_then(serde_json::Value::as_str)
+                == Some("v1")
+                && timer
+                    .payload
+                    .get("thread_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(thread.generation))
         {
             return Ok(TimerDisposition::Complete);
         }
@@ -4461,7 +4547,7 @@ impl Orchestrator {
             .get("activation_id")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        let event = Event::new(
+        let mut event = Event::new(
             format!("thread_wait_due_{}_g{}", timer.owner_id, timer.generation),
             "System-ThreadWait".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
@@ -4492,6 +4578,15 @@ impl Orchestrator {
                 ),
             ]),
         );
+        if thread.response_annotations == ResponseAnnotationProtocol::V1 {
+            event.payload.insert(
+                "response_annotations".into(),
+                json!(thread.response_annotations),
+            );
+            event
+                .payload
+                .insert("thread_generation".into(), json!(thread.generation));
+        }
         self.store
             .append_to_thread(event.clone(), &thread.id)
             .await?;
@@ -6661,10 +6756,11 @@ impl Orchestrator {
             if activations.is_empty() {
                 continue;
             }
-            let mut event_ids = Vec::with_capacity(activations.len().saturating_mul(2));
+            let mut event_ids = Vec::with_capacity(activations.len().saturating_mul(3));
             for activation in &activations {
                 event_ids.push(activation.trigger_event_id.clone());
                 event_ids.push(format!("call_{}", activation.id));
+                event_ids.push(format!("call_{}_final", activation.id));
             }
             event_ids.sort();
             event_ids.dedup();
@@ -6716,6 +6812,7 @@ impl Orchestrator {
                 // continuation. dispatch_persisted never appends a new Event.
                 let mut trigger = trigger;
                 if events.contains_key(&format!("call_{}", activation.id))
+                    || events.contains_key(&format!("call_{}_final", activation.id))
                     || session_store
                         .get_thread_activation_approval_wait(&activation.id)
                         .await?
@@ -7814,6 +7911,15 @@ impl Orchestrator {
             ("return_session_id".to_string(), json!(parent_session_id)),
             ("text".to_string(), json!(instruction)),
         ];
+        if let Some(parent) = parent_thread
+            .as_ref()
+            .filter(|parent| parent.response_annotations == ResponseAnnotationProtocol::V1)
+        {
+            start_payload.push((
+                "response_annotations".to_string(),
+                json!(parent.response_annotations),
+            ));
+        }
         if let Some(principal_id) = &initiating_principal_id {
             start_payload.push(("principal_id".to_string(), json!(principal_id)));
         }
@@ -8104,6 +8210,17 @@ impl Orchestrator {
         let mut result_payload = result_payload.into_iter().collect();
         if let Some(route) = return_route.as_ref() {
             route.apply(&mut result_payload);
+            if let Some(parent) = session_store
+                .get_thread(&route.thread_id)
+                .await?
+                .filter(|parent| parent.response_annotations == ResponseAnnotationProtocol::V1)
+            {
+                result_payload.insert(
+                    "response_annotations".to_string(),
+                    json!(parent.response_annotations),
+                );
+                result_payload.insert("thread_generation".to_string(), json!(parent.generation));
+            }
         }
         let result_event = Event::new(
             format!(
@@ -8994,6 +9111,13 @@ impl Orchestrator {
         };
         let ensure_thread_started = Instant::now();
         let new_thread = NewThread {
+            response_annotations: if plan_execution_id.is_some() {
+                ResponseAnnotationProtocol::Off
+            } else if let Some(existing) = existing_thread.as_ref() {
+                existing.response_annotations
+            } else {
+                crate::memory::response_annotations_from_payload(&event.payload)?
+            },
             model_alias: event
                 .payload
                 .get("model_alias")
@@ -9092,6 +9216,49 @@ impl Orchestrator {
         // already owned by the claimed Timer and must not cancel itself.
         let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+        // Startup redispatch of an already owned input is not a fresh signal.
+        // In particular it must not cancel the fallback clock durably armed
+        // by that same Activation immediately before the process exited.
+        let recovering_owned_input = if thread.response_annotations
+            == ResponseAnnotationProtocol::V1
+        {
+            if let Some(recovery_id) = event
+                .payload
+                .get("runtime_recovery_activation_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                match session_store.get_thread_activation(recovery_id).await? {
+                    Some(owner)
+                        if owner.context_id == thread.context_id
+                            && owner.session_id == thread.session_id
+                            && owner.agent_id == thread.agent_id
+                            && owner.root_turn_id == thread.root_turn_id
+                            && owner.generation == thread.generation
+                            && owner.initiating_principal_id == thread.initiating_principal_id
+                            && owner.trigger_event_id == event.id
+                            && owner.trigger_sequence == trigger_sequence =>
+                    {
+                        session_store
+                            .list_activation_signals(recovery_id)
+                            .await?
+                            .iter()
+                            .any(|signal| {
+                                signal.thread_id == thread.id
+                                    && signal.thread_generation == thread.generation
+                                    && signal.event_id == event.id
+                                    && signal.sequence == trigger_sequence
+                                    && signal.principal_id == thread.initiating_principal_id
+                                    && signal.status != crate::memory::ThreadSignalStatus::Pending
+                            })
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         // Cancellation and durable signal claim are independent operations.
         // Start both immediately: the real signal still races the fallback
         // timer at routing time, while neither database round trip serially
@@ -9099,6 +9266,7 @@ impl Orchestrator {
         let cancel_wait = async {
             let started = Instant::now();
             let result = if thread_preexisted
+                && !recovering_owned_input
                 && event
                     .payload
                     .get("wake_kind")
@@ -9719,7 +9887,8 @@ impl Orchestrator {
                 role: "assistant".to_string(),
                 content: event
                     .payload
-                    .get("text")
+                    .get("raw_text")
+                    .or_else(|| event.payload.get("text"))
                     .and_then(|value| value.as_str())
                     .unwrap_or_default()
                     .to_string(),
@@ -9972,6 +10141,227 @@ impl Orchestrator {
             .build_context_encoding(context_id, session_id, &HashSet::new())
             .await?
             .parent_session_id)
+    }
+
+    /// Resolve only observations resident in the actual request. Text from a
+    /// model cannot mint a ref or broaden the current Execution's authority.
+    async fn response_annotation_context(
+        &self,
+        thread: &ThreadRecord,
+        manifest: &ContextViewManifest,
+        provided_event_ids: impl IntoIterator<Item = String>,
+        producer: Producer,
+        restored_title_revision: Option<Option<response_annotations::TitleInputRevision>>,
+    ) -> Result<NormalizationContext, DynError> {
+        let scope = ExecutionScope {
+            execution_id: thread.id.clone(),
+            generation: thread.generation,
+        };
+        let mut observations = HashMap::new();
+        // Input ownership belongs to the logical Thread, not just its latest
+        // physical Activation. A consumed supplement remains the same input
+        // revision when a subsequent tool receipt opens another Activation.
+        let input_signals = self
+            .context_engine
+            .session_store()
+            .ok_or("annotation input revision requires SessionStore")?
+            .list_context_thread_signals_for_threads(
+                &thread.context_id,
+                std::slice::from_ref(&thread.id),
+                None,
+            )
+            .await?
+            .into_iter()
+            .filter(|signal| {
+                signal.thread_generation == thread.generation
+                    && signal.principal_id == thread.initiating_principal_id
+                    && signal.kind == "chat/steering"
+                    && signal.status != crate::memory::ThreadSignalStatus::Pending
+            })
+            .map(|signal| (signal.event_id.clone(), signal))
+            .collect::<HashMap<_, _>>();
+        let input_revision = |event: &Event| {
+            let signal = input_signals.get(&event.id)?;
+            let sequence = event.sequence?;
+            if event.topic != "chat/steering"
+                || signal.sequence != sequence
+                || sequence > manifest.event_sequence_upper_bound
+                || event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(thread.session_id.as_str())
+                || event
+                    .payload
+                    .get("thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(thread.id.as_str())
+                || event
+                    .payload
+                    .get("thread_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(thread.generation)
+                || event
+                    .payload
+                    .get("principal_id")
+                    .and_then(serde_json::Value::as_str)
+                    != thread.initiating_principal_id.as_deref()
+            {
+                return None;
+            }
+            let revision = response_annotations::TitleInputRevision {
+                event_id: event.id.clone(),
+                sequence,
+            };
+            revision.is_valid().then_some(revision)
+        };
+        let mut title_input_revision = None;
+        // An already verified host revision survives Context compaction. This
+        // is a bounded read of prior immutable response boundaries for this
+        // exact Thread/Session, never a scan for today's newest input. Every
+        // normal V1 response carries the revision even if it has no title.
+        if restored_title_revision.is_none() {
+            for source in self
+                .store
+                .query(QueryFilter {
+                    context_id: Some(thread.context_id.clone()),
+                    session_id: Some(thread.session_id.clone()),
+                    thread_id: Some(thread.id.clone()),
+                    topics: vec![
+                        "chat/assistant_call".into(),
+                        "runtime/thread_waiting".into(),
+                    ],
+                    through_sequence: Some(manifest.event_sequence_upper_bound),
+                    event_visibility_snapshot: manifest.event_visibility_snapshot.clone(),
+                    latest_k: Some(32),
+                    ..Default::default()
+                })
+                .await?
+            {
+                let Ok(Some(bundle)) =
+                    response_annotations::annotations_from_authorized_event(&source, &scope)
+                else {
+                    continue;
+                };
+                let Some(revision) = bundle.title_input_revision else {
+                    continue;
+                };
+                // Historical display evidence is optional. A corrupt old
+                // candidate must not fail a legitimate new work response;
+                // the current recovery boundary remains fail-closed below.
+                let Ok(Some(source_manifest)) = persisted_context_view_manifest(&source) else {
+                    continue;
+                };
+                if revision.sequence > source_manifest.event_sequence_upper_bound {
+                    continue;
+                }
+                let Some(event) = self
+                    .context_engine
+                    .find_event(&thread.context_id, &revision.event_id)
+                    .await?
+                else {
+                    continue;
+                };
+                if input_revision(&event).as_ref() == Some(&revision)
+                    && title_input_revision.as_ref().is_none_or(
+                        |old: &response_annotations::TitleInputRevision| {
+                            old.sequence < revision.sequence
+                        },
+                    )
+                {
+                    title_input_revision = Some(revision);
+                }
+            }
+        }
+        for id in provided_event_ids.into_iter().collect::<HashSet<_>>() {
+            let Some(event) = self
+                .context_engine
+                .find_event(&thread.context_id, &id)
+                .await?
+            else {
+                continue;
+            };
+            if restored_title_revision.is_none() {
+                if let Some(revision) = input_revision(&event) {
+                    if title_input_revision.as_ref().is_none_or(
+                        |old: &response_annotations::TitleInputRevision| {
+                            old.sequence < revision.sequence
+                        },
+                    ) {
+                        title_input_revision = Some(revision);
+                    }
+                }
+            }
+            if event.event_type != TYPE_TOOL_OUTPUT
+                || event
+                    .sequence
+                    .is_none_or(|sequence| sequence > manifest.event_sequence_upper_bound)
+                || event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(thread.session_id.as_str())
+                || event
+                    .payload
+                    .get("thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(thread.id.as_str())
+                || event
+                    .payload
+                    .get("thread_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(thread.generation)
+            {
+                continue;
+            }
+            observations.insert(
+                self.context_engine.event_reference(&event),
+                TrustedObservation {
+                    event_id: event.id,
+                    scope: scope.clone(),
+                    provided: true,
+                    allowed: true,
+                },
+            );
+        }
+        if let Some(saved_revision) = restored_title_revision {
+            // The validated immutable host boundary is the seen-input witness.
+            // Do not turn its revision ID into a newly "provided" model Event
+            // or upgrade an old response from Signals accepted after it.
+            title_input_revision = match saved_revision {
+                Some(revision) => {
+                    let event = self
+                        .context_engine
+                        .find_event(&thread.context_id, &revision.event_id)
+                        .await?
+                        .ok_or("recovered annotation input revision disappeared")?;
+                    if input_revision(&event).as_ref() != Some(&revision) {
+                        return Err(
+                            "recovered annotation input revision is outside its original boundary"
+                                .into(),
+                        );
+                    }
+                    Some(revision)
+                }
+                None => None,
+            };
+        }
+        Ok(NormalizationContext {
+            protocol: thread.response_annotations,
+            typed_infer: thread.executor_kind == "plan_infer",
+            scope: Some(scope.clone()),
+            producer: Some(producer),
+            observations,
+            title_input_revision,
+            // A valid delivery is not necessarily a terminal Execution. Only
+            // the subsequent existing termination/wait boundary sets this.
+            execution_fact: Some(ExecutionFact {
+                scope,
+                status: thread.lifecycle.as_str().to_string(),
+                terminal: false,
+                terminal_sequence: None,
+            }),
+        })
     }
 
     async fn effective_model_request_policy(
@@ -10310,7 +10700,15 @@ impl Orchestrator {
         let timeout_prompt_measurement = prompt_measurement.clone();
         let forward_observability = Arc::clone(&self.observability);
         let forward_root_turn_id = trace_root_turn_id.clone();
+        let response_annotations = trace_route
+            .as_ref()
+            .map(|route| route.response_annotations)
+            .unwrap_or_default();
         let stream_forwarder = tokio::spawn(async move {
+            let mut normalizer = response_annotations::stream::ModelStreamNormalizer::new(
+                response_annotations,
+                false,
+            );
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
             let mut text_chars = 0usize;
@@ -10320,111 +10718,117 @@ impl Orchestrator {
             let mut provider_started_recorded = false;
             let mut first_output_recorded = false;
             while let Some(stream_event) = stream_rx.recv().await {
-                let stream_event_at = Utc::now();
-                if matches!(&stream_event, crate::llm::ModelStreamEvent::Started)
-                    && !provider_started_recorded
+                // Opaque Provider state remains in the Attempt; reply JSON and
+                // annotation metadata never enter public draft persistence.
+                for stream_event in normalizer
+                    .push(stream_event)
+                    .map_err(|error| Box::new(error) as DynError)?
                 {
-                    provider_started_recorded = true;
-                    let duration = stream_started_at.elapsed();
-                    forward_observability.record_operation(
-                        "provider",
-                        "stream_open",
-                        duration,
-                        "ok",
-                    );
-                    if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
-                        forward_observability.record_turn_checkpoint(
-                            root_turn_id,
-                            Some(&forward_context_id),
-                            Some(&forward_session_id),
-                            "provider.stream_started",
+                    let stream_event_at = Utc::now();
+                    if matches!(&stream_event, crate::llm::ModelStreamEvent::Started)
+                        && !provider_started_recorded
+                    {
+                        provider_started_recorded = true;
+                        let duration = stream_started_at.elapsed();
+                        forward_observability.record_operation(
+                            "provider",
+                            "stream_open",
+                            duration,
                             "ok",
                         );
+                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                            forward_observability.record_turn_checkpoint(
+                                root_turn_id,
+                                Some(&forward_context_id),
+                                Some(&forward_session_id),
+                                "provider.stream_started",
+                                "ok",
+                            );
+                        }
                     }
-                }
-                let is_first_output = matches!(
-                    &stream_event,
-                    crate::llm::ModelStreamEvent::TextDelta { .. }
-                        | crate::llm::ModelStreamEvent::ReasoningSummaryDelta { .. }
-                        | crate::llm::ModelStreamEvent::ToolCallStarted { .. }
-                        | crate::llm::ModelStreamEvent::ToolArgumentsDelta { .. }
-                );
-                if is_first_output && !first_output_recorded {
-                    first_output_recorded = true;
-                    let duration = stream_started_at.elapsed();
-                    forward_observability.record_operation(
-                        "provider",
-                        "time_to_first_output",
-                        duration,
-                        "ok",
+                    let is_first_output = matches!(
+                        &stream_event,
+                        crate::llm::ModelStreamEvent::TextDelta { .. }
+                            | crate::llm::ModelStreamEvent::ReasoningSummaryDelta { .. }
+                            | crate::llm::ModelStreamEvent::ToolCallStarted { .. }
+                            | crate::llm::ModelStreamEvent::ToolArgumentsDelta { .. }
                     );
-                    if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
-                        forward_observability.record_turn_checkpoint(
-                            root_turn_id,
-                            Some(&forward_context_id),
-                            Some(&forward_session_id),
-                            "provider.first_output",
+                    if is_first_output && !first_output_recorded {
+                        first_output_recorded = true;
+                        let duration = stream_started_at.elapsed();
+                        forward_observability.record_operation(
+                            "provider",
+                            "time_to_first_output",
+                            duration,
                             "ok",
                         );
+                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                            forward_observability.record_turn_checkpoint(
+                                root_turn_id,
+                                Some(&forward_context_id),
+                                Some(&forward_session_id),
+                                "provider.first_output",
+                                "ok",
+                            );
+                        }
                     }
-                }
-                match &stream_event {
-                    crate::llm::ModelStreamEvent::TextDelta { text } => {
-                        text_delta_count = text_delta_count.saturating_add(1);
-                        text_chars = text_chars.saturating_add(text.chars().count());
-                        {
-                            let mut summary = forward_reasoning_summary.lock().await;
-                            if !text.is_empty() {
-                                summary
-                                    .public_text_started_at
-                                    .get_or_insert(stream_event_at);
-                                summary.public_text.push_str(text);
+                    match &stream_event {
+                        crate::llm::ModelStreamEvent::TextDelta { text } => {
+                            text_delta_count = text_delta_count.saturating_add(1);
+                            text_chars = text_chars.saturating_add(text.chars().count());
+                            {
+                                let mut summary = forward_reasoning_summary.lock().await;
+                                if !text.is_empty() {
+                                    summary
+                                        .public_text_started_at
+                                        .get_or_insert(stream_event_at);
+                                    summary.public_text.push_str(text);
+                                }
+                            }
+                            first_text_delta_ms.get_or_insert_with(|| {
+                                u64::try_from(stream_started_at.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX)
+                            });
+                        }
+                        crate::llm::ModelStreamEvent::ReasoningSummaryDelta { text } => {
+                            reasoning_summary_delta_count =
+                                reasoning_summary_delta_count.saturating_add(1);
+                            reasoning_summary_chars =
+                                reasoning_summary_chars.saturating_add(text.chars().count());
+                            forward_reasoning_summary.lock().await.text.push_str(text);
+                        }
+                        crate::llm::ModelStreamEvent::ReasoningSummaryCompleted => {
+                            if let Err(error) = persist_model_attempt_state(
+                                &forward_bus,
+                                &forward_context_id,
+                                &forward_session_id,
+                                &forward_attempt_id,
+                                &forward_route,
+                                "waiting_final_output",
+                                false,
+                                false,
+                                Some("provider reasoning item completed"),
+                                &[],
+                            )
+                            .await
+                            {
+                                tracing::warn!(event_code = "orchestrator.model_stream.reasoning_completion_persist_failed", %error, "Failed to persist reasoning-completion state");
                             }
                         }
-                        first_text_delta_ms.get_or_insert_with(|| {
-                            u64::try_from(stream_started_at.elapsed().as_millis())
-                                .unwrap_or(u64::MAX)
-                        });
-                    }
-                    crate::llm::ModelStreamEvent::ReasoningSummaryDelta { text } => {
-                        reasoning_summary_delta_count =
-                            reasoning_summary_delta_count.saturating_add(1);
-                        reasoning_summary_chars =
-                            reasoning_summary_chars.saturating_add(text.chars().count());
-                        forward_reasoning_summary.lock().await.text.push_str(text);
-                    }
-                    crate::llm::ModelStreamEvent::ReasoningSummaryCompleted => {
-                        if let Err(error) = persist_model_attempt_state(
-                            &forward_bus,
-                            &forward_context_id,
-                            &forward_session_id,
-                            &forward_attempt_id,
-                            &forward_route,
-                            "waiting_final_output",
-                            false,
-                            false,
-                            Some("provider reasoning item completed"),
-                            &[],
-                        )
-                        .await
-                        {
-                            tracing::warn!(event_code = "orchestrator.model_stream.reasoning_completion_persist_failed", %error, "Failed to persist reasoning-completion state");
+                        crate::llm::ModelStreamEvent::ProviderContinuation { continuation } => {
+                            // This is opaque protocol state, not a presentation
+                            // event. Keep it inside the physical Attempt and never
+                            // broadcast raw reasoning to Dashboard/TUI clients.
+                            forward_reasoning_summary.lock().await.provider_continuation =
+                                Some(continuation.clone());
+                            continue;
                         }
-                    }
-                    crate::llm::ModelStreamEvent::ProviderContinuation { continuation } => {
-                        // This is opaque protocol state, not a presentation
-                        // event. Keep it inside the physical Attempt and never
-                        // broadcast raw reasoning to Dashboard/TUI clients.
-                        forward_reasoning_summary.lock().await.provider_continuation =
-                            Some(continuation.clone());
-                        continue;
-                    }
-                    crate::llm::ModelStreamEvent::Usage { usage } => {
-                        let mut summary = forward_reasoning_summary.lock().await;
-                        summary.usage.merge_from(usage);
-                    }
-                    crate::llm::ModelStreamEvent::Incomplete { reason } => {
-                        if let Err(error) = persist_model_attempt_state(
+                        crate::llm::ModelStreamEvent::Usage { usage } => {
+                            let mut summary = forward_reasoning_summary.lock().await;
+                            summary.usage.merge_from(usage);
+                        }
+                        crate::llm::ModelStreamEvent::Incomplete { reason } => {
+                            if let Err(error) = persist_model_attempt_state(
                             &forward_bus,
                             &forward_context_id,
                             &forward_session_id,
@@ -10442,104 +10846,105 @@ impl Orchestrator {
                         {
                             tracing::warn!(event_code = "orchestrator.model_stream.incomplete_persist_failed", %error, "Failed to persist model-response incomplete state");
                         }
-                        tracing::info!(
-                            session_id = %forward_session_id,
-                            attempt_id = %forward_attempt_id,
-                            reason,
-                            event_code = "orchestrator.model_stream.incomplete",
-                            "Native model stream reached an incomplete terminal"
-                        );
-                    }
-                    crate::llm::ModelStreamEvent::Completed => {
-                        forward_reasoning_summary.lock().await.complete = true;
-                        if let Err(error) = persist_model_attempt_state(
-                            &forward_bus,
-                            &forward_context_id,
-                            &forward_session_id,
-                            &forward_attempt_id,
-                            &forward_route,
-                            "settling",
-                            false,
-                            false,
-                            Some("provider response completed; Runtime is classifying output"),
-                            &[],
-                        )
-                        .await
-                        {
-                            tracing::warn!(event_code = "orchestrator.model_stream.response_completion_persist_failed", %error, "Failed to persist model-response completion state");
+                            tracing::info!(
+                                session_id = %forward_session_id,
+                                attempt_id = %forward_attempt_id,
+                                reason,
+                                event_code = "orchestrator.model_stream.incomplete",
+                                "Native model stream reached an incomplete terminal"
+                            );
                         }
-                        tracing::info!(
-                            session_id = %forward_session_id,
-                            attempt_id = %forward_attempt_id,
-                            text_delta_count,
-                            text_chars,
-                            reasoning_summary_delta_count,
-                            reasoning_summary_chars,
-                            first_text_delta_ms,
-                            total_stream_ms = u64::try_from(stream_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            event_code = "orchestrator.model_stream.completed",
-                            "Native model stream completed"
-                        );
-                        forward_observability.record_operation(
-                            "provider",
-                            "response_stream",
-                            stream_started_at.elapsed(),
-                            "ok",
-                        );
-                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
-                            forward_observability.record_turn_stage(
-                                root_turn_id,
-                                Some(&forward_context_id),
-                                Some(&forward_session_id),
-                                "provider.stream_completed",
+                        crate::llm::ModelStreamEvent::Completed => {
+                            forward_reasoning_summary.lock().await.complete = true;
+                            if let Err(error) = persist_model_attempt_state(
+                                &forward_bus,
+                                &forward_context_id,
+                                &forward_session_id,
+                                &forward_attempt_id,
+                                &forward_route,
+                                "settling",
+                                false,
+                                false,
+                                Some("provider response completed; Runtime is classifying output"),
+                                &[],
+                            )
+                            .await
+                            {
+                                tracing::warn!(event_code = "orchestrator.model_stream.response_completion_persist_failed", %error, "Failed to persist model-response completion state");
+                            }
+                            tracing::info!(
+                                session_id = %forward_session_id,
+                                attempt_id = %forward_attempt_id,
+                                text_delta_count,
+                                text_chars,
+                                reasoning_summary_delta_count,
+                                reasoning_summary_chars,
+                                first_text_delta_ms,
+                                total_stream_ms = u64::try_from(stream_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                event_code = "orchestrator.model_stream.completed",
+                                "Native model stream completed"
+                            );
+                            forward_observability.record_operation(
+                                "provider",
+                                "response_stream",
                                 stream_started_at.elapsed(),
                                 "ok",
-                                None,
                             );
+                            if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                                forward_observability.record_turn_stage(
+                                    root_turn_id,
+                                    Some(&forward_context_id),
+                                    Some(&forward_session_id),
+                                    "provider.stream_completed",
+                                    stream_started_at.elapsed(),
+                                    "ok",
+                                    None,
+                                );
+                            }
                         }
-                    }
-                    crate::llm::ModelStreamEvent::Failed { message } => {
-                        forward_reasoning_summary.lock().await.failure = Some(message.clone());
-                        forward_observability.record_operation(
-                            "provider",
-                            "response_stream",
-                            stream_started_at.elapsed(),
-                            "error",
-                        );
-                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
-                            forward_observability.record_turn_stage(
-                                root_turn_id,
-                                Some(&forward_context_id),
-                                Some(&forward_session_id),
-                                "provider.stream_completed",
+                        crate::llm::ModelStreamEvent::Failed { message } => {
+                            forward_reasoning_summary.lock().await.failure = Some(message.clone());
+                            forward_observability.record_operation(
+                                "provider",
+                                "response_stream",
                                 stream_started_at.elapsed(),
                                 "error",
-                                Some("provider_stream_failed"),
                             );
+                            if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                                forward_observability.record_turn_stage(
+                                    root_turn_id,
+                                    Some(&forward_context_id),
+                                    Some(&forward_session_id),
+                                    "provider.stream_completed",
+                                    stream_started_at.elapsed(),
+                                    "error",
+                                    Some("provider_stream_failed"),
+                                );
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                let mut payload = vec![
-                    ("context_id".to_string(), json!(&forward_context_id)),
-                    ("session_id".to_string(), json!(&forward_session_id)),
-                    ("attempt_id".to_string(), json!(&forward_attempt_id)),
-                    ("stream".to_string(), json!(stream_event)),
-                ];
-                payload.extend(forward_route.clone());
-                let mut event = Event::new(
-                    format!(
-                        "model_stream_{}",
-                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                    ),
-                    "Model-Provider".to_string(),
-                    "runtime_ephemeral".to_string(),
-                    "runtime/model_stream".to_string(),
-                    payload.into_iter().collect(),
-                );
-                event.timestamp = stream_event_at;
-                if let Err(error) = forward_bus.publish_ephemeral(event).await {
-                    tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
+                    let mut payload = vec![
+                        ("context_id".to_string(), json!(&forward_context_id)),
+                        ("session_id".to_string(), json!(&forward_session_id)),
+                        ("attempt_id".to_string(), json!(&forward_attempt_id)),
+                        ("stream".to_string(), json!(stream_event)),
+                    ];
+                    payload.extend(forward_route.clone());
+                    let mut event = Event::new(
+                        format!(
+                            "model_stream_{}",
+                            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                        ),
+                        "Model-Provider".to_string(),
+                        "runtime_ephemeral".to_string(),
+                        "runtime/model_stream".to_string(),
+                        payload.into_iter().collect(),
+                    );
+                    event.timestamp = stream_event_at;
+                    if let Err(error) = forward_bus.publish_ephemeral(event).await {
+                        tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
+                    }
                 }
             }
             persist_model_public_output(
@@ -10796,6 +11201,16 @@ impl Orchestrator {
         )
         .await;
         let outcome = match (result, forward_result) {
+            (_, Ok(Err(error))) if error.is::<response_annotations::ProtocolError>() => {
+                // Invalid reply control must not be downgraded into a Provider
+                // empty/incomplete response that would trigger a repair round.
+                Err(ModelCompletionError::with_summary_from(
+                    error,
+                    &reasoning_summary,
+                    ModelCompletionErrorOrigin::RuntimeInput,
+                )
+                .await)
+            }
             (Err(error), _) => Err(ModelCompletionError::with_summary_from(
                 error,
                 &reasoning_summary,
@@ -10808,12 +11223,17 @@ impl Orchestrator {
                 ModelCompletionErrorOrigin::RuntimeInternal,
             )
             .await),
-            (Ok(_), Ok(Err(error))) => Err(ModelCompletionError::with_summary_from(
-                error,
-                &reasoning_summary,
-                ModelCompletionErrorOrigin::RuntimePersistence,
-            )
-            .await),
+            (Ok(_), Ok(Err(error))) => {
+                let origin = if error.is::<response_annotations::ProtocolError>() {
+                    ModelCompletionErrorOrigin::RuntimeInput
+                } else {
+                    ModelCompletionErrorOrigin::RuntimePersistence
+                };
+                Err(
+                    ModelCompletionError::with_summary_from(error, &reasoning_summary, origin)
+                        .await,
+                )
+            }
             (Ok(response), Ok(Ok(()))) => Ok(ModelCompletion {
                 response,
                 provider_continuation: reasoning_summary.lock().await.provider_continuation.clone(),
@@ -11288,7 +11708,8 @@ impl Orchestrator {
         let Some(assistant_call) = persisted_boundary else {
             return Ok(false);
         };
-        if assistant_call.topic != "chat/assistant_call" {
+        let recovering_wait = assistant_call.topic == "runtime/thread_waiting";
+        if assistant_call.topic != "chat/assistant_call" && !recovering_wait {
             return Err(format!(
                 "Thread Activation '{}' recovery boundary '{}' is not assistant_call",
                 activation.id, assistant_event_id
@@ -11302,7 +11723,7 @@ impl Orchestrator {
             .cloned()
             .unwrap_or_else(|| json!([]));
         let calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value)?;
-        let response = crate::llm::Response {
+        let mut response = crate::llm::Response {
             content: assistant_call
                 .payload
                 .get("text")
@@ -11319,6 +11740,147 @@ impl Orchestrator {
                 })
                 .collect(),
         };
+
+        if let Some(route) = self.activation_route(&activation.id).filter(|route| {
+            route.response_annotations == ResponseAnnotationProtocol::V1
+                && (assistant_call.payload.contains_key("model_attempt_id")
+                    || assistant_call
+                        .payload
+                        .contains_key(response_annotations::BUNDLE_PAYLOAD_KEY))
+        }) {
+            if crate::memory::response_annotations_from_payload(&assistant_call.payload)?
+                != route.response_annotations
+            {
+                return Err(
+                    "persisted response annotation protocol differs from frozen Execution".into(),
+                );
+            }
+            let scope = ExecutionScope {
+                execution_id: route.thread_id.clone(),
+                generation: route.thread_generation,
+            };
+            let bundle =
+                response_annotations::annotations_from_authorized_event(assistant_call, &scope)?
+                    .ok_or("V1 recovery boundary lacks source annotations")?;
+            let store = self
+                .context_engine
+                .session_store()
+                .ok_or("annotation recovery requires SessionStore")?;
+            let thread = store
+                .get_thread(&route.thread_id)
+                .await?
+                .ok_or("annotation recovery Thread disappeared")?;
+            if thread.generation != scope.generation
+                || thread.lifecycle == ThreadLifecycle::Cancelled
+            {
+                return Err("stale response annotation recovery generation".into());
+            }
+            let manifest = persisted_context_view_manifest(assistant_call)?
+                .ok_or("annotated response recovery lacks its exact Context View")?;
+            let provided = manifest.resident_event_ids.iter().cloned().chain(
+                bundle
+                    .records
+                    .iter()
+                    .filter_map(|record| record.observation_event_id.clone()),
+            );
+            let mut context = Box::pin(
+                self.response_annotation_context(
+                    &thread,
+                    &manifest,
+                    provided,
+                    Producer {
+                        event_id: assistant_call.id.clone(),
+                        attempt_id: assistant_call
+                            .payload
+                            .get("model_attempt_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(&activation.id)
+                            .to_string(),
+                        sequence: assistant_call.sequence,
+                    },
+                    Some(bundle.title_input_revision.clone()),
+                ),
+            )
+            .await?;
+            if let Some(fact) = &mut context.execution_fact {
+                fact.terminal = assistant_call
+                    .payload
+                    .get("terminal_outcome")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
+            }
+            let normalized =
+                response_annotations::normalize_response(&bundle.raw_response, &context)?;
+            if serde_json::to_value(&normalized.execution_response.tool_calls)?
+                != serde_json::to_value(&response.tool_calls)?
+            {
+                return Err(
+                    "annotated recovery business calls differ from their raw source".into(),
+                );
+            }
+            // Stored text may include an earlier interrupted public draft;
+            // raw provider text remains separately preserved for continuation.
+            let content = response.content;
+            response = normalized.execution_response;
+            response.content = content;
+        }
+
+        if recovering_wait {
+            // The timer was durably armed before this immutable boundary.
+            // Recovery settles the same Activation; it neither arms another
+            // timer nor repeats the model/tool/previous public draft.
+            let route = self
+                .activation_route(&activation.id)
+                .ok_or("annotated wait recovery lacks its Execution route")?;
+            if route.response_annotations != ResponseAnnotationProtocol::V1
+                || !assistant_call
+                    .payload
+                    .contains_key(response_annotations::BUNDLE_PAYLOAD_KEY)
+                || assistant_call
+                    .payload
+                    .get("wait_timer_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(thread_wait_timer_id(&route.thread_id).as_str())
+                || assistant_call
+                    .payload
+                    .get("wait_timer_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none()
+            {
+                return Err("invalid annotated wait recovery boundary".into());
+            }
+            let timer = self
+                .timer_engine
+                .get(&thread_wait_timer_id(&route.thread_id))
+                .await?
+                .ok_or("annotated wait recovery timer disappeared")?;
+            if timer.kind != RuntimeTimerKind::ThreadWait
+                || timer.owner_id != route.thread_id
+                || Some(timer.generation)
+                    != assistant_call
+                        .payload
+                        .get("wait_timer_generation")
+                        .and_then(serde_json::Value::as_u64)
+                || timer
+                    .payload
+                    .get("activation_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(activation.id.as_str())
+                || timer
+                    .payload
+                    .get("context_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(activation.context_id.as_str())
+                || timer
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(session_id)
+            {
+                return Err("annotated wait recovery timer differs from immutable boundary".into());
+            }
+            return Ok(true);
+        }
 
         if assistant_call
             .payload
@@ -11429,12 +11991,13 @@ impl Orchestrator {
             event_code = "orchestrator.tool_plan.recovered_from_assistant_call",
             "Recovered the tool-execution plan from a persisted assistant_call"
         );
-        self.execute_tool_calls(
+        Box::pin(self.execute_tool_calls(
             session_id,
             &activation.id,
             response,
             phase,
             ToolExecutionOptions {
+                response_annotation_bundle: None,
                 context_tx_allowed,
                 wake_on_output: true,
                 plan_execution_id: None,
@@ -11448,7 +12011,7 @@ impl Orchestrator {
                 harness_functions,
                 harness_types,
             },
-        )
+        ))
         .await?;
         Ok(true)
     }
@@ -11602,11 +12165,36 @@ impl Orchestrator {
         // measurement. All rebuilds, continuations and recovery use this same
         // durable Thread binding, never mutable latest heads.
         let rom = if let Some(store) = &self.plan_store {
-            Some(
-                store
-                    .bind_thread_custom(&stable_thread_id(&activation.root_turn_id))
-                    .await?,
-            )
+            let thread_id = match self.activation_route(&activation.id) {
+                Some(route)
+                    if route.root_turn_id == activation.root_turn_id
+                        && route.thread_generation == activation.generation =>
+                {
+                    route.thread_id
+                }
+                Some(_) => {
+                    return Err("Custom binding Activation route differs from its root".into())
+                }
+                None => {
+                    let thread = self
+                        .context_engine
+                        .session_store()
+                        .ok_or("Custom binding requires SessionStore")?
+                        .get_thread_by_root(&activation.root_turn_id)
+                        .await?
+                        .ok_or("Custom binding Thread disappeared")?;
+                    if thread.agent_id != activation.agent_id
+                        || thread.context_id != activation.context_id
+                        || thread.session_id != activation.session_id
+                        || thread.generation != activation.generation
+                        || thread.initiating_principal_id != activation.initiating_principal_id
+                    {
+                        return Err("Custom binding Thread is outside the Activation scope".into());
+                    }
+                    thread.id
+                }
+            };
+            Some(store.bind_thread_custom(&thread_id).await?)
         } else {
             None
         };
@@ -12050,6 +12638,11 @@ impl Orchestrator {
             }
         }
         let thread_kind = thread.kind.as_str();
+        let response_annotations = if thread.executor_kind == "plan_infer" {
+            ResponseAnnotationProtocol::Off
+        } else {
+            thread.response_annotations
+        };
         let trigger_model_alias = trigger_event
             .as_ref()
             .and_then(|event| {
@@ -12157,6 +12750,12 @@ impl Orchestrator {
             attempt_id.clone(),
             ActivationRoute {
                 thread_id: thread.id.clone(),
+                thread_generation: thread.generation,
+                response_annotations: if thread.executor_kind == "plan_infer" {
+                    ResponseAnnotationProtocol::Off
+                } else {
+                    thread.response_annotations
+                },
                 activation_id: activation.id.clone(),
                 root_turn_id: activation.root_turn_id.clone(),
                 trigger_event_id: activation.trigger_event_id.clone(),
@@ -12189,14 +12788,16 @@ impl Orchestrator {
         } else {
             false
         };
+        // Recovery includes the same physical executor as normal work, plus
+        // optional annotation validation. Keep that state machine off this
+        // already large Evaluation future even when the protocol is Off.
         if (!recovering_completion_intent || persisted_final_response.is_some())
-            && self
-                .resume_persisted_activation(
-                    session_id,
-                    activation,
-                    persisted_current_boundary.as_ref(),
-                )
-                .await?
+            && Box::pin(self.resume_persisted_activation(
+                session_id,
+                activation,
+                persisted_current_boundary.as_ref(),
+            ))
+            .await?
         {
             if let Some(lease) = dialogue_lease.as_mut() {
                 if persisted_terminal {
@@ -12207,6 +12808,11 @@ impl Orchestrator {
             }
             return Ok(());
         }
+        // A recovered physical Job must not traverse the fresh-model poll
+        // frame. Keep the two phases in separate futures: boxing the child
+        // executor alone does not bound the caller's debug-build stack frame.
+        // This remains an inline await, with the same task, leases and errors.
+        Box::pin(async move {
         if thread_kind == "delivery" && self.pending_delivery_threads(session_id).await?.is_empty()
         {
             tracing::info!(
@@ -12470,6 +13076,14 @@ impl Orchestrator {
         } else {
             std::borrow::Cow::Borrowed(stable_system_prompt)
         };
+        let stable_system_prompt = if response_annotations == ResponseAnnotationProtocol::V1 {
+            std::borrow::Cow::Owned(format!(
+                "{stable_system_prompt}\n\n{}",
+                response_annotations::CONTRACT_V1,
+            ))
+        } else {
+            stable_system_prompt
+        };
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
         // First measure a candidate request with full work capability. Pressure answers whether the
@@ -12522,6 +13136,11 @@ impl Orchestrator {
         if thread.executor_kind != "plan_infer" {
             stable_work_tools.push(no_reply_tool_definition());
         }
+        let stable_work_tools = response_annotations::augment_tools(
+            &stable_work_tools,
+            response_annotations,
+            thread.executor_kind == "plan_infer",
+        )?;
         // Pressure measurement uses the ordinary work contract. Explicit
         // critical/final phase transitions may later narrow the physical
         // schema because those transitions already invalidate the Context
@@ -12762,10 +13381,27 @@ impl Orchestrator {
                 tool_call_id: None,
                 tool_calls: None,
             });
-            allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+            allowed_tools.retain(|tool| {
+                tool.name == NO_REPLY_TOOL_NAME
+                    || (response_annotations == ResponseAnnotationProtocol::V1
+                        && tool.name == "reply")
+            });
         }
         if schedule_receipt {
-            allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+            allowed_tools.retain(|tool| {
+                tool.name == NO_REPLY_TOOL_NAME
+                    || (response_annotations == ResponseAnnotationProtocol::V1
+                        && tool.name == "reply")
+            });
+        }
+        // Reply is a protocol form, not a Harness work capability. Preserve it
+        // across admission narrowing only when this Execution opted in.
+        if response_annotations == ResponseAnnotationProtocol::V1
+            && !allowed_tools.iter().any(|tool| tool.name == "reply")
+        {
+            if let Some(reply) = stable_work_tools.iter().find(|tool| tool.name == "reply") {
+                allowed_tools.push(reply.clone());
+            }
         }
         let mut tools =
             provider_tools_for_phase(&stable_work_tools, &allowed_tools, effective_phase.as_str());
@@ -12819,6 +13455,7 @@ impl Orchestrator {
                     response,
                     "required-coordination",
                     ToolExecutionOptions {
+                        response_annotation_bundle: None,
                         context_tx_allowed: false,
                         wake_on_output: true,
                         plan_execution_id: None,
@@ -13193,6 +13830,7 @@ impl Orchestrator {
             terminal_model_attempt_id,
             terminal_provider_continuation,
             terminal_context_view_manifest,
+            terminal_response_annotations,
         ) = loop {
             if self
                 .yield_to_pending_input(
@@ -13380,11 +14018,78 @@ impl Orchestrator {
                     }
                 }
             }
-            let (response, provider_continuation) = match completion {
+            let (response, provider_continuation, annotation_bundle) = match completion {
                 Ok(ModelCompletion {
                     mut response,
                     provider_continuation,
                 }) => {
+                    let annotation_bundle =
+                        if response_annotations == ResponseAnnotationProtocol::V1 {
+                            let terminal_carrier = response.tool_calls.is_empty()
+                                || response.tool_calls.iter().any(|call| {
+                                    matches!(call.func_name.as_str(), "reply" | "no_reply")
+                                });
+                            let event_id = if terminal_carrier {
+                                // A control tool may have already persisted a
+                                // work decision in this same Activation. Keep
+                                // its immutable source separate from delivery
+                                // or waiting, including failed completion.
+                                format!("call_{attempt_id}_final")
+                            } else {
+                                format!("call_{model_attempt_id}")
+                            };
+                            let provided_event_ids = context
+                                .observations
+                                .iter()
+                                .map(|item| item.id.clone())
+                                .chain(visible_routed_input_ids.iter().cloned());
+                            let annotation_context = Box::pin(self.response_annotation_context(
+                                &thread,
+                                &request_context_view_manifest,
+                                provided_event_ids,
+                                Producer {
+                                    event_id,
+                                    attempt_id: model_attempt_id.clone(),
+                                    sequence: None,
+                                },
+                                None,
+                            ))
+                            .await?;
+                            let normalized = match response_annotations::normalize_response(
+                                &response,
+                                &annotation_context,
+                            ) {
+                                Ok(normalized) => normalized,
+                                Err(error) => {
+                                    // Bad display fields downgrade inside the normalizer.
+                                    // Bad execution-control syntax fails without a repair request.
+                                    self.record_response_protocol_error(
+                                        session_id,
+                                        &model_attempt_id,
+                                        1,
+                                        "response_annotations",
+                                        &error.to_string(),
+                                        None,
+                                    )
+                                    .await?;
+                                    return Box::pin(self
+                                        .publish_response_annotation_protocol_failure(
+                                            session_id,
+                                            &model_attempt_id,
+                                            context.parent_session_id.as_deref(),
+                                        ))
+                                        .await;
+                                }
+                            };
+                            let bundle = PersistedAnnotations::from_normalized(
+                                annotation_context.scope.expect("trusted Thread scope"),
+                                &normalized,
+                            );
+                            response = normalized.execution_response;
+                            Some(bundle)
+                        } else {
+                            None
+                        };
                     if !interrupted_public_text.is_empty() {
                         response.content = format!("{interrupted_public_text}{}", response.content);
                         interrupted_public_text.clear();
@@ -13410,7 +14115,35 @@ impl Orchestrator {
                         Some("provider response received"),
                     )
                     .await?;
-                    (response, provider_continuation)
+                    (response, provider_continuation, annotation_bundle)
+                }
+                Err(error)
+                    if response_annotations == ResponseAnnotationProtocol::V1
+                        && error.source.is::<response_annotations::ProtocolError>() =>
+                {
+                    self.record_model_attempt_terminal_state(
+                        session_id,
+                        &model_attempt_id,
+                        "protocol_invalid",
+                        Some("Invalid response annotation control syntax"),
+                    )
+                    .await?;
+                    self.record_response_protocol_error(
+                        session_id,
+                        &model_attempt_id,
+                        1,
+                        "response_annotations",
+                        &error.to_string(),
+                        None,
+                    )
+                    .await?;
+                    return Box::pin(self
+                        .publish_response_annotation_protocol_failure(
+                            session_id,
+                            &model_attempt_id,
+                            context.parent_session_id.as_deref(),
+                        ))
+                        .await;
                 }
                 Err(error) if error.is_runtime_failure() => {
                     let failure_origin = match error.origin {
@@ -13592,6 +14325,11 @@ impl Orchestrator {
                     if schedule_receipt {
                         recovery_allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
                     }
+                    let recovery_allowed_tools = response_annotations::augment_tools(
+                        &recovery_allowed_tools,
+                        response_annotations,
+                        thread.executor_kind == "plan_infer",
+                    )?;
                     allowed_tool_names = recovery_allowed_tools
                         .iter()
                         .map(|tool| tool.name.clone())
@@ -13989,10 +14727,12 @@ impl Orchestrator {
                         response,
                         &effective_phase,
                         ToolExecutionOptions {
+                            response_annotation_bundle: annotation_bundle.clone(),
                             context_tx_allowed: false,
                             wake_on_output: false,
                             plan_execution_id: None,
-                            continuation_tool_calls: None,
+                            continuation_tool_calls:
+                                annotation_bundle.as_ref().map(annotation_raw_tool_calls),
                             allowed_tool_names: allowed_tool_names.clone(),
                             record_assistant_call: true,
                             model_attempt_id: Some(model_attempt_id.clone()),
@@ -14013,9 +14753,16 @@ impl Orchestrator {
                         protocol_messages
                             .push(provider_continuation_message(provider_continuation)?);
                     }
+                    let protocol_call = annotation_bundle
+                        .as_ref()
+                        .and_then(|bundle| annotation_raw_tool_calls(bundle).into_iter().next())
+                        .unwrap_or(protocol_call);
                     protocol_messages.push(Message {
                         role: "assistant".to_string(),
-                        content: String::new(),
+                        content: annotation_bundle
+                            .as_ref()
+                            .map(|bundle| bundle.raw_response.content.clone())
+                            .unwrap_or_default(),
                         name: None,
                         tool_call_id: None,
                         tool_calls: Some(vec![protocol_call.clone()]),
@@ -14040,7 +14787,11 @@ impl Orchestrator {
                     if completion_committed {
                         completion_prepared = true;
                         effective_phase = "objective-finalization".to_string();
-                        tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+                        tools.retain(|tool| {
+                            tool.name == NO_REPLY_TOOL_NAME
+                                || (response_annotations == ResponseAnnotationProtocol::V1
+                                    && tool.name == "reply")
+                        });
                         allowed_tool_names = HashSet::from([NO_REPLY_TOOL_NAME.to_string()]);
                         protocol_messages.push(Message {
                             role: "user".to_string(),
@@ -14107,7 +14858,12 @@ impl Orchestrator {
                         append_response_protocol_correction_input(
                             &mut protocol_messages,
                             provider_continuation.as_ref(),
-                            Some(&response),
+                            Some(
+                                annotation_bundle
+                                    .as_ref()
+                                    .map(|bundle| &bundle.raw_response)
+                                    .unwrap_or(&response),
+                            ),
                             reason,
                         )?;
                         continue;
@@ -14118,6 +14874,7 @@ impl Orchestrator {
                         model_attempt_id,
                         provider_continuation,
                         request_context_view_manifest,
+                        annotation_bundle,
                     );
                 }
                 Ok(decision) => {
@@ -14127,6 +14884,7 @@ impl Orchestrator {
                         model_attempt_id,
                         provider_continuation,
                         request_context_view_manifest,
+                        annotation_bundle,
                     )
                 }
                 Err(reason) => {
@@ -14153,7 +14911,12 @@ impl Orchestrator {
                     append_response_protocol_correction_input(
                         &mut protocol_messages,
                         provider_continuation.as_ref(),
-                        Some(&response),
+                        Some(
+                            annotation_bundle
+                                .as_ref()
+                                .map(|bundle| &bundle.raw_response)
+                                .unwrap_or(&response),
+                        ),
                         &reason,
                     )?;
                 }
@@ -14233,6 +14996,26 @@ impl Orchestrator {
                         .await?
                         .is_some_and(|root| crate::event::is_input_event(&root));
                     if answers_a_waiting_user {
+                        // The existing interactive delivery path commits a
+                        // terminal Outcome even when a future Schedule remains.
+                        // Persist V1's source response at that same real terminal
+                        // boundary: yield_thread will correctly ignore the now
+                        // completed Thread rather than publish a waiting bundle.
+                        // Off keeps its original Event and lifecycle behavior.
+                        if terminal_response_annotations.is_some() {
+                            self.record_terminal_response(
+                                session_id,
+                                &attempt_id,
+                                &terminal_model_attempt_id,
+                                &effective_phase,
+                                &response,
+                                &decision,
+                                terminal_response_annotations.as_ref(),
+                                &terminal_context_view_manifest,
+                                terminal_provider_continuation.as_ref(),
+                            )
+                            .await?;
+                        }
                         self.publish_reply_for_model_attempt(
                             session_id,
                             &attempt_id,
@@ -14257,6 +15040,11 @@ impl Orchestrator {
                         wait_secs,
                         wait_explicitly_requested,
                     },
+                    terminal_response_annotations,
+                    &response,
+                    &terminal_model_attempt_id,
+                    &terminal_context_view_manifest,
+                    terminal_provider_continuation.as_ref(),
                 )
                 .await?;
                 if let Some(lease) = dialogue_lease.as_mut() {
@@ -14271,6 +15059,9 @@ impl Orchestrator {
                 &effective_phase,
                 &response,
                 &decision,
+                terminal_response_annotations.as_ref(),
+                &terminal_context_view_manifest,
+                terminal_provider_continuation.as_ref(),
             )
             .await?;
             let direct_interactive_execution = thread_kind == "execution"
@@ -14363,27 +15154,32 @@ impl Orchestrator {
                 // the same semantic boundary.
                 self.refill_activation_admission_queue().await?;
             }
-            let result = Box::pin(self.execute_tool_calls(
-                session_id,
-                &attempt_id,
-                response,
-                &effective_phase,
-                ToolExecutionOptions {
-                    context_tx_allowed: context.turn_budget.context_tx_available
-                        && !context_tx_cooldown,
-                    wake_on_output: true,
-                    plan_execution_id: None,
-                    continuation_tool_calls: None,
-                    allowed_tool_names,
-                    record_assistant_call: true,
-                    model_attempt_id: Some(terminal_model_attempt_id.clone()),
-                    provider_continuation: terminal_provider_continuation,
-                    prompt_cache_transport_seed: prompt_cache_transport_seed_to_persist,
-                    context_view_manifest: Some(terminal_context_view_manifest),
-                    harness_functions: harness_function_sources.clone(),
-                    harness_types: harness_type_sources.clone(),
-                },
-            ))
+            let result = Box::pin(
+                self.execute_tool_calls(
+                    session_id,
+                    &attempt_id,
+                    response,
+                    &effective_phase,
+                    ToolExecutionOptions {
+                        response_annotation_bundle: terminal_response_annotations.clone(),
+                        context_tx_allowed: context.turn_budget.context_tx_available
+                            && !context_tx_cooldown,
+                        wake_on_output: true,
+                        plan_execution_id: None,
+                        continuation_tool_calls: terminal_response_annotations
+                            .as_ref()
+                            .map(annotation_raw_tool_calls),
+                        allowed_tool_names,
+                        record_assistant_call: true,
+                        model_attempt_id: Some(terminal_model_attempt_id.clone()),
+                        provider_continuation: terminal_provider_continuation,
+                        prompt_cache_transport_seed: prompt_cache_transport_seed_to_persist,
+                        context_view_manifest: Some(terminal_context_view_manifest),
+                        harness_functions: harness_function_sources.clone(),
+                        harness_types: harness_type_sources.clone(),
+                    },
+                ),
+            )
             .await;
             let outcome = result?;
             if outcome.context_tx_succeeded {
@@ -14425,6 +15221,7 @@ impl Orchestrator {
         }
 
         unreachable!("A tool-free response must be handled by terminal-protocol classification, correction, or the circuit breaker")
+        }).await
     }
 
     async fn execution_result_is_interactive(
@@ -14770,15 +15567,46 @@ impl Orchestrator {
         attempt_id: &str,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        self.publish_response_protocol_failure_with_count(
+            session_id,
+            attempt_id,
+            parent_session_id,
+            MAX_RESPONSE_PROTOCOL_RETRIES + 1,
+            false,
+        )
+        .await
+    }
+
+    async fn publish_response_annotation_protocol_failure(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        parent_session_id: Option<&str>,
+    ) -> Result<(), DynError> {
+        self.publish_response_protocol_failure_with_count(
+            session_id,
+            attempt_id,
+            parent_session_id,
+            1,
+            true,
+        )
+        .await
+    }
+
+    async fn publish_response_protocol_failure_with_count(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        parent_session_id: Option<&str>,
+        invalid_responses: usize,
+        annotation_failure: bool,
+    ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
-            (
-                "invalid_responses".to_string(),
-                json!(MAX_RESPONSE_PROTOCOL_RETRIES + 1),
-            ),
+            ("invalid_responses".to_string(), json!(invalid_responses)),
         ];
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
@@ -14819,7 +15647,11 @@ impl Orchestrator {
                     session_id,
                     attempt_id,
                     None,
-                    "The model failed to produce a valid Objective final report three consecutive times. This completion intent was revoked and the Objective was not marked complete; inspect model state before continuing.".to_string(),
+                    if annotation_failure {
+                        "The model returned invalid response-annotation control syntax. No repair request was sent; this completion intent was revoked and the Objective was not marked complete.".to_string()
+                    } else {
+                        "The model failed to produce a valid Objective final report three consecutive times. This completion intent was revoked and the Objective was not marked complete; inspect model state before continuing.".to_string()
+                    },
                     parent_session_id,
                     vec![
                         ("terminal_kind".to_string(), json!("failed")),
@@ -14834,6 +15666,15 @@ impl Orchestrator {
                     ],
                 )
                 .await;
+        }
+        if annotation_failure {
+            return self.publish_reply_with_attributes(session_id, attempt_id, None,
+                "模型返回了非法回复控制格式，本次执行已安全停止。未执行混入的工具，也未追加模型请求；之前已提交的结果保持不变。".to_string(),
+                parent_session_id,
+                vec![("terminal_kind".to_string(), json!("failed")),
+                    ("runtime_failure_kind".to_string(), json!("response_annotations_protocol")),
+                    ("runtime_failure_stage".to_string(), json!("response_normalization"))],
+            ).await;
         }
         self.publish_reply(
             session_id,
@@ -14852,6 +15693,9 @@ impl Orchestrator {
         phase: &str,
         response: &crate::llm::Response,
         decision: &TerminalDecision,
+        annotation_bundle: Option<&PersistedAnnotations>,
+        context_view_manifest: &ContextViewManifest,
+        provider_continuation: Option<&ProviderContinuation>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let tool_calls = response
@@ -14880,8 +15724,36 @@ impl Orchestrator {
                 json!(decision.disposition()),
             ),
         ];
+        if let Some(bundle) = annotation_bundle {
+            append_response_annotation_bundle(&mut payload, bundle, true);
+            payload.push((
+                "context_view_manifest".to_string(),
+                json!(context_view_manifest),
+            ));
+            if let Some(continuation) = provider_continuation {
+                payload.push(("provider_continuation".to_string(), json!(continuation)));
+            }
+        }
         self.append_activation_route(attempt_id, &mut payload);
-        let event_id = if phase == "objective-finalization" {
+        // A rejected logical completion can reassess inside this same
+        // Activation, whose first working call already owns call_{attempt}.
+        // Preserve Off's original ID unless that real durable work boundary
+        // exists; never overwrite it with the later terminal response.
+        let earlier_work_boundary = if annotation_bundle.is_none()
+            && phase != "objective-finalization"
+            && model_attempt_id != attempt_id
+        {
+            self.context_engine
+                .find_event(&context_id, &format!("call_{attempt_id}"))
+                .await?
+                .is_some_and(|event| event.payload.get("terminal_outcome") != Some(&json!(true)))
+        } else {
+            false
+        };
+        let event_id = if annotation_bundle.is_some()
+            || phase == "objective-finalization"
+            || earlier_work_boundary
+        {
             format!("call_{attempt_id}_final")
         } else {
             format!("call_{attempt_id}")
@@ -15517,6 +16389,7 @@ impl Orchestrator {
         // generation and survives process restart.
         event.timestamp = delivery_flush_timestamp(&timer);
         let delivery_thread = NewThread {
+            response_annotations: ResponseAnnotationProtocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: stable_thread_id(&delivery_event_id),
@@ -16206,6 +17079,11 @@ impl Orchestrator {
         attempt_id: &str,
         model_disposition: &str,
         state: ThreadYieldState,
+        annotation_bundle: Option<PersistedAnnotations>,
+        response: &crate::llm::Response,
+        model_attempt_id: &str,
+        context_view_manifest: &ContextViewManifest,
+        provider_continuation: Option<&ProviderContinuation>,
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
@@ -16217,7 +17095,10 @@ impl Orchestrator {
         let Some(current) = session_store.get_thread(&route.thread_id).await? else {
             return Err(format!("Thread '{}' does not exist", route.thread_id).into());
         };
-        if current.lifecycle.is_terminal() {
+        if current.lifecycle.is_terminal()
+            || (route.response_annotations == ResponseAnnotationProtocol::V1
+                && current.generation != route.thread_generation)
+        {
             return Ok(());
         }
         let context_id = self.context_id_for_session(session_id)?;
@@ -16264,13 +17145,35 @@ impl Orchestrator {
                 json!(wait_timer.generation),
             ),
         ];
+        if let Some(bundle) = annotation_bundle.as_ref() {
+            append_response_annotation_bundle(&mut payload, bundle, false);
+            payload.extend([
+                ("model_attempt_id".to_string(), json!(model_attempt_id)),
+                (
+                    "context_view_manifest".to_string(),
+                    json!(context_view_manifest),
+                ),
+                ("text".to_string(), json!(response.content)),
+                (
+                    "tool_calls".to_string(),
+                    json!(response_tool_calls(response)),
+                ),
+            ]);
+            if let Some(continuation) = provider_continuation {
+                payload.push(("provider_continuation".to_string(), json!(continuation)));
+            }
+        }
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "thread_waiting_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                if annotation_bundle.is_some() {
+                    format!("call_{attempt_id}_final")
+                } else {
+                    format!(
+                        "thread_waiting_{}",
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    )
+                },
                 "Runtime".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "runtime/thread_waiting".to_string(),
@@ -17753,6 +18656,7 @@ impl Orchestrator {
             response,
             "plan-execution",
             ToolExecutionOptions {
+                response_annotation_bundle: None,
                 context_tx_allowed: false,
                 wake_on_output: false,
                 plan_execution_id: Some(plan.id.clone()),
@@ -18617,6 +19521,7 @@ impl Orchestrator {
                     ("output_empty".to_string(), json!(false)),
                     ("text".to_string(), json!(reason)),
                 ]);
+                stamp_response_annotation_route(&mut payload, route);
                 payload.insert("thread_id".to_string(), json!(route.thread_id));
                 if let Some(principal_id) = &route.initiating_principal_id {
                     payload.insert("principal_id".to_string(), json!(principal_id));
@@ -19102,6 +20007,9 @@ impl Orchestrator {
                 json!(unavailable_call_names),
             ),
         ];
+        if let Some(bundle) = options.response_annotation_bundle.as_ref() {
+            append_response_annotation_bundle(&mut assistant_call_payload, bundle, false);
+        }
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             assistant_call_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
         }
@@ -19860,7 +20768,8 @@ impl Orchestrator {
                                                                 job.record.claimed_by.as_deref(),
                                                             );
                                                         }
-                                                        if let Some(route) = activation_route {
+                                                       if let Some(route) = activation_route {
+                                                            stamp_response_annotation_route(&mut payload, &route);
                                                             payload.insert(
                                                                 "thread_id".to_string(),
                                                                 json!(route.thread_id),
@@ -20484,6 +21393,20 @@ impl Orchestrator {
                 json!(route.reasoning_effort),
             ),
         ]);
+        // Off leaves the legacy Event bytes unchanged. V1 carries the frozen
+        // execution/generation contract through tool outputs and recovery.
+        if route.response_annotations == ResponseAnnotationProtocol::V1 {
+            payload.extend([
+                (
+                    "response_annotations".to_string(),
+                    json!(route.response_annotations),
+                ),
+                (
+                    "thread_generation".to_string(),
+                    json!(route.thread_generation),
+                ),
+            ]);
+        }
         if let Some(principal_id) = route.initiating_principal_id {
             payload.push(("principal_id".to_string(), json!(principal_id)));
         }
@@ -20834,6 +21757,7 @@ impl Orchestrator {
             response,
             "harness-entry",
             ToolExecutionOptions {
+                response_annotation_bundle: None,
                 context_tx_allowed: false,
                 wake_on_output: true,
                 plan_execution_id: None,
@@ -22375,6 +23299,7 @@ fn approval_denied_tool_output(
     if let Some(principal_id) = &route.initiating_principal_id {
         payload.insert("principal_id".to_string(), json!(principal_id));
     }
+    stamp_response_annotation_route(&mut payload, route);
     Event::new(
         output_id.to_string(),
         "System-ApprovalAuthority".to_string(),
@@ -22459,6 +23384,7 @@ fn physical_execution_preflight_rejected_tool_output(
     if let Some(principal_id) = &route.initiating_principal_id {
         payload.insert("principal_id".to_string(), json!(principal_id));
     }
+    stamp_response_annotation_route(&mut payload, route);
     if let Some(version) = route.context_snapshot_version {
         payload.insert("context_snapshot_version".to_string(), json!(version));
     }
@@ -22793,6 +23719,7 @@ fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
         ("text".to_string(), json!(reason)),
     ]);
     if let Some(route) = &metadata.activation_route {
+        stamp_response_annotation_route(&mut payload, route);
         payload.insert("thread_id".to_string(), json!(route.thread_id));
         if let Some(principal_id) = &route.initiating_principal_id {
             payload.insert("principal_id".to_string(), json!(principal_id));
@@ -23487,6 +24414,7 @@ fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::persist_model_public_output;
+    use crate::response_annotations::Protocol as ResponseAnnotationProtocol;
     use chrono::Utc;
     use serde_json::json;
 
@@ -23729,6 +24657,7 @@ mod tests {
             .await
             .unwrap();
         let new_thread = |id: &str, supervision| NewThread {
+            response_annotations: ResponseAnnotationProtocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: id.to_string(),
@@ -24949,6 +25878,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: ResponseAnnotationProtocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-cancel".to_string(),
@@ -26505,6 +27435,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: ResponseAnnotationProtocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.to_string(),
@@ -27128,6 +28059,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: ResponseAnnotationProtocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.to_string(),

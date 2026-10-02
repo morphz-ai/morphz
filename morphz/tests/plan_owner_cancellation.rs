@@ -283,6 +283,7 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> NewPlanExecution {
     let activation = format!("activation-{label}");
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: thread.clone(),
@@ -656,6 +657,7 @@ async fn cancellation_contract(store: &dyn RuntimeStore, label: &str) -> Vec<Str
     sibling.activation_id.push_str("-sibling");
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: sibling.thread_id.clone(),

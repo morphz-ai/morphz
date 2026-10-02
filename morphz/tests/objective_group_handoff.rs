@@ -72,6 +72,7 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
             &[],
             &[],
             &[NewThread {
+                response_annotations: morphz::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.to_string(),
@@ -207,6 +208,7 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
     let direct_root_turn_id = "objective-handoff-direct-root";
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: direct_thread_id.to_string(),

@@ -466,6 +466,18 @@ impl Tool for ObjectiveCreateTool {
         if let Some(principal_id) = &initiating_principal_id {
             request_payload.push(("principal_id".to_string(), json!(principal_id)));
         }
+        if let Some(route) = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten() {
+            if let Some(store) = self.supervisor.thread_store.as_ref() {
+                if let Some(owner) = store.get_thread(&route.thread_id).await? {
+                    if !owner.response_annotations.is_off() {
+                        request_payload.push((
+                            "response_annotations".into(),
+                            json!(owner.response_annotations),
+                        ));
+                    }
+                }
+            }
+        }
         if let Some(harness) = requested_harness.as_ref() {
             let descriptor = harness.descriptor();
             request_payload.push(("harness_id".to_string(), json!(descriptor.id)));
@@ -1457,6 +1469,35 @@ pub struct ObjectiveSupervisor {
 }
 
 impl ObjectiveSupervisor {
+    async fn response_annotations_for_objective(
+        &self,
+        objective: &ObjectiveRecord,
+    ) -> Result<crate::response_annotations::Protocol, DynError> {
+        if let Some(store) = self.thread_store.as_ref() {
+            let root = crate::memory::objective_primary_execution_root_id(
+                &objective.id,
+                objective.generation,
+            );
+            if let Some(thread) = store.get_thread_by_root(&root).await? {
+                return Ok(thread.response_annotations);
+            }
+        }
+        let source = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(objective.source_event_id.clone()),
+                context_id: Some(objective.context_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        source
+            .map(|event| crate::memory::response_annotations_from_payload(&event.payload))
+            .transpose()
+            .map(|value| value.unwrap_or_default())
+    }
+
     async fn current_scheduler_dependencies(
         &self,
         objective: &ObjectiveRecord,
@@ -3245,6 +3286,7 @@ impl ObjectiveSupervisor {
             .collect(),
         );
         let thread = NewThread {
+            response_annotations: self.response_annotations_for_objective(&objective).await?,
             model_alias: objective.model_alias.clone(),
             reasoning_effort: objective.reasoning_effort.clone(),
             id: stable_thread_id(&root_turn_id),
@@ -5014,6 +5056,7 @@ impl ObjectiveSupervisor {
             continuation_payload.into_iter().collect(),
         );
         let continuation_thread = NewThread {
+            response_annotations: self.response_annotations_for_objective(&objective).await?,
             model_alias: objective.model_alias.clone(),
             reasoning_effort: objective.reasoning_effort.clone(),
             id: stable_thread_id(&objective_execution_root_id),
@@ -5939,6 +5982,7 @@ mod tests {
         let thread_id = stable_thread_id(&root_turn_id);
         let thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.clone(),
@@ -6636,6 +6680,7 @@ mod tests {
         store.append(source_event.clone()).await.unwrap();
         let dialogue_thread = store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: stable_thread_id(&source_event.id),
@@ -6750,6 +6795,7 @@ mod tests {
                 &[],
                 &[],
                 &[NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
                     model_alias: None,
                     reasoning_effort: None,
                     id: "thread-legacy-open-objective".to_string(),
@@ -7307,6 +7353,7 @@ mod tests {
         let root_turn_id = format!("root-{suffix}");
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.clone(),
@@ -7745,6 +7792,7 @@ mod tests {
         let trigger_event_id = "trigger-expired-evaluation-fence";
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "thread-expired-evaluation-fence".to_string(),

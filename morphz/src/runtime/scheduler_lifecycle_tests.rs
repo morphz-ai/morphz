@@ -350,6 +350,7 @@ async fn assert_directed_interrupt_chain(with_infer: bool) {
             runtime.identity().principal_id.clone(),
             Some("live-steering-message".into()),
             SessionMessageOptions {
+                response_annotations: None,
                 input_destination: Some(crate::steering::InputDestination::Objective {
                     objective_id: objective.id.clone(),
                     generation: objective.generation,
@@ -586,6 +587,7 @@ async fn assert_directed_interrupt_chain(with_infer: bool) {
 
 fn thread(runtime: &MorphzRuntime, id: &str) -> NewThread {
     NewThread {
+        response_annotations: crate::response_annotations::Protocol::Off,
         model_alias: None,
         reasoning_effort: None,
         id: id.into(),

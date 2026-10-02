@@ -3447,6 +3447,7 @@ mod tests {
             .unwrap();
         store
             .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::Off,
                 model_alias: None,
                 reasoning_effort: None,
                 id: thread_id.clone(),

@@ -744,6 +744,7 @@ async fn claiming_a_pre_fix_direct_signal_backfills_its_parent_activation() {
         .unwrap();
     let parent_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "legacy-parent-thread".to_string(),
@@ -799,6 +800,7 @@ async fn claiming_a_pre_fix_direct_signal_backfills_its_parent_activation() {
 
     let child_thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "legacy-child-thread".to_string(),

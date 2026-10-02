@@ -249,6 +249,7 @@ async fn seed(store: &dyn RuntimeStore, label: &str) -> Batch {
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: thread.clone(),
@@ -537,6 +538,7 @@ async fn assert_later_dialogue_is_not_blocked(store: &dyn RuntimeStore, batch: &
     }))).await.unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: root.clone(),

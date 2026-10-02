@@ -700,6 +700,7 @@ mod tests {
 
     fn thread(now: DateTime<Utc>, lifecycle: ThreadLifecycle) -> ThreadRecord {
         ThreadRecord {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "thread-1".into(),
@@ -903,6 +904,7 @@ mod tests {
         let objective = objective(now);
         let root = objective_primary_execution_root_id(&objective.id, objective.generation);
         let primary = ThreadRecord {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: stable_thread_id(&root),

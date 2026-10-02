@@ -3727,6 +3727,28 @@ mod supervised_concurrency_contract_tests {
         };
         let base =
             message_request_fingerprint(&payload("principal:a", "hello", "/node-a/blob")).unwrap();
+        let mut effective_only = payload("principal:a", "hello", "/node-a/blob");
+        effective_only.insert("response_annotations".into(), serde_json::json!("v1"));
+        assert_eq!(
+            base,
+            message_request_fingerprint(&effective_only).unwrap(),
+            "resolved defaults are not caller intent"
+        );
+        let mut explicit_off = effective_only.clone();
+        explicit_off.insert(
+            "requested_response_annotations".into(),
+            serde_json::json!("off"),
+        );
+        let mut explicit_v1 = effective_only.clone();
+        explicit_v1.insert(
+            "requested_response_annotations".into(),
+            serde_json::json!("v1"),
+        );
+        assert_ne!(base, message_request_fingerprint(&explicit_off).unwrap());
+        assert_ne!(
+            message_request_fingerprint(&explicit_off).unwrap(),
+            message_request_fingerprint(&explicit_v1).unwrap()
+        );
         assert_eq!(
             base,
             message_request_fingerprint(&payload("principal:a", "hello", "/node-b/blob")).unwrap(),
@@ -4924,6 +4946,13 @@ impl DeliveryStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadRecord {
+    /// Frozen response annotation contract for this logical Thread. Generation
+    /// changes inherit it; absence on legacy rows means the original protocol.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::response_annotations::Protocol::is_off"
+    )]
+    pub response_annotations: crate::response_annotations::Protocol,
     /// Task-scoped overrides. Absence preserves live Session/Runtime defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_alias: Option<String>,
@@ -4957,6 +4986,7 @@ pub struct ThreadRecord {
 
 #[derive(Debug, Clone)]
 pub struct NewThread {
+    pub response_annotations: crate::response_annotations::Protocol,
     pub model_alias: Option<String>,
     pub reasoning_effort: Option<String>,
     pub id: String,
@@ -5527,6 +5557,19 @@ pub(crate) fn background_wake_audit_event(
     }
 }
 
+/// Read the accepted, effective contract. Old Events deliberately mean Off.
+pub(crate) fn response_annotations_from_payload(
+    payload: &serde_json::Map<String, JsonValue>,
+) -> Result<crate::response_annotations::Protocol, Box<dyn std::error::Error + Send + Sync>> {
+    payload
+        .get("response_annotations")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map(|protocol| protocol.unwrap_or_default())
+        .map_err(Into::into)
+}
+
 /// Stable identity of one logical user-message request. The database key says
 /// where the request lives; this digest says what immutable intent that key
 /// names. Generated Event IDs, timestamps, and storage paths are deliberately
@@ -5563,6 +5606,14 @@ pub(crate) fn message_request_fingerprint(
 
     let mut digest = sha2::Sha256::new();
     digest.update(b"morphz.message-request.v1\0");
+    // Hash only an explicit caller choice, never the resolved Runtime default.
+    // Omission must retain every pre-annotation transport retry fingerprint.
+    if let Some(protocol) = payload.get("requested_response_annotations") {
+        let protocol: crate::response_annotations::Protocol =
+            serde_json::from_value(protocol.clone())?;
+        digest.update(b"morphz.response-annotations-request.v1\0");
+        digest_field(&mut digest, protocol.as_str());
+    }
     if let Some(destination) = payload.get("input_destination") {
         digest.update(b"morphz.input-destination.v1\0");
         digest_field(&mut digest, &serde_json::to_string(destination)?);

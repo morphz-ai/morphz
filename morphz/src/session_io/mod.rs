@@ -275,6 +275,10 @@ pub struct Delivery {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Activation {
+    /// Optional caller-owned response contract. Omission preserves the old
+    /// request bytes and resolves the configured default only at acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_annotations: Option<crate::response_annotations::Protocol>,
     #[serde(default = "evaluate")]
     pub mode: String,
     pub dispatch_mode: Option<crate::memory::MessageDispatchMode>,
@@ -287,6 +291,7 @@ pub struct Activation {
 impl Default for Activation {
     fn default() -> Self {
         Self {
+            response_annotations: None,
             mode: evaluate(),
             dispatch_mode: None,
             model_alias: None,
@@ -597,6 +602,7 @@ impl Registry {
         }
         if request.activation.input_destination.is_some()
             && (request.activation.model_alias.is_some()
+                || request.activation.response_annotations.is_some()
                 || request.activation.reasoning_effort.is_some()
                 || request.activation.target_id.is_some()
                 || request.activation.harness.is_some())

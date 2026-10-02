@@ -26,6 +26,7 @@ fn command(id: &str, revision: u64, name: &str) -> PutCustomCommand {
 async fn thread(store: &PostgresStore, id: &str) {
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             id: id.into(),
             agent_id: "agent".into(),
             context_id: "context".into(),

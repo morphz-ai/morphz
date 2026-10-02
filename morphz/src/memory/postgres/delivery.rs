@@ -52,6 +52,7 @@ async fn append_dialogue_signal_in_tx(
         .get("principal_id")
         .and_then(JsonValue::as_str);
     let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
+    let response_annotations = crate::memory::response_annotations_from_payload(&event.payload)?;
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = now_text();
 
@@ -83,6 +84,7 @@ async fn append_dialogue_signal_in_tx(
              AND ($4 IS NULL OR thread.target_id IS NULL OR thread.target_id = $4)
              AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM $5
              AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM $6
+             AND thread.response_annotations = $7
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1
            FOR UPDATE OF activation, thread"#,
@@ -98,6 +100,7 @@ async fn append_dialogue_signal_in_tx(
                 .get("reasoning_effort")
                 .and_then(JsonValue::as_str),
         )
+        .bind(response_annotations.as_str())
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -131,6 +134,7 @@ async fn append_dialogue_signal_in_tx(
                  AND ($3 IS NULL OR thread.target_id IS NULL OR thread.target_id = $3)
                  AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM $5
                  AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM $6
+                 AND thread.response_annotations = $7
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -153,6 +157,7 @@ async fn append_dialogue_signal_in_tx(
                     .get("reasoning_effort")
                     .and_then(JsonValue::as_str),
             )
+            .bind(response_annotations.as_str())
             .fetch_optional(&mut **tx)
             .await?
         } else {
@@ -172,10 +177,10 @@ async fn append_dialogue_signal_in_tx(
                     initiating_principal_id, root_turn_id, kind, status, control_state,
                     executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
-                    created_at, updated_at, model_alias, reasoning_effort)
+                    created_at, updated_at, model_alias, reasoning_effort, response_annotations)
                    VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
                            'active', 'self', $7, 'durable', 'runtime', 'dialogue-router', 1,
-                           '{}'::jsonb, 'none', $8, $8, $9, $10)"#,
+                           '{}'::jsonb, 'none', $8, $8, $9, $10, $11)"#,
             )
             .bind(&thread_id)
             .bind(agent_id)
@@ -192,6 +197,7 @@ async fn append_dialogue_signal_in_tx(
                     .get("reasoning_effort")
                     .and_then(JsonValue::as_str),
             )
+            .bind(response_annotations.as_str())
             .execute(&mut **tx)
             .await?;
             (thread_id, 1, None)
@@ -440,10 +446,10 @@ async fn interrupt_dialogue_turn_in_tx(
             initiating_principal_id, root_turn_id, kind, status, control_state,
             executor_kind, lifetime, supervisor_kind, supervisor_id,
             supervision_generation, completion_contract_json, delivery_status,
-            created_at, updated_at, model_alias, reasoning_effort)
+            created_at, updated_at, model_alias, reasoning_effort, response_annotations)
            VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
                    'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
-                   '{}'::jsonb, 'none', $7, $7, $8, $9)"#,
+                   '{}'::jsonb, 'none', $7, $7, $8, $9, $10)"#,
     )
     .bind(&replacement_thread_id)
     .bind(agent_id)
@@ -459,6 +465,7 @@ async fn interrupt_dialogue_turn_in_tx(
             .get("reasoning_effort")
             .and_then(JsonValue::as_str),
     )
+    .bind(crate::memory::response_annotations_from_payload(&event.payload)?.as_str())
     .execute(&mut **tx)
     .await?;
 
@@ -683,13 +690,14 @@ async fn claim_parallel_message_fast_path(
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at, model_alias, reasoning_effort)
+                created_at, updated_at, model_alias, reasoning_effort, response_annotations)
              SELECT $14, 1, 1, authority.agent_id, $7, $1, $2, $4,
                     'dialogue_turn', 'open', 'active', 'self', $15,
                     'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
                     'none', $6, $6,
                     event_insert.payload ->> 'model_alias',
-                    event_insert.payload ->> 'reasoning_effort'
+                    event_insert.payload ->> 'reasoning_effort',
+                    COALESCE(event_insert.payload ->> 'response_annotations', 'off')
              FROM event_insert CROSS JOIN authority
              RETURNING id, generation
            ),
@@ -1075,6 +1083,7 @@ async fn claim_ordered_message_fast_path(
                AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
                AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM ($13::jsonb ->> 'model_alias')
                AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM ($13::jsonb ->> 'reasoning_effort')
+               AND thread.response_annotations = COALESCE($13::jsonb ->> 'response_annotations', 'off')
              ORDER BY activation.trigger_sequence, activation.id
              LIMIT 1
              FOR UPDATE OF activation, thread
@@ -1098,6 +1107,7 @@ async fn claim_ordered_message_fast_path(
                AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
                AND (root_event.payload ->> 'model_alias') IS NOT DISTINCT FROM ($13::jsonb ->> 'model_alias')
                AND (root_event.payload ->> 'reasoning_effort') IS NOT DISTINCT FROM ($13::jsonb ->> 'reasoning_effort')
+               AND thread.response_annotations = COALESCE($13::jsonb ->> 'response_annotations', 'off')
                AND NOT EXISTS (
                  SELECT 1 FROM thread_activations activation
                  WHERE activation.root_turn_id = thread.root_turn_id
@@ -1225,13 +1235,14 @@ async fn claim_ordered_message_fast_path(
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at, model_alias, reasoning_effort)
+                created_at, updated_at, model_alias, reasoning_effort, response_annotations)
              SELECT $14, 1, 1, authority.agent_id, $6, $1, $7, $3,
                     'dialogue_turn', 'open', 'active', 'self', $15,
                     'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
                     'none', $5, $5,
                     event_insert.payload ->> 'model_alias',
-                    event_insert.payload ->> 'reasoning_effort'
+                    event_insert.payload ->> 'reasoning_effort',
+                    COALESCE(event_insert.payload ->> 'response_annotations', 'off')
              FROM event_insert CROSS JOIN authority
              WHERE EXISTS (SELECT 1 FROM interrupted_candidate)
                 OR (
@@ -1957,9 +1968,38 @@ impl DeliveryIngressStore for PostgresStore {
                 _ => None,
             };
             let thread = if let Some(objective) = objective.as_ref() {
+                let root = crate::memory::objective_primary_execution_root_id(
+                    &objective.id,
+                    objective.generation,
+                );
+                let response_annotations = if let Some(protocol) = sqlx::query_scalar::<_, String>(
+                    "SELECT response_annotations FROM threads WHERE root_turn_id = $1",
+                )
+                .bind(&root)
+                .fetch_optional(&mut *tx)
+                .await?
+                {
+                    protocol.parse()?
+                } else if let Some(payload) =
+                    sqlx::query_scalar::<_, JsonValue>("SELECT payload FROM events WHERE id = $1")
+                        .bind(&objective.source_event_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                {
+                    crate::memory::response_annotations_from_payload(
+                        payload
+                            .as_object()
+                            .ok_or("Objective source payload is not an object")?,
+                    )?
+                } else {
+                    crate::response_annotations::Protocol::Off
+                };
                 let thread = super::thread::ensure_thread_in_tx(
                     &mut tx,
-                    &crate::steering::objective_thread(objective),
+                    &crate::steering::objective_thread_with_annotations(
+                        objective,
+                        response_annotations,
+                    ),
                 )
                 .await?;
                 let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
@@ -2730,10 +2770,10 @@ impl DeliveryIngressStore for PostgresStore {
                 initiating_principal_id, root_turn_id, kind, status, control_state,
                 executor_kind, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
-                created_at, updated_at)
+                created_at, updated_at, response_annotations)
                VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
                        'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
-                       '{}'::jsonb, 'none', $7, $7)"#,
+                       '{}'::jsonb, 'none', $7, $7, $8)"#,
         )
         .bind(&thread_id)
         .bind(&target_agent_id)
@@ -2742,6 +2782,7 @@ impl DeliveryIngressStore for PostgresStore {
         .bind(principal_id)
         .bind(&event.id)
         .bind(&now)
+        .bind(crate::memory::response_annotations_from_payload(&event.payload)?.as_str())
         .execute(&mut *tx)
         .await?;
         let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM events WHERE id = $1")

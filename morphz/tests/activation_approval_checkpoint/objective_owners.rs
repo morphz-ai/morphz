@@ -510,6 +510,7 @@ async fn additional_owner_as(
         .unwrap();
     store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: format!("thread-{label}"),

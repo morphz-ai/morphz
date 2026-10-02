@@ -155,6 +155,7 @@ mod tests {
 
     fn thread(id: &str) -> ThreadRecord {
         ThreadRecord {
+            response_annotations: crate::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: id.into(),

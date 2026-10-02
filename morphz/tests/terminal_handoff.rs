@@ -64,6 +64,7 @@ async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal()
 
     let parent = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "terminal-handoff-parent".to_string(),
@@ -82,6 +83,7 @@ async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal()
         .unwrap();
     let child = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: "terminal-handoff-child".to_string(),

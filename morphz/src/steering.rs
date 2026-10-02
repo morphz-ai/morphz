@@ -59,8 +59,16 @@ pub fn input_request_id(objective: &ObjectiveRecord) -> Option<String> {
 }
 
 pub fn objective_thread(objective: &ObjectiveRecord) -> NewThread {
+    objective_thread_with_annotations(objective, crate::response_annotations::Protocol::Off)
+}
+
+pub fn objective_thread_with_annotations(
+    objective: &ObjectiveRecord,
+    response_annotations: crate::response_annotations::Protocol,
+) -> NewThread {
     let root = objective_primary_execution_root_id(&objective.id, objective.generation);
     NewThread {
+        response_annotations,
         model_alias: None,
         reasoning_effort: None,
         id: stable_thread_id(&root),
@@ -177,6 +185,42 @@ pub fn route(
     event
         .payload
         .insert("input_delivery".into(), json!("queued"));
+    if event.payload.contains_key("requested_response_annotations")
+        || event
+            .payload
+            .get("session_io")
+            .and_then(|input| input.pointer("/request/activation/response_annotations"))
+            .is_some()
+    {
+        return Err(
+            "Directed input cannot override its owner's response annotation contract".into(),
+        );
+    }
+    if thread.response_annotations.is_off() {
+        event.payload.remove("response_annotations");
+    } else {
+        event.payload.insert(
+            "response_annotations".into(),
+            json!(thread.response_annotations),
+        );
+    }
+    if let Some(input) = event.payload.get_mut("session_io") {
+        // Rebind only the accepted execution snapshot, not the caller Request.
+        if let Some(execution) = input
+            .get_mut("binding")
+            .and_then(|binding| binding.get_mut("execution"))
+            .and_then(|value| value.as_object_mut())
+        {
+            if thread.response_annotations.is_off() {
+                execution.remove("response_annotations");
+            } else {
+                execution.insert(
+                    "response_annotations".into(),
+                    json!(thread.response_annotations),
+                );
+            }
+        }
+    }
     event.topic = "chat/steering".into();
     Ok(())
 }
@@ -261,6 +305,8 @@ impl crate::tool::Tool for SteerTool {
         event.payload.remove("model_alias");
         event.payload.remove("reasoning_effort");
         for key in [
+            "requested_response_annotations",
+            "response_annotations",
             "after_thread_id",
             "requested_harness_id",
             "requested_harness_version",
@@ -319,6 +365,41 @@ mod tests {
             .unwrap();
         let (thread, event) = seed(&store).await;
         (file, store, thread, event)
+    }
+
+    #[tokio::test]
+    async fn directed_annotations_inherit_owner_and_rebind_only_execution_snapshot() {
+        use crate::response_annotations::Protocol;
+        let (_file, _store, mut thread, source) = fixture().await;
+        let destination = InputDestination::Thread {
+            thread_id: thread.id.clone(),
+            generation: thread.generation,
+        };
+        let mut event = directed(&source, "annotations-steering", destination.clone());
+        let raw_request = json!({"activation": {}, "message": {"text": "original"}});
+        event.payload.insert(
+            "session_io".into(),
+            json!({"request": raw_request, "binding": {"execution": {}}}),
+        );
+        thread.response_annotations = Protocol::V1;
+        route(&mut event, &destination, &thread, None).unwrap();
+        assert_eq!(event.payload["response_annotations"], json!("v1"));
+        assert_eq!(
+            event.payload["session_io"]["binding"]["execution"]["response_annotations"],
+            json!("v1")
+        );
+        assert_eq!(event.payload["session_io"]["request"], raw_request);
+        thread.response_annotations = Protocol::Off;
+        route(&mut event, &destination, &thread, None).unwrap();
+        assert!(!event.payload.contains_key("response_annotations"));
+        assert!(event.payload["session_io"]["binding"]["execution"]
+            .get("response_annotations")
+            .is_none());
+        assert_eq!(event.payload["session_io"]["request"], raw_request);
+        event
+            .payload
+            .insert("requested_response_annotations".into(), json!("v1"));
+        assert!(route(&mut event, &destination, &thread, None).is_err());
     }
 
     async fn seed(store: &dyn RuntimeStore) -> (ThreadRecord, Event) {
@@ -402,6 +483,12 @@ mod tests {
         source
             .payload
             .insert("text".into(), json!("Keep the original public interface"));
+        source
+            .payload
+            .insert("requested_response_annotations".into(), json!("v1"));
+        source
+            .payload
+            .insert("response_annotations".into(), json!("v1"));
         store
             .claim_message(
                 "session-steer",
@@ -459,6 +546,13 @@ mod tests {
         assert_eq!(forwarded.len(), 1);
         assert_eq!(forwarded[0].payload["text"], source.payload["text"]);
         assert_eq!(forwarded[0].payload["source_event_id"], source.id);
+        assert!(!forwarded[0]
+            .payload
+            .contains_key("requested_response_annotations"));
+        assert!(
+            !forwarded[0].payload.contains_key("response_annotations"),
+            "natural steering inherits the Off destination, not the source's new-execution choice"
+        );
         assert_eq!(forwarded[0].payload["thread_id"], target.id);
         assert!(store
             .get_thread_by_root(&forwarded[0].id)
