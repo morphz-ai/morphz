@@ -30,6 +30,14 @@
 
 继续原窗口前，Computer Use 再次明确返回 Mac locked，已请求手动解锁；尚未发送维护事务或第二次四节点输入，不绕过 UI 注入 Human 消息，不改锁屏设置。当前边界：剧本完整原窗验收通过；嵌套活动实现、隔离真链和实际组件测试通过，原窗完整四节点验收仍待完成。目标包含两项且保持 active，不能只凭剧本通过关闭。
 
+随后原 Mac 已解锁，原 App 45017／Runtime 54199／18089 均保持。03:31 通过同一原 TEST 对话的真实 UI 发送固定六项维护及四节点验收；实际 input `3b8bed9f-53da-4aae-982a-3149367d2703`、root `msg_1790969479969864000_54199_2` 三来源正文一致，无 Harness。唯一指定 context_tx 已提交 26→27。独立前后审计：原 6037 个 durable Events 原始字段／payload hash 不变、14 Frames 全内容／来源／版本不变、protected／relations／checkpoints／retiring、Profile head／80 versions、原提醒 Thread／Schedule／未来 timer 不变；仅指定六项退休并退出 active projection，原文未删除。证据 `/tmp/morphz-original-four-node-maintenance.J1uOFk/preservation-audit.json`，原窗回执 `/tmp/morphz-original-final-window.L2NOIY/original-maintenance-six-receipt.jpeg`。
+
+第二次四节点仍未执行，原 FAIL 保留：本次维护前真实 full-work gate 为 265662，提交后为 244018，实际下降 21644，仍超过 critical 229376。先前预计恢复使用了第一次请求的 244156，未计同 Session 随后建立的 actual-usage anchor 20481，不能沿用其 6646 余量。计数 source 是 `usage-calibrated-estimate`，不是完整 work 的 exact usage：首次 reduced maintenance 实际 input 181906／local 161425；本次 reduced input 182934／local 162458，随后 full-work raw 223542＋anchor 20476=244018。退休有效、budget 未耗尽、不是 cooldown 或继承工具锁；因此当前 phase 仍 critical、family 仍 1、零 Job／子 Thread。没有清 anchor、改阈值或再盲发测试。下一步仅量化本轮 TEST 已消费的其他重复追踪记录；自身记录不足时必须取得维护旧用户内容的额外授权。
+
+剩余 TEST 范围的独立复核已完成（`/tmp/morphz-original-four-node-maintenance.J1uOFk/remaining-test-trace-audit.json`）：严格保留唯一提案求值 `@e5918`、唯一候选生成 `@e5991`、所有 Human／回复／Host 保存与交付后，14 项已消费追踪记录的当前 JSON-escaped wire 释放上限 11450。即便全移出，244018→232568，仍需额外至少 3193 才严格低于 critical，且未计新维护元数据、输入、usage-anchor 变化和四节点增长。这只是乐观上限，不是恢复证明，因此未执行这批事务或第三次付费尝试。两份 1.4.3 Plan succeeded、10 个实际所属 Thread 均已完成，来源按真实 parent／Plan 核，不靠文本猜。
+
+已向用户请求继续验收所需的新增边界：允许逐项核验后，让当前 Context 中已完成的历史重复调用参数／只读结果退出模型视窗，原始事件不删，保留 Human 消息、业务成果、Frames、Profile、提醒及未完成工作。未收到答复前不实施历史整理、不改预算、不切第二中心替代；目标保持 active，不将第二项原窗验收冒称完成。计量校准跨 reduced／full-work shape 的现有外推边界只记录为只读审查（`/tmp/morphz-full-work-pressure-review.92ozOr/review.md`），没有为让测试通过清锚点或改变 Runtime 守门。
+
 子 Thread 实现、隔离真实 Runtime 与实际组件回归已通过。剧本 1.4.2 三组真实模型场景通过；
 1.4.3 首次新正向模型验收失败，修复独立证实的输出传输缺陷后，第二次有界真实链通过。
 原失败证据与新 build 的验收边界分别保留，详见下面的输出传输边界。
