@@ -1746,8 +1746,24 @@ body:has(dialog[open]) .cognitive-application-frame {
   background: none;
   font: inherit;
   color: var(--accent-strong);
-  text-decoration: underline;
+}
+.app :is(.markdown-link, .inline-object-link) {
+  color: var(--markdown-link-color);
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
   text-underline-offset: 3px;
+  text-decoration-skip-ink: auto;
+  overflow-wrap: anywhere;
+}
+.app :is(.markdown-link, .inline-object-link):is(:hover, :focus-visible) {
+  color: var(--accent-strong);
+  text-decoration-color: currentColor;
+}
+.app :is(a.markdown-link, button.inline-object-link):focus-visible {
+  outline: 1px solid var(--markdown-link-color);
+  outline-offset: 3px;
+  border-radius: 2px;
 }
 .reply-content img,
 .document-body img {

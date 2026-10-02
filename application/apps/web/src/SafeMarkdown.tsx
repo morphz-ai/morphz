@@ -162,6 +162,7 @@ function Link({
   return (
     <>
       <a
+        className="markdown-link"
         href={url}
         target="_blank"
         rel="noopener noreferrer"

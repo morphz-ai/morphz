@@ -50,6 +50,11 @@
 /* Flat, opaque navigation stays clean over any native window material. The
    shell's appearance/accessibility contract and control geometry are unchanged. */
 .app {
+  --markdown-link-color: color-mix(
+    in srgb,
+    var(--accent-strong) 84%,
+    var(--ink)
+  );
   --sidebar-base: light-dark(#fafafa, #242424);
   --sidebar-fill: var(--sidebar-base);
   --sidebar-edge: var(--hairline);
