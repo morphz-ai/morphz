@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
-import { Camera, Check, RotateCcw } from "lucide-react";
+import { Camera, Check, ChevronRight, RotateCcw } from "lucide-react";
 import {
   defaultAgentProfile,
   defaultHumanProfile,
@@ -363,19 +363,6 @@ export function ProfileEditor({
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
     >
-      <label className="personality-master">
-        <span>使用 Profile</span>
-        <span className="personality-master-state">
-          {dirty ? "待保存" : actual?.enabled ? "已启用" : "未启用"}
-        </span>
-        <input
-          type="checkbox"
-          aria-label="使用 Profile"
-          checked={enabled}
-          disabled={!editable}
-          onChange={(e) => change(data, e.target.checked)}
-        />
-      </label>
       <div className="personality-identity">
         <div className="personality-portrait">
           {subject === "agent" ? (
@@ -387,7 +374,7 @@ export function ProfileEditor({
               posterSrc={urls?.poster}
               animated={animated}
               allowMotion={allowMotion}
-              size={96}
+              size={64}
             />
           ) : (
             <HumanAvatar
@@ -396,7 +383,7 @@ export function ProfileEditor({
               posterSrc={urls?.poster}
               animated={animated}
               allowMotion={allowMotion}
-              size={96}
+              size={64}
             />
           )}
           <button
@@ -456,6 +443,19 @@ export function ProfileEditor({
           )}
         </div>
       </div>
+      <label className="personality-master">
+        <span>{subject === "agent" ? "个性设定" : "个人设定"}</span>
+        <span className="personality-master-state">
+          {dirty ? "待保存" : actual?.enabled ? "已启用" : "未启用"}
+        </span>
+        <input
+          type="checkbox"
+          aria-label="使用 Profile"
+          checked={enabled}
+          disabled={!editable}
+          onChange={(e) => change(data, e.target.checked)}
+        />
+      </label>
       {human && (
         <div className="personality-field">
           <label className="personality-optional">
@@ -487,14 +487,27 @@ export function ProfileEditor({
         </div>
       )}
       {agent && (
-        <>
+        <div className="personality-preferences">
+          <h4 className="personality-group-title">表达偏好</h4>
           <div className="personality-traits">
             {traits.map((trait) => {
               const level = agent.traits[trait.key];
               return (
-                <div className="personality-trait" key={trait.key}>
+                <div
+                  className="personality-trait"
+                  data-configured={level !== null}
+                  key={trait.key}
+                >
                   <span className="personality-trait-heading">
                     <span>{trait.label}</span>
+                    {level !== null && (
+                      <span className="personality-trait-value">
+                        <output htmlFor={`${id}-${trait.key}`}>
+                          <span>{trait.values[level]}</span>
+                          <b>{level}</b>
+                        </output>
+                      </span>
+                    )}
                     <label className="personality-optional">
                       <span>{level === null ? "不设置" : "已设置"}</span>
                       <input
@@ -516,12 +529,6 @@ export function ProfileEditor({
                   </span>
                   {level !== null && (
                     <>
-                      <span className="personality-trait-value">
-                        <output htmlFor={`${id}-${trait.key}`}>
-                          <span>{trait.values[level]}</span>
-                          <b>{level}</b>
-                        </output>
-                      </span>
                       <input
                         type="range"
                         id={`${id}-${trait.key}`}
@@ -586,7 +593,10 @@ export function ProfileEditor({
             </div>
           </fieldset>
           <details className="personality-custom">
-            <summary>自定义风格</summary>
+            <summary>
+              <span>自定义风格</span>
+              <ChevronRight size={14} />
+            </summary>
             <label className="personality-optional">
               <span>{agent.customStyle === null ? "不设置" : "已设置"}</span>
               <input
@@ -614,7 +624,7 @@ export function ProfileEditor({
               }
             />
           </details>
-        </>
+        </div>
       )}
       {!actual?.editable && actual?.available && (
         <p className="muted">由中心管理员管理</p>

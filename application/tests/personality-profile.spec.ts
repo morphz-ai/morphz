@@ -235,6 +235,214 @@ async function save(editor: Locator) {
   await expect(editor.locator(".personality-save-state")).toHaveText("已保存");
 }
 
+async function expectCompactIdentity(editor: Locator, scale = 1) {
+  const geometry = await editor.evaluate((element) => {
+    const rect = (selector: string) => {
+      const target = element.querySelector<HTMLElement>(selector);
+      if (!target) throw new Error(`Missing Profile layout: ${selector}`);
+      const bounds = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+        width: bounds.width,
+        height: bounds.height,
+        cssWidth: parseFloat(style.width),
+        cssHeight: parseFloat(style.height),
+        radius: parseFloat(style.borderTopLeftRadius),
+      };
+    };
+    const bounds = element.getBoundingClientRect();
+    return {
+      identity: rect(".personality-identity"),
+      portrait: rect(".personality-portrait"),
+      avatar: rect(".personality-portrait > .profile-avatar"),
+      camera: rect(".personality-camera"),
+      name: rect(".personality-name"),
+      master: rect(".personality-master"),
+      footer: rect(".personality-actions"),
+      hasRemoveAvatar: !!element.querySelector(".personality-text-action"),
+      firstClasses: [...element.children]
+        .slice(0, 2)
+        .map((child) => child.className),
+      mark: element.querySelector(".personality-portrait .brand-mark")
+        ? rect(".personality-portrait .brand-mark")
+        : null,
+      left: bounds.left,
+      right: bounds.right,
+      viewport: innerWidth,
+      overflow: element.scrollWidth > element.clientWidth + 1,
+    };
+  });
+  expect(geometry.firstClasses).toEqual([
+    "personality-identity",
+    "personality-master",
+  ]);
+  for (const portrait of [geometry.portrait, geometry.avatar]) {
+    expect(portrait.cssWidth).toBeCloseTo(64, 1);
+    expect(portrait.cssHeight).toBeCloseTo(64, 1);
+    expect(portrait.width / scale).toBeCloseTo(64, 1);
+    expect(portrait.height / scale).toBeCloseTo(64, 1);
+    expect(portrait.radius).toBe(18);
+  }
+  expect(geometry.camera.width / scale).toBeCloseTo(32, 1);
+  expect(geometry.camera.height / scale).toBeCloseTo(32, 1);
+  if (geometry.mark) {
+    expect(geometry.mark.cssWidth).toBe(40);
+    expect(geometry.mark.cssHeight).toBe(40);
+  }
+  expect(geometry.name.left).toBeGreaterThan(geometry.portrait.right);
+  expect(geometry.camera.right).toBeLessThanOrEqual(geometry.name.left);
+  expect(geometry.name.right).toBeLessThanOrEqual(geometry.identity.right);
+  // An uploaded portrait adds a real, keyboard-reachable remove action to the
+  // name column; allow that row without weakening the avatar size/alignment.
+  expect(geometry.identity.height / scale).toBeLessThanOrEqual(
+    geometry.hasRemoveAvatar ? 136 : 120,
+  );
+  expect(geometry.master.top).toBeGreaterThanOrEqual(
+    geometry.identity.bottom + 8 * scale,
+  );
+  expect(geometry.left).toBeGreaterThanOrEqual(-1);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
+  expect(geometry.overflow).toBe(false);
+  return geometry;
+}
+
+async function cssProfileZoom(page: Page, scale: number) {
+  await page.evaluate((zoom) => {
+    document.documentElement.style.zoom = String(zoom);
+    // Bound the shell's logical canvas, otherwise root CSS zoom multiplies
+    // 100dvh too. This is CSS geometry coverage, NOT Electron native zoom.
+    const shell = document.querySelector<HTMLElement>(".app");
+    if (shell) shell.style.height = `calc(100dvh / ${zoom})`;
+  }, scale);
+}
+
+test("紧凑圆角身份区和独立设定分组保留完整键盘路径，矮窗保存与连接入口可达", async ({
+  page,
+}, testInfo) => {
+  const snapshot = initialProfile();
+  snapshot.agent.data = structuredClone(defaultAgentProfile);
+  snapshot.agent.enabled = false;
+  snapshot.agent.revision = 0;
+  const fixture = await profileFixture(page, snapshot);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 760, height: 540 });
+  await enterDialogue(page);
+  const editor = await openAgent(page);
+  await expectCompactIdentity(editor);
+  await expect(
+    editor.getByRole("heading", { name: "表达偏好", exact: true }),
+  ).toHaveCount(1);
+  await expect(editor.locator(".personality-traits")).toHaveCount(1);
+  const rows = editor.locator(".personality-trait");
+  await expect(rows).toHaveCount(4);
+  for (const row of await rows.all()) {
+    await expect(row).toHaveAttribute("data-configured", "false");
+    const bounds = await row.boundingBox();
+    expect(bounds?.height).toBeGreaterThanOrEqual(48);
+    expect(bounds?.height).toBeLessThanOrEqual(51);
+  }
+  const camera = editor.getByRole("button", {
+    name: "上传智能体头像",
+    exact: true,
+  });
+  await camera.focus();
+  await camera.press("Tab");
+  await expect(
+    editor.getByRole("checkbox", { name: "设置智能体名字", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  const master = editor.getByRole("checkbox", {
+    name: "使用 Profile",
+    exact: true,
+  });
+  await expect(master).toBeFocused();
+  await expect(master).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Tab");
+  const humor = editor.getByRole("checkbox", {
+    name: "设置幽默",
+    exact: true,
+  });
+  await expect(humor).toBeFocused();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Tab");
+  const slider = editor.getByRole("slider", {
+    name: "幽默程度",
+    exact: true,
+  });
+  await expect(slider).toBeFocused();
+  await expect(slider).toHaveValue("0");
+  await slider.press("End");
+  await expect(slider).toHaveValue("5");
+  const unset = editor.getByRole("radio", { name: "不设置", exact: true });
+  await unset.focus();
+  await unset.press("ArrowRight");
+  await expect(
+    editor.getByRole("radio", { name: "自然", exact: true }),
+  ).toBeChecked();
+  const custom = editor.locator(".personality-custom > summary");
+  await custom.focus();
+  await custom.press("Space");
+  await expect(editor.locator(".personality-custom")).toHaveAttribute(
+    "open",
+    "",
+  );
+  await page.keyboard.press("Tab");
+  await expect(
+    editor.getByRole("checkbox", { name: "设置自定义风格", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Tab");
+  const text = editor.getByRole("textbox", {
+    name: "自定义讲话风格",
+    exact: true,
+  });
+  await expect(text).toBeFocused();
+  await text.fill("TEST 先给结论。");
+  await text.press("Tab");
+  await expect(
+    editor.getByRole("button", { name: "恢复已保存资料", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  const saveButton = editor.getByRole("button", {
+    name: "保存",
+    exact: true,
+  });
+  await expect(saveButton).toBeFocused();
+  await expect(saveButton).toBeInViewport();
+  await saveButton.press("Enter");
+  await expect(editor.locator(".personality-save-state")).toHaveText("已保存");
+  expect(fixture.commands).toHaveLength(1);
+  expect(fixture.commands[0]).toMatchObject({
+    enabled: true,
+    data: {
+      name: null,
+      traits: { humor: 5, rigor: null, warmth: null, verbosity: null },
+      speechStyle: "natural",
+      customStyle: "TEST 先给结论。",
+    },
+  });
+  const system = page.locator(".subject-settings-system");
+  await expect(
+    system.getByRole("heading", { name: "能力与连接", exact: true }),
+  ).toHaveCount(1);
+  await expect(system.locator(".subject-settings-group")).toHaveCount(1);
+  const connection = system.getByRole("button", {
+    name: "智能体连接",
+    exact: true,
+  });
+  await connection.focus();
+  await expect(connection).toBeInViewport();
+  await page.screenshot({
+    path: testInfo.outputPath("agent-short-keyboard-saved.png"),
+    fullPage: true,
+  });
+});
+
 test("双方资料入口分离，Agent 与消息草稿跨面板保留，人名和称呼只写 human", async ({
   page,
 }) => {
@@ -932,6 +1140,11 @@ test("二进制上传和头像读取含当前授权，使用本地 blob，减少
   });
   const image = editor.locator(".profile-avatar-media");
   await expect(image).toHaveAttribute("src", /^blob:/);
+  await expectCompactIdentity(editor);
+  await expect(image).toHaveCSS("object-fit", "cover");
+  await expect(image).toHaveCSS("border-top-left-radius", "18px");
+  await expect(image).toHaveCSS("width", "64px");
+  await expect(image).toHaveCSS("height", "64px");
   await expect
     .poll(() =>
       image.evaluate(
@@ -1496,7 +1709,24 @@ for (const appearance of ["light", "dark"] as const) {
     });
     await enterDialogue(page);
     const agent = await openAgent(page);
+    await expectCompactIdentity(agent);
+    await expect(
+      agent.getByRole("heading", { name: "表达偏好", exact: true }),
+    ).toHaveCount(1);
+    await page.screenshot({
+      path: testInfo.outputPath(`agent-default-${appearance}-1440.png`),
+      fullPage: true,
+    });
+    if (appearance === "light") {
+      const panel = await page.locator(".subject-sidebar").boundingBox();
+      expect(panel).not.toBeNull();
+      await page.screenshot({
+        path: testInfo.outputPath("agent-default-light-panel.png"),
+        clip: panel!,
+      });
+    }
     await page.setViewportSize({ width: 390, height: 960 });
+    await expectCompactIdentity(agent);
     await expect(
       agent.getByRole("checkbox", { name: "使用 Profile", exact: true }),
     ).not.toBeChecked();
@@ -1519,10 +1749,9 @@ for (const appearance of ["light", "dark"] as const) {
       [1440, 2],
     ] as const) {
       await page.setViewportSize({ width, height: 960 });
-      await page.evaluate((scale) => {
-        document.documentElement.style.zoom = String(scale);
-      }, zoom);
+      await cssProfileZoom(page, zoom);
       await expect(agent).toBeVisible();
+      await expectCompactIdentity(agent, zoom);
       const geometry = await agent.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
         const inputs = [
@@ -1548,16 +1777,35 @@ for (const appearance of ["light", "dark"] as const) {
       expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
       expect(geometry.overflow).toBe(false);
       expect(geometry.inputOverflow).toBe(false);
+      await agent.evaluate((element) => {
+        const scroll = element.closest<HTMLElement>(".inspector-scroll");
+        if (scroll) scroll.scrollTop = 0;
+      });
+      await expect(
+        agent.locator(".personality-portrait > .profile-avatar"),
+      ).toBeInViewport({ ratio: 1 });
       await page.screenshot({
         path: testInfo.outputPath(`agent-${appearance}-${width}-${zoom}.png`),
         fullPage: true,
       });
+      const saveButton = agent.getByRole("button", {
+        name: "保存",
+        exact: true,
+      });
+      await saveButton.focus();
+      await expect(saveButton).toBeFocused();
+      await expect(saveButton).toBeInViewport({ ratio: 1 });
+      const connection = page
+        .locator(".subject-settings-system")
+        .getByRole("button", { name: "智能体连接", exact: true });
+      await connection.focus();
+      await expect(connection).toBeFocused();
+      await expect(connection).toBeInViewport({ ratio: 1 });
     }
-    await page.evaluate(() => {
-      document.documentElement.style.zoom = "1";
-    });
+    await cssProfileZoom(page, 1);
     await page.setViewportSize({ width: 390, height: 960 });
     const human = await openHuman(page);
+    await expectCompactIdentity(human);
     await expect(
       human.getByRole("textbox", { name: "你的名字", exact: true }),
     ).toBeInViewport();
@@ -1575,10 +1823,27 @@ for (const appearance of ["light", "dark"] as const) {
       path: testInfo.outputPath(`human-${appearance}-390.png`),
       fullPage: true,
     });
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await page.evaluate(() => {
-      document.documentElement.style.zoom = "2";
+    const name = human.getByRole("textbox", {
+      name: "你的名字",
+      exact: true,
     });
+    await name.fill(`TEST ${appearance} 资料草稿`);
+    const saveButton = human.getByRole("button", {
+      name: "保存",
+      exact: true,
+    });
+    await saveButton.focus();
+    await expect(saveButton).toBeFocused();
+    await expect(saveButton).toBeInViewport({ ratio: 1 });
+    await expect(human.locator(".personality-actions")).toBeInViewport({
+      ratio: 1,
+    });
+    await page.screenshot({
+      path: testInfo.outputPath(`human-${appearance}-390-save-visible.png`),
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await cssProfileZoom(page, 2);
     await page.evaluate(
       () =>
         new Promise<void>((done) =>
@@ -1590,11 +1855,30 @@ for (const appearance of ["light", "dark"] as const) {
       right: element.getBoundingClientRect().right,
       viewport: innerWidth,
     }));
+    await expectCompactIdentity(human, 2);
+    await human.locator(".personality-identity").scrollIntoViewIfNeeded();
+    await expect(human.locator(".personality-identity")).toBeInViewport({
+      ratio: 1,
+    });
     await page.screenshot({
       path: testInfo.outputPath(`human-${appearance}-1440-2.png`),
       fullPage: true,
     });
     expect(zoomGeometry.overflow).toBe(false);
     expect(zoomGeometry.right).toBeLessThanOrEqual(zoomGeometry.viewport + 1);
+    // The same save button remains focused across resize; focusing it again
+    // does not scroll. Exercise the actual modal scroller after the identity
+    // screenshot, without changing layout or hiding the clipping assertion.
+    await human.locator(".personality-actions").scrollIntoViewIfNeeded();
+    await saveButton.focus();
+    await expect(saveButton).toBeFocused();
+    await expect(saveButton).toBeInViewport({ ratio: 1 });
+    await expect(human.locator(".personality-actions")).toBeInViewport({
+      ratio: 1,
+    });
+    await page.screenshot({
+      path: testInfo.outputPath(`human-${appearance}-1440-2-save-visible.png`),
+      fullPage: true,
+    });
   });
 }

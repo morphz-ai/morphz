@@ -1,15 +1,18 @@
 .personality-profile {
   --profile-accent: var(--accent);
   display: grid;
-  gap: 22px;
+  gap: 16px;
   min-width: 0;
-  padding: 2px 0 12px;
+  padding: 2px 0 0;
 }
 .personality-identity {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 12px 0 4px;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--paper);
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
   min-width: 0;
 }
 .personality-master,
@@ -18,16 +21,22 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
+  min-height: 32px;
+  cursor: pointer;
 }
 .personality-master {
-  padding: 4px 0 12px;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 550;
+}
+.personality-optional {
+  min-width: 32px;
 }
 .personality-master-state,
 .personality-optional > span:last-of-type {
   color: var(--muted);
   font-size: 12px;
+  font-weight: 400;
 }
 .personality-master-state,
 .personality-name .personality-optional > span:last-of-type,
@@ -36,33 +45,99 @@
 }
 .app .personality-optional > input[type="checkbox"],
 .app .personality-master > input[type="checkbox"] {
-  appearance: auto;
-  width: 16px;
-  height: 16px;
+  appearance: none;
+  position: relative;
+  box-sizing: border-box;
+  width: 28px;
+  height: 17px;
   flex: none;
   padding: 0;
   margin: 0;
-  accent-color: var(--accent);
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  background: var(--hover);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    background 110ms ease,
+    border-color 110ms ease;
+}
+.app .personality-optional > input[type="checkbox"]::before,
+.app .personality-master > input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  left: 2px;
+  top: 2px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 110ms ease;
+}
+.app .personality-optional > input[type="checkbox"]:checked,
+.app .personality-master > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.app .personality-optional > input[type="checkbox"]:checked::before,
+.app .personality-master > input[type="checkbox"]:checked::before {
+  transform: translateX(11px);
+  background: var(--paper);
+}
+.app .personality-master > input[type="checkbox"] {
+  width: 36px;
+  height: 22px;
+}
+.app .personality-master > input[type="checkbox"]::before {
+  width: 16px;
+  height: 16px;
+}
+.app .personality-master > input[type="checkbox"]:checked::before {
+  transform: translateX(14px);
+}
+.app .personality-optional > input[type="checkbox"]:focus-visible,
+.app .personality-master > input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .personality-portrait {
   position: relative;
-  flex: 0 0 96px;
-  width: 96px;
-  height: 96px;
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+}
+.personality-portrait > .profile-avatar,
+.personality-portrait > .human-avatar {
+  border-radius: inherit;
+  background: var(--soft);
+}
+.app .personality-portrait .profile-avatar > .brand-mark {
+  width: 40px;
+  height: 40px;
+}
+.personality-portrait .profile-avatar-media,
+.personality-portrait .profile-avatar-initial {
+  border-radius: inherit;
 }
 .app .personality-camera {
   position: absolute;
   right: -3px;
-  bottom: 1px;
-  width: 29px;
-  height: 29px;
+  bottom: -4px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   padding: 0;
-  border-radius: 50%;
+  border-radius: 10px;
   background: var(--paper);
   border: 1px solid var(--line);
   color: var(--muted);
+  box-shadow: none;
+}
+.personality-camera svg {
+  width: 14px;
+  height: 14px;
 }
 .app .personality-camera:hover {
   color: var(--ink);
@@ -85,10 +160,16 @@
   border-radius: 0;
   box-shadow: none;
   background: transparent;
-  font-size: 23px;
-  font-weight: 550;
-  padding: 7px 0;
+  font-size: 20px;
+  font-weight: 600;
+  padding: 2px 0 4px;
   color: var(--ink);
+}
+.app .personality-name > input:disabled {
+  opacity: 1;
+}
+.personality-name > input::placeholder {
+  color: var(--text-secondary);
 }
 .app .personality-name > input:not(:disabled):hover {
   border-bottom-color: var(--line);
@@ -108,46 +189,76 @@
 }
 .personality-field {
   display: grid;
-  gap: 9px;
+  gap: 8px;
   font-size: 13px;
 }
 .app .personality-field > input {
   width: 100%;
   border: 1px solid var(--line);
-  background: var(--soft);
-  border-radius: 12px;
-  padding: 12px 14px;
+  background: var(--paper);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.personality-preferences {
+  min-width: 0;
+}
+.personality-group-title {
+  margin: 0 2px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
 }
 .personality-traits {
   display: grid;
-  gap: 23px;
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  border-radius: 12px;
+  background: var(--paper);
+  overflow: hidden;
 }
 .personality-trait {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  padding: 8px 12px;
+}
+.personality-trait + .personality-trait {
+  border-top: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
 }
 .personality-trait-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 13px;
+  min-height: 32px;
+  gap: 8px;
+}
+.personality-trait[data-configured="true"] .personality-optional > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.personality-trait-value {
+  margin-left: auto;
+  min-width: 0;
 }
 .personality-trait-value output {
   display: flex;
   align-items: center;
   gap: 9px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   justify-content: flex-end;
 }
 .personality-trait-value output b {
-  min-width: 24px;
+  min-width: 20px;
   padding: 2px 5px;
   text-align: center;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--accent) 13%, var(--paper));
-  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+  color: var(--ink);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -197,26 +308,26 @@
   display: flex;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   margin-top: -5px;
 }
 .personality-speaking {
   padding: 0;
   border: 0;
   min-width: 0;
-  margin: 0;
+  margin: 16px 0 0;
 }
 .personality-speaking legend {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   padding: 0;
   font-size: 13px;
 }
 .personality-speaking > div {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  padding: 4px;
+  padding: 3px;
   gap: 3px;
-  border-radius: 13px;
+  border-radius: 10px;
   background: var(--hover);
 }
 .personality-speaking label {
@@ -232,15 +343,15 @@
 }
 .personality-speaking label > span {
   display: block;
-  padding: 9px 2px;
-  border-radius: 10px;
+  padding: 7px 2px;
+  border-radius: 7px;
   color: var(--muted);
   font-size: 12px;
 }
 .personality-speaking input:checked + span {
   color: var(--ink);
   background: var(--paper);
-  box-shadow: 0 1px 5px #0001;
+  font-weight: 550;
 }
 .personality-speaking input:focus-visible + span {
   outline: 2px solid var(--accent);
@@ -249,9 +360,21 @@
 .personality-custom {
   color: var(--muted);
   font-size: 12px;
+  margin-top: 12px;
 }
 .personality-custom summary {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  list-style: none;
+}
+.personality-custom summary::-webkit-details-marker {
+  display: none;
+}
+.personality-custom[open] > summary > svg {
+  transform: rotate(90deg);
 }
 .personality-custom > .personality-optional {
   justify-content: flex-end;
@@ -262,18 +385,24 @@
   box-sizing: border-box;
   width: 100%;
   margin-top: 12px;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid var(--line);
-  padding: 12px;
+  padding: 10px;
   resize: vertical;
-  background: var(--soft);
+  background: var(--paper);
   font-size: 13px;
 }
 .personality-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
+  min-height: 32px;
+}
+/* The embedded Human editor is not the outer dialog's action footer. */
+.app .settings-content .personality-actions {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 .personality-save-state {
   flex: 1;
@@ -285,7 +414,11 @@
 }
 .app .personality-save {
   min-width: 68px;
-  border-radius: 11px;
+  min-height: 32px;
+  height: 32px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 .app .personality-reset {
   display: grid;
@@ -317,7 +450,7 @@
   opacity: 0.55;
 }
 .subject-settings > .personality-profile {
-  margin-bottom: 18px;
+  margin-bottom: 24px;
 }
 .subject-tabs .profile-avatar {
   pointer-events: none;
@@ -328,9 +461,27 @@
 }
 @media (max-width: 520px) {
   .personality-identity {
-    gap: 16px;
+    gap: 12px;
+    padding: 12px;
   }
   .personality-name > input {
-    font-size: 21px;
+    font-size: 20px;
+  }
+}
+@media (hover: none), (pointer: coarse) {
+  .personality-optional,
+  .personality-master,
+  .personality-speaking label > span,
+  .personality-custom summary {
+    min-height: 44px;
+  }
+  .personality-optional {
+    min-width: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .personality-profile input[type="checkbox"],
+  .personality-profile input[type="checkbox"]::before {
+    transition: none;
   }
 }

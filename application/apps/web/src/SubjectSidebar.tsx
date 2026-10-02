@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   Settings2,
   FolderKey,
+  ChevronRight,
+  Blocks,
 } from "lucide-react";
 import { BrandMark } from "./BrandMark.js";
 import { InspectorPanel } from "./InspectorPanel.js";
@@ -245,37 +247,50 @@ export function SubjectSidebar({
                 allowMotion={allowMotion}
               />
             )}
-            <dl>
-              {!profile && (
-                <>
-                  <dt>名字</dt>
-                  <dd>{subject?.name ?? "Morphz"}</dd>
-                </>
-              )}
-              <dt>默认模型</dt>
-              <dd>{runtime.model || "尚未配置"}</dd>
-            </dl>
-            {onModels && (
-              <button onClick={onModels}>
-                <Settings2 />
-                模型与账号
-              </button>
-            )}
-            <button onClick={onConnection}>
-              <SlidersHorizontal />
-              智能体连接
-            </button>
-            {runtime.harnesses?.length ? (
-              <details>
-                <summary>已安装执行方式</summary>
-                {runtime.harnesses.map((h) => (
-                  <p key={`${h.id}:${h.version}`}>
-                    {h.id}
-                    <small>{h.version}</small>
-                  </p>
-                ))}
-              </details>
-            ) : null}
+            <div className="subject-settings-system">
+              <h4>能力与连接</h4>
+              <div className="subject-settings-group">
+                <dl>
+                  {!profile && (
+                    <>
+                      <dt>名字</dt>
+                      <dd>{subject?.name ?? "Morphz"}</dd>
+                    </>
+                  )}
+                  <dt>默认模型</dt>
+                  <dd title={runtime.model || "尚未配置"}>
+                    {runtime.model || "尚未配置"}
+                  </dd>
+                </dl>
+                {onModels && (
+                  <button onClick={onModels}>
+                    <Settings2 />
+                    <span>模型与账号</span>
+                    <ChevronRight className="subject-settings-chevron" />
+                  </button>
+                )}
+                <button onClick={onConnection}>
+                  <SlidersHorizontal />
+                  <span>智能体连接</span>
+                  <ChevronRight className="subject-settings-chevron" />
+                </button>
+                {runtime.harnesses?.length ? (
+                  <details>
+                    <summary>
+                      <Blocks />
+                      <span>已安装执行方式</span>
+                      <ChevronRight className="subject-settings-chevron" />
+                    </summary>
+                    {runtime.harnesses.map((h) => (
+                      <p key={`${h.id}:${h.version}`}>
+                        {h.id}
+                        <small>{h.version}</small>
+                      </p>
+                    ))}
+                  </details>
+                ) : null}
+              </div>
+            </div>
           </section>
         )}
       </div>

@@ -200,38 +200,95 @@
   gap: 12px;
   justify-content: space-between;
 }
-.subject-settings dl {
+.subject-settings-system h4 {
+  margin: 0 2px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.subject-settings-group {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.subject-settings-group dl {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px 16px;
-  font-size: 13px;
+  align-items: start;
+  gap: 8px 12px;
+  padding: 12px;
+  margin: 0;
+  font-size: 12px;
 }
-.subject-settings dt {
+.subject-settings-group dt {
   color: var(--muted);
 }
-.subject-settings dd {
+.subject-settings-group dd {
   margin: 0;
-  overflow-wrap: anywhere;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.subject-settings > button {
+.app .subject-settings-group > button,
+.subject-settings-group > details > summary {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   width: 100%;
   text-align: left;
-  padding: 12px 8px;
+  min-height: 42px;
+  padding: 10px 12px;
   border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
   background: transparent;
-  border-radius: 10px;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 13px;
+  cursor: pointer;
 }
-.subject-settings > button:hover {
+.app .subject-settings-group > button:hover,
+.subject-settings-group > details > summary:hover {
   background: var(--hover);
 }
-.subject-settings > button svg {
-  width: 17px;
-  height: 17px;
+.subject-settings-group svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-secondary);
 }
-.subject-settings details {
-  margin-top: 14px;
+.subject-settings-group .subject-settings-chevron {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--muted);
+}
+.subject-settings-group details {
+  margin: 0;
   font-size: 12px;
+}
+.subject-settings-group details > summary {
+  list-style: none;
+}
+.subject-settings-group details > summary::-webkit-details-marker {
+  display: none;
+}
+.subject-settings-group details[open] .subject-settings-chevron {
+  transform: rotate(90deg);
+}
+.subject-settings-group details > p {
+  margin: 0;
+  padding: 8px 12px 8px 36px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.subject-settings-group details > p small {
+  flex: none;
+}
+@media (hover: none), (pointer: coarse) {
+  .app .subject-settings-group > button,
+  .subject-settings-group > details > summary {
+    min-height: 44px;
+  }
 }
