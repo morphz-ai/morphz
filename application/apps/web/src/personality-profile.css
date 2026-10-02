@@ -1,9 +1,24 @@
 .personality-profile {
   --profile-accent: var(--accent);
+  --profile-selected-surface: var(--paper);
+  --profile-selected-text: var(--ink);
+  --profile-selected-weight: 550;
   display: grid;
   gap: 20px;
   min-width: 0;
   padding: 2px 0 0;
+}
+/* A retained selection is not an applied instruction. Keep it readable and
+   editable when the whole Profile is unused, without clearing its values. */
+.personality-profile[data-profile-use="false"] {
+  --profile-accent: var(--muted);
+  --profile-selected-surface: color-mix(
+    in srgb,
+    var(--muted) 12%,
+    var(--paper)
+  );
+  --profile-selected-text: var(--text-secondary);
+  --profile-selected-weight: 400;
 }
 .personality-identity {
   display: flex;
@@ -85,8 +100,8 @@
 }
 .app .personality-optional > input[type="checkbox"]:checked,
 .app .personality-master > input[type="checkbox"]:checked {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--profile-accent);
+  border-color: var(--profile-accent);
 }
 .app .personality-optional > input[type="checkbox"]:checked::before,
 .app .personality-master > input[type="checkbox"]:checked::before {
@@ -371,8 +386,8 @@
   padding: 2px 5px;
   text-align: center;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
-  color: var(--ink);
+  background: color-mix(in srgb, var(--profile-accent) 10%, var(--paper));
+  color: var(--profile-selected-text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -394,8 +409,8 @@
   background:
     linear-gradient(
         90deg,
-        color-mix(in srgb, var(--accent) 36%, var(--paper)),
-        color-mix(in srgb, var(--accent) 70%, var(--paper))
+        color-mix(in srgb, var(--profile-accent) 36%, var(--paper)),
+        color-mix(in srgb, var(--profile-accent) 70%, var(--paper))
       )
       left center / var(--trait-fill) 9px no-repeat,
     linear-gradient(var(--track-empty), var(--track-empty)) center / 100% 9px
@@ -415,7 +430,7 @@
   height: 21px;
   border-radius: 50%;
   border: 3px solid var(--paper);
-  background: var(--accent);
+  background: var(--profile-accent);
   box-shadow: var(--trait-thumb-shadow);
 }
 .personality-trait input[type="range"]::-moz-range-thumb {
@@ -423,7 +438,7 @@
   height: 15px;
   border-radius: 50%;
   border: 3px solid var(--paper);
-  background: var(--accent);
+  background: var(--profile-accent);
   box-shadow: var(--trait-thumb-shadow);
 }
 .personality-trait-ends {
@@ -471,12 +486,12 @@
   font-size: 12px;
 }
 .personality-speaking input:checked + span {
-  color: var(--ink);
-  background: var(--paper);
-  font-weight: 550;
+  color: var(--profile-selected-text);
+  background: var(--profile-selected-surface);
+  font-weight: var(--profile-selected-weight);
 }
 .personality-speaking input:focus-visible + span {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--profile-accent);
   outline-offset: 1px;
 }
 .personality-custom {

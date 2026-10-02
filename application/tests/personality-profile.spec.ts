@@ -902,6 +902,287 @@ async function cssProfileZoom(page: Page, scale: number) {
   }, scale);
 }
 
+async function profileSelectionPaint(editor: Locator) {
+  return editor.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.hidden = true;
+    element.append(probe);
+    const color = (value: string) => {
+      probe.style.color = value;
+      return getComputedStyle(probe).color;
+    };
+    const background = (value: string) => {
+      probe.style.background = value;
+      return getComputedStyle(probe).backgroundImage;
+    };
+    const tokens = {
+      accent: color("var(--accent)"),
+      neutral: color("var(--muted)"),
+      effective: color("var(--profile-accent)"),
+      selectedText: color("var(--profile-selected-text)"),
+      selectedSurface: color("var(--profile-selected-surface)"),
+      badgeSurface: color(
+        "color-mix(in srgb, var(--profile-accent) 10%, var(--paper))",
+      ),
+      range: background(
+        "linear-gradient(90deg, color-mix(in srgb, var(--profile-accent) 36%, var(--paper)), color-mix(in srgb, var(--profile-accent) 70%, var(--paper))), linear-gradient(color-mix(in srgb, var(--ink) 9%, var(--paper)), color-mix(in srgb, var(--ink) 9%, var(--paper)))",
+      ),
+    };
+    probe.remove();
+    const choices = [
+      ...element.querySelectorAll<HTMLInputElement>(
+        '.personality-optional > input[type="checkbox"]',
+      ),
+    ].map((input) => {
+      const style = getComputedStyle(input);
+      return {
+        name: input.getAttribute("aria-label"),
+        checked: input.checked,
+        disabled: input.disabled,
+        background: style.backgroundColor,
+        border: style.borderColor,
+        opacity: style.opacity,
+        outline: style.outlineStyle,
+        shadow: style.boxShadow,
+        dotTransform: getComputedStyle(input, "::before").transform,
+      };
+    });
+    const ranges = [
+      ...element.querySelectorAll<HTMLInputElement>('input[type="range"]'),
+    ].map((input) => {
+      const style = getComputedStyle(input);
+      return {
+        value: input.value,
+        disabled: input.disabled,
+        fill: style.getPropertyValue("--trait-fill").trim(),
+        background: style.backgroundImage,
+        opacity: style.opacity,
+        outline: style.outlineStyle,
+        shadow: style.boxShadow,
+      };
+    });
+    const badges = [
+      ...element.querySelectorAll<HTMLElement>(
+        ".personality-trait-value output b",
+      ),
+    ].map((badge) => {
+      const style = getComputedStyle(badge);
+      return {
+        text: badge.textContent,
+        background: style.backgroundColor,
+        color: style.color,
+        opacity: style.opacity,
+      };
+    });
+    const radio = element.querySelector<HTMLInputElement>(
+      '.personality-speaking input[type="radio"]:checked',
+    )!;
+    const speaking = getComputedStyle(radio.nextElementSibling!);
+    return {
+      tokens,
+      choices,
+      ranges,
+      badges,
+      speaking: {
+        value: radio.value,
+        disabled: radio.matches(":disabled"),
+        background: speaking.backgroundColor,
+        color: speaking.color,
+        weight: speaking.fontWeight,
+        opacity: speaking.opacity,
+      },
+      rootOpacity: getComputedStyle(element).opacity,
+    };
+  });
+}
+
+async function expectProfileSelectionPaint(editor: Locator, enabled: boolean) {
+  await expectProfileUsage(editor, enabled);
+  // Wait for the actual painted switch transition, not only the data flag.
+  await expect
+    .poll(async () => {
+      const paint = await profileSelectionPaint(editor);
+      return paint.choices.every(
+        (choice) => choice.background === paint.tokens.effective,
+      );
+    })
+    .toBe(true);
+  const paint = await profileSelectionPaint(editor);
+  expect(paint.tokens.effective).toBe(
+    enabled ? paint.tokens.accent : paint.tokens.neutral,
+  );
+  expect(paint.rootOpacity).toBe("1");
+  expect(paint.choices).toHaveLength(5);
+  for (const choice of paint.choices) {
+    expect(choice.checked).toBe(true);
+    expect(choice.disabled).toBe(false);
+    expect(choice.background).toBe(paint.tokens.effective);
+    expect(choice.border).toBe(paint.tokens.effective);
+    expect(choice.dotTransform).toBe("matrix(1, 0, 0, 1, 12, 0)");
+    expect(choice.opacity).toBe("1");
+    expect(choice.outline).toBe("none");
+    expect(choice.shadow).toBe("none");
+  }
+  expect(paint.ranges).toHaveLength(4);
+  for (const range of paint.ranges) {
+    expect(range.disabled).toBe(false);
+    expect(range.background).toBe(paint.tokens.range);
+    expect(range.fill).toBe(`${Number(range.value) * 20}%`);
+    expect(range.opacity).toBe("1");
+    expect(range.outline).toBe("none");
+    expect(range.shadow).toBe("none");
+  }
+  for (const badge of paint.badges) {
+    expect(badge.background).toBe(paint.tokens.badgeSurface);
+    expect(badge.color).toBe(paint.tokens.selectedText);
+    expect(badge.opacity).toBe("1");
+  }
+  expect(paint.speaking.disabled).toBe(false);
+  expect(paint.speaking.background).toBe(paint.tokens.selectedSurface);
+  expect(paint.speaking.color).toBe(paint.tokens.selectedText);
+  expect(paint.speaking.weight).toBe(enabled ? "550" : "400");
+  expect(paint.speaking.opacity).toBe("1");
+  return paint;
+}
+
+for (const appearance of ["light", "dark"] as const) {
+  test(`整体 Profile 关闭使用中性灰，${appearance}保留选择并可编辑，刷新与重新启用恢复实际颜色`, async ({
+    page,
+  }, testInfo) => {
+    const snapshot = initialProfile();
+    snapshot.agent.data = {
+      ...snapshot.agent.data,
+      name: "Echo",
+      traits: { humor: 4, rigor: 5, warmth: 2, verbosity: 2 },
+      speechStyle: "thoughtful",
+      customStyle: "TEST 已确认的风格原文，关闭不能删除。",
+    };
+    const original = structuredClone(snapshot.agent.data);
+    const fixture = await profileFixture(page, snapshot);
+    await page.emulateMedia({
+      colorScheme: appearance,
+      reducedMotion: "reduce",
+    });
+    await enterDialogue(page);
+    let editor = await openAgent(page);
+    await openPreferences(editor);
+    await page.mouse.move(1, 1);
+    const on = await expectProfileSelectionPaint(editor, true);
+    expect(on.ranges.map((range) => range.value)).toEqual(["4", "5", "2", "2"]);
+    expect(on.badges.map((badge) => badge.text)).toEqual(["4", "5", "2", "2"]);
+    expect(on.speaking.value).toBe("thoughtful");
+    const custom = editor.locator('textarea[aria-label="自定义讲话风格"]');
+    await expect(custom).toBeVisible();
+    await expect(custom).toHaveValue(original.customStyle!);
+    const confirmedExpression = await editor
+      .locator(".personality-expression")
+      .textContent();
+    const onLabels = (await paintedProfileLabels(editor))
+      .split("\n")
+      .filter((label) => label !== confirmedExpression)
+      .join("\n");
+    expect(fixture.commands).toEqual([]);
+    await editor.screenshot({
+      path: testInfo.outputPath(`profile-usage-${appearance}-on.png`),
+    });
+
+    await setProfileUsage(editor, false);
+    await waitForAutosave(editor);
+    await page.mouse.move(1, 1);
+    const off = await expectProfileSelectionPaint(editor, false);
+    expect(off.tokens.effective).not.toBe(on.tokens.effective);
+    expect(off.ranges.map((range) => range.value)).toEqual(
+      on.ranges.map((range) => range.value),
+    );
+    expect(off.badges.map((badge) => badge.text)).toEqual(
+      on.badges.map((badge) => badge.text),
+    );
+    expect(off.ranges[0]!.background).not.toBe(on.ranges[0]!.background);
+    expect(off.badges[0]!.background).not.toBe(on.badges[0]!.background);
+    expect(off.speaking.background).not.toBe(on.speaking.background);
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: false,
+      data: original,
+    });
+    await expect(custom).toHaveValue(original.customStyle!);
+    // No new banner, status label, outer ring, or save/restore action is
+    // needed to communicate the global usage choice.
+    expect(await paintedProfileLabels(editor)).toBe(onLabels);
+    await expectQuietProfileLabels(editor, true);
+    await editor.screenshot({
+      path: testInfo.outputPath(`profile-usage-${appearance}-off.png`),
+    });
+
+    const writes = fixture.commands.length;
+    await page.reload();
+    editor = await openAgent(page);
+    await expect(
+      editor.locator("details.personality-preferences"),
+    ).toHaveAttribute("open", "");
+    const reloaded = await expectProfileSelectionPaint(editor, false);
+    expect(reloaded).toEqual(off);
+    expect(fixture.commands).toHaveLength(writes);
+    await expect(
+      editor.locator('textarea[aria-label="自定义讲话风格"]'),
+    ).toHaveValue(original.customStyle!);
+    await editor.screenshot({
+      path: testInfo.outputPath(`profile-usage-${appearance}-off-reload.png`),
+    });
+
+    // Neutral means retained but not applied, not disabled or erased. All
+    // original editing paths stay live without implicitly restoring usage.
+    await setLevel(editor, "幽默", 3);
+    await waitForAutosave(editor);
+    await editor.getByRole("radio", { name: "自然", exact: true }).check();
+    await waitForAutosave(editor);
+    const editedStyle = `${original.customStyle} TEST 关闭后仍能修改。`;
+    const reopenedCustom = editor.locator(
+      'textarea[aria-label="自定义讲话风格"]',
+    );
+    await reopenedCustom.fill(editedStyle);
+    await reopenedCustom.blur();
+    await waitForAutosave(editor);
+    await expectProfileUsage(editor, false);
+    expect(
+      fixture.commands
+        .slice(writes)
+        .every((command) => command.enabled === false),
+    ).toBe(true);
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: false,
+      data: {
+        ...original,
+        traits: { ...original.traits, humor: 3 },
+        speechStyle: "natural",
+        customStyle: editedStyle,
+      },
+    });
+    await expectProfileSelectionPaint(editor, false);
+
+    const retained = structuredClone(fixture.snapshot.agent.data);
+    await setProfileUsage(editor, true);
+    await waitForAutosave(editor);
+    await page.mouse.move(1, 1);
+    const restored = await expectProfileSelectionPaint(editor, true);
+    expect(restored.tokens).toEqual(on.tokens);
+    expect(restored.ranges.map((range) => range.value)).toEqual([
+      "3",
+      "5",
+      "2",
+      "2",
+    ]);
+    expect(restored.speaking.value).toBe("natural");
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: true,
+      data: retained,
+    });
+    await expect(reopenedCustom).toHaveValue(editedStyle);
+    await editor.screenshot({
+      path: testInfo.outputPath(`profile-usage-${appearance}-reenabled.png`),
+    });
+  });
+}
+
 for (const appearance of ["light", "dark"] as const) {
   test(`自定义风格同一行开关，${appearance}关闭保留确认原文，刷新后重新开启恢复`, async ({
     page,
