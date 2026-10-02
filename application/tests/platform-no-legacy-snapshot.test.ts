@@ -18,6 +18,7 @@ import {
   assertNoLegacyBusinessTables,
   forbidLegacySnapshot,
 } from "./host-transport-invariant.js";
+import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
 test("缺少 Platform 配置也不能通过本地桥恢复旧 workspace 快照", async () => {
   const store = new WorkspaceStore(":memory:", { mode: "transport" });
@@ -48,33 +49,40 @@ test("缺少 Platform 配置也不能通过本地桥恢复旧 workspace 快照",
 });
 
 test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () => {
-  const store = new WorkspaceStore(":memory:", { mode: "transport" });
-  const bridge = new RuntimeBridge(store, {
-    url: "http://127.0.0.1:1",
-    token: "test-only",
-    namespace: randomUUID(),
-  });
+  const fixture = await platformRuntimeHostFixture();
+  const { store, runtime: bridge } = fixture;
+  const snapshot = forbidLegacySnapshot(store);
   try {
-    const snapshot = forbidLegacySnapshot(store);
+    await fixture.session().platformMessage({
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input",
+        projectId: fixture.projectId,
+        artifactId: null,
+        artifactRevision: null,
+        selection: "",
+        body: "正式输入",
+        targetActantId: "morphz-agent",
+      },
+    });
     const internals = bridge as unknown as {
       request: (path: string) => Promise<unknown>;
       refreshActivity: () => Promise<void>;
       refreshAttention: () => Promise<void>;
       state: {
         sessions: Record<string, unknown>;
+        deliveries: { rootId: string | null; sessionId: string }[];
         activity?: { available: boolean; threads: unknown[] };
       };
       attention: { available: boolean };
     };
-    internals.state.sessions["platform-session"] = {
-      id: "platform-session",
-      projectId: "platform-project",
-      conversationId: "platform-project",
-      artifactId: null,
-      platform: true,
-      sharedDefault: false,
-    };
+    const delivery = internals.state.deliveries[0]!;
+    delivery.rootId = "root-platform";
     internals.state.sessions["old-session"] = {
+      ...(internals.state.sessions[delivery.sessionId] as Record<
+        string,
+        unknown
+      >),
       id: "old-session",
       projectId: "old-project",
       conversationId: "old-project",
@@ -82,8 +90,15 @@ test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () =>
       platform: false,
       sharedDefault: false,
     };
+    let unknownRoots = 0;
+    let rootId = "root-platform";
     internals.request = async (path) => {
       if (path === "/api/approvals") return { approvals: [] };
+      if (path.includes("/events/")) {
+        assert.ok(path.endsWith("/unverified-root"));
+        unknownRoots++;
+        return { event: null };
+      }
       assert.match(path, /^\/api\/contexts\/.*\/scheduler\?/);
       return {
         threads: [
@@ -93,9 +108,9 @@ test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () =>
             thread: {
               id: "thread-platform",
               kind: "dialogue_turn",
-              session_id: "platform-session",
+              session_id: delivery.sessionId,
               context_id: decodeURIComponent(path.split("/")[3]!),
-              root_turn_id: "root-platform",
+              root_turn_id: rootId,
               lifecycle: "open",
               revision: 1,
               updated_at: "2026-09-28T00:00:00.000Z",
@@ -115,9 +130,19 @@ test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () =>
     assert.equal(internals.attention.available, true);
     assert.equal(bridge.platformStatus().messages.length, 0);
     assert.equal(snapshot.calls(), 0);
-    snapshot.restore();
+    rootId = "unverified-root";
+    await internals.refreshActivity();
+    assert.equal(internals.state.activity?.available, true);
+    assert.equal(
+      internals.state.activity?.threads.length,
+      0,
+      "A transport Session is not authority to infer an unknown root's project",
+    );
+    assert.equal(unknownRoots, 1);
+    assert.equal(snapshot.calls(), 0);
   } finally {
-    store.close();
+    snapshot.restore();
+    await fixture.close();
   }
 });
 

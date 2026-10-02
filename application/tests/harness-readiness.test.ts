@@ -8,7 +8,17 @@ import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 test("应用执行包未加载或无法核实时不发送；加载精确版本后只重试原输入", async () => {
   let harnesses: { id: string; version: string }[] | undefined = [];
   const sent: string[] = [];
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
+  let policyWrites = 0;
+  let policyReadbacks = 0;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -29,6 +39,19 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       return send(201, session);
     }
     const session = sessions.get(path.split("/")[3]!);
+    if (session && path === `/api/sessions/${session.id}`) {
+      if (request.method === "PATCH") {
+        assert.deepEqual(body, { permission_mode: "request_approval" });
+        policyWrites++;
+        Object.assign(session, {
+          permission_mode: "request_approval",
+          sandbox_mode: null,
+        });
+      } else if (request.method === "GET" && session.permission_mode) {
+        policyReadbacks++;
+      }
+      return send(200, session);
+    }
     if (path.endsWith("/principal"))
       return send(200, {
         principal_id: "synthetic-user",
@@ -36,6 +59,12 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
         context_id: session!.context_id,
       });
     if (path.endsWith("/io/messages")) {
+      assert.equal(session!.permission_mode, "request_approval");
+      assert.equal(policyWrites, 1);
+      assert.ok(
+        policyReadbacks >= 1,
+        "The new Session's safe policy must be read back before input POST",
+      );
       assert.deepEqual(body.activation.harness, {
         id: "morphz.script-studio",
         version: "1.4.0",
@@ -109,6 +138,11 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
     await bridge.retryPlatformInput(inputId);
     await bridge.tick();
     assert.deepEqual(sent, [inputId]);
+    assert.equal(
+      policyWrites,
+      1,
+      "Retry must not reinitialize an existing Session policy",
+    );
     assert.deepEqual(bridge.platformStatus().harnesses, harnesses);
     await assert.rejects(bridge.retryPlatformInput(inputId), /已发送/);
     await bridge.tick();

@@ -11,7 +11,15 @@ import { localAccess } from "../packages/core/src/model.js";
 import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
 
 test("Runtime 已公开的部分回复通过授权历史保留原身份，Host 重开不会丢失", async () => {
-  const sessions = new Map<string, { id: string; context_id: string }>();
+  const sessions = new Map<
+    string,
+    {
+      id: string;
+      context_id: string;
+      permission_mode?: string;
+      sandbox_mode?: string | null;
+    }
+  >();
   let accepted: ReturnType<typeof acceptedRuntimeInput> | undefined;
   let posts = 0;
   let complete = false;
@@ -40,6 +48,14 @@ test("Runtime 已公开的部分回复通过授权历史保留原身份，Host �
       return send(201, value);
     }
     if (!sessions.has(sessionId)) return send(404, {});
+    if (req.method === "PATCH") {
+      assert.deepEqual(body, { permission_mode: "request_approval" });
+      Object.assign(sessions.get(sessionId)!, {
+        permission_mode: body.permission_mode,
+        sandbox_mode: null,
+      });
+      return send(200, sessions.get(sessionId));
+    }
     if (url.pathname.endsWith("/principal"))
       return send(200, {
         principal_id: "fixture-principal",

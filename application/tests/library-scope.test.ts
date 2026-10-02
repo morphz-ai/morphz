@@ -2,11 +2,33 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { workspaceFor } from "../apps/service/src/identity.js";
-import { ObjectCollection } from "../apps/web/src/ObjectCollection.js";
 import { contentSchema } from "../packages/core/src/model.js";
 import type { WorkspaceClient } from "../apps/web/src/client.js";
 import { viewModelFixture } from "./view-model-fixture.js";
+
+// This is an HTML/authorization assertion, not a browser/CSS renderer. Keep
+// the production component's stylesheet imports: read actual CSS (so missing
+// assets still fail), but do not ask Node to execute it as JavaScript. Limit
+// the hook to this import and deregister before executing the test.
+const styles = registerHooks({
+  load(url, context, nextLoad) {
+    if (url.startsWith("file:") && new URL(url).pathname.endsWith(".css")) {
+      readFileSync(new URL(url), "utf8");
+      return { format: "module", source: "export {};", shortCircuit: true };
+    }
+    return nextLoad(url, context);
+  },
+});
+const { ObjectCollection } = await (async () => {
+  try {
+    return await import("../apps/web/src/ObjectCollection.js");
+  } finally {
+    styles.deregister();
+  }
+})();
 
 test("分页目录首帧不从旧快照或本地目录补出对象", () => {
   const fixture = viewModelFixture();

@@ -289,7 +289,17 @@ test("阅读能力的 Host 描述不超过 Runtime 的 UTF-8 字节预算", () =
 for (const selected of [true, false])
   test(`Runtime 未加载阅读格式 v${selected ? 8 : 9} 时保留问题和引用；重试不降级或复制输入`, async () => {
     const requests: unknown[] = [];
-    const sessions = new Map<string, unknown>();
+    const sessions = new Map<
+      string,
+      {
+        id: string;
+        context_id: string;
+        permission_mode?: string;
+        sandbox_mode?: string | null;
+      }
+    >();
+    let policyWrites = 0;
+    let policyReadbacks = 0;
     const server = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk);
@@ -308,14 +318,33 @@ for (const selected of [true, false])
         sessions.set(session.id, session);
         return send(201, session);
       }
+      const session = sessions.get(path.split("/")[3]!);
+      if (session && path === `/api/sessions/${session.id}`) {
+        if (request.method === "PATCH") {
+          assert.deepEqual(body, { permission_mode: "request_approval" });
+          policyWrites++;
+          Object.assign(session, {
+            permission_mode: "request_approval",
+            sandbox_mode: null,
+          });
+        } else if (request.method === "GET" && session.permission_mode) {
+          policyReadbacks++;
+        }
+        return send(200, session);
+      }
       if (path.endsWith("/io/messages")) {
+        assert.equal(session!.permission_mode, "request_approval");
+        assert.equal(policyWrites, 1);
+        assert.ok(
+          policyReadbacks >= 1,
+          "The reading request must follow a genuine policy readback",
+        );
         requests.push(body);
         return requests.length === 1
           ? send(422, { error: { code: "unsupported_format" } })
           : send(200, { accepted: true, event_id: "reading-root" });
       }
       if (path.endsWith("/events")) return send(200, { events: [] });
-      const session = sessions.get(path.split("/")[3]!);
       if (path.endsWith("/principal"))
         return send(200, {
           principal_id: "fixture-user",
@@ -384,6 +413,11 @@ for (const selected of [true, false])
       await f.runtime.tick();
       assert.equal(ledger().deliveries[0]!.state, "running");
       assert.equal(requests.length, 2);
+      assert.equal(
+        policyWrites,
+        1,
+        "Format retry must not reset the Session's policy",
+      );
       assert.deepEqual(requests[0], requests[1]);
       assert.equal(ledger().deliveries.length, 1);
       assert.deepEqual(ledger().deliveries[0]!.platformSource.reading, reading);
