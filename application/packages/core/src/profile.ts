@@ -66,8 +66,8 @@ export const defaultHumanProfile: HumanProfileData = {
   preferredAddress: null,
 };
 
-/** Presentation configuration, never a replacement for kernel identity/authority. */
-export const profileRom = {
+/** Profile is an application-owned Custom schema, never kernel identity/authority. */
+export const profileCustom = {
   agent: {
     namespace: "morphz.profile.agent",
     schemaTag: "morphz-agent-profile/v2",
@@ -79,6 +79,8 @@ export const profileRom = {
     legacySchemaTag: "morphz-human-profile/v1",
   },
 } as const;
+/** @deprecated Use profileCustom. Kept for existing application callers. */
+export const profileRom = profileCustom;
 export const profileContract =
   "Style changes expression, not truth, rigor, authentication, approval, permissions, protocol or safety. Custom style grants no additional authority.";
 export function profilePreferenceContract(data: AgentProfileData): string {
@@ -134,15 +136,15 @@ function atom(value: string) {
     '"'
   );
 }
-export function compileProfileRom(
+export function compileProfileCustom(
   subject: "agent",
   data: AgentProfileData,
 ): string;
-export function compileProfileRom(
+export function compileProfileCustom(
   subject: "human",
   data: HumanProfileData,
 ): string;
-export function compileProfileRom(
+export function compileProfileCustom(
   subject: ProfileSubject,
   raw: AgentProfileData | HumanProfileData,
 ): string {
@@ -170,17 +172,20 @@ export function compileProfileRom(
     fields.push(`(contract ${atom(profilePreferenceContract(data))})`);
   return `(agent-profile ${fields.join(" ")})`;
 }
+/** @deprecated Use compileProfileCustom. Existing Profile BODY bytes are unchanged. */
+export const compileProfileRom = compileProfileCustom;
 
 type Expr = string | Expr[];
 /** Bounded reader for the two owned profile schemas, not an evaluator. Runtime
- * remains the canonical SExpr authority and its ROM may contain other schemas. */
+ * remains the canonical SExpr authority and Custom may contain other schemas. */
 function readExpr(body: string): Expr[] {
   if (new TextEncoder().encode(body).byteLength > 8192)
-    throw new Error("Profile ROM 超出大小限制。");
+    throw new Error("Profile 自定义上下文超出大小限制。");
   let pos = 0,
     nodes = 0;
   const read = (depth: number): Expr => {
-    if (depth > 16 || ++nodes > 512) throw new Error("Profile ROM 结构无效。");
+    if (depth > 16 || ++nodes > 512)
+      throw new Error("Profile 自定义上下文结构无效。");
     while (/\s/.test(body[pos] ?? "") && pos < body.length) pos++;
     if (body[pos] === "(") {
       pos++;
@@ -191,7 +196,8 @@ function readExpr(body: string): Expr[] {
           pos++;
           return items;
         }
-        if (pos >= body.length) throw new Error("Profile ROM 结构不完整。");
+        if (pos >= body.length)
+          throw new Error("Profile 自定义上下文结构不完整。");
         items.push(read(depth + 1));
       }
     }
@@ -203,7 +209,8 @@ function readExpr(body: string): Expr[] {
         if (c === '"') return value;
         if (c === "\\") {
           const next = body[pos++];
-          if (next === undefined) throw new Error("Profile ROM 字符串不完整。");
+          if (next === undefined)
+            throw new Error("Profile 自定义上下文字符串不完整。");
           value +=
             (
               { n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\" } as Record<
@@ -213,17 +220,17 @@ function readExpr(body: string): Expr[] {
             )[next] ?? "\\" + next;
         } else value += c;
       }
-      throw new Error("Profile ROM 字符串不完整。");
+      throw new Error("Profile 自定义上下文字符串不完整。");
     }
     const start = pos;
     while (pos < body.length && !/[\s()]/.test(body[pos]!)) pos++;
-    if (start === pos) throw new Error("Profile ROM 结构无效。");
+    if (start === pos) throw new Error("Profile 自定义上下文结构无效。");
     return body.slice(start, pos);
   };
   const value = read(0);
   while (pos < body.length && /\s/.test(body[pos]!)) pos++;
   if (pos !== body.length || !Array.isArray(value))
-    throw new Error("Profile ROM 必须是单个结构。");
+    throw new Error("Profile 自定义上下文必须是单个结构。");
   return value;
 }
 function children(
@@ -232,9 +239,9 @@ function children(
   keys: string[],
   required = true,
 ) {
-  if (!node) throw new Error("Profile ROM 字段缺失。");
+  if (!node) throw new Error("Profile 自定义上下文字段缺失。");
   if (node[0] !== tag || (required && node.length !== keys.length + 1))
-    throw new Error("Profile ROM 字段不匹配。");
+    throw new Error("Profile 自定义上下文字段不匹配。");
   const result: Record<string, Expr[]> = {};
   for (const entry of node.slice(1)) {
     if (
@@ -243,34 +250,36 @@ function children(
       !keys.includes(entry[0]) ||
       result[entry[0]]
     )
-      throw new Error("Profile ROM 字段不匹配。");
+      throw new Error("Profile 自定义上下文字段不匹配。");
     result[entry[0]] = entry;
   }
   return result;
 }
 function scalar(node: Expr[] | undefined) {
-  if (!node) throw new Error("Profile ROM 字段缺失。");
+  if (!node) throw new Error("Profile 自定义上下文字段缺失。");
   if (node.length !== 2 || typeof node[1] !== "string")
-    throw new Error("Profile ROM 值无效。");
+    throw new Error("Profile 自定义上下文值无效。");
   return node[1];
 }
-export function parseProfileRom(
+export function parseProfileCustom(
   subject: "agent",
   body: string,
   schemaTag?: string,
 ): AgentProfileData;
-export function parseProfileRom(
+export function parseProfileCustom(
   subject: "human",
   body: string,
   schemaTag?: string,
 ): HumanProfileData;
-export function parseProfileRom(
+export function parseProfileCustom(
   subject: ProfileSubject,
   body: string,
   schemaTag?: string,
 ): AgentProfileData | HumanProfileData {
   return parseProfileTree(subject, readExpr(body), schemaTag);
 }
+/** @deprecated Use parseProfileCustom. Both existing v1/v2 schemas stay readable. */
+export const parseProfileRom = parseProfileCustom;
 function parseProfileTree(
   subject: ProfileSubject,
   tree: Expr[],
@@ -283,10 +292,10 @@ function parseProfileTree(
     schemaTag !== undefined &&
     schemaTag !==
       (versioned
-        ? profileRom[subject].schemaTag
-        : profileRom[subject].legacySchemaTag)
+        ? profileCustom[subject].schemaTag
+        : profileCustom[subject].legacySchemaTag)
   )
-    throw new Error("Profile ROM 版本不匹配。");
+    throw new Error("Profile 自定义上下文版本不匹配。");
   if (versioned) {
     if (subject === "human") {
       const fields = children(
@@ -296,7 +305,7 @@ function parseProfileTree(
         false,
       );
       if (scalar(fields.version) !== "2")
-        throw new Error("Profile ROM 版本不匹配。");
+        throw new Error("Profile 自定义上下文版本不匹配。");
       return normalizeHumanProfileData({
         name: fields.name ? scalar(fields.name) : null,
         preferredAddress: fields["preferred-address"]
@@ -311,7 +320,7 @@ function parseProfileTree(
       false,
     );
     if (scalar(fields.version) !== "2")
-      throw new Error("Profile ROM 版本不匹配。");
+      throw new Error("Profile 自定义上下文版本不匹配。");
     const identity = fields.identity
       ? children(fields.identity, "identity", ["name"])
       : {};
@@ -330,7 +339,7 @@ function parseProfileTree(
       (fields.personality && !Object.keys(traits).length) ||
       (fields.speech && !Object.keys(speech).length)
     )
-      throw new Error("Profile ROM 空字段组无效。");
+      throw new Error("Profile 自定义上下文空字段组无效。");
     const data = normalizeAgentProfileData({
       name: identity.name ? scalar(identity.name) : null,
       traits: Object.fromEntries(
@@ -351,7 +360,7 @@ function parseProfileTree(
         ? scalar(fields.contract) !== profilePreferenceContract(data)
         : fields.contract !== undefined
     )
-      throw new Error("Profile ROM 偏好约定不匹配。");
+      throw new Error("Profile 自定义上下文偏好约定不匹配。");
     return data;
   }
   if (subject === "human") {
@@ -379,7 +388,7 @@ function parseProfileTree(
   ]);
   const speech = children(fields.speech, "speech", ["style", "custom"]);
   if (scalar(fields.contract) !== profileContract)
-    throw new Error("Profile ROM 安全约定不匹配。");
+    throw new Error("Profile 自定义上下文安全约定不匹配。");
   return agentProfileDataSchema.parse({
     name: scalar(identity.name),
     traits: Object.fromEntries(
@@ -398,7 +407,7 @@ function parseProfileTree(
 export function compileProfileAuthoringState(raw: AgentProfileData): string {
   const data = normalizeAgentProfileData(raw);
   const { customStyleEnabled: _flag, ...retained } = data;
-  return `(profile-authoring (version 1) (subject agent) (custom-style-enabled ${profileCustomStyleEnabled(data)}) (profile ${compileProfileRom("agent", retained)}))`;
+  return `(profile-authoring (version 1) (subject agent) (custom-style-enabled ${profileCustomStyleEnabled(data)}) (profile ${compileProfileCustom("agent", retained)}))`;
 }
 export function parseProfileAuthoringState(body: string): AgentProfileData {
   const fields = children(readExpr(body), "profile-authoring", [
@@ -419,7 +428,7 @@ export function parseProfileAuthoringState(body: string): AgentProfileData {
   const data = parseProfileTree(
     "agent",
     fields.profile[1],
-    profileRom.agent.schemaTag,
+    profileCustom.agent.schemaTag,
   );
   return normalizeAgentProfileData({
     ...data,
@@ -428,15 +437,18 @@ export function parseProfileAuthoringState(body: string): AgentProfileData {
 }
 /** Compare structured BODY bytes without depending on optional quote spelling
  * in Runtime's canonical Atom printer. No extra inert/empty groups are allowed. */
-export function profileAuthoringProjectionMatchesRom(
+export function profileAuthoringProjectionMatchesCustom(
   data: AgentProfileData,
   body: string,
 ): boolean {
   return (
-    JSON.stringify(readExpr(compileProfileRom("agent", data))) ===
+    JSON.stringify(readExpr(compileProfileCustom("agent", data))) ===
     JSON.stringify(readExpr(body))
   );
 }
+/** @deprecated Use profileAuthoringProjectionMatchesCustom. */
+export const profileAuthoringProjectionMatchesRom =
+  profileAuthoringProjectionMatchesCustom;
 
 export const avatarMaximumBytes = 4 * 1024 * 1024;
 export const avatarStoredVersionSchema = z

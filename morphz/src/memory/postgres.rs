@@ -64,8 +64,8 @@ mod action_group;
 mod activation;
 mod activation_approval_wait;
 mod agent_provider;
-mod agent_rom;
 mod approval;
+mod custom;
 mod delegation;
 mod delivery;
 mod edge;
@@ -611,12 +611,12 @@ impl PostgresStore {
                 )
                 .await?;
             store
-                .run_versioned_migration("20261002_01_agent_rom", agent_rom::migrate(&store.pool))
+                .run_versioned_migration("20261002_01_agent_rom", custom::migrate(&store.pool))
                 .await?;
             store
                 .run_versioned_migration(
                     "20261002_02_agent_rom_authoring_state",
-                    agent_rom::migrate_authoring_state(&store.pool),
+                    custom::migrate_authoring_state(&store.pool),
                 )
                 .await?;
             store

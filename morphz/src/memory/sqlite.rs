@@ -90,7 +90,7 @@ use tokio::sync::Notify;
 
 mod activation_approval_wait;
 mod agent_provider;
-mod agent_rom;
+mod custom;
 mod objective_approval_wait;
 mod plan_execution;
 
@@ -2080,7 +2080,7 @@ impl SqliteStore {
         migrate_tool_call_history(&pool).await?;
         migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
-        agent_rom::migrate(&pool).await?;
+        custom::migrate(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
         sqlx::query(super::activation_approval_wait::TABLE)
             .execute(&pool)

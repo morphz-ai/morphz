@@ -1,10 +1,10 @@
-//! Actual SQL authority tests, shared by SQLite and PostgreSQL.
-use morphz::agent_rom::*;
+//! Actual Custom SQL authority tests, shared by SQLite and PostgreSQL.
+use morphz::context::*;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    AgentRomStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread,
-    RuntimeStore, SessionMountKind, ThreadKind, ThreadSupervision,
+    CustomStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread, RuntimeStore,
+    SessionMountKind, ThreadKind, ThreadSupervision,
 };
 use std::sync::Arc;
 
@@ -15,11 +15,11 @@ fn command(
     id: &str,
     revision: u64,
     body: &str,
-) -> PutAgentRomCommand {
-    PutAgentRomCommand {
+) -> PutCustomCommand {
+    PutCustomCommand {
         command_id: id.into(),
         expected_revision: revision,
-        key: AgentRomKey {
+        key: CustomKey {
             agent_id: agent.into(),
             namespace: namespace.into(),
             principal_scope: principal.map(str::to_owned),
@@ -46,7 +46,7 @@ async fn setup<S: RuntimeStore>(
         .create_agent_bundle(
             NewAgent {
                 id: agent.clone(),
-                title: "ROM conformance".into(),
+                title: "Custom conformance".into(),
                 root_context_id: context.clone(),
             },
             NewCognitiveContext {
@@ -107,9 +107,9 @@ async fn thread<S: RuntimeStore>(
     id
 }
 
-fn committed(result: AgentRomMutation) -> AgentRomRecord {
+fn committed(result: CustomMutation) -> Custom {
     match result {
-        AgentRomMutation::Committed { record, .. } => record,
+        CustomMutation::Committed { record, .. } => record,
         other => panic!("Expected commit: {other:?}"),
     }
 }
@@ -126,15 +126,15 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     );
     on.authoring_state_sexpr =
         Some("(editor (custom RETAIN_THIS_STYLE) (custom-enabled true))".into());
-    let v1 = committed(store.put_agent_rom(on.clone(), "host").await.unwrap());
+    let v1 = committed(store.put_custom(on.clone(), "host").await.unwrap());
     let old_id = thread(&*store, &ids, "old", Some(&ids.3)).await;
-    let old = store.bind_thread_rom(&old_id).await.unwrap();
+    let old = store.bind_thread_custom(&old_id).await.unwrap();
     assert!(old
         .entries
         .iter()
         .all(|entry| entry.canonical_authoring_state.is_none()));
     assert!(old
-        .context_rom()
+        .context_custom()
         .unwrap()
         .unwrap()
         .to_string()
@@ -150,7 +150,7 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     );
     off.authoring_state_sexpr =
         Some("(editor (custom RETAIN_THIS_STYLE) (custom-enabled false))".into());
-    let off_result = store.put_agent_rom(off.clone(), "host").await.unwrap();
+    let off_result = store.put_custom(off.clone(), "host").await.unwrap();
     let v2 = committed(off_result.clone());
     assert_eq!(v2.revision, 2);
     assert!(v2
@@ -159,19 +159,16 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         .unwrap()
         .contains("RETAIN_THIS_STYLE"));
     assert!(!v2.canonical_sexpr.contains("RETAIN_THIS_STYLE"));
+    assert_eq!(store.get_custom(&off.key).await.unwrap(), Some(v2.clone()));
     assert_eq!(
-        store.get_agent_rom(&off.key).await.unwrap(),
-        Some(v2.clone())
-    );
-    assert_eq!(
-        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        store.list_custom(&ids.0, None).await.unwrap(),
         vec![v2.clone()]
     );
-    assert_eq!(store.bind_thread_rom(&old_id).await.unwrap(), old);
+    assert_eq!(store.bind_thread_custom(&old_id).await.unwrap(), old);
     let new_id = thread(&*store, &ids, "off", Some(&ids.3)).await;
-    let new = store.bind_thread_rom(&new_id).await.unwrap();
+    let new = store.bind_thread_custom(&new_id).await.unwrap();
     assert_eq!(
-        store.get_thread_rom(&new_id).await.unwrap(),
+        store.get_thread_custom(&new_id).await.unwrap(),
         Some(new.clone())
     );
     assert!(new
@@ -179,7 +176,7 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         .iter()
         .all(|entry| entry.canonical_authoring_state.is_none()));
     assert!(!new
-        .context_rom()
+        .context_custom()
         .unwrap()
         .unwrap()
         .to_string()
@@ -191,15 +188,15 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     let mut retry = off.clone();
     retry.authoring_state_sexpr =
         Some(" ( editor ( custom \"RETAIN_THIS_STYLE\" ) ( custom-enabled false ) ) ".into());
-    match store.put_agent_rom(retry, "host").await.unwrap() {
-        AgentRomMutation::Committed {
+    match store.put_custom(retry, "host").await.unwrap() {
+        CustomMutation::Committed {
             record,
             receipt,
             duplicate,
         } => {
             assert!(duplicate);
             assert_eq!(record, v2);
-            if let AgentRomMutation::Committed {
+            if let CustomMutation::Committed {
                 receipt: original, ..
             } = off_result
             {
@@ -213,15 +210,15 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         Some("(editor (custom ALTERED_STYLE) (custom-enabled false))".into());
     assert!(matches!(
         store
-            .put_agent_rom(reused, "host")
+            .put_custom(reused, "host")
             .await
             .unwrap_err()
-            .downcast_ref::<AgentRomError>(),
-        Some(AgentRomError::CommandReuse)
+            .downcast_ref::<CustomError>(),
+        Some(CustomError::CommandReuse)
     ));
     let mut omitted = off.clone();
     omitted.authoring_state_sexpr = None;
-    assert!(store.put_agent_rom(omitted, "host").await.is_err());
+    assert!(store.put_custom(omitted, "host").await.is_err());
 
     // Two simultaneous CAS commands must atomically choose one complete pair,
     // never a winning body combined with the losing editor state.
@@ -239,28 +236,28 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     b.body_sexpr = "(profile (name B))".into();
     b.authoring_state_sexpr = Some("(editor (custom PRIVATE_B) (custom-enabled false))".into());
     let (a_result, b_result) = tokio::join!(
-        store.put_agent_rom(a.clone(), "host"),
-        store.put_agent_rom(b.clone(), "host")
+        store.put_custom(a.clone(), "host"),
+        store.put_custom(b.clone(), "host")
     );
     let results = [a_result.unwrap(), b_result.unwrap()];
     assert_eq!(
         results
             .iter()
-            .filter(|r| matches!(r, AgentRomMutation::Committed { .. }))
+            .filter(|r| matches!(r, CustomMutation::Committed { .. }))
             .count(),
         1
     );
     assert_eq!(
         results
             .iter()
-            .filter(|r| matches!(r, AgentRomMutation::Conflict { .. }))
+            .filter(|r| matches!(r, CustomMutation::Conflict { .. }))
             .count(),
         1
     );
     let winner = results
         .iter()
         .find_map(|r| match r {
-            AgentRomMutation::Committed { record, .. } => Some(record),
+            CustomMutation::Committed { record, .. } => Some(record),
             _ => None,
         })
         .unwrap();
@@ -275,12 +272,12 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         winning_command.authoring_state_sexpr
     );
     assert_eq!(
-        store.get_agent_rom(&off.key).await.unwrap().as_ref(),
+        store.get_custom(&off.key).await.unwrap().as_ref(),
         Some(winner)
     );
-    assert_eq!(store.bind_thread_rom(&new_id).await.unwrap(), new);
+    assert_eq!(store.bind_thread_custom(&new_id).await.unwrap(), new);
     assert_eq!(
-        committed(store.put_agent_rom(off.clone(), "host").await.unwrap()),
+        committed(store.put_custom(off.clone(), "host").await.unwrap()),
         v2,
         "Unknown outcome replay returns the original authoring/body pair, not latest head"
     );
@@ -294,22 +291,22 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         "(human (name Alice))",
     );
     private.authoring_state_sexpr = Some("(editor (private PRIVATE_ALICE_EDITOR))".into());
-    let private_v1 = committed(store.put_agent_rom(private, "host").await.unwrap());
+    let private_v1 = committed(store.put_custom(private, "host").await.unwrap());
     assert_eq!(
-        store.list_agent_rom(&ids.0, Some(&ids.3)).await.unwrap(),
+        store.list_custom(&ids.0, Some(&ids.3)).await.unwrap(),
         vec![private_v1]
     );
     assert!(store
-        .list_agent_rom(&ids.0, Some(&ids.4))
+        .list_custom(&ids.0, Some(&ids.4))
         .await
         .unwrap()
         .is_empty());
     assert_eq!(
-        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        store.list_custom(&ids.0, None).await.unwrap(),
         vec![winner.clone()]
     );
     let alice = store
-        .bind_thread_rom(&thread(&*store, &ids, "alice", Some(&ids.3)).await)
+        .bind_thread_custom(&thread(&*store, &ids, "alice", Some(&ids.3)).await)
         .await
         .unwrap();
     assert!(!serde_json::to_string(&alice)
@@ -332,18 +329,18 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         "(editor".to_owned(),
         format!("{}a{}", "(".repeat(33), ")".repeat(33)),
         format!("({})", "a ".repeat(4096)),
-        format!("(editor \"{}\")", "x".repeat(ROM_MAX_ENTRY_BYTES)),
+        format!("(editor \"{}\")", "x".repeat(CUSTOM_MAX_ENTRY_BYTES)),
     ] {
         invalid.authoring_state_sexpr = Some(bad);
         assert!(matches!(
             store
-                .put_agent_rom(invalid.clone(), "host")
+                .put_custom(invalid.clone(), "host")
                 .await
                 .unwrap_err()
-                .downcast_ref::<AgentRomError>(),
-            Some(AgentRomError::Invalid(_))
+                .downcast_ref::<CustomError>(),
+            Some(CustomError::Invalid(_))
         ));
-        assert!(store.get_agent_rom(&invalid.key).await.unwrap().is_none());
+        assert!(store.get_custom(&invalid.key).await.unwrap().is_none());
     }
     assert_eq!(v1.canonical_authoring_state, on.authoring_state_sexpr);
 }
@@ -351,7 +348,7 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
 async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
     store: &S,
     prefix: &str,
-) -> (AgentRomRecord, ThreadRomManifest) {
+) -> (Custom, ThreadCustomManifest) {
     let ids = setup(store, prefix).await;
     let mut initial = command(
         &ids.0,
@@ -362,18 +359,18 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
         "(agent-profile (version 2) (identity (name Nora)))",
     );
     initial.schema_tag = "morphz-agent-profile/v2".into();
-    let named = committed(store.put_agent_rom(initial.clone(), "host").await.unwrap());
+    let named = committed(store.put_custom(initial.clone(), "host").await.unwrap());
     let named_id = thread(store, &ids, "named", None).await;
-    let old = store.bind_thread_rom(&named_id).await.unwrap();
+    let old = store.bind_thread_custom(&named_id).await.unwrap();
     assert_eq!(old.entries, vec![named]);
-    let old_bytes = old.context_rom().unwrap().unwrap().to_string();
+    let old_bytes = old.context_custom().unwrap().unwrap().to_string();
     let mut empty = initial.clone();
     empty.command_id = format!("{prefix}-empty-on");
     empty.expected_revision = 1;
     empty.body_sexpr = " ( agent-profile ( version 2 ) ) ".into();
     empty.authoring_state_sexpr =
         Some("(editor (custom RETAIN_EMPTY_PROFILE_EDITOR_ONLY) (custom-enabled false))".into());
-    let saved = committed(store.put_agent_rom(empty.clone(), "host").await.unwrap());
+    let saved = committed(store.put_custom(empty.clone(), "host").await.unwrap());
     assert!(saved.enabled);
     assert_eq!(saved.canonical_sexpr, "(agent-profile (version 2))");
     assert!(saved
@@ -382,38 +379,38 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
         .unwrap()
         .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
     assert_eq!(
-        store.get_agent_rom(&empty.key).await.unwrap(),
+        store.get_custom(&empty.key).await.unwrap(),
         Some(saved.clone())
     );
     assert_eq!(
-        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        store.list_custom(&ids.0, None).await.unwrap(),
         vec![saved.clone()]
     );
     assert_eq!(
-        committed(store.put_agent_rom(empty.clone(), "host").await.unwrap()),
+        committed(store.put_custom(empty.clone(), "host").await.unwrap()),
         saved
     );
     let empty_id = thread(store, &ids, "empty", None).await;
-    let blank = store.bind_thread_rom(&empty_id).await.unwrap();
+    let blank = store.bind_thread_custom(&empty_id).await.unwrap();
     assert!(blank.entries.is_empty());
     assert_eq!(blank.manifest_hash, manifest_hash(&[]));
     assert_eq!(blank.compiler_hash, compiler_hash());
-    assert_eq!(blank.context_rom().unwrap(), None);
+    assert_eq!(blank.context_custom().unwrap(), None);
     assert!(!serde_json::to_string(&blank)
         .unwrap()
         .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
     assert_eq!(
-        store.get_thread_rom(&empty_id).await.unwrap(),
+        store.get_thread_custom(&empty_id).await.unwrap(),
         Some(blank.clone())
     );
-    assert_eq!(store.bind_thread_rom(&named_id).await.unwrap(), old);
+    assert_eq!(store.bind_thread_custom(&named_id).await.unwrap(), old);
     assert_eq!(
         store
-            .get_thread_rom(&named_id)
+            .get_thread_custom(&named_id)
             .await
             .unwrap()
             .unwrap()
-            .context_rom()
+            .context_custom()
             .unwrap()
             .unwrap()
             .to_string(),
@@ -423,32 +420,36 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
     let mut restored = initial.clone();
     restored.command_id = format!("{prefix}-restore-named");
     restored.expected_revision = 2;
-    let restored = committed(store.put_agent_rom(restored, "host").await.unwrap());
+    let restored = committed(store.put_custom(restored, "host").await.unwrap());
     assert_eq!(
-        store.bind_thread_rom(&empty_id).await.unwrap(),
+        store.bind_thread_custom(&empty_id).await.unwrap(),
         blank,
         "A frozen empty mount does not acquire later profile fields"
     );
     let restored_id = thread(store, &ids, "restored", None).await;
     assert_eq!(
-        store.bind_thread_rom(&restored_id).await.unwrap().entries,
+        store
+            .bind_thread_custom(&restored_id)
+            .await
+            .unwrap()
+            .entries,
         vec![restored]
     );
     empty.command_id = format!("{prefix}-empty-again");
     empty.expected_revision = 3;
-    let saved = committed(store.put_agent_rom(empty.clone(), "host").await.unwrap());
+    let saved = committed(store.put_custom(empty.clone(), "host").await.unwrap());
 
     let mut other_namespace = empty.clone();
     other_namespace.command_id = format!("{prefix}-other-namespace");
     other_namespace.expected_revision = 0;
     other_namespace.key.namespace = "example.same-empty-body".into();
-    let other_namespace = committed(store.put_agent_rom(other_namespace, "host").await.unwrap());
+    let other_namespace = committed(store.put_custom(other_namespace, "host").await.unwrap());
     let mut other_schema = empty.clone();
     other_schema.command_id = format!("{prefix}-other-schema");
     other_schema.expected_revision = 0;
     other_schema.key.principal_scope = Some(ids.3.clone());
     other_schema.schema_tag = "example-agent-profile/v2".into();
-    let other_schema = committed(store.put_agent_rom(other_schema, "host").await.unwrap());
+    let other_schema = committed(store.put_custom(other_schema, "host").await.unwrap());
     let mut human = empty.clone();
     human.command_id = format!("{prefix}-human-empty");
     human.expected_revision = 0;
@@ -456,9 +457,9 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
     human.key.principal_scope = Some(ids.3.clone());
     human.schema_tag = "morphz-human-profile/v2".into();
     human.body_sexpr = "(human-profile (version 2))".into();
-    let human = committed(store.put_agent_rom(human, "host").await.unwrap());
+    let human = committed(store.put_custom(human, "host").await.unwrap());
     let mixed_id = thread(store, &ids, "mixed", Some(&ids.3)).await;
-    let mixed = store.bind_thread_rom(&mixed_id).await.unwrap();
+    let mixed = store.bind_thread_custom(&mixed_id).await.unwrap();
     let mut expected = vec![other_namespace, other_schema, human];
     for entry in &mut expected {
         entry.canonical_authoring_state = None;
@@ -469,14 +470,14 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
         .unwrap()
         .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
     assert_eq!(
-        store.get_agent_rom(&empty.key).await.unwrap(),
+        store.get_custom(&empty.key).await.unwrap(),
         Some(saved.clone()),
         "Selection never rewrites the saved empty enable switch"
     );
     let historical_id = thread(store, &ids, "historical-empty", None).await;
     (
         saved.clone(),
-        ThreadRomManifest {
+        ThreadCustomManifest {
             thread_id: historical_id,
             agent_id: ids.0,
             initiating_principal_id: None,
@@ -523,35 +524,38 @@ async fn sqlite_empty_enabled_agent_profile_omits_only_new_exact_consumer_mounts
     .unwrap();
     tx.commit().await.unwrap();
     pool.close().await;
-    let historical_bytes = historical.context_rom().unwrap().unwrap().to_string();
+    let historical_bytes = historical.context_custom().unwrap().unwrap().to_string();
     assert_eq!(
-        store.get_thread_rom(&historical.thread_id).await.unwrap(),
+        store
+            .get_thread_custom(&historical.thread_id)
+            .await
+            .unwrap(),
         Some(historical.clone())
     );
     assert_eq!(
-        store.bind_thread_rom(&historical.thread_id).await.unwrap(),
+        store
+            .bind_thread_custom(&historical.thread_id)
+            .await
+            .unwrap(),
         historical
     );
     drop(store);
     let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
-    assert_eq!(
-        reopened.get_agent_rom(&saved.key).await.unwrap(),
-        Some(saved)
-    );
+    assert_eq!(reopened.get_custom(&saved.key).await.unwrap(), Some(saved));
     assert_eq!(
         reopened
-            .bind_thread_rom(&historical.thread_id)
+            .bind_thread_custom(&historical.thread_id)
             .await
             .unwrap(),
         historical
     );
     assert_eq!(
         reopened
-            .get_thread_rom(&historical.thread_id)
+            .get_thread_custom(&historical.thread_id)
             .await
             .unwrap()
             .unwrap()
-            .context_rom()
+            .context_custom()
             .unwrap()
             .unwrap()
             .to_string(),
@@ -594,35 +598,38 @@ async fn postgres_empty_enabled_agent_profile_omits_only_new_exact_consumer_moun
     .unwrap();
     tx.commit().await.unwrap();
     pool.close().await;
-    let historical_bytes = historical.context_rom().unwrap().unwrap().to_string();
+    let historical_bytes = historical.context_custom().unwrap().unwrap().to_string();
     assert_eq!(
-        store.get_thread_rom(&historical.thread_id).await.unwrap(),
+        store
+            .get_thread_custom(&historical.thread_id)
+            .await
+            .unwrap(),
         Some(historical.clone())
     );
     assert_eq!(
-        store.bind_thread_rom(&historical.thread_id).await.unwrap(),
+        store
+            .bind_thread_custom(&historical.thread_id)
+            .await
+            .unwrap(),
         historical
     );
     drop(store);
     let reopened = PostgresStore::new(&url, 4).await.unwrap();
-    assert_eq!(
-        reopened.get_agent_rom(&saved.key).await.unwrap(),
-        Some(saved)
-    );
+    assert_eq!(reopened.get_custom(&saved.key).await.unwrap(), Some(saved));
     assert_eq!(
         reopened
-            .bind_thread_rom(&historical.thread_id)
+            .bind_thread_custom(&historical.thread_id)
             .await
             .unwrap(),
         historical
     );
     assert_eq!(
         reopened
-            .get_thread_rom(&historical.thread_id)
+            .get_thread_custom(&historical.thread_id)
             .await
             .unwrap()
             .unwrap()
-            .context_rom()
+            .context_custom()
             .unwrap()
             .unwrap()
             .to_string(),
@@ -633,9 +640,9 @@ async fn postgres_empty_enabled_agent_profile_omits_only_new_exact_consumer_moun
 async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     let ids = setup(&*store, prefix).await;
     let empty_thread = thread(&*store, &ids, "bound-empty", Some(&ids.3)).await;
-    let empty = store.bind_thread_rom(&empty_thread).await.unwrap();
+    let empty = store.bind_thread_custom(&empty_thread).await.unwrap();
     assert!(empty.entries.is_empty());
-    assert_eq!(empty.context_rom().unwrap(), None);
+    assert_eq!(empty.context_custom().unwrap(), None);
     let initial = command(
         &ids.0,
         "example.agent",
@@ -645,32 +652,28 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         "(factory (public-name Nora))",
     );
     let first = store
-        .put_agent_rom(initial.clone(), "trusted-host")
+        .put_custom(initial.clone(), "trusted-host")
         .await
         .unwrap();
     let v1 = committed(first.clone());
     assert_eq!(v1.revision, 1);
     assert_eq!(
-        store.get_agent_rom(&initial.key).await.unwrap(),
+        store.get_custom(&initial.key).await.unwrap(),
         Some(v1.clone())
     );
     assert_eq!(
-        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        store.list_custom(&ids.0, None).await.unwrap(),
         vec![v1.clone()]
     );
     assert_eq!(
-        store.bind_thread_rom(&empty_thread).await.unwrap(),
+        store.bind_thread_custom(&empty_thread).await.unwrap(),
         empty,
         "None is a frozen binding, not unbound"
     );
     let mut duplicate = initial.clone();
     duplicate.body_sexpr = " ( factory ( public-name \"Nora\" ) ) ".into();
-    match store
-        .put_agent_rom(duplicate, "trusted-host")
-        .await
-        .unwrap()
-    {
-        AgentRomMutation::Committed {
+    match store.put_custom(duplicate, "trusted-host").await.unwrap() {
+        CustomMutation::Committed {
             record, duplicate, ..
         } => {
             assert!(duplicate);
@@ -679,13 +682,13 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         other => panic!("{other:?}"),
     }
     assert!(store
-        .put_agent_rom(initial.clone(), "other-host")
+        .put_custom(initial.clone(), "other-host")
         .await
         .unwrap_err()
-        .is::<AgentRomError>());
+        .is::<CustomError>());
     let mut altered = initial.clone();
     altered.body_sexpr = "(factory (public-name other))".into();
-    assert!(store.put_agent_rom(altered, "trusted-host").await.is_err());
+    assert!(store.put_custom(altered, "trusted-host").await.is_err());
     let stale = command(
         &ids.0,
         "example.agent",
@@ -695,11 +698,11 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         "(factory changed)",
     );
     assert!(
-        matches!(store.put_agent_rom(stale,"trusted-host").await.unwrap(),AgentRomMutation::Conflict{current:Some(record)} if record==v1)
+        matches!(store.put_custom(stale,"trusted-host").await.unwrap(),CustomMutation::Conflict{current:Some(record)} if record==v1)
     );
     for (scope, name) in [(&ids.3, "Alice"), (&ids.4, "Bob")] {
         store
-            .put_agent_rom(
+            .put_custom(
                 command(
                     &ids.0,
                     "example.human",
@@ -713,25 +716,25 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
             .await
             .unwrap();
     }
-    let private = store.list_agent_rom(&ids.0, Some(&ids.3)).await.unwrap();
+    let private = store.list_custom(&ids.0, Some(&ids.3)).await.unwrap();
     assert_eq!(private.len(), 1);
     assert!(private[0].canonical_sexpr.contains("Alice"));
     assert_eq!(
-        store.list_agent_rom(&ids.0, None).await.unwrap().len(),
+        store.list_custom(&ids.0, None).await.unwrap().len(),
         1,
         "No private records in public listing"
     );
     let old_id = thread(&*store, &ids, "alice-old", Some(&ids.3)).await;
-    let old = store.bind_thread_rom(&old_id).await.unwrap();
+    let old = store.bind_thread_custom(&old_id).await.unwrap();
     assert_eq!(old.entries.len(), 2);
     assert!(!old
-        .context_rom()
+        .context_custom()
         .unwrap()
         .unwrap()
         .to_string()
         .contains("Bob"));
     let anonymous = store
-        .bind_thread_rom(&thread(&*store, &ids, "anonymous", None).await)
+        .bind_thread_custom(&thread(&*store, &ids, "anonymous", None).await)
         .await
         .unwrap();
     assert_eq!(
@@ -741,7 +744,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     );
     let v2 = committed(
         store
-            .put_agent_rom(
+            .put_custom(
                 command(
                     &ids.0,
                     "example.agent",
@@ -757,27 +760,27 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     );
     assert_eq!(v2.revision, 2);
     assert_eq!(
-        store.bind_thread_rom(&old_id).await.unwrap(),
+        store.bind_thread_custom(&old_id).await.unwrap(),
         old,
         "Existing Thread cannot jump to latest head"
     );
     assert_eq!(
-        store.get_thread_rom(&old_id).await.unwrap(),
+        store.get_thread_custom(&old_id).await.unwrap(),
         Some(old.clone())
     );
     let new = store
-        .bind_thread_rom(&thread(&*store, &ids, "alice-new", Some(&ids.3)).await)
+        .bind_thread_custom(&thread(&*store, &ids, "alice-new", Some(&ids.3)).await)
         .await
         .unwrap();
     assert_ne!(new.manifest_hash, old.manifest_hash);
     assert!(new
-        .context_rom()
+        .context_custom()
         .unwrap()
         .unwrap()
         .to_string()
         .contains("Vega"));
-    match store.put_agent_rom(initial, "trusted-host").await.unwrap() {
-        AgentRomMutation::Committed {
+    match store.put_custom(initial, "trusted-host").await.unwrap() {
+        CustomMutation::Committed {
             record, duplicate, ..
         } => {
             assert!(duplicate);
@@ -797,15 +800,15 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         "(factory (public-name Vega))",
     );
     disabled.enabled = false;
-    committed(store.put_agent_rom(disabled, "trusted-host").await.unwrap());
+    committed(store.put_custom(disabled, "trusted-host").await.unwrap());
     assert_eq!(
-        store.bind_thread_rom(&old_id).await.unwrap(),
+        store.bind_thread_custom(&old_id).await.unwrap(),
         old,
         "Disable cannot rewrite historical mount"
     );
     assert_eq!(
         store
-            .bind_thread_rom(&thread(&*store, &ids, "after-disable", None).await)
+            .bind_thread_custom(&thread(&*store, &ids, "after-disable", None).await)
             .await
             .unwrap()
             .entries
@@ -821,12 +824,12 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         "(human nope)",
     );
     assert!(store
-        .put_agent_rom(bad_principal.clone(), "trusted-host")
+        .put_custom(bad_principal.clone(), "trusted-host")
         .await
         .is_err());
     assert!(
         store
-            .get_agent_rom(&bad_principal.key)
+            .get_custom(&bad_principal.key)
             .await
             .unwrap()
             .is_none(),
@@ -834,7 +837,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     );
     assert!(matches!(
         store
-            .put_agent_rom(
+            .put_custom(
                 command(
                     "absent-agent",
                     "example.profile",
@@ -847,7 +850,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
             )
             .await
             .unwrap(),
-        AgentRomMutation::NotFound
+        CustomMutation::NotFound
     ));
     // Concurrent clients cannot both commit from the same exact revision.
     let x = command(
@@ -861,32 +864,25 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     let mut y = x.clone();
     y.command_id = format!("{prefix}-race-b");
     y.body_sexpr = "(config b)".into();
-    let (x, y) = tokio::join!(
-        store.put_agent_rom(x, "host"),
-        store.put_agent_rom(y, "host")
-    );
+    let (x, y) = tokio::join!(store.put_custom(x, "host"), store.put_custom(y, "host"));
     assert_eq!(
         [x.unwrap(), y.unwrap()]
             .iter()
-            .filter(|result| matches!(result, AgentRomMutation::Committed { .. }))
+            .filter(|result| matches!(result, CustomMutation::Committed { .. }))
             .count(),
         1
     );
     let race_thread = thread(&*store, &ids, "bind-race", Some(&ids.4)).await;
     let (a, b) = tokio::join!(
-        store.bind_thread_rom(&race_thread),
-        store.bind_thread_rom(&race_thread)
+        store.bind_thread_custom(&race_thread),
+        store.bind_thread_custom(&race_thread)
     );
     assert_eq!(a.unwrap(), b.unwrap());
     // A second Agent with the same namespace must have isolated authority.
     let other = setup(&*store, &format!("{prefix}-other")).await;
+    assert!(store.list_custom(&other.0, None).await.unwrap().is_empty());
     assert!(store
-        .list_agent_rom(&other.0, None)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(store
-        .bind_thread_rom(&thread(&*store, &other, "other", Some(&other.3)).await)
+        .bind_thread_custom(&thread(&*store, &other, "other", Some(&other.3)).await)
         .await
         .unwrap()
         .entries
@@ -897,7 +893,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     for n in 0..4 {
         committed(
             store
-                .put_agent_rom(
+                .put_custom(
                     command(
                         &limits.0,
                         &format!("example.item{n}"),
@@ -920,8 +916,8 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         0,
         &large,
     );
-    assert!(store.put_agent_rom(overflow.clone(), "host").await.is_err());
-    assert!(store.get_agent_rom(&overflow.key).await.unwrap().is_none());
+    assert!(store.put_custom(overflow.clone(), "host").await.is_err());
+    assert!(store.get_custom(&overflow.key).await.unwrap().is_none());
     let invalid = command(
         &limits.0,
         "example.invalid",
@@ -930,14 +926,14 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         0,
         "(unterminated",
     );
-    assert!(store.put_agent_rom(invalid.clone(), "host").await.is_err());
-    assert!(store.get_agent_rom(&invalid.key).await.unwrap().is_none());
+    assert!(store.put_custom(invalid.clone(), "host").await.is_err());
+    assert!(store.get_custom(&invalid.key).await.unwrap().is_none());
 
     // A new public entry must not invalidate an existing private selection.
     let private_first = setup(&*store, &format!("{prefix}-private-first")).await;
     committed(
         store
-            .put_agent_rom(
+            .put_custom(
                 command(
                     &private_first.0,
                     "example.human",
@@ -954,7 +950,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     for n in 0..3 {
         committed(
             store
-                .put_agent_rom(
+                .put_custom(
                     command(
                         &private_first.0,
                         &format!("example.public{n}"),
@@ -978,22 +974,22 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         &large,
     );
     let error = store
-        .put_agent_rom(overflow_public.clone(), "host")
+        .put_custom(overflow_public.clone(), "host")
         .await
         .unwrap_err();
     assert!(matches!(
-        error.downcast_ref::<AgentRomError>(),
-        Some(AgentRomError::Invalid(_))
+        error.downcast_ref::<CustomError>(),
+        Some(CustomError::Invalid(_))
     ));
     assert!(store
-        .get_agent_rom(&overflow_public.key)
+        .get_custom(&overflow_public.key)
         .await
         .unwrap()
         .is_none());
 
     // Disabling does not evade the configuration-head bound or delete history.
     let head_limits = setup(&*store, &format!("{prefix}-head-limits")).await;
-    for n in 0..ROM_MAX_SELECTED_ENTRIES {
+    for n in 0..CUSTOM_MAX_SELECTED_ENTRIES {
         let mut disabled = command(
             &head_limits.0,
             &format!("example.disabled{n}"),
@@ -1003,7 +999,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
             "(config disabled)",
         );
         disabled.enabled = false;
-        committed(store.put_agent_rom(disabled, "host").await.unwrap());
+        committed(store.put_custom(disabled, "host").await.unwrap());
     }
     let excess_head = command(
         &head_limits.0,
@@ -1014,51 +1010,43 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         "(config excess)",
     );
     let error = store
-        .put_agent_rom(excess_head.clone(), "host")
+        .put_custom(excess_head.clone(), "host")
         .await
         .unwrap_err();
     assert!(matches!(
-        error.downcast_ref::<AgentRomError>(),
-        Some(AgentRomError::Invalid(_))
+        error.downcast_ref::<CustomError>(),
+        Some(CustomError::Invalid(_))
     ));
-    assert!(store
-        .get_agent_rom(&excess_head.key)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(store.get_custom(&excess_head.key).await.unwrap().is_none());
     assert_eq!(
-        store
-            .list_agent_rom(&head_limits.0, None)
-            .await
-            .unwrap()
-            .len(),
-        ROM_MAX_SELECTED_ENTRIES
+        store.list_custom(&head_limits.0, None).await.unwrap().len(),
+        CUSTOM_MAX_SELECTED_ENTRIES
     );
     authoring_conformance(store, prefix).await;
 }
 
 #[tokio::test]
-async fn sqlite_rom_authority_conformance_and_reopen() {
+async fn sqlite_custom_authority_conformance_and_reopen() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("rom.db");
     let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
     conformance(store.clone(), "sqlite-rom").await;
     let before = store
-        .get_thread_rom("sqlite-rom-agent-alice-old")
+        .get_thread_custom("sqlite-rom-agent-alice-old")
         .await
         .unwrap();
     drop(store);
     let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
     assert_eq!(
         reopened
-            .get_thread_rom("sqlite-rom-agent-alice-old")
+            .get_thread_custom("sqlite-rom-agent-alice-old")
             .await
             .unwrap(),
         before
     );
     assert_eq!(
         reopened
-            .bind_thread_rom("sqlite-rom-agent-alice-old")
+            .bind_thread_custom("sqlite-rom-agent-alice-old")
             .await
             .unwrap(),
         before.unwrap()
@@ -1066,7 +1054,7 @@ async fn sqlite_rom_authority_conformance_and_reopen() {
 }
 
 #[tokio::test]
-async fn postgres_rom_authority_conformance_and_reopen() {
+async fn postgres_custom_authority_conformance_and_reopen() {
     let Ok(url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         eprintln!("SKIP: MORPHZ_TEST_POSTGRES_URL is not configured");
         return;
@@ -1078,12 +1066,12 @@ async fn postgres_rom_authority_conformance_and_reopen() {
     );
     conformance(store.clone(), &prefix).await;
     let old_id = format!("{prefix}-agent-alice-old");
-    let before = store.get_thread_rom(&old_id).await.unwrap();
+    let before = store.get_thread_custom(&old_id).await.unwrap();
     drop(store);
     let reopened = PostgresStore::new(&url, 8).await.unwrap();
-    assert_eq!(reopened.get_thread_rom(&old_id).await.unwrap(), before);
+    assert_eq!(reopened.get_thread_custom(&old_id).await.unwrap(), before);
     assert_eq!(
-        reopened.bind_thread_rom(&old_id).await.unwrap(),
+        reopened.bind_thread_custom(&old_id).await.unwrap(),
         before.unwrap()
     );
 }
@@ -1096,7 +1084,7 @@ async fn sqlite_upgrade_freezes_legacy_thread_empty_once() {
     let ids = setup(&store, "legacy-rom").await;
     let old_id = thread(&store, &ids, "old-unbound", Some(&ids.3)).await;
     drop(store);
-    // Simulate the pre-ROM migration marker in this isolated disposable DB.
+    // Simulate the pre-Custom migration marker in this isolated disposable DB.
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
         .await
         .unwrap();
@@ -1107,7 +1095,7 @@ async fn sqlite_upgrade_freezes_legacy_thread_empty_once() {
     pool.close().await;
     let store = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
     assert!(store
-        .get_thread_rom(&old_id)
+        .get_thread_custom(&old_id)
         .await
         .unwrap()
         .unwrap()
@@ -1115,7 +1103,7 @@ async fn sqlite_upgrade_freezes_legacy_thread_empty_once() {
         .is_empty());
     committed(
         store
-            .put_agent_rom(
+            .put_custom(
                 command(
                     &ids.0,
                     "example.agent",
@@ -1133,14 +1121,14 @@ async fn sqlite_upgrade_freezes_legacy_thread_empty_once() {
     drop(store);
     let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
     assert!(reopened
-        .bind_thread_rom(&old_id)
+        .bind_thread_custom(&old_id)
         .await
         .unwrap()
         .entries
         .is_empty());
     assert_eq!(
         reopened
-            .bind_thread_rom(&new_id)
+            .bind_thread_custom(&new_id)
             .await
             .unwrap()
             .entries
@@ -1164,10 +1152,10 @@ async fn sqlite_v1_rom_schema_upgrade_preserves_receipts_and_authoring_on_reopen
         0,
         "(profile (name Nora))",
     );
-    let initial = store.put_agent_rom(original.clone(), "host").await.unwrap();
+    let initial = store.put_custom(original.clone(), "host").await.unwrap();
     let v1 = committed(initial.clone());
     let old_id = thread(&store, &ids, "old-mounted", None).await;
-    let old = store.bind_thread_rom(&old_id).await.unwrap();
+    let old = store.bind_thread_custom(&old_id).await.unwrap();
     let unbound_id = thread(&store, &ids, "v1-unbound", None).await;
     drop(store);
     // This disposable database now has the actual old v1 table shape, rows,
@@ -1189,17 +1177,17 @@ async fn sqlite_v1_rom_schema_upgrade_preserves_receipts_and_authoring_on_reopen
 
     let upgraded = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
     assert_eq!(
-        upgraded.get_agent_rom(&original.key).await.unwrap(),
+        upgraded.get_custom(&original.key).await.unwrap(),
         Some(v1.clone())
     );
     assert_eq!(
-        upgraded.get_thread_rom(&old_id).await.unwrap(),
+        upgraded.get_thread_custom(&old_id).await.unwrap(),
         Some(old.clone())
     );
-    assert_eq!(upgraded.bind_thread_rom(&old_id).await.unwrap(), old);
+    assert_eq!(upgraded.bind_thread_custom(&old_id).await.unwrap(), old);
     assert_eq!(
         upgraded
-            .bind_thread_rom(&unbound_id)
+            .bind_thread_custom(&unbound_id)
             .await
             .unwrap()
             .entries
@@ -1207,15 +1195,15 @@ async fn sqlite_v1_rom_schema_upgrade_preserves_receipts_and_authoring_on_reopen
         1,
         "Authoring migration must not perform legacy empty-mount backfill again"
     );
-    match upgraded.put_agent_rom(original, "host").await.unwrap() {
-        AgentRomMutation::Committed {
+    match upgraded.put_custom(original, "host").await.unwrap() {
+        CustomMutation::Committed {
             record,
             receipt,
             duplicate,
         } => {
             assert!(duplicate);
             assert_eq!(record, v1);
-            if let AgentRomMutation::Committed {
+            if let CustomMutation::Committed {
                 receipt: original, ..
             } = initial
             {
@@ -1234,25 +1222,20 @@ async fn sqlite_v1_rom_schema_upgrade_preserves_receipts_and_authoring_on_reopen
     );
     authored.authoring_state_sexpr =
         Some("(editor (custom RETAIN_AFTER_RESTART) (enabled false))".into());
-    let v2 = committed(
-        upgraded
-            .put_agent_rom(authored.clone(), "host")
-            .await
-            .unwrap(),
-    );
+    let v2 = committed(upgraded.put_custom(authored.clone(), "host").await.unwrap());
     drop(upgraded);
     for _ in 0..2 {
         let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
         assert_eq!(
-            reopened.get_agent_rom(&authored.key).await.unwrap(),
+            reopened.get_custom(&authored.key).await.unwrap(),
             Some(v2.clone())
         );
         assert_eq!(
-            reopened.get_thread_rom(&old_id).await.unwrap(),
+            reopened.get_thread_custom(&old_id).await.unwrap(),
             Some(old.clone())
         );
         assert!(
-            matches!(reopened.put_agent_rom(authored.clone(), "host").await.unwrap(), AgentRomMutation::Committed { record, duplicate: true, .. } if record == v2)
+            matches!(reopened.put_custom(authored.clone(), "host").await.unwrap(), CustomMutation::Committed { record, duplicate: true, .. } if record == v2)
         );
     }
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
@@ -1308,7 +1291,7 @@ async fn remote_rom_authority_conformance_real_workerd() {
         async fn commit(&self, fence: &Fence, request: &Commit) -> Result<Head, StoreError> {
             let result = self.inner.commit(fence, request).await?;
             if self.lose.swap(false, Ordering::SeqCst) {
-                Err("injected ROM receipt response loss after durable commit".into())
+                Err("injected Custom receipt response loss after durable commit".into())
             } else {
                 Ok(result)
             }
@@ -1350,12 +1333,12 @@ async fn remote_rom_authority_conformance_real_workerd() {
     );
     transport.lose.store(true, Ordering::SeqCst);
     assert!(
-        store.put_agent_rom(command.clone(), "host").await.is_err(),
+        store.put_custom(command.clone(), "host").await.is_err(),
         "An ambiguous remote commit cannot acknowledge the speculative record"
     );
     assert_eq!(
         store
-            .get_agent_rom(&command.key)
+            .get_custom(&command.key)
             .await
             .unwrap()
             .unwrap()
@@ -1363,25 +1346,25 @@ async fn remote_rom_authority_conformance_real_workerd() {
         1,
         "Next read restores the actual remote authority"
     );
-    match store.put_agent_rom(command.clone(), "host").await.unwrap() {
-        AgentRomMutation::Committed { duplicate, .. } => assert!(duplicate),
+    match store.put_custom(command.clone(), "host").await.unwrap() {
+        CustomMutation::Committed { duplicate, .. } => assert!(duplicate),
         other => panic!("{other:?}"),
     }
     assert!(
         store
-            .put_agent_rom(command, "forged-other-host")
+            .put_custom(command, "forged-other-host")
             .await
             .unwrap_err()
-            .is::<AgentRomError>(),
+            .is::<CustomError>(),
         "Remote Store preserves domain command-reuse errors after its independent fence validation"
     );
     let old_id = format!("{prefix}-agent-alice-old");
-    let old = store.get_thread_rom(&old_id).await.unwrap();
+    let old = store.get_thread_custom(&old_id).await.unwrap();
     drop(store);
     let recovered = RemoteRuntimeStore::connect(transport, fence).await.unwrap();
-    assert_eq!(recovered.get_thread_rom(&old_id).await.unwrap(), old);
+    assert_eq!(recovered.get_thread_custom(&old_id).await.unwrap(), old);
     assert_eq!(
-        recovered.bind_thread_rom(&old_id).await.unwrap(),
+        recovered.bind_thread_custom(&old_id).await.unwrap(),
         old.unwrap()
     );
 }

@@ -20,7 +20,7 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import {
   defaultAgentProfile,
-  profileRom,
+  profileCustom,
   profileSnapshotSchema,
   profileUpdateResultSchema,
 } from "../packages/core/src/profile.js";
@@ -144,7 +144,7 @@ async function getRom(
   scope?: string,
 ) {
   const response = await fetch(
-    `${runtimeUrl}/api/agents/${encodeURIComponent(agentId)}/rom/${profileRom[subject].namespace}${scope ? "?principal_scope=" + encodeURIComponent(scope) : ""}`,
+    `${runtimeUrl}/api/agents/${encodeURIComponent(agentId)}/custom/${profileCustom[subject].namespace}${scope ? "?principal_scope=" + encodeURIComponent(scope) : ""}`,
     { headers: { Authorization: "Bearer " + operator } },
   );
   return {
@@ -309,7 +309,7 @@ try {
   );
   assert.equal(count("agent_rom_heads"), beforeProposal);
 
-  // Existing Team gateway remains insufficient for ROM administration.
+  // Existing Team gateway remains insufficient for Custom administration.
   const teamConfig = {
     url: runtimeUrl,
     token: gateway,
@@ -384,7 +384,7 @@ try {
     404,
   );
   const gatewayRom = await fetch(
-    `${runtimeUrl}/api/agents/${initial.agent.id}/rom`,
+    `${runtimeUrl}/api/agents/${initial.agent.id}/custom`,
     {
       headers: {
         Authorization: "Bearer " + gateway,

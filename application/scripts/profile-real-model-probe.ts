@@ -142,7 +142,7 @@ try {
   assert.ok(
     !disabled.messages.includes("(agent-profile ") &&
       !disabled.messages.includes(
-        "Installed agent-rom is caller-owned read-only configuration",
+        "Installed custom is caller-owned read-only configuration",
       ),
   );
   assert.deepEqual(fixture.sql("SELECT id FROM sessions"), sessions);
@@ -168,7 +168,7 @@ try {
   console.log(serialized);
   assert.ok(
     evidence.profileNameReported && evidence.disabledRomAbsent,
-    "Real model identity or disabled ROM verification failed",
+    "Real model identity or disabled Custom verification failed",
   );
 } finally {
   await browser?.close();

@@ -20,7 +20,7 @@ import { openApplicationDomainsHost } from "../packages/application/src/applicat
 import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import {
-  profileRom,
+  profileCustom,
   profileSnapshotSchema,
   type ProfileUpdate,
 } from "../packages/core/src/profile.js";
@@ -328,9 +328,9 @@ export async function profileActualTransportFixture(
         ),
       update: (command: ProfileUpdate) =>
         client.call("profile.update", command, options),
-      rom: async (subject: "agent" | "human", scope?: string) => {
+      custom: async (subject: "agent" | "human", scope?: string) => {
         const response = await fetch(
-          `${runtimeUrl}/api/agents/${status.agent_id}/rom/${profileRom[subject].namespace}${scope ? "?principal_scope=" + encodeURIComponent(scope) : ""}`,
+          `${runtimeUrl}/api/agents/${status.agent_id}/custom/${profileCustom[subject].namespace}${scope ? "?principal_scope=" + encodeURIComponent(scope) : ""}`,
           { headers: { Authorization: "Bearer " + operator } },
         );
         return {

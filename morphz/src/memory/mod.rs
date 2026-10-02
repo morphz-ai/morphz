@@ -8566,35 +8566,78 @@ pub struct StoragePoolMetricsSnapshot {
     pub max_connections: u32,
 }
 
-/// Caller-owned, versioned read-only configuration; deliberately outside Mind.
+/// Caller-owned, versioned read-only Context Custom; deliberately outside Mind.
 #[async_trait::async_trait]
-pub trait AgentRomStore: Send + Sync {
+pub trait CustomStore: Send + Sync {
+    async fn get_custom(
+        &self,
+        key: &crate::context::CustomKey,
+    ) -> Result<Option<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Only this exact scope is returned. `None` lists public entries, never private data.
+    async fn list_custom(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> Result<Vec<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn put_custom(
+        &self,
+        command: crate::context::PutCustomCommand,
+        actor_authority_id: &str,
+    ) -> Result<crate::context::CustomMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically freezes the latest public + exact initiating-Principal versions,
+    /// or returns the already bound immutable manifest. Never follows heads again.
+    async fn bind_thread_custom(
+        &self,
+        thread_id: &str,
+    ) -> Result<crate::context::ThreadCustomManifest, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_custom(
+        &self,
+        thread_id: &str,
+    ) -> Result<
+        Option<crate::context::ThreadCustomManifest>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
+
+    /// Legacy source-compatible call names, delegated to canonical Custom storage.
     async fn get_agent_rom(
         &self,
-        key: &crate::agent_rom::AgentRomKey,
-    ) -> Result<Option<crate::agent_rom::AgentRomRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    /// Only this exact scope is returned. `None` lists public entries, never private data.
+        key: &crate::context::CustomKey,
+    ) -> Result<Option<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>> {
+        self.get_custom(key).await
+    }
     async fn list_agent_rom(
         &self,
         agent_id: &str,
         principal_scope: Option<&str>,
-    ) -> Result<Vec<crate::agent_rom::AgentRomRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>> {
+        self.list_custom(agent_id, principal_scope).await
+    }
     async fn put_agent_rom(
         &self,
-        command: crate::agent_rom::PutAgentRomCommand,
+        command: crate::context::PutCustomCommand,
         actor_authority_id: &str,
-    ) -> Result<crate::agent_rom::AgentRomMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically freezes the latest public + exact initiating-Principal versions,
-    /// or returns the already bound immutable manifest. Never follows heads again.
+    ) -> Result<crate::context::CustomMutation, Box<dyn std::error::Error + Send + Sync>> {
+        self.put_custom(command, actor_authority_id).await
+    }
     async fn bind_thread_rom(
         &self,
         thread_id: &str,
-    ) -> Result<crate::agent_rom::ThreadRomManifest, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<crate::context::ThreadCustomManifest, Box<dyn std::error::Error + Send + Sync>>
+    {
+        self.bind_thread_custom(thread_id).await
+    }
     async fn get_thread_rom(
         &self,
         thread_id: &str,
-    ) -> Result<Option<crate::agent_rom::ThreadRomManifest>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<
+        Option<crate::context::ThreadCustomManifest>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        self.get_thread_custom(thread_id).await
+    }
 }
+
+pub use CustomStore as AgentRomStore;
 
 pub trait RuntimeStore:
     EventStore
@@ -8616,7 +8659,7 @@ pub trait RuntimeStore:
     + RecallProjectionStore
     + CognitiveClockStore
     + AgentProviderBindingStore
-    + AgentRomStore
+    + CustomStore
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
     + StorageMaintenanceStore

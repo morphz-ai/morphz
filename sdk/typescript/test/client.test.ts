@@ -1,25 +1,193 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MorphzClient, MorphzHttpError } from "../src/index.ts";
+import type { context, PutAgentRomCommand } from "../src/index.ts";
 
-test("ROM operator SDK keeps exact private scope and command identity separate from caller authentication", async () => {
-  const calls: Array<{url:string;init?:RequestInit}> = [];
-  const client = new MorphzClient({baseUrl:"https://runtime.example",serviceToken:"operator-secret",fetch:async(url,init)=>{calls.push({url:String(url),init});return Response.json({entries:[],status:"committed"});}});
-  await client.listAgentRomAsOperator("agent one");
-  await client.listAgentRomAsOperator("agent one","human/@1");
-  const command={command_id:"save-1",expected_revision:0,key:{agent_id:"agent one",namespace:"example.profile",principal_scope:"human/@1"},schema_tag:"profile/v1",body_sexpr:"(profile (name Nora))",enabled:true};
-  await client.putAgentRomAsOperator(command);
+test("Custom operator SDK keeps exact private scope, authoring state and command identity separate from authentication", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new MorphzClient({
+    baseUrl: "https://runtime.example",
+    serviceToken: "operator-secret",
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json({ entries: [], status: "committed" });
+    },
+  });
+  await client.listCustomAsOperator("agent one");
+  await client.listCustomAsOperator("agent one", "human/@1");
+  const command: context.PutCustomCommand = {
+    command_id: "save-1",
+    expected_revision: 0,
+    key: {
+      agent_id: "agent one",
+      namespace: "example.profile",
+      principal_scope: "human/@1",
+    },
+    schema_tag: "profile/v1",
+    body_sexpr: "(profile (name Nora))",
+    authoring_state_sexpr: '(editor (retained "Not model context"))',
+    enabled: true,
+  };
+  await client.putCustomAsOperator(command);
+  await client.getCustomAsOperator(command.key);
+  await client.threadCustomAsOperator("thread one");
+  await client.ensureAuthenticatedPrincipal({ id: "human/@1" });
+  assert.equal(new URL(calls[0].url).search, "");
+  assert.equal(
+    new URL(calls[1].url).searchParams.get("principal_scope"),
+    "human/@1",
+  );
+  assert.equal(
+    new URL(calls[2].url).searchParams.get("principal_scope"),
+    "human/@1",
+  );
+  assert.deepEqual(
+    calls.slice(0, 5).map((call) => new URL(call.url).pathname),
+    [
+      "/api/agents/agent%20one/custom",
+      "/api/agents/agent%20one/custom",
+      "/api/agents/agent%20one/custom/example.profile",
+      "/api/agents/agent%20one/custom/example.profile",
+      "/api/threads/thread%20one/custom",
+    ],
+  );
+  assert.equal(calls[2].init?.method, "PUT");
+  assert.deepEqual(JSON.parse(String(calls[2].init?.body)), command);
+  assert.equal(
+    new Headers(calls[2].init?.headers).get("x-morphz-principal"),
+    null,
+  );
+  assert.equal(
+    new Headers(calls[2].init?.headers).get("authorization"),
+    "Bearer operator-secret",
+  );
+  assert.equal(calls[5].init?.body, undefined);
+  assert.equal(
+    new Headers(calls[5].init?.headers).get("x-morphz-principal"),
+    "human/@1",
+  );
+  assert.throws(
+    () =>
+      client.putCustomAsOperator({
+        ...command,
+        expected_revision: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    /safe integer/,
+  );
+  assert.throws(
+    () => client.putCustomAsOperator({ ...command, expected_revision: -1 }),
+    /safe integer/,
+  );
+  assert.equal(calls.length, 6, "Invalid revisions must not dispatch requests");
+});
+
+test("legacy ROM methods retain their explicit old Runtime paths and canonical wire types", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new MorphzClient({
+    baseUrl: "https://runtime.example",
+    serviceToken: "operator-secret",
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json({ entries: [], status: "committed" });
+    },
+  });
+  const command: PutAgentRomCommand = {
+    command_id: "legacy-save",
+    expected_revision: 0,
+    key: {
+      agent_id: "agent/one",
+      namespace: "example/profile",
+      principal_scope: "human/@1",
+    },
+    schema_tag: "profile/v1",
+    body_sexpr: "(profile (name Nora))",
+    enabled: true,
+  };
+  const canonicalCommand: context.PutCustomCommand = command;
+  await client.listAgentRomAsOperator(
+    command.key.agent_id,
+    command.key.principal_scope,
+  );
   await client.getAgentRomAsOperator(command.key);
-  await client.threadRomAsOperator("thread one");
-  await client.ensureAuthenticatedPrincipal({id:"human/@1"});
-  assert.equal(new URL(calls[0].url).search,"");
-  assert.equal(new URL(calls[1].url).searchParams.get("principal_scope"),"human/@1");
-  assert.equal(new URL(calls[2].url).searchParams.get("principal_scope"),"human/@1");
-  assert.equal(calls[2].init?.method,"PUT");assert.deepEqual(JSON.parse(String(calls[2].init?.body)),command);
-  assert.equal(new Headers(calls[2].init?.headers).get("x-morphz-principal"),null);
-  assert.equal(new Headers(calls[2].init?.headers).get("authorization"),"Bearer operator-secret");
-  assert.equal(calls[5].init?.body,undefined);assert.equal(new Headers(calls[5].init?.headers).get("x-morphz-principal"),"human/@1");
-  assert.throws(()=>client.putAgentRomAsOperator({...command,expected_revision:Number.MAX_SAFE_INTEGER+1}),/safe integer/);
+  await client.putAgentRomAsOperator(canonicalCommand);
+  await client.threadRomAsOperator("thread/one");
+  assert.deepEqual(
+    calls.map((call) => new URL(call.url).pathname),
+    [
+      "/api/agents/agent%2Fone/rom",
+      "/api/agents/agent%2Fone/rom/example%2Fprofile",
+      "/api/agents/agent%2Fone/rom/example%2Fprofile",
+      "/api/threads/thread%2Fone/rom",
+    ],
+  );
+  assert.deepEqual(JSON.parse(String(calls[2].init?.body)), command);
+  assert.equal(
+    "authoring_state_sexpr" in JSON.parse(String(calls[2].init?.body)),
+    false,
+  );
+  for (const call of calls) {
+    assert.equal(
+      new Headers(call.init?.headers).get("x-morphz-principal"),
+      null,
+    );
+    assert.equal(
+      new Headers(call.init?.headers).get("authorization"),
+      "Bearer operator-secret",
+    );
+  }
+  assert.throws(
+    () => client.putAgentRomAsOperator({ ...command, expected_revision: 0.5 }),
+    /safe integer/,
+  );
+  assert.equal(calls.length, 4);
+});
+
+test("a failed Custom write never retries through the legacy ROM path", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new MorphzClient({
+    baseUrl: "https://runtime.example",
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json(
+        { error: { code: "not_found", message: "unknown endpoint" } },
+        { status: 404 },
+      );
+    },
+  });
+  const command: context.PutCustomCommand = {
+    command_id: "one-command",
+    expected_revision: 0,
+    key: { agent_id: "agent-one", namespace: "example.profile" },
+    schema_tag: "profile/v1",
+    body_sexpr: "(profile (name Nora))",
+    enabled: true,
+  };
+  for (const put of [
+    () => client.putCustomAsOperator(command),
+    () => client.putAgentRomAsOperator(command),
+  ]) {
+    const count = calls.length;
+    await assert.rejects(
+      put,
+      (error: unknown) =>
+        error instanceof MorphzHttpError &&
+        error.status === 404 &&
+        error.code === "not_found",
+    );
+    assert.equal(
+      calls.length,
+      count + 1,
+      "A write must issue exactly one HTTP request even after 404",
+    );
+  }
+  assert.deepEqual(
+    calls.map((call) => new URL(call.url).pathname),
+    [
+      "/api/agents/agent-one/custom/example.profile",
+      "/api/agents/agent-one/rom/example.profile",
+    ],
+  );
+  assert.equal(calls[0].init?.body, calls[1].init?.body);
 });
 
 test("Session approval methods use the same Principal and preserve the exact decision on retry", async () => {

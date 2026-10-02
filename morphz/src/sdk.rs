@@ -5,10 +5,6 @@
 //! authenticate credentials before constructing a [`PrincipalAssertion`];
 //! message text is never accepted as identity evidence.
 
-pub use crate::agent_rom::{
-    AgentRomCommandReceipt, AgentRomKey, AgentRomMutation, AgentRomRecord, PutAgentRomCommand,
-    ThreadRomManifest,
-};
 use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::config::{
     remove_managed_provider_accounts_at, save_managed_auth_account_at,
@@ -18,6 +14,15 @@ use crate::config::{
     save_managed_provider_instance_at, AppConfig, AuthAccountConfig, CredentialConfig,
     ModelProtocol, ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig,
     ModelRouteSelection, ProviderInstanceConfig, ProviderModelConfig,
+};
+pub use crate::context::{
+    Custom, CustomCommandReceipt, CustomKey, CustomMutation, PutCustomCommand, ThreadCustomManifest,
+};
+// Compatibility names for callers compiled against the pre-Custom SDK.
+pub use crate::context::{
+    Custom as AgentRomRecord, CustomCommandReceipt as AgentRomCommandReceipt,
+    CustomKey as AgentRomKey, CustomMutation as AgentRomMutation,
+    PutCustomCommand as PutAgentRomCommand, ThreadCustomManifest as ThreadRomManifest,
 };
 use crate::event::Event;
 use crate::execution::JobReceipt;
@@ -85,10 +90,10 @@ pub use api_connections::{ApiConnectionSettings, ApiConnectionUpdate};
 /// Version of the supported embedded application contract.
 pub const SDK_CONTRACT_VERSION: &str = "1";
 
-fn rom_sdk_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
-    let code = match error.downcast_ref::<crate::agent_rom::AgentRomError>() {
-        Some(crate::agent_rom::AgentRomError::Invalid(_)) => SdkErrorCode::InvalidArgument,
-        Some(crate::agent_rom::AgentRomError::CommandReuse) => SdkErrorCode::Conflict,
+fn custom_sdk_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
+    let code = match error.downcast_ref::<crate::context::CustomError>() {
+        Some(crate::context::CustomError::Invalid(_)) => SdkErrorCode::InvalidArgument,
+        Some(crate::context::CustomError::CommandReuse) => SdkErrorCode::Conflict,
         _ => SdkErrorCode::Internal,
     };
     SdkError::new(code, error.to_string())
@@ -2570,50 +2575,83 @@ impl MorphzSdk {
 
     /// Read only one exact scope. The adapter must authenticate its operator
     /// and authorize private-scope disclosure before calling this trusted API.
-    pub async fn get_agent_rom_as_operator(
-        &self,
-        key: &AgentRomKey,
-    ) -> SdkResult<Option<AgentRomRecord>> {
-        crate::agent_rom::validate_key(key)
+    pub async fn get_custom_as_operator(&self, key: &CustomKey) -> SdkResult<Option<Custom>> {
+        crate::context::validate_key(key)
             .map_err(|e| SdkError::new(SdkErrorCode::InvalidArgument, e.to_string()))?;
         self.runtime
-            .get_agent_rom(key)
+            .get_custom(key)
             .await
             .map_err(SdkError::internal)
     }
 
+    pub async fn list_custom_as_operator(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> SdkResult<Vec<Custom>> {
+        self.runtime
+            .list_custom(agent_id, principal_scope)
+            .await
+            .map_err(custom_sdk_error)
+    }
+
+    /// `actor_authority_id` is supplied by the authenticated trusted adapter,
+    /// never accepted from model text or an untrusted JSON actor field.
+    pub async fn put_custom_as_operator(
+        &self,
+        command: PutCustomCommand,
+        actor_authority_id: &str,
+    ) -> SdkResult<CustomMutation> {
+        self.runtime
+            .put_custom_as_operator(command, actor_authority_id)
+            .await
+            .map_err(custom_sdk_error)
+    }
+
+    pub async fn get_thread_custom_as_operator(
+        &self,
+        thread_id: &str,
+    ) -> SdkResult<Option<ThreadCustomManifest>> {
+        self.runtime
+            .thread_custom_as_operator(thread_id)
+            .await
+            .map_err(custom_sdk_error)
+    }
+
+    /// Legacy compatibility name; use [`Self::get_custom_as_operator`].
+    pub async fn get_agent_rom_as_operator(
+        &self,
+        key: &AgentRomKey,
+    ) -> SdkResult<Option<AgentRomRecord>> {
+        self.get_custom_as_operator(key).await
+    }
+
+    /// Legacy compatibility name; use [`Self::list_custom_as_operator`].
     pub async fn list_agent_rom_as_operator(
         &self,
         agent_id: &str,
         principal_scope: Option<&str>,
     ) -> SdkResult<Vec<AgentRomRecord>> {
-        self.runtime
-            .list_agent_rom(agent_id, principal_scope)
+        self.list_custom_as_operator(agent_id, principal_scope)
             .await
-            .map_err(rom_sdk_error)
     }
 
-    /// `actor_authority_id` is supplied by the authenticated trusted adapter,
-    /// never accepted from model text or an untrusted JSON actor field.
+    /// Legacy compatibility name; use [`Self::put_custom_as_operator`].
     pub async fn put_agent_rom_as_operator(
         &self,
         command: PutAgentRomCommand,
         actor_authority_id: &str,
     ) -> SdkResult<AgentRomMutation> {
-        self.runtime
-            .put_agent_rom_as_operator(command, actor_authority_id)
+        self.put_custom_as_operator(command, actor_authority_id)
             .await
-            .map_err(rom_sdk_error)
     }
 
+    /// Legacy compatibility name; use [`Self::get_thread_custom_as_operator`].
     pub async fn thread_rom_as_operator(
         &self,
         thread_id: &str,
     ) -> SdkResult<Option<ThreadRomManifest>> {
-        self.runtime
-            .thread_rom_as_operator(thread_id)
-            .await
-            .map_err(rom_sdk_error)
+        self.get_thread_custom_as_operator(thread_id).await
     }
 
     /// Compiles the same bounded Context Projection used by an Evaluation.

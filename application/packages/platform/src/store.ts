@@ -1859,7 +1859,7 @@ export class PlatformStore {
     }, "read");
   }
 
-  /** Personal presentation only; ROM remains the sole name/persona authority. */
+  /** Personal presentation only; Runtime Custom remains the sole name/persona authority. */
   async profileAvatarSubject(access: PlatformActor, subject: ProfileSubject, write = false) {
     const actor = await this.authorize(access);
     if (subject !== "human" && subject !== "agent") throw new PlatformStorageError("invalid", "头像主体无效。");

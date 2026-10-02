@@ -888,10 +888,10 @@ pub struct SessionWorkingSetView {
 pub struct ContextView {
     /// Exact immutable configuration bound to the root Thread. Absent/empty
     /// configuration preserves the legacy encoding byte for byte.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_rom: Option<crate::agent_rom::ThreadRomManifest>,
+    #[serde(default, alias = "agent_rom", skip_serializing_if = "Option::is_none")]
+    pub custom: Option<crate::context::ThreadCustomManifest>,
     #[serde(skip)]
-    compiled_agent_rom: Option<SExpr>,
+    compiled_custom: Option<SExpr>,
     pub context_id: String,
     /// Greatest immutable Event sequence admitted by the physical visibility
     /// snapshot used to compile the model-facing View. Sequence is append
@@ -4639,7 +4639,7 @@ impl ContextEngine {
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
-                    agent_rom: None,
+                    custom: None,
                     context_id,
                     active_session_id,
                     active_principal_id: active_principal_id.as_deref(),
@@ -4685,8 +4685,8 @@ impl ContextEngine {
         );
 
         Ok(ContextView {
-            agent_rom: None,
-            compiled_agent_rom: None,
+            custom: None,
+            compiled_custom: None,
             context_id: context_id.to_string(),
             event_sequence_upper_bound,
             event_visibility_snapshot,
@@ -4892,7 +4892,7 @@ impl ContextEngine {
             return Ok(());
         }
         view.sexpr = render_context(ContextRenderInput {
-            agent_rom: view.compiled_agent_rom.as_ref(),
+            custom: view.compiled_custom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
             active_principal_id: view.active_principal_id.as_deref(),
@@ -5079,32 +5079,34 @@ impl ContextEngine {
         (total, visible)
     }
 
-    pub(crate) fn mount_thread_rom(
+    pub(crate) fn mount_thread_custom(
         &self,
         view: &mut ContextView,
-        manifest: crate::agent_rom::ThreadRomManifest,
+        manifest: crate::context::ThreadCustomManifest,
     ) -> Result<(), DynError> {
         // Defend even an embedded caller's hand-built manifest: authoring state
         // must not enter ContextView's serialized or model-facing projection.
         let manifest = manifest.without_authoring_state();
-        let compiled = manifest.context_rom()?;
+        let compiled = manifest.context_custom()?;
         if compiled.is_none() {
             return Ok(());
         }
         if view.activation.as_ref().is_none_or(|focus| {
             crate::memory::stable_thread_id(&focus.root_turn_id) != manifest.thread_id
         }) {
-            return Err("ROM may only be mounted in its bound Thread's Evaluation Context".into());
+            return Err(
+                "Custom may only be mounted in its bound Thread's Evaluation Context".into(),
+            );
         }
-        view.compiled_agent_rom = compiled;
-        view.agent_rom = Some(manifest);
+        view.compiled_custom = compiled;
+        view.custom = Some(manifest);
         self.rerender_context_view(view);
         Ok(())
     }
 
     fn rerender_context_view(&self, view: &mut ContextView) {
         view.sexpr = render_context(ContextRenderInput {
-            agent_rom: view.compiled_agent_rom.as_ref(),
+            custom: view.compiled_custom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
             active_principal_id: view.active_principal_id.as_deref(),
@@ -8687,7 +8689,7 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
 }
 
 struct ContextRenderInput<'a> {
-    agent_rom: Option<&'a SExpr>,
+    custom: Option<&'a SExpr>,
     context_id: &'a str,
     active_session_id: &'a str,
     active_principal_id: Option<&'a str>,
@@ -9669,7 +9671,7 @@ fn render_execution_targets(
 
 fn render_context(input: ContextRenderInput<'_>) -> String {
     let ContextRenderInput {
-        agent_rom,
+        custom,
         context_id,
         active_session_id,
         active_principal_id,
@@ -10175,7 +10177,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         session_directory,
         SExpr::List(kernel),
     ];
-    if let Some(rom) = agent_rom {
+    if let Some(rom) = custom {
         // Factory configuration is immutable and cache-stable, never a Mind Frame.
         context.insert(2, rom.clone());
     }
@@ -12806,12 +12808,17 @@ pub fn attribute_prompt_components(
     });
 
     let mut context_children_weight = 0u64;
-    if let Some(rom) = &view.agent_rom {
+    if let Some(rom) = &view.custom {
         for entry in &rom.entries {
             let weight = text_weight_units(&entry.canonical_sexpr);
             context_children_weight = context_children_weight.saturating_add(weight);
             components.push(Weighted {
-                kind: "agent_rom".into(),
+                kind: if rom.compiler_hash == crate::context::legacy_compiler_hash() {
+                    "agent_rom"
+                } else {
+                    "custom"
+                }
+                .into(),
                 id: entry.entry_id.clone(),
                 label: entry.key.namespace.clone(),
                 weight,
@@ -16909,7 +16916,7 @@ mod tests {
             updated_at: Utc::now(),
         }];
         let rendered = render_context(ContextRenderInput {
-            agent_rom: None,
+            custom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -17053,7 +17060,7 @@ mod tests {
         let mut warning_pressure = pressure.clone();
         warning_pressure.level = "warning".to_string();
         let warning = render_context(ContextRenderInput {
-            agent_rom: None,
+            custom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -17121,7 +17128,7 @@ mod tests {
         let kernel_offset = rendered.find(" (kernel (context context-1)").unwrap();
         budget.attempt = 2;
         let changed = render_context(ContextRenderInput {
-            agent_rom: None,
+            custom: None,
             context_id: "context-1",
             active_session_id: "s2",
             active_principal_id: None,
@@ -17166,7 +17173,7 @@ mod tests {
             .usage
             .recall_count_total = 1;
         let state_changed = render_context(ContextRenderInput {
-            agent_rom: None,
+            custom: None,
             context_id: "context-1",
             active_session_id: "s1",
             active_principal_id: None,
@@ -20650,9 +20657,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rom_survives_measurement_and_recovery_without_changing_empty_encoding() {
-        use crate::agent_rom::{AgentRomKey, PutAgentRomCommand, ThreadRomManifest};
-        use crate::memory::AgentRomStore as _;
+    async fn custom_survives_measurement_and_recovery_without_changing_empty_encoding() {
+        use crate::context::{CustomKey, PutCustomCommand, ThreadCustomManifest};
+        use crate::memory::CustomStore as _;
 
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(
@@ -20754,28 +20761,31 @@ mod tests {
             .unwrap();
         let legacy = view.sexpr.clone();
         engine
-            .mount_thread_rom(
+            .mount_thread_custom(
                 &mut view,
-                ThreadRomManifest {
+                ThreadCustomManifest {
                     thread_id: thread_id.clone(),
                     agent_id: agent.into(),
                     initiating_principal_id: None,
-                    manifest_hash: crate::agent_rom::manifest_hash(&[]),
-                    compiler_hash: crate::agent_rom::compiler_hash(),
+                    manifest_hash: crate::context::manifest_hash(&[]),
+                    compiler_hash: crate::context::compiler_hash(),
                     bound_at: chrono::Utc::now(),
                     entries: vec![],
                 },
             )
             .unwrap();
-        assert_eq!(view.sexpr, legacy, "Empty ROM must preserve Context bytes");
-        assert!(view.agent_rom.is_none());
+        assert_eq!(
+            view.sexpr, legacy,
+            "Empty Custom must preserve Context bytes"
+        );
+        assert!(view.custom.is_none());
 
         store
-            .put_agent_rom(
-                PutAgentRomCommand {
+            .put_custom(
+                PutCustomCommand {
                     command_id: "rom-context-create".into(),
                     expected_revision: 0,
-                    key: AgentRomKey {
+                    key: CustomKey {
                         agent_id: agent.into(),
                         namespace: "example.agent".into(),
                         principal_scope: None,
@@ -20789,12 +20799,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut manifest = store.bind_thread_rom(&thread_id).await.unwrap();
+        let mut manifest = store.bind_thread_custom(&thread_id).await.unwrap();
         manifest.entries[0].canonical_authoring_state =
             Some("(editor (custom DO_NOT_PROJECT_EDITOR_TEXT))".into());
-        let stable_rom = manifest.context_rom().unwrap().unwrap().to_string();
+        let stable_rom = manifest.context_custom().unwrap().unwrap().to_string();
         engine
-            .mount_thread_rom(&mut view, manifest.clone())
+            .mount_thread_custom(&mut view, manifest.clone())
             .unwrap();
         let projected = serde_json::to_string(&view).unwrap();
         assert!(!projected.contains("DO_NOT_PROJECT_EDITOR_TEXT"));
@@ -20802,9 +20812,30 @@ mod tests {
         manifest = manifest.without_authoring_state();
         assert!(view.sexpr.contains(&stable_rom));
         let protocol_position = view.sexpr.find("(protocol ").unwrap();
-        let rom_position = view.sexpr.find("(agent-rom ").unwrap();
+        let rom_position = view.sexpr.find("(custom ").unwrap();
         let evaluation_position = view.sexpr.find("(evaluation-profile ").unwrap();
         assert!(protocol_position < rom_position && rom_position < evaluation_position);
+        // The same Context rebuilt for an already-bound legacy Thread keeps
+        // its old encoding byte-for-byte, including the legacy root label.
+        let mut historical = manifest.clone();
+        historical.compiler_hash = crate::context::legacy_compiler_hash();
+        historical.manifest_hash = crate::context::legacy_manifest_hash(&historical.entries);
+        let mut historical_view = view.clone();
+        engine
+            .mount_thread_custom(&mut historical_view, historical)
+            .unwrap();
+        assert_eq!(
+            historical_view.sexpr,
+            view.sexpr.replacen("(custom ", "(agent-rom ", 1),
+        );
+        // A previously serialized view remains readable under the new field name.
+        let mut historical_json = serde_json::to_value(&historical_view).unwrap();
+        let fields = historical_json.as_object_mut().unwrap();
+        let old_custom = fields.remove("custom").unwrap();
+        fields.insert("agent_rom".into(), old_custom);
+        let restored: ContextView = serde_json::from_value(historical_json).unwrap();
+        assert_eq!(restored.custom, historical_view.custom);
+        assert_eq!(restored.sexpr, historical_view.sexpr);
         let unchanged_mind = view.state.clone();
         engine
             .apply_prompt_token_count(
@@ -20827,10 +20858,10 @@ mod tests {
         assert!(view.sexpr.contains(&stable_rom));
         engine.apply_safety_refusal_recovery_projection(&mut view, 1, 64);
         assert!(view.sexpr.contains(&stable_rom));
-        assert_eq!(view.agent_rom, Some(manifest));
+        assert_eq!(view.custom, Some(manifest));
         assert_eq!(
             view.state, unchanged_mind,
-            "ROM rendering must not mutate Mind"
+            "Custom rendering must not mutate Mind"
         );
     }
 

@@ -1,5 +1,17 @@
 # 桌面能力实施记录
 
+## 2026-10-02 ROM 正式改名为 Context 作用域内的 Custom
+
+当前正式概念为 `context::Custom`，模型上下文新节点为 `(custom …)`；Rust／TypeScript SDK、operator HTTP `/custom`、Profile Client、当前设计文档及普通测试使用新名称。第三方拥有 Schema 与正文，Profile 只是应用定义的一种结构。正文、Profile v1／v2 Schema、作者状态及已有资料不改；数据库表、迁移 ID、entry ID 和幂等哈希域保留原值。旧 SDK 名称与 `/rom` 路由只是同一存储和权限边界的兼容入口，不维护第二份数据。
+
+新 Thread 使用新编译器与 Custom 缓存契约；已有 Thread 按持久 compiler hash 保留原 `agent-rom` 节点、System Rule、manifest hash、`rom_*` cache contract 和 `agent_rom` attempt metadata。空内容仍零额外节点／规则／缓存维度；作者编辑态仍不进入模型。ContextView JSON 输出字段现在叫 `custom`，兼容读取旧 `agent_rom` 字段，不承诺 JSON 输出名逐字相同。说明见[Runtime Custom 设计](../../docs/context-custom.md)及[Profile 当前设计](39-profile-custom-production-design.md)。
+
+最终验证：Runtime 单测 **16／16**、SQLite／真实 PostgreSQL 与真实 Runtime 请求捕获 **9／9**（6+1+2），均零失败；PG 使用独立临时数据库，已删除，仅测试数据，不动用户库。日志 `/tmp/morphz-custom-lib-tests.log`、`/tmp/morphz-custom-postgres-integration-tests.log`。Profile 六组单测 **28／28**（含真实 browser 身份 race、真实 PG）与自动保存 **21／21**、SDK **11／11**，均零跳过；日志 `/tmp/morphz-custom-profile-tests.log`、`/tmp/morphz-custom-autosave-tests.log`、`/tmp/morphz-custom-sdk-tests.log`。Runtime binary、Application 生产构建与最终类型检查退出 0；`remote-store` 特性编译通过，但不称本轮运行了 workerd 或远程 Cell 验收。
+
+新 binary＋新 Web bundle 的实际 Profile 保存→发送→Context 链最终 **5／5**、零跳过（38.6 秒，`/tmp/morphz-custom-actual-transport.log`）；控制面 smoke 的重启版本保持、双凭据隔离通过，零 Session、零模型请求（`/tmp/morphz-custom-profile-runtime-smoke.log`）。请求链使用本地受控模型传输，不冒称付费模型行为或供应商 cache 命中。
+
+首轮实际链 **4／5**：旧自定义风格的全文 `"(custom "` negative 与新顶层节点撞名，已改为真实 SExpr 的 `Context/custom/entry/body/agent-profile/speech/custom` 精确路径，保留停用 marker 零字节、作者原文与重新启用恢复断言；初跑日志保留。SQL 升级测试首轮也发现测试查询误把旧物理表写成 `agent_custom_command_receipts`，已恢复 `agent_rom_command_receipts` 后完整重跑通过，不把测试误改当生产迁移、不删校验。原同一 App、资料、草稿、Runtime 与在途工作未重启／重写；本轮完成代码与隔离链路验证，不冒称运行中的旧 Runtime 已热替换。
+
 ## 2026-10-02 主题气泡内引用悬停同色系
 
 截图中的白块来自已发送引用卡片的 hover 与所有按钮的 active 继承普通中性 `--hover`。现在仅覆盖本人消息内的 `.sent-text-quote`：悬停／主动键盘焦点沿原气泡面色混入 12% 可读强调色，按下混入 16%；按下时来源小字改用正文色。默认透明引用底、编号、引用线、布局与原键盘轮廓保持，不改全局 `--hover`／`--tint`，也不扩到草稿引用、选文浮层、附件、回复来源或菜单。无新的持久状态、API、Host／Runtime 修改或模型请求。

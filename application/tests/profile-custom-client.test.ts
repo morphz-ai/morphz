@@ -15,16 +15,16 @@ import { openApplicationDomainsHost } from "../packages/application/src/applicat
 import {
   defaultAgentProfile,
   defaultHumanProfile,
-  compileProfileRom,
+  compileProfileCustom,
   profileContract,
-  profileRom,
+  profileCustom,
   profileSnapshotSchema,
   compileProfileAuthoringState,
 } from "../packages/core/src/profile.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 /** A controlled Runtime protocol endpoint; this tests Host payload/auth/retry,
- * not real Runtime persistence or infer's frozen ROM assembly. */
+ * not real Runtime persistence or infer's frozen Custom assembly. */
 async function fixture(team = false, supported = true) {
   const agentId = "kernel-agent-" + randomUUID(),
     principalId = "kernel-principal-" + randomUUID();
@@ -73,7 +73,7 @@ async function fixture(team = false, supported = true) {
       );
       return;
     }
-    const base = `/api/agents/${agentId}/rom`;
+    const base = `/api/agents/${agentId}/custom`;
     if (!supported || !url.pathname.startsWith(base)) {
       res.writeHead(404);
       res.end("{}");
@@ -129,7 +129,7 @@ async function fixture(team = false, supported = true) {
       return;
     }
     const record = {
-      entry_id: "rom-" + key,
+      entry_id: "custom-" + key,
       key: command.key,
       revision: revision + 1,
       schema_tag: command.schema_tag,
@@ -182,7 +182,7 @@ async function fixture(team = false, supported = true) {
   };
 }
 
-test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同command回执不复制到Host", async () => {
+test("Custom Host Client 使用实际kernel Agent/Principal，保存、冲突和同command回执不复制到Host", async () => {
   const f = await fixture();
   try {
     const before = await f.client.read(localAccess);
@@ -216,7 +216,7 @@ test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同
     });
     assert.equal(human.data.name, "小谢");
     const record = [...f.records.values()].find(
-      (row) => row.schema_tag === profileRom.human.schemaTag,
+      (row) => row.schema_tag === profileCustom.human.schemaTag,
     )!;
     assert.equal(
       (record.key as { principal_scope: string }).principal_scope,
@@ -225,7 +225,7 @@ test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同
     assert.equal(
       f.calls.some((call) => call.principal !== undefined),
       false,
-    ); // Operator ROM auth, never model actor header.
+    ); // Operator Custom auth, never model actor header.
     await assert.rejects(
       f.client.update(localAccess, { ...request, namespace: "morphz.admin" }),
     );
@@ -234,7 +234,121 @@ test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同
   }
 });
 
-test("Team Human私有ROM登记真实gateway Principal而不建Session，Team Agent不可写", async () => {
+test("Profile Client 实际 list/get/put 只请求 canonical Custom 路由，不回退旧入口", async () => {
+  const f = await fixture();
+  try {
+    await f.client.read(localAccess);
+    await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      data: { ...defaultAgentProfile, name: "Echo" },
+    });
+    await f.client.update(localAccess, {
+      subject: "human",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      data: { name: "小谢", preferredAddress: "谢先生" },
+    });
+    await f.client.read(localAccess);
+    const customCalls = f.calls.filter((call) =>
+      call.path.startsWith("/api/agents/"),
+    );
+    const base = `/api/agents/${f.agentId}/custom`;
+    assert.ok(
+      customCalls.some((call) => call.method === "GET" && call.path === base),
+    );
+    for (const subject of ["agent", "human"] as const) {
+      const path =
+        `${base}/${profileCustom[subject].namespace}` +
+        (subject === "human"
+          ? `?principal_scope=${encodeURIComponent(f.principalId)}`
+          : "");
+      for (const method of ["GET", "PUT"])
+        assert.ok(
+          customCalls.some(
+            (call) => call.method === method && call.path === path,
+          ),
+        );
+    }
+    assert.ok(
+      customCalls.every(
+        (call) => call.path === base || call.path.startsWith(base + "/"),
+      ),
+    );
+    assert.equal(
+      f.calls.some((call) => /\/rom(?:\/|\?|$)/.test(call.path)),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("Custom Client 保留四项全部0–5数值、关闭数据和作者原文，重开恢复相同BODY", async () => {
+  const f = await fixture();
+  try {
+    const marker = "CUSTOM_OFF_AUTHORING_RETAINED";
+    for (let value = 0; value <= 5; value++) {
+      const data = {
+        ...defaultAgentProfile,
+        name: "Echo",
+        traits: { humor: value, rigor: value, warmth: value, verbosity: value },
+        customStyle: marker,
+        customStyleEnabled: false,
+      };
+      const saved = await f.client.update(localAccess, {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: value,
+        enabled: true,
+        data,
+      });
+      assert.deepEqual(saved.data, data);
+      assert.deepEqual((await f.client.read(localAccess)).agent.data, data);
+      const lastPut = f.calls.filter((call) => call.method === "PUT").at(-1)!;
+      const command = JSON.parse(lastPut.body);
+      assert.equal(command.schema_tag, "morphz-agent-profile/v2");
+      assert.equal(command.key.namespace, "morphz.profile.agent");
+      for (const trait of ["humor", "rigor", "warmth", "verbosity"])
+        assert.ok(command.body_sexpr.includes(`(${trait} ${value})`));
+      assert.equal(command.body_sexpr.includes(marker), false);
+      assert.ok(command.authoring_state_sexpr.includes(marker));
+      assert.equal(command.body_sexpr, compileProfileCustom("agent", data));
+    }
+    const active = (await f.client.read(localAccess)).agent;
+    const body = [...f.records.values()][0]!.canonical_sexpr;
+    const off = await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 6,
+      enabled: false,
+      data: active.data,
+    });
+    assert.equal(off.enabled, false);
+    const reopened = new RuntimeProfileClient(() => f.config);
+    assert.deepEqual((await reopened.read(localAccess)).agent, {
+      revision: 7,
+      enabled: false,
+      data: active.data,
+    });
+    assert.equal([...f.records.values()][0]!.canonical_sexpr, body);
+    const on = await reopened.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 7,
+      enabled: true,
+      data: active.data,
+    });
+    assert.equal(on.enabled, true);
+    assert.deepEqual(on.data, active.data);
+    assert.equal([...f.records.values()][0]!.canonical_sexpr, body);
+  } finally {
+    await f.close();
+  }
+});
+
+test("Team Human私有Custom登记真实gateway Principal而不建Session，Team Agent不可写", async () => {
   const f = await fixture(true),
     access = { principalId: "alice", actantId: "alice-human" };
   try {
@@ -291,12 +405,12 @@ test("Team Human私有ROM登记真实gateway Principal而不建Session，Team Ag
   }
 });
 
-test("旧Runtime ROM路由404不冒充默认资料已启用，身份撤销挡住迟到响应", async () => {
+test("旧Runtime Custom路由404不冒充默认资料已启用，身份撤销挡住迟到响应", async () => {
   const unsupported = await fixture(false, false);
   try {
     await assert.rejects(
       unsupported.client.read(localAccess),
-      /尚不支持 Profile ROM/,
+      /尚不支持 Profile 自定义上下文/,
     );
   } finally {
     await unsupported.close();
@@ -388,7 +502,7 @@ test("Agent空资料显式on/off精确读回，省略enabled保留按有效字�
       assert.equal(record.enabled, item.expected);
       assert.equal(
         record.canonical_sexpr,
-        compileProfileRom("agent", item.data),
+        compileProfileCustom("agent", item.data),
       );
       assert.equal(
         record.canonical_authoring_state,
@@ -557,7 +671,7 @@ test("字段off作者态保留原文、有效BODY零marker；重新on恢复且�
     );
     const changedData = { ...data, customStyle: marker + "_CHANGED" };
     assert.equal(
-      compileProfileRom("agent", changedData),
+      compileProfileCustom("agent", changedData),
       record.canonical_sexpr,
     );
     await assert.rejects(
@@ -627,7 +741,10 @@ test("Host作者态与有效BODY严格交叉校验，丢作者态回执不冒充
       /作者状态与有效配置不匹配/,
     );
     record.canonical_authoring_state = "(profile-authoring (version 999))";
-    await assert.rejects(f.client.read(localAccess), /Profile ROM|作者状态/);
+    await assert.rejects(
+      f.client.read(localAccess),
+      /Profile 自定义上下文|作者状态/,
+    );
     record.canonical_authoring_state = authoring;
     assert.deepEqual((await f.client.read(localAccess)).agent.data, data);
     const body = record.canonical_sexpr;
@@ -673,12 +790,12 @@ test("读取v1沿用显式值和disabled head且不写回，下一次显式保�
       speechStyle: "natural" as const,
       customStyle: null,
     };
-    const key = JSON.stringify([profileRom.agent.namespace, undefined]);
+    const key = JSON.stringify([profileCustom.agent.namespace, undefined]);
     f.records.set(key, {
       entry_id: "legacy-entry",
-      key: { agent_id: f.agentId, namespace: profileRom.agent.namespace },
+      key: { agent_id: f.agentId, namespace: profileCustom.agent.namespace },
       revision: 7,
-      schema_tag: profileRom.agent.legacySchemaTag,
+      schema_tag: profileCustom.agent.legacySchemaTag,
       canonical_sexpr: `(agent-profile (identity (name 旧名字)) (personality (humor 2) (rigor 3) (warmth 3) (verbosity 2)) (speech (style natural) (custom "")) (contract ${JSON.stringify(profileContract)}))`,
       enabled: false,
       canonical_format_version: 1,
@@ -704,10 +821,10 @@ test("读取v1沿用显式值和disabled head且不写回，下一次显式保�
     });
     assert.equal(saved.enabled, false);
     assert.deepEqual(saved.data, legacy);
-    assert.equal(f.records.get(key)?.schema_tag, profileRom.agent.schemaTag);
+    assert.equal(f.records.get(key)?.schema_tag, profileCustom.agent.schemaTag);
     assert.equal(
       f.records.get(key)?.canonical_sexpr,
-      compileProfileRom("agent", legacy),
+      compileProfileCustom("agent", legacy),
     );
     // Older v2 entries have no authoring state. Read keeps their present custom
     // style enabled without a migration write or a manufactured new revision.
@@ -718,7 +835,7 @@ test("读取v1沿用显式值和disabled head且不写回，下一次显式保�
     f.records.set(key, {
       ...f.records.get(key)!,
       canonical_authoring_state: null,
-      canonical_sexpr: compileProfileRom("agent", legacyV2),
+      canonical_sexpr: compileProfileCustom("agent", legacyV2),
       enabled: true,
     });
     const writesBeforeRead = f.calls.filter(

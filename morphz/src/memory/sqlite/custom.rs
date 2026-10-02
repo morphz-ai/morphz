@@ -1,6 +1,6 @@
 use super::{begin_immediate_sqlite_transaction, SqliteStore};
-use crate::agent_rom::*;
-use crate::memory::AgentRomStore;
+use crate::context::custom::*;
+use crate::memory::CustomStore;
 use chrono::{DateTime, Utc};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -54,9 +54,9 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Error> {
     .fetch_one(&mut *tx)
     .await?;
     if migrated == 0 {
-        // Existing work must remain bound to no ROM, not acquire new settings on recovery.
+        // Existing work must remain bound to no Custom, not acquire new settings on recovery.
         sqlx::query("INSERT INTO thread_rom_mounts(thread_id,agent_id,initiating_principal_id,manifest_hash,compiler_hash,bound_at) SELECT id,agent_id,initiating_principal_id,?,?,? FROM threads")
-            .bind(manifest_hash(&[])).bind(compiler_hash()).bind(Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+            .bind(legacy_manifest_hash(&[])).bind(legacy_compiler_hash()).bind(Utc::now().to_rfc3339()).execute(&mut *tx).await?;
         sqlx::query(
             "INSERT INTO schema_migrations(version,applied_at) VALUES('20261002_01_agent_rom',?)",
         )
@@ -83,10 +83,10 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Error> {
     Ok(())
 }
 
-fn record(row: SqliteRow) -> Result<AgentRomRecord, Error> {
-    Ok(AgentRomRecord {
+fn record(row: SqliteRow) -> Result<Custom, Error> {
+    Ok(Custom {
         entry_id: row.try_get("entry_id")?,
-        key: AgentRomKey {
+        key: CustomKey {
             agent_id: row.try_get("agent_id")?,
             namespace: row.try_get("namespace")?,
             principal_scope: row.try_get("principal_scope")?,
@@ -109,18 +109,18 @@ fn record(row: SqliteRow) -> Result<AgentRomRecord, Error> {
 async fn load_manifest(
     connection: &mut sqlx::SqliteConnection,
     thread_id: &str,
-) -> Result<Option<ThreadRomManifest>, Error> {
+) -> Result<Option<ThreadCustomManifest>, Error> {
     let Some(row) = sqlx::query("SELECT m.*,t.agent_id AS actual_agent,t.initiating_principal_id AS actual_principal FROM thread_rom_mounts m JOIN threads t ON t.id=m.thread_id WHERE m.thread_id=?").bind(thread_id).fetch_optional(&mut *connection).await? else { return Ok(None); };
     let agent_id: String = row.try_get("agent_id")?;
     let principal: Option<String> = row.try_get("initiating_principal_id")?;
     if agent_id != row.try_get::<String, _>("actual_agent")?
         || principal != row.try_get::<Option<String>, _>("actual_principal")?
     {
-        return Err(AgentRomError::Integrity("Thread ROM mount route mismatch".into()).into());
+        return Err(CustomError::Integrity("Thread Custom mount route mismatch".into()).into());
     }
     let entries = sqlx::query(&format!("{SELECT_VERSION} JOIN thread_rom_bindings b ON b.entry_id=v.entry_id AND b.revision=v.revision WHERE b.thread_id=? ORDER BY b.ordinal"))
         .bind(thread_id).fetch_all(&mut *connection).await?.into_iter().map(record).collect::<Result<Vec<_>,_>>()?;
-    let manifest = ThreadRomManifest {
+    let manifest = ThreadCustomManifest {
         thread_id: thread_id.into(),
         agent_id,
         initiating_principal_id: principal,
@@ -132,14 +132,13 @@ async fn load_manifest(
     }
     .without_authoring_state();
     if manifest.entries.is_empty() {
-        if manifest.manifest_hash != manifest_hash(&[]) || manifest.compiler_hash != compiler_hash()
-        {
+        if manifest.manifest_hash != manifest_hash_for_compiler(&[], &manifest.compiler_hash)? {
             return Err(
-                AgentRomError::Integrity("Empty ROM manifest integrity mismatch".into()).into(),
+                CustomError::Integrity("Empty Custom manifest integrity mismatch".into()).into(),
             );
         }
     } else {
-        manifest.context_rom()?;
+        manifest.context_custom()?;
     }
     Ok(Some(manifest))
 }
@@ -154,9 +153,9 @@ async fn validate_all_selections(
         .bind(agent_id)
         .fetch_one(&mut *connection)
         .await?;
-    if total > ROM_MAX_SELECTED_ENTRIES as i64 {
-        return Err(AgentRomError::Invalid(
-            "Agent ROM configuration exceeds 32 entries (including disabled entries)".into(),
+    if total > CUSTOM_MAX_SELECTED_ENTRIES as i64 {
+        return Err(CustomError::Invalid(
+            "Agent Custom configuration exceeds 32 entries (including disabled entries)".into(),
         )
         .into());
     }
@@ -178,11 +177,11 @@ async fn validate_all_selections(
     }
     private.push((0, 0));
     if private.into_iter().any(|p| {
-        p.0 + public.0 > ROM_MAX_SELECTED_ENTRIES as i64
-            || p.1 + public.1 > ROM_MAX_SELECTED_BYTES as i64
+        p.0 + public.0 > CUSTOM_MAX_SELECTED_ENTRIES as i64
+            || p.1 + public.1 > CUSTOM_MAX_SELECTED_BYTES as i64
     }) {
-        return Err(AgentRomError::Invalid(
-            "Public + Human ROM selection exceeds 32 entries or 32 KiB".into(),
+        return Err(CustomError::Invalid(
+            "Public + Human Custom selection exceeds 32 entries or 32 KiB".into(),
         )
         .into());
     }
@@ -190,18 +189,18 @@ async fn validate_all_selections(
 }
 
 #[async_trait::async_trait]
-impl AgentRomStore for SqliteStore {
-    async fn get_agent_rom(&self, key: &AgentRomKey) -> Result<Option<AgentRomRecord>, Error> {
+impl CustomStore for SqliteStore {
+    async fn get_custom(&self, key: &CustomKey) -> Result<Option<Custom>, Error> {
         validate_key(key)?;
         sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=? AND h.namespace=? AND h.principal_scope IS ? AND v.revision=h.current_revision"))
             .bind(&key.agent_id).bind(&key.namespace).bind(&key.principal_scope).fetch_optional(&self.pool).await?.map(record).transpose()
     }
-    async fn list_agent_rom(
+    async fn list_custom(
         &self,
         agent_id: &str,
         principal_scope: Option<&str>,
-    ) -> Result<Vec<AgentRomRecord>, Error> {
-        validate_key(&AgentRomKey {
+    ) -> Result<Vec<Custom>, Error> {
+        validate_key(&CustomKey {
             agent_id: agent_id.into(),
             namespace: "scope".into(),
             principal_scope: principal_scope.map(str::to_owned),
@@ -209,11 +208,11 @@ impl AgentRomStore for SqliteStore {
         sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=? AND h.principal_scope IS ? AND v.revision=h.current_revision ORDER BY h.namespace,h.entry_id"))
             .bind(agent_id).bind(principal_scope).fetch_all(&self.pool).await?.into_iter().map(record).collect()
     }
-    async fn put_agent_rom(
+    async fn put_custom(
         &self,
-        command: PutAgentRomCommand,
+        command: PutCustomCommand,
         actor_authority_id: &str,
-    ) -> Result<AgentRomMutation, Error> {
+    ) -> Result<CustomMutation, Error> {
         let (canonical, content_hash, request_hash) =
             prepare_command(&command, actor_authority_id)?;
         let authoring = canonicalize_authoring_state(command.authoring_state_sexpr.as_deref())?;
@@ -227,9 +226,9 @@ impl AgentRomStore for SqliteStore {
             if row.try_get::<String, _>("actor_authority_id")? != actor_authority_id
                 || row.try_get::<String, _>("request_hash")? != request_hash
             {
-                return Err(AgentRomError::CommandReuse.into());
+                return Err(CustomError::CommandReuse.into());
             }
-            let receipt = AgentRomCommandReceipt {
+            let receipt = CustomCommandReceipt {
                 command_id: command.command_id,
                 actor_authority_id: actor_authority_id.into(),
                 request_hash,
@@ -251,7 +250,7 @@ impl AgentRomStore for SqliteStore {
                 .await?,
             )?;
             tx.commit().await?;
-            return Ok(AgentRomMutation::Committed {
+            return Ok(CustomMutation::Committed {
                 record: version,
                 receipt,
                 duplicate: true,
@@ -263,12 +262,12 @@ impl AgentRomStore for SqliteStore {
             .await?
             == 0
         {
-            return Ok(AgentRomMutation::NotFound);
+            return Ok(CustomMutation::NotFound);
         }
         let current=sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=? AND h.namespace=? AND h.principal_scope IS ? AND v.revision=h.current_revision"))
             .bind(&command.key.agent_id).bind(&command.key.namespace).bind(&command.key.principal_scope).fetch_optional(&mut *tx).await?.map(record).transpose()?;
         if current.as_ref().map_or(0, |v| v.revision) != command.expected_revision {
-            return Ok(AgentRomMutation::Conflict { current });
+            return Ok(CustomMutation::Conflict { current });
         }
         let now = Utc::now();
         let timestamp = now.to_rfc3339();
@@ -283,31 +282,30 @@ impl AgentRomStore for SqliteStore {
         } else {
             let updated=sqlx::query("UPDATE agent_rom_heads SET current_revision=?,updated_at=? WHERE entry_id=? AND current_revision=?").bind(revision as i64).bind(&timestamp).bind(&entry_id).bind(command.expected_revision as i64).execute(&mut *tx).await?;
             if updated.rows_affected() != 1 {
-                return Err(AgentRomError::Integrity(
-                    "ROM CAS changed while write lock held".into(),
-                )
-                .into());
+                return Err(
+                    CustomError::Integrity("Custom CAS changed while write lock held".into()).into(),
+                );
             }
         }
         sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_authoring_state,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
-            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(&authoring).bind(ROM_FORMAT_VERSION as i64).bind(&content_hash).bind(command.enabled).bind(actor_authority_id).bind(&timestamp).execute(&mut *tx).await?;
+            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(&authoring).bind(CUSTOM_FORMAT_VERSION as i64).bind(&content_hash).bind(command.enabled).bind(actor_authority_id).bind(&timestamp).execute(&mut *tx).await?;
         validate_all_selections(&mut tx, &command.key.agent_id).await?;
         sqlx::query("INSERT INTO agent_rom_command_receipts(command_id,actor_authority_id,request_hash,entry_id,expected_revision,committed_revision,committed_at) VALUES(?,?,?,?,?,?,?)")
             .bind(&command.command_id).bind(actor_authority_id).bind(&request_hash).bind(&entry_id).bind(command.expected_revision as i64).bind(revision as i64).bind(&timestamp).execute(&mut *tx).await?;
-        let version = AgentRomRecord {
+        let version = Custom {
             entry_id: entry_id.clone(),
             key: command.key,
             revision,
             schema_tag: command.schema_tag,
             canonical_sexpr: canonical,
             canonical_authoring_state: authoring,
-            canonical_format_version: ROM_FORMAT_VERSION,
+            canonical_format_version: CUSTOM_FORMAT_VERSION,
             content_hash,
             enabled: command.enabled,
             created_by: actor_authority_id.into(),
             created_at: now,
         };
-        let receipt = AgentRomCommandReceipt {
+        let receipt = CustomCommandReceipt {
             command_id: command.command_id,
             actor_authority_id: actor_authority_id.into(),
             request_hash,
@@ -317,13 +315,13 @@ impl AgentRomStore for SqliteStore {
             committed_at: now,
         };
         tx.commit().await?;
-        Ok(AgentRomMutation::Committed {
+        Ok(CustomMutation::Committed {
             record: version,
             receipt,
             duplicate: false,
         })
     }
-    async fn bind_thread_rom(&self, thread_id: &str) -> Result<ThreadRomManifest, Error> {
+    async fn bind_thread_custom(&self, thread_id: &str) -> Result<ThreadCustomManifest, Error> {
         let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         if let Some(manifest) = load_manifest(&mut tx, thread_id).await? {
             tx.commit().await?;
@@ -333,16 +331,14 @@ impl AgentRomStore for SqliteStore {
             .bind(thread_id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or_else(|| {
-                AgentRomError::Invalid("Cannot bind ROM: Thread does not exist".into())
-            })?;
+            .ok_or_else(|| CustomError::Invalid("Cannot bind Custom: Thread does not exist".into()))?;
         let agent_id: String = row.try_get("agent_id")?;
         let principal: Option<String> = row.try_get("initiating_principal_id")?;
         let mut entries=sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=? AND (h.principal_scope IS NULL OR h.principal_scope=?) AND v.revision=h.current_revision AND v.enabled=1 ORDER BY h.namespace,h.principal_scope,h.entry_id"))
             .bind(&agent_id).bind(&principal).fetch_all(&mut *tx).await?.into_iter().map(record).collect::<Result<Vec<_>,_>>()?;
-        retain_new_thread_effective_rom(&mut entries);
+        retain_new_thread_effective_custom(&mut entries);
         validate_selection(&entries)?;
-        let manifest = ThreadRomManifest {
+        let manifest = ThreadCustomManifest {
             thread_id: thread_id.into(),
             agent_id,
             initiating_principal_id: principal,
@@ -357,12 +353,264 @@ impl AgentRomStore for SqliteStore {
         for (ordinal, entry) in manifest.entries.iter().enumerate() {
             sqlx::query("INSERT INTO thread_rom_bindings(thread_id,entry_id,revision,ordinal) VALUES(?,?,?,?)").bind(thread_id).bind(&entry.entry_id).bind(entry.revision as i64).bind(ordinal as i64).execute(&mut *tx).await?;
         }
-        manifest.context_rom()?;
+        manifest.context_custom()?;
         tx.commit().await?;
         Ok(manifest)
     }
-    async fn get_thread_rom(&self, thread_id: &str) -> Result<Option<ThreadRomManifest>, Error> {
+    async fn get_thread_custom(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadCustomManifest>, Error> {
         let mut connection = self.pool.acquire().await?;
         load_manifest(&mut connection, thread_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{
+        NewAgent, NewCognitiveContext, NewSession, NewThread, SessionDirectoryStore,
+        SessionMountKind, ThreadKind, ThreadStore, ThreadSupervision,
+    };
+
+    async fn create_thread(store: &SqliteStore, id: &str) {
+        store
+            .ensure_thread(NewThread {
+                model_alias: None,
+                reasoning_effort: None,
+                id: id.into(),
+                agent_id: "custom-agent".into(),
+                context_id: "custom-context".into(),
+                session_id: "custom-session".into(),
+                initiating_principal_id: None,
+                root_turn_id: format!("{id}-root"),
+                kind: ThreadKind::Execution,
+                executor_kind: "runtime".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn custom_sqlite_reopens_frozen_legacy_bytes_and_original_receipts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("custom-compat.sqlite");
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "custom-agent".into(),
+                    title: "Custom".into(),
+                    root_context_id: "custom-context".into(),
+                },
+                NewCognitiveContext {
+                    id: "custom-context".into(),
+                    agent_id: "custom-agent".into(),
+                    title: "Context".into(),
+                },
+                NewSession {
+                    id: "custom-session".into(),
+                    agent_id: "custom-agent".into(),
+                    context_id: "custom-context".into(),
+                    parent_session_id: None,
+                    title: "Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let original = PutCustomCommand {
+            command_id: "legacy-command".into(),
+            expected_revision: 0,
+            key: CustomKey {
+                agent_id: "custom-agent".into(),
+                namespace: "example.profile".into(),
+                principal_scope: None,
+            },
+            schema_tag: "profile/v1".into(),
+            body_sexpr: "(profile (name Echo))".into(),
+            authoring_state_sexpr: Some("(editor (inactive PRIVATE_RETAINED_STYLE))".into()),
+            enabled: true,
+        };
+        let (first, receipt) = match store.put_custom(original.clone(), "host").await.unwrap() {
+            CustomMutation::Committed {
+                record,
+                receipt,
+                duplicate: false,
+            } => (record, receipt),
+            other => panic!("Expected first commit: {other:?}"),
+        };
+        create_thread(&store, "legacy-thread").await;
+        let selected = store.bind_thread_custom("legacy-thread").await.unwrap();
+        // Install an exact historical fixture; no production migration rewrites a mount.
+        sqlx::query(
+            "UPDATE thread_rom_mounts SET compiler_hash=?,manifest_hash=? WHERE thread_id=?",
+        )
+        .bind(legacy_compiler_hash())
+        .bind(legacy_manifest_hash(&selected.entries))
+        .bind("legacy-thread")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let legacy = store
+            .get_thread_custom("legacy-thread")
+            .await
+            .unwrap()
+            .unwrap();
+        let legacy_bytes = legacy.context_custom().unwrap().unwrap().to_string();
+        assert_eq!(legacy_bytes, "(agent-rom (entry (namespace example.profile) (scope agent) (revision 1) (schema profile/v1) (body (profile (name Echo)))))");
+        assert_eq!(legacy.system_rule().unwrap(), LEGACY_ROM_SYSTEM_RULE);
+        assert_eq!(
+            legacy.manifest_hash,
+            crate::agent_rom::manifest_hash(&legacy.entries)
+        );
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("PRIVATE_RETAINED_STYLE"));
+
+        let mut replacement = original.clone();
+        replacement.command_id = "custom-command".into();
+        replacement.expected_revision = 1;
+        replacement.body_sexpr = "(profile (name Nora))".into();
+        assert!(matches!(
+            store.put_custom(replacement.clone(), "host").await.unwrap(),
+            CustomMutation::Committed {
+                duplicate: false,
+                ..
+            }
+        ));
+        match store.put_agent_rom(original.clone(), "host").await.unwrap() {
+            CustomMutation::Committed {
+                record,
+                receipt: replay,
+                duplicate: true,
+            } => {
+                assert_eq!(record, first);
+                assert_eq!(replay, receipt);
+            }
+            other => panic!("Expected original receipt replay: {other:?}"),
+        }
+        assert_eq!(
+            store
+                .get_custom(&original.key)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2
+        );
+        assert!(store
+            .put_custom(original.clone(), "different-host")
+            .await
+            .is_err());
+        create_thread(&store, "custom-thread").await;
+        let current = store.bind_thread_custom("custom-thread").await.unwrap();
+        let current_bytes = current.context_custom().unwrap().unwrap().to_string();
+        assert!(current_bytes.starts_with("(custom "));
+        assert!(current_bytes.contains("(name Nora)"));
+        assert_eq!(current.system_rule().unwrap(), CUSTOM_SYSTEM_RULE);
+        assert!(!serde_json::to_string(&current)
+            .unwrap()
+            .contains("PRIVATE_RETAINED_STYLE"));
+
+        replacement.command_id = "disabled-command".into();
+        replacement.expected_revision = 2;
+        replacement.enabled = false;
+        store.put_custom(replacement, "host").await.unwrap();
+        create_thread(&store, "empty-thread").await;
+        let empty = store.bind_thread_custom("empty-thread").await.unwrap();
+        assert_eq!(empty.context_custom().unwrap(), None);
+        create_thread(&store, "legacy-empty-thread").await;
+        store
+            .bind_thread_custom("legacy-empty-thread")
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE thread_rom_mounts SET compiler_hash=?,manifest_hash=? WHERE thread_id=?",
+        )
+        .bind(legacy_compiler_hash())
+        .bind(legacy_manifest_hash(&[]))
+        .bind("legacy-empty-thread")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store.pool.close().await;
+        drop(store);
+
+        let reopened = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(
+            reopened
+                .bind_thread_custom("legacy-thread")
+                .await
+                .unwrap()
+                .context_custom()
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            legacy_bytes
+        );
+        assert_eq!(
+            reopened
+                .bind_thread_custom("custom-thread")
+                .await
+                .unwrap()
+                .context_custom()
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            current_bytes
+        );
+        for id in ["empty-thread", "legacy-empty-thread"] {
+            assert_eq!(
+                reopened
+                    .bind_thread_custom(id)
+                    .await
+                    .unwrap()
+                    .context_custom()
+                    .unwrap(),
+                None
+            );
+        }
+        match reopened.put_custom(original, "host").await.unwrap() {
+            CustomMutation::Committed {
+                record,
+                receipt: replay,
+                duplicate: true,
+            } => {
+                assert_eq!(record, first);
+                assert_eq!(replay, receipt);
+            }
+            other => panic!("Expected restart receipt replay: {other:?}"),
+        }
+        for (id, valid) in [
+            ("legacy-thread", legacy),
+            ("custom-thread", current),
+            ("empty-thread", empty),
+        ] {
+            sqlx::query("UPDATE thread_rom_mounts SET manifest_hash='tampered' WHERE thread_id=?")
+                .bind(id)
+                .execute(&reopened.pool)
+                .await
+                .unwrap();
+            assert!(reopened.get_thread_custom(id).await.is_err());
+            sqlx::query("UPDATE thread_rom_mounts SET manifest_hash=?,compiler_hash='unknown' WHERE thread_id=?")
+                .bind(&valid.manifest_hash).bind(id).execute(&reopened.pool).await.unwrap();
+            assert!(reopened.get_thread_custom(id).await.is_err());
+            sqlx::query("UPDATE thread_rom_mounts SET compiler_hash=? WHERE thread_id=?")
+                .bind(&valid.compiler_hash)
+                .bind(id)
+                .execute(&reopened.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened.get_thread_custom(id).await.unwrap().unwrap(),
+                valid
+            );
+        }
+        reopened.pool.close().await;
     }
 }

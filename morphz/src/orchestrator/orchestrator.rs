@@ -2865,13 +2865,13 @@ fn prompt_cache_transport_contract_digest(
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
-fn prompt_cache_transport_contract_digest_with_rom(
+fn prompt_cache_transport_contract_digest_with_custom(
     model_alias: &str,
     reasoning_effort: &str,
     phase: &str,
     system_message: &Message,
     tools: &[ToolDefinition],
-    rom: Option<&crate::agent_rom::ThreadRomManifest>,
+    rom: Option<&crate::context::ThreadCustomManifest>,
 ) -> String {
     let legacy = prompt_cache_transport_contract_digest(
         model_alias,
@@ -2884,13 +2884,30 @@ fn prompt_cache_transport_contract_digest_with_rom(
         return legacy;
     };
     // The structured transport can substitute an older Context message. A
-    // stable System/tools contract alone must never authorize a stale ROM seed.
-    let encoded = serde_json::to_vec(&json!({
-        "base": legacy,
-        "rom_manifest": rom.manifest_hash,
-        "rom_compiler": rom.compiler_hash,
-        "rom_versions": rom.entries.iter().map(|e| (&e.entry_id,e.revision,&e.content_hash)).collect::<Vec<_>>(),
-    })).expect("ROM cache contract serializes");
+    // stable System/tools contract alone must never authorize a stale Custom seed.
+    // Existing Threads retain their exact legacy transport contract. Renaming
+    // current concepts must not invalidate an already-persisted cache seed.
+    let refs = rom
+        .entries
+        .iter()
+        .map(|e| (&e.entry_id, e.revision, &e.content_hash))
+        .collect::<Vec<_>>();
+    let payload = if rom.compiler_hash == crate::context::legacy_compiler_hash() {
+        json!({
+            "base": legacy,
+            "rom_manifest": rom.manifest_hash,
+            "rom_compiler": rom.compiler_hash,
+            "rom_versions": refs,
+        })
+    } else {
+        json!({
+            "base": legacy,
+            "custom_manifest": rom.manifest_hash,
+            "custom_compiler": rom.compiler_hash,
+            "custom_versions": refs,
+        })
+    };
+    let encoded = serde_json::to_vec(&payload).expect("Custom cache contract serializes");
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
@@ -11587,7 +11604,7 @@ impl Orchestrator {
         let rom = if let Some(store) = &self.plan_store {
             Some(
                 store
-                    .bind_thread_rom(&stable_thread_id(&activation.root_turn_id))
+                    .bind_thread_custom(&stable_thread_id(&activation.root_turn_id))
                     .await?,
             )
         } else {
@@ -11618,7 +11635,7 @@ impl Orchestrator {
                 .await?
         };
         if let Some(rom) = rom {
-            self.context_engine.mount_thread_rom(&mut view, rom)?;
+            self.context_engine.mount_thread_custom(&mut view, rom)?;
         }
         Ok(view)
     }
@@ -12445,10 +12462,10 @@ impl Orchestrator {
         );
         let prompt_prepare_started = Instant::now();
         let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
-        let stable_system_prompt = if context.agent_rom.is_some() {
+        let stable_system_prompt = if let Some(custom) = context.custom.as_ref() {
             std::borrow::Cow::Owned(format!(
                 "{stable_system_prompt}\n\n{}",
-                crate::agent_rom::ROM_SYSTEM_RULE
+                crate::context::system_rule_for_compiler(&custom.compiler_hash)?
             ))
         } else {
             std::borrow::Cow::Borrowed(stable_system_prompt)
@@ -12976,13 +12993,13 @@ impl Orchestrator {
                 initial_request_policy.model_alias.as_str(),
             ));
         if transport_shape_is_safe {
-            let contract_digest = prompt_cache_transport_contract_digest_with_rom(
+            let contract_digest = prompt_cache_transport_contract_digest_with_custom(
                 &initial_request_policy.model_alias,
                 &initial_request_policy.reasoning_effort,
                 &effective_phase,
                 &messages[0],
                 &tools,
-                context.agent_rom.as_ref(),
+                context.custom.as_ref(),
             );
             let current_context_message = messages[1].clone();
             let current_seed = prompt_cache_transport_seed(
@@ -16802,8 +16819,13 @@ impl Orchestrator {
                 json!(self.orchestrator_config.model_attempt_hard_timeout_secs),
             ),
         ];
-        if let Some(rom) = &context.agent_rom {
-            attributes.push(("agent_rom".into(), json!({
+        if let Some(rom) = &context.custom {
+            let attribute_key = if rom.compiler_hash == crate::context::legacy_compiler_hash() {
+                "agent_rom"
+            } else {
+                "custom"
+            };
+            attributes.push((attribute_key.into(), json!({
                 "thread_id":rom.thread_id,
                 "manifest_hash":rom.manifest_hash,
                 "compiler_hash":rom.compiler_hash,
@@ -24446,8 +24468,9 @@ mod tests {
     }
 
     #[test]
-    fn rom_cache_contract_preserves_empty_and_fences_versions_compiler_and_private_scope() {
-        use crate::agent_rom::*;
+    fn custom_cache_contract_preserves_empty_and_fences_versions_compiler_and_private_scope() {
+        use crate::context::*;
+        use sha2::{Digest, Sha256};
         let system = Message {
             role: "system".into(),
             content: "unchanged system".into(),
@@ -24458,7 +24481,7 @@ mod tests {
         let baseline =
             super::prompt_cache_transport_contract_digest("m", "low", "execution", &system, &[]);
         assert_eq!(
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",
@@ -24468,7 +24491,7 @@ mod tests {
             ),
             baseline
         );
-        let mut manifest = ThreadRomManifest {
+        let mut manifest = ThreadCustomManifest {
             thread_id: "t".into(),
             agent_id: "a".into(),
             initiating_principal_id: Some("human-a".into()),
@@ -24478,7 +24501,7 @@ mod tests {
             entries: vec![],
         };
         assert_eq!(
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",
@@ -24488,10 +24511,10 @@ mod tests {
             ),
             baseline
         );
-        let command = PutAgentRomCommand {
+        let command = PutCustomCommand {
             command_id: "c".into(),
             expected_revision: 0,
-            key: AgentRomKey {
+            key: CustomKey {
                 agent_id: "a".into(),
                 namespace: "example.profile".into(),
                 principal_scope: Some("human-a".into()),
@@ -24502,21 +24525,63 @@ mod tests {
             enabled: true,
         };
         let (canonical_sexpr, content_hash, _) = prepare_command(&command, "host").unwrap();
-        manifest.entries.push(AgentRomRecord {
+        manifest.entries.push(Custom {
             entry_id: stable_entry_id(&command.key),
             key: command.key,
             revision: 1,
             schema_tag: command.schema_tag,
             canonical_sexpr,
             canonical_authoring_state: None,
-            canonical_format_version: ROM_FORMAT_VERSION,
+            canonical_format_version: CUSTOM_FORMAT_VERSION,
             content_hash,
             enabled: true,
             created_by: "host".into(),
             created_at: Utc::now(),
         });
         manifest.manifest_hash = manifest_hash(&manifest.entries);
-        let with_rom = super::prompt_cache_transport_contract_digest_with_rom(
+        // Frozen pre-rename bindings preserve the original cache contract,
+        // compiler rule and model-facing node, not merely equivalent meaning.
+        let mut historical = manifest.clone();
+        historical.compiler_hash = legacy_compiler_hash();
+        historical.manifest_hash = legacy_manifest_hash(&historical.entries);
+        let expected_legacy_payload = serde_json::to_vec(&json!({
+            "base": baseline,
+            "rom_manifest": historical.manifest_hash,
+            "rom_compiler": historical.compiler_hash,
+            "rom_versions": historical.entries.iter().map(|e| (&e.entry_id,e.revision,&e.content_hash)).collect::<Vec<_>>(),
+        })).unwrap();
+        assert_eq!(
+            super::prompt_cache_transport_contract_digest_with_custom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&historical)
+            ),
+            format!("sha256:{:x}", Sha256::digest(expected_legacy_payload)),
+        );
+        assert_eq!(
+            historical.system_rule().unwrap(),
+            crate::agent_rom::ROM_SYSTEM_RULE
+        );
+        assert_eq!(
+            historical.context_custom().unwrap(),
+            historical.context_rom().unwrap(),
+        );
+        assert!(historical
+            .context_custom()
+            .unwrap()
+            .unwrap()
+            .to_string()
+            .starts_with("(agent-rom "));
+        assert!(manifest
+            .context_custom()
+            .unwrap()
+            .unwrap()
+            .to_string()
+            .starts_with("(custom "));
+        let with_rom = super::prompt_cache_transport_contract_digest_with_custom(
             "m",
             "low",
             "execution",
@@ -24530,7 +24595,7 @@ mod tests {
         assert_eq!(manifest.manifest_hash, manifest_hash(&manifest.entries));
         assert_eq!(
             with_rom,
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",
@@ -24545,7 +24610,7 @@ mod tests {
         manifest.manifest_hash = manifest_hash(&manifest.entries);
         assert_ne!(
             with_rom,
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",
@@ -24559,7 +24624,7 @@ mod tests {
         manifest.compiler_hash = "different-compiler".into();
         assert_ne!(
             with_rom,
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",
@@ -24573,7 +24638,7 @@ mod tests {
         manifest.manifest_hash = manifest_hash(&manifest.entries);
         assert_ne!(
             with_rom,
-            super::prompt_cache_transport_contract_digest_with_rom(
+            super::prompt_cache_transport_contract_digest_with_custom(
                 "m",
                 "low",
                 "execution",

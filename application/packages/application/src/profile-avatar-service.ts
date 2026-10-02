@@ -48,7 +48,7 @@ export function profileAvatarArtifactId(
   );
 }
 /** Bytes are published before the Platform pointer CAS. Failed or ambiguous
- * binds never erase bytes or replace a newer head. ROM is a separate authority. */
+ * binds never erase bytes or replace a newer head. Custom is a separate authority. */
 export class ProfileAvatarService {
   private constructor(
     private readonly store: ManagedArtifactStore,

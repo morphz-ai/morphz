@@ -41,53 +41,86 @@ export interface ContextRecord {
   [key: string]: unknown;
 }
 
-export interface AgentRomKey {
-  agent_id: string;
-  namespace: string;
-  principal_scope?: string;
+/** Structured Context components; this namespace contains types, not a client instance. */
+export namespace context {
+  export interface CustomKey {
+    agent_id: string;
+    namespace: string;
+    principal_scope?: string;
+  }
+  export interface PutCustomCommand {
+    command_id: string;
+    expected_revision: number;
+    key: CustomKey;
+    schema_tag: string;
+    body_sexpr: string;
+    /** Trusted editor state, stored atomically but never projected to the model. */
+    authoring_state_sexpr?: string;
+    enabled: boolean;
+  }
+  export interface Custom {
+    entry_id: string;
+    key: CustomKey;
+    revision: number;
+    schema_tag: string;
+    canonical_sexpr: string;
+    /** Operator-only authoring state; omitted from Thread manifests. */
+    canonical_authoring_state?: string;
+    canonical_format_version: number;
+    content_hash: string;
+    enabled: boolean;
+    created_by: string;
+    created_at: string;
+  }
+  export interface CustomCommandReceipt {
+    command_id: string;
+    actor_authority_id: string;
+    request_hash: string;
+    entry_id: string;
+    expected_revision: number;
+    committed_revision: number;
+    committed_at: string;
+  }
+  export type CustomMutation =
+    | {
+        status: "committed";
+        record: Custom;
+        receipt: CustomCommandReceipt;
+        duplicate: boolean;
+      }
+    | { status: "conflict"; current: Custom | null }
+    | { status: "not_found" };
+  export interface ThreadCustomManifest {
+    thread_id: string;
+    agent_id: string;
+    initiating_principal_id: string | null;
+    manifest_hash: string;
+    compiler_hash: string;
+    bound_at: string;
+    entries: Custom[];
+  }
 }
-export interface PutAgentRomCommand {
-  command_id: string;
-  expected_revision: number;
-  key: AgentRomKey;
-  schema_tag: string;
-  body_sexpr: string;
-  enabled: boolean;
-}
-export interface AgentRomRecord {
-  entry_id: string;
-  key: AgentRomKey;
-  revision: number;
-  schema_tag: string;
-  canonical_sexpr: string;
-  canonical_format_version: number;
-  content_hash: string;
-  enabled: boolean;
-  created_by: string;
-  created_at: string;
-}
-export interface AgentRomCommandReceipt {
-  command_id: string;
-  actor_authority_id: string;
-  request_hash: string;
-  entry_id: string;
-  expected_revision: number;
-  committed_revision: number;
-  committed_at: string;
-}
-export type AgentRomMutation =
-  | { status: "committed"; record: AgentRomRecord; receipt: AgentRomCommandReceipt; duplicate: boolean }
-  | { status: "conflict"; current: AgentRomRecord | null }
-  | { status: "not_found" };
-export interface ThreadRomManifest {
-  thread_id: string;
-  agent_id: string;
-  initiating_principal_id: string | null;
-  manifest_hash: string;
-  compiler_hash: string;
-  bound_at: string;
-  entries: AgentRomRecord[];
-}
+
+// Convenient top-level aliases of the canonical Context type contract.
+export type Custom = context.Custom;
+export type CustomKey = context.CustomKey;
+export type PutCustomCommand = context.PutCustomCommand;
+export type CustomCommandReceipt = context.CustomCommandReceipt;
+export type CustomMutation = context.CustomMutation;
+export type ThreadCustomManifest = context.ThreadCustomManifest;
+
+/** @deprecated Use context.CustomKey. */
+export type AgentRomKey = context.CustomKey;
+/** @deprecated Use context.PutCustomCommand. */
+export type PutAgentRomCommand = context.PutCustomCommand;
+/** @deprecated Use context.Custom. */
+export type AgentRomRecord = context.Custom;
+/** @deprecated Use context.CustomCommandReceipt. */
+export type AgentRomCommandReceipt = context.CustomCommandReceipt;
+/** @deprecated Use context.CustomMutation. */
+export type AgentRomMutation = context.CustomMutation;
+/** @deprecated Use context.ThreadCustomManifest. */
+export type ThreadRomManifest = context.ThreadCustomManifest;
 
 export interface UpdateSessionInput {
   title?: string;
@@ -226,30 +259,102 @@ export class MorphzClient {
     return this.call("/api/principal/self",principal,{method:"POST"});
   }
 
-  /** Operator/trusted Host only. A principal Header is not ROM write authority. */
-  async listAgentRomAsOperator(agentId: string, principalScope?: string): Promise<AgentRomRecord[]> {
-    const query = principalScope === undefined ? "" : `?${new URLSearchParams({principal_scope: principalScope})}`;
-    const result = await this.call<{entries: AgentRomRecord[]}>(`/api/agents/${encodeURIComponent(agentId)}/rom${query}`, undefined);
-    return result.entries;
+  /** Operator/trusted Host only. A Principal header is not Custom write authority. */
+  async listCustomAsOperator(
+    agentId: string,
+    principalScope?: string,
+  ): Promise<context.Custom[]> {
+    return this.listCustomAt("custom", agentId, principalScope);
   }
 
-  getAgentRomAsOperator(key: AgentRomKey): Promise<AgentRomRecord> {
-    return this.call(this.agentRomPath(key), undefined);
+  getCustomAsOperator(key: context.CustomKey): Promise<context.Custom> {
+    return this.call(this.customPath("custom", key), undefined);
   }
 
   /** Conflict is a 409 MorphzHttpError; retries must reuse the same command_id. */
-  putAgentRomAsOperator(command: PutAgentRomCommand): Promise<AgentRomMutation> {
-    if (!Number.isSafeInteger(command.expected_revision) || command.expected_revision < 0) throw new Error("expected_revision must be a nonnegative safe integer");
-    return this.call(this.agentRomPath(command.key), undefined, {method:"PUT",body:JSON.stringify(command)});
+  putCustomAsOperator(
+    command: context.PutCustomCommand,
+  ): Promise<context.CustomMutation> {
+    return this.putCustomAt("custom", command);
   }
 
+  threadCustomAsOperator(
+    threadId: string,
+  ): Promise<context.ThreadCustomManifest> {
+    return this.call(
+      `/api/threads/${encodeURIComponent(threadId)}/custom`,
+      undefined,
+    );
+  }
+
+  /** @deprecated Use listCustomAsOperator. This compatibility method requests /rom. */
+  async listAgentRomAsOperator(
+    agentId: string,
+    principalScope?: string,
+  ): Promise<AgentRomRecord[]> {
+    return this.listCustomAt("rom", agentId, principalScope);
+  }
+
+  /** @deprecated Use getCustomAsOperator. This compatibility method requests /rom. */
+  getAgentRomAsOperator(key: AgentRomKey): Promise<AgentRomRecord> {
+    return this.call(this.customPath("rom", key), undefined);
+  }
+
+  /** @deprecated Use putCustomAsOperator. This compatibility method requests /rom. */
+  putAgentRomAsOperator(
+    command: PutAgentRomCommand,
+  ): Promise<AgentRomMutation> {
+    return this.putCustomAt("rom", command);
+  }
+
+  /** @deprecated Use threadCustomAsOperator. This compatibility method requests /rom. */
   threadRomAsOperator(threadId: string): Promise<ThreadRomManifest> {
-    return this.call(`/api/threads/${encodeURIComponent(threadId)}/rom`, undefined);
+    return this.call(
+      `/api/threads/${encodeURIComponent(threadId)}/rom`,
+      undefined,
+    );
   }
 
-  private agentRomPath(key: AgentRomKey): string {
-    const query = key.principal_scope === undefined ? "" : `?${new URLSearchParams({principal_scope:key.principal_scope})}`;
-    return `/api/agents/${encodeURIComponent(key.agent_id)}/rom/${encodeURIComponent(key.namespace)}${query}`;
+  private async listCustomAt(
+    resource: "custom" | "rom",
+    agentId: string,
+    principalScope?: string,
+  ): Promise<context.Custom[]> {
+    const query =
+      principalScope === undefined
+        ? ""
+        : `?${new URLSearchParams({ principal_scope: principalScope })}`;
+    const result = await this.call<{ entries: context.Custom[] }>(
+      `/api/agents/${encodeURIComponent(agentId)}/${resource}${query}`,
+      undefined,
+    );
+    return result.entries;
+  }
+
+  private putCustomAt(
+    resource: "custom" | "rom",
+    command: context.PutCustomCommand,
+  ): Promise<context.CustomMutation> {
+    if (
+      !Number.isSafeInteger(command.expected_revision) ||
+      command.expected_revision < 0
+    )
+      throw new Error("expected_revision must be a nonnegative safe integer");
+    return this.call(this.customPath(resource, command.key), undefined, {
+      method: "PUT",
+      body: JSON.stringify(command),
+    });
+  }
+
+  private customPath(
+    resource: "custom" | "rom",
+    key: context.CustomKey,
+  ): string {
+    const query =
+      key.principal_scope === undefined
+        ? ""
+        : `?${new URLSearchParams({ principal_scope: key.principal_scope })}`;
+    return `/api/agents/${encodeURIComponent(key.agent_id)}/${resource}/${encodeURIComponent(key.namespace)}${query}`;
   }
 
   async createSession(

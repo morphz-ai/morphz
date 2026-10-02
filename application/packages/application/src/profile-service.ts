@@ -12,7 +12,7 @@ import type { PlatformActor, PlatformStore } from "../../platform/src/store.js";
 import type { ProfileAvatarService } from "./profile-avatar-service.js";
 import type { RuntimeBridge } from "./runtime.js";
 
-/** Names and preferences have exactly one writable authority: Runtime ROM.
+/** Names and preferences have exactly one writable authority: Runtime Custom.
  * Platform only owns independent, versioned avatar presentation. */
 export class ProfileService {
   constructor(
@@ -34,7 +34,7 @@ export class ProfileService {
           ? owner.actor.initiatingHumanActantId!
           : owner.actor.actantId,
     };
-    // Existing identity presentation remains separate from optional ROM fields.
+    // Existing identity presentation remains separate from optional Custom fields.
     // Merely viewing/saving an unset Profile must not copy identity defaults into it.
     let profile:
       Awaited<ReturnType<RuntimeBridge["profiles"]["read"]>> | undefined;
@@ -46,7 +46,7 @@ export class ProfileService {
         active();
         if (error instanceof DomainError && error.code === "forbidden")
           throw error;
-        // Unsupported/offline ROM is a visible unavailable state, not fake data.
+        // Unsupported/offline Custom is a visible unavailable state, not fake data.
       }
     }
     const humanAvatar = await this.platform.readProfileAvatar(actor, "human");
@@ -95,14 +95,14 @@ export class ProfileService {
       active,
     );
   }
-  /** Agent requests are data, never an implicit Human confirmation or ROM put.
+  /** Agent requests are data, never an implicit Human confirmation or Custom put.
    * No pending draft is represented as a saved profile or durable receipt. */
   async agentOperation(actor: PlatformActor, raw: unknown) {
     const request = profileToolSchema.parse(raw);
     if (request.action === "read") {
       const snapshot = await this.read(actor);
       // The Human/operator may retain inactive authoring text, but an Agent
-      // tool result must not reintroduce it after the ROM compiler omitted it.
+      // tool result must not reintroduce it after the Custom compiler omitted it.
       if (
         !snapshot.agent.enabled ||
         !profileCustomStyleEnabled(snapshot.agent.data)

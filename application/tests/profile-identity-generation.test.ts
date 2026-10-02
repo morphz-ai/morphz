@@ -36,7 +36,7 @@ type FixtureWindow = Window &
   };
 
 // Actual React hook + actual applicationCall module; only the bridge's scoped
-// authority/store is a fixture. This is not an additional real Host/ROM test.
+// authority/store is a fixture. This is not an additional real Host/Custom test.
 // Its positive controls parse commands, enforce CAS, persist the fixture head
 // and return matching receipts/read-backs; unsupported calls never succeed.
 const fixtureModule = `

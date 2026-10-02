@@ -1,17 +1,17 @@
-//! Isolated real PostgreSQL upgrade and independent-store concurrency checks.
-use morphz::agent_rom::{AgentRomKey, AgentRomMutation, PutAgentRomCommand};
+//! Isolated real PostgreSQL Custom upgrade and independent-store concurrency checks.
+use morphz::context::{CustomKey, CustomMutation, PutCustomCommand};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
-    AgentRomStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread,
+    CustomStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread,
     SessionDirectoryStore, SessionMountKind, ThreadKind, ThreadStore, ThreadSupervision,
 };
 use std::sync::Arc;
 
-fn command(id: &str, revision: u64, name: &str) -> PutAgentRomCommand {
-    PutAgentRomCommand {
+fn command(id: &str, revision: u64, name: &str) -> PutCustomCommand {
+    PutCustomCommand {
         command_id: id.into(),
         expected_revision: revision,
-        key: AgentRomKey {
+        key: CustomKey {
             agent_id: "agent".into(),
             namespace: "example.profile".into(),
             principal_scope: None,
@@ -101,7 +101,7 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
         .unwrap();
     thread(&store, "old").await;
     drop(store);
-    // Reconstruct only the pre-ROM boundary; all existing identity/work rows remain.
+    // Reconstruct only the pre-Custom boundary; all existing identity/work rows remain.
     let mut tx = pool.begin().await.unwrap();
     for table in [
         "thread_rom_bindings",
@@ -121,53 +121,56 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
         .unwrap();
     tx.commit().await.unwrap();
     let first = Arc::new(PostgresStore::new(&scoped, 4).await.unwrap());
-    let legacy = first.get_thread_rom("old").await.unwrap().unwrap();
+    let legacy = first.get_thread_custom("old").await.unwrap().unwrap();
     assert!(legacy.entries.is_empty());
-    assert!(legacy.context_rom().unwrap().is_none());
+    assert!(legacy.context_custom().unwrap().is_none());
     assert!(matches!(
         first
-            .put_agent_rom(command("create", 0, "Nora"), "host")
+            .put_custom(command("create", 0, "Nora"), "host")
             .await
             .unwrap(),
-        AgentRomMutation::Committed { .. }
+        CustomMutation::Committed { .. }
     ));
     thread(&first, "new").await;
     let second = Arc::new(PostgresStore::new(&scoped, 4).await.unwrap());
     assert!(second
-        .bind_thread_rom("old")
+        .bind_thread_custom("old")
         .await
         .unwrap()
         .entries
         .is_empty());
     // Opening a second Host must not backfill a post-upgrade Thread as empty.
-    let (a, b) = tokio::join!(first.bind_thread_rom("new"), second.bind_thread_rom("new"));
+    let (a, b) = tokio::join!(
+        first.bind_thread_custom("new"),
+        second.bind_thread_custom("new")
+    );
     let mounted = a.unwrap();
     assert_eq!(mounted, b.unwrap());
     assert_eq!(mounted.entries.len(), 1);
     assert_eq!(mounted.entries[0].revision, 1);
     let (a, b) = tokio::join!(
-        first.put_agent_rom(command("write-a", 1, "A"), "host"),
-        second.put_agent_rom(command("write-b", 1, "B"), "host")
+        first.put_custom(command("write-a", 1, "A"), "host"),
+        second.put_custom(command("write-b", 1, "B"), "host")
     );
     let results = [a.unwrap(), b.unwrap()];
     assert_eq!(
         results
             .iter()
-            .filter(|r| matches!(r, AgentRomMutation::Committed { .. }))
+            .filter(|r| matches!(r, CustomMutation::Committed { .. }))
             .count(),
         1
     );
     assert_eq!(
         results
             .iter()
-            .filter(|r| matches!(r, AgentRomMutation::Conflict { .. }))
+            .filter(|r| matches!(r, CustomMutation::Conflict { .. }))
             .count(),
         1
     );
     let (winner, receipt) = results
         .iter()
         .find_map(|r| match r {
-            AgentRomMutation::Committed {
+            CustomMutation::Committed {
                 record, receipt, ..
             } => Some((record, receipt)),
             _ => None,
@@ -180,13 +183,13 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
         command("write-b", 1, "B")
     };
     assert!(
-        matches!(second.put_agent_rom(replay.clone(), "host").await.unwrap(), AgentRomMutation::Committed { duplicate: true, record, .. } if record == *winner)
+        matches!(second.put_custom(replay.clone(), "host").await.unwrap(), CustomMutation::Committed { duplicate: true, record, .. } if record == *winner)
     );
-    assert!(second.put_agent_rom(replay, "other-host").await.is_err());
-    assert_eq!(first.bind_thread_rom("new").await.unwrap(), mounted);
+    assert!(second.put_custom(replay, "other-host").await.is_err());
+    assert_eq!(first.bind_thread_custom("new").await.unwrap(), mounted);
     thread(&second, "latest").await;
     assert_eq!(
-        second.bind_thread_rom("latest").await.unwrap().entries[0].revision,
+        second.bind_thread_custom("latest").await.unwrap().entries[0].revision,
         2
     );
     assert_eq!(
@@ -202,7 +205,7 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
     let old = mounted.clone();
     drop(first);
     drop(second);
-    // Reconstruct the actual previous ROM schema, preserving its current head,
+    // Reconstruct the actual previous Custom schema, preserving its current head,
     // historical version/receipt rows and Thread bindings for the upgrade.
     sqlx::query("ALTER TABLE agent_rom_versions DROP COLUMN canonical_authoring_state")
         .execute(&pool)
@@ -217,16 +220,16 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
     let upgraded = PostgresStore::new(&scoped, 4).await.unwrap();
     assert_eq!(
         upgraded
-            .get_agent_rom(&command("read", 0, "unused").key)
+            .get_custom(&command("read", 0, "unused").key)
             .await
             .unwrap(),
         Some(winner)
     );
     assert_eq!(
-        upgraded.get_thread_rom("new").await.unwrap(),
+        upgraded.get_thread_custom("new").await.unwrap(),
         Some(old.clone())
     );
-    assert_eq!(upgraded.bind_thread_rom("new").await.unwrap(), old);
+    assert_eq!(upgraded.bind_thread_custom("new").await.unwrap(), old);
     let legacy_hash = sqlx::query_scalar::<_, String>(
         "SELECT request_hash FROM agent_rom_command_receipts WHERE command_id='create'",
     )
@@ -234,11 +237,11 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
     .await
     .unwrap();
     match upgraded
-        .put_agent_rom(command("create", 0, "Nora"), "host")
+        .put_custom(command("create", 0, "Nora"), "host")
         .await
         .unwrap()
     {
-        AgentRomMutation::Committed {
+        CustomMutation::Committed {
             record,
             receipt,
             duplicate,
@@ -253,16 +256,15 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
     let mut authored = command("save-authoring", 2, "Nora");
     authored.authoring_state_sexpr =
         Some("(editor (custom RETAIN_PG_EDITOR) (enabled false))".into());
-    let v3 = match upgraded
-        .put_agent_rom(authored.clone(), "host")
-        .await
-        .unwrap()
-    {
-        AgentRomMutation::Committed { record, .. } => record,
+    let v3 = match upgraded.put_custom(authored.clone(), "host").await.unwrap() {
+        CustomMutation::Committed { record, .. } => record,
         other => panic!("{other:?}"),
     };
     thread(&upgraded, "after-authoring").await;
-    let projection = upgraded.bind_thread_rom("after-authoring").await.unwrap();
+    let projection = upgraded
+        .bind_thread_custom("after-authoring")
+        .await
+        .unwrap();
     assert_eq!(projection.entries[0].revision, 3);
     assert!(!serde_json::to_string(&projection)
         .unwrap()
@@ -271,12 +273,12 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
     for _ in 0..2 {
         let reopened = PostgresStore::new(&scoped, 4).await.unwrap();
         assert_eq!(
-            reopened.get_agent_rom(&authored.key).await.unwrap(),
+            reopened.get_custom(&authored.key).await.unwrap(),
             Some(v3.clone())
         );
-        assert_eq!(reopened.bind_thread_rom("new").await.unwrap(), old);
+        assert_eq!(reopened.bind_thread_custom("new").await.unwrap(), old);
         assert!(
-            matches!(reopened.put_agent_rom(authored.clone(), "host").await.unwrap(), AgentRomMutation::Committed { duplicate: true, record, .. } if record == v3)
+            matches!(reopened.put_custom(authored.clone(), "host").await.unwrap(), CustomMutation::Committed { duplicate: true, record, .. } if record == v3)
         );
     }
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version='20261002_02_agent_rom_authoring_state'").fetch_one(&pool).await.unwrap(), 1);

@@ -25,13 +25,13 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { localAccess } from "../packages/core/src/model.js";
 import {
-  compileProfileRom,
-  parseProfileRom,
+  compileProfileCustom,
+  parseProfileCustom,
   defaultAgentProfile,
   defaultHumanProfile,
   profileHasConfiguredFields,
   profileContract,
-  profileRom,
+  profileCustom,
   profileAvatarBytesSchema,
   profileAvatarSnapshotSchema,
   profileSnapshotSchema,
@@ -39,9 +39,46 @@ import {
   profileCustomStyleEnabled,
   compileProfileAuthoringState,
   parseProfileAuthoringState,
+  profileAuthoringProjectionMatchesCustom,
+  // Explicit source compatibility coverage; ordinary calls above use Custom.
+  profileRom as legacyProfileRom,
+  compileProfileRom as legacyCompileProfileRom,
+  parseProfileRom as legacyParseProfileRom,
+  profileAuthoringProjectionMatchesRom as legacyProjectionMatchesRom,
 } from "../packages/core/src/profile.js";
 
-test("Profile ROM 单一编译/读取保留中文、引号与反斜线，不把风格当权限", () => {
+test("旧 Profile ROM 导出只是 Custom alias，原 namespace/schema 和 BODY 不变", () => {
+  assert.equal(legacyProfileRom, profileCustom);
+  assert.equal(legacyCompileProfileRom, compileProfileCustom);
+  assert.equal(legacyParseProfileRom, parseProfileCustom);
+  assert.equal(
+    legacyProjectionMatchesRom,
+    profileAuthoringProjectionMatchesCustom,
+  );
+  assert.deepEqual(profileCustom, {
+    agent: {
+      namespace: "morphz.profile.agent",
+      schemaTag: "morphz-agent-profile/v2",
+      legacySchemaTag: "morphz-agent-profile/v1",
+    },
+    human: {
+      namespace: "morphz.profile.human",
+      schemaTag: "morphz-human-profile/v2",
+      legacySchemaTag: "morphz-human-profile/v1",
+    },
+  });
+  const human = { name: "小谢", preferredAddress: "谢先生" };
+  assert.equal(
+    compileProfileCustom("human", human),
+    '(human-profile (version 2) (name "小谢") (preferred-address "谢先生"))',
+  );
+  assert.deepEqual(
+    legacyParseProfileRom("human", compileProfileCustom("human", human)),
+    human,
+  );
+});
+
+test("Profile Custom 单一编译/读取保留中文、引号与反斜线，不把风格当权限", () => {
   const data = {
     ...defaultAgentProfile,
     name: '小智 "朋友"',
@@ -49,28 +86,28 @@ test("Profile ROM 单一编译/读取保留中文、引号与反斜线，不把�
     traits: { humor: 0, rigor: 0, warmth: 5, verbosity: 5 },
   };
   assert.deepEqual(
-    parseProfileRom("agent", compileProfileRom("agent", data)),
+    parseProfileCustom("agent", compileProfileCustom("agent", data)),
     data,
   );
   const human = { name: "谢先生", preferredAddress: "老谢" };
   assert.deepEqual(
-    parseProfileRom("human", compileProfileRom("human", human)),
+    parseProfileCustom("human", compileProfileCustom("human", human)),
     human,
   );
   assert.throws(() =>
-    parseProfileRom("human", '(human-profile (name "我") (name "你"))'),
+    parseProfileCustom("human", '(human-profile (name "我") (name "你"))'),
   );
   assert.throws(() =>
-    parseProfileRom("agent", '(agent-profile (identity (name "x")))'),
+    parseProfileCustom("agent", '(agent-profile (identity (name "x")))'),
   );
   assert.throws(() =>
-    parseProfileRom(
+    parseProfileCustom(
       "human",
       '(human-profile (name "我") (preferred-address "你")) (extra x)',
     ),
   );
   assert.throws(() =>
-    compileProfileRom("agent", {
+    compileProfileCustom("agent", {
       ...data,
       traits: { ...data.traits, rigor: 6 },
     }),
@@ -81,14 +118,14 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
   assert.equal(profileHasConfiguredFields(defaultAgentProfile), false);
   assert.equal(profileHasConfiguredFields(defaultHumanProfile), false);
   assert.equal(
-    compileProfileRom("agent", defaultAgentProfile),
+    compileProfileCustom("agent", defaultAgentProfile),
     "(agent-profile (version 2))",
   );
   assert.equal(
-    compileProfileRom("human", defaultHumanProfile),
+    compileProfileCustom("human", defaultHumanProfile),
     "(human-profile (version 2))",
   );
-  const nameOnly = compileProfileRom("agent", {
+  const nameOnly = compileProfileCustom("agent", {
     ...defaultAgentProfile,
     name: "阿芷",
   });
@@ -96,17 +133,20 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
     /humor|rigor|warmth|verbosity|0–5|value\/5/.test(nameOnly),
     false,
   );
-  const humorOnly = compileProfileRom("agent", {
+  const humorOnly = compileProfileCustom("agent", {
     ...defaultAgentProfile,
     traits: { ...defaultAgentProfile.traits, humor: 5 },
   });
   assert.equal(/rigor|warmth|verbosity/.test(humorOnly), false);
   assert.equal(
-    compileProfileRom("agent", { ...defaultAgentProfile, customStyle: "   " }),
+    compileProfileCustom("agent", {
+      ...defaultAgentProfile,
+      customStyle: "   ",
+    }),
     "(agent-profile (version 2))",
   );
   assert.equal(
-    compileProfileRom("human", {
+    compileProfileCustom("human", {
       ...defaultHumanProfile,
       preferredAddress: "   ",
     }),
@@ -117,7 +157,7 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
       ...defaultAgentProfile,
       traits: { ...defaultAgentProfile.traits, [key]: 0 },
     };
-    const body = compileProfileRom("agent", data);
+    const body = compileProfileCustom("agent", data);
     assert.equal(profileHasConfiguredFields(data), true);
     assert.ok(body.includes(`(${key} 0)`));
     for (const other of ["humor", "rigor", "warmth", "verbosity"].filter(
@@ -129,49 +169,58 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
     assert.match(body, /0–5 scale, not model parameters/);
     assert.match(body, /exact selected value as value\/5, not value\/100/);
     assert.deepEqual(
-      parseProfileRom("agent", body, profileRom.agent.schemaTag),
+      parseProfileCustom("agent", body, profileCustom.agent.schemaTag),
       data,
     );
   }
   const partial = { name: null, preferredAddress: "朋友" };
   assert.equal(
-    compileProfileRom("human", partial),
+    compileProfileCustom("human", partial),
     '(human-profile (version 2) (preferred-address "朋友"))',
   );
   assert.deepEqual(
-    parseProfileRom("human", compileProfileRom("human", partial)),
+    parseProfileCustom("human", compileProfileCustom("human", partial)),
     partial,
   );
   assert.deepEqual(
-    parseProfileRom("agent", compileProfileRom("agent", defaultAgentProfile)),
+    parseProfileCustom(
+      "agent",
+      compileProfileCustom("agent", defaultAgentProfile),
+    ),
     defaultAgentProfile,
   );
   assert.deepEqual(
-    parseProfileRom("human", compileProfileRom("human", defaultHumanProfile)),
+    parseProfileCustom(
+      "human",
+      compileProfileCustom("human", defaultHumanProfile),
+    ),
     defaultHumanProfile,
   );
   assert.throws(() =>
-    parseProfileRom(
+    parseProfileCustom(
       "agent",
       "(agent-profile (version 2) (personality (humor 0)))",
     ),
   );
   assert.throws(() =>
-    parseProfileRom("agent", "(agent-profile (version 2) (speech))"),
+    parseProfileCustom("agent", "(agent-profile (version 2) (speech))"),
   );
   assert.throws(() =>
-    parseProfileRom("human", "(human-profile (version 2) (name x) (name y))"),
+    parseProfileCustom(
+      "human",
+      "(human-profile (version 2) (name x) (name y))",
+    ),
   );
   assert.throws(() =>
-    parseProfileRom(
+    parseProfileCustom(
       "human",
       "(human-profile (version 2))",
-      profileRom.human.legacySchemaTag,
+      profileCustom.human.legacySchemaTag,
     ),
   );
   const legacy = `(agent-profile (identity (name Morphz)) (personality (humor 2) (rigor 3) (warmth 3) (verbosity 2)) (speech (style natural) (custom "")) (contract ${JSON.stringify(profileContract)}))`;
   assert.deepEqual(
-    parseProfileRom("agent", legacy, profileRom.agent.legacySchemaTag),
+    parseProfileCustom("agent", legacy, profileCustom.agent.legacySchemaTag),
     {
       name: "Morphz",
       traits: { humor: 2, rigor: 3, warmth: 3, verbosity: 2 },
@@ -180,10 +229,10 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
     },
   );
   assert.deepEqual(
-    parseProfileRom(
+    parseProfileCustom(
       "human",
       '(human-profile (name 我) (preferred-address ""))',
-      profileRom.human.legacySchemaTag,
+      profileCustom.human.legacySchemaTag,
     ),
     { name: "我", preferredAddress: "" },
   );
@@ -203,7 +252,7 @@ test("自定义风格选择兼容旧资料；作者态保留off原文而有效v2
     defaultAgentProfile,
   );
   assert.equal(
-    compileProfileRom("agent", selectedEmpty),
+    compileProfileCustom("agent", selectedEmpty),
     "(agent-profile (version 2))",
   );
   const legacy = { ...defaultAgentProfile, customStyle: marker };
@@ -211,7 +260,10 @@ test("自定义风格选择兼容旧资料；作者态保留off原文而有效v2
   const off = { ...legacy, customStyleEnabled: false };
   assert.equal(profileCustomStyleEnabled(off), false);
   assert.equal(profileHasConfiguredFields(off), false);
-  assert.equal(compileProfileRom("agent", off), "(agent-profile (version 2))");
+  assert.equal(
+    compileProfileCustom("agent", off),
+    "(agent-profile (version 2))",
+  );
   assert.deepEqual(
     parseProfileAuthoringState(compileProfileAuthoringState(off)),
     off,
@@ -225,10 +277,10 @@ test("自定义风格选择兼容旧资料；作者态保留off原文而有效v2
     name: "Echo",
     traits: { ...off.traits, humor: 0 },
   };
-  const active = compileProfileRom("agent", other);
+  const active = compileProfileCustom("agent", other);
   assert.equal(
     active,
-    compileProfileRom("agent", { ...other, customStyle: null }),
+    compileProfileCustom("agent", { ...other, customStyle: null }),
   );
   assert.equal(active.includes("OFF_AUTHORING_ONLY"), false);
   assert.equal(active.includes("custom-style-enabled"), false);
@@ -241,7 +293,7 @@ test("自定义风格选择兼容旧资料；作者态保留off原文而有效v2
   const on = normalizeAgentProfileData({ ...off, customStyleEnabled: true });
   assert.deepEqual(on, legacy);
   assert.equal(
-    compileProfileRom("agent", on).includes("OFF_AUTHORING_ONLY"),
+    compileProfileCustom("agent", on).includes("OFF_AUTHORING_ONLY"),
     true,
   );
   assert.deepEqual(

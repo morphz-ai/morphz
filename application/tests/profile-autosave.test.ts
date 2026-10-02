@@ -144,7 +144,7 @@ test("network failures use Chinese feedback and keep the immutable retry command
   }
 });
 
-test("default/unset and empty text controls do not write ROM", async () => {
+test("default/unset and empty text controls do not write Custom", async () => {
   const h = harness();
   h.controller.edit("agent", agentName(null), false, 1000);
   await h.controller.flush();

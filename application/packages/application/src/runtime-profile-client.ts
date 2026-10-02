@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DomainError, type AccessContext } from "../../core/src/model.js";
 import {
-  compileProfileRom,
+  compileProfileCustom,
   compileProfileAuthoringState,
-  parseProfileRom,
+  parseProfileCustom,
   parseProfileAuthoringState,
-  profileAuthoringProjectionMatchesRom,
-  profileRom,
+  profileAuthoringProjectionMatchesCustom,
+  profileCustom,
   profileUpdateSchema,
   profileHasConfiguredFields,
   normalizeAgentProfileData,
@@ -59,15 +59,22 @@ export class RuntimeProfileClient {
   ) {
     const effective =
       subject === "human"
-        ? parseProfileRom("human", record.canonical_sexpr, record.schema_tag)
-        : parseProfileRom("agent", record.canonical_sexpr, record.schema_tag);
+        ? parseProfileCustom("human", record.canonical_sexpr, record.schema_tag)
+        : parseProfileCustom(
+            "agent",
+            record.canonical_sexpr,
+            record.schema_tag,
+          );
     if (record.canonical_authoring_state == null) return effective;
-    if (subject !== "agent" || record.schema_tag !== profileRom.agent.schemaTag)
+    if (
+      subject !== "agent" ||
+      record.schema_tag !== profileCustom.agent.schemaTag
+    )
       throw new DomainError("invalid", "Runtime Profile 作者状态版本不匹配。");
     const data = parseProfileAuthoringState(record.canonical_authoring_state);
     // Runtime's canonical printer may omit unnecessary string quotes. Compare
     // the strictly validated S-expression tree, not Host printer spelling.
-    if (!profileAuthoringProjectionMatchesRom(data, record.canonical_sexpr))
+    if (!profileAuthoringProjectionMatchesCustom(data, record.canonical_sexpr))
       throw new DomainError(
         "invalid",
         "Runtime Profile 作者状态与有效配置不匹配。",
@@ -186,11 +193,11 @@ export class RuntimeProfileClient {
   ) {
     const expected = {
       agent_id: identity.agentId,
-      namespace: profileRom[subject].namespace,
+      namespace: profileCustom[subject].namespace,
       ...(subject === "human" ? { principal_scope: identity.principalId } : {}),
     };
     const path =
-      `/api/agents/${encodeURIComponent(identity.agentId)}/rom/${profileRom[subject].namespace}` +
+      `/api/agents/${encodeURIComponent(identity.agentId)}/custom/${profileCustom[subject].namespace}` +
       (subject === "human"
         ? "?principal_scope=" + encodeURIComponent(identity.principalId)
         : "");
@@ -206,8 +213,8 @@ export class RuntimeProfileClient {
       record.key.agent_id !== expected.agent_id ||
       record.key.namespace !== expected.namespace ||
       record.key.principal_scope !== expected.principal_scope ||
-      (record.schema_tag !== profileRom[subject].schemaTag &&
-        record.schema_tag !== profileRom[subject].legacySchemaTag)
+      (record.schema_tag !== profileCustom[subject].schemaTag &&
+        record.schema_tag !== profileCustom[subject].legacySchemaTag)
     )
       throw new DomainError("invalid", "Runtime Profile 版本或主体不匹配。");
     return {
@@ -218,13 +225,16 @@ export class RuntimeProfileClient {
   }
   async read(access: AccessContext, active: () => void = () => {}) {
     const identity = await this.identity(access, active);
-    // A missing entry is a valid default; a missing ROM API is not support.
+    // A missing entry is a valid default; a missing Custom API is not support.
     const capability = await this.call(
-      `/api/agents/${encodeURIComponent(identity.agentId)}/rom`,
+      `/api/agents/${encodeURIComponent(identity.agentId)}/custom`,
       active,
     );
     if (capability === null)
-      throw new DomainError("invalid", "当前 Runtime 尚不支持 Profile ROM。");
+      throw new DomainError(
+        "invalid",
+        "当前 Runtime 尚不支持 Profile 自定义上下文。",
+      );
     z.object({ entries: z.array(recordSchema) }).parse(capability);
     const [human, agent] = await Promise.all([
       this.readRecord("human", identity, active),
@@ -246,20 +256,20 @@ export class RuntimeProfileClient {
       throw new DomainError("forbidden", "团队智能体资料只读。");
     const key = {
       agent_id: identity.agentId,
-      namespace: profileRom[request.subject].namespace,
+      namespace: profileCustom[request.subject].namespace,
       ...(request.subject === "human"
         ? { principal_scope: identity.principalId }
         : {}),
     };
     const path =
-      `/api/agents/${encodeURIComponent(identity.agentId)}/rom/${key.namespace}` +
+      `/api/agents/${encodeURIComponent(identity.agentId)}/custom/${key.namespace}` +
       (request.subject === "human"
         ? "?principal_scope=" + encodeURIComponent(identity.principalId)
         : "");
     const body =
       request.subject === "human"
-        ? compileProfileRom("human", request.data)
-        : compileProfileRom("agent", request.data);
+        ? compileProfileCustom("human", request.data)
+        : compileProfileCustom("agent", request.data);
     // Agent use is explicit caller-owned intent, even before any optional
     // fields exist. Runtime excludes its exact empty v2 BODY from new Thread
     // bindings; do not manufacture data or erase the persisted on/off choice.
@@ -274,7 +284,7 @@ export class RuntimeProfileClient {
       command_id: request.commandId,
       expected_revision: request.expectedRevision,
       key,
-      schema_tag: profileRom[request.subject].schemaTag,
+      schema_tag: profileCustom[request.subject].schemaTag,
       body_sexpr: body,
       ...(request.subject === "agent"
         ? { authoring_state_sexpr: compileProfileAuthoringState(request.data) }
@@ -302,7 +312,7 @@ export class RuntimeProfileClient {
       result.record.key.agent_id !== key.agent_id ||
       result.record.key.namespace !== key.namespace ||
       result.record.key.principal_scope !== key.principal_scope ||
-      result.record.schema_tag !== profileRom[request.subject].schemaTag ||
+      result.record.schema_tag !== profileCustom[request.subject].schemaTag ||
       result.record.enabled !== enabled ||
       result.receipt.command_id !== request.commandId ||
       result.receipt.expected_revision !== request.expectedRevision ||

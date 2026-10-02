@@ -4737,40 +4737,75 @@ impl MorphzRuntime {
 
     /// Trusted control-plane boundary. Network adapters must authenticate an
     /// operator; ordinary model tools never receive this capability.
-    pub async fn get_agent_rom(
+    pub async fn get_custom(
         &self,
-        key: &crate::agent_rom::AgentRomKey,
-    ) -> Result<Option<crate::agent_rom::AgentRomRecord>, RuntimeError> {
-        self.inner.store.get_agent_rom(key).await
+        key: &crate::context::CustomKey,
+    ) -> Result<Option<crate::context::Custom>, RuntimeError> {
+        self.inner.store.get_custom(key).await
     }
 
+    pub async fn list_custom(
+        &self,
+        agent_id: &str,
+        principal_scope: Option<&str>,
+    ) -> Result<Vec<crate::context::Custom>, RuntimeError> {
+        self.inner
+            .store
+            .list_custom(agent_id, principal_scope)
+            .await
+    }
+
+    pub async fn put_custom_as_operator(
+        &self,
+        command: crate::context::PutCustomCommand,
+        actor_authority_id: &str,
+    ) -> Result<crate::context::CustomMutation, RuntimeError> {
+        self.inner
+            .store
+            .put_custom(command, actor_authority_id)
+            .await
+    }
+
+    pub async fn thread_custom_as_operator(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::context::ThreadCustomManifest>, RuntimeError> {
+        self.inner.store.get_thread_custom(thread_id).await
+    }
+
+    /// Compatibility alias. New callers should use `get_custom`.
+    pub async fn get_agent_rom(
+        &self,
+        key: &crate::context::CustomKey,
+    ) -> Result<Option<crate::context::Custom>, RuntimeError> {
+        self.get_custom(key).await
+    }
+
+    /// Compatibility alias. New callers should use `list_custom`.
     pub async fn list_agent_rom(
         &self,
         agent_id: &str,
         principal_scope: Option<&str>,
-    ) -> Result<Vec<crate::agent_rom::AgentRomRecord>, RuntimeError> {
-        self.inner
-            .store
-            .list_agent_rom(agent_id, principal_scope)
-            .await
+    ) -> Result<Vec<crate::context::Custom>, RuntimeError> {
+        self.list_custom(agent_id, principal_scope).await
     }
 
+    /// Compatibility alias with unchanged operator authority and retry identity.
     pub async fn put_agent_rom_as_operator(
         &self,
-        command: crate::agent_rom::PutAgentRomCommand,
+        command: crate::context::PutCustomCommand,
         actor_authority_id: &str,
-    ) -> Result<crate::agent_rom::AgentRomMutation, RuntimeError> {
-        self.inner
-            .store
-            .put_agent_rom(command, actor_authority_id)
+    ) -> Result<crate::context::CustomMutation, RuntimeError> {
+        self.put_custom_as_operator(command, actor_authority_id)
             .await
     }
 
+    /// Compatibility alias; reads the same immutable Thread binding.
     pub async fn thread_rom_as_operator(
         &self,
         thread_id: &str,
-    ) -> Result<Option<crate::agent_rom::ThreadRomManifest>, RuntimeError> {
-        self.inner.store.get_thread_rom(thread_id).await
+    ) -> Result<Option<crate::context::ThreadCustomManifest>, RuntimeError> {
+        self.thread_custom_as_operator(thread_id).await
     }
 
     /// Return the Auth Accounts that this Agent's operator has made

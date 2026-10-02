@@ -14,6 +14,8 @@ pub mod artifact;
 pub mod build_info;
 pub mod cli;
 pub mod config;
+/// Structured Context content, including caller-defined read-only Custom data.
+pub mod context;
 mod context_ast;
 #[cfg(feature = "context-db")]
 pub mod context_db;

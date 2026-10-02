@@ -206,7 +206,7 @@ async function send(page: Page, marker: string) {
 }
 function modelText(request: Awaited<ReturnType<typeof fixture.waitRequest>>) {
   // Tool schema intentionally still exposes Profile read/propose. Inspect only
-  // model-visible messages, never confuse schema property names with ROM bytes.
+  // model-visible messages, never confuse schema property names with Custom bytes.
   return request.messages
     .map((message) =>
       typeof message.content === "string"
@@ -215,20 +215,105 @@ function modelText(request: Awaited<ReturnType<typeof fixture.waitRequest>>) {
     )
     .join("\n");
 }
-function assertEmptyRom(text: string) {
+
+type ModelSExpr = string | ModelSExpr[];
+/** Read the actual Context tree, not strings in protocol cards or remembered
+ * input. The Custom root and Profile's speech/custom field share a word but
+ * have different paths; quoted parentheses must not confuse their boundaries. */
+function modelProfileCustomStyle(text: string): string | undefined {
+  let pos = text.indexOf("(context (protocol ");
+  expect(pos, "Actual model Context root").toBeGreaterThanOrEqual(0);
+  const whitespace = () => {
+    while (pos < text.length && /\s/.test(text[pos]!)) pos++;
+  };
+  const read = (depth = 0): ModelSExpr => {
+    expect(depth, "Bounded Context nesting").toBeLessThan(512);
+    whitespace();
+    if (text[pos] === "(") {
+      pos++;
+      const items: ModelSExpr[] = [];
+      for (;;) {
+        whitespace();
+        if (text[pos] === ")") {
+          pos++;
+          return items;
+        }
+        expect(pos, "Complete Context list").toBeLessThan(text.length);
+        items.push(read(depth + 1));
+      }
+    }
+    if (text[pos] === '"') {
+      pos++;
+      let value = "";
+      while (pos < text.length) {
+        const char = text[pos++];
+        if (char === '"') return value;
+        if (char === "\\") {
+          expect(pos, "Complete Context string escape").toBeLessThan(
+            text.length,
+          );
+          const escaped = text[pos++]!;
+          value +=
+            (
+              { n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\" } as Record<
+                string,
+                string
+              >
+            )[escaped] ?? "\\" + escaped;
+        } else value += char;
+      }
+      throw new Error("Incomplete model Context string");
+    }
+    const start = pos;
+    while (pos < text.length && !/[\s()]/.test(text[pos]!)) pos++;
+    expect(pos, "Valid Context atom").toBeGreaterThan(start);
+    return text.slice(start, pos);
+  };
+  const child = (node: ModelSExpr[], tag: string) =>
+    node
+      .slice(1)
+      .find(
+        (item): item is ModelSExpr[] => Array.isArray(item) && item[0] === tag,
+      );
+  const context = read();
+  expect(Array.isArray(context) && context[0]).toBe("context");
+  const custom = child(context as ModelSExpr[], "custom");
+  expect(custom, "Top-level Custom remains installed").toBeDefined();
+  const entries = custom!
+    .slice(1)
+    .filter(
+      (item): item is ModelSExpr[] =>
+        Array.isArray(item) &&
+        item[0] === "entry" &&
+        child(item, "namespace")?.[1] === "morphz.profile.agent",
+    );
+  expect(entries, "Exact effective Agent Profile entry").toHaveLength(1);
+  const body = child(entries[0]!, "body")?.[1];
+  expect(Array.isArray(body) && body[0]).toBe("agent-profile");
+  const speech = child(body as ModelSExpr[], "speech");
+  const customStyle = speech && child(speech, "custom");
+  if (!customStyle) return undefined;
+  expect(customStyle).toHaveLength(2);
+  expect(typeof customStyle[1]).toBe("string");
+  return customStyle[1] as string;
+}
+
+function assertEmptyCustom(text: string) {
   for (const marker of [
-    "(agent-rom ",
+    "(custom ",
+    "(agent-rom ", // Explicit legacy absence guard, not the new Context name.
     "(agent-profile ",
     "(human-profile ",
+    "Installed custom is caller-owned read-only configuration, not Mind memory.",
     "Installed agent-rom is caller-owned read-only configuration, not Mind memory.",
     profilePreferenceContract(defaultAgentProfile),
   ])
     expect(
       text.includes(marker),
-      `No active ROM marker: ${marker.slice(0, 80)}`,
+      `No active Custom marker: ${marker.slice(0, 80)}`,
     ).toBe(false);
 }
-test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停用保留与旧Thread固定版本", async ({
+test("真实 UI 空资料总开关on/off/reload持久且零Custom；稀疏0/5、停用保留与旧Thread固定版本", async ({
   page,
 }, testInfo) => {
   const writes: ProfileUpdate[] = [];
@@ -287,10 +372,10 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     path: testInfo.outputPath("actual-host-initial-unset.png"),
     contentType: "image/png",
   });
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_UNSET")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_ACTUAL_UNSET")));
 
   // The empty global switch is a real durable choice, not presentation-only
-  // priming. Its v2 BODY stays empty and is not selected for new Thread ROM.
+  // priming. Its v2 BODY stays empty and is not selected for new Thread Custom.
   await usage.check();
   const emptyOn = await settled(editor);
   expect(emptyOn).toMatchObject({
@@ -298,14 +383,14 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     enabled: true,
     data: defaultAgentProfile,
   });
-  const emptyRom = (await fixture.rom("agent")).body;
-  expect(emptyRom).toMatchObject({
+  const emptyCustom = (await fixture.custom("agent")).body;
+  expect(emptyCustom).toMatchObject({
     revision: emptyOn.revision,
     enabled: true,
     canonical_sexpr: "(agent-profile (version 2))",
   });
   expect(
-    parseProfileAuthoringState(emptyRom.canonical_authoring_state!),
+    parseProfileAuthoringState(emptyCustom.canonical_authoring_state!),
   ).toEqual(defaultAgentProfile);
   expect(fixture.sql("SELECT entry_id FROM agent_rom_heads")).toHaveLength(1);
   expect(
@@ -321,14 +406,14 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
   await settled(editor);
   expect(writes).toHaveLength(emptyWrites);
   expect((await fixture.read()).agent.revision).toBe(emptyOn.revision);
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_EMPTY_ON")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_ACTUAL_EMPTY_ON")));
   expect(fixture.sql("SELECT thread_id FROM thread_rom_bindings")).toHaveLength(
     0,
   );
   await usage.uncheck();
   const emptyOff = await settled(editor, false);
   expect(emptyOff.revision).toBe(emptyOn.revision + 1);
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_EMPTY_OFF")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_ACTUAL_EMPTY_OFF")));
   // An existing empty/off head is an explicit opt-out, unlike a never-written
   // default. A new valid field must stay off until the global switch is used.
   await level(editor, "幽默", 0);
@@ -344,7 +429,9 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
   const emptyRestored = await settled(editor);
   expect(emptyRestored.revision).toBe(emptyOffCleared.revision + 1);
   expect(emptyRestored.data).toEqual(defaultAgentProfile);
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_EMPTY_RESTORED")));
+  assertEmptyCustom(
+    modelText(await send(page, "PROFILE_ACTUAL_EMPTY_RESTORED")),
+  );
   expect(fixture.sql("SELECT thread_id FROM thread_rom_bindings")).toHaveLength(
     0,
   );
@@ -369,10 +456,10 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
       customStyle: null,
     },
   });
-  const rom = await fixture.rom("agent");
-  expect(rom.status).toBe(200);
-  expect(rom.body.canonical_sexpr).toContain("(humor 5)");
-  expect(rom.body.canonical_sexpr).toContain("(rigor 0)");
+  const custom = await fixture.custom("agent");
+  expect(custom.status).toBe(200);
+  expect(custom.body.canonical_sexpr).toContain("(humor 5)");
+  expect(custom.body.canonical_sexpr).toContain("(rigor 0)");
   for (const absent of [
     "(name ",
     "(warmth ",
@@ -380,11 +467,12 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     "(style ",
     "(custom ",
   ])
-    expect(rom.body.canonical_sexpr).not.toContain(absent);
+    expect(custom.body.canonical_sexpr).not.toContain(absent);
   fixture.hold("PROFILE_ACTUAL_CONFIGURED");
   const configured = modelText(await send(page, "PROFILE_ACTUAL_CONFIGURED"));
+  expect(configured).not.toContain("(agent-rom ");
   for (const marker of [
-    "(agent-rom ",
+    "(custom ",
     "(agent-profile ",
     "(humor 5)",
     "(rigor 0)",
@@ -413,7 +501,7 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     revision: saved.agent.revision + 1,
     data: saved.agent.data,
   });
-  const disabled = await fixture.rom("agent");
+  const disabled = await fixture.custom("agent");
   expect(disabled.body).toMatchObject({
     revision: saved.agent.revision + 1,
     enabled: false,
@@ -437,7 +525,7 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     continued.includes("(rigor 0)"),
     "Old Thread continuation keeps rigor0",
   ).toBe(true);
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_DISABLED")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_ACTUAL_DISABLED")));
   await editor
     .getByRole("checkbox", { name: "设置幽默", exact: true })
     .uncheck();
@@ -449,10 +537,12 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
     enabled: false,
     data: defaultAgentProfile,
   });
-  expect((await fixture.rom("agent")).body.canonical_sexpr).toBe(
+  expect((await fixture.custom("agent")).body.canonical_sexpr).toBe(
     "(agent-profile (version 2))",
   );
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_ALL_FIELDS_OFF")));
+  assertEmptyCustom(
+    modelText(await send(page, "PROFILE_ACTUAL_ALL_FIELDS_OFF")),
+  );
   expect(
     fixture.sql(
       "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
@@ -467,7 +557,7 @@ test("真实 UI 空资料总开关on/off/reload持久且零ROM；稀疏0/5、停
   expect((await fixture.read()).agent.revision).toBe(writes.length);
 });
 
-test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关闭后新Thread无HumanProfile", async ({
+test("真实个人资料UI只保存选中称呼，Custom精确私有Principal；关闭后新Thread无HumanProfile", async ({
   page,
 }, testInfo) => {
   await enter(page);
@@ -503,12 +593,12 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
     data: { name: null, preferredAddress: "测试同学" },
   });
   const identity = await fixture.runtime.profiles.identity(localAccess);
-  const privateRom = await fixture.rom("human", identity.principalId);
-  expect(privateRom.status).toBe(200);
-  expect(privateRom.body.canonical_sexpr).toBe(
+  const privateCustom = await fixture.custom("human", identity.principalId);
+  expect(privateCustom.status).toBe(200);
+  expect(privateCustom.body.canonical_sexpr).toBe(
     "(human-profile (version 2) (preferred-address 测试同学))",
   );
-  expect((await fixture.rom("human")).status).toBe(404);
+  expect((await fixture.custom("human")).status).toBe(404);
   expect(
     fixture.sql<{ principal_scope: string; namespace: string }>(
       "SELECT principal_scope,namespace FROM agent_rom_heads",
@@ -530,7 +620,7 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
       configured.includes(
         '(human-profile (version 2) (preferred-address "测试同学"))',
       ),
-    "Selected Human address in actual private ROM slot",
+    "Selected Human address in actual private Custom slot",
   ).toBe(true);
   expect(configured.includes("(agent-profile ")).toBe(false);
   await page
@@ -551,7 +641,9 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
     data: { name: null, preferredAddress: "测试同学" },
   });
   await page.getByRole("button", { name: "关闭设置", exact: true }).click();
-  assertEmptyRom(modelText(await send(page, "PROFILE_ACTUAL_HUMAN_DISABLED")));
+  assertEmptyCustom(
+    modelText(await send(page, "PROFILE_ACTUAL_HUMAN_DISABLED")),
+  );
 });
 
 test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不覆盖用户草稿", async ({
@@ -665,7 +757,7 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
     enabled: true,
     data: defaultAgentProfile,
   });
-  expect((await fixture.rom("agent")).body).toMatchObject({
+  expect((await fixture.custom("agent")).body).toMatchObject({
     revision: (await fixture.read()).agent.revision,
     enabled: true,
     canonical_sexpr: "(agent-profile (version 2))",
@@ -761,7 +853,7 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
     enabled: true,
     data: defaultAgentProfile,
   });
-  expect((await fixture.rom("agent")).body.canonical_sexpr).toBe(
+  expect((await fixture.custom("agent")).body.canonical_sexpr).toBe(
     "(agent-profile (version 2))",
   );
   expect(
@@ -773,7 +865,7 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
   const agentClearedRequest = modelText(
     await send(page, "PROFILE_INPLACE_AGENT_NAME_CLEARED"),
   );
-  assertEmptyRom(agentClearedRequest);
+  assertEmptyCustom(agentClearedRequest);
   expect(agentClearedRequest).not.toContain(agentNameMarker);
 
   await page
@@ -808,10 +900,11 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
     preferredAddress: humanAddressMarker,
   });
   const identity = await fixture.runtime.profiles.identity(localAccess);
-  const privateRom = (await fixture.rom("human", identity.principalId)).body;
-  expect(privateRom.canonical_sexpr).not.toContain("(name ");
-  expect(privateRom.canonical_sexpr).toContain(humanAddressMarker);
-  expect((await fixture.rom("human")).status).toBe(404);
+  const privateCustom = (await fixture.custom("human", identity.principalId))
+    .body;
+  expect(privateCustom.canonical_sexpr).not.toContain("(name ");
+  expect(privateCustom.canonical_sexpr).toContain(humanAddressMarker);
+  expect((await fixture.custom("human")).status).toBe(404);
   await page.getByRole("button", { name: "关闭设置", exact: true }).click();
   const humanNameClearedRequest = modelText(
     await send(page, "PROFILE_INPLACE_HUMAN_NAME_CLEARED"),
@@ -834,7 +927,7 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
   const clearedHuman = await settled(human, false);
   expect(clearedHuman.data).toEqual({ name: null, preferredAddress: null });
   expect(
-    (await fixture.rom("human", identity.principalId)).body.canonical_sexpr,
+    (await fixture.custom("human", identity.principalId)).body.canonical_sexpr,
   ).toBe("(human-profile (version 2))");
   expect(
     writes.filter((write) => write.subject === "human").at(-1),
@@ -846,17 +939,17 @@ test("实际Inplace名字/称呼结束空值写null且请求省略；临时空�
   const humanClearedRequest = modelText(
     await send(page, "PROFILE_INPLACE_ALL_PERSONAL_TEXT_CLEARED"),
   );
-  assertEmptyRom(humanClearedRequest);
+  assertEmptyCustom(humanClearedRequest);
   expect(humanClearedRequest).not.toContain(humanNameMarker);
   expect(humanClearedRequest).not.toContain(humanAddressMarker);
 });
 
-test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom off保留原文且请求零字节、reload/on恢复", async ({
+test("同一Session即时Echo与旧Thread固定版本；整体off零Custom，custom off保留原文且请求零字节、reload/on恢复", async ({
   page,
 }) => {
   await enter(page);
   const editor = await agentEditor(page);
-  assertEmptyRom(modelText(await send(page, "PROFILE_IMMEDIATE_UNSET")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_IMMEDIATE_UNSET")));
   const sessions = fixture.sql<{ id: string }>("SELECT id FROM sessions");
   expect(sessions).toHaveLength(1);
   expect(fixture.sql("SELECT thread_id FROM thread_rom_bindings")).toHaveLength(
@@ -957,7 +1050,7 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
     traits: { humor: 5 },
   });
   expect(editedWhileDisabled.revision).toBeGreaterThan(disabled.revision);
-  assertEmptyRom(modelText(await send(page, "PROFILE_IMMEDIATE_DISABLED")));
+  assertEmptyCustom(modelText(await send(page, "PROFILE_IMMEDIATE_DISABLED")));
   expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
   expect(
     fixture.sql(
@@ -992,7 +1085,7 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   });
 
   // Field-level off is durable authoring state, not deletion or a textual
-  // instruction hidden in the still-mounted effective ROM BODY.
+  // instruction hidden in the still-mounted effective Custom BODY.
   await level(editor, "幽默", 0);
   const beforeCustom = await settled(editor);
   const customChoice = editor.getByRole("checkbox", {
@@ -1016,6 +1109,7 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   fixture.hold("PROFILE_CUSTOM_ACTIVE");
   const customOnRequest = modelText(await send(page, "PROFILE_CUSTOM_ACTIVE"));
   expect(customOnRequest).toContain(customMarker);
+  expect(modelProfileCustomStyle(customOnRequest)).toBe(customMarker);
   expect(customOnRequest).not.toContain("(profile-authoring ");
   const customBindings = fixture.sql<{
     thread_id: string;
@@ -1043,13 +1137,13 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   await expect(customText).toBeHidden();
   await expect(customText).toBeDisabled();
   await expect(customText).toHaveValue(customMarker);
-  const offRom = (await fixture.rom("agent")).body;
-  expect(offRom.canonical_sexpr).not.toContain(customMarker);
-  expect(offRom.canonical_sexpr).not.toContain("(custom ");
-  expect(offRom.canonical_authoring_state).toBeTruthy();
-  expect(parseProfileAuthoringState(offRom.canonical_authoring_state!)).toEqual(
-    customOff.data,
-  );
+  const offCustom = (await fixture.custom("agent")).body;
+  expect(offCustom.canonical_sexpr).not.toContain(customMarker);
+  expect(offCustom.canonical_sexpr).not.toContain("(custom ");
+  expect(offCustom.canonical_authoring_state).toBeTruthy();
+  expect(
+    parseProfileAuthoringState(offCustom.canonical_authoring_state!),
+  ).toEqual(customOff.data);
   const offSql = fixture.sql<{
     revision: number;
     canonical_sexpr: string;
@@ -1059,9 +1153,9 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   );
   expect(offSql).toHaveLength(1);
   expect(offSql[0]!.revision).toBe(customOff.revision);
-  expect(offSql[0]!.canonical_sexpr).toBe(offRom.canonical_sexpr);
+  expect(offSql[0]!.canonical_sexpr).toBe(offCustom.canonical_sexpr);
   expect(offSql[0]!.canonical_authoring_state).toBe(
-    offRom.canonical_authoring_state,
+    offCustom.canonical_authoring_state,
   );
 
   await page.reload();
@@ -1088,12 +1182,12 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   expect(oldCustomRequest).not.toContain("(profile-authoring ");
 
   // Complete the deliberately held previous evaluation before submitting the
-  // next input; this fixture tests frozen ROM, not concurrent composer sends.
+  // next input; this fixture tests frozen Custom, not concurrent composer sends.
   const offRequest = modelText(await send(page, "PROFILE_CUSTOM_INACTIVE"));
   expect(offRequest).toContain("(name Nova)");
   expect(offRequest).toContain("(humor 0)");
   expect(offRequest).not.toContain(customMarker);
-  expect(offRequest).not.toContain("(custom ");
+  expect(modelProfileCustomStyle(offRequest)).toBeUndefined();
   expect(offRequest).not.toContain("(profile-authoring ");
 
   await customChoice.check();
@@ -1106,6 +1200,7 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
     await send(page, "PROFILE_CUSTOM_REACTIVATED"),
   );
   expect(customRestoredRequest).toContain(customMarker);
+  expect(modelProfileCustomStyle(customRestoredRequest)).toBe(customMarker);
   expect(customRestoredRequest).toContain("(name Nova)");
   expect(customRestoredRequest).toContain("(humor 0)");
   expect(customRestoredRequest).not.toContain("(profile-authoring ");

@@ -1,4 +1,6 @@
-# 人格化个人助手：Profile 与只读 ROM
+# 人格化个人助手：Profile 与只读 ROM（历史兼容入口）
+
+当前机制已按用户确认命名为 **Custom（自定义上下文）**；Profile 是应用定义的一个 Custom Schema。当前设计见[Profile 与 Custom](39-profile-custom-production-design.md)，Runtime 通用机制见[Custom 设计](../../docs/context-custom.md)。本页保留此前逐轮设计和 dated 验收原文，旧 ROM 术语、被后续否决的 UI 描述及历史数字不能当作当前实现或本轮测试结果。旧持久数据／schema／哈希／绑定不会为命名修改而重写。
 
 状态：2026-10-02 Runtime ROM、Host/Profile 与 UI 首轮已实现。用户实际测试发现：未保存的预填数值被误看为有效配置，原生默认头像被否决，首轮缺少 UI 保存到实际模型请求的整链路证据。当前“不设置”及 Logo 修复已通过实际链路、独立真实模型与原窗口验收，详见下方记录；这不等于整个长期人格化目标或主观表达效果已经完成。历史证据保留，并区分隔离测试、原窗口及真实模型结果。
 

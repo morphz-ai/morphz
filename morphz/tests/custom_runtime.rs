@@ -1,11 +1,11 @@
-//! Capture real Runtime requests (deterministic model transport, real SQL
+//! Capture Custom in real Runtime requests (deterministic model transport, real SQL
 //! Threads/Activations/Context compilation). This does not claim provider cache hits.
-use morphz::agent_rom::*;
 use morphz::config::AppConfig;
+use morphz::context::*;
 use morphz::llm::{model_visible_message_text, Client, Message, Response, ToolDefinition};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    AgentRomStore, NewPrincipal, NewSession, QueryFilter, RuntimeStore, SessionDirectoryStore,
+    CustomStore, NewPrincipal, NewSession, QueryFilter, RuntimeStore, SessionDirectoryStore,
     SessionMountKind,
 };
 use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy};
@@ -33,22 +33,22 @@ impl Client for CaptureClient {
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         self.requests.lock().unwrap().push((messages, tools));
         Ok(Response {
-            content: "ROM test complete".into(),
+            content: "Custom test complete".into(),
             tool_calls: vec![],
         })
     }
 }
-fn rom_command(
+fn custom_command(
     agent: &str,
     principal: Option<&str>,
     id: &str,
     revision: u64,
     name: &str,
-) -> PutAgentRomCommand {
-    PutAgentRomCommand {
+) -> PutCustomCommand {
+    PutCustomCommand {
         command_id: id.into(),
         expected_revision: revision,
-        key: AgentRomKey {
+        key: CustomKey {
             agent_id: agent.into(),
             namespace: if principal.is_some() {
                 "example.human"
@@ -66,7 +66,7 @@ fn rom_command(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring_bytes() {
+async fn empty_enabled_agent_profile_saves_switch_without_model_custom_or_authoring_bytes() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("runtime-empty-enabled-profile.db");
     let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
@@ -110,10 +110,10 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
         .unwrap()
         .unwrap();
 
-    let empty = PutAgentRomCommand {
+    let empty = PutCustomCommand {
         command_id: "runtime-empty-profile-on".into(),
         expected_revision: 0,
-        key: AgentRomKey {
+        key: CustomKey {
             agent_id: identity.agent_id.clone(),
             namespace: "morphz.profile.agent".into(),
             principal_scope: None,
@@ -126,10 +126,10 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
         enabled: true,
     };
     store
-        .put_agent_rom(empty.clone(), "trusted-host")
+        .put_custom(empty.clone(), "trusted-host")
         .await
         .unwrap();
-    let persisted = store.get_agent_rom(&empty.key).await.unwrap().unwrap();
+    let persisted = store.get_custom(&empty.key).await.unwrap().unwrap();
     assert!(persisted.enabled);
     assert!(persisted
         .canonical_authoring_state
@@ -160,12 +160,12 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
         serde_json::to_value(&enabled_empty.1).unwrap()
     );
     let text = model_visible_message_text(&enabled_empty.0[1]);
-    assert!(!text.contains("(agent-rom "));
+    assert!(!text.contains("(custom "));
     assert!(!text.contains("(agent-profile "));
     assert!(!serde_json::to_string(&enabled_empty)
         .unwrap()
         .contains("INACTIVE_EMPTY_STYLE_NEVER_MODEL"));
-    assert!(!enabled_empty.0[0].content.contains(ROM_SYSTEM_RULE));
+    assert!(!enabled_empty.0[0].content.contains(CUSTOM_SYSTEM_RULE));
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
         .await
         .unwrap();
@@ -183,7 +183,7 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
             .await
             .unwrap();
     let frozen = store
-        .get_thread_rom(&empty_thread_id)
+        .get_thread_custom(&empty_thread_id)
         .await
         .unwrap()
         .unwrap();
@@ -195,7 +195,7 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
     named.command_id = "runtime-empty-profile-name".into();
     named.expected_revision = 1;
     named.body_sexpr = "(agent-profile (version 2) (identity (name Nora)))".into();
-    store.put_agent_rom(named, "trusted-host").await.unwrap();
+    store.put_custom(named, "trusted-host").await.unwrap();
     session
         .send(
             "configured profile",
@@ -209,19 +209,19 @@ async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring
         .unwrap()
         .unwrap();
     let requests = client.requests.lock().unwrap().clone();
-    assert!(requests[2].0[0].content.contains(ROM_SYSTEM_RULE));
+    assert!(requests[2].0[0].content.contains(CUSTOM_SYSTEM_RULE));
     assert!(model_visible_message_text(&requests[2].0[1]).contains("(identity (name Nora))"));
     assert!(!serde_json::to_string(&requests)
         .unwrap()
         .contains("INACTIVE_EMPTY_STYLE_NEVER_MODEL"));
     assert_eq!(
-        store.bind_thread_rom(&empty_thread_id).await.unwrap(),
+        store.bind_thread_custom(&empty_thread_id).await.unwrap(),
         frozen
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_binding() {
+async fn actual_model_requests_mount_scoped_custom_and_record_immutable_attempt_binding() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("runtime-rom.db");
     let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
@@ -247,7 +247,7 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
             agent_id: identity.agent_id.clone(),
             context_id: identity.context_id.clone(),
             parent_session_id: None,
-            title: "ROM test".into(),
+            title: "Custom test".into(),
             mount_kind: SessionMountKind::ExistingContext,
         })
         .await
@@ -262,9 +262,9 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         .unwrap()
         .unwrap();
     let baseline = client.requests.lock().unwrap()[0].0.clone();
-    assert!(!model_visible_message_text(&baseline[1]).contains("(agent-rom "));
-    assert!(!baseline[0].content.contains(ROM_SYSTEM_RULE));
-    let mut first = rom_command(
+    assert!(!model_visible_message_text(&baseline[1]).contains("(custom "));
+    assert!(!baseline[0].content.contains(CUSTOM_SYSTEM_RULE));
+    let mut first = custom_command(
         &identity.agent_id,
         None,
         "rom-runtime-agent-create",
@@ -274,12 +274,12 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     first.authoring_state_sexpr =
         Some("(editor (custom INACTIVE_STYLE_ONLY_CONTROL_PLANE) (custom-enabled false))".into());
     store
-        .put_agent_rom(first.clone(), "trusted-host")
+        .put_custom(first.clone(), "trusted-host")
         .await
         .unwrap();
     store
-        .put_agent_rom(
-            rom_command(
+        .put_custom(
+            custom_command(
                 &identity.agent_id,
                 Some(&identity.principal_id),
                 "rom-runtime-human-create",
@@ -300,8 +300,8 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         .await
         .unwrap();
     store
-        .put_agent_rom(
-            rom_command(
+        .put_custom(
+            custom_command(
                 &identity.agent_id,
                 Some("other-runtime-human"),
                 "rom-runtime-other-human",
@@ -329,7 +329,7 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     let (configured, tools) = &requests[1];
     let text = model_visible_message_text(&configured[1]);
     let parsed = morphz::sexpr::parse(text[text.find("(context ").unwrap()..].trim()).unwrap();
-    let rom = parsed.get_path(&["agent-rom"]).unwrap().to_string();
+    let rom = parsed.get_path(&["custom"]).unwrap().to_string();
     assert!(rom.contains("Nora") && rom.contains("Alice"));
     assert!(!rom.contains("SECRET_BOB"));
     assert!(!serde_json::to_string(&configured)
@@ -338,22 +338,22 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     assert!(!serde_json::to_string(&configured)
         .unwrap()
         .contains("canonical_authoring_state"));
-    assert!(text.find("(protocol ").unwrap() < text.find("(agent-rom ").unwrap());
-    assert!(text.find("(agent-rom ").unwrap() < text.find("(evaluation-profile ").unwrap());
+    assert!(text.find("(protocol ").unwrap() < text.find("(custom ").unwrap());
+    assert!(text.find("(custom ").unwrap() < text.find("(evaluation-profile ").unwrap());
     assert!(configured[0].content.starts_with(&baseline[0].content));
-    assert!(configured[0].content.contains(ROM_SYSTEM_RULE));
+    assert!(configured[0].content.contains(CUSTOM_SYSTEM_RULE));
     assert!(
         !tools
             .iter()
-            .any(|t| t.name.contains("rom") || t.name == "put_agent_rom"),
+            .any(|t| t.name.contains("rom") || t.name.contains("custom")),
         "No generic control-plane tool for Agent"
     );
     assert_eq!(
         runtime.mind_version(&identity.context_id).await.unwrap(),
         mind_before,
-        "ROM does not mutate Mind version"
+        "Custom does not mutate Mind version"
     );
-    let version = runtime.get_agent_rom(&first.key).await.unwrap().unwrap();
+    let version = runtime.get_custom(&first.key).await.unwrap().unwrap();
     assert!(version
         .canonical_authoring_state
         .as_deref()
@@ -367,17 +367,17 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         format!("(rollback {})", version.entry_id),
     ] {
         let tx = format!(
-            "(context-tx (base-version {mind_before}) (reason test-ROM-read-only) {operation})"
+            "(context-tx (base-version {mind_before}) (reason test-Custom-read-only) {operation})"
         );
         assert!(
             runtime
                 .apply_context_transaction_strict(&identity.context_id, session.id(), &tx)
                 .await
                 .is_err(),
-            "Agent operation {operation} cannot modify ROM"
+            "Agent operation {operation} cannot modify Custom"
         );
         assert_eq!(
-            runtime.get_agent_rom(&first.key).await.unwrap(),
+            runtime.get_custom(&first.key).await.unwrap(),
             Some(version.clone())
         );
     }
@@ -391,11 +391,11 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         .unwrap();
     let binding = events
         .iter()
-        .find_map(|e| e.payload.get("agent_rom"))
-        .expect("ROM binding metadata must be durable, not ephemeral snapshot only");
+        .find_map(|e| e.payload.get("custom"))
+        .expect("Custom binding metadata must be durable, not ephemeral snapshot only");
     assert_eq!(binding["versions"].as_array().unwrap().len(), 2);
     let old_thread = binding["thread_id"].as_str().unwrap();
-    let old = store.get_thread_rom(old_thread).await.unwrap().unwrap();
+    let old = store.get_thread_custom(old_thread).await.unwrap().unwrap();
     assert!(old
         .entries
         .iter()
@@ -404,13 +404,13 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         .unwrap()
         .contains("INACTIVE_STYLE_ONLY_CONTROL_PLANE"));
     store
-        .put_agent_rom(
-            rom_command(&identity.agent_id, None, "rom-runtime-rename", 1, "Vega"),
+        .put_custom(
+            custom_command(&identity.agent_id, None, "rom-runtime-rename", 1, "Vega"),
             "trusted-host",
         )
         .await
         .unwrap();
-    assert_eq!(store.bind_thread_rom(old_thread).await.unwrap(), old);
+    assert_eq!(store.bind_thread_custom(old_thread).await.unwrap(), old);
     session
         .send(
             "new renamed request",
@@ -425,7 +425,7 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         .unwrap();
     let requests = client.requests.lock().unwrap();
     let text = model_visible_message_text(&requests[2].0[1]);
-    let rom_start = text.find("(agent-rom ").unwrap();
+    let rom_start = text.find("(custom ").unwrap();
     let profile_start = text.find("(evaluation-profile ").unwrap();
     assert!(text[rom_start..profile_start].contains("Vega"));
     assert!(!text[rom_start..profile_start].contains("Nora"));

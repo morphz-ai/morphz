@@ -12,7 +12,7 @@ import type { HostInvocation } from "../packages/application/src/agent-tools.js"
 import { hostOperations } from "../packages/application/src/agent-tools.js";
 import { defaultHumanProfile } from "../packages/core/src/profile.js";
 
-test("Agent Profile请求经过持久根输入来源校验，仅提议并明确待用户确认，不直接改ROM/头像", async () => {
+test("Agent Profile请求经过持久根输入来源校验，仅提议并明确待用户确认，不直接改Custom/头像", async () => {
   let active = true;
   const route: HostInvocation = {
     job_id: "job",
@@ -143,7 +143,7 @@ test("Agent Profile请求经过持久根输入来源校验，仅提议并明确�
     assert.equal(initial.human.revision, 0);
     assert.equal(initial.human.available, false);
     assert.equal(initial.human.enabled, false);
-    assert.equal(presentationReads, 0); // Identity display name is not optional ROM data.
+    assert.equal(presentationReads, 0); // Identity display name is not optional Custom data.
     const agentRead = await authority.withInvocation(route, (actor) =>
       profile.agentOperation(actor, { action: "read" }),
     );

@@ -1144,12 +1144,7 @@ impl Server {
                 "/api/agents",
                 get(handle_list_agents).post(handle_create_agent),
             )
-            .route("/api/agents/:agent_id/rom", get(handle_list_agent_rom))
-            .route(
-                "/api/agents/:agent_id/rom/:namespace",
-                get(handle_get_agent_rom).put(handle_put_agent_rom),
-            )
-            .route("/api/threads/:thread_id/rom", get(handle_thread_rom))
+            .merge(custom_operator_routes())
             .route(
                 "/api/agents/:agent_id/provider-accounts",
                 get(handle_get_agent_provider_bindings),
@@ -4229,23 +4224,41 @@ async fn handle_list_agents(
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct AgentRomQuery {
+struct CustomQuery {
     token: Option<String>,
     principal_scope: Option<String>,
 }
 
-async fn handle_list_agent_rom(
+// Both API generations use the same handlers and authenticated actor. In
+// particular, retrying a command through either path shares its one receipt.
+fn custom_operator_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/api/agents/:agent_id/custom", get(handle_list_custom))
+        .route(
+            "/api/agents/:agent_id/custom/:namespace",
+            get(handle_get_custom).put(handle_put_custom),
+        )
+        .route("/api/threads/:thread_id/custom", get(handle_thread_custom))
+        .route("/api/agents/:agent_id/rom", get(handle_list_custom))
+        .route(
+            "/api/agents/:agent_id/rom/:namespace",
+            get(handle_get_custom).put(handle_put_custom),
+        )
+        .route("/api/threads/:thread_id/rom", get(handle_thread_custom))
+}
+
+async fn handle_list_custom(
     State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<AgentRomQuery>,
+    Query(query): Query<CustomQuery>,
 ) -> axum::response::Response {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
     match state
         .sdk
-        .list_agent_rom_as_operator(&agent_id, query.principal_scope.as_deref())
+        .list_custom_as_operator(&agent_id, query.principal_scope.as_deref())
         .await
     {
         Ok(entries) => Json(json!({"entries":entries})).into_response(),
@@ -4282,33 +4295,33 @@ async fn handle_ensure_self_principal(
     }
 }
 
-async fn handle_get_agent_rom(
+async fn handle_get_custom(
     State(state): State<Arc<AppState>>,
     Path((agent_id, namespace)): Path<(String, String)>,
     headers: HeaderMap,
-    Query(query): Query<AgentRomQuery>,
+    Query(query): Query<CustomQuery>,
 ) -> axum::response::Response {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let key = crate::agent_rom::AgentRomKey {
+    let key = crate::context::CustomKey {
         agent_id,
         namespace,
         principal_scope: query.principal_scope,
     };
-    match state.sdk.get_agent_rom_as_operator(&key).await {
+    match state.sdk.get_custom_as_operator(&key).await {
         Ok(Some(record)) => Json(record).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "ROM entry does not exist"),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Custom entry does not exist"),
         Err(error) => sdk_error_response(error),
     }
 }
 
-async fn handle_put_agent_rom(
+async fn handle_put_custom(
     State(state): State<Arc<AppState>>,
     Path((agent_id, namespace)): Path<(String, String)>,
     headers: HeaderMap,
-    Query(query): Query<AgentRomQuery>,
-    Json(command): Json<crate::agent_rom::PutAgentRomCommand>,
+    Query(query): Query<CustomQuery>,
+    Json(command): Json<crate::context::PutCustomCommand>,
 ) -> axum::response::Response {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -4319,21 +4332,21 @@ async fn handle_put_agent_rom(
     {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "ROM route/query must match command key",
+            "Custom route/query must match command key",
         );
     }
     // The credential grants Runtime operator authority; request text does not
     // nominate an actor. Private principal_scope is a target, never auth proof.
     match state
         .sdk
-        .put_agent_rom_as_operator(command, "http-operator")
+        .put_custom_as_operator(command, "http-operator")
         .await
     {
         Ok(mutation) => {
             let status = match &mutation {
-                crate::agent_rom::AgentRomMutation::Committed { .. } => StatusCode::OK,
-                crate::agent_rom::AgentRomMutation::Conflict { .. } => StatusCode::CONFLICT,
-                crate::agent_rom::AgentRomMutation::NotFound => StatusCode::NOT_FOUND,
+                crate::context::CustomMutation::Committed { .. } => StatusCode::OK,
+                crate::context::CustomMutation::Conflict { .. } => StatusCode::CONFLICT,
+                crate::context::CustomMutation::NotFound => StatusCode::NOT_FOUND,
             };
             (status, Json(mutation)).into_response()
         }
@@ -4341,7 +4354,7 @@ async fn handle_put_agent_rom(
     }
 }
 
-async fn handle_thread_rom(
+async fn handle_thread_custom(
     State(state): State<Arc<AppState>>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
@@ -4350,9 +4363,9 @@ async fn handle_thread_rom(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.sdk.thread_rom_as_operator(&thread_id).await {
+    match state.sdk.get_thread_custom_as_operator(&thread_id).await {
         Ok(Some(manifest)) => Json(manifest).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Thread ROM has not been bound"),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Thread Custom has not been bound"),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -11081,10 +11094,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rom_control_plane_and_self_identity_require_real_ingress_authority() {
+    async fn custom_control_plane_and_self_identity_require_real_ingress_authority() {
         let temp = tempfile::TempDir::new().unwrap();
         let (default_state, runtime) =
-            test_state_at_with_workers(&temp.path().join("rom-http.db"), false).await;
+            test_state_at_with_workers(&temp.path().join("custom-http.db"), false).await;
         let state = Arc::new(AppState {
             runtime: runtime.clone(),
             sdk: MorphzSdk::new(runtime.clone()),
@@ -11169,7 +11182,7 @@ mod tests {
             .create_agent_bundle(
                 NewAgent {
                     id: "agent-test".into(),
-                    title: "ROM HTTP test".into(),
+                    title: "Custom HTTP test".into(),
                     root_context_id: "context-test".into(),
                 },
                 NewCognitiveContext {
@@ -11188,10 +11201,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let command = crate::agent_rom::PutAgentRomCommand {
+        let command = crate::context::PutCustomCommand {
             command_id: "rom-http-create".into(),
             expected_revision: 0,
-            key: crate::agent_rom::AgentRomKey {
+            key: crate::context::CustomKey {
                 agent_id: "agent-test".into(),
                 namespace: "example.human".into(),
                 principal_scope: Some("rom-human".into()),
@@ -11201,13 +11214,13 @@ mod tests {
             authoring_state_sexpr: None,
             enabled: true,
         };
-        let query = || AgentRomQuery {
+        let query = || CustomQuery {
             token: None,
             principal_scope: Some("rom-human".into()),
         };
         let path = || Path(("agent-test".into(), "example.human".into()));
         assert_eq!(
-            handle_put_agent_rom(
+            handle_put_custom(
                 State(state.clone()),
                 path(),
                 gateway_headers(Some("rom-human")),
@@ -11219,11 +11232,11 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "Gateway identity is not operator configuration authority"
         );
-        assert!(runtime.get_agent_rom(&command.key).await.unwrap().is_none());
+        assert!(runtime.get_custom(&command.key).await.unwrap().is_none());
         let mut bad = command.clone();
         bad.key.principal_scope = None;
         assert_eq!(
-            handle_put_agent_rom(
+            handle_put_custom(
                 State(state.clone()),
                 path(),
                 dashboard_headers(),
@@ -11235,7 +11248,7 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         for duplicate in [false, true] {
-            let response = handle_put_agent_rom(
+            let response = handle_put_custom(
                 State(state.clone()),
                 path(),
                 dashboard_headers(),
@@ -11254,7 +11267,7 @@ mod tests {
         let mut conflict = command.clone();
         conflict.command_id = "rom-http-stale".into();
         assert_eq!(
-            handle_put_agent_rom(
+            handle_put_custom(
                 State(state.clone()),
                 path(),
                 dashboard_headers(),
@@ -11266,7 +11279,7 @@ mod tests {
             StatusCode::CONFLICT
         );
         assert_eq!(
-            handle_get_agent_rom(
+            handle_get_custom(
                 State(state.clone()),
                 path(),
                 gateway_headers(Some("rom-human")),
@@ -11276,11 +11289,11 @@ mod tests {
             .status(),
             StatusCode::UNAUTHORIZED
         );
-        let response = handle_list_agent_rom(
+        let response = handle_list_custom(
             State(state.clone()),
             Path("agent-test".into()),
             dashboard_headers(),
-            Query(AgentRomQuery {
+            Query(CustomQuery {
                 token: None,
                 principal_scope: None,
             }),
@@ -11293,6 +11306,221 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
             json!({"entries":[]})
         );
+    }
+
+    #[tokio::test]
+    async fn custom_and_legacy_http_routes_share_receipts_and_operator_scope() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (mut state, runtime) =
+            test_state_at_with_workers(&temp.path().join("custom-aliases.db"), false).await;
+        let state_mut = Arc::get_mut(&mut state).unwrap();
+        state_mut.auth_token = Some("dashboard-secret".into());
+        state_mut.gateway_token = Some("gateway-secret".into());
+        state_mut.identity.mode = ServerIdentityMode::TrustedGateway;
+        runtime
+            .ensure_agent(NewAgent {
+                id: "agent-test".into(),
+                title: "Custom aliases".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        state
+            .sdk
+            .ensure_authenticated_principal(PrincipalAssertion {
+                principal_id: "custom-human".into(),
+                provider_id: "test-ingress".into(),
+                assurance: "test".into(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = custom_operator_routes().with_state(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        for (first, second, principal_scope) in [
+            ("custom", "rom", Some("custom-human")),
+            ("rom", "custom", None),
+        ] {
+            let command = crate::context::PutCustomCommand {
+                command_id: format!("custom-alias-{first}"),
+                expected_revision: 0,
+                key: crate::context::CustomKey {
+                    agent_id: "agent-test".into(),
+                    namespace: "example.profile".into(),
+                    principal_scope: principal_scope.map(str::to_owned),
+                },
+                schema_tag: "example/v1".into(),
+                body_sexpr: "(profile (name Echo))".into(),
+                authoring_state_sexpr: Some("(editor (retained INACTIVE_ONLY))".into()),
+                enabled: true,
+            };
+            let query = principal_scope
+                .map(|scope| format!("?principal_scope={scope}"))
+                .unwrap_or_default();
+            let path = |resource: &str| {
+                format!("{base_url}/api/agents/agent-test/{resource}/example.profile{query}")
+            };
+            for resource in [first, second] {
+                let response = client
+                    .put(path(resource))
+                    .bearer_auth("gateway-secret")
+                    .header("x-morphz-principal", "custom-human")
+                    .json(&command)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 401);
+                for url in [
+                    path(resource),
+                    format!("{base_url}/api/agents/agent-test/{resource}{query}"),
+                    format!("{base_url}/api/threads/missing-thread/{resource}"),
+                ] {
+                    let response = client
+                        .get(url)
+                        .bearer_auth("gateway-secret")
+                        .header("x-morphz-principal", "custom-human")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 401);
+                }
+            }
+            assert!(runtime.get_custom(&command.key).await.unwrap().is_none());
+            for resource in [first, second] {
+                let mut mismatched = command.clone();
+                mismatched.key.namespace = "different.namespace".into();
+                let response = client
+                    .put(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .json(&mismatched)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 400);
+            }
+            assert!(runtime.get_custom(&command.key).await.unwrap().is_none());
+            let mut committed: Option<Value> = None;
+            for (resource, duplicate) in [(first, false), (second, true)] {
+                let response = client
+                    .put(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .json(&command)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                let response: Value = response.json().await.unwrap();
+                assert_eq!(response["duplicate"], duplicate);
+                assert_eq!(response["record"]["revision"], 1);
+                assert_eq!(response["receipt"]["actor_authority_id"], "http-operator");
+                if let Some(previous) = &committed {
+                    assert_eq!(response["record"], previous["record"]);
+                    assert_eq!(response["receipt"], previous["receipt"]);
+                } else {
+                    committed = Some(response);
+                }
+            }
+            let committed = committed.unwrap();
+            for resource in [first, second] {
+                let response = client
+                    .get(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                assert_eq!(response.json::<Value>().await.unwrap(), committed["record"]);
+                let mut stale = command.clone();
+                stale.command_id = format!("stale-{first}-{resource}");
+                let response = client
+                    .put(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .json(&stale)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 409);
+                let conflict: Value = response.json().await.unwrap();
+                assert_eq!(conflict["status"], "conflict");
+                assert_eq!(conflict["current"], committed["record"]);
+                let response = client
+                    .get(format!(
+                        "{base_url}/api/agents/agent-test/{resource}{query}"
+                    ))
+                    .bearer_auth("dashboard-secret")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                let listed: Value = response.json().await.unwrap();
+                assert_eq!(listed["entries"], json!([committed["record"]]));
+            }
+        }
+        for resource in ["custom", "rom"] {
+            let response = client
+                .get(format!(
+                    "{base_url}/api/agents/agent-test/{resource}?principal_scope=someone-else"
+                ))
+                .bearer_auth("dashboard-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.json::<Value>().await.unwrap(),
+                json!({"entries":[]})
+            );
+            let response = client
+                .get(format!("{base_url}/api/threads/missing-thread/{resource}"))
+                .bearer_auth("dashboard-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 404);
+            let missing: Value = response.json().await.unwrap();
+            assert_eq!(missing["error"]["code"], "not_found");
+            assert_eq!(missing["error"]["message"], "Thread Custom has not been bound");
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn custom_and_legacy_routes_preserve_tokenless_operator_semantics() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let client = reqwest::Client::new();
+        for gateway_mode in [false, true] {
+            let (mut state, _runtime) = test_state_at_with_workers(
+                &temp
+                    .path()
+                    .join(format!("custom-tokenless-{gateway_mode}.db")),
+                false,
+            )
+            .await;
+            if gateway_mode {
+                let state_mut = Arc::get_mut(&mut state).unwrap();
+                state_mut.identity.mode = ServerIdentityMode::TrustedGateway;
+                state_mut.gateway_token = Some("gateway-secret".into());
+            }
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let app = custom_operator_routes().with_state(state);
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            for resource in ["custom", "rom"] {
+                let mut request =
+                    client.get(format!("{base_url}/api/agents/agent-test/{resource}"));
+                if gateway_mode {
+                    request = request
+                        .bearer_auth("gateway-secret")
+                        .header("x-morphz-principal", "custom-human");
+                }
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status().as_u16(), if gateway_mode { 401 } else { 200 },
+                    "{resource}: tokenless local default access must not become gateway operator authority");
+            }
+            server.abort();
+        }
     }
 
     #[tokio::test]

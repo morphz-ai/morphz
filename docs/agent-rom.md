@@ -1,5 +1,10 @@
 # Agent ROM: caller-owned read-only configuration
 
+> Compatibility reference: the current concept is **Context Custom**. Use
+> [`context::Custom`, `(custom ...)` and the `/custom` APIs](context-custom.md)
+> for new work. This page retains the legacy names used by existing bindings,
+> storage identities and compatibility APIs; it is not a second mechanism.
+
 ROM is versioned factory configuration supplied by an authenticated operator or
 trusted embedding Host. It is **not Mind memory**, not an Objective, not a Harness,
 and not a new model-callable tool. Runtime does not hard-code personality fields.
