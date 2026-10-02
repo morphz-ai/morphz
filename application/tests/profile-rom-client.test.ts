@@ -350,7 +350,60 @@ test("Host Profile连接错误和非法Header不会把管理凭据放进错误�
   assert.equal(requests, 1);
 });
 
-test("停用保留已选字段且可正常读取，全未设置强制disabled并保留CAS/丢回执重试", async () => {
+test("Agent空资料显式on/off精确读回，省略enabled保留按有效字段默认且仅查看零写入", async () => {
+  const f = await fixture();
+  try {
+    await f.client.read(localAccess);
+    await f.client.read(localAccess);
+    assert.equal(f.records.size, 0);
+    assert.equal(f.calls.filter((call) => call.method === "PUT").length, 0);
+    const named = { ...defaultAgentProfile, name: "Echo" };
+    const cases = [
+      { data: defaultAgentProfile, expected: false },
+      { data: defaultAgentProfile, enabled: true, expected: true },
+      { data: defaultAgentProfile, enabled: false, expected: false },
+      { data: defaultAgentProfile, enabled: true, expected: true },
+      { data: named, expected: true },
+      { data: named, enabled: false, expected: false },
+    ];
+    for (const [index, item] of cases.entries()) {
+      const command = {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: index,
+        data: item.data,
+        ...("enabled" in item ? { enabled: item.enabled } : {}),
+      };
+      const saved = await f.client.update(localAccess, command);
+      assert.equal(saved.revision, index + 1);
+      assert.equal(saved.enabled, item.expected);
+      assert.deepEqual(saved.data, item.data);
+      const reopened = new RuntimeProfileClient(() => f.config);
+      assert.deepEqual((await reopened.read(localAccess)).agent, {
+        revision: index + 1,
+        enabled: item.expected,
+        data: item.data,
+      });
+      const record = [...f.records.values()][0]!;
+      assert.equal(record.enabled, item.expected);
+      assert.equal(
+        record.canonical_sexpr,
+        compileProfileRom("agent", item.data),
+      );
+      assert.equal(
+        record.canonical_authoring_state,
+        compileProfileAuthoringState(item.data),
+      );
+      assert.deepEqual(await f.client.update(localAccess, command), saved);
+    }
+    assert.equal(f.records.size, 1);
+    assert.equal(f.receipts.size, cases.length);
+  } finally {
+    await f.close();
+  }
+});
+
+test("停用保留字段，Agent显式空启用真实持久且保留CAS/丢回执重试；Human空值仍停用", async () => {
   const f = await fixture();
   try {
     const data = {
@@ -404,8 +457,13 @@ test("停用保留已选字段且可正常读取，全未设置强制disabled并
     await assert.rejects(lossy.update(localAccess, emptyRequest), /连接失败/);
     const empty = await lossy.update(localAccess, emptyRequest);
     assert.equal(empty.revision, 3);
-    assert.equal(empty.enabled, false);
+    assert.equal(empty.enabled, true);
     assert.deepEqual(empty.data, defaultAgentProfile);
+    assert.deepEqual((await f.client.read(localAccess)).agent, {
+      revision: 3,
+      enabled: true,
+      data: defaultAgentProfile,
+    });
     assert.equal(
       [...f.records.values()][0]?.canonical_sexpr,
       "(agent-profile (version 2))",
@@ -417,7 +475,11 @@ test("停用保留已选字段且可正常读取，全未设置强制disabled并
     );
     assert.equal(puts.length, 2);
     assert.equal(puts[0]?.body, puts[1]?.body);
-    assert.equal(JSON.parse(puts[0]!.body).enabled, false);
+    assert.equal(JSON.parse(puts[0]!.body).enabled, true);
+    await assert.rejects(
+      f.client.update(localAccess, { ...emptyRequest, enabled: false }),
+      /Profile 已更新/,
+    );
     await assert.rejects(
       f.client.update(localAccess, {
         ...emptyRequest,
@@ -443,7 +505,7 @@ test("停用保留已选字段且可正常读取，全未设置强制disabled并
       enabled: true,
       data: { ...defaultAgentProfile, customStyle: "   " },
     });
-    assert.equal(emptyCustom.enabled, false);
+    assert.equal(emptyCustom.enabled, true);
     assert.deepEqual(emptyCustom.data, defaultAgentProfile);
     const emptyAddress = await f.client.update(localAccess, {
       subject: "human",
@@ -526,7 +588,7 @@ test("字段off作者态保留原文、有效BODY零marker；重新on恢复且�
         customStyleEnabled: false,
       },
     });
-    assert.equal(onlyOff.enabled, false);
+    assert.equal(onlyOff.enabled, true);
     assert.equal(
       [...f.records.values()][0]!.canonical_sexpr,
       "(agent-profile (version 2))",
@@ -754,7 +816,7 @@ test("真实embedded Host的disabled/全未设置Profile仍可读编辑和显示
     );
     const empty = await read();
     assert.equal(empty.agent.available, true);
-    assert.equal(empty.agent.enabled, false);
+    assert.equal(empty.agent.enabled, true);
     assert.deepEqual(empty.agent.data, defaultAgentProfile);
     assert.deepEqual(empty.agent.avatar, avatar);
     const retained = {

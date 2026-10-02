@@ -125,7 +125,8 @@ export function ProfileEditor({
   const configured = hasConfiguration(data);
   // Retained choices with enabled=false are an explicit opt-out, not a
   // request to activate the whole Profile when another field is selected.
-  const canActivate = enabled || !configured;
+  const canActivate =
+    enabled || (!configured && (subject === "human" || actual?.revision === 0));
   const Heading = subject === "agent" ? "h3" : "h2";
   const headingText = subject === "agent" ? "设定" : "个人资料";
   const avatarPending = useRef<
@@ -163,7 +164,7 @@ export function ProfileEditor({
     profile.edit(
       subject,
       next,
-      configured || allowEmpty ? nextEnabled : false,
+      subject === "agent" || configured || allowEmpty ? nextEnabled : false,
       delay,
     );
   };
@@ -197,13 +198,14 @@ export function ProfileEditor({
     // A field's use and its retained authoring text are separate. The Host
     // atomically persists this choice with the effective ROM projection.
     const agent = data as AgentProfileData;
+    const next = {
+      ...agent,
+      customStyle: agent.customStyle ?? (checked ? "" : null),
+      customStyleEnabled: checked,
+    };
     change(
-      {
-        ...agent,
-        customStyle: agent.customStyle ?? (checked ? "" : null),
-        customStyleEnabled: checked,
-      },
-      checked ? canActivate : enabled,
+      next,
+      checked && hasConfiguration(next) ? canActivate : enabled,
       0,
       checked && enabled,
     );
@@ -381,17 +383,22 @@ export function ProfileEditor({
     subject === "human"
       ? (actual?.data as HumanProfileData | undefined)?.preferredAddress
       : null;
-  const humanUsageToggle = (
+  const usageLabel = subject === "agent" ? "使用人格设定" : "使用个人资料";
+  const usageToggle = (
     <label
       className="personality-master"
-      title="使用个人资料；关闭后不提供名字和称呼，选值保留"
+      title={
+        subject === "agent"
+          ? "使用人格设定；关闭后不提供自定义名字和表达偏好，选值保留"
+          : "使用个人资料；关闭后不提供名字和称呼，选值保留"
+      }
     >
-      <span className="profile-visually-hidden">使用个人资料</span>
+      <span className="profile-visually-hidden">{usageLabel}</span>
       <input
         type="checkbox"
-        aria-label="使用个人资料"
-        checked={configured && enabled}
-        disabled={!editable || !configured}
+        aria-label={usageLabel}
+        checked={subject === "agent" ? enabled : configured && enabled}
+        disabled={!editable || (subject === "human" && !configured)}
         onChange={(e) => {
           activateText.clear();
           change(data, e.target.checked);
@@ -426,12 +433,12 @@ export function ProfileEditor({
       className="personality-profile"
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
-      data-profile-use={configured && enabled}
+      data-profile-use={subject === "agent" ? enabled : configured && enabled}
     >
       {human && (
         <div className="personality-heading">
           <Heading>{headingText}</Heading>
-          {humanUsageToggle}
+          {usageToggle}
         </div>
       )}
       <div className="personality-identity">
@@ -539,6 +546,7 @@ export function ProfileEditor({
             </button>
           )}
         </div>
+        {agent && usageToggle}
       </div>
       {human && (
         <div className="personality-field">
@@ -765,29 +773,6 @@ export function ProfileEditor({
             </div>
           </div>
         </PersistentDetails>
-      )}
-      {agent && configured && (
-        <div className="personality-usage">
-          {!enabled && actual?.available && !actual.enabled && (
-            <span>未使用人格设定</span>
-          )}
-          <button
-            className="personality-usage-action"
-            type="button"
-            disabled={!editable}
-            title={
-              enabled
-                ? "不向新工作提供自定义名字和表达偏好，保留全部选值；头像和 Agent 运行不受影响"
-                : "向新工作提供这些名字和表达偏好；未设置的项保持不设置"
-            }
-            onClick={() => {
-              activateText.clear();
-              change(data, !enabled);
-            }}
-          >
-            {enabled ? "不使用人格设定" : "使用这些设定"}
-          </button>
-        </div>
       )}
       {!actual?.editable && actual?.available && (
         <p className="muted">由中心管理员管理</p>

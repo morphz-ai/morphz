@@ -66,6 +66,161 @@ fn rom_command(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_enabled_agent_profile_saves_switch_without_model_rom_or_authoring_bytes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("runtime-empty-enabled-profile.db");
+    let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(CaptureClient::default());
+    let mut config = AppConfig::default();
+    config.permissions.workspace_root = dir.path().to_string_lossy().into_owned();
+    config.background_task.artifact_dir =
+        dir.path().join("artifacts").to_string_lossy().into_owned();
+    let runtime = MorphzRuntime::builder(config, client.clone() as Arc<dyn Client>)
+        .store(
+            "sqlite:empty-profile-test",
+            store.clone() as Arc<dyn RuntimeStore>,
+        )
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: false,
+        })
+        .build()
+        .await
+        .unwrap();
+    runtime.start().await.unwrap();
+    let identity = runtime.identity().clone();
+    let session = runtime
+        .ensure_session(NewSession {
+            id: "empty-enabled-profile-session".into(),
+            agent_id: identity.agent_id.clone(),
+            context_id: identity.context_id.clone(),
+            parent_session_id: None,
+            title: "Empty profile test".into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let mut replies = runtime.subscribe("chat/reply", 16);
+    session
+        .send("baseline", "Test", Some("empty-profile-baseline".into()))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), replies.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let empty = PutAgentRomCommand {
+        command_id: "runtime-empty-profile-on".into(),
+        expected_revision: 0,
+        key: AgentRomKey {
+            agent_id: identity.agent_id.clone(),
+            namespace: "morphz.profile.agent".into(),
+            principal_scope: None,
+        },
+        schema_tag: "morphz-agent-profile/v2".into(),
+        body_sexpr: "(agent-profile (version 2))".into(),
+        authoring_state_sexpr: Some(
+            "(editor (custom INACTIVE_EMPTY_STYLE_NEVER_MODEL) (custom-enabled false))".into(),
+        ),
+        enabled: true,
+    };
+    store
+        .put_agent_rom(empty.clone(), "trusted-host")
+        .await
+        .unwrap();
+    let persisted = store.get_agent_rom(&empty.key).await.unwrap().unwrap();
+    assert!(persisted.enabled);
+    assert!(persisted
+        .canonical_authoring_state
+        .as_ref()
+        .unwrap()
+        .contains("INACTIVE_EMPTY_STYLE_NEVER_MODEL"));
+    let empty_receipt = session
+        .send(
+            "empty profile enabled",
+            "Test",
+            Some("empty-profile-request".into()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), replies.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let requests = client.requests.lock().unwrap().clone();
+    let baseline = &requests[0];
+    let enabled_empty = &requests[1];
+    assert_eq!(
+        baseline.0[0], enabled_empty.0[0],
+        "Empty enabled Profile does not extend the legacy System contract"
+    );
+    assert_eq!(
+        serde_json::to_value(&baseline.1).unwrap(),
+        serde_json::to_value(&enabled_empty.1).unwrap()
+    );
+    let text = model_visible_message_text(&enabled_empty.0[1]);
+    assert!(!text.contains("(agent-rom "));
+    assert!(!text.contains("(agent-profile "));
+    assert!(!serde_json::to_string(&enabled_empty)
+        .unwrap()
+        .contains("INACTIVE_EMPTY_STYLE_NEVER_MODEL"));
+    assert!(!enabled_empty.0[0].content.contains(ROM_SYSTEM_RULE));
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM thread_rom_bindings")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let empty_thread_id =
+        sqlx::query_scalar::<_, String>("SELECT id FROM threads WHERE root_turn_id=?")
+            .bind(&empty_receipt.event_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let frozen = store
+        .get_thread_rom(&empty_thread_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(frozen.entries.is_empty());
+    assert_eq!(frozen.manifest_hash, manifest_hash(&[]));
+    pool.close().await;
+
+    let mut named = empty.clone();
+    named.command_id = "runtime-empty-profile-name".into();
+    named.expected_revision = 1;
+    named.body_sexpr = "(agent-profile (version 2) (identity (name Nora)))".into();
+    store.put_agent_rom(named, "trusted-host").await.unwrap();
+    session
+        .send(
+            "configured profile",
+            "Test",
+            Some("empty-profile-now-named".into()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), replies.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let requests = client.requests.lock().unwrap().clone();
+    assert!(requests[2].0[0].content.contains(ROM_SYSTEM_RULE));
+    assert!(model_visible_message_text(&requests[2].0[1]).contains("(identity (name Nora))"));
+    assert!(!serde_json::to_string(&requests)
+        .unwrap()
+        .contains("INACTIVE_EMPTY_STYLE_NEVER_MODEL"));
+    assert_eq!(
+        store.bind_thread_rom(&empty_thread_id).await.unwrap(),
+        frozen
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_binding() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("runtime-rom.db");

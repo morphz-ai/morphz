@@ -188,7 +188,10 @@ export function useProfile(client: WorkspaceClient) {
       receipt.subject !== command.subject ||
       receipt.revision !== command.expectedRevision + 1 ||
       receipt.enabled !==
-        (command.enabled === true && profileHasConfiguredFields(command.data))
+        (command.subject === "agent"
+          ? (command.enabled ?? profileHasConfiguredFields(command.data))
+          : command.enabled === true &&
+            profileHasConfiguredFields(command.data))
     )
       throw new Error("保存回执不匹配，请用同一次操作重试。");
     const actual = await refresh();

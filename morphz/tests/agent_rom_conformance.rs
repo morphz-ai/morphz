@@ -348,6 +348,288 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     assert_eq!(v1.canonical_authoring_state, on.authoring_state_sexpr);
 }
 
+async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
+    store: &S,
+    prefix: &str,
+) -> (AgentRomRecord, ThreadRomManifest) {
+    let ids = setup(store, prefix).await;
+    let mut initial = command(
+        &ids.0,
+        "morphz.profile.agent",
+        None,
+        &format!("{prefix}-named"),
+        0,
+        "(agent-profile (version 2) (identity (name Nora)))",
+    );
+    initial.schema_tag = "morphz-agent-profile/v2".into();
+    let named = committed(store.put_agent_rom(initial.clone(), "host").await.unwrap());
+    let named_id = thread(store, &ids, "named", None).await;
+    let old = store.bind_thread_rom(&named_id).await.unwrap();
+    assert_eq!(old.entries, vec![named]);
+    let old_bytes = old.context_rom().unwrap().unwrap().to_string();
+    let mut empty = initial.clone();
+    empty.command_id = format!("{prefix}-empty-on");
+    empty.expected_revision = 1;
+    empty.body_sexpr = " ( agent-profile ( version 2 ) ) ".into();
+    empty.authoring_state_sexpr =
+        Some("(editor (custom RETAIN_EMPTY_PROFILE_EDITOR_ONLY) (custom-enabled false))".into());
+    let saved = committed(store.put_agent_rom(empty.clone(), "host").await.unwrap());
+    assert!(saved.enabled);
+    assert_eq!(saved.canonical_sexpr, "(agent-profile (version 2))");
+    assert!(saved
+        .canonical_authoring_state
+        .as_ref()
+        .unwrap()
+        .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
+    assert_eq!(
+        store.get_agent_rom(&empty.key).await.unwrap(),
+        Some(saved.clone())
+    );
+    assert_eq!(
+        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        vec![saved.clone()]
+    );
+    assert_eq!(
+        committed(store.put_agent_rom(empty.clone(), "host").await.unwrap()),
+        saved
+    );
+    let empty_id = thread(store, &ids, "empty", None).await;
+    let blank = store.bind_thread_rom(&empty_id).await.unwrap();
+    assert!(blank.entries.is_empty());
+    assert_eq!(blank.manifest_hash, manifest_hash(&[]));
+    assert_eq!(blank.compiler_hash, compiler_hash());
+    assert_eq!(blank.context_rom().unwrap(), None);
+    assert!(!serde_json::to_string(&blank)
+        .unwrap()
+        .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
+    assert_eq!(
+        store.get_thread_rom(&empty_id).await.unwrap(),
+        Some(blank.clone())
+    );
+    assert_eq!(store.bind_thread_rom(&named_id).await.unwrap(), old);
+    assert_eq!(
+        store
+            .get_thread_rom(&named_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_rom()
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        old_bytes
+    );
+
+    let mut restored = initial.clone();
+    restored.command_id = format!("{prefix}-restore-named");
+    restored.expected_revision = 2;
+    let restored = committed(store.put_agent_rom(restored, "host").await.unwrap());
+    assert_eq!(
+        store.bind_thread_rom(&empty_id).await.unwrap(),
+        blank,
+        "A frozen empty mount does not acquire later profile fields"
+    );
+    let restored_id = thread(store, &ids, "restored", None).await;
+    assert_eq!(
+        store.bind_thread_rom(&restored_id).await.unwrap().entries,
+        vec![restored]
+    );
+    empty.command_id = format!("{prefix}-empty-again");
+    empty.expected_revision = 3;
+    let saved = committed(store.put_agent_rom(empty.clone(), "host").await.unwrap());
+
+    let mut other_namespace = empty.clone();
+    other_namespace.command_id = format!("{prefix}-other-namespace");
+    other_namespace.expected_revision = 0;
+    other_namespace.key.namespace = "example.same-empty-body".into();
+    let other_namespace = committed(store.put_agent_rom(other_namespace, "host").await.unwrap());
+    let mut other_schema = empty.clone();
+    other_schema.command_id = format!("{prefix}-other-schema");
+    other_schema.expected_revision = 0;
+    other_schema.key.principal_scope = Some(ids.3.clone());
+    other_schema.schema_tag = "example-agent-profile/v2".into();
+    let other_schema = committed(store.put_agent_rom(other_schema, "host").await.unwrap());
+    let mut human = empty.clone();
+    human.command_id = format!("{prefix}-human-empty");
+    human.expected_revision = 0;
+    human.key.namespace = "morphz.profile.human".into();
+    human.key.principal_scope = Some(ids.3.clone());
+    human.schema_tag = "morphz-human-profile/v2".into();
+    human.body_sexpr = "(human-profile (version 2))".into();
+    let human = committed(store.put_agent_rom(human, "host").await.unwrap());
+    let mixed_id = thread(store, &ids, "mixed", Some(&ids.3)).await;
+    let mixed = store.bind_thread_rom(&mixed_id).await.unwrap();
+    let mut expected = vec![other_namespace, other_schema, human];
+    for entry in &mut expected {
+        entry.canonical_authoring_state = None;
+    }
+    expected.sort_by(|a, b| a.key.namespace.cmp(&b.key.namespace));
+    assert_eq!(mixed.entries, expected);
+    assert!(!serde_json::to_string(&mixed)
+        .unwrap()
+        .contains("RETAIN_EMPTY_PROFILE_EDITOR_ONLY"));
+    assert_eq!(
+        store.get_agent_rom(&empty.key).await.unwrap(),
+        Some(saved.clone()),
+        "Selection never rewrites the saved empty enable switch"
+    );
+    let historical_id = thread(store, &ids, "historical-empty", None).await;
+    (
+        saved.clone(),
+        ThreadRomManifest {
+            thread_id: historical_id,
+            agent_id: ids.0,
+            initiating_principal_id: None,
+            manifest_hash: manifest_hash(&[saved.clone()]),
+            compiler_hash: compiler_hash(),
+            bound_at: chrono::Utc::now(),
+            entries: vec![saved],
+        }
+        .without_authoring_state(),
+    )
+}
+
+#[tokio::test]
+async fn sqlite_empty_enabled_agent_profile_omits_only_new_exact_consumer_mounts() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("empty-enabled-profile.db");
+    let store = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+    let (saved, historical) =
+        empty_enabled_profile_conformance(&store, "sqlite-empty-enabled").await;
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM thread_rom_bindings WHERE thread_id=?")
+            .bind("sqlite-empty-enabled-agent-empty")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    // Persist the exact old-version binding shape into this disposable store;
+    // a new binary must read it as-is, not retroactively apply head selection.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO thread_rom_mounts(thread_id,agent_id,initiating_principal_id,manifest_hash,compiler_hash,bound_at) VALUES(?,?,NULL,?,?,?)")
+        .bind(&historical.thread_id).bind(&historical.agent_id).bind(&historical.manifest_hash).bind(&historical.compiler_hash).bind(historical.bound_at.to_rfc3339()).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "INSERT INTO thread_rom_bindings(thread_id,entry_id,revision,ordinal) VALUES(?,?,?,0)",
+    )
+    .bind(&historical.thread_id)
+    .bind(&saved.entry_id)
+    .bind(saved.revision as i64)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    pool.close().await;
+    let historical_bytes = historical.context_rom().unwrap().unwrap().to_string();
+    assert_eq!(
+        store.get_thread_rom(&historical.thread_id).await.unwrap(),
+        Some(historical.clone())
+    );
+    assert_eq!(
+        store.bind_thread_rom(&historical.thread_id).await.unwrap(),
+        historical
+    );
+    drop(store);
+    let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        reopened.get_agent_rom(&saved.key).await.unwrap(),
+        Some(saved)
+    );
+    assert_eq!(
+        reopened
+            .bind_thread_rom(&historical.thread_id)
+            .await
+            .unwrap(),
+        historical
+    );
+    assert_eq!(
+        reopened
+            .get_thread_rom(&historical.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_rom()
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        historical_bytes
+    );
+}
+
+#[tokio::test]
+async fn postgres_empty_enabled_agent_profile_omits_only_new_exact_consumer_mounts() {
+    let Ok(url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        eprintln!("SKIP: MORPHZ_TEST_POSTGRES_URL is not configured");
+        return;
+    };
+    let prefix = format!(
+        "pg-empty-enabled-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    );
+    let store = PostgresStore::new(&url, 4).await.unwrap();
+    let (saved, historical) = empty_enabled_profile_conformance(&store, &prefix).await;
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM thread_rom_bindings WHERE thread_id=$1")
+            .bind(format!("{prefix}-agent-empty"))
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO thread_rom_mounts(thread_id,agent_id,initiating_principal_id,manifest_hash,compiler_hash,bound_at) VALUES($1,$2,NULL,$3,$4,$5)")
+        .bind(&historical.thread_id).bind(&historical.agent_id).bind(&historical.manifest_hash).bind(&historical.compiler_hash).bind(historical.bound_at.to_rfc3339()).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "INSERT INTO thread_rom_bindings(thread_id,entry_id,revision,ordinal) VALUES($1,$2,$3,0)",
+    )
+    .bind(&historical.thread_id)
+    .bind(&saved.entry_id)
+    .bind(saved.revision as i64)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    pool.close().await;
+    let historical_bytes = historical.context_rom().unwrap().unwrap().to_string();
+    assert_eq!(
+        store.get_thread_rom(&historical.thread_id).await.unwrap(),
+        Some(historical.clone())
+    );
+    assert_eq!(
+        store.bind_thread_rom(&historical.thread_id).await.unwrap(),
+        historical
+    );
+    drop(store);
+    let reopened = PostgresStore::new(&url, 4).await.unwrap();
+    assert_eq!(
+        reopened.get_agent_rom(&saved.key).await.unwrap(),
+        Some(saved)
+    );
+    assert_eq!(
+        reopened
+            .bind_thread_rom(&historical.thread_id)
+            .await
+            .unwrap(),
+        historical
+    );
+    assert_eq!(
+        reopened
+            .get_thread_rom(&historical.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_rom()
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        historical_bytes
+    );
+}
+
 async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
     let ids = setup(&*store, prefix).await;
     let empty_thread = thread(&*store, &ids, "bound-empty", Some(&ids.3)).await;

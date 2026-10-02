@@ -1,5 +1,19 @@
 # 桌面能力实施记录
 
+## 2026-10-02 恢复 Logo 右侧直接人格开关
+
+按用户本次明确方向撤回末尾按钮，Agent 身份行恢复 Logo／名字右侧原生「使用人格设定」正向开关，不增加标题或重复关闭文字。沿用原 32×20 胶囊及 44px 触控命中区；按追加要求，总控和单项开关均去掉外焦点圈，鼠标只显示底色与圆点，主动键盘焦点只在胶囊内部提示，Tab／Space 仍可达；不因字段为空或分组收起而禁用。关闭保留全部选值／头像，不停止 Agent，继续编辑不暗中开启；仅尚无 head 的首次有效字段自然使用。Human 原标题开关位置和空字段规则不改。
+
+Agent 总控的明确 true／false 现在经自动提交队列、Host、不可变 ROM revision／CAS／receipt 精确持久，不用本机状态冒充生效；默认读取及空文本展开仍零写。空 on 和清空最后字段保留总体意图，但新 Thread 对精确内建 Agent v2 空 BODY 不绑定、不加 ROM 槽或系统规则。新选择共用 SQLite／PostgreSQL 窄判定，检查原规范版本及内容 hash；其他 namespace／schema、非空 Profile、Human、历史 mount、通用 compiler 与旧 prefix 字节不改。作者态仅保留编辑原文，不参与空配置判定，无新 API 字段、表、列或迁移。实现前设计与边界见 `39-profile-rom-production-design.md` 和 Runtime `docs/agent-rom.md`。
+
+最终去外圈后的完整生产构建退出 0（`/tmp/morphz-profile-logo-toggle-no-outer-ring-build.log`）；Profile UI **43／43**、零跳过（43.8 秒，`/tmp/morphz-profile-no-outer-ring-ui.jnKZOz/profile.log`）。主控与逐项验证鼠标真实焦点无 outline／box-shadow，Tab 真实 focus-visible 时仅内部 inset 提示；新增全空直接开／关／刷新及清空最后字段保持 on，原 Space／Tab、触控外沿、头像取消零修改、权限、CAS、unknown、确认读回、折叠及明暗390px／200% CSS 几何守门保留。明暗及内部键盘提示截图已复看，CSS 几何不称原生 Electron 缩放。追加要求前构建和 UI43／43（40.6 秒）记录仍保留，不用旧结果冒称最新外观验证。相关队列／Host／领域单测 **36／36**、零跳过（`/tmp/morphz-profile-logo-toggle-final-unit.log`）；补充领域／头像／配置组30通过、2缺PG配置跳过（`/tmp/morphz-profile-empty-enabled-domain-unit-headless.log`），不与前组相加。类型、格式与差异检查通过。
+
+实际 UI → typed Host → 隔离 SQL → 最终 Rust Runtime → Provider 请求 **5／5**、零跳过（20.4 秒，`/tmp/morphz-profile-empty-switch.uFZAFm/deterministic-empty-switch.log`）。验证默认0head／receipt／POST、empty on真实SQL enabled1及作者态读回、刷新零重写、新输入on/off/reon均零Profile／ROM／系统扩展／bindings；保留非空0／5、Echo输入保存屏障、停用编辑、自定义 off／原文保留／reload／on、旧Thread绑定、实际CAS和丢回执守门。Runtime SQL／实际请求 **9／9**（含隔离真实PG）、ROM单元 **5／5**、相关Context／cache **38／38**均无跳过，日志 `/tmp/morphz-empty-profile-runtime-sql-final.log`、`/tmp/morphz-empty-profile-unit.log`、`/tmp/morphz-empty-profile-unit-context.log`。以上组不相加为独立总数；Provider为确定性字节验证，未新增付费模型调用或人格效果／上游cache命中验收。首轮Runtime测试使用客户端消息ID查询实际Thread失败，已改用真实 receipt.event_id；首轮App构建捕获测试迁移中途的helper引用不完整，源码冻结后完整重建通过，失败日志保留。
+
+原同一 `/Users/shafreeck/Applications/Morphz.app` 在空输入、听写关闭、资料确认且无 queued／running activation 时正常退出。12库一致SQLite备份、私有配置及退出后desktop副本位于 `/tmp/morphz-original-logo-switch.SJ8pxN`；首次退出中的desktop复制仅因短暂Singleton链接消失而失败，确认进程已退出后完整副本另存 `desktop-stopped`，不将中途副本称为完整备份。原模型凭据只在内存保留，同端点18089正常SIGTERM／重开验证Runtime（67258），再重开同一App，不重签名或新建手工环境。实际窗口及再次Cmd+R均确认身份行总开关可用且off、幽默0／严谨0、原设定页／两组展开、左右显隐及324px／345.875px宽度保持，末尾按钮已消失；没有替用户切换人格、头像、审批、目录、模型或发送消息。
+
+首轮重启核对240表中 **235表逻辑摘要相同**，当时Profile所有版本／回执、ROM绑定、原消息、Threads及未来安排均未变。正常重启只新增2个控制事件（objective_control／runtime_control），原4553事件未改；execution_targets仅last_seen_at、principals仅updated_at、单个Session仅更新时间／活动时间、单个Host runtime_sessions仅确认cursor变化，行数不变。追加外圈要求后的12:36再次核对为 **232／240相同**：资料另有12:32的12个 enabled 交替版本及回执，BODY content_hash保持一致，原26条版本／回执零修改、零删除，head仅推进revision／更新时间。这些提交早于12:35的最新样式构建，不能归因为随后Cmd+R；没有代用户点击总开关，也不回滚后续选择。最新原窗口仍off、幽默0／严谨0和原栏位／分组状态保持，去圈样式已通过Cmd+R载入并实看。没有将首验235或上一轮240全部不变套用于后验；此为本次直接开关实现与验证，不称用户审美或长期人格化目标已经验收。
+
 ## 2026-10-02 人格使用操作的按钮可识别性
 
 用户已找到并体验末尾操作，但原文字样式缺少可点击提示。现仅改其外观：中性底色、1px 细描边、8px 圆角、正常文字色及 12px 横向留白；悬停与按下有反馈，鼠标点击没有额外焦点圈，键盘仍有清晰焦点，触控目标至少 44px，减少动态偏好关闭过渡。沿用现有主题令牌，不使用主按钮或红色删除样式。位置、显示条件、关闭保留选值、自动提交及实际回执语义不改，无 Profile／Host／Runtime／schema 修改。

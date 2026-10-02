@@ -307,6 +307,22 @@ pub fn validate_selection(entries: &[AgentRomRecord]) -> Result<(), AgentRomErro
     Ok(())
 }
 
+/// A directly enabled Morphz Agent Profile may have no selected fields yet.
+/// Only this exact consumer's canonical v2 empty body is omitted when a NEW
+/// Thread chooses heads. Never apply this to historical manifests or the ROM
+/// compiler: their exact bound versions and bytes must remain recoverable.
+/// Authoring state is intentionally irrelevant to the effective selection.
+pub(crate) fn retain_new_thread_effective_rom(entries: &mut Vec<AgentRomRecord>) {
+    entries.retain(|entry| {
+        !(entry.key.namespace == "morphz.profile.agent"
+            && entry.schema_tag == "morphz-agent-profile/v2"
+            && entry.canonical_sexpr == "(agent-profile (version 2))"
+            && entry.canonical_format_version == ROM_FORMAT_VERSION
+            && entry.content_hash
+                == hash_parts("morphz.agent-rom.body.v1", &[&entry.canonical_sexpr]))
+    });
+}
+
 /// Check candidate latest heads, including disabled entries, before committing.
 /// A public change must remain mountable with every private Human scope.
 pub fn validate_candidate_records(entries: &[AgentRomRecord]) -> Result<(), AgentRomError> {
@@ -587,5 +603,126 @@ mod tests {
         assert!(!serde_json::to_string(&clean)
             .unwrap()
             .contains("PRIVATE_EDITOR_TEXT"));
+    }
+
+    #[test]
+    fn new_thread_empty_profile_filter_is_an_exact_consumer_boundary_only() {
+        let command = PutAgentRomCommand {
+            command_id: "empty-profile".into(),
+            expected_revision: 0,
+            key: AgentRomKey {
+                agent_id: "a".into(),
+                namespace: "morphz.profile.agent".into(),
+                principal_scope: None,
+            },
+            schema_tag: "morphz-agent-profile/v2".into(),
+            body_sexpr: " ( agent-profile ( version 2 ) ) ".into(),
+            authoring_state_sexpr: Some("(editor (custom RETAIN_INACTIVE_ONLY))".into()),
+            enabled: true,
+        };
+        let (canonical_sexpr, content_hash, _) = prepare_command(&command, "host").unwrap();
+        let empty = AgentRomRecord {
+            entry_id: stable_entry_id(&command.key),
+            key: command.key,
+            revision: 1,
+            schema_tag: command.schema_tag,
+            canonical_sexpr,
+            canonical_authoring_state: command.authoring_state_sexpr,
+            canonical_format_version: ROM_FORMAT_VERSION,
+            content_hash,
+            enabled: true,
+            created_by: "host".into(),
+            created_at: Utc::now(),
+        };
+        let mut matching = vec![empty.clone()];
+        retain_new_thread_effective_rom(&mut matching);
+        assert!(matching.is_empty());
+        assert_eq!(empty.canonical_sexpr, "(agent-profile (version 2))");
+        assert!(
+            empty.enabled,
+            "Selection does not rewrite the saved enable switch"
+        );
+        for (namespace, schema, body) in [
+            (
+                "example.profile",
+                "morphz-agent-profile/v2",
+                "(agent-profile (version 2))",
+            ),
+            (
+                "morphz.profile.agent",
+                "example/v2",
+                "(agent-profile (version 2))",
+            ),
+            (
+                "morphz.profile.agent",
+                "morphz-agent-profile/v1",
+                "(agent-profile (version 2))",
+            ),
+            (
+                "morphz.profile.agent",
+                "morphz-agent-profile/v2",
+                "(agent-profile (version 2) (identity))",
+            ),
+            (
+                "morphz.profile.agent",
+                "morphz-agent-profile/v2",
+                "(agent-profile (version 2) (identity (name Nora)))",
+            ),
+            (
+                "morphz.profile.agent",
+                "morphz-agent-profile/v2",
+                "(agent-profile (version 3))",
+            ),
+            ("morphz.profile.agent", "morphz-agent-profile/v2", "()"),
+            (
+                "morphz.profile.human",
+                "morphz-human-profile/v2",
+                "(human-profile (version 2))",
+            ),
+        ] {
+            let mut record = empty.clone();
+            record.key.namespace = namespace.into();
+            record.schema_tag = schema.into();
+            record.canonical_sexpr = body.into();
+            let mut selected = vec![record.clone()];
+            retain_new_thread_effective_rom(&mut selected);
+            assert_eq!(selected, vec![record], "{namespace} / {schema} / {body}");
+        }
+        for corrupt_format in [false, true] {
+            let mut corrupt = empty.clone();
+            if corrupt_format {
+                corrupt.canonical_format_version += 1;
+            } else {
+                corrupt.content_hash = "invalid-body-hash".into();
+            }
+            let mut selected = vec![corrupt.clone()];
+            retain_new_thread_effective_rom(&mut selected);
+            assert_eq!(
+                selected,
+                vec![corrupt],
+                "Filtering must not hide an invalid historical format/hash from integrity checks"
+            );
+        }
+
+        // A previously persisted empty-profile mount must still compile exactly
+        // as it did before this selection exception was introduced.
+        let historical = ThreadRomManifest {
+            thread_id: "old".into(),
+            agent_id: "a".into(),
+            initiating_principal_id: None,
+            manifest_hash: manifest_hash(&[empty.clone()]),
+            compiler_hash: compiler_hash(),
+            bound_at: Utc::now(),
+            entries: vec![empty],
+        }
+        .without_authoring_state();
+        let bytes = historical.context_rom().unwrap().unwrap().to_string();
+        assert!(bytes.contains("(body (agent-profile (version 2)))"));
+        assert!(!bytes.contains("RETAIN_INACTIVE_ONLY"));
+        assert_eq!(
+            historical.context_rom().unwrap().unwrap().to_string(),
+            bytes
+        );
+        assert_eq!(historical.manifest_hash, manifest_hash(&historical.entries));
     }
 }

@@ -103,6 +103,18 @@ recovery use those immutable versions, not current heads. Saved changes apply to
 **new Threads**, not already-started work. The manifest is not rebound when Mind
 snapshot versions advance or an existing Thread is retried.
 
+The Morphz Agent Profile consumer has one explicit empty-selection exception:
+at a **new Thread's initial binding only**, namespace `morphz.profile.agent`,
+schema `morphz-agent-profile/v2` and exact canonical body
+`(agent-profile (version 2))` are omitted before hashing/saving bindings. This
+allows its explicit enabled switch to remain durably true without installing
+empty personality instructions. Format and body hash must still be valid;
+authoring text does not make an empty effective Profile nonempty. Other
+namespaces, schemas, nonempty bodies and Human Profile semantics are unchanged.
+Historical mount reads and the generic ROM compiler never apply this exception,
+so even a previously bound empty Profile retains its original Context/cache
+bytes. Saving or reading the entry does not rewrite its enabled value.
+
 Migration `20261002_01_agent_rom` gives pre-existing Threads an explicit empty
 mount, preserving their previous semantics. Migration runs once: a later restart
 must not mount post-migration new Threads empty. An empty mount emits no ROM slot,

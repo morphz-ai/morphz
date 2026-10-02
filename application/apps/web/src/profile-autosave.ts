@@ -271,7 +271,9 @@ export class ProfileAutosave {
     const data = canonical(subject, raw);
     return {
       data,
-      enabled: queue.intent.enabled && profileHasConfiguredFields(data),
+      enabled:
+        queue.intent.enabled &&
+        (subject === "agent" || profileHasConfiguredFields(data)),
     };
   }
 

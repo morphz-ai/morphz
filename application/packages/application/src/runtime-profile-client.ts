@@ -260,8 +260,16 @@ export class RuntimeProfileClient {
       request.subject === "human"
         ? compileProfileRom("human", request.data)
         : compileProfileRom("agent", request.data);
+    // Agent use is explicit caller-owned intent, even before any optional
+    // fields exist. Runtime excludes its exact empty v2 BODY from new Thread
+    // bindings; do not manufacture data or erase the persisted on/off choice.
+    // Omitted enabled keeps the earlier configured-fields default. Human's
+    // existing empty-profile clamp is deliberately unchanged.
+    const configured = profileHasConfiguredFields(request.data);
     const enabled =
-      profileHasConfiguredFields(request.data) && (request.enabled ?? true);
+      request.subject === "agent"
+        ? (request.enabled ?? configured)
+        : configured && (request.enabled ?? true);
     const rawResult = await this.call(path, active, "PUT", {
       command_id: request.commandId,
       expected_revision: request.expectedRevision,

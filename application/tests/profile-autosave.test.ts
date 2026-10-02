@@ -144,13 +144,16 @@ test("network failures use Chinese feedback and keep the immutable retry command
   }
 });
 
-test("default/unset, empty controls and master priming do not write ROM", async () => {
+test("default/unset and empty text controls do not write ROM", async () => {
   const h = harness();
   h.controller.edit("agent", agentName(null), false, 1000);
   await h.controller.flush();
-  h.controller.edit("agent", agentName(null), true, 1000);
-  await h.controller.flush();
-  h.controller.edit("agent", { ...agentName(""), customStyle: "" }, true, 1000);
+  h.controller.edit(
+    "agent",
+    { ...agentName(""), customStyle: "" },
+    false,
+    1000,
+  );
   h.controller.edit("human", { name: "", preferredAddress: "" }, true, 1000);
   await h.controller.flush();
   assert.equal(h.calls.length, 0);
@@ -158,7 +161,48 @@ test("default/unset, empty controls and master priming do not write ROM", async 
   assert.equal(h.controller.state.agent.data?.name, "");
   assert.equal(h.controller.state.agent.data?.customStyle, "");
   assert.equal(h.controller.state.human.data?.preferredAddress, "");
+  assert.equal(h.controller.state.agent.enabled, false);
+  h.controller.dispose();
+});
+
+test("explicit Agent master on/off persists even with no configured fields", async () => {
+  const h = harness();
+  h.controller.edit("agent", agentName(null), true, 1000);
+  await h.controller.flush();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0]?.enabled, true);
+  assert.equal(h.actual().agent.enabled, true);
+  assert.deepEqual(h.actual().agent.data, defaultAgentProfile);
+  assert.equal(h.controller.state.agent.dirty, false);
+  // Hydrating the confirmed empty-on head cannot silently turn the master off.
+  h.controller.hydrate(h.actual());
   assert.equal(h.controller.state.agent.enabled, true);
+  h.controller.edit("agent", agentName(null), false, 1000);
+  await h.controller.flush();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls[1]?.expectedRevision, 1);
+  assert.equal(h.actual().agent.enabled, false);
+  assert.deepEqual(h.actual().agent.data, defaultAgentProfile);
+  h.controller.dispose();
+});
+
+test("clearing last Agent field preserves master choice while Human empty stays off", async () => {
+  const h = harness();
+  h.controller.edit("agent", agentName("Echo"), true, 1000);
+  await h.controller.flush();
+  h.controller.edit("agent", agentName(null), true, 1000);
+  h.controller.edit(
+    "human",
+    { name: null, preferredAddress: null },
+    true,
+    1000,
+  );
+  await h.controller.flush();
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.actual().agent.enabled, true);
+  assert.deepEqual(h.actual().agent.data, defaultAgentProfile);
+  assert.equal(h.actual().human.enabled, false);
+  assert.equal(h.actual().human.revision, 0);
   h.controller.dispose();
 });
 
@@ -327,7 +371,7 @@ test("master off keeps chosen fields; editing them does not force enable", async
   await h.controller.flush();
   assert.equal(h.actual().agent.enabled, false);
   assert.equal(h.actual().agent.data.traits.humor, 5);
-  h.controller.edit("agent", agentName(null), true, 10000);
+  h.controller.edit("agent", agentName(null), false, 10000);
   await h.controller.flush();
   assert.equal(h.calls.at(-1)?.enabled, false);
   assert.equal(h.actual().agent.enabled, false);

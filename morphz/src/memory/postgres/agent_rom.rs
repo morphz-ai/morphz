@@ -373,8 +373,9 @@ impl AgentRomStore for PostgresStore {
             return Ok(manifest);
         }
         let principal: Option<String> = row.try_get("initiating_principal_id")?;
-        let entries = sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND (h.principal_scope IS NULL OR h.principal_scope=$2) AND v.revision=h.current_revision AND v.enabled ORDER BY h.namespace,h.principal_scope NULLS FIRST,h.entry_id"))
+        let mut entries = sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND (h.principal_scope IS NULL OR h.principal_scope=$2) AND v.revision=h.current_revision AND v.enabled ORDER BY h.namespace,h.principal_scope NULLS FIRST,h.entry_id"))
             .bind(&agent_id).bind(&principal).fetch_all(&mut *tx).await?.into_iter().map(record).collect::<Result<Vec<_>, _>>()?;
+        retain_new_thread_effective_rom(&mut entries);
         validate_selection(&entries)?;
         let manifest = ThreadRomManifest {
             thread_id: thread_id.into(),
