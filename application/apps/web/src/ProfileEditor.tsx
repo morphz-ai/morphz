@@ -10,6 +10,7 @@ import { Camera, ChevronRight, Pencil } from "lucide-react";
 import {
   defaultAgentProfile,
   defaultHumanProfile,
+  profileCustomStyleEnabled,
   avatarMaximumBytes,
   profileHasConfiguredFields,
   type AgentProfileData,
@@ -19,6 +20,7 @@ import {
 import { ProfileAvatar, type ProfileAvatarState } from "./ProfileAvatar.js";
 import { HumanAvatar } from "./HumanAvatar.js";
 import type { ProfileController } from "./useProfile.js";
+import { PersistentDetails } from "./PersistentDetails.js";
 import { RequestError } from "./application-transport.js";
 
 const traits = [
@@ -175,10 +177,7 @@ export function ProfileEditor({
     change({ ...data, [field]: value }, firstValue ? true : enabled, 450, true);
   };
   const flushText = () => void profile.flush(subject).catch(() => {});
-  const selectText = (
-    field: "name" | "preferredAddress" | "customStyle",
-    checked: boolean,
-  ) => {
+  const selectText = (field: "name" | "preferredAddress", checked: boolean) => {
     if (checked && canActivate) activateText.add(field);
     else activateText.delete(field);
     change(
@@ -191,6 +190,27 @@ export function ProfileEditor({
       requestAnimationFrame(() => {
         document.getElementById(`${id}-${field}`)?.focus();
       });
+  };
+  const selectCustomStyle = (checked: boolean) => {
+    if (checked && canActivate) activateText.add("customStyle");
+    else activateText.delete("customStyle");
+    // A field's use and its retained authoring text are separate. The Host
+    // atomically persists this choice with the effective ROM projection.
+    const agent = data as AgentProfileData;
+    change(
+      {
+        ...agent,
+        customStyle: agent.customStyle ?? (checked ? "" : null),
+        customStyleEnabled: checked,
+      },
+      checked ? canActivate : enabled,
+      0,
+      checked && enabled,
+    );
+    if (checked)
+      requestAnimationFrame(() =>
+        document.getElementById(`${id}-customStyle`)?.focus(),
+      );
   };
   const openText = (field: "name" | "preferredAddress") => {
     // Opening a personal detail is presentation only: a fallback name must
@@ -350,23 +370,52 @@ export function ProfileEditor({
           ...styles
             .filter((style) => style.value === confirmedAgent.speechStyle)
             .map((style) => style.label),
-          ...(confirmedAgent.customStyle ? [confirmedAgent.customStyle] : []),
+          ...(profileCustomStyleEnabled(confirmedAgent) &&
+          confirmedAgent.customStyle
+            ? [confirmedAgent.customStyle]
+            : []),
         ]
       : [];
-  const expressionText = expression.join(" · ") || "由模型决定";
+  const expressionText = expression.join(" · ");
   const confirmedAddress =
     subject === "human"
       ? (actual?.data as HumanProfileData | undefined)?.preferredAddress
       : null;
+  const usageToggle = (
+    <label
+      className="personality-master"
+      title={
+        subject === "agent"
+          ? "使用人格设定；关闭后不加入自定义名字和表达偏好，选值保留"
+          : "使用个人资料；关闭后不提供名字和称呼，选值保留"
+      }
+    >
+      <span className="profile-visually-hidden">
+        {subject === "agent" ? "使用人格设定" : "使用个人资料"}
+      </span>
+      <input
+        type="checkbox"
+        aria-label={subject === "agent" ? "使用人格设定" : "使用个人资料"}
+        checked={configured && enabled}
+        disabled={!editable || !configured}
+        onChange={(e) => {
+          activateText.clear();
+          change(data, e.target.checked);
+        }}
+      />
+    </label>
+  );
   if (profile.accessDenied)
     return (
       <section
         className="personality-profile"
         aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       >
-        <div className="personality-heading">
-          <Heading>{headingText}</Heading>
-        </div>
+        {human && (
+          <div className="personality-heading">
+            <Heading>{headingText}</Heading>
+          </div>
+        )}
         <div className="personality-read-error" role="status">
           {profile.error || "当前资料访问已被撤回。"}
           <button
@@ -384,31 +433,12 @@ export function ProfileEditor({
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
     >
-      <div className="personality-heading">
-        <Heading>{headingText}</Heading>
-        <label
-          className="personality-master"
-          title={
-            subject === "agent"
-              ? "使用人格设定；关闭后不加入自定义名字和表达偏好，选值保留"
-              : "使用个人资料；关闭后不提供名字和称呼，选值保留"
-          }
-        >
-          <span className="profile-visually-hidden">
-            {subject === "agent" ? "使用人格设定" : "使用个人资料"}
-          </span>
-          <input
-            type="checkbox"
-            aria-label={subject === "agent" ? "使用人格设定" : "使用个人资料"}
-            checked={configured && enabled}
-            disabled={!editable || !configured}
-            onChange={(e) => {
-              activateText.clear();
-              change(data, e.target.checked);
-            }}
-          />
-        </label>
-      </div>
+      {human && (
+        <div className="personality-heading">
+          <Heading>{headingText}</Heading>
+          {usageToggle}
+        </div>
+      )}
       <div className="personality-identity">
         <div className="personality-portrait">
           {subject === "agent" ? (
@@ -514,6 +544,7 @@ export function ProfileEditor({
             </button>
           )}
         </div>
+        {agent && usageToggle}
       </div>
       {human && (
         <div className="personality-field">
@@ -573,12 +604,18 @@ export function ProfileEditor({
         </div>
       )}
       {agent && (
-        <details className="personality-preferences">
-          <summary>
+        <PersistentDetails
+          className="personality-preferences"
+          storageScope={profile.interfaceScope}
+          preferenceKey="profile:agent:expression"
+        >
+          <summary data-has-expression={!!expressionText}>
             <span>个性与表达</span>
-            <span className="personality-expression" title={expressionText}>
-              {expressionText}
-            </span>
+            {expressionText && (
+              <span className="personality-expression" title={expressionText}>
+                {expressionText}
+              </span>
+            )}
             <ChevronRight size={14} aria-hidden="true" />
           </summary>
           <div className="personality-preferences-editor">
@@ -699,37 +736,41 @@ export function ProfileEditor({
                 ))}
               </div>
             </fieldset>
-            <details className="personality-custom">
-              <summary>
+            <div
+              className="personality-custom"
+              data-expanded={profileCustomStyleEnabled(agent)}
+            >
+              <label
+                className="personality-optional"
+                htmlFor={`${id}-customStyle-use`}
+              >
                 <span>自定义风格</span>
-                <ChevronRight size={14} />
-              </summary>
-              <label className="personality-optional">
-                <span className="profile-visually-hidden">
-                  {agent.customStyle === null ? "不设置" : "已设置"}
-                </span>
                 <input
+                  id={`${id}-customStyle-use`}
                   type="checkbox"
                   aria-label="设置自定义风格"
-                  checked={agent.customStyle !== null}
+                  aria-controls={`${id}-customStyle`}
+                  checked={profileCustomStyleEnabled(agent)}
                   disabled={!editable}
-                  onChange={(e) => selectText("customStyle", e.target.checked)}
+                  onChange={(e) => selectCustomStyle(e.target.checked)}
                 />
               </label>
               <textarea
                 id={`${id}-customStyle`}
                 aria-label="自定义讲话风格"
+                data-configured={agent.customStyle !== null}
                 maxLength={500}
                 rows={3}
-                disabled={!editable || agent.customStyle === null}
+                hidden={!profileCustomStyleEnabled(agent)}
+                disabled={!editable || !profileCustomStyleEnabled(agent)}
                 value={agent.customStyle ?? ""}
                 placeholder="例如：先给结论，再聊细节。"
                 onChange={(e) => textChange("customStyle", e.target.value)}
                 onBlur={flushText}
               />
-            </details>
+            </div>
           </div>
-        </details>
+        </PersistentDetails>
       )}
       {!actual?.editable && actual?.available && (
         <p className="muted">由中心管理员管理</p>

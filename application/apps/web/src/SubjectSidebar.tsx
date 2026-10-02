@@ -21,6 +21,7 @@ import { SubjectSchedules } from "./SubjectSchedules.js";
 import { subjectStatus, type SubjectView } from "./subject-sidebar-model.js";
 import "./subject-sidebar.css";
 import { ProfileEditor } from "./ProfileEditor.js";
+import { PersistentDetails } from "./PersistentDetails.js";
 import { ProfileAvatar } from "./ProfileAvatar.js";
 import type { ProfileController } from "./useProfile.js";
 import { projectDisplayLabel } from "./project-display-label.js";
@@ -247,7 +248,15 @@ export function SubjectSidebar({
                 allowMotion={allowMotion}
               />
             )}
-            <details className="subject-settings-system">
+            <PersistentDetails
+              className="subject-settings-system"
+              storageScope={
+                client.boot
+                  ? `${client.boot.centerId}:${client.boot.principalId}`
+                  : undefined
+              }
+              preferenceKey="subject:capabilities"
+            >
               <summary>
                 <h4>能力与连接</h4>
                 <ChevronRight size={14} aria-hidden="true" />
@@ -278,7 +287,14 @@ export function SubjectSidebar({
                   <ChevronRight className="subject-settings-chevron" />
                 </button>
                 {runtime.harnesses?.length ? (
-                  <details>
+                  <PersistentDetails
+                    storageScope={
+                      client.boot
+                        ? `${client.boot.centerId}:${client.boot.principalId}`
+                        : undefined
+                    }
+                    preferenceKey="subject:installed-harnesses"
+                  >
                     <summary>
                       <Blocks />
                       <span>已安装执行方式</span>
@@ -290,10 +306,10 @@ export function SubjectSidebar({
                         <small>{h.version}</small>
                       </p>
                     ))}
-                  </details>
+                  </PersistentDetails>
                 ) : null}
               </div>
-            </details>
+            </PersistentDetails>
           </section>
         )}
       </div>

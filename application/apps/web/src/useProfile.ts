@@ -303,6 +303,9 @@ export function useProfile(client: WorkspaceClient) {
   }
   return {
     scope: key,
+    interfaceScope: client.boot
+      ? `${client.boot.centerId}:${client.boot.principalId}`
+      : undefined,
     snapshot,
     textActivation: textActivation.current,
     autosave: autosave.state,

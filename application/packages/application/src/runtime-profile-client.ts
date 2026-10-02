@@ -3,7 +3,10 @@ import { z } from "zod";
 import { DomainError, type AccessContext } from "../../core/src/model.js";
 import {
   compileProfileRom,
+  compileProfileAuthoringState,
   parseProfileRom,
+  parseProfileAuthoringState,
+  profileAuthoringProjectionMatchesRom,
   profileRom,
   profileUpdateSchema,
   profileHasConfiguredFields,
@@ -25,6 +28,7 @@ const recordSchema = z.object({
   revision: z.number().int().positive(),
   schema_tag: z.string(),
   canonical_sexpr: z.string(),
+  canonical_authoring_state: z.string().nullable().optional(),
   enabled: z.boolean(),
   content_hash: z.string(),
   canonical_format_version: z.literal(1),
@@ -49,6 +53,27 @@ export class RuntimeProfileClient {
     private readonly request: typeof fetch = (...args) =>
       globalThis.fetch(...args),
   ) {}
+  private recordData(
+    subject: "human" | "agent",
+    record: z.infer<typeof recordSchema>,
+  ) {
+    const effective =
+      subject === "human"
+        ? parseProfileRom("human", record.canonical_sexpr, record.schema_tag)
+        : parseProfileRom("agent", record.canonical_sexpr, record.schema_tag);
+    if (record.canonical_authoring_state == null) return effective;
+    if (subject !== "agent" || record.schema_tag !== profileRom.agent.schemaTag)
+      throw new DomainError("invalid", "Runtime Profile 作者状态版本不匹配。");
+    const data = parseProfileAuthoringState(record.canonical_authoring_state);
+    // Runtime's canonical printer may omit unnecessary string quotes. Compare
+    // the strictly validated S-expression tree, not Host printer spelling.
+    if (!profileAuthoringProjectionMatchesRom(data, record.canonical_sexpr))
+      throw new DomainError(
+        "invalid",
+        "Runtime Profile 作者状态与有效配置不匹配。",
+      );
+    return data;
+  }
   private async call(
     path: string,
     active: () => void,
@@ -188,10 +213,7 @@ export class RuntimeProfileClient {
     return {
       revision: record.revision,
       enabled: record.enabled,
-      data:
-        subject === "human"
-          ? parseProfileRom("human", record.canonical_sexpr, record.schema_tag)
-          : parseProfileRom("agent", record.canonical_sexpr, record.schema_tag),
+      data: this.recordData(subject, record),
     };
   }
   async read(access: AccessContext, active: () => void = () => {}) {
@@ -246,6 +268,9 @@ export class RuntimeProfileClient {
       key,
       schema_tag: profileRom[request.subject].schemaTag,
       body_sexpr: body,
+      ...(request.subject === "agent"
+        ? { authoring_state_sexpr: compileProfileAuthoringState(request.data) }
+        : {}),
       enabled,
     });
     const result = z
@@ -277,18 +302,12 @@ export class RuntimeProfileClient {
       result.receipt.entry_id !== result.record.entry_id
     )
       throw new Error("Runtime Profile 保存回执与请求不匹配。");
-    const data =
-      request.subject === "human"
-        ? parseProfileRom(
-            "human",
-            result.record.canonical_sexpr,
-            result.record.schema_tag,
-          )
-        : parseProfileRom(
-            "agent",
-            result.record.canonical_sexpr,
-            result.record.schema_tag,
-          );
+    if (
+      request.subject === "agent" &&
+      result.record.canonical_authoring_state == null
+    )
+      throw new Error("Runtime Profile 未确认作者状态，保存结果未确认。");
+    const data = this.recordData(request.subject, result.record);
     if (JSON.stringify(data) !== JSON.stringify(request.data))
       throw new Error("Runtime Profile 内容回执与请求不匹配。");
     return {

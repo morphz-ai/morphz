@@ -25,6 +25,7 @@ import {
   type ProfileUpdate,
 } from "../packages/core/src/profile.js";
 import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
+import { applicationStoragePrefix } from "../packages/core/src/application-names.js";
 import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import { platformBootSchema } from "../apps/web/src/platform-client.js";
 import { openInput } from "./interaction-helpers.js";
@@ -199,6 +200,9 @@ async function enterDialogue(page: Page) {
 }
 async function openAgent(page: Page) {
   const panel = page.locator(".subject-sidebar");
+  await expect(
+    page.getByRole("button", { name: /^(显示|隐藏)右侧栏$/, exact: true }),
+  ).toBeVisible();
   if (!(await panel.isVisible()))
     await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
@@ -274,11 +278,6 @@ async function openSystem(page: Page) {
 }
 async function openCustom(editor: Locator) {
   await openPreferences(editor);
-  const details = editor.locator(".personality-custom");
-  if (
-    !(await details.evaluate((element) => (element as HTMLDetailsElement).open))
-  )
-    await details.locator(":scope > summary").click();
 }
 async function setLevel(editor: Locator, label: string, level: number) {
   await openPreferences(editor);
@@ -355,9 +354,10 @@ async function waitForAutosave(editor: Locator) {
                 : (element.querySelector<HTMLInputElement>(
                     'input[type="radio"]:checked',
                   )?.value ?? null),
-            customStyle: checked("设置自定义风格")
+            customStyle: configured("自定义讲话风格")
               ? text("自定义讲话风格")
               : null,
+            customStyleEnabled: checked("设置自定义风格"),
           }
         : {
             name: configured("你的名字") ? text("你的名字") : null,
@@ -514,18 +514,21 @@ async function expectCompactIdentity(editor: Locator, scale = 1) {
       };
     };
     const bounds = element.getBoundingClientRect();
+    const agent = element.getAttribute("aria-label") === "智能体资料";
     return {
+      agent,
       identity: rect(".personality-identity"),
       portrait: rect(".personality-portrait"),
       avatar: rect(".personality-portrait > .profile-avatar"),
       camera: rect(".personality-camera"),
       name: rect(".personality-name"),
-      heading: rect(".personality-heading"),
-      title: rect(".personality-heading > :is(h2,h3)"),
+      heading: agent ? null : rect(".personality-heading"),
+      title: agent ? null : rect(".personality-heading > :is(h2,h3)"),
       master: rect(".personality-master"),
       masterSwitch: rect(".personality-master > input"),
       headingChildren: [
-        ...element.querySelector<HTMLElement>(".personality-heading")!.children,
+        ...(element.querySelector<HTMLElement>(".personality-heading")
+          ?.children ?? []),
       ].map((child) => child.tagName),
       hasRemoveAvatar: !!element.querySelector(".personality-text-action"),
       firstClasses: [...element.children]
@@ -575,23 +578,40 @@ async function expectCompactIdentity(editor: Locator, scale = 1) {
           : [],
     };
   });
-  expect(geometry.firstClasses).toEqual([
-    "personality-heading",
-    "personality-identity",
-  ]);
-  expect(geometry.headingChildren).toEqual([
-    (await editor.getAttribute("aria-label")) === "智能体资料" ? "H3" : "H2",
-    "LABEL",
-  ]);
-  expect(geometry.heading.height / scale).toBeLessThanOrEqual(44);
-  expect(geometry.master.left).toBeGreaterThan(geometry.title.right);
-  expect(geometry.master.right).toBeLessThanOrEqual(geometry.heading.right);
-  expect(
-    Math.abs(
-      (geometry.title.top + geometry.title.bottom) / 2 -
-        (geometry.masterSwitch.top + geometry.masterSwitch.bottom) / 2,
-    ) / scale,
-  ).toBeLessThanOrEqual(1);
+  if (geometry.agent) {
+    expect(geometry.firstClasses).toEqual([
+      "personality-identity",
+      "personality-preferences",
+    ]);
+    expect(geometry.headingChildren).toEqual([]);
+    await expect(editor.locator(".personality-heading")).toHaveCount(0);
+    await expect(
+      editor.getByRole("heading", { name: "设定", exact: true }),
+    ).toHaveCount(0);
+    expect(geometry.master.left).toBeGreaterThan(geometry.name.right);
+    expect(geometry.master.right).toBeLessThanOrEqual(geometry.identity.right);
+    expect(
+      Math.abs(
+        (geometry.avatar.top + geometry.avatar.bottom) / 2 -
+          (geometry.masterSwitch.top + geometry.masterSwitch.bottom) / 2,
+      ) / scale,
+    ).toBeLessThanOrEqual(1);
+  } else {
+    expect(geometry.firstClasses).toEqual([
+      "personality-heading",
+      "personality-identity",
+    ]);
+    expect(geometry.headingChildren).toEqual(["H2", "LABEL"]);
+    expect(geometry.heading!.height / scale).toBeLessThanOrEqual(44);
+    expect(geometry.master.left).toBeGreaterThan(geometry.title!.right);
+    expect(geometry.master.right).toBeLessThanOrEqual(geometry.heading!.right);
+    expect(
+      Math.abs(
+        (geometry.title!.top + geometry.title!.bottom) / 2 -
+          (geometry.masterSwitch.top + geometry.masterSwitch.bottom) / 2,
+      ) / scale,
+    ).toBeLessThanOrEqual(1);
+  }
   for (const portrait of [geometry.portrait, geometry.avatar]) {
     expect(portrait.cssWidth).toBeCloseTo(64, 1);
     expect(portrait.cssHeight).toBeCloseTo(64, 1);
@@ -613,9 +633,10 @@ async function expectCompactIdentity(editor: Locator, scale = 1) {
   expect(geometry.identity.height / scale).toBeLessThanOrEqual(
     geometry.hasRemoveAvatar ? 136 : 120,
   );
-  expect(geometry.identity.top).toBeGreaterThanOrEqual(
-    geometry.heading.bottom + 8 * scale,
-  );
+  if (!geometry.agent)
+    expect(geometry.identity.top).toBeGreaterThanOrEqual(
+      geometry.heading!.bottom + 8 * scale,
+    );
   expect(geometry.left).toBeGreaterThanOrEqual(-1);
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
   expect(geometry.overflow, JSON.stringify(geometry)).toBe(false);
@@ -634,6 +655,174 @@ async function cssProfileZoom(page: Page, scale: number) {
     );
   }, scale);
 }
+
+for (const appearance of ["light", "dark"] as const) {
+  test(`自定义风格同一行开关，${appearance}关闭保留确认原文，刷新后重新开启恢复`, async ({
+    page,
+  }, testInfo) => {
+    const snapshot = initialProfile();
+    snapshot.agent.data = structuredClone(defaultAgentProfile);
+    snapshot.agent.enabled = false;
+    snapshot.agent.revision = 0;
+    const fixture = await profileFixture(page, snapshot);
+    await page.setViewportSize({ width: 390, height: 960 });
+    await page.emulateMedia({
+      colorScheme: appearance,
+      reducedMotion: "reduce",
+    });
+    await enterDialogue(page);
+    let editor = await openAgent(page);
+    await expectCompactIdentity(editor);
+    await expect(editor.locator(".personality-expression")).toHaveCount(0);
+    await expect(
+      editor.locator(".personality-preferences > summary"),
+    ).toHaveText("个性与表达");
+    await openCustom(editor);
+    const row = editor.locator(".personality-custom > label");
+    const choice = editor.getByRole("checkbox", {
+      name: "设置自定义风格",
+      exact: true,
+    });
+    const text = editor.locator('textarea[aria-label="自定义讲话风格"]');
+    await expect(row.locator("summary,svg")).toHaveCount(0);
+    await expect(row.locator("span")).toHaveText("自定义风格");
+    await expect(text).toBeHidden();
+    const geometry = await row.evaluate((element) => {
+      const title = element.querySelector("span")!.getBoundingClientRect();
+      const input = element.querySelector("input")!.getBoundingClientRect();
+      return {
+        gap: input.left - title.right,
+        y: Math.abs((title.top + title.bottom - input.top - input.bottom) / 2),
+        height: element.getBoundingClientRect().height,
+      };
+    });
+    expect(geometry.gap).toBeGreaterThan(0);
+    expect(geometry.y).toBeLessThanOrEqual(1);
+    expect(geometry.height).toBe(44);
+    await choice.check();
+    await expect(text).toBeVisible();
+    await expect(text).toBeFocused();
+    await waitForAutosave(editor);
+    expect(fixture.commands).toEqual([]);
+    expect(fixture.snapshot.agent.revision).toBe(0);
+    const value = "TEST 先给结论，再聊细节；保留这句原文。";
+    await text.fill(value);
+    await text.blur();
+    await waitForAutosave(editor);
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: true,
+      data: { customStyle: value },
+    });
+    await choice.uncheck();
+    await waitForAutosave(editor);
+    await expect(text).toBeHidden();
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: false,
+      data: { customStyle: value, customStyleEnabled: false },
+    });
+    await expect(editor.locator(".personality-expression")).toHaveCount(0);
+    await page.reload();
+    editor = await openAgent(page);
+    await openCustom(editor);
+    const reopenedChoice = editor.getByRole("checkbox", {
+      name: "设置自定义风格",
+      exact: true,
+    });
+    const reopenedText = editor.locator(
+      'textarea[aria-label="自定义讲话风格"]',
+    );
+    await expect(reopenedChoice).not.toBeChecked();
+    await expect(reopenedText).toBeHidden();
+    await expect(reopenedText).toHaveValue(value);
+    await reopenedChoice.check();
+    await waitForAutosave(editor);
+    await expect(reopenedText).toBeVisible();
+    await expect(reopenedText).toHaveValue(value);
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: true,
+      data: { customStyle: value },
+    });
+    expect(fixture.snapshot.agent.data.customStyleEnabled).toBeUndefined();
+    expect(fixture.commands).toHaveLength(3);
+    await editor.screenshot({
+      path: testInfo.outputPath(`custom-style-single-row-${appearance}.png`),
+    });
+  });
+}
+
+test("资料分组和已安装执行方式客户端记住展开及折叠，刷新和重开不改资料或其他身份偏好", async ({
+  page,
+}) => {
+  const fixture = await profileFixture(page);
+  fixture.runtime.harnesses = [
+    { id: "TEST-persisted-disclosure", version: "1" },
+  ];
+  await enterDialogue(page);
+  const draft = "TEST 折叠刷新期间不丢失的未发送草稿";
+  await (await openInput(page)).fill(draft);
+  let editor = await openAgent(page);
+  const expressions = () => editor.locator("details.personality-preferences");
+  const capabilities = () => page.locator("details.subject-settings-system");
+  const harnesses = () =>
+    capabilities().locator(".subject-settings-group details");
+  const boot = fixture.conversation.client.boot;
+  const prefix = `${applicationStoragePrefix}${boot.centerId}:${boot.principalId}:disclosure:`;
+  const keys = [
+    "profile:agent:expression",
+    "subject:capabilities",
+    "subject:installed-harnesses",
+  ].map((suffix) => prefix + suffix);
+  const stored = () =>
+    page.evaluate((keys) => keys.map((key) => localStorage.getItem(key)), keys);
+  expect(await stored()).toEqual([null, null, null]);
+  await openPreferences(editor);
+  await openSystem(page);
+  await harnesses().locator(":scope > summary").click();
+  await expect.poll(stored).toEqual(["true", "true", "true"]);
+  await page.reload();
+  editor = await openAgent(page);
+  for (const disclosure of [expressions(), capabilities(), harnesses()])
+    await expect(disclosure).toHaveAttribute("open", "");
+  await page.getByRole("button", { name: "隐藏右侧栏", exact: true }).click();
+  editor = await openAgent(page);
+  for (const disclosure of [expressions(), capabilities(), harnesses()])
+    await expect(disclosure).toHaveAttribute("open", "");
+  await harnesses().locator(":scope > summary").click();
+  await expect.poll(stored).toEqual(["true", "true", "false"]);
+  await expect(capabilities()).toHaveAttribute("open", "");
+  await expressions().locator(":scope > summary").click();
+  await capabilities().locator(":scope > summary").click();
+  await expect.poll(stored).toEqual(["false", "false", "false"]);
+  const foreign = keys.map((key) =>
+    key.replace(
+      `${boot.centerId}:${boot.principalId}:`,
+      `${boot.centerId}:TEST-other-principal:`,
+    ),
+  );
+  await page.evaluate(
+    (keys) => keys.forEach((key) => localStorage.setItem(key, "true")),
+    foreign,
+  );
+  await page.reload();
+  editor = await openAgent(page);
+  for (const disclosure of [expressions(), capabilities(), harnesses()])
+    await expect(disclosure).not.toHaveAttribute("open");
+  expect(
+    await page.evaluate(
+      (keys) => keys.map((key) => localStorage.getItem(key)),
+      foreign,
+    ),
+  ).toEqual(["true", "true", "true"]);
+  await page.evaluate(
+    (key) => localStorage.setItem(key, JSON.stringify("true")),
+    keys[0]!,
+  );
+  await page.reload();
+  editor = await openAgent(page);
+  await expect(expressions()).not.toHaveAttribute("open");
+  await expect(await openInput(page)).toHaveValue(draft);
+  expect(fixture.commands).toEqual([]);
+});
 
 for (const subject of ["agent", "human"] as const) {
   test(`${subject === "agent" ? "Agent" : "Human"} 查看资料与打开局部编辑零写入，IME和Escape不误关对话框`, async ({
@@ -770,8 +959,20 @@ for (const subject of ["agent", "human"] as const) {
       name: /^使用(?:人格设定|个人资料)$/,
       exact: true,
     });
-    await master.focus();
-    await master.press("Tab");
+    if (subject === "agent") {
+      // The usage switch is now after the name in the identity row.
+      await editor.locator(".personality-preferences > summary").focus();
+      await page.keyboard.press("Shift+Tab");
+      await expect(master).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+      await expect(
+        editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+      ).toBeFocused();
+      await page.keyboard.press("Shift+Tab");
+    } else {
+      await master.focus();
+      await master.press("Tab");
+    }
     await expect(camera).toBeFocused();
     await expect(camera).toHaveCSS("opacity", "1");
     await expect(camera).toHaveCSS("pointer-events", "auto");
@@ -1055,17 +1256,15 @@ test("紧凑身份区和独立设定分组保留键盘自动保存路径，矮�
   await expect(
     editor.getByRole("radio", { name: "自然", exact: true }),
   ).toBeChecked();
-  const custom = editor.locator(".personality-custom > summary");
+  const custom = editor.getByRole("checkbox", {
+    name: "设置自定义风格",
+    exact: true,
+  });
   await custom.focus();
-  await custom.press("Space");
-  await expect(editor.locator(".personality-custom")).toHaveAttribute(
-    "open",
-    "",
-  );
-  await page.keyboard.press("Tab");
   await expect(
     editor.getByRole("checkbox", { name: "设置自定义风格", exact: true }),
   ).toBeFocused();
+  await expect(editor.locator(".personality-custom > summary")).toHaveCount(0);
   await page.keyboard.press("Space");
   const text = editor.getByRole("textbox", {
     name: "自定义讲话风格",
@@ -1300,7 +1499,7 @@ for (const subject of ["agent", "human"] as const) {
     });
     await expect(master).toBeChecked();
     await expectQuietProfileLabels(editor, subject === "agent");
-    await editor.locator(".personality-heading").scrollIntoViewIfNeeded();
+    await master.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: testInfo.outputPath(`${subject}-header-explicit-use.png`),
       fullPage: true,
@@ -1445,8 +1644,13 @@ test("清空唯一自定义风格后真实读回全空且不使用，标题开�
   await waitForAutosave(editor);
   expect(fixture.snapshot.agent).toMatchObject({
     enabled: false,
-    data: defaultAgentProfile,
+    data: {
+      ...defaultAgentProfile,
+      customStyle: "TEST 重新开始的表达偏好",
+      customStyleEnabled: false,
+    },
   });
+  await expect(custom).toBeHidden();
   await expect(master).toBeDisabled();
   await expect(master).not.toBeChecked();
   await setLevel(editor, "幽默", 0);
@@ -1455,6 +1659,8 @@ test("清空唯一自定义风格后真实读回全空且不使用，标题开�
     enabled: true,
     data: {
       ...defaultAgentProfile,
+      customStyle: "TEST 重新开始的表达偏好",
+      customStyleEnabled: false,
       traits: { ...defaultAgentProfile.traits, humor: 0 },
     },
   });
@@ -1559,8 +1765,8 @@ test("名字、称呼、讲话风格和自定义文字可各自撤回为null，�
   await waitForAutosave(agent);
   expect(fixture.snapshot.agent.enabled).toBe(false);
   await agent
-    .getByRole("checkbox", { name: "设置自定义风格", exact: true })
-    .uncheck();
+    .getByRole("textbox", { name: "自定义讲话风格", exact: true })
+    .fill("");
   const cleared = await waitForAutosave(agent);
   expect(cleared).toMatchObject({
     enabled: false,
@@ -2811,7 +3017,7 @@ for (const appearance of ["light", "dark"] as const) {
     await expectCompactIdentity(agent, 2);
     await expect(agent.getByRole("textbox")).toHaveCount(0);
     await expect(agent.getByRole("slider")).toHaveCount(0);
-    await expect(agent.locator(".personality-heading")).toBeInViewport({
+    await expect(agent.locator(".personality-identity")).toBeInViewport({
       ratio: 1,
     });
     await page.screenshot({
@@ -2884,8 +3090,14 @@ for (const appearance of ["light", "dark"] as const) {
         name: "自定义讲话风格",
         exact: true,
       });
-      await customText.scrollIntoViewIfNeeded();
+      // Settle the confirmed expression caption before measuring a scrolled
+      // field. CSS-zoom coverage uses DOM scrollIntoView to avoid the driver's
+      // logical/physical viewport mismatch; this is not native zoom evidence.
+      await waitForAutosave(agent);
       await customText.focus();
+      await customText.evaluate((element) =>
+        element.scrollIntoView({ block: "center" }),
+      );
       await expect(customText).toBeFocused();
       await expect(customText).toBeInViewport({ ratio: 1 });
       await waitForAutosave(agent);

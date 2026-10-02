@@ -6,7 +6,7 @@ use crate::memory::AgentRomStore;
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgRow, PgConnection, PgPool, Row};
 
-const SELECT_VERSION: &str = "SELECT h.entry_id,h.agent_id,h.namespace,h.principal_scope,v.revision,v.schema_tag,v.canonical_sexpr,v.canonical_format_version,v.content_hash,v.enabled,v.created_by,v.created_at FROM agent_rom_heads h JOIN agent_rom_versions v ON v.entry_id=h.entry_id";
+const SELECT_VERSION: &str = "SELECT h.entry_id,h.agent_id,h.namespace,h.principal_scope,v.revision,v.schema_tag,v.canonical_sexpr,v.canonical_authoring_state,v.canonical_format_version,v.content_hash,v.enabled,v.created_by,v.created_at FROM agent_rom_heads h JOIN agent_rom_versions v ON v.entry_id=h.entry_id";
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     let mut tx = pool.begin().await?;
@@ -66,6 +66,21 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// A separate versioned migration is required: existing v1 installations skip
+/// the original migration altogether. Nullable preserves every historical row.
+pub(super) async fn migrate_authoring_state(pool: &PgPool) -> Result<(), StoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "ALTER TABLE agent_rom_versions ADD COLUMN IF NOT EXISTS canonical_authoring_state TEXT",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO schema_migrations(version,applied_at) VALUES('20261002_02_agent_rom_authoring_state',$1) ON CONFLICT(version) DO NOTHING")
+        .bind(Utc::now().to_rfc3339()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 fn record(row: PgRow) -> Result<AgentRomRecord, StoreError> {
     Ok(AgentRomRecord {
         entry_id: row.try_get("entry_id")?,
@@ -77,6 +92,7 @@ fn record(row: PgRow) -> Result<AgentRomRecord, StoreError> {
         revision: u64::try_from(row.try_get::<i64, _>("revision")?)?,
         schema_tag: row.try_get("schema_tag")?,
         canonical_sexpr: row.try_get("canonical_sexpr")?,
+        canonical_authoring_state: row.try_get("canonical_authoring_state")?,
         canonical_format_version: u32::try_from(
             row.try_get::<i64, _>("canonical_format_version")?,
         )?,
@@ -112,7 +128,8 @@ async fn load_manifest(
         bound_at: DateTime::parse_from_rfc3339(&row.try_get::<String, _>("bound_at")?)?
             .with_timezone(&Utc),
         entries,
-    };
+    }
+    .without_authoring_state();
     if manifest.entries.is_empty() {
         if manifest.manifest_hash != manifest_hash(&[]) || manifest.compiler_hash != compiler_hash()
         {
@@ -202,6 +219,7 @@ impl AgentRomStore for PostgresStore {
     ) -> Result<AgentRomMutation, StoreError> {
         let (canonical, content_hash, request_hash) =
             prepare_command(&command, actor_authority_id)?;
+        let authoring = canonicalize_authoring_state(command.authoring_state_sexpr.as_deref())?;
         let mut tx = self.pool.begin().await?;
         // Command IDs are global. Lock their domain before the Agent row so
         // cross-Agent reuse also yields an intentional idempotency error.
@@ -283,8 +301,8 @@ impl AgentRomStore for PostgresStore {
                 .into());
             }
         }
-        sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(ROM_FORMAT_VERSION as i64)
+        sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_authoring_state,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(&authoring).bind(ROM_FORMAT_VERSION as i64)
             .bind(&content_hash).bind(command.enabled).bind(actor_authority_id).bind(&timestamp).execute(&mut *tx).await?;
         validate_all_selections(&mut tx, &command.key.agent_id).await?;
         sqlx::query("INSERT INTO agent_rom_command_receipts(command_id,actor_authority_id,request_hash,entry_id,expected_revision,committed_revision,committed_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
@@ -296,6 +314,7 @@ impl AgentRomStore for PostgresStore {
             revision,
             schema_tag: command.schema_tag,
             canonical_sexpr: canonical,
+            canonical_authoring_state: authoring,
             canonical_format_version: ROM_FORMAT_VERSION,
             content_hash,
             enabled: command.enabled,
@@ -365,7 +384,8 @@ impl AgentRomStore for PostgresStore {
             compiler_hash: compiler_hash(),
             bound_at: Utc::now(),
             entries,
-        };
+        }
+        .without_authoring_state();
         sqlx::query("INSERT INTO thread_rom_mounts(thread_id,agent_id,initiating_principal_id,manifest_hash,compiler_hash,bound_at) VALUES($1,$2,$3,$4,$5,$6)")
             .bind(thread_id).bind(&manifest.agent_id).bind(&manifest.initiating_principal_id).bind(&manifest.manifest_hash)
             .bind(&manifest.compiler_hash).bind(manifest.bound_at.to_rfc3339()).execute(&mut *tx).await?;

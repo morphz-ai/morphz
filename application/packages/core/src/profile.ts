@@ -19,6 +19,8 @@ export const agentProfileDataSchema = z
       .enum(["natural", "concise", "thoughtful", "direct"])
       .nullable(),
     customStyle: z.string().trim().max(500).nullable().default(null),
+    // Omission preserves the v1/v2 meaning of a present custom style.
+    customStyleEnabled: z.boolean().optional(),
   })
   .strict();
 export const humanProfileDataSchema = z
@@ -33,7 +35,21 @@ export type HumanProfileData = z.infer<typeof humanProfileDataSchema>;
 // compilation) normalizes semantically empty text; reading never rewrites a head.
 export function normalizeAgentProfileData(raw: unknown): AgentProfileData {
   const data = agentProfileDataSchema.parse(raw);
-  return { ...data, customStyle: data.customStyle || null };
+  const { customStyleEnabled, ...fields } = data;
+  const customStyle = data.customStyle || null;
+  // Empty/on is an editor selection, not a durable configured field. Explicit
+  // true has the same meaning as the legacy omission; only retained/off needs
+  // an additional canonical API field. Raw drafts remain owned by the queue.
+  return {
+    ...fields,
+    customStyle,
+    ...(customStyle !== null && customStyleEnabled === false
+      ? { customStyleEnabled: false }
+      : {}),
+  };
+}
+export function profileCustomStyleEnabled(data: AgentProfileData): boolean {
+  return data.customStyleEnabled ?? data.customStyle !== null;
 }
 export function normalizeHumanProfileData(raw: unknown): HumanProfileData {
   const data = humanProfileDataSchema.parse(raw);
@@ -100,7 +116,7 @@ export function profileHasConfiguredFields(
       data.name !== null ||
       Object.values(data.traits).some((value) => value !== null) ||
       data.speechStyle !== null ||
-      !!data.customStyle?.trim()
+      (profileCustomStyleEnabled(data) && !!data.customStyle?.trim())
     );
   return data.name !== null || !!data.preferredAddress?.trim();
 }
@@ -147,7 +163,7 @@ export function compileProfileRom(
   if (traits.length) fields.push(`(personality ${traits.join(" ")})`);
   const speech: string[] = [];
   if (data.speechStyle !== null) speech.push(`(style ${data.speechStyle})`);
-  if (data.customStyle !== null)
+  if (profileCustomStyleEnabled(data) && data.customStyle !== null)
     speech.push(`(custom ${atom(data.customStyle)})`);
   if (speech.length) fields.push(`(speech ${speech.join(" ")})`);
   if (profileHasConfiguredFields(data))
@@ -253,7 +269,13 @@ export function parseProfileRom(
   body: string,
   schemaTag?: string,
 ): AgentProfileData | HumanProfileData {
-  const tree = readExpr(body);
+  return parseProfileTree(subject, readExpr(body), schemaTag);
+}
+function parseProfileTree(
+  subject: ProfileSubject,
+  tree: Expr[],
+  schemaTag?: string,
+): AgentProfileData | HumanProfileData {
   const versioned = tree.some(
     (entry) => Array.isArray(entry) && entry[0] === "version",
   );
@@ -369,6 +391,51 @@ export function parseProfileRom(
     speechStyle: scalar(speech.style),
     customStyle: scalar(speech.custom) || undefined,
   });
+}
+
+/** Operator-only editing state. Its full text is deliberately separate from
+ * the effective v2 BODY; Runtime stores both under one immutable revision. */
+export function compileProfileAuthoringState(raw: AgentProfileData): string {
+  const data = normalizeAgentProfileData(raw);
+  const { customStyleEnabled: _flag, ...retained } = data;
+  return `(profile-authoring (version 1) (subject agent) (custom-style-enabled ${profileCustomStyleEnabled(data)}) (profile ${compileProfileRom("agent", retained)}))`;
+}
+export function parseProfileAuthoringState(body: string): AgentProfileData {
+  const fields = children(readExpr(body), "profile-authoring", [
+    "version",
+    "subject",
+    "custom-style-enabled",
+    "profile",
+  ]);
+  const selected = scalar(fields["custom-style-enabled"]);
+  if (
+    scalar(fields.version) !== "1" ||
+    scalar(fields.subject) !== "agent" ||
+    !["true", "false"].includes(selected) ||
+    fields.profile?.length !== 2 ||
+    !Array.isArray(fields.profile[1])
+  )
+    throw new Error("Profile 作者状态结构无效。");
+  const data = parseProfileTree(
+    "agent",
+    fields.profile[1],
+    profileRom.agent.schemaTag,
+  );
+  return normalizeAgentProfileData({
+    ...data,
+    customStyleEnabled: selected === "true",
+  });
+}
+/** Compare structured BODY bytes without depending on optional quote spelling
+ * in Runtime's canonical Atom printer. No extra inert/empty groups are allowed. */
+export function profileAuthoringProjectionMatchesRom(
+  data: AgentProfileData,
+  body: string,
+): boolean {
+  return (
+    JSON.stringify(readExpr(compileProfileRom("agent", data))) ===
+    JSON.stringify(readExpr(body))
+  );
 }
 
 export const avatarMaximumBytes = 4 * 1024 * 1024;

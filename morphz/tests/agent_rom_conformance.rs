@@ -26,6 +26,7 @@ fn command(
         },
         schema_tag: "example/v1".into(),
         body_sexpr: body.into(),
+        authoring_state_sexpr: None,
         enabled: true,
     }
 }
@@ -111,6 +112,240 @@ fn committed(result: AgentRomMutation) -> AgentRomRecord {
         AgentRomMutation::Committed { record, .. } => record,
         other => panic!("Expected commit: {other:?}"),
     }
+}
+
+async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
+    let ids = setup(&*store, &format!("{prefix}-authoring")).await;
+    let mut on = command(
+        &ids.0,
+        "example.profile",
+        None,
+        &format!("{prefix}-author-on"),
+        0,
+        "(profile (name Nora) (custom RETAIN_THIS_STYLE))",
+    );
+    on.authoring_state_sexpr =
+        Some("(editor (custom RETAIN_THIS_STYLE) (custom-enabled true))".into());
+    let v1 = committed(store.put_agent_rom(on.clone(), "host").await.unwrap());
+    let old_id = thread(&*store, &ids, "old", Some(&ids.3)).await;
+    let old = store.bind_thread_rom(&old_id).await.unwrap();
+    assert!(old
+        .entries
+        .iter()
+        .all(|entry| entry.canonical_authoring_state.is_none()));
+    assert!(old
+        .context_rom()
+        .unwrap()
+        .unwrap()
+        .to_string()
+        .contains("RETAIN_THIS_STYLE"));
+
+    let mut off = command(
+        &ids.0,
+        "example.profile",
+        None,
+        &format!("{prefix}-author-off"),
+        1,
+        "(profile (name Nora))",
+    );
+    off.authoring_state_sexpr =
+        Some("(editor (custom RETAIN_THIS_STYLE) (custom-enabled false))".into());
+    let off_result = store.put_agent_rom(off.clone(), "host").await.unwrap();
+    let v2 = committed(off_result.clone());
+    assert_eq!(v2.revision, 2);
+    assert!(v2
+        .canonical_authoring_state
+        .as_deref()
+        .unwrap()
+        .contains("RETAIN_THIS_STYLE"));
+    assert!(!v2.canonical_sexpr.contains("RETAIN_THIS_STYLE"));
+    assert_eq!(
+        store.get_agent_rom(&off.key).await.unwrap(),
+        Some(v2.clone())
+    );
+    assert_eq!(
+        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        vec![v2.clone()]
+    );
+    assert_eq!(store.bind_thread_rom(&old_id).await.unwrap(), old);
+    let new_id = thread(&*store, &ids, "off", Some(&ids.3)).await;
+    let new = store.bind_thread_rom(&new_id).await.unwrap();
+    assert_eq!(
+        store.get_thread_rom(&new_id).await.unwrap(),
+        Some(new.clone())
+    );
+    assert!(new
+        .entries
+        .iter()
+        .all(|entry| entry.canonical_authoring_state.is_none()));
+    assert!(!new
+        .context_rom()
+        .unwrap()
+        .unwrap()
+        .to_string()
+        .contains("RETAIN_THIS_STYLE"));
+    let serialized = serde_json::to_string(&new).unwrap();
+    assert!(!serialized.contains("canonical_authoring_state"));
+    assert!(!serialized.contains("RETAIN_THIS_STYLE"));
+
+    let mut retry = off.clone();
+    retry.authoring_state_sexpr =
+        Some(" ( editor ( custom \"RETAIN_THIS_STYLE\" ) ( custom-enabled false ) ) ".into());
+    match store.put_agent_rom(retry, "host").await.unwrap() {
+        AgentRomMutation::Committed {
+            record,
+            receipt,
+            duplicate,
+        } => {
+            assert!(duplicate);
+            assert_eq!(record, v2);
+            if let AgentRomMutation::Committed {
+                receipt: original, ..
+            } = off_result
+            {
+                assert_eq!(receipt, original);
+            }
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut reused = off.clone();
+    reused.authoring_state_sexpr =
+        Some("(editor (custom ALTERED_STYLE) (custom-enabled false))".into());
+    assert!(matches!(
+        store
+            .put_agent_rom(reused, "host")
+            .await
+            .unwrap_err()
+            .downcast_ref::<AgentRomError>(),
+        Some(AgentRomError::CommandReuse)
+    ));
+    let mut omitted = off.clone();
+    omitted.authoring_state_sexpr = None;
+    assert!(store.put_agent_rom(omitted, "host").await.is_err());
+
+    // Two simultaneous CAS commands must atomically choose one complete pair,
+    // never a winning body combined with the losing editor state.
+    let mut a = command(
+        &ids.0,
+        "example.profile",
+        None,
+        &format!("{prefix}-author-cas-a"),
+        2,
+        "(profile (name A))",
+    );
+    a.authoring_state_sexpr = Some("(editor (custom PRIVATE_A) (custom-enabled false))".into());
+    let mut b = a.clone();
+    b.command_id = format!("{prefix}-author-cas-b");
+    b.body_sexpr = "(profile (name B))".into();
+    b.authoring_state_sexpr = Some("(editor (custom PRIVATE_B) (custom-enabled false))".into());
+    let (a_result, b_result) = tokio::join!(
+        store.put_agent_rom(a.clone(), "host"),
+        store.put_agent_rom(b.clone(), "host")
+    );
+    let results = [a_result.unwrap(), b_result.unwrap()];
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, AgentRomMutation::Committed { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, AgentRomMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+    let winner = results
+        .iter()
+        .find_map(|r| match r {
+            AgentRomMutation::Committed { record, .. } => Some(record),
+            _ => None,
+        })
+        .unwrap();
+    let winning_command = if winner.canonical_sexpr == a.body_sexpr {
+        &a
+    } else {
+        &b
+    };
+    assert_eq!(winner.revision, 3);
+    assert_eq!(
+        winner.canonical_authoring_state,
+        winning_command.authoring_state_sexpr
+    );
+    assert_eq!(
+        store.get_agent_rom(&off.key).await.unwrap().as_ref(),
+        Some(winner)
+    );
+    assert_eq!(store.bind_thread_rom(&new_id).await.unwrap(), new);
+    assert_eq!(
+        committed(store.put_agent_rom(off.clone(), "host").await.unwrap()),
+        v2,
+        "Unknown outcome replay returns the original authoring/body pair, not latest head"
+    );
+
+    let mut private = command(
+        &ids.0,
+        "example.human",
+        Some(&ids.3),
+        &format!("{prefix}-author-private"),
+        0,
+        "(human (name Alice))",
+    );
+    private.authoring_state_sexpr = Some("(editor (private PRIVATE_ALICE_EDITOR))".into());
+    let private_v1 = committed(store.put_agent_rom(private, "host").await.unwrap());
+    assert_eq!(
+        store.list_agent_rom(&ids.0, Some(&ids.3)).await.unwrap(),
+        vec![private_v1]
+    );
+    assert!(store
+        .list_agent_rom(&ids.0, Some(&ids.4))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.list_agent_rom(&ids.0, None).await.unwrap(),
+        vec![winner.clone()]
+    );
+    let alice = store
+        .bind_thread_rom(&thread(&*store, &ids, "alice", Some(&ids.3)).await)
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&alice)
+        .unwrap()
+        .contains("PRIVATE_ALICE_EDITOR"));
+    assert!(alice
+        .entries
+        .iter()
+        .all(|entry| entry.canonical_authoring_state.is_none()));
+
+    let mut invalid = command(
+        &ids.0,
+        "example.invalid",
+        None,
+        &format!("{prefix}-author-invalid"),
+        0,
+        "(profile valid)",
+    );
+    for bad in [
+        "(editor".to_owned(),
+        format!("{}a{}", "(".repeat(33), ")".repeat(33)),
+        format!("({})", "a ".repeat(4096)),
+        format!("(editor \"{}\")", "x".repeat(ROM_MAX_ENTRY_BYTES)),
+    ] {
+        invalid.authoring_state_sexpr = Some(bad);
+        assert!(matches!(
+            store
+                .put_agent_rom(invalid.clone(), "host")
+                .await
+                .unwrap_err()
+                .downcast_ref::<AgentRomError>(),
+            Some(AgentRomError::Invalid(_))
+        ));
+        assert!(store.get_agent_rom(&invalid.key).await.unwrap().is_none());
+    }
+    assert_eq!(v1.canonical_authoring_state, on.authoring_state_sexpr);
 }
 
 async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
@@ -517,6 +752,7 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
             .len(),
         ROM_MAX_SELECTED_ENTRIES
     );
+    authoring_conformance(store, prefix).await;
 }
 
 #[tokio::test]
@@ -630,6 +866,134 @@ async fn sqlite_upgrade_freezes_legacy_thread_empty_once() {
         1,
         "Restart must not backfill post-migration new work empty"
     );
+}
+
+#[tokio::test]
+async fn sqlite_v1_rom_schema_upgrade_preserves_receipts_and_authoring_on_reopen() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("v1-authoring-upgrade.db");
+    let store = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+    let ids = setup(&store, "v1-authoring-upgrade").await;
+    let original = command(
+        &ids.0,
+        "example.profile",
+        None,
+        "v1-authoring-create",
+        0,
+        "(profile (name Nora))",
+    );
+    let initial = store.put_agent_rom(original.clone(), "host").await.unwrap();
+    let v1 = committed(initial.clone());
+    let old_id = thread(&store, &ids, "old-mounted", None).await;
+    let old = store.bind_thread_rom(&old_id).await.unwrap();
+    let unbound_id = thread(&store, &ids, "v1-unbound", None).await;
+    drop(store);
+    // This disposable database now has the actual old v1 table shape, rows,
+    // receipts and mounts, not merely a missing migration marker.
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE agent_rom_versions DROP COLUMN canonical_authoring_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version='20261002_02_agent_rom_authoring_state'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let upgraded = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        upgraded.get_agent_rom(&original.key).await.unwrap(),
+        Some(v1.clone())
+    );
+    assert_eq!(
+        upgraded.get_thread_rom(&old_id).await.unwrap(),
+        Some(old.clone())
+    );
+    assert_eq!(upgraded.bind_thread_rom(&old_id).await.unwrap(), old);
+    assert_eq!(
+        upgraded
+            .bind_thread_rom(&unbound_id)
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1,
+        "Authoring migration must not perform legacy empty-mount backfill again"
+    );
+    match upgraded.put_agent_rom(original, "host").await.unwrap() {
+        AgentRomMutation::Committed {
+            record,
+            receipt,
+            duplicate,
+        } => {
+            assert!(duplicate);
+            assert_eq!(record, v1);
+            if let AgentRomMutation::Committed {
+                receipt: original, ..
+            } = initial
+            {
+                assert_eq!(receipt, original);
+            }
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut authored = command(
+        &ids.0,
+        "example.profile",
+        None,
+        "v1-authoring-add-state",
+        1,
+        "(profile (name Nora))",
+    );
+    authored.authoring_state_sexpr =
+        Some("(editor (custom RETAIN_AFTER_RESTART) (enabled false))".into());
+    let v2 = committed(
+        upgraded
+            .put_agent_rom(authored.clone(), "host")
+            .await
+            .unwrap(),
+    );
+    drop(upgraded);
+    for _ in 0..2 {
+        let reopened = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+        assert_eq!(
+            reopened.get_agent_rom(&authored.key).await.unwrap(),
+            Some(v2.clone())
+        );
+        assert_eq!(
+            reopened.get_thread_rom(&old_id).await.unwrap(),
+            Some(old.clone())
+        );
+        assert!(
+            matches!(reopened.put_agent_rom(authored.clone(), "host").await.unwrap(), AgentRomMutation::Committed { record, duplicate: true, .. } if record == v2)
+        );
+    }
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .unwrap();
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version='20261002_02_agent_rom_authoring_state'").fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM agent_rom_versions WHERE canonical_authoring_state IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_rom_command_receipts")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        2
+    );
+    pool.close().await;
 }
 
 #[cfg(feature = "remote-store")]

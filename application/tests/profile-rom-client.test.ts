@@ -19,6 +19,7 @@ import {
   profileContract,
   profileRom,
   profileSnapshotSchema,
+  compileProfileAuthoringState,
 } from "../packages/core/src/profile.js";
 import { localAccess } from "../packages/core/src/model.js";
 
@@ -31,7 +32,10 @@ async function fixture(team = false, supported = true) {
     token = randomUUID(),
     gatewayToken = randomUUID();
   const records = new Map<string, Record<string, unknown>>();
-  const receipts = new Map<string, { body: string; result: unknown }>();
+  const receipts = new Map<
+    string,
+    { body: string; hash: string; result: unknown }
+  >();
   const calls: Array<{
     path: string;
     method: string;
@@ -101,9 +105,12 @@ async function fixture(team = false, supported = true) {
     assert.equal(command.key.agent_id, agentId);
     assert.equal(command.key.namespace, schemaNamespace);
     assert.equal(command.key.principal_scope, scope);
+    // Controlled protocol fixture, not Rust's hash conformance: include every
+    // command byte, especially authoring text omitted from the effective BODY.
+    const requestHash = createHash("sha256").update(body).digest("hex");
     const prior = receipts.get(command.command_id);
     if (prior) {
-      if (prior.body !== body) {
+      if (prior.hash !== requestHash || prior.body !== body) {
         res.writeHead(409);
         res.end(JSON.stringify({ status: "conflict" }));
       } else
@@ -127,8 +134,11 @@ async function fixture(team = false, supported = true) {
       revision: revision + 1,
       schema_tag: command.schema_tag,
       canonical_sexpr: command.body_sexpr,
+      canonical_authoring_state: command.authoring_state_sexpr ?? null,
       canonical_format_version: 1,
-      content_hash: "a".repeat(64),
+      content_hash: createHash("sha256")
+        .update(command.body_sexpr)
+        .digest("hex"),
       enabled: command.enabled,
       created_by: "operator",
       created_at: "2026-10-02T00:00:00Z",
@@ -139,7 +149,7 @@ async function fixture(team = false, supported = true) {
       receipt: {
         command_id: command.command_id,
         actor_authority_id: "operator",
-        request_hash: "b".repeat(64),
+        request_hash: requestHash,
         entry_id: record.entry_id,
         expected_revision: revision,
         committed_revision: revision + 1,
@@ -148,7 +158,7 @@ async function fixture(team = false, supported = true) {
       duplicate: false,
     };
     records.set(key, record);
-    receipts.set(command.command_id, { body, result });
+    receipts.set(command.command_id, { body, hash: requestHash, result });
     res.end(JSON.stringify(result));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -164,6 +174,7 @@ async function fixture(team = false, supported = true) {
     client: new RuntimeProfileClient(() => config),
     calls,
     records,
+    receipts,
     config,
     agentId,
     principalId,
@@ -448,6 +459,149 @@ test("停用保留已选字段且可正常读取，全未设置强制disabled并
   }
 });
 
+test("字段off作者态保留原文、有效BODY零marker；重新on恢复且同command换off文字拒绝", async () => {
+  const f = await fixture();
+  try {
+    const marker = "HOST_OFF_AUTHORING_MARKER_NEVER_IN_BODY";
+    const data = {
+      ...defaultAgentProfile,
+      name: "Echo",
+      traits: { ...defaultAgentProfile.traits, rigor: 0 },
+      customStyle: marker,
+      customStyleEnabled: false,
+    };
+    const command = {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      enabled: true,
+      data,
+    };
+    const saved = await f.client.update(localAccess, command);
+    assert.deepEqual(saved.data, data);
+    assert.equal(saved.enabled, true);
+    const record = [...f.records.values()][0]!;
+    assert.equal(String(record.canonical_sexpr).includes(marker), false);
+    assert.equal(
+      record.canonical_authoring_state,
+      compileProfileAuthoringState(data),
+    );
+    assert.deepEqual((await f.client.read(localAccess)).agent.data, data);
+    assert.deepEqual(await f.client.update(localAccess, command), saved);
+    const receipt = f.receipts.get(command.commandId)!;
+    assert.equal(
+      receipt.hash,
+      createHash("sha256").update(receipt.body).digest("hex"),
+    );
+    const changedData = { ...data, customStyle: marker + "_CHANGED" };
+    assert.equal(
+      compileProfileRom("agent", changedData),
+      record.canonical_sexpr,
+    );
+    await assert.rejects(
+      f.client.update(localAccess, { ...command, data: changedData }),
+      /Profile 已更新/,
+    );
+    assert.equal([...f.records.values()][0]!.revision, 1);
+    const on = await f.client.update(localAccess, {
+      ...command,
+      commandId: randomUUID(),
+      expectedRevision: 1,
+      data: { ...data, customStyleEnabled: true },
+    });
+    assert.equal(on.revision, 2);
+    assert.ok("customStyle" in on.data);
+    assert.equal(on.data.customStyle, marker);
+    assert.equal(
+      String([...f.records.values()][0]!.canonical_sexpr).includes(marker),
+      true,
+    );
+    const onlyOff = await f.client.update(localAccess, {
+      ...command,
+      commandId: randomUUID(),
+      expectedRevision: 2,
+      data: {
+        ...defaultAgentProfile,
+        customStyle: marker,
+        customStyleEnabled: false,
+      },
+    });
+    assert.equal(onlyOff.enabled, false);
+    assert.equal(
+      [...f.records.values()][0]!.canonical_sexpr,
+      "(agent-profile (version 2))",
+    );
+    const reread = (await f.client.read(localAccess)).agent.data;
+    assert.ok("customStyle" in reread);
+    assert.equal(reread.customStyle, marker);
+  } finally {
+    await f.close();
+  }
+});
+
+test("Host作者态与有效BODY严格交叉校验，丢作者态回执不冒充已保存", async () => {
+  const f = await fixture();
+  try {
+    const data = {
+      ...defaultAgentProfile,
+      name: "Echo",
+      customStyle: "PRIVATE_OFF_MARKER",
+      customStyleEnabled: false,
+    };
+    await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      data,
+    });
+    const record = [...f.records.values()][0]!;
+    const authoring = record.canonical_authoring_state;
+    record.canonical_authoring_state = compileProfileAuthoringState({
+      ...data,
+      customStyleEnabled: true,
+    });
+    await assert.rejects(
+      f.client.read(localAccess),
+      /作者状态与有效配置不匹配/,
+    );
+    record.canonical_authoring_state = "(profile-authoring (version 999))";
+    await assert.rejects(f.client.read(localAccess), /Profile ROM|作者状态/);
+    record.canonical_authoring_state = authoring;
+    assert.deepEqual((await f.client.read(localAccess)).agent.data, data);
+    const body = record.canonical_sexpr;
+    record.canonical_sexpr = String(body).replace(
+      "(version 2)",
+      '(version 2) (speech (custom ""))',
+    );
+    await assert.rejects(
+      f.client.read(localAccess),
+      /作者状态与有效配置不匹配/,
+    );
+    record.canonical_sexpr = body;
+    const missingState = new RuntimeProfileClient(
+      () => f.config,
+      async (...args) => {
+        const response = await fetch(...args);
+        if (args[1]?.method !== "PUT") return response;
+        const value = await response.json();
+        delete value.record.canonical_authoring_state;
+        return new Response(JSON.stringify(value), { status: response.status });
+      },
+    );
+    await assert.rejects(
+      missingState.update(localAccess, {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 1,
+        data,
+      }),
+      /未确认作者状态/,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("读取v1沿用显式值和disabled head且不写回，下一次显式保存迁移v2", async () => {
   const f = await fixture();
   try {
@@ -492,6 +646,30 @@ test("读取v1沿用显式值和disabled head且不写回，下一次显式保�
     assert.equal(
       f.records.get(key)?.canonical_sexpr,
       compileProfileRom("agent", legacy),
+    );
+    // Older v2 entries have no authoring state. Read keeps their present custom
+    // style enabled without a migration write or a manufactured new revision.
+    const legacyV2 = {
+      ...legacy,
+      customStyle: "LEGACY_V2_CUSTOM_WITHOUT_AUTHORING",
+    };
+    f.records.set(key, {
+      ...f.records.get(key)!,
+      canonical_authoring_state: null,
+      canonical_sexpr: compileProfileRom("agent", legacyV2),
+      enabled: true,
+    });
+    const writesBeforeRead = f.calls.filter(
+      (call) => call.method === "PUT",
+    ).length;
+    assert.deepEqual((await f.client.read(localAccess)).agent, {
+      revision: 8,
+      enabled: true,
+      data: legacyV2,
+    });
+    assert.equal(
+      f.calls.filter((call) => call.method === "PUT").length,
+      writesBeforeRead,
     );
   } finally {
     await f.close();
@@ -579,6 +757,65 @@ test("真实embedded Host的disabled/全未设置Profile仍可读编辑和显示
     assert.equal(empty.agent.enabled, false);
     assert.deepEqual(empty.agent.data, defaultAgentProfile);
     assert.deepEqual(empty.agent.avatar, avatar);
+    const retained = {
+      ...defaultAgentProfile,
+      name: "Echo",
+      customStyle: "AGENT_TOOL_OFF_AUTHORING_MARKER",
+      customStyleEnabled: false,
+    };
+    await connection.call(
+      "profile.update",
+      {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 2,
+        enabled: true,
+        data: retained,
+      },
+      options,
+    );
+    assert.deepEqual((await read()).agent.data, retained);
+    const toolRead = profileSnapshotSchema.parse(
+      await domains.profiles.authority.withSession(
+        localAccess,
+        () => {},
+        (actor) =>
+          domains!.profiles.service.agentOperation(actor, { action: "read" }),
+      ),
+    );
+    assert.equal(toolRead.agent.data.customStyle, null);
+    assert.equal(toolRead.agent.data.name, "Echo");
+    assert.equal(
+      JSON.stringify(toolRead).includes(retained.customStyle),
+      false,
+    );
+    assert.deepEqual((await read()).agent.data, retained);
+    await connection.call(
+      "profile.update",
+      {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 3,
+        enabled: false,
+        data: { ...retained, customStyleEnabled: true },
+      },
+      options,
+    );
+    const globallyOffToolRead = profileSnapshotSchema.parse(
+      await domains.profiles.authority.withSession(
+        localAccess,
+        () => {},
+        (actor) =>
+          domains!.profiles.service.agentOperation(actor, { action: "read" }),
+      ),
+    );
+    assert.equal(globallyOffToolRead.agent.enabled, false);
+    assert.equal(globallyOffToolRead.agent.data.customStyle, null);
+    assert.equal(
+      JSON.stringify(globallyOffToolRead).includes(retained.customStyle),
+      false,
+    );
+    assert.equal((await read()).agent.data.customStyle, retained.customStyle);
     assert.equal(
       f.calls.some((call) => call.path.includes("/sessions")),
       false,

@@ -2,6 +2,12 @@
 
 状态：2026-10-02 Runtime ROM、Host/Profile 与 UI 首轮已实现。用户实际测试发现：未保存的预填数值被误看为有效配置，原生默认头像被否决，首轮缺少 UI 保存到实际模型请求的整链路证据。当前“不设置”及 Logo 修复已通过实际链路、独立真实模型与原窗口验收，详见下方记录；这不等于整个长期人格化目标或主观表达效果已经完成。历史证据保留，并区分隔离测试、原窗口及真实模型结果。
 
+### 2026-10-02 同行控制、客户端折叠与停用原文
+
+后续反馈覆盖上一轮展示布局：Agent 不画「设定」标题，整份开关位于头像／名字行右侧；个性与表达未配置时没有占位说明。自定义风格标题与开关同行，打开展开，关闭收起但保留文字。三组折叠状态使用 center／principal 的客户端偏好保持，既不写 Profile，也不入 ROM。原 Avatar／Human 身份边界不改。
+
+下方作者状态设计已实现：Runtime 通用 optional 作者态与有效 BODY 同版本保存、双 SQL 后端幂等迁移，Thread／Context 和 Agent read 不泄漏停用文字；Host 严格核验两者有效投影相同。旧 JSON／wire／receipt 不变，第三方 Rust literal 须补新的 optional 字段为 None。当前最终 UI **60／60**，实际请求链 **5／5**，App 单测 **51通过／2缺PG配置跳过**，Runtime 作者态／双后端迁移／Context 与缓存相关专项通过，未称 remote Cell 已运行。原同一 App／Runtime 正常重启和原窗口刷新已验收，用户字段未修改；本轮有 schema 和正常启动元数据变化，不沿用旧轮240表完全不变的结论。日志、失败记录和精确边界见 `13-implementation-status.md` 最新章节。上一轮的标题右侧及「由模型决定」是下方历史记录，不是当前布局。
+
 ### 2026-10-02 资料优先的展示修正
 
 默认身份区只展示圆角头像和已确认名字，不把 Profile 绘成常驻姓名标签、开关和输入框的配置卡。名字、Human 称呼可点击／键盘进入局部编辑；打开和关闭查看本身零写入，展示回退不转成 ROM。局部「不设置」沿用稀疏 null，文本继续自动保存；完成／Enter／Escape 是结束编辑而非撤销已提交结果，组合输入期间不退出，Escape 不触发原生 dialog cancel。个性与表达折叠摘要仅来自已确认且已启用的字段，无设定显示「由模型决定」，不生成新简介、虚构人格或额外模型请求。「能力与连接」为独立折叠操作组，原入口保留。
@@ -21,6 +27,17 @@ Agent 可以有名字、头像、幽默、严谨、亲和、详略和讲话风�
 风格参数使用 **0–5 六个值**，不是温度、智能或工具权限。严谨度调节核查和解释的表达密度，0 也必须诚实、保留不确定性，不能胡编或跳过必要验证。幽默不调侃严肃风险，亲和不无条件附和。自定义风格不能覆盖真实身份、安全规则、审批、授权或工具协议。
 
 ## 2. 生产数据权威
+
+### 2026-10-02 字段停用与保留内容：实现前设计（已按边界实现并验证）
+
+用户明确自定义风格关闭后不删除文字，重新开启恢复原文。显示开关不能用清 null 冒充停用，也不能把 off 文字藏在现有 ROM BODY：Runtime 会把整个 BODY 挂入模型 Context。采用同一不可变 ROM 版本内的「作者编辑状态／有效配置」分离，不在 Renderer、第二数据库或另一个 namespace 顺序双写。
+
+- Runtime 的既有受信 PUT 增加可选 `authoring_state_sexpr`；operator 读回为 `canonical_authoring_state`。它是有界、单一、规范化的 S-expression，最大 8 KiB，供受信调用方保留编辑内容，Runtime 不解释 Profile 业务。与 `canonical_sexpr`、enabled、版本和 receipt 在同一 SQLite／PostgreSQL 事务、同一 revision/CAS 下保存。新 nullable 列以幂等版本迁移添加，旧记录缺失即无作者状态。
+- `canonical_sexpr` 始终只有有效模型配置；作者状态不进入 Thread manifest、Context、系统契约或 Provider 请求。Store 创建／读取 Thread manifest 时去除作者状态，Context 挂载再次防御性去除；只保留 operator get/list/receipt 的作者读回。模型的 Profile read 也返回有效字段投影，不将停用原文通过工具结果送给模型。
+- 缺少作者状态时继续解析原 v1/v2，已有非空自定义风格沿用启用；读取不迁移、不重写 head。新的 Agent data 增加可选 `customStyleEnabled`，省略时兼容旧语义；Host 保存显式编辑状态，并校验其有效投影与实际 canonical BODY 一致。整份开关、名字、traits 和 Human 数据不改变归属与授权，其他字段不借此改成新保留机制。
+- 关闭自定义项保留 customStyle 原文字、持久 `customStyleEnabled=false`，有效 BODY 完全省略 custom。再打开恢复原文且自动保存；空输入选择只展开编辑，不创建有效人格。直接清空文字仍规范为 null。只有停用原文时不能算有效字段，不能生成风格契约；其他有效字段保持，整体明确停用仍不会被编辑暗中恢复。
+- 旧命令无作者状态时保持原请求哈希字节与 domain；新命令覆盖作者状态和有效 BODY，复用 command ID 换停用文字必须拒绝。content／compiler／manifest 的既有哈希规则、Context 顺序与旧 Thread 版本不变。实际作者编辑仍创建新 revision，新 Thread 的 revision 维度可能改变 prefix；不能承诺 inactive 文案编辑后新工作的 Context 字节相同，但不引入时间、随机值、头像或编辑文本作为模型 prefix 内容。
+- 必须验证：旧 SQLite／PostgreSQL 库升级及重复启动、旧回执重试、作者状态有界和同命令拒绝、控制态永不进入新旧 Thread Context；Host authoring/body 校验及 Agent 有效 read；真实 UI 同一行开关、off/on/reload 原文恢复、权限／CAS／unknown／草稿；实际 UI → typed Host → SQL → Rust Runtime → Provider 的停用唯一 marker 零字节、其他字段保留及旧 Thread 不变。模型回应使用受控 Provider 时明确标注，不把 UI fixture 当真实持久证据。
 
 | 对象                   | 唯一权威与范围                                                    | 非权威部分                                                            |
 | ---------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |

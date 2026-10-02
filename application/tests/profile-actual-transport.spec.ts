@@ -8,6 +8,7 @@ import {
   normalizeAgentProfileData,
   normalizeHumanProfileData,
   profileHasConfiguredFields,
+  parseProfileAuthoringState,
   type ProfileUpdate,
 } from "../packages/core/src/profile.js";
 import { openInput } from "./interaction-helpers.js";
@@ -38,8 +39,11 @@ async function enter(page: Page) {
 }
 async function agentEditor(page: Page) {
   const panel = page.locator(".subject-sidebar");
-  if (!(await panel.isVisible()))
-    await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  const toggle = page.getByRole("button", { name: /^(显示|隐藏)右侧栏$/ });
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute("aria-expanded")) === "false")
+    await toggle.click();
+  await expect(panel).toBeVisible();
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
   await expect(
@@ -93,8 +97,9 @@ async function settled(editor: Locator, expectedEnabled = true) {
         `[aria-label="${name}"]`,
       )?.value ?? "";
     const configuredText = (name: string) =>
-      element.querySelector<HTMLInputElement>(`input[aria-label="${name}"]`)
-        ?.dataset.configured === "true"
+      element.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        `[aria-label="${name}"]`,
+      )?.dataset.configured === "true"
         ? text(name)
         : null;
     return element.getAttribute("aria-label") === "智能体资料"
@@ -112,9 +117,8 @@ async function settled(editor: Locator, expectedEnabled = true) {
             ]),
           ),
           speechStyle: null,
-          customStyle: checked("设置自定义风格")
-            ? text("自定义讲话风格")
-            : null,
+          customStyle: configuredText("自定义讲话风格"),
+          customStyleEnabled: checked("设置自定义风格"),
         }
       : {
           name: configuredText("你的名字"),
@@ -529,7 +533,6 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   await enter(page);
   const agent = await agentEditor(page);
   await preferences(agent);
-  await agent.locator(".personality-custom summary").click();
   await agent
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
     .check();
@@ -599,7 +602,7 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   expect(fixture.requests).toHaveLength(0);
 });
 
-test("同一Session即时Echo与旧Thread固定版本；不使用人格时新增字段无ROM，启用后name和新字段同时生效", async ({
+test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom off保留原文且请求零字节、reload/on恢复", async ({
   page,
 }) => {
   await enter(page);
@@ -738,4 +741,124 @@ test("同一Session即时Echo与旧Thread固定版本；不使用人格时新增
     entry_id: echoBindings[0]!.entry_id,
     revision: restored.revision,
   });
+
+  // Field-level off is durable authoring state, not deletion or a textual
+  // instruction hidden in the still-mounted effective ROM BODY.
+  await level(editor, "幽默", 0);
+  const beforeCustom = await settled(editor);
+  const customChoice = editor.getByRole("checkbox", {
+    name: "设置自定义风格",
+    exact: true,
+  });
+  const customText = editor.locator('textarea[aria-label="自定义讲话风格"]');
+  await customChoice.check();
+  await expect(customText).toBeVisible();
+  await expect(customText).toHaveValue("");
+  await settled(editor);
+  expect((await fixture.read()).agent.revision).toBe(beforeCustom.revision);
+  const customMarker = "TEST_RETAINED_AUTHORING_CUSTOM_NEVER_IN_OFF_REQUEST";
+  await customText.fill(customMarker);
+  const customOn = await settled(editor);
+  expect(customOn.data).toMatchObject({
+    name: "Nova",
+    traits: { humor: 0 },
+    customStyle: customMarker,
+  });
+  fixture.hold("PROFILE_CUSTOM_ACTIVE");
+  const customOnRequest = modelText(await send(page, "PROFILE_CUSTOM_ACTIVE"));
+  expect(customOnRequest).toContain(customMarker);
+  expect(customOnRequest).not.toContain("(profile-authoring ");
+  const customBindings = fixture.sql<{
+    thread_id: string;
+    entry_id: string;
+    revision: number;
+  }>(
+    "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+  );
+  expect(customBindings).toHaveLength(3);
+  expect(customBindings).toContainEqual({
+    thread_id: expect.any(String),
+    entry_id: echoBindings[0]!.entry_id,
+    revision: customOn.revision,
+  });
+
+  await customChoice.uncheck();
+  const customOff = await settled(editor);
+  expect(customOff.data).toMatchObject({
+    name: "Nova",
+    traits: { humor: 0 },
+    customStyle: customMarker,
+    customStyleEnabled: false,
+  });
+  expect(customOff.enabled).toBe(true);
+  await expect(customText).toBeHidden();
+  await expect(customText).toBeDisabled();
+  await expect(customText).toHaveValue(customMarker);
+  const offRom = (await fixture.rom("agent")).body;
+  expect(offRom.canonical_sexpr).not.toContain(customMarker);
+  expect(offRom.canonical_sexpr).not.toContain("(custom ");
+  expect(offRom.canonical_authoring_state).toBeTruthy();
+  expect(parseProfileAuthoringState(offRom.canonical_authoring_state!)).toEqual(
+    customOff.data,
+  );
+  const offSql = fixture.sql<{
+    revision: number;
+    canonical_sexpr: string;
+    canonical_authoring_state: string;
+  }>(
+    "SELECT v.revision,v.canonical_sexpr,v.canonical_authoring_state FROM agent_rom_heads h JOIN agent_rom_versions v ON v.entry_id=h.entry_id AND v.revision=h.current_revision WHERE h.namespace='morphz.profile.agent'",
+  );
+  expect(offSql).toHaveLength(1);
+  expect(offSql[0]!.revision).toBe(customOff.revision);
+  expect(offSql[0]!.canonical_sexpr).toBe(offRom.canonical_sexpr);
+  expect(offSql[0]!.canonical_authoring_state).toBe(
+    offRom.canonical_authoring_state,
+  );
+
+  await page.reload();
+  await agentEditor(page);
+  await preferences(editor);
+  await expect(customChoice).not.toBeChecked();
+  await expect(customText).toBeHidden();
+  await expect(customText).toHaveValue(customMarker);
+  expect((await settled(editor)).data).toEqual(customOff.data);
+  expect(
+    fixture.sql(
+      "SELECT thread_id,entry_id,revision FROM thread_rom_bindings ORDER BY thread_id,entry_id",
+    ),
+  ).toContainEqual(
+    customBindings.find((binding) => binding.revision === customOn.revision)!,
+  );
+  const oldCustomStart = fixture.requests.length;
+  await fixture.continueHeld("PROFILE_CUSTOM_ACTIVE");
+  const oldCustomRequest = modelText(
+    await fixture.waitRequest("PROFILE_CUSTOM_ACTIVE", oldCustomStart),
+  );
+  expect(oldCustomRequest).toContain(customMarker);
+  expect(oldCustomRequest).toContain("(humor 0)");
+  expect(oldCustomRequest).not.toContain("(profile-authoring ");
+
+  // Complete the deliberately held previous evaluation before submitting the
+  // next input; this fixture tests frozen ROM, not concurrent composer sends.
+  const offRequest = modelText(await send(page, "PROFILE_CUSTOM_INACTIVE"));
+  expect(offRequest).toContain("(name Nova)");
+  expect(offRequest).toContain("(humor 0)");
+  expect(offRequest).not.toContain(customMarker);
+  expect(offRequest).not.toContain("(custom ");
+  expect(offRequest).not.toContain("(profile-authoring ");
+
+  await customChoice.check();
+  await expect(customText).toBeVisible();
+  await expect(customText).toHaveValue(customMarker);
+  const customRestored = await settled(editor);
+  expect(customRestored.revision).toBe(customOff.revision + 1);
+  expect(customRestored.data).toEqual(customOn.data);
+  const customRestoredRequest = modelText(
+    await send(page, "PROFILE_CUSTOM_REACTIVATED"),
+  );
+  expect(customRestoredRequest).toContain(customMarker);
+  expect(customRestoredRequest).toContain("(name Nova)");
+  expect(customRestoredRequest).toContain("(humor 0)");
+  expect(customRestoredRequest).not.toContain("(profile-authoring ");
+  expect(fixture.sql("SELECT id FROM sessions")).toEqual(sessions);
 });

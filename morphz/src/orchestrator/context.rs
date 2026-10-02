@@ -5084,6 +5084,9 @@ impl ContextEngine {
         view: &mut ContextView,
         manifest: crate::agent_rom::ThreadRomManifest,
     ) -> Result<(), DynError> {
+        // Defend even an embedded caller's hand-built manifest: authoring state
+        // must not enter ContextView's serialized or model-facing projection.
+        let manifest = manifest.without_authoring_state();
         let compiled = manifest.context_rom()?;
         if compiled.is_none() {
             return Ok(());
@@ -20779,17 +20782,24 @@ mod tests {
                     },
                     schema_tag: "example/v1".into(),
                     body_sexpr: "(factory (public-name Nora))".into(),
+                    authoring_state_sexpr: None,
                     enabled: true,
                 },
                 "trusted-host",
             )
             .await
             .unwrap();
-        let manifest = store.bind_thread_rom(&thread_id).await.unwrap();
+        let mut manifest = store.bind_thread_rom(&thread_id).await.unwrap();
+        manifest.entries[0].canonical_authoring_state =
+            Some("(editor (custom DO_NOT_PROJECT_EDITOR_TEXT))".into());
         let stable_rom = manifest.context_rom().unwrap().unwrap().to_string();
         engine
             .mount_thread_rom(&mut view, manifest.clone())
             .unwrap();
+        let projected = serde_json::to_string(&view).unwrap();
+        assert!(!projected.contains("DO_NOT_PROJECT_EDITOR_TEXT"));
+        assert!(!projected.contains("canonical_authoring_state"));
+        manifest = manifest.without_authoring_state();
         assert!(view.sexpr.contains(&stable_rom));
         let protocol_position = view.sexpr.find("(protocol ").unwrap();
         let rom_position = view.sexpr.find("(agent-rom ").unwrap();

@@ -18,6 +18,7 @@ fn command(id: &str, revision: u64, name: &str) -> PutAgentRomCommand {
         },
         schema_tag: "example/v1".into(),
         body_sexpr: format!("(profile (name {name}))"),
+        authoring_state_sexpr: None,
         enabled: true,
     }
 }
@@ -114,7 +115,7 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
             .await
             .unwrap();
     }
-    sqlx::query("DELETE FROM schema_migrations WHERE version='20261002_01_agent_rom'")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN ('20261002_01_agent_rom','20261002_02_agent_rom_authoring_state')")
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -197,8 +198,97 @@ async fn postgres_legacy_mount_and_two_independent_store_instances() {
         .unwrap(),
         1
     );
+    let winner = winner.clone();
+    let old = mounted.clone();
     drop(first);
     drop(second);
+    // Reconstruct the actual previous ROM schema, preserving its current head,
+    // historical version/receipt rows and Thread bindings for the upgrade.
+    sqlx::query("ALTER TABLE agent_rom_versions DROP COLUMN canonical_authoring_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version='20261002_02_agent_rom_authoring_state'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let upgraded = PostgresStore::new(&scoped, 4).await.unwrap();
+    assert_eq!(
+        upgraded
+            .get_agent_rom(&command("read", 0, "unused").key)
+            .await
+            .unwrap(),
+        Some(winner)
+    );
+    assert_eq!(
+        upgraded.get_thread_rom("new").await.unwrap(),
+        Some(old.clone())
+    );
+    assert_eq!(upgraded.bind_thread_rom("new").await.unwrap(), old);
+    let legacy_hash = sqlx::query_scalar::<_, String>(
+        "SELECT request_hash FROM agent_rom_command_receipts WHERE command_id='create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    match upgraded
+        .put_agent_rom(command("create", 0, "Nora"), "host")
+        .await
+        .unwrap()
+    {
+        AgentRomMutation::Committed {
+            record,
+            receipt,
+            duplicate,
+        } => {
+            assert!(duplicate);
+            assert_eq!(record.revision, 1);
+            assert!(record.canonical_authoring_state.is_none());
+            assert_eq!(receipt.request_hash, legacy_hash);
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut authored = command("save-authoring", 2, "Nora");
+    authored.authoring_state_sexpr =
+        Some("(editor (custom RETAIN_PG_EDITOR) (enabled false))".into());
+    let v3 = match upgraded
+        .put_agent_rom(authored.clone(), "host")
+        .await
+        .unwrap()
+    {
+        AgentRomMutation::Committed { record, .. } => record,
+        other => panic!("{other:?}"),
+    };
+    thread(&upgraded, "after-authoring").await;
+    let projection = upgraded.bind_thread_rom("after-authoring").await.unwrap();
+    assert_eq!(projection.entries[0].revision, 3);
+    assert!(!serde_json::to_string(&projection)
+        .unwrap()
+        .contains("RETAIN_PG_EDITOR"));
+    drop(upgraded);
+    for _ in 0..2 {
+        let reopened = PostgresStore::new(&scoped, 4).await.unwrap();
+        assert_eq!(
+            reopened.get_agent_rom(&authored.key).await.unwrap(),
+            Some(v3.clone())
+        );
+        assert_eq!(reopened.bind_thread_rom("new").await.unwrap(), old);
+        assert!(
+            matches!(reopened.put_agent_rom(authored.clone(), "host").await.unwrap(), AgentRomMutation::Committed { duplicate: true, record, .. } if record == v3)
+        );
+    }
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version='20261002_02_agent_rom_authoring_state'").fetch_one(&pool).await.unwrap(), 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM agent_rom_versions WHERE canonical_authoring_state IS NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        2
+    );
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&admin)

@@ -337,6 +337,7 @@ export async function profileActualTransportFixture(
           status: response.status,
           body: (await response.json()) as {
             canonical_sexpr: string;
+            canonical_authoring_state?: string | null;
             revision: number;
             enabled: boolean;
           },

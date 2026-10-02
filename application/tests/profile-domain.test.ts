@@ -35,6 +35,10 @@ import {
   profileAvatarBytesSchema,
   profileAvatarSnapshotSchema,
   profileSnapshotSchema,
+  normalizeAgentProfileData,
+  profileCustomStyleEnabled,
+  compileProfileAuthoringState,
+  parseProfileAuthoringState,
 } from "../packages/core/src/profile.js";
 
 test("Profile ROM 单一编译/读取保留中文、引号与反斜线，不把风格当权限", () => {
@@ -183,6 +187,90 @@ test("Profile v2每项null完全省略、0保持明确设置，全未设置不�
     ),
     { name: "我", preferredAddress: "" },
   );
+});
+
+test("自定义风格选择兼容旧资料；作者态保留off原文而有效v2 BODY完全省略", () => {
+  const marker = 'OFF_AUTHORING_ONLY_测试\\"风格\n不可注入';
+  const selectedEmpty = {
+    ...defaultAgentProfile,
+    customStyle: "",
+    customStyleEnabled: true,
+  };
+  assert.equal(profileCustomStyleEnabled(selectedEmpty), true);
+  assert.equal(profileHasConfiguredFields(selectedEmpty), false);
+  assert.deepEqual(
+    normalizeAgentProfileData(selectedEmpty),
+    defaultAgentProfile,
+  );
+  assert.equal(
+    compileProfileRom("agent", selectedEmpty),
+    "(agent-profile (version 2))",
+  );
+  const legacy = { ...defaultAgentProfile, customStyle: marker };
+  assert.equal(profileCustomStyleEnabled(legacy), true);
+  const off = { ...legacy, customStyleEnabled: false };
+  assert.equal(profileCustomStyleEnabled(off), false);
+  assert.equal(profileHasConfiguredFields(off), false);
+  assert.equal(compileProfileRom("agent", off), "(agent-profile (version 2))");
+  assert.deepEqual(
+    parseProfileAuthoringState(compileProfileAuthoringState(off)),
+    off,
+  );
+  assert.equal(
+    compileProfileAuthoringState(off).includes("OFF_AUTHORING_ONLY"),
+    true,
+  );
+  const other = {
+    ...off,
+    name: "Echo",
+    traits: { ...off.traits, humor: 0 },
+  };
+  const active = compileProfileRom("agent", other);
+  assert.equal(
+    active,
+    compileProfileRom("agent", { ...other, customStyle: null }),
+  );
+  assert.equal(active.includes("OFF_AUTHORING_ONLY"), false);
+  assert.equal(active.includes("custom-style-enabled"), false);
+  assert.equal(active.includes("profile-authoring"), false);
+  assert.equal(active.includes("(humor 0)"), true);
+  assert.deepEqual(
+    parseProfileAuthoringState(compileProfileAuthoringState(other)),
+    other,
+  );
+  const on = normalizeAgentProfileData({ ...off, customStyleEnabled: true });
+  assert.deepEqual(on, legacy);
+  assert.equal(
+    compileProfileRom("agent", on).includes("OFF_AUTHORING_ONLY"),
+    true,
+  );
+  assert.deepEqual(
+    parseProfileAuthoringState(compileProfileAuthoringState(on)),
+    legacy,
+  );
+  assert.deepEqual(
+    normalizeAgentProfileData({ ...off, customStyle: "   " }),
+    defaultAgentProfile,
+  );
+});
+
+test("Profile作者态只接受有界严格Agent schema，坏版本或隐藏额外字段拒绝", () => {
+  const state = compileProfileAuthoringState(defaultAgentProfile);
+  assert.deepEqual(parseProfileAuthoringState(state), defaultAgentProfile);
+  for (const malformed of [
+    state.replace("(version 1)", "(version 2)"),
+    state.replace("(subject agent)", "(subject human)"),
+    state.replace(
+      "(custom-style-enabled false)",
+      "(custom-style-enabled maybe)",
+    ),
+    state.replace("(subject agent)", "(subject agent) (subject agent)"),
+    state.replace("(subject agent)", "(subject agent) (secret hidden)"),
+    state + " (extra true)",
+    "(".repeat(18) + "x" + ")".repeat(18),
+    " ".repeat(8193),
+  ])
+    assert.throws(() => parseProfileAuthoringState(malformed));
 });
 
 test("头像真实 embedded/HTTP Client 共用双版本CAS，重试不覆盖新值并成套恢复", async () => {

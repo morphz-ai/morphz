@@ -38,7 +38,7 @@ SQLite and PostgreSQL implement the same five tables in the Runtime Store:
 | Table | Role |
 | --- | --- |
 | `agent_rom_heads` | Immutable key, mutable current-revision pointer |
-| `agent_rom_versions` | Immutable canonical body and exact revision/hash |
+| `agent_rom_versions` | Immutable effective body, optional authoring state and exact revision/hash |
 | `agent_rom_command_receipts` | Durable authority-bound idempotency receipt |
 | `thread_rom_mounts` | One immutable manifest per Thread, including empty |
 | `thread_rom_bindings` | Ordered exact version references |
@@ -47,6 +47,43 @@ The body is stored once per version, not as a workspace JSON snapshot. Writes
 atomically commit version, head, and receipt. SQLite uses `BEGIN IMMEDIATE`;
 PostgreSQL serializes Agent writes/mounts with the Agent row lock and uses a
 command advisory lock to fence cross-Agent command reuse.
+
+### Optional authoring state
+
+Trusted callers may also send `authoring_state_sexpr` for editor configuration
+that they need to retain without showing it to the model, such as the text of a
+disabled style. Operator record and committed/conflict responses expose its
+normalized value as `canonical_authoring_state`. It is application-owned data,
+not another model-visible ROM body or a new Agent capability. Runtime does not
+interpret application-specific switches or infer effective configuration from it.
+The caller must submit the intended effective `body_sexpr` separately.
+
+Both values commit in the **same immutable version, CAS and SQL transaction**
+with the head and authority-bound receipt. This is a complete version write:
+omitting authoring state produces `None`, not a merge with an older version.
+Each authoring value must independently satisfy the existing balanced, one-list,
+8 KiB, depth-32 and 4096-node canonicalization limits. It is not counted as
+effective Context content against the selected-body 32 KiB budget.
+
+Store binding and historical Thread reads strip authoring state from their
+manifests; Context mounting strips it again for embedded hand-built manifests.
+Thus neither ContextView serialization, ROM rendering, model request messages,
+nor the ROM cache contract exposes it. Trusted entry get/list and receipt replay
+retain it, including after restart and after a newer revision has committed.
+Applications must likewise return only effective fields from model-facing tools.
+
+Commands without this optional field retain the original wire shape and exact
+`morphz.agent-rom.command.v1` request hash, so existing receipts remain replayable.
+Existing JSON callers need no change. Rust callers using public struct literals
+must add the new optional field as `None`; wire compatibility does not imply
+unchanged Rust literal source. `prepare_command` keeps its original tuple API.
+Commands that include it use `morphz.agent-rom.command.authoring.v1`, covering
+both the original canonical request and canonical authoring value. Reusing a
+command ID with changed editor text is rejected even if the effective body is
+unchanged. Body content, compiler and manifest hashing rules remain unchanged.
+An authoring edit still creates a new revision; a new Thread's revision/prefix
+can therefore change. This does not promise byte-identical new-Thread Context
+after an editor-only save or provider cache hits. Existing Threads stay frozen.
 
 `expected_revision: 0` creates; existing entries require the exact current head
 revision. Stale writes return a conflict without changing authority. Retrying the
@@ -71,6 +108,14 @@ mount, preserving their previous semantics. Migration runs once: a later restart
 must not mount post-migration new Threads empty. An empty mount emits no ROM slot,
 no ROM system rule, no ROM Attempt metadata and no extra cache-contract dimension;
 legacy Context and model request bytes are preserved.
+
+Migration `20261002_02_agent_rom_authoring_state` adds a nullable
+`agent_rom_versions.canonical_authoring_state` column in SQLite and PostgreSQL.
+Existing version/receipt rows keep their original bodies, hashes and revision
+bindings; old records read with no authoring state. The new migration is
+idempotent and does **not** repeat the old empty-mount backfill. PostgreSQL uses
+its own new outer migration version, because an installed v1 store skips the
+original ROM migration entirely.
 
 SQLite/PostgreSQL migrations are part of this change. The fenced remote Store
 automatically forwards the new trait and captures its ordinary SQL tables, but
@@ -151,9 +196,14 @@ TypeScript `MorphzClient` exposes matching operator methods.
   "key": { "agent_id": "default-agent", "namespace": "example.agent" },
   "schema_tag": "example-profile/v1",
   "body_sexpr": "(profile (public-name Nora) (role assistant))",
+  "authoring_state_sexpr": "(editor (custom-style Retained-text) (custom-enabled false))",
   "enabled": true
 }
 ```
+
+`authoring_state_sexpr` is optional; legacy commands need not send it. The
+example's retained text is control-plane data only, not an installed custom
+style. Only fields present in the effective `body_sexpr` enter model Context.
 
 Caller-supplied actor fields are rejected. HTTP derives `http-operator` authority
 from the validated control-plane credential; embedded Hosts supply their trusted

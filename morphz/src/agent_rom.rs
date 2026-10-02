@@ -36,6 +36,10 @@ pub struct PutAgentRomCommand {
     pub key: AgentRomKey,
     pub schema_tag: String,
     pub body_sexpr: String,
+    /// Optional trusted authoring state, never part of model-visible ROM.
+    /// Omitting it preserves the legacy command hash and wire representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_state_sexpr: Option<String>,
     pub enabled: bool,
 }
 
@@ -46,6 +50,10 @@ pub struct AgentRomRecord {
     pub revision: u64,
     pub schema_tag: String,
     pub canonical_sexpr: String,
+    /// Control-plane-only editor state stored atomically with this version.
+    /// Thread manifests and Context projections strip this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_authoring_state: Option<String>,
     pub canonical_format_version: u32,
     pub content_hash: String,
     pub enabled: bool,
@@ -232,6 +240,7 @@ pub fn prepare_command(
         return Err(invalid("ROM schema_tag must be nonempty and bounded"));
     }
     let canonical = canonicalize_body(&command.body_sexpr)?;
+    let authoring = canonicalize_authoring_state(command.authoring_state_sexpr.as_deref())?;
     let content_hash = hash_parts("morphz.agent-rom.body.v1", &[&canonical]);
     let request = serde_json::to_string(&(
         actor,
@@ -244,8 +253,31 @@ pub fn prepare_command(
         &canonical,
     ))
     .expect("ROM values serialize");
-    let request_hash = hash_parts("morphz.agent-rom.command.v1", &[&request]);
+    // Legacy receipts remain replayable byte for byte. New authoring state is
+    // canonical and authority-bound but never changes body/compiler hashes.
+    let request_hash = match authoring {
+        None => hash_parts("morphz.agent-rom.command.v1", &[&request]),
+        Some(authoring) => hash_parts(
+            "morphz.agent-rom.command.authoring.v1",
+            &[&request, &authoring],
+        ),
+    };
     Ok((canonical, content_hash, request_hash))
+}
+
+/// Authoring state uses the same bounded data syntax as a ROM body, with an
+/// independent 8 KiB budget. Runtime assigns no application-specific meaning.
+pub fn canonicalize_authoring_state(state: Option<&str>) -> Result<Option<String>, AgentRomError> {
+    state
+        .map(|state| {
+            canonicalize_body(state).map_err(|error| match error {
+                AgentRomError::Invalid(message) => {
+                    AgentRomError::Invalid(format!("ROM authoring state: {message}"))
+                }
+                other => other,
+            })
+        })
+        .transpose()
 }
 
 pub fn stable_entry_id(key: &AgentRomKey) -> String {
@@ -332,6 +364,15 @@ fn hash_parts(domain: &str, parts: &[&str]) -> String {
 }
 
 impl ThreadRomManifest {
+    /// Thread execution has only effective configuration. Trusted get/list and
+    /// command receipts retain authoring state; no execution projection does.
+    pub fn without_authoring_state(mut self) -> Self {
+        for entry in &mut self.entries {
+            entry.canonical_authoring_state = None;
+        }
+        self
+    }
+
     /// Mount data under a distinct root, not a Context Frame or executable AST.
     pub fn context_rom(&self) -> Result<Option<SExpr>, AgentRomError> {
         if self.entries.is_empty() {
@@ -425,11 +466,126 @@ mod tests {
             },
             schema_tag: "profile/v1".into(),
             body_sexpr: "(profile (name Nora))".into(),
+            authoring_state_sexpr: None,
             enabled: true,
         };
         let first = prepare_command(&command, "host").unwrap();
+        assert_eq!(
+            first.2, "b7673bfd6e4ede7c06539640ed4cc1c639743a3523309a54f8d7c21d93847fc9",
+            "Absent authoring state must preserve the original v1 receipt hash"
+        );
+        let legacy_json = serde_json::to_value(&command).unwrap();
+        assert!(legacy_json.get("authoring_state_sexpr").is_none());
+        assert_eq!(
+            serde_json::from_value::<PutAgentRomCommand>(legacy_json).unwrap(),
+            command,
+            "Pre-extension commands remain valid"
+        );
         command.body_sexpr = " ( profile ( name \"Nora\" ) ) ".into();
         assert_eq!(first, prepare_command(&command, "host").unwrap());
         assert_ne!(first.2, prepare_command(&command, "other-host").unwrap().2);
+
+        command.authoring_state_sexpr =
+            Some("(editor (custom \"KEEP_PRIVATE\") (enabled false))".into());
+        let authored = prepare_command(&command, "host").unwrap();
+        assert_eq!(authored.0, first.0);
+        assert_eq!(authored.1, first.1);
+        assert_ne!(authored.2, first.2);
+        command.authoring_state_sexpr =
+            Some(" ( editor ( custom KEEP_PRIVATE ) ( enabled false ) ) ".into());
+        assert_eq!(authored, prepare_command(&command, "host").unwrap());
+        command.authoring_state_sexpr = Some("(editor (custom CHANGED) (enabled false))".into());
+        assert_ne!(authored.2, prepare_command(&command, "host").unwrap().2);
+        command.authoring_state_sexpr = None;
+        assert_eq!(first, prepare_command(&command, "host").unwrap());
+    }
+
+    #[test]
+    fn authoring_state_has_independent_safe_canonical_bounds() {
+        assert_eq!(canonicalize_authoring_state(None).unwrap(), None);
+        assert_eq!(
+            canonicalize_authoring_state(Some(" ( editor ( custom \"Keep me\" ) ) ")).unwrap(),
+            Some("(editor (custom \"Keep me\"))".into())
+        );
+        for state in [
+            "(editor",
+            "(editor))",
+            "(editor) (extra)",
+            "atom",
+            "(\"unfinished)",
+        ] {
+            assert!(
+                canonicalize_authoring_state(Some(state)).is_err(),
+                "{state}"
+            );
+        }
+        for state in [
+            format!("{}a{}", "(".repeat(33), ")".repeat(33)),
+            format!("({})", "a ".repeat(4096)),
+            format!("(editor \"{}\")", "a".repeat(ROM_MAX_ENTRY_BYTES)),
+        ] {
+            assert!(canonicalize_authoring_state(Some(&state)).is_err());
+        }
+    }
+
+    #[test]
+    fn authoring_state_is_not_context_or_manifest_hash_input() {
+        let command = PutAgentRomCommand {
+            command_id: "authoring".into(),
+            expected_revision: 0,
+            key: AgentRomKey {
+                agent_id: "a".into(),
+                namespace: "example.profile".into(),
+                principal_scope: None,
+            },
+            schema_tag: "profile/v1".into(),
+            body_sexpr: "(profile (name Nora))".into(),
+            authoring_state_sexpr: Some("(editor (custom PRIVATE_EDITOR_TEXT))".into()),
+            enabled: true,
+        };
+        let (canonical_sexpr, content_hash, _) = prepare_command(&command, "host").unwrap();
+        let entries = vec![AgentRomRecord {
+            entry_id: stable_entry_id(&command.key),
+            key: command.key,
+            revision: 1,
+            schema_tag: command.schema_tag,
+            canonical_sexpr,
+            canonical_authoring_state: canonicalize_authoring_state(
+                command.authoring_state_sexpr.as_deref(),
+            )
+            .unwrap(),
+            canonical_format_version: ROM_FORMAT_VERSION,
+            content_hash,
+            enabled: true,
+            created_by: "host".into(),
+            created_at: Utc::now(),
+        }];
+        let manifest = ThreadRomManifest {
+            thread_id: "t".into(),
+            agent_id: "a".into(),
+            initiating_principal_id: None,
+            manifest_hash: manifest_hash(&entries),
+            compiler_hash: compiler_hash(),
+            bound_at: Utc::now(),
+            entries,
+        };
+        let compiled = manifest.context_rom().unwrap().unwrap().to_string();
+        assert!(!compiled.contains("PRIVATE_EDITOR_TEXT"));
+        let clean = manifest.clone().without_authoring_state();
+        assert_eq!(
+            manifest_hash(&manifest.entries),
+            manifest_hash(&clean.entries)
+        );
+        assert_eq!(manifest.compiler_hash, clean.compiler_hash);
+        assert_eq!(
+            manifest.context_rom().unwrap(),
+            clean.context_rom().unwrap()
+        );
+        assert!(!serde_json::to_string(&clean)
+            .unwrap()
+            .contains("canonical_authoring_state"));
+        assert!(!serde_json::to_string(&clean)
+            .unwrap()
+            .contains("PRIVATE_EDITOR_TEXT"));
     }
 }

@@ -24498,6 +24498,7 @@ mod tests {
             },
             schema_tag: "profile/v1".into(),
             body_sexpr: "(profile name)".into(),
+            authoring_state_sexpr: None,
             enabled: true,
         };
         let (canonical_sexpr, content_hash, _) = prepare_command(&command, "host").unwrap();
@@ -24507,6 +24508,7 @@ mod tests {
             revision: 1,
             schema_tag: command.schema_tag,
             canonical_sexpr,
+            canonical_authoring_state: None,
             canonical_format_version: ROM_FORMAT_VERSION,
             content_hash,
             enabled: true,
@@ -24523,6 +24525,21 @@ mod tests {
             Some(&manifest),
         );
         assert_ne!(with_rom, baseline);
+        manifest.entries[0].canonical_authoring_state =
+            Some("(editor (custom DO_NOT_INCLUDE_IN_CACHE_CONTRACT))".into());
+        assert_eq!(manifest.manifest_hash, manifest_hash(&manifest.entries));
+        assert_eq!(
+            with_rom,
+            super::prompt_cache_transport_contract_digest_with_rom(
+                "m",
+                "low",
+                "execution",
+                &system,
+                &[],
+                Some(&manifest),
+            ),
+            "Editor metadata does not change the execution contract for an exact bound version"
+        );
         let old = manifest.clone();
         manifest.entries[0].revision = 2;
         manifest.manifest_hash = manifest_hash(&manifest.entries);

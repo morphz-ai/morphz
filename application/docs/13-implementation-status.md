@@ -1,5 +1,23 @@
 # 桌面能力实施记录
 
+## 2026-10-02 折叠偏好持久化与自定义风格停用保留
+
+按连续反馈，Agent 不再另画「设定」标题行；整份使用开关移到头像／名字所在身份行右侧，保持与头像垂直对齐。Human 个人资料标题不变。个性与表达未设置时只有分组名，没有「由模型决定」等占位说明；配置摘要仍只显示已确认、已启用的实际字段。自定义风格标题和开关同行，开启直接展开并聚焦文本，关闭收起且保留原文，不需重新填写；正常操作自动生效，不增加手动保存步骤。
+
+三个资料分组（个性与表达、能力与连接、已安装执行方式）的 open／closed 现在由共用 `PersistentDetails` 保存在客户端。使用当前 center／principal 的显式作用域，不保存 CSRF，不借全局最新身份写入旧作用域；嵌套 toggle 不覆盖父组，非法存值按收起处理，无法使用存储时仍可现场操作。刷新、页签往返及关闭再打开保持选择，不写 Profile／ROM、不发送输入或恢复旧 Thread。左右侧栏原有显隐、宽度和分类保持规则仍适用。
+
+关闭保留原文不采用 Renderer 缓存或 BODY 内隐藏文字：既有 ROM BODY 整体进入模型。Runtime 增加通用可选作者状态，与有效 BODY 在同一不可变版本、CAS、事务和回执保存；SQLite／PostgreSQL 的 02 nullable 列迁移保持旧行和旧回执。作者状态仅供受信控制面读回，Thread manifest、Context 序列化和模型请求都去除；Host 严格校验有效投影，Agent 的 read 工具也不透传停用原文。Profile 只增加兼容旧数据的可选自定义风格使用标志，关闭文字仍存在、有效配置中无 custom，重新开启原文恢复。其他选值、整份明确不使用、旧 Thread、内容／compiler hash 与缓存契约不改；作者编辑创建新 revision，不保证新工作的 prefix 与旧 revision 相同。旧 JSON／wire／receipt 兼容，Rust struct literal 调用方需补新增字段为 None。实现前设计和边界见 `39-profile-rom-production-design.md` 与 Runtime `docs/agent-rom.md`。
+
+最终生产构建退出 0（`/tmp/morphz-profile-custom-retained-final-build.log`）。Profile／Dock／侧栏刷新／原伸缩 UI **60／60**、零跳过，日志 `/tmp/morphz-custom-style-ui.4OfjCn/final-ui.log`，明暗单行风格和默认资料截图已复看；390px／200% 为 CSS 几何覆盖，不冒称原生 Electron 缩放。保留首轮 53／60 失败：重载时旧驱动早读 isVisible、名字之后的新键盘顺序、将停用误当清空的旧预期，以及缩放后滚动／确认摘要布局的驱动问题；专项 **8／8** 后完整重跑，原权限、媒体、CAS、unknown、身份、草稿及完整可见断言没有删除。
+
+实际 UI → typed Host → 隔离 SQL → Rust Runtime → Provider 请求 **5／5**、零跳过（18 秒），日志 `/tmp/morphz-profile-custom-retained-complete.Xyu1oV/deterministic-custom-retained-complete.log`。同一 Session 验证 on → off 精确 SQL 作者态读回 → 刷新原文仍在 → 新 root 请求唯一停用 marker 零字节且 Nova／幽默0保留 → 旧 Thread continuation 仍用旧版本 → re-on 恢复原文字；空选择不建版本及原五项断言保持。Provider 为确定性验证，不称新付费模型、人格质量或上游缓存命中验收。错误 binary 路径与 reload 驱动竞态的失败证据保留，最终使用仓库根 `target/debug/morphz`。
+
+相关 App 单测 **51 通过、2 跳过、0 失败**（总53，缺 PG／cloud PG 配置），日志 `/tmp/morphz-profile-authoring-unit-final.log`；codec 专项 **14／14**。Runtime 作者状态专项 **4／4**、SQL／迁移／实际模型请求专项 **6／6**（包括本机隔离真实 PostgreSQL）及 Context／cache 等相关 lib **38／38** 均无跳过；这些组可能重叠，不相加为独立总数。默认构建、类型／格式／差异检查及 remote-store 编译检查通过；后者不是实际远端 Cell 迁移或运行验收。日志 `/tmp/morphz-rom-authoring-unit.log`、`/tmp/morphz-rom-authoring-sql-runtime-pg.log`、`/tmp/morphz-rom-authoring-context-cache.log`、`/tmp/morphz-rom-authoring-remote-check.log`、`/tmp/morphz-rom-authoring-build.log`。
+
+原同一 App 在空输入、听写关闭且无未结束 activation 时正常退出；Runtime 一致性 SQLite 备份及退出后的原 desktop profile 备份位于 `/tmp/morphz-original-profile-cutover.J4E5u4`。从原 11395 仅在内存保留同一模型凭据，正常 SIGTERM 后用验证二进制重开原 18089 Runtime（34696），再正常重开同一 Morphz 包，不重签名、不建立新手工环境。用户临近退出已切到授权，重启保持授权、左右栏及宽度；随后只操作分组展示，以一收两展正常刷新，三项均恢复，再恢复原个性展开、系统／执行方式收起及授权页签。未代用户改 Profile、头像、模型、审批、目录或发送测试消息。
+
+原库 240 表比较中，新增 nullable 列从旧版本投影中排除；**233 表逻辑摘要相同**，含 Profile 旧12个版本／12个回执、ROM heads／bindings、Threads、Mind 和未来安排。7表因正常启动／Host 重连发生变化：新增一个迁移 marker、两个 runtime/objective 控制事件；Runtime 原事件未改，execution target／principal／Session 仅心跳或更新时间变化，Host 的 runtime_sessions／runtime_deliveries 重新确认投影，行数不变。未冒称本轮仍是 240／240 hash 不变；旧版本新增作者列全部为 null，用户资料没有被迁移重写。原窗口仍104条消息、原未来提醒，展示已实看；不称用户审美或整个人格化长期目标已验收。
+
 ## 2026-10-02 Profile 资料展示与侧栏刷新保持
 
 常态改为资料展示：64px 圆角头像和已确认名字直接同行，不再使用身份卡片描边、常驻「名字」标签或姓名开关。点击名字才进入局部编辑；Human 的名字、称呼沿用同一方式。打开编辑不提交，不把 Morphz／「我」展示回退写成配置；完成、Enter、非组合输入的 Escape 结束编辑并保留自动保存，不假称撤销。组合输入的 Escape 阻止原生 dialog 取消，不关闭整窗；此项有 DOM 事件回归，未补称原生系统 IME 实测。姓名与称呼可在编辑内明确「不设置」，仍写 null；0、全空、不使用、CAS、未知回执及身份范围队列保持。个性与表达默认折叠，简短描述仅来自实际已确认、已启用字段；无设定时「由模型决定」，不生成虚构简介或默认人格。系统入口收进独立的「能力与连接」，没有删除原功能。

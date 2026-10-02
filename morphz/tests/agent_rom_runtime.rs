@@ -60,6 +60,7 @@ fn rom_command(
         },
         schema_tag: "example/v1".into(),
         body_sexpr: format!("(configuration (name {name}))"),
+        authoring_state_sexpr: None,
         enabled: true,
     }
 }
@@ -108,13 +109,15 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     let baseline = client.requests.lock().unwrap()[0].0.clone();
     assert!(!model_visible_message_text(&baseline[1]).contains("(agent-rom "));
     assert!(!baseline[0].content.contains(ROM_SYSTEM_RULE));
-    let first = rom_command(
+    let mut first = rom_command(
         &identity.agent_id,
         None,
         "rom-runtime-agent-create",
         0,
         "Nora",
     );
+    first.authoring_state_sexpr =
+        Some("(editor (custom INACTIVE_STYLE_ONLY_CONTROL_PLANE) (custom-enabled false))".into());
     store
         .put_agent_rom(first.clone(), "trusted-host")
         .await
@@ -174,6 +177,12 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     let rom = parsed.get_path(&["agent-rom"]).unwrap().to_string();
     assert!(rom.contains("Nora") && rom.contains("Alice"));
     assert!(!rom.contains("SECRET_BOB"));
+    assert!(!serde_json::to_string(&configured)
+        .unwrap()
+        .contains("INACTIVE_STYLE_ONLY_CONTROL_PLANE"));
+    assert!(!serde_json::to_string(&configured)
+        .unwrap()
+        .contains("canonical_authoring_state"));
     assert!(text.find("(protocol ").unwrap() < text.find("(agent-rom ").unwrap());
     assert!(text.find("(agent-rom ").unwrap() < text.find("(evaluation-profile ").unwrap());
     assert!(configured[0].content.starts_with(&baseline[0].content));
@@ -190,6 +199,11 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
         "ROM does not mutate Mind version"
     );
     let version = runtime.get_agent_rom(&first.key).await.unwrap().unwrap();
+    assert!(version
+        .canonical_authoring_state
+        .as_deref()
+        .unwrap()
+        .contains("INACTIVE_STYLE_ONLY_CONTROL_PLANE"));
     for operation in [
         format!("(revise {} (configuration changed))", version.entry_id),
         format!("(retire {})", version.entry_id),
@@ -227,6 +241,13 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     assert_eq!(binding["versions"].as_array().unwrap().len(), 2);
     let old_thread = binding["thread_id"].as_str().unwrap();
     let old = store.get_thread_rom(old_thread).await.unwrap().unwrap();
+    assert!(old
+        .entries
+        .iter()
+        .all(|entry| entry.canonical_authoring_state.is_none()));
+    assert!(!serde_json::to_string(&old)
+        .unwrap()
+        .contains("INACTIVE_STYLE_ONLY_CONTROL_PLANE"));
     store
         .put_agent_rom(
             rom_command(&identity.agent_id, None, "rom-runtime-rename", 1, "Vega"),
@@ -253,4 +274,10 @@ async fn actual_model_requests_mount_scoped_rom_and_record_immutable_attempt_bin
     let profile_start = text.find("(evaluation-profile ").unwrap();
     assert!(text[rom_start..profile_start].contains("Vega"));
     assert!(!text[rom_start..profile_start].contains("Nora"));
+    assert!(
+        !serde_json::to_string(&*requests)
+            .unwrap()
+            .contains("INACTIVE_STYLE_ONLY_CONTROL_PLANE"),
+        "No actual model request or tool definition may carry editor-only text"
+    );
 }

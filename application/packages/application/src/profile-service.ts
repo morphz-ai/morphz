@@ -5,6 +5,7 @@ import {
   profileSnapshotSchema,
   profileToolSchema,
   profileUpdateSchema,
+  profileCustomStyleEnabled,
   type ProfileSnapshot,
 } from "../../core/src/profile.js";
 import type { PlatformActor, PlatformStore } from "../../platform/src/store.js";
@@ -98,7 +99,17 @@ export class ProfileService {
    * No pending draft is represented as a saved profile or durable receipt. */
   async agentOperation(actor: PlatformActor, raw: unknown) {
     const request = profileToolSchema.parse(raw);
-    if (request.action === "read") return this.read(actor);
+    if (request.action === "read") {
+      const snapshot = await this.read(actor);
+      // The Human/operator may retain inactive authoring text, but an Agent
+      // tool result must not reintroduce it after the ROM compiler omitted it.
+      if (
+        !snapshot.agent.enabled ||
+        !profileCustomStyleEnabled(snapshot.agent.data)
+      )
+        snapshot.agent.data = { ...snapshot.agent.data, customStyle: null };
+      return snapshot;
+    }
     await this.platform.profileAvatarSubject(actor, "human");
     return {
       ok: false,

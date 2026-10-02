@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const SELECT_VERSION: &str = "SELECT h.entry_id,h.agent_id,h.namespace,h.principal_scope,v.revision,v.schema_tag,v.canonical_sexpr,v.canonical_format_version,v.content_hash,v.enabled,v.created_by,v.created_at FROM agent_rom_heads h JOIN agent_rom_versions v ON v.entry_id=h.entry_id";
+const SELECT_VERSION: &str = "SELECT h.entry_id,h.agent_id,h.namespace,h.principal_scope,v.revision,v.schema_tag,v.canonical_sexpr,v.canonical_authoring_state,v.canonical_format_version,v.content_hash,v.enabled,v.created_by,v.created_at FROM agent_rom_heads h JOIN agent_rom_versions v ON v.entry_id=h.entry_id";
 
 pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Error> {
     let mut tx = begin_immediate_sqlite_transaction(pool).await?;
@@ -64,6 +64,21 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Error> {
         .execute(&mut *tx)
         .await?;
     }
+    // SQLite has no ADD COLUMN IF NOT EXISTS. Inspect under the same immediate
+    // write transaction so an old v1 database upgrades safely and only once.
+    let columns = sqlx::query("PRAGMA table_info(agent_rom_versions)")
+        .fetch_all(&mut *tx)
+        .await?;
+    if !columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == "canonical_authoring_state")
+    }) {
+        sqlx::query("ALTER TABLE agent_rom_versions ADD COLUMN canonical_authoring_state TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES('20261002_02_agent_rom_authoring_state',?)")
+        .bind(Utc::now().to_rfc3339()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -79,6 +94,7 @@ fn record(row: SqliteRow) -> Result<AgentRomRecord, Error> {
         revision: u64::try_from(row.try_get::<i64, _>("revision")?)?,
         schema_tag: row.try_get("schema_tag")?,
         canonical_sexpr: row.try_get("canonical_sexpr")?,
+        canonical_authoring_state: row.try_get("canonical_authoring_state")?,
         canonical_format_version: u32::try_from(
             row.try_get::<i64, _>("canonical_format_version")?,
         )?,
@@ -113,7 +129,8 @@ async fn load_manifest(
         bound_at: DateTime::parse_from_rfc3339(&row.try_get::<String, _>("bound_at")?)?
             .with_timezone(&Utc),
         entries,
-    };
+    }
+    .without_authoring_state();
     if manifest.entries.is_empty() {
         if manifest.manifest_hash != manifest_hash(&[]) || manifest.compiler_hash != compiler_hash()
         {
@@ -199,6 +216,7 @@ impl AgentRomStore for SqliteStore {
     ) -> Result<AgentRomMutation, Error> {
         let (canonical, content_hash, request_hash) =
             prepare_command(&command, actor_authority_id)?;
+        let authoring = canonicalize_authoring_state(command.authoring_state_sexpr.as_deref())?;
         let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         if let Some(row) =
             sqlx::query("SELECT * FROM agent_rom_command_receipts WHERE command_id=?")
@@ -271,8 +289,8 @@ impl AgentRomStore for SqliteStore {
                 .into());
             }
         }
-        sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
-            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(ROM_FORMAT_VERSION as i64).bind(&content_hash).bind(command.enabled).bind(actor_authority_id).bind(&timestamp).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_authoring_state,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+            .bind(&entry_id).bind(revision as i64).bind(&command.schema_tag).bind(&canonical).bind(&authoring).bind(ROM_FORMAT_VERSION as i64).bind(&content_hash).bind(command.enabled).bind(actor_authority_id).bind(&timestamp).execute(&mut *tx).await?;
         validate_all_selections(&mut tx, &command.key.agent_id).await?;
         sqlx::query("INSERT INTO agent_rom_command_receipts(command_id,actor_authority_id,request_hash,entry_id,expected_revision,committed_revision,committed_at) VALUES(?,?,?,?,?,?,?)")
             .bind(&command.command_id).bind(actor_authority_id).bind(&request_hash).bind(&entry_id).bind(command.expected_revision as i64).bind(revision as i64).bind(&timestamp).execute(&mut *tx).await?;
@@ -282,6 +300,7 @@ impl AgentRomStore for SqliteStore {
             revision,
             schema_tag: command.schema_tag,
             canonical_sexpr: canonical,
+            canonical_authoring_state: authoring,
             canonical_format_version: ROM_FORMAT_VERSION,
             content_hash,
             enabled: command.enabled,
@@ -330,7 +349,8 @@ impl AgentRomStore for SqliteStore {
             compiler_hash: compiler_hash(),
             bound_at: Utc::now(),
             entries,
-        };
+        }
+        .without_authoring_state();
         sqlx::query("INSERT INTO thread_rom_mounts(thread_id,agent_id,initiating_principal_id,manifest_hash,compiler_hash,bound_at) VALUES(?,?,?,?,?,?)")
             .bind(thread_id).bind(&manifest.agent_id).bind(&manifest.initiating_principal_id).bind(&manifest.manifest_hash).bind(&manifest.compiler_hash).bind(manifest.bound_at.to_rfc3339()).execute(&mut *tx).await?;
         for (ordinal, entry) in manifest.entries.iter().enumerate() {

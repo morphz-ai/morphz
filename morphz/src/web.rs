@@ -11198,6 +11198,7 @@ mod tests {
             },
             schema_tag: "example/v1".into(),
             body_sexpr: "(preferences (call-me Alice))".into(),
+            authoring_state_sexpr: None,
             enabled: true,
         };
         let query = || AgentRomQuery {

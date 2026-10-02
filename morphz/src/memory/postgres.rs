@@ -615,6 +615,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20261002_02_agent_rom_authoring_state",
+                    agent_rom::migrate_authoring_state(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260725_01_recall_segmented_index",
                     store.resegment_recall_documents(),
                 )

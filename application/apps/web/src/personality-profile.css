@@ -321,6 +321,9 @@
 .personality-preferences[open] > summary > svg {
   transform: rotate(90deg);
 }
+.personality-preferences > summary[data-has-expression="false"] > svg {
+  grid-row: 1;
+}
 .personality-preferences-editor {
   padding-top: 12px;
 }
@@ -477,23 +480,13 @@
   font-size: 12px;
   margin-top: 12px;
 }
-.personality-custom summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 32px;
-  list-style: none;
-}
-.personality-custom summary::-webkit-details-marker {
-  display: none;
-}
-.personality-custom[open] > summary > svg {
-  transform: rotate(90deg);
-}
 .personality-custom > .personality-optional {
-  justify-content: flex-end;
-  margin-top: 12px;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 2px;
+}
+.app .personality-custom textarea[hidden] {
+  display: none;
 }
 .app .personality-custom textarea {
   display: block;
@@ -556,7 +549,6 @@
   .personality-optional,
   .personality-master,
   .personality-speaking label > span,
-  .personality-custom summary,
   .app .personality-name-display,
   .app .personality-detail-display,
   .app .personality-edit-actions > button {
