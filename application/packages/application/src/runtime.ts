@@ -69,6 +69,7 @@ import type { HostInvocation, ToolScope } from "./agent-tools.js";
 import type { IdentityCenter } from "./identity.js";
 import type { MessageAttachmentService } from "./message-attachment-service.js";
 import { ConversationFeed } from "./conversation-feed.js";
+import { RuntimeChangeObserver } from "./runtime-change-observer.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { inspectRuntimeConnection } from "./runtime-connection.js";
 import { RuntimeModelSettings } from "./model-settings.js";
@@ -80,7 +81,12 @@ import {
   type TaskSourceEvidenceReader,
 } from "./runtime-input-evidence.js";
 import { RuntimeTaskRunStatusReader } from "./runtime-task-run-status.js";
-import { matchesTaskSourceRequest, type TaskSourceEvent, type TaskSourceDestination, type TaskSourceReceipt } from "../../platform/src/task-run-source.js";
+import {
+  matchesTaskSourceRequest,
+  type TaskSourceEvent,
+  type TaskSourceDestination,
+  type TaskSourceReceipt,
+} from "../../platform/src/task-run-source.js";
 import {
   taskRunAdmissionSchema,
   taskRunRuntimeReceiptSchema,
@@ -101,8 +107,12 @@ const configSchema = z
     token: z.string().min(1),
     // Host-only control-plane credential. Never emitted in connection state,
     // renderer settings or model tool inputs; Team gateway token stays scoped.
-    operatorToken: z.string().min(1).max(8192)
-      .regex(/^[\x21-\x7e]+$/).optional(),
+    operatorToken: z
+      .string()
+      .min(1)
+      .max(8192)
+      .regex(/^[\x21-\x7e]+$/)
+      .optional(),
     namespace: z.string().uuid(),
     identityMode: z.literal("trusted_gateway").optional(),
   })
@@ -132,10 +142,12 @@ export function loadRuntimeConfig(directory: string): RuntimeConfig | null {
   ) {
     const stat = lstatSync(filename);
     if (
-      !stat.isFile() || stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
       (process.platform !== "win32" &&
         (stat.mode & 0o077 || stat.uid !== process.getuid!()))
-    ) throw new Error("Runtime 管理凭据必须放在当前用户私有配置文件中。");
+    )
+      throw new Error("Runtime 管理凭据必须放在当前用户私有配置文件中。");
   }
   if (process.env.MORPHZ_APP_RUNTIME_OPERATOR_TOKEN !== undefined)
     config.operatorToken = runtimeOperatorTokenFromEnvironment();
@@ -612,7 +624,9 @@ class UpstreamError extends Error {
 /** An IO POST explicitly rejected admission; unlike a transport failure this
  * can release its uncertain-send marker after exact Runtime reconciliation. */
 export class TaskSourceRejectedError extends Error {
-  constructor(cause: unknown) { super("Runtime 未接收这次来源投递。", { cause }); }
+  constructor(cause: unknown) {
+    super("Runtime 未接收这次来源投递。", { cause });
+  }
 }
 /** Only a failure at the HTTP transport boundary, never a parsed Runtime
  * protocol error or a Platform authorization failure. */
@@ -2014,7 +2028,11 @@ export class RuntimeBridge {
     );
   }
   readonly modelSettings = new RuntimeModelSettings(() => this.config);
-  readonly profiles = new RuntimeProfileClient(() => this.config, undefined, () => this.publishWorkspaceChange());
+  readonly profiles = new RuntimeProfileClient(
+    () => this.config,
+    undefined,
+    () => this.publishWorkspaceChange(),
+  );
   private state: z.infer<typeof storedSchema>;
   private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
@@ -2036,27 +2054,139 @@ export class RuntimeBridge {
   private busy = false;
   private workspaceChangeListeners = new Set<() => void>();
   private workspaceChangeFingerprint = "";
+  private executionObserver?: RuntimeChangeObserver;
+  private executionObserverSessions = "";
+  private executionChangeVersions = new Map<string, number>();
   /** Host-only wake-up for actual public Runtime projection changes. */
   observeWorkspaceChanges(listener: () => void): () => void {
     this.workspaceChangeListeners.add(listener);
-    return () => { this.workspaceChangeListeners.delete(listener); };
+    if (!this.executionObserver && !this.stopped) {
+      const access = this.teamIdentity
+        ? { principalId: "morphz-service", actantId: "morphz-agent" }
+        : localAccess;
+      this.executionObserver = new RuntimeChangeObserver({
+        url: this.config.url,
+        sessions: () =>
+          this.activeSessions().map((session) => ({
+            id: session.id,
+            cursor: session.cursor,
+          })),
+        headers: () => ({
+          Authorization: "Bearer " + this.config.token,
+          ...(this.teamIdentity
+            ? { "X-Morphz-Principal": this.principalId(access.principalId) }
+            : {}),
+        }),
+        request: (path) =>
+          this.request(path, "GET", undefined, access, undefined),
+        changed: (sessionId) => {
+          this.executionChangeVersions.set(
+            sessionId,
+            (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
+          );
+          this.publishWorkspaceChange();
+        },
+      });
+      this.executionObserverSessions = this.activeSessions()
+        .map((session) => session.id)
+        .sort()
+        .join("\n");
+    }
+    return () => {
+      this.workspaceChangeListeners.delete(listener);
+      if (!this.workspaceChangeListeners.size) {
+        this.executionObserver?.close();
+        this.executionObserver = undefined;
+        this.executionObserverSessions = "";
+      }
+    };
+  }
+  /** Ephemeral, authorization-scoped invalidation only. Neither a Runtime
+   * cursor nor a token received over WebSocket is an execution-state receipt. */
+  platformExecutionChangeVersion(
+    access: AccessContext,
+    projectIds: readonly string[],
+  ): string {
+    const readable = new Set(projectIds);
+    const ownSharedSessions = new Set(
+      this.activeDeliveries()
+        .filter((delivery) => {
+          const source = delivery.platformSource!;
+          return (
+            readable.has(source.projectId) &&
+            source.author.principalId === access.principalId
+          );
+        })
+        .map((delivery) => delivery.sessionId),
+    );
+    return createHash("sha256")
+      .update(
+        JSON.stringify(
+          this.activeSessions()
+            .filter((session) =>
+              session.sharedDefault
+                ? ownSharedSessions.has(session.id)
+                : readable.has(session.projectId),
+            )
+            .map((session) => [
+              session.id,
+              this.executionChangeVersions.get(session.id) ?? 0,
+              session.cursor,
+            ])
+            .sort(([left], [right]) =>
+              String(left).localeCompare(String(right)),
+            ),
+        ),
+      )
+      .digest("hex");
+  }
+  private syncExecutionObserverSessions() {
+    if (!this.executionObserver) return;
+    const next = this.activeSessions()
+      .map((session) => session.id)
+      .sort()
+      .join("\n");
+    if (next === this.executionObserverSessions) return;
+    this.executionObserverSessions = next;
+    void this.executionObserver.sync();
   }
   private notifyWorkspaceChanges() {
-    const next = createHash("sha256").update(JSON.stringify({
-      status: this.platformStatus(),
-      activity: this.state.activity,
-      attention: this.attention,
-      sessions: Object.values(this.state.sessions).filter(session => session.platform).map(session => [session.id, session.cursor]),
-      deliveries: this.state.deliveries.filter(delivery => delivery.platformSource).map(delivery => [delivery.inputId, delivery.state, delivery.rootId, delivery.acceptedEventId, delivery.error, delivery.cancelRequested, delivery.platformHeld, delivery.lastActivityAt]),
-    }, (key, value) => key === "checkedAt" ? undefined : value)).digest("hex");
+    const next = createHash("sha256")
+      .update(
+        JSON.stringify(
+          {
+            status: this.platformStatus(),
+            activity: this.state.activity,
+            attention: this.attention,
+            sessions: Object.values(this.state.sessions)
+              .filter((session) => session.platform)
+              .map((session) => [session.id, session.cursor]),
+            deliveries: this.state.deliveries
+              .filter((delivery) => delivery.platformSource)
+              .map((delivery) => [
+                delivery.inputId,
+                delivery.state,
+                delivery.rootId,
+                delivery.acceptedEventId,
+                delivery.error,
+                delivery.cancelRequested,
+                delivery.platformHeld,
+                delivery.lastActivityAt,
+              ]),
+          },
+          (key, value) => (key === "checkedAt" ? undefined : value),
+        ),
+      )
+      .digest("hex");
     if (next === this.workspaceChangeFingerprint) return;
     this.workspaceChangeFingerprint = next;
     this.publishWorkspaceChange();
   }
   private publishWorkspaceChange() {
-    for (const listener of this.workspaceChangeListeners) queueMicrotask(() => {
-      if (this.workspaceChangeListeners.has(listener)) listener();
-    });
+    for (const listener of this.workspaceChangeListeners)
+      queueMicrotask(() => {
+        if (this.workspaceChangeListeners.has(listener)) listener();
+      });
   }
   private busyCompletion: Promise<void> | null = null;
   private stopped = false;
@@ -2141,6 +2271,7 @@ export class RuntimeBridge {
     // records together with their Event and connection cursors.
     this.dirtyDeliveries.clear();
     this.notifyWorkspaceChanges();
+    this.syncExecutionObserverSessions();
   }
   bindPlatformInputAuthority(
     authorize?: (
@@ -5407,6 +5538,8 @@ export class RuntimeBridge {
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
+    this.executionObserver?.close();
+    this.executionObserver = undefined;
     for (const feed of this.feeds) feed.close();
     this.feeds.clear();
     await this.busyCompletion;

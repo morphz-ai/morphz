@@ -9,6 +9,8 @@ import {
   pageStateSchema,
   type BrowserReceipt,
   type BrowserPageState,
+  type BrowserWake,
+  browserWatchSchema,
 } from "../../../packages/core/src/browser.js";
 import type { WorkspaceStore } from "./store.js";
 import type { HostInvocation } from "./agent-tools.js";
@@ -112,6 +114,7 @@ export class BrowserBroker {
   private pages = new Map<string, Page>();
   private readonly journal: BrowserControlJournal;
   private readonly receiptWaiters = new Map<string, Set<() => void>>();
+  private readonly desktopWatchers = new Map<string, () => void>();
   constructor(
     store: Pick<WorkspaceStore, "browserControlJournal">,
     private readonly authority: BrowserPageAuthority,
@@ -122,7 +125,7 @@ export class BrowserBroker {
   }
   private expire() {
     for (const [id, page] of this.pages)
-      if (this.now() - page.seen > 10000) {
+      if (!this.desktopWatchers.has(id) && this.now() - page.seen > 10000) {
         this.invalidate(id, "桌面连接已断开。");
         this.pages.delete(id);
       }
@@ -134,6 +137,95 @@ export class BrowserBroker {
   private notifyReceiptWaiters() {
     for (const waiters of this.receiptWaiters.values())
       for (const wake of [...waiters]) wake();
+  }
+  async observeDesktop(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+    emit: (hint: BrowserWake) => void,
+    onClose: () => void,
+  ): Promise<{ close(): void; check(): Promise<void> }> {
+    const { pageId, key } = browserWatchSchema.parse(raw);
+    let closed = false,
+      dirty = false,
+      draining = false,
+      sequence = 0;
+    const page = this.pages.get(pageId);
+    const hash = createHash("sha256").update(key).digest();
+    if (
+      !page ||
+      page.principalId !== access.principalId ||
+      !timingSafeEqual(page.key, hash)
+    )
+      throw new DomainError("forbidden", "桌面页面连接已失效，请重新打开。");
+    if (this.desktopWatchers.has(pageId))
+      throw new DomainError("conflict", "页面已有动作通知连接。");
+    const check = async () => {
+      active();
+      await this.authority.authorizeProject(page.projectId, access);
+      if (page.state.artifactId) {
+        const website = await this.authority.readWebsite(
+          page.state.artifactId,
+          access,
+        );
+        if (website.projectId !== page.projectId)
+          throw new DomainError("forbidden", "网站对象已变化，请重新打开。");
+      }
+      active();
+      if (closed || this.pages.get(pageId) !== page)
+        throw new DomainError("forbidden", "页面连接已关闭。");
+    };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      if (this.desktopWatchers.get(pageId) === wake)
+        this.desktopWatchers.delete(pageId);
+      page.state = { ...page.state, granted: false };
+      page.seen = this.now();
+      this.invalidate(pageId, "桌面动作通知连接已断开，旧控制权失效。");
+      onClose();
+    };
+    const drain = async () => {
+      if (closed || draining) return;
+      draining = true;
+      try {
+        while (dirty && !closed) {
+          dirty = false;
+          await check();
+          if (!closed)
+            emit({
+              pageId,
+              sequence: ++sequence,
+              reason: sequence === 1 ? "resync" : "queued",
+            });
+        }
+      } catch {
+        close();
+      } finally {
+        draining = false;
+      }
+    };
+    const wake = () => {
+      dirty = true;
+      void drain();
+    };
+    await check();
+    // Authorization can yield. Recheck atomically before acquiring the lease;
+    // a losing concurrent observer must never invalidate the winning owner.
+    if (this.desktopWatchers.has(pageId))
+      throw new DomainError("conflict", "页面已有动作通知连接。");
+    this.desktopWatchers.set(pageId, wake);
+    wake();
+    return {
+      close,
+      check: async () => {
+        try {
+          await check();
+        } catch {
+          close();
+        }
+      },
+    };
   }
   /** Wait inside the original Runtime tool call, not by fabricating a Human
    * message. A slow approval stays pending and can be read by request ID. */
@@ -341,6 +433,7 @@ export class BrowserBroker {
       result: null,
     };
     this.journal.insert(receipt, ownerPrincipalId ?? null);
+    this.desktopWatchers.get(page.state.pageId)?.();
     return receipt;
   }
 }

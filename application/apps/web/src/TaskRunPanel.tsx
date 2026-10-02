@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
 import {
   taskPresentation,
@@ -10,6 +10,7 @@ import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
 import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import { FileText, ListChecks, Play, X } from "lucide-react";
+import { useObservedRead } from "./useObservedRead.js";
 
 export function TaskRunPanel({
   artifact,
@@ -36,11 +37,13 @@ export function TaskRunPanel({
   const [localReadError, setReadError] = useState("");
   const readError = runtimeObserved ? (runtimeReadError ?? "") : localReadError;
   const [live, setLive] = useState<{
+    scope: string;
     taskId: string;
     taskRevision: number;
     view: TaskRuntime;
   } | null>(null);
   const [loadedResponses, setLoadedResponses] = useState<{
+    scope: string;
     taskId: string;
     taskRevision: number;
     items: Workspace["taskResponses"];
@@ -54,79 +57,68 @@ export function TaskRunPanel({
   const human =
     isTask &&
     state.actants.find((a) => a.id === task.assigneeId)?.kind === "human";
-  useEffect(() => {
-    if (
-      !isTask ||
-      human ||
-      !taskRunRequested ||
-      !client.online ||
-      runtimeObserved
-    )
-      return;
-    let cancelled = false;
-    let reading = false;
-    const taskId = artifact.id;
-    const taskRevision = artifact.revision;
-    const refresh = async () => {
-      if (reading) return;
-      reading = true;
-      try {
-        const view = taskRuntimeSchema.parse(
-          await api.current.taskRuntime(taskId),
-        );
-        if (!cancelled) {
-          setLive({ taskId, taskRevision, view });
-          setReadError("");
-        }
-      } catch (cause) {
-        if (!cancelled)
-          setReadError(
-            cause instanceof Error ? cause.message : "无法读取执行状态。",
-          );
-      } finally {
-        reading = false;
-      }
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [
+  const observationScope = JSON.stringify([
+    client.boot?.centerId,
+    client.boot?.principalId,
+    client.boot?.csrfToken,
     artifact.id,
     artifact.revision,
     taskRunRequested,
-    isTask,
-    human,
-    client.online,
-    runtimeObserved,
   ]);
-  useEffect(() => {
-    if (!isTask || !human || compact || !client.online) return;
-    let cancelled = false;
-    const taskId = artifact.id;
-    const taskRevision = artifact.revision;
-    void api.current.taskResponses(taskId).then(
-      (items) => {
-        if (cancelled) return;
-        setLoadedResponses({ taskId, taskRevision, items });
-        setReadError("");
-      },
-      (cause: unknown) => {
-        if (!cancelled)
-          setReadError(
-            cause instanceof Error ? cause.message : "无法读取事项回应。",
-          );
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [artifact.id, artifact.revision, isTask, human, compact, client.online]);
+  useObservedRead({
+    scope: observationScope,
+    enabled:
+      isTask &&
+      !human &&
+      !!taskRunRequested &&
+      client.online &&
+      !runtimeObserved,
+    revision: client.workspaceChangeRevision,
+    read: async (signal) =>
+      taskRuntimeSchema.parse(
+        await api.current.taskRuntime(artifact.id, undefined, {
+          signal,
+          isCurrent: () => !signal.aborted,
+        }),
+      ),
+    publish: (view) => {
+      setLive({
+        scope: observationScope,
+        taskId: artifact.id,
+        taskRevision: artifact.revision,
+        view,
+      });
+      setReadError("");
+    },
+    failed: (cause) =>
+      setReadError(
+        cause instanceof Error ? cause.message : "无法读取执行状态。",
+      ),
+  });
+  useObservedRead({
+    scope: observationScope,
+    enabled: isTask && !!human && !compact && client.online,
+    revision: client.workspaceChangeRevision,
+    read: () => api.current.taskResponses(artifact.id),
+    publish: (items) => {
+      setLoadedResponses({
+        scope: observationScope,
+        taskId: artifact.id,
+        taskRevision: artifact.revision,
+        items,
+      });
+      setReadError("");
+    },
+    failed: (cause) =>
+      setReadError(
+        cause instanceof Error ? cause.message : "无法读取事项回应。",
+      ),
+  });
   if (!isTask) return null;
   const view =
-    live?.taskId === artifact.id && live.taskRevision === artifact.revision
+    live?.scope === observationScope &&
+    live.taskId === artifact.id &&
+    live.taskRevision === artifact.revision
       ? live.view
       : client.boot?.taskRuns[artifact.id];
   const run = view?.runs.find((r) => r.run === task.runRequested);
@@ -134,7 +126,8 @@ export function TaskRunPanel({
   const status = taskPresentation(task, !!human, view);
   const connected = client.online && client.boot?.capabilities.runtime;
   const responses =
-    loadedResponses?.taskId === artifact.id &&
+    loadedResponses?.scope === observationScope &&
+    loadedResponses.taskId === artifact.id &&
     loadedResponses.taskRevision === artifact.revision
       ? loadedResponses.items
       : [];
@@ -142,7 +135,8 @@ export function TaskRunPanel({
     human &&
     !compact &&
     client.online &&
-    (loadedResponses?.taskId !== artifact.id ||
+    (loadedResponses?.scope !== observationScope ||
+      loadedResponses.taskId !== artifact.id ||
       loadedResponses.taskRevision !== artifact.revision) &&
     !readError;
   const canRespond =

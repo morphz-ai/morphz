@@ -53,6 +53,31 @@ export class ReaderOcr {
   private jobs = new Map<string, Job>();
   private installed: boolean | undefined;
   private running = false;
+  private listeners = new Set<() => void>();
+  /** Host-only wake; no recognized text, book identity or credential is sent. */
+  observeChanges(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  workspaceChangeVersion(owner: string): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify(
+          [...this.jobs.entries()]
+            .filter(([, job]) => job.owner === owner)
+            .map(([id, job]) => [id, job.state, job.sectionId, job.message]),
+        ),
+      )
+      .digest("hex");
+  }
+  private changed() {
+    for (const listener of this.listeners)
+      queueMicrotask(() => {
+        if (this.listeners.has(listener)) listener();
+      });
+  }
   constructor(
     private directory: string,
     private engine?: ReadingOcrEngine,
@@ -214,6 +239,7 @@ export class ReaderOcr {
       previous.abort.abort();
       if (["loading", "recognizing"].includes(previous.state))
         previous.state = "cancelled";
+      this.changed();
     }
     if (
       request.operation === "start" &&
@@ -285,6 +311,7 @@ export class ReaderOcr {
     };
     this.jobs.set(request.jobId, job);
     this.running = true;
+    this.changed();
     void (async () => {
       try {
         const models = await this.models(request.download, job.abort.signal);
@@ -307,6 +334,7 @@ export class ReaderOcr {
           ),
         );
         job.state = "recognizing";
+        this.changed();
         const result = ocrResultSchema.parse(
           await this.engine!(
             { pdf, page: request.page, models },
@@ -337,11 +365,13 @@ export class ReaderOcr {
             : "本地 OCR 未完成，请重试或继续阅读原页；未上传文档。";
       } finally {
         this.running = false;
+        this.changed();
       }
     })();
     return { ...base, state: job.state, jobId: request.jobId };
   }
   close() {
     for (const job of this.jobs.values()) job.abort.abort();
+    this.listeners.clear();
   }
 }

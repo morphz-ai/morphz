@@ -17,8 +17,17 @@ test("慢网页加载有就地反馈，结束或失败后停止，不遮住网�
 }) => {
   await page.addInitScript(() => {
     let current: any = null;
+    let sequence = 0;
+    const listeners = new Set<(frame: any) => void>();
     (window as any).__finishPage = (error = "") => {
       current = { ...current, loading: false, error };
+      for (const listener of listeners)
+        listener({
+          generation: 1,
+          sequence: ++sequence,
+          pageId: current.pageId,
+          value: current,
+        });
     };
     (window as any).morphzDesktop = {
       browser: {
@@ -37,6 +46,10 @@ test("慢网页加载有就地反馈，结束或失败后停止，不遮住网�
             visible: true,
           }),
         state: async () => current,
+        onState: (listener: (frame: any) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
         control: async () =>
           (current = { ...current, loading: true, error: "" }),
         visibility: async () => {},

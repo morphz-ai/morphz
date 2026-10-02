@@ -14,6 +14,7 @@ import {
   type ExecutionControl,
 } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
+import { useObservedRead } from "./useObservedRead.js";
 export function ExecutionDialog({
   client,
   scope,
@@ -31,10 +32,12 @@ export function ExecutionDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     api = useRef(client),
-    mounted = useRef(true),
-    loading = useRef(false);
+    mounted = useRef(true);
   api.current = client;
-  const [snapshot, setSnapshot] = useState<ExecutionSnapshot | null>(null),
+  const [observation, setObservation] = useState<{
+      scope: string;
+      snapshot: ExecutionSnapshot;
+    } | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
     [notice, setNotice] = useState("");
@@ -44,34 +47,44 @@ export function ExecutionDialog({
     truncated: boolean;
     available: boolean;
   } | null>(null);
-  async function refresh() {
-    if (loading.current) return;
-    loading.current = true;
-    try {
-      const next = await api.current.executionSnapshot(scope);
-      if (mounted.current) {
-        setSnapshot(next);
-        setError("");
-      }
-    } catch (error) {
-      if (mounted.current)
-        setError(error instanceof Error ? error.message : "无法读取执行状态。");
-    } finally {
-      loading.current = false;
-    }
-  }
+  const observationScope = JSON.stringify([
+    client.boot?.centerId,
+    client.boot?.principalId,
+    client.boot?.csrfToken,
+    scope,
+  ]);
+  const currentScope = useRef(observationScope);
+  currentScope.current = observationScope;
+  const snapshot =
+    observation?.scope === observationScope ? observation.snapshot : null;
+  const refresh = useObservedRead({
+    scope: observationScope,
+    enabled: client.online,
+    revision: client.workspaceChangeRevision,
+    read: (signal) => api.current.executionSnapshot(scope, signal),
+    publish: (next) => {
+      setObservation({ scope: observationScope, snapshot: next });
+      setError("");
+    },
+    failed: (cause) =>
+      setError(cause instanceof Error ? cause.message : "无法读取执行状态。"),
+  });
   useModal(dialog, undefined, !embedded);
   useEffect(() => {
     mounted.current = true;
 
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2000);
+    setObservation(null);
+    setResult(null);
+    setError("");
+    setBusy("");
+    setNotice("");
     return () => {
       mounted.current = false;
-      clearInterval(timer);
     };
-  }, []);
+  }, [observationScope]);
   async function control(action: ExecutionControl["action"]) {
+    const origin = observationScope;
+    const current = () => mounted.current && currentScope.current === origin;
     setBusy(
       action.type === "cancel-job"
         ? action.jobId
@@ -82,32 +95,34 @@ export function ExecutionDialog({
     setNotice("");
     try {
       await api.current.controlExecution({ scope, action });
-      if (mounted.current)
+      if (current())
         setNotice(action.type === "cancel-job" ? "已请求停止" : "已提交决定");
     } catch (error) {
-      if (mounted.current)
+      if (current())
         setNotice(
           error instanceof Error
             ? error.message
             : "结果未确认，请核对最新状态。",
         );
     } finally {
-      if (mounted.current) {
+      if (current()) {
         setBusy("");
         void refresh();
       }
     }
   }
   async function readResult(id: string) {
+    const origin = observationScope;
+    const current = () => mounted.current && currentScope.current === origin;
     setBusy(id);
     try {
       const value = await api.current.executionResult(scope, id);
-      if (mounted.current) setResult({ id, ...value });
+      if (current()) setResult({ id, ...value });
     } catch (error) {
-      if (mounted.current)
+      if (current())
         setNotice(error instanceof Error ? error.message : "无法读取结果。");
     } finally {
-      if (mounted.current) setBusy("");
+      if (current()) setBusy("");
     }
   }
   let producedId: string | undefined;

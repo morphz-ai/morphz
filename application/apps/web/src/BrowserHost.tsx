@@ -129,9 +129,94 @@ export function BrowserHost({
   );
   useEffect(() => {
     latestOnPage.current?.(activeView ? page : null);
-  }, [activeView, page?.pageId, page?.epoch, page?.url, page?.granted]);
+  }, [
+    activeView,
+    page?.pageId,
+    page?.epoch,
+    page?.url,
+    page?.title,
+    page?.granted,
+  ]);
   const active = useRef<string | null>(null);
   const mounted = useRef(true);
+  const stateCursor = useRef({ generation: -1, sequence: 0, revision: 0 });
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false,
+      recovering = false;
+    const clearPage = () => {
+      active.current = null;
+      // A host close consumes the saved-address intent. Only a new explicit
+      // open (or a fresh component after reload) may claim another guest.
+      openedFromIntent.current = true;
+      setPage(null);
+    };
+    const unsubscribe = desktop.onState?.((frame) => {
+      if (
+        disposed ||
+        !mounted.current ||
+        !active.current ||
+        frame.pageId !== active.current ||
+        !Number.isSafeInteger(frame.generation) ||
+        !Number.isSafeInteger(frame.sequence) ||
+        frame.sequence <= 0 ||
+        frame.generation < stateCursor.current.generation ||
+        (frame.generation === stateCursor.current.generation &&
+          frame.sequence <= stateCursor.current.sequence)
+      )
+        return;
+      if (
+        frame.value &&
+        (frame.value.pageId !== active.current ||
+          (projectId && frame.value.projectId !== projectId) ||
+          (artifact && frame.value.artifactId !== artifact.id))
+      )
+        return;
+      stateCursor.current = {
+        generation: frame.generation,
+        sequence: frame.sequence,
+        revision: stateCursor.current.revision + 1,
+      };
+      if (frame.value) setPage(frame.value);
+      else clearPage();
+    });
+    const recover = async () => {
+      if (disposed || recovering || document.hidden) return;
+      recovering = true;
+      const id = active.current,
+        revision = stateCursor.current.revision;
+      try {
+        const next = await desktop.state();
+        if (
+          disposed ||
+          !mounted.current ||
+          active.current !== id ||
+          stateCursor.current.revision !== revision ||
+          !id
+        )
+          return;
+        if (next?.pageId === id) setPage(next);
+        else clearPage();
+      } catch {
+        /* Preserve the last page; host events carry actual failures. */
+      } finally {
+        recovering = false;
+      }
+    };
+    const foreground = () => {
+      if (activeViewRef.current) void recover();
+    };
+    window.addEventListener("focus", foreground);
+    document.addEventListener("visibilitychange", foreground);
+    // Subscribe before the first read, so a real event wins an in-flight read.
+    void recover();
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+      window.removeEventListener("focus", foreground);
+      document.removeEventListener("visibilitychange", foreground);
+    };
+  }, [desktop, projectId, artifact?.id, activeView]);
   useEffect(() => {
     if (page?.url) setURL(page.url);
   }, [page?.url]);
@@ -195,29 +280,11 @@ export function BrowserHost({
     document.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
     document.addEventListener("visibilitychange", update);
-    const timer = setInterval(() => {
-      update();
-      void desktop
-        .state()
-        .then((next) => {
-          if (!mounted.current || active.current !== id) return;
-          if (next?.pageId === id) setPage(next);
-          else {
-            // Another workspace may have replaced the single native page.
-            // A hidden application must not reclaim it in the background.
-            active.current = null;
-            openedFromIntent.current = false;
-            setPage(null);
-          }
-        })
-        .catch(() => {});
-    }, 600);
     update();
     return () => {
       unregister();
       observer.disconnect();
       modal.disconnect();
-      clearInterval(timer);
       document.removeEventListener("scroll", update, true);
       window.removeEventListener("resize", update);
       document.removeEventListener("visibilitychange", update);
@@ -281,11 +348,20 @@ export function BrowserHost({
       | "reject",
   ) {
     if (!desktop || !page) return;
+    const id = page.pageId,
+      revision = stateCursor.current.revision;
     try {
       setError("");
-      setPage(await desktop.control(page.pageId, action));
+      const next = await desktop.control(id, action);
+      if (
+        mounted.current &&
+        active.current === id &&
+        stateCursor.current.revision === revision
+      )
+        setPage(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "操作失败。");
+      if (mounted.current && active.current === id)
+        setError(e instanceof Error ? e.message : "操作失败。");
     }
   }
   return (

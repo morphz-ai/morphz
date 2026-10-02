@@ -2589,17 +2589,21 @@ export function useWorkspace() {
   async function readingOcr(
     request: import("../../../packages/core/src/reader-ocr.js").ReaderOcrRequest,
     signal?: AbortSignal,
+    identityGeneration?: string,
   ): Promise<
     import("../../../packages/core/src/reader-ocr.js").ReaderOcrStatus
   > {
     const identity = current.current;
     if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    return applicationCall("reader.ocr", request, {
+    if (identityGeneration && identityGeneration !== identity.csrfToken)
+      throw new Error("阅读权限已变化，请重新读取。");
+    const result = (await applicationCall("reader.ocr", request, {
       identityGeneration: identity.csrfToken,
       signal,
-    }) as Promise<
-      import("../../../packages/core/src/reader-ocr.js").ReaderOcrStatus
-    >;
+    })) as import("../../../packages/core/src/reader-ocr.js").ReaderOcrStatus;
+    if (signal?.aborted || current.current?.csrfToken !== identity.csrfToken)
+      throw new Error("阅读权限已变化，请重新读取。");
+    return result;
   }
   async function readingContents(
     artifactId: string,
@@ -2794,10 +2798,15 @@ export function useWorkspace() {
       signal: signal ?? AbortSignal.timeout(8000),
     }) as Promise<SearchResult>;
   }
-  async function executionSnapshot(scope: ExecutionScope) {
+  async function executionSnapshot(
+    scope: ExecutionScope,
+    signal?: AbortSignal,
+  ) {
     return executionSnapshotSchema.parse(
       await applicationCall("execution.snapshot", scope, {
-        signal: AbortSignal.timeout(12000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(12000)])
+          : AbortSignal.timeout(12000),
       }),
     );
   }
@@ -2808,6 +2817,7 @@ export function useWorkspace() {
       revision: number;
       action: "pause" | "resume" | "cancel" | "stop";
     },
+    observation?: { signal?: AbortSignal; isCurrent?: () => boolean },
   ) {
     const origin = current.current;
     if (!origin) throw new Error("应用尚未就绪，请稍后重试。");
@@ -2820,14 +2830,21 @@ export function useWorkspace() {
           control ? { id: taskId, ...control } : taskId,
           {
             identityGeneration: origin.csrfToken,
-            signal: AbortSignal.timeout(12000),
+            signal: observation?.signal
+              ? AbortSignal.any([
+                  observation.signal,
+                  AbortSignal.timeout(12000),
+                ])
+              : AbortSignal.timeout(12000),
           },
         ),
       );
+      observation?.signal?.throwIfAborted();
       // List and detail reads supply the same board/filter projection. These
       // observations never authorize operations or introduce a storage authority.
       if (
         taskRuntimeReads.current.get(taskId) === generation &&
+        (observation?.isCurrent?.() ?? true) &&
         taskRuntimeResponseStillCurrent(origin, current.current, taskId) &&
         JSON.stringify(current.current!.taskRuns[taskId]) !==
           JSON.stringify(view)

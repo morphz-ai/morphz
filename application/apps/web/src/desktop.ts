@@ -21,6 +21,12 @@ export type BrowserView = {
   error: string;
   pending: { id: string; label: string; action: string } | null;
 };
+export type BrowserStateFrame = {
+  generation: number;
+  sequence: number;
+  pageId: string | null;
+  value: BrowserView | null;
+};
 declare global {
   interface Window {
     morphzDesktop?: {
@@ -33,11 +39,13 @@ declare global {
         cancel(id: string): void;
         subscribe(
           id: string,
-          scope: {
-            projectId: string;
-            conversationId: string;
-            kind?: "platform";
-          } | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope,
+          scope:
+            | {
+                projectId: string;
+                conversationId: string;
+                kind?: "platform";
+              }
+            | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope,
           generation: string,
         ): Promise<void>;
         unsubscribe(id: string): void;
@@ -45,7 +53,9 @@ declare global {
           callback: (event: {
             id: string;
             closed?: boolean;
-            value?: import("../../../packages/core/src/live-conversation.js").ConversationStream | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange;
+            value?:
+              | import("../../../packages/core/src/live-conversation.js").ConversationStream
+              | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange;
           }) => void,
         ): () => void;
       };
@@ -116,6 +126,7 @@ declare global {
           target: string | { projectId: string; url: string },
         ): Promise<BrowserView>;
         state(): Promise<BrowserView | null>;
+        onState?(callback: (frame: BrowserStateFrame) => void): () => void;
         navigate(pageId: string, url: string): Promise<BrowserView>;
         control(
           pageId: string,

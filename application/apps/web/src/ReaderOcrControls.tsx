@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ScanText, Square, Pencil } from "lucide-react";
+import { useObservedRead } from "./useObservedRead.js";
 import type { WorkspaceClient } from "./client.js";
 import type { ReadingSection } from "../../../packages/core/src/reader.js";
 import {
@@ -25,87 +26,105 @@ export function ReaderOcrControls({
   onOpen: (id: string) => void;
   onFocusLine: (line: number) => void;
 }) {
+  const binding = { artifactId, revision, page: readingPage(section.id) };
+  const scope = JSON.stringify([
+    client.boot?.centerId,
+    client.boot?.principalId,
+    client.boot?.csrfToken,
+    artifactId,
+    revision,
+    binding.page,
+  ]);
   const [expanded, setExpanded] = useState(!section.text.trim()),
-    [status, setStatus] = useState<ReaderOcrStatus | null>(null);
+    [storedStatus, storeStatus] = useState<{
+      scope: string;
+      value: ReaderOcrStatus;
+    } | null>(null);
+  const status = storedStatus?.scope === scope ? storedStatus.value : null;
+  const setStatus = (value: ReaderOcrStatus) => storeStatus({ scope, value });
+  const identityGeneration = client.boot?.csrfToken;
+  const readOcr = (
+    request: Parameters<WorkspaceClient["readingOcr"]>[0],
+    signal?: AbortSignal,
+  ) => client.readingOcr(request, signal, identityGeneration);
   const [layout, setLayout] = useState<OcrLayout>(
       section.ocr?.layout ?? "horizontal",
     ),
-    [error, setError] = useState("");
-  const [busy, setBusy] = useState(false),
+    [storedError, storeError] = useState({ scope, value: "" });
+  const error = storedError.scope === scope ? storedError.value : "";
+  const setError = (value: string) => storeError({ scope, value });
+  const [storedBusy, storeBusy] = useState({ scope, value: false }),
     [line, setLine] = useState(0),
     [correction, setCorrection] = useState("");
-  const job = useRef<string | null>(null),
+  const busy = storedBusy.scope === scope && storedBusy.value;
+  const setBusy = (value: boolean) => storeBusy({ scope, value });
+  const job = useRef<{ id: string; scope: string } | null>(null),
     mounted = useRef(true);
-  const binding = { artifactId, revision, page: readingPage(section.id) };
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
   const running = !!status && ["loading", "recognizing"].includes(status.state);
+  useObservedRead({
+    scope: JSON.stringify([scope, status?.jobId ?? null]),
+    enabled: expanded && active && client.online,
+    revision: client.workspaceChangeRevision,
+    read: (signal) =>
+      readOcr(
+        {
+          operation: "status",
+          ...binding,
+          ...(status?.jobId ? { jobId: status.jobId } : {}),
+        },
+        signal,
+      ),
+    publish: (next) => {
+      setStatus(next);
+      setError(next.message ?? "");
+      if (["complete", "cancelled", "failed"].includes(next.state)) {
+        const owned =
+          job.current?.scope === scope && job.current.id === next.jobId;
+        job.current = null;
+        if (owned && next.state === "complete" && next.sectionId)
+          onOpen(next.sectionId);
+      }
+    },
+    failed: (cause) =>
+      setError(cause instanceof Error ? cause.message : "无法读取识别状态。"),
+  });
   useEffect(() => {
     mounted.current = true;
+    setBusy(false);
+    setError("");
+    setLayout(section.ocr?.layout ?? "horizontal");
+    setLine(0);
+    setCorrection(
+      section.ocr?.items[0]?.correction ?? section.ocr?.items[0]?.text ?? "",
+    );
     return () => {
       mounted.current = false;
-      if (job.current)
-        void client
-          .readingOcr({ operation: "cancel", ...binding, jobId: job.current })
-          .catch(() => {});
-    };
-  }, []);
-  useEffect(() => {
-    if (!active && job.current)
-      void client
-        .readingOcr({ operation: "cancel", ...binding, jobId: job.current })
-        .catch(() => {});
-  }, [active]);
-  useEffect(() => {
-    if (!expanded || !active) return;
-    const abort = new AbortController();
-    void client
-      .readingOcr({ operation: "status", ...binding }, abort.signal)
-      .then(setStatus)
-      .catch((e) => {
-        if (!abort.signal.aborted) setError(e.message);
-      });
-    return () => abort.abort();
-  }, [expanded, active]);
-  useEffect(() => {
-    if (!running || !status?.jobId) return;
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const next = await client.readingOcr(
-          { operation: "status", ...binding, jobId: status.jobId! },
-          abort.signal,
+      if (job.current?.scope === scope) {
+        const jobId = job.current.id;
+        job.current = null;
+        void readOcr({ operation: "cancel", ...binding, jobId }).catch(
+          () => {},
         );
-        if (abort.signal.aborted) return;
-        setStatus(next);
-        if (next.state === "complete" && next.sectionId) {
-          job.current = null;
-          onOpen(next.sectionId);
-        } else if (["loading", "recognizing"].includes(next.state))
-          timer = setTimeout(() => void poll(), 1000);
-        else {
-          job.current = null;
-          setError(next.message ?? "");
-        }
-      } catch (e) {
-        if (!abort.signal.aborted) {
-          setError((e as Error).message);
-          timer = setTimeout(() => void poll(), 2000);
-        }
       }
     };
-    timer = setTimeout(() => void poll(), 300);
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [running, status?.jobId]);
+  }, [scope]);
+  useEffect(() => {
+    if (!active && job.current?.scope === scope)
+      void readOcr({
+        operation: "cancel",
+        ...binding,
+        jobId: job.current.id,
+      }).catch(() => {});
+  }, [active, scope]);
   async function start() {
     setBusy(true);
     setError("");
     const jobId = crypto.randomUUID();
-    job.current = jobId;
+    job.current = { id: jobId, scope };
     try {
-      const next = await client.readingOcr({
+      const next = await readOcr({
         operation: "start",
         ...binding,
         jobId,
@@ -113,10 +132,10 @@ export function ReaderOcrControls({
         download: !status?.installed,
         force: !!section.ocr,
       });
-      if (!mounted.current) {
-        void client
-          .readingOcr({ operation: "cancel", ...binding, jobId })
-          .catch(() => {});
+      if (!mounted.current || currentScope.current !== scope) {
+        void readOcr({ operation: "cancel", ...binding, jobId }).catch(
+          () => {},
+        );
         return;
       }
       setStatus(next);
@@ -125,28 +144,31 @@ export function ReaderOcrControls({
         onOpen(next.sectionId);
       }
     } catch (e) {
-      if (mounted.current) setError((e as Error).message);
-      job.current = null;
+      if (mounted.current && currentScope.current === scope)
+        setError((e as Error).message);
+      if (job.current?.scope === scope) job.current = null;
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current && currentScope.current === scope) setBusy(false);
     }
   }
   async function saveCorrection() {
     setBusy(true);
     setError("");
     try {
-      const next = await client.readingOcr({
+      const next = await readOcr({
         operation: "correct",
         ...binding,
         sectionId: section.id,
         line,
         text: correction,
       });
-      if (mounted.current && next.sectionId) onOpen(next.sectionId);
+      if (mounted.current && currentScope.current === scope && next.sectionId)
+        onOpen(next.sectionId);
     } catch (e) {
-      if (mounted.current) setError((e as Error).message);
+      if (mounted.current && currentScope.current === scope)
+        setError((e as Error).message);
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current && currentScope.current === scope) setBusy(false);
     }
   }
   useEffect(() => {
@@ -190,12 +212,11 @@ export function ReaderOcrControls({
             </span>
             <button
               onClick={() =>
-                void client
-                  .readingOcr({
-                    operation: "cancel",
-                    ...binding,
-                    jobId: job.current!,
-                  })
+                void readOcr({
+                  operation: "cancel",
+                  ...binding,
+                  jobId: status!.jobId!,
+                })
                   .then(setStatus)
                   .catch((e) => setError(e.message))
               }

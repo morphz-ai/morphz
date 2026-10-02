@@ -35,6 +35,9 @@ export async function browserControlFixture() {
   return {
     directory,
     projectId,
+    get connection() {
+      return host.connection;
+    },
     get client() {
       return client;
     },

@@ -19,6 +19,11 @@ import {
   workspaceChangeSchema,
   type WorkspaceChange,
 } from "../../packages/core/src/workspace-changes.js";
+import {
+  browserWatchSchema,
+  browserWakeSchema,
+  type BrowserWake,
+} from "../../packages/core/src/browser.js";
 
 const requestSchema = z
   .object({
@@ -38,6 +43,7 @@ export class RemoteApplicationConnection {
   private identityTransition = false;
   private requests = new Map<string, AbortController>();
   private streams = new Map<string, AbortController>();
+  private browserClosers = new Map<string, () => void>();
   constructor(
     private origin: string,
     private request: typeof fetch,
@@ -351,6 +357,97 @@ export class RemoteApplicationConnection {
       },
     );
   }
+  async observeBrowser(
+    id: string,
+    raw: unknown,
+    generation: string,
+    emit: (hint: BrowserWake) => void,
+    close: () => void,
+  ) {
+    this.assertOpen();
+    const scope = browserWatchSchema.parse(raw);
+    z.uuid().parse(id);
+    if (
+      this.identityTransition ||
+      generation !== this.generation ||
+      !generation ||
+      this.streams.has(id) ||
+      this.streams.size >= 32
+    )
+      throw new ApplicationRequestError(403, "订阅身份已失效或订阅过多。");
+    const controller = new AbortController(),
+      epoch = this.epoch;
+    this.streams.set(id, controller);
+    // Bound only the initial handshake. A healthy established stream has no
+    // periodic query or timeout masquerading as page polling.
+    const handshake = setTimeout(() => controller.abort(), 4000);
+    const finish = () => {
+      clearTimeout(handshake);
+      if (this.streams.get(id) === controller) {
+        this.streams.delete(id);
+        this.browserClosers.delete(id);
+        close();
+      }
+    };
+    this.browserClosers.set(id, finish);
+    // Starting the stream returns immediately, but only a strict first resync
+    // establishes liveness. Transport loss calls close, never retries an action.
+    void (async () => {
+      const response = await this.request(
+        this.origin +
+          "/api/browser/desktop/stream?pageId=" +
+          encodeURIComponent(scope.pageId),
+        {
+          credentials: "include",
+          redirect: "error",
+          signal: controller.signal,
+          headers: { "X-Desktop-Key": scope.key, "X-Morphz-Token": generation },
+        },
+      );
+      if (!response.ok || !response.body)
+        throw new Error("浏览器动作通知不可用。");
+      const reader = response.body.getReader(),
+        decoder = new TextDecoder();
+      let buffer = "",
+        sequence = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || epoch !== this.epoch || controller.signal.aborted) break;
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > 8192) throw new Error("浏览器通知超过大小限制。");
+          let end: number;
+          while ((end = buffer.indexOf("\n\n")) >= 0) {
+            const frame = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            const data = frame
+              .split("\n")
+              .filter((line) => line.startsWith("data: "))
+              .map((line) => line.slice(6))
+              .join("\n");
+            if (!data) continue;
+            const hint = browserWakeSchema.parse(JSON.parse(data));
+            if (hint.pageId !== scope.pageId || hint.sequence <= sequence)
+              throw new Error("浏览器通知身份或顺序无效。");
+            if (
+              sequence === 0 &&
+              (hint.sequence !== 1 || hint.reason !== "resync")
+            )
+              throw new Error("浏览器通知尚未确认初始连接。");
+            if (epoch !== this.epoch || controller.signal.aborted) return;
+            sequence = hint.sequence;
+            clearTimeout(handshake);
+            emit(hint);
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+    })()
+      .catch(() => {})
+      .finally(finish);
+  }
   async observe(
     rawId: unknown,
     rawScope: unknown,
@@ -456,6 +553,7 @@ export class RemoteApplicationConnection {
   }
   unobserve(id: unknown) {
     if (typeof id === "string") {
+      this.browserClosers.delete(id);
       this.streams.get(id)?.abort();
       this.streams.delete(id);
     }
@@ -463,6 +561,10 @@ export class RemoteApplicationConnection {
   invalidate() {
     this.epoch++;
     this.generation = "";
+    for (const [id, finish] of this.browserClosers) {
+      this.streams.get(id)?.abort();
+      finish();
+    }
     for (const request of this.requests.values()) request.abort();
     for (const stream of this.streams.values()) stream.abort();
     this.streams.clear();

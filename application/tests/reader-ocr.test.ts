@@ -20,6 +20,7 @@ import {
   readingOcrScale,
   type OcrResult,
 } from "../packages/core/src/reader-ocr.js";
+import type { WorkspaceChange } from "../packages/core/src/workspace-changes.js";
 
 const line = (x: number, y: number, text: string) => ({
   poly: [
@@ -137,10 +138,10 @@ test("OCR 栅格按像素预算渲染，不受扫描 PDF 纸张单位大小影�
     assert.throws(() => readingOcrScale(size, size));
 });
 test("OCR 校对新增不可变来源；旧标注、选文引用和原 PDF 保留，重开可读", async () => {
-  const host = await platformMessageFixture(
-    [],
-    { browser: true, model: "isolated-ocr-model" },
-  );
+  const host = await platformMessageFixture([], {
+    browser: true,
+    model: "isolated-ocr-model",
+  });
   const ocr = new ReaderOcr(join(host.directory, "models"));
   let agent: Awaited<ReturnType<typeof agentDomainFixture>> | undefined;
   const human = () =>
@@ -467,6 +468,137 @@ test("OCR 不自动下载、不上传文档；Agent 不得确认安装，取消�
     );
     host.assertNoLegacyData();
   } finally {
+    service.close();
+    await agent?.close();
+    await host.close();
+  }
+});
+
+test("OCR Host 进度和结果通过已授权 workspace 通知唤醒，闲置不发 frame", async () => {
+  const host = await platformMessageFixture([], { browser: true });
+  let release!: (result: OcrResult) => void;
+  let entered = false;
+  const engineResult = new Promise<OcrResult>((resolve) => {
+    release = resolve;
+  });
+  const service = new ReaderOcr(
+    join(host.directory, "models"),
+    async () => {
+      entered = true;
+      return engineResult;
+    },
+    async () => {
+      throw new Error("Synthetic installed model must not download");
+    },
+    async () => [new Uint8Array([1])],
+  );
+  let agent: Awaited<ReturnType<typeof agentDomainFixture>> | undefined;
+  let dispose: (() => void) | undefined;
+  const frames: WorkspaceChange[] = [];
+  const until = async (check: () => boolean) => {
+    const deadline = Date.now() + 4000;
+    while (!check()) {
+      assert.ok(
+        Date.now() < deadline,
+        "Expected real OCR Host change notification",
+      );
+      await new Promise((done) => setTimeout(done, 5));
+    }
+  };
+  try {
+    const imported = await new Application(host.transport, {
+      ...host.applicationOptions,
+      readerOcr: service,
+    })
+      .session(localAccess)
+      .importReading({
+        commandId: randomUUID(),
+        projectId: "first-project",
+        relativePath: "event-ocr.pdf",
+        data: readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
+      });
+    agent = await agentDomainFixture({
+      existingCenter: { directory: host.directory, projectId: "first-project" },
+      readerOcr: service,
+    });
+    const session = new Application(host.transport, {
+      ...host.applicationOptions,
+      runtime: undefined,
+      workspaceChanges: agent.domains.workspaceChanges,
+      readerOcr: service,
+    }).session(localAccess, () => {});
+    dispose = await session.observeWorkspaceChanges(
+      (frame) => frames.push(frame),
+      () => {},
+    );
+    await until(() => frames.length === 1);
+    const foreign = service.workspaceChangeVersion("foreign:principal");
+    const owner = `${agent.domains.reader.authority.tenantId}:${localAccess.principalId}`;
+    const own = service.workspaceChangeVersion(owner);
+    const request = {
+      artifactId: imported.entityId,
+      revision: 1,
+      page: 1,
+      jobId: randomUUID(),
+    };
+    await session.readingOcr({
+      ...request,
+      operation: "start",
+      layout: "horizontal",
+      download: false,
+    });
+    await until(() => entered && frames.length > 1);
+    assert.equal(
+      (await session.readingOcr({ ...request, operation: "status" })).state,
+      "recognizing",
+    );
+    assert.notEqual(service.workspaceChangeVersion(owner), own);
+    assert.equal(service.workspaceChangeVersion("foreign:principal"), foreign);
+    const progressFrames = frames.length;
+    await new Promise((done) => setTimeout(done, 150));
+    assert.equal(
+      frames.length,
+      progressFrames,
+      "healthy OCR work must not poll or keep emitting",
+    );
+    release(sample);
+    await until(() => frames.length > progressFrames);
+    // A commit wake may precede the final job-state wake; read only in response
+    // to each actual notification instead of using the old status interval.
+    let result = await session.readingOcr({ ...request, operation: "status" });
+    if (result.state !== "complete") {
+      const pending = frames.length;
+      await until(() => frames.length > pending);
+      result = await session.readingOcr({ ...request, operation: "status" });
+    }
+    assert.equal(result.state, "complete");
+    assert.ok(result.sectionId);
+    assert.deepEqual(
+      frames.map((frame) => frame.sequence),
+      frames.map((_, i) => i + 1),
+    );
+    for (const frame of frames)
+      assert.deepEqual(Object.keys(frame).sort(), [
+        "accessChanged",
+        "kind",
+        "reason",
+        "sequence",
+      ]);
+    const finalFrames = frames.length;
+    await new Promise((done) => setTimeout(done, 150));
+    assert.equal(frames.length, finalFrames);
+    dispose();
+    dispose = undefined;
+    const retained = await session.readPlatformReaderSection({
+      artifactId: imported.entityId,
+      revision: 1,
+      sectionId: result.sectionId!,
+    });
+    assert.match(retained.text, /先王慎德/);
+    host.assertNoLegacyData();
+  } finally {
+    release?.(sample);
+    dispose?.();
     service.close();
     await agent?.close();
     await host.close();

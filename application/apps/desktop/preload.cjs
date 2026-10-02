@@ -46,6 +46,11 @@ contextBridge.exposeInMainWorld(
     browser: Object.freeze({
       open: (artifactId) => ipcRenderer.invoke("browser:open", artifactId),
       state: () => ipcRenderer.invoke("browser:state"),
+      onState: (callback) => {
+        const receive = (_event, frame) => callback(frame);
+        ipcRenderer.on("browser:changed", receive);
+        return () => ipcRenderer.removeListener("browser:changed", receive);
+      },
       navigate: (pageId, url) =>
         ipcRenderer.invoke("browser:navigate", pageId, url),
       control: (pageId, action) =>

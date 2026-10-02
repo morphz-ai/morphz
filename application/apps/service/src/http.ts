@@ -1150,6 +1150,68 @@ export function createAppServer(
           res.end(file.bytes);
           return;
         }
+        if (url.pathname === "/api/browser/desktop/stream") {
+          const query = platformQuery(url, ["pageId"]);
+          if (req.headers["x-morphz-token"] !== requestToken)
+            throw new DomainError("forbidden", "浏览器通知身份已变化。");
+          const controller = new AbortController();
+          let closed = false,
+            dispose: (() => void) | undefined;
+          const close = () => {
+            if (closed) return;
+            closed = true;
+            controller.abort();
+            clearInterval(heartbeat);
+            streams.delete(close);
+            dispose?.();
+            if (res.headersSent && !res.destroyed && !res.writableEnded)
+              res.end();
+          };
+          // Network keepalive bytes only, never a page read or DOM capture.
+          const heartbeat = setInterval(() => {
+            if (!closed && res.headersSent) res.write(": keepalive\n\n");
+          }, 15_000);
+          res.on("close", close);
+          streams.add(close);
+          try {
+            dispose = await business.observeBrowserDesktop(
+              {
+                pageId: query.value("pageId"),
+                key: req.headers["x-desktop-key"],
+              },
+              (hint) => {
+                if (closed) return;
+                if (!res.headersSent) {
+                  res.writeHead(200, {
+                    "Content-Type": "text/event-stream",
+                    "X-Accel-Buffering": "no",
+                    Connection: "keep-alive",
+                  });
+                  res.flushHeaders();
+                }
+                if (res.writableLength > 64 * 1024) {
+                  close();
+                  return;
+                }
+                res.write(`data: ${JSON.stringify(hint)}\n\n`);
+              },
+              close,
+              controller.signal,
+            );
+            if (closed) {
+              dispose();
+              if (!res.headersSent && !res.destroyed)
+                json(res, 503, { message: "浏览器通知连接已关闭。" });
+            }
+          } catch (error) {
+            clearInterval(heartbeat);
+            streams.delete(close);
+            res.off("close", close);
+            if (res.headersSent || res.writableEnded) close();
+            else throw error;
+          }
+          return;
+        }
         if (url.pathname === "/api/platform/workspace/stream") {
           platformQuery(url, []);
           const controller = new AbortController();

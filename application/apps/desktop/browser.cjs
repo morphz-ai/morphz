@@ -1,7 +1,11 @@
 const { session, app } = require("electron");
 const { persistentPartition } = require("./configuration.cjs");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
-const { webPreferences, trustedAppURL } = require("./security.cjs");
+const {
+  webPreferences,
+  trustedAppURL,
+  trustedMainURL,
+} = require("./security.cjs");
 const { pageAction, pageSelection } = require("./browser-page.cjs");
 function browserURL(value, center) {
   const u = new URL(value);
@@ -24,7 +28,127 @@ class DesktopBrowser {
     this.current = null;
     this.guestOwners = new WeakMap();
     this.generation = 0;
-    this.timer = setInterval(() => void this.tick(), 700);
+    this.sequence = 0;
+    this.lastPublished = "";
+    this.onFocus = () => this.recover();
+    this.window.on?.("focus", this.onFocus);
+  }
+  publish(c = this.current, pageId = c?.state.pageId ?? null) {
+    if (c && this.current !== c) return;
+    const contents = this.window.webContents;
+    if (
+      !contents ||
+      contents.isDestroyed?.() ||
+      !trustedMainURL(contents.getURL(), this.centerURL)
+    )
+      return;
+    const value = this.state(false);
+    const fingerprint = JSON.stringify([this.generation, value]);
+    if (fingerprint === this.lastPublished) return;
+    this.lastPublished = fingerprint;
+    contents.send("browser:changed", {
+      generation: this.generation,
+      sequence: ++this.sequence,
+      pageId,
+      value,
+    });
+  }
+  changed(c) {
+    if (this.current !== c) return;
+    this.publish(c);
+    c.dirty = true;
+    if (c.scheduled) return;
+    c.scheduled = true;
+    queueMicrotask(() => {
+      c.scheduled = false;
+      void this.drain(c);
+    });
+  }
+  async drain(c) {
+    if (c.drainPromise) return c.drainPromise;
+    if (this.current !== c || c.busy || !c.connected) return;
+    c.drainPromise = (async () => {
+      while (this.current === c && c.dirty && !c.busy && c.connected) {
+        c.dirty = false;
+        await this.tick();
+      }
+    })();
+    try {
+      await c.drainPromise;
+    } finally {
+      c.drainPromise = null;
+    }
+  }
+  recover() {
+    const c = this.current;
+    if (!c) return;
+    if (!c.connected && !c.observing) void this.observe(c);
+    this.changed(c);
+  }
+  async observe(c) {
+    if (this.current !== c || c.observing) return;
+    c.observing = true;
+    const id = randomUUID();
+    c.subscriptionId = id;
+    let sequence = 0;
+    const disconnected = () => {
+      if (this.current !== c || c.subscriptionId !== id || !c.observing) return;
+      clearTimeout(c.handshake);
+      c.observing = false;
+      c.connected = false;
+      this.invalidate(c);
+      c.error ||= "浏览器协助连接中断，请重新允许协助。";
+      this.publish(c);
+      // Recovery backoff only while disconnected, never a healthy page poll.
+      if ((c.retries = (c.retries ?? 0) + 1) <= 8)
+        c.retry = setTimeout(
+          () => void this.observe(c),
+          Math.min(5000, 250 * 2 ** (c.retries - 1)),
+        );
+    };
+    c.handshake = setTimeout(() => {
+      if (this.current !== c || c.subscriptionId !== id || sequence !== 0)
+        return;
+      this.application?.unobserve(id);
+      disconnected();
+    }, 5000);
+    try {
+      if (!this.application?.observeBrowser)
+        throw new Error("浏览器动作通知尚未接入，请更新宿主。");
+      await this.application.observeBrowser(
+        id,
+        { pageId: c.state.pageId, key: c.key },
+        c.identityGeneration,
+        (hint) => {
+          if (this.current !== c || c.subscriptionId !== id || !c.observing)
+            return;
+          if (
+            !hint ||
+            hint.pageId !== c.state.pageId ||
+            !Number.isSafeInteger(hint.sequence) ||
+            hint.sequence <= sequence ||
+            (sequence === 0 &&
+              (hint.sequence !== 1 || hint.reason !== "resync")) ||
+            !["queued", "resync"].includes(hint.reason)
+          ) {
+            this.application.unobserve(id);
+            disconnected();
+            return;
+          }
+          sequence = hint.sequence;
+          clearTimeout(c.handshake);
+          c.connected = true;
+          c.retries = 0;
+          if (c.error === "浏览器协助连接中断，请重新允许协助。") c.error = "";
+          this.changed(c);
+        },
+        disconnected,
+      );
+      if (this.current !== c || c.subscriptionId !== id)
+        this.application.unobserve(id);
+    } catch (error) {
+      disconnected();
+    }
   }
   async boot() {
     if (this.application)
@@ -51,7 +175,11 @@ class DesktopBrowser {
   }
   async post(path, body, c) {
     const boot = await this.boot();
-    if (boot.centerId !== c.centerId || boot.principalId !== c.principalId)
+    if (
+      boot.centerId !== c.centerId ||
+      boot.principalId !== c.principalId ||
+      (c.identityGeneration && boot.csrfToken !== c.identityGeneration)
+    )
       throw new Error("工作空间或登录身份已变化，请重新打开网站。");
     if (this.application) {
       const method =
@@ -156,6 +284,7 @@ class DesktopBrowser {
       key: randomBytes(32).toString("hex"),
       centerId: boot.centerId,
       principalId: boot.principalId,
+      identityGeneration: boot.csrfToken,
       state: {
         pageId: randomUUID(),
         artifactId,
@@ -177,6 +306,8 @@ class DesktopBrowser {
       await this.post("/api/browser/desktop/register", c.state, c);
       if (this.current !== c || generation !== this.generation)
         throw new Error("页面打开已取消或被替换。");
+      void this.observe(c);
+      this.publish(c);
     } catch (e) {
       if (this.current === c) this.close();
       throw e;
@@ -229,16 +360,23 @@ class DesktopBrowser {
     c.attaching = false;
     const view = (c.view = { webContents: contents });
     view.webContents.setWindowOpenHandler(({ url }) => {
+      if (this.current !== c) return { action: "deny" };
       c.error =
         "网站请求打开新窗口。请在地址栏打开目标地址；不会绕过网站的登录限制。";
+      this.changed(c);
       return { action: "deny" };
     });
     const checkNavigation = (event, url) => {
+      if (this.current !== c) {
+        event.preventDefault();
+        return;
+      }
       try {
         browserURL(url, this.centerURL);
       } catch {
         event.preventDefault();
         c.error = "已阻止不安全的页面跳转。";
+        this.changed(c);
       }
     };
     view.webContents.on("will-navigate", checkNavigation);
@@ -250,15 +388,29 @@ class DesktopBrowser {
       if (details.isMainFrame) this.invalidate(c);
     });
     view.webContents.on("did-navigate", (_e, url) => {
+      if (this.current !== c) return;
       c.state.url = url;
+      this.changed(c);
     });
     view.webContents.on("did-navigate-in-page", (_e, url, main) => {
-      if (main) c.state.url = url;
+      if (main && this.current === c) {
+        c.state.url = url;
+        this.changed(c);
+      }
     });
     view.webContents.on("page-title-updated", (_e, title) => {
+      if (this.current !== c) return;
       c.state.title = title.slice(0, 500);
+      this.changed(c);
     });
+    for (const event of [
+      "did-start-loading",
+      "did-stop-loading",
+      "did-finish-load",
+    ])
+      view.webContents.on(event, () => this.changed(c));
     view.webContents.on("before-input-event", (event, input) => {
+      if (this.current !== c) return;
       if (
         input.type === "keyDown" &&
         !input.isAutoRepeat &&
@@ -279,6 +431,7 @@ class DesktopBrowser {
       if (input.type === "keyUp") captureSelection();
     });
     view.webContents.on("before-mouse-event", (_e, mouse) => {
+      if (this.current !== c) return;
       if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
         this.invalidate(c);
       if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
@@ -327,10 +480,14 @@ class DesktopBrowser {
     view.webContents.on("input-event", (_event, input) => {
       if (input.type === "mouseUp") captureSelection();
     });
-    view.webContents.on("destroyed", () => clearTimeout(selectionTimer));
+    view.webContents.on("destroyed", () => {
+      clearTimeout(selectionTimer);
+      if (this.current === c) this.close(c.state.pageId);
+    });
     view.webContents.on("render-process-gone", () => {
       this.invalidate(c);
       c.error = "网页进程已退出，请重新打开。";
+      this.changed(c);
     });
     view.webContents.on(
       "did-fail-load",
@@ -338,9 +495,11 @@ class DesktopBrowser {
         if (main && code !== -3 && this.current === c) {
           this.invalidate(c);
           c.error = "网页未能载入，请检查地址或重新载入。";
+          this.changed(c);
         }
       },
     );
+    this.changed(c);
   }
   load(c, url) {
     if (!c.view) throw new Error("网页尚未准备好，请稍后重试。");
@@ -356,6 +515,7 @@ class DesktopBrowser {
       ) {
         this.invalidate(c);
         c.error = "网页未能载入，请检查地址或重新载入。";
+        this.changed(c);
       }
     });
   }
@@ -365,6 +525,7 @@ class DesktopBrowser {
     return c;
   }
   invalidate(c) {
+    if (this.current !== c) return;
     c.state.epoch = randomUUID();
     c.state.granted = false;
     if (c.pending) {
@@ -375,6 +536,7 @@ class DesktopBrowser {
       });
       c.pending = null;
     }
+    this.changed(c);
   }
   visibility(pageId, visible) {
     const c = this.require(pageId);
@@ -382,6 +544,7 @@ class DesktopBrowser {
     if (!visible && c.state.visible) this.invalidate(c);
     c.state.visible = visible;
     if (!visible) this.window.webContents.send("browser:selection", null);
+    this.changed(c);
   }
   async reveal(pageId, request) {
     const c = this.require(pageId);
@@ -410,8 +573,9 @@ class DesktopBrowser {
       { code: `(${pageSelection.toString()})(${JSON.stringify(payload)})` },
     ]);
   }
-  state() {
+  state(recover = true) {
     const c = this.current;
+    if (recover && c?.identityGeneration) this.recover();
     return c
       ? {
           ...c.state,
@@ -442,7 +606,8 @@ class DesktopBrowser {
     const c = this.require(pageId);
     if (action === "takeover") this.invalidate(c);
     else if (action === "grant") {
-      if (!c.state.visible || !c.view) throw new Error("页面尚不可用。");
+      if (!c.state.visible || !c.view || !c.connected)
+        throw new Error("页面或协助连接尚不可用。");
       this.invalidate(c);
       c.state.granted = true;
     } else if (action === "back") {
@@ -479,7 +644,9 @@ class DesktopBrowser {
         }
       }
     } else throw new Error("不支持的操作。");
-    return this.state();
+    this.changed(c);
+    await this.drain(c);
+    return this.state(false);
   }
   async evaluate(c, action) {
     return c.view.webContents.executeJavaScriptInIsolatedWorld(1001, [
@@ -538,7 +705,6 @@ class DesktopBrowser {
         c,
       );
       c.results.splice(0, results.length);
-      c.error = "";
       const r = response.requests[0];
       if (
         !r ||
@@ -565,11 +731,16 @@ class DesktopBrowser {
       } else await this.perform(c, r);
     } catch (e) {
       if (this.current === c) {
+        c.connected = false;
         this.invalidate(c);
         c.error = e.message;
+        if (c.subscriptionId) this.application?.unobserve(c.subscriptionId);
+        c.observing = false;
       }
     } finally {
       c.busy = false;
+      this.publish(c);
+      if (c.results.length) c.dirty = true;
     }
   }
   close(pageId) {
@@ -584,10 +755,14 @@ class DesktopBrowser {
       c,
     ).catch(() => {});
     this.current = null;
+    clearTimeout(c.retry);
+    clearTimeout(c.handshake);
+    if (c.subscriptionId) this.application?.unobserve(c.subscriptionId);
+    this.publish(null, c.state.pageId);
     if (c.view && !c.view.webContents.isDestroyed()) c.view.webContents.close();
   }
   stop() {
-    clearInterval(this.timer);
+    this.window.removeListener?.("focus", this.onFocus);
     this.close();
   }
 }

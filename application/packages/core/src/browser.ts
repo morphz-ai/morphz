@@ -75,3 +75,20 @@ export const pageStateSchema = z
   })
   .strict();
 export type BrowserPageState = z.infer<typeof pageStateSchema>;
+
+// Host-to-Host wake-up only. No actions, page contents, credential or permission
+// are carried by this hint; exchange remains the authorized control authority.
+export const browserWakeSchema = z
+  .object({
+    pageId: z.uuid(),
+    sequence: z.number().int().positive(),
+    reason: z.enum(["queued", "resync"]),
+  })
+  .strict();
+export type BrowserWake = z.infer<typeof browserWakeSchema>;
+export const browserWatchSchema = z
+  .object({
+    pageId: z.uuid(),
+    key: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();

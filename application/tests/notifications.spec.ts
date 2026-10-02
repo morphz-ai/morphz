@@ -223,13 +223,16 @@ test("通知比例紧凑，提醒范围支持键盘且失败不显示为已保�
     "通知设置未确认保存，请重试。",
   );
   await expect(dialog.getByRole("radio", { name: "不提示" })).toBeChecked();
-  // A successful background GET must not erase a failed setting write.
-  await page.waitForResponse(
+  // Foreground reconciliation replaces the old three-second poll. Register
+  // before its explicit wake so a fast authorized read cannot be missed.
+  const reconciled = page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/notifications") &&
       response.request().method() === "GET",
     { timeout: 6000 },
   );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await reconciled;
   await expect(dialog.getByRole("alert")).toHaveText(
     "通知设置未确认保存，请重试。",
   );

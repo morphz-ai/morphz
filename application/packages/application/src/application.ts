@@ -135,15 +135,23 @@ import type { MessageAttachmentService } from "./message-attachment-service.js";
 import type { UiPackageService } from "./ui-package-service.js";
 import type { ProfileService } from "./profile-service.js";
 import { profileAvatarCommandSchema } from "../../core/src/profile.js";
-import { observeSqlChanges, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
+import {
+  observeSqlChanges,
+  type SqlChangeSource,
+} from "../../storage/src/commit-notifications.js";
 import type { WorkspaceChange } from "../../core/src/workspace-changes.js";
 
 export type ApplicationOptions = {
   /** Trusted Host capabilities, never accepted from a Client/Agent request. */
   workspaceChanges?: {
     sources: readonly SqlChangeSource[];
-    readVersion: (access: AccessContext, assertActive: () => void) => Promise<{
-      version: string; accessVersion: string; projectIds: string[];
+    readVersion: (
+      access: AccessContext,
+      assertActive: () => void,
+    ) => Promise<{
+      version: string;
+      accessVersion: string;
+      projectIds: string[];
     }>;
   };
   profiles?: { authority: HumanPlatformAuthority; service: ProfileService };
@@ -641,30 +649,60 @@ export class ApplicationSession {
   }
   readProfile() {
     const domain = this.profileDomain();
-    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.read(actor, () => this.active()));
+    return domain.authority.withSession(
+      this.access,
+      () => this.active(),
+      (actor) => domain.service.read(actor, () => this.active()),
+    );
   }
   updateProfile(raw: unknown) {
     const domain = this.profileDomain();
-    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.update(actor, raw, () => this.active()));
+    return domain.authority.withSession(
+      this.access,
+      () => this.active(),
+      (actor) => domain.service.update(actor, raw, () => this.active()),
+    );
   }
   setProfileAvatar(raw: unknown) {
     const domain = this.profileDomain();
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new DomainError("invalid", "头像参数无效。");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      throw new DomainError("invalid", "头像参数无效。");
     const { data, ...metadata } = raw as Record<string, unknown>;
     const request = profileAvatarCommandSchema.parse(metadata);
-    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) throw new DomainError("invalid", "请上传头像文件。");
-    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
-    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.set(actor, request, data instanceof Uint8Array ? data : new Uint8Array(data)));
+    if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer))
+      throw new DomainError("invalid", "请上传头像文件。");
+    if (!domain.service.avatars)
+      throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(
+      this.access,
+      () => this.active(),
+      (actor) =>
+        domain.service.avatars!.set(
+          actor,
+          request,
+          data instanceof Uint8Array ? data : new Uint8Array(data),
+        ),
+    );
   }
   clearProfileAvatar(raw: unknown) {
     const domain = this.profileDomain();
-    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
-    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.clear(actor, raw));
+    if (!domain.service.avatars)
+      throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(
+      this.access,
+      () => this.active(),
+      (actor) => domain.service.avatars!.clear(actor, raw),
+    );
   }
   readProfileAvatar(raw: unknown) {
     const domain = this.profileDomain();
-    if (!domain.service.avatars) throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
-    return domain.authority.withSession(this.access, () => this.active(), actor => domain.service.avatars!.read(actor, raw));
+    if (!domain.service.avatars)
+      throw new ApplicationUnavailable("当前部署尚未配置头像存储。");
+    return domain.authority.withSession(
+      this.access,
+      () => this.active(),
+      (actor) => domain.service.avatars!.read(actor, raw),
+    );
   }
   /** Runtime-owned conversation status for the unchanged exchange chrome.
    * Project and application data are not read from the old workspace here. */
@@ -3243,6 +3281,57 @@ export class ApplicationSession {
       ? this.options.browser.exchange(data, key, this.access)
       : this.options.browser.register(data, key, this.access);
   }
+  async observeBrowserDesktop(
+    raw: unknown,
+    emit: (hint: import("../../core/src/browser.js").BrowserWake) => void,
+    onClose: () => void,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    this.active();
+    signal?.throwIfAborted();
+    if (!this.options.browser)
+      throw new DomainError("invalid", "浏览器通道尚未启用。");
+    let closed = false;
+    let watcher:
+      Awaited<ReturnType<BrowserBroker["observeDesktop"]>> | undefined;
+    let disposeAccess: (() => void) | undefined;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      signal?.removeEventListener("abort", close);
+      watcher?.close();
+      disposeAccess?.();
+      onClose();
+    };
+    signal?.addEventListener("abort", close, { once: true });
+    try {
+      watcher = await this.options.browser.observeDesktop(
+        raw,
+        this.access,
+        () => this.active(),
+        (hint) => {
+          if (!closed) emit(hint);
+        },
+        close,
+      );
+      if (closed) {
+        watcher.close();
+        return close;
+      }
+      // Workspace events are permission invalidations, never page/control data.
+      if (this.options.workspaceChanges)
+        disposeAccess = await this.observeWorkspaceChanges(
+          () => void watcher?.check(),
+          close,
+          signal,
+        );
+      if (closed) disposeAccess?.();
+      return close;
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
   async observeWorkspaceChanges(
     emit: (value: WorkspaceChange) => void,
     onClose: () => void,
@@ -3262,11 +3351,13 @@ export class ApplicationSession {
       accessVersion: string | undefined;
     const subscriptions: ReturnType<typeof observeSqlChanges>[] = [];
     let disposeRuntime: (() => void) | undefined;
+    let disposeOcr: (() => void) | undefined;
     const close = () => {
       if (closed) return;
       closed = true;
       signal?.removeEventListener("abort", close);
       disposeRuntime?.();
+      disposeOcr?.();
       for (const subscription of subscriptions)
         void subscription.close().catch(() => {});
       onClose();
@@ -3292,6 +3383,14 @@ export class ApplicationSession {
             this.access,
             current.projectIds,
           );
+          const ocr =
+            this.options.readerOcr && this.options.platformReader
+              ? await this.reader(async () =>
+                  this.options.readerOcr!.workspaceChangeVersion(
+                    `${this.options.platformReader!.authority.tenantId}:${this.access.principalId}`,
+                  ),
+                )
+              : undefined;
           // checkedAt is freshness bookkeeping, not a visible domain change.
           const next = createHash("sha256")
             .update(
@@ -3299,6 +3398,12 @@ export class ApplicationSession {
                 {
                   version: current.version,
                   runtime,
+                  ocr,
+                  execution:
+                    this.options.runtime?.platformExecutionChangeVersion(
+                      this.access,
+                      current.projectIds,
+                    ),
                 },
                 (key, value) => (key === "checkedAt" ? undefined : value),
               ),
@@ -3345,6 +3450,7 @@ export class ApplicationSession {
       disposeRuntime = this.options.runtime?.observeWorkspaceChanges(() =>
         wake(),
       );
+      disposeOcr = this.options.readerOcr?.observeChanges(() => wake());
       await Promise.all(
         subscriptions.map((subscription) => subscription.ready),
       );
@@ -3416,11 +3522,16 @@ export function invokeApplication(
   switch (method) {
     case "platform.bootstrap":
       return session.platformBootstrap(identityGeneration);
-    case "profile.read": return session.readProfile();
-    case "profile.update": return session.updateProfile(params);
-    case "profile.avatar.set": return session.setProfileAvatar(params);
-    case "profile.avatar.clear": return session.clearProfileAvatar(params);
-    case "profile.avatar.read": return session.readProfileAvatar(params);
+    case "profile.read":
+      return session.readProfile();
+    case "profile.update":
+      return session.updateProfile(params);
+    case "profile.avatar.set":
+      return session.setProfileAvatar(params);
+    case "profile.avatar.clear":
+      return session.clearProfileAvatar(params);
+    case "profile.avatar.read":
+      return session.readProfileAvatar(params);
     case "runtime.snapshot":
       return session.platformRuntimeSnapshot();
     case "runtime.navigation":

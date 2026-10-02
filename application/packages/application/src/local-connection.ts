@@ -181,6 +181,43 @@ export class LocalApplicationConnection {
   cancel(id: unknown) {
     if (typeof id === "string") this.requests.get(id)?.abort();
   }
+  /** Native Host-only subscription. It is intentionally absent from the
+   * renderer subscribe scope union; page credentials never cross that bridge. */
+  async observeBrowser(
+    id: string,
+    scope: unknown,
+    generation: string,
+    emit: (hint: import("../../core/src/browser.js").BrowserWake) => void,
+    onClose: () => void,
+  ) {
+    const key = z.uuid().parse(id);
+    if (this.subscriptions.has(key) || this.subscriptions.size >= 32)
+      throw new DomainError("invalid", "订阅过多或标识重复。");
+    const controller = new AbortController();
+    let disposed = false,
+      dispose: (() => void) | undefined;
+    const close = () => {
+      if (disposed) return;
+      disposed = true;
+      controller.abort();
+      this.subscriptions.delete(key);
+      dispose?.();
+      onClose();
+    };
+    this.subscriptions.set(key, close);
+    try {
+      dispose = await this.session(generation).session.observeBrowserDesktop(
+        scope,
+        emit,
+        close,
+        controller.signal,
+      );
+      if (disposed) dispose();
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
   async observe(
     id: unknown,
     scope: unknown,
@@ -209,7 +246,11 @@ export class LocalApplicationConnection {
     try {
       const session = this.session(expected).session;
       if (workspaceChangeScopeSchema.safeParse(scope).success) {
-        dispose = await session.observeWorkspaceChanges(emit, close, controller.signal);
+        dispose = await session.observeWorkspaceChanges(
+          emit,
+          close,
+          controller.signal,
+        );
         if (disposed) dispose();
         return;
       }

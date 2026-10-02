@@ -307,9 +307,13 @@ else {
           // A logged-out team center must not restore another identity's storage.
         }
       }
-      registerApplicationBridge(ipcMain, application, requireMain, () =>
-        host?.persistAuthentication(),
-      );
+      registerApplicationBridge(ipcMain, application, requireMain, () => {
+        // A confirmed login/logout changes the owner of persistent guest
+        // storage. Disconnecting a stream alone must not discard a form, but
+        // an identity transition must never retain another Principal's page.
+        browser?.close();
+        host?.persistAuthentication();
+      });
       const { buildScriptDocx } =
         await import("../../dist/service/packages/core/src/script-studio-docx.js");
       scriptExports = createScriptExportSaver({
