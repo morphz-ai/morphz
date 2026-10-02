@@ -28,6 +28,10 @@ import {
   compileProfileRom,
   parseProfileRom,
   defaultAgentProfile,
+  defaultHumanProfile,
+  profileHasConfiguredFields,
+  profileContract,
+  profileRom,
   profileAvatarBytesSchema,
   profileAvatarSnapshotSchema,
   profileSnapshotSchema,
@@ -66,6 +70,118 @@ test("Profile ROM 单一编译/读取保留中文、引号与反斜线，不把�
       ...data,
       traits: { ...data.traits, rigor: 6 },
     }),
+  );
+});
+
+test("Profile v2每项null完全省略、0保持明确设置，全未设置不附偏好指令", () => {
+  assert.equal(profileHasConfiguredFields(defaultAgentProfile), false);
+  assert.equal(profileHasConfiguredFields(defaultHumanProfile), false);
+  assert.equal(
+    compileProfileRom("agent", defaultAgentProfile),
+    "(agent-profile (version 2))",
+  );
+  assert.equal(
+    compileProfileRom("human", defaultHumanProfile),
+    "(human-profile (version 2))",
+  );
+  const nameOnly = compileProfileRom("agent", {
+    ...defaultAgentProfile,
+    name: "阿芷",
+  });
+  assert.equal(
+    /humor|rigor|warmth|verbosity|0–5|value\/5/.test(nameOnly),
+    false,
+  );
+  const humorOnly = compileProfileRom("agent", {
+    ...defaultAgentProfile,
+    traits: { ...defaultAgentProfile.traits, humor: 5 },
+  });
+  assert.equal(/rigor|warmth|verbosity/.test(humorOnly), false);
+  assert.equal(
+    compileProfileRom("agent", { ...defaultAgentProfile, customStyle: "   " }),
+    "(agent-profile (version 2))",
+  );
+  assert.equal(
+    compileProfileRom("human", {
+      ...defaultHumanProfile,
+      preferredAddress: "   ",
+    }),
+    "(human-profile (version 2))",
+  );
+  for (const key of ["humor", "rigor", "warmth", "verbosity"] as const) {
+    const data = {
+      ...defaultAgentProfile,
+      traits: { ...defaultAgentProfile.traits, [key]: 0 },
+    };
+    const body = compileProfileRom("agent", data);
+    assert.equal(profileHasConfiguredFields(data), true);
+    assert.ok(body.includes(`(${key} 0)`));
+    for (const other of ["humor", "rigor", "warmth", "verbosity"].filter(
+      (other) => other !== key,
+    ))
+      assert.equal(body.includes(`(${other} `), false);
+    assert.equal(body.includes("(identity "), false);
+    assert.equal(body.includes("(speech "), false);
+    assert.match(body, /0–5 scale, not model parameters/);
+    assert.match(body, /exact selected value as value\/5, not value\/100/);
+    assert.deepEqual(
+      parseProfileRom("agent", body, profileRom.agent.schemaTag),
+      data,
+    );
+  }
+  const partial = { name: null, preferredAddress: "朋友" };
+  assert.equal(
+    compileProfileRom("human", partial),
+    '(human-profile (version 2) (preferred-address "朋友"))',
+  );
+  assert.deepEqual(
+    parseProfileRom("human", compileProfileRom("human", partial)),
+    partial,
+  );
+  assert.deepEqual(
+    parseProfileRom("agent", compileProfileRom("agent", defaultAgentProfile)),
+    defaultAgentProfile,
+  );
+  assert.deepEqual(
+    parseProfileRom("human", compileProfileRom("human", defaultHumanProfile)),
+    defaultHumanProfile,
+  );
+  assert.throws(() =>
+    parseProfileRom(
+      "agent",
+      "(agent-profile (version 2) (personality (humor 0)))",
+    ),
+  );
+  assert.throws(() =>
+    parseProfileRom("agent", "(agent-profile (version 2) (speech))"),
+  );
+  assert.throws(() =>
+    parseProfileRom("human", "(human-profile (version 2) (name x) (name y))"),
+  );
+  assert.throws(() =>
+    parseProfileRom(
+      "human",
+      "(human-profile (version 2))",
+      profileRom.human.legacySchemaTag,
+    ),
+  );
+  const legacy = `(agent-profile (identity (name Morphz)) (personality (humor 2) (rigor 3) (warmth 3) (verbosity 2)) (speech (style natural) (custom "")) (contract ${JSON.stringify(profileContract)}))`;
+  assert.deepEqual(
+    parseProfileRom("agent", legacy, profileRom.agent.legacySchemaTag),
+    {
+      name: "Morphz",
+      traits: { humor: 2, rigor: 3, warmth: 3, verbosity: 2 },
+      speechStyle: "natural",
+      customStyle: null,
+    },
+  );
+  assert.deepEqual(
+    parseProfileRom(
+      "human",
+      '(human-profile (name 我) (preferred-address ""))',
+      profileRom.human.legacySchemaTag,
+    ),
+    { name: "我", preferredAddress: "" },
   );
 });
 

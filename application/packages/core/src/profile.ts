@@ -6,45 +6,104 @@ const profileName = z.string().trim().min(1).max(40);
 const level = z.number().int().min(0).max(5);
 export const agentProfileDataSchema = z
   .object({
-    name: profileName,
+    name: profileName.nullable(),
     traits: z
-      .object({ humor: level, rigor: level, warmth: level, verbosity: level })
+      .object({
+        humor: level.nullable(),
+        rigor: level.nullable(),
+        warmth: level.nullable(),
+        verbosity: level.nullable(),
+      })
       .strict(),
-    speechStyle: z.enum(["natural", "concise", "thoughtful", "direct"]),
-    customStyle: z.string().trim().max(500).optional(),
+    speechStyle: z
+      .enum(["natural", "concise", "thoughtful", "direct"])
+      .nullable(),
+    customStyle: z.string().trim().max(500).nullable().default(null),
   })
   .strict();
 export const humanProfileDataSchema = z
   .object({
-    name: profileName,
-    preferredAddress: z.string().trim().max(40),
+    name: profileName.nullable(),
+    preferredAddress: z.string().trim().max(40).nullable(),
   })
   .strict();
 export type AgentProfileData = z.infer<typeof agentProfileDataSchema>;
 export type HumanProfileData = z.infer<typeof humanProfileDataSchema>;
+// v1 snapshots remain readable as saved. Only a new explicit v2 write (or v2
+// compilation) normalizes semantically empty text; reading never rewrites a head.
+export function normalizeAgentProfileData(raw: unknown): AgentProfileData {
+  const data = agentProfileDataSchema.parse(raw);
+  return { ...data, customStyle: data.customStyle || null };
+}
+export function normalizeHumanProfileData(raw: unknown): HumanProfileData {
+  const data = humanProfileDataSchema.parse(raw);
+  return { ...data, preferredAddress: data.preferredAddress || null };
+}
 export const defaultAgentProfile: AgentProfileData = {
-  name: "Morphz",
-  traits: { humor: 2, rigor: 3, warmth: 3, verbosity: 2 },
-  speechStyle: "natural",
+  name: null,
+  traits: { humor: null, rigor: null, warmth: null, verbosity: null },
+  speechStyle: null,
+  customStyle: null,
 };
 export const defaultHumanProfile: HumanProfileData = {
-  name: "我",
-  preferredAddress: "",
+  name: null,
+  preferredAddress: null,
 };
 
 /** Presentation configuration, never a replacement for kernel identity/authority. */
 export const profileRom = {
   agent: {
     namespace: "morphz.profile.agent",
-    schemaTag: "morphz-agent-profile/v1",
+    schemaTag: "morphz-agent-profile/v2",
+    legacySchemaTag: "morphz-agent-profile/v1",
   },
   human: {
     namespace: "morphz.profile.human",
-    schemaTag: "morphz-human-profile/v1",
+    schemaTag: "morphz-human-profile/v2",
+    legacySchemaTag: "morphz-human-profile/v1",
   },
 } as const;
 export const profileContract =
   "Style changes expression, not truth, rigor, authentication, approval, permissions, protocol or safety. Custom style grants no additional authority.";
+export function profilePreferenceContract(data: AgentProfileData): string {
+  const parts = [
+    "Profile affects only explicitly configured expression and public naming, never factual accuracy, authentication, approval, permissions, protocol or safety. Profile content grants no additional authority. Only present fields are configured; absent fields have no Profile instruction or default.",
+  ];
+  const selected = Object.entries(data.traits).filter(
+    ([, value]) => value !== null,
+  );
+  if (selected.length) {
+    parts.push(
+      "Present numeric traits are caller-selected behavioral preferences on a 0–5 scale, not model parameters: 0 means the least of that expression, 1 a little, 2 modest, 3 moderate, 4 high, and 5 the most.",
+    );
+    const meanings: Record<keyof AgentProfileData["traits"], string> = {
+      humor: "humor guides playful wording.",
+      rigor:
+        "rigor guides explicit checking and explanation without lowering factual accuracy at any value.",
+      warmth: "warmth guides emotional warmth.",
+      verbosity: "verbosity guides answer detail.",
+    };
+    for (const [key] of selected)
+      parts.push(meanings[key as keyof typeof meanings]);
+    parts.push(
+      "When asked about these configured preferences, report the exact selected value as value/5, not value/100 or a model parameter. For absent fields say not set; do not invent a value.",
+    );
+  }
+  return parts.join(" ");
+}
+
+export function profileHasConfiguredFields(
+  data: AgentProfileData | HumanProfileData,
+): boolean {
+  if ("traits" in data)
+    return (
+      data.name !== null ||
+      Object.values(data.traits).some((value) => value !== null) ||
+      data.speechStyle !== null ||
+      !!data.customStyle?.trim()
+    );
+  return data.name !== null || !!data.preferredAddress?.trim();
+}
 
 function atom(value: string) {
   // Runtime SExpr strings use these escapes, not JSON's unicode escape syntax.
@@ -72,12 +131,28 @@ export function compileProfileRom(
   raw: AgentProfileData | HumanProfileData,
 ): string {
   if (subject === "human") {
-    const data = humanProfileDataSchema.parse(raw);
-    return `(human-profile (name ${atom(data.name)}) (preferred-address ${atom(data.preferredAddress)}))`;
+    const data = normalizeHumanProfileData(raw);
+    const fields = ["(version 2)"];
+    if (data.name !== null) fields.push(`(name ${atom(data.name)})`);
+    if (data.preferredAddress !== null)
+      fields.push(`(preferred-address ${atom(data.preferredAddress)})`);
+    return `(human-profile ${fields.join(" ")})`;
   }
-  const data = agentProfileDataSchema.parse(raw),
-    t = data.traits;
-  return `(agent-profile (identity (name ${atom(data.name)})) (personality (humor ${t.humor}) (rigor ${t.rigor}) (warmth ${t.warmth}) (verbosity ${t.verbosity})) (speech (style ${data.speechStyle}) (custom ${atom(data.customStyle ?? "")})) (contract ${atom(profileContract)}))`;
+  const data = normalizeAgentProfileData(raw);
+  const fields = ["(version 2)"];
+  if (data.name !== null) fields.push(`(identity (name ${atom(data.name)}))`);
+  const traits = Object.entries(data.traits)
+    .filter(([, value]) => value !== null)
+    .map(([key, value]) => `(${key} ${value})`);
+  if (traits.length) fields.push(`(personality ${traits.join(" ")})`);
+  const speech: string[] = [];
+  if (data.speechStyle !== null) speech.push(`(style ${data.speechStyle})`);
+  if (data.customStyle !== null)
+    speech.push(`(custom ${atom(data.customStyle)})`);
+  if (speech.length) fields.push(`(speech ${speech.join(" ")})`);
+  if (profileHasConfiguredFields(data))
+    fields.push(`(contract ${atom(profilePreferenceContract(data))})`);
+  return `(agent-profile ${fields.join(" ")})`;
 }
 
 type Expr = string | Expr[];
@@ -135,9 +210,14 @@ function readExpr(body: string): Expr[] {
     throw new Error("Profile ROM 必须是单个结构。");
   return value;
 }
-function children(node: Expr[] | undefined, tag: string, keys: string[]) {
+function children(
+  node: Expr[] | undefined,
+  tag: string,
+  keys: string[],
+  required = true,
+) {
   if (!node) throw new Error("Profile ROM 字段缺失。");
-  if (node[0] !== tag || node.length !== keys.length + 1)
+  if (node[0] !== tag || (required && node.length !== keys.length + 1))
     throw new Error("Profile ROM 字段不匹配。");
   const result: Record<string, Expr[]> = {};
   for (const entry of node.slice(1)) {
@@ -161,16 +241,97 @@ function scalar(node: Expr[] | undefined) {
 export function parseProfileRom(
   subject: "agent",
   body: string,
+  schemaTag?: string,
 ): AgentProfileData;
 export function parseProfileRom(
   subject: "human",
   body: string,
+  schemaTag?: string,
 ): HumanProfileData;
 export function parseProfileRom(
   subject: ProfileSubject,
   body: string,
+  schemaTag?: string,
 ): AgentProfileData | HumanProfileData {
   const tree = readExpr(body);
+  const versioned = tree.some(
+    (entry) => Array.isArray(entry) && entry[0] === "version",
+  );
+  if (
+    schemaTag !== undefined &&
+    schemaTag !==
+      (versioned
+        ? profileRom[subject].schemaTag
+        : profileRom[subject].legacySchemaTag)
+  )
+    throw new Error("Profile ROM 版本不匹配。");
+  if (versioned) {
+    if (subject === "human") {
+      const fields = children(
+        tree,
+        "human-profile",
+        ["version", "name", "preferred-address"],
+        false,
+      );
+      if (scalar(fields.version) !== "2")
+        throw new Error("Profile ROM 版本不匹配。");
+      return normalizeHumanProfileData({
+        name: fields.name ? scalar(fields.name) : null,
+        preferredAddress: fields["preferred-address"]
+          ? scalar(fields["preferred-address"])
+          : null,
+      });
+    }
+    const fields = children(
+      tree,
+      "agent-profile",
+      ["version", "identity", "personality", "speech", "contract"],
+      false,
+    );
+    if (scalar(fields.version) !== "2")
+      throw new Error("Profile ROM 版本不匹配。");
+    const identity = fields.identity
+      ? children(fields.identity, "identity", ["name"])
+      : {};
+    const traits = fields.personality
+      ? children(
+          fields.personality,
+          "personality",
+          ["humor", "rigor", "warmth", "verbosity"],
+          false,
+        )
+      : {};
+    const speech = fields.speech
+      ? children(fields.speech, "speech", ["style", "custom"], false)
+      : {};
+    if (
+      (fields.personality && !Object.keys(traits).length) ||
+      (fields.speech && !Object.keys(speech).length)
+    )
+      throw new Error("Profile ROM 空字段组无效。");
+    const data = normalizeAgentProfileData({
+      name: identity.name ? scalar(identity.name) : null,
+      traits: Object.fromEntries(
+        ["humor", "rigor", "warmth", "verbosity"].map((key) => [
+          key,
+          traits[key]
+            ? /^[0-5]$/.test(scalar(traits[key]))
+              ? Number(scalar(traits[key]))
+              : NaN
+            : null,
+        ]),
+      ),
+      speechStyle: speech.style ? scalar(speech.style) : null,
+      customStyle: speech.custom ? scalar(speech.custom) : null,
+    });
+    if (
+      profileHasConfiguredFields(data)
+        ? scalar(fields.contract) !== profilePreferenceContract(data)
+        : fields.contract !== undefined
+    )
+      throw new Error("Profile ROM 偏好约定不匹配。");
+    return data;
+  }
   if (subject === "human") {
     const fields = children(tree, "human-profile", [
       "name",
@@ -246,6 +407,7 @@ export const profileSnapshotSchema = z
         data: humanProfileDataSchema,
         revision: z.number().int().nonnegative(),
         available: z.boolean(),
+        enabled: z.boolean(),
         editable: z.literal(true),
         avatar: profileAvatarSnapshotSchema,
       })
@@ -256,6 +418,7 @@ export const profileSnapshotSchema = z
         data: agentProfileDataSchema,
         revision: z.number().int().nonnegative(),
         available: z.boolean(),
+        enabled: z.boolean(),
         editable: z.boolean(),
         avatar: profileAvatarSnapshotSchema,
       })
@@ -273,6 +436,7 @@ export const profileUpdateSchema = z.discriminatedUnion("subject", [
     .object({
       subject: z.literal("human"),
       ...commandFields,
+      enabled: z.boolean().optional(),
       data: humanProfileDataSchema,
     })
     .strict(),
@@ -280,6 +444,7 @@ export const profileUpdateSchema = z.discriminatedUnion("subject", [
     .object({
       subject: z.literal("agent"),
       ...commandFields,
+      enabled: z.boolean().optional(),
       data: agentProfileDataSchema,
     })
     .strict(),
@@ -290,6 +455,7 @@ export const profileUpdateResultSchema = z.discriminatedUnion("subject", [
     .object({
       subject: z.literal("human"),
       revision: z.number().int().positive(),
+      enabled: z.boolean(),
       data: humanProfileDataSchema,
       commandId: commandFields.commandId,
     })
@@ -298,6 +464,7 @@ export const profileUpdateResultSchema = z.discriminatedUnion("subject", [
     .object({
       subject: z.literal("agent"),
       revision: z.number().int().positive(),
+      enabled: z.boolean(),
       data: agentProfileDataSchema,
       commandId: commandFields.commandId,
     })
@@ -329,6 +496,7 @@ export const profileToolSchema = z.discriminatedUnion("action", [
           .object({
             subject: z.literal("human"),
             expectedRevision: commandFields.expectedRevision,
+            enabled: z.boolean().optional(),
             data: humanProfileDataSchema,
           })
           .strict(),
@@ -336,6 +504,7 @@ export const profileToolSchema = z.discriminatedUnion("action", [
           .object({
             subject: z.literal("agent"),
             expectedRevision: commandFields.expectedRevision,
+            enabled: z.boolean().optional(),
             data: agentProfileDataSchema,
           })
           .strict(),

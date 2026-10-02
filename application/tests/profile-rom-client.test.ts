@@ -2,8 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
 import { createServer } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sharp from "sharp";
 import { RuntimeProfileClient } from "../packages/application/src/runtime-profile-client.js";
-import { defaultAgentProfile } from "../packages/core/src/profile.js";
+import { RuntimeBridge } from "../packages/application/src/runtime.js";
+import { WorkspaceStore } from "../packages/application/src/store.js";
+import { Application } from "../packages/application/src/application.js";
+import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
+import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
+import {
+  defaultAgentProfile,
+  defaultHumanProfile,
+  compileProfileRom,
+  profileContract,
+  profileRom,
+  profileSnapshotSchema,
+} from "../packages/core/src/profile.js";
 import { localAccess } from "../packages/core/src/model.js";
 
 /** A controlled Runtime protocol endpoint; this tests Host payload/auth/retry,
@@ -113,7 +129,7 @@ async function fixture(team = false, supported = true) {
       canonical_sexpr: command.body_sexpr,
       canonical_format_version: 1,
       content_hash: "a".repeat(64),
-      enabled: true,
+      enabled: command.enabled,
       created_by: "operator",
       created_at: "2026-10-02T00:00:00Z",
     };
@@ -162,6 +178,10 @@ test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同
     assert.equal(before.identity.agentId, f.agentId);
     assert.equal(before.identity.principalId, f.principalId);
     assert.equal(before.agent.revision, 0);
+    assert.equal(before.agent.enabled, false);
+    assert.deepEqual(before.agent.data, defaultAgentProfile);
+    assert.deepEqual(before.human.data, defaultHumanProfile);
+    assert.equal(f.records.size, 0);
     const request = {
       subject: "agent",
       commandId: randomUUID(),
@@ -185,7 +205,7 @@ test("ROM Host Client 使用实际kernel Agent/Principal，保存、冲突和同
     });
     assert.equal(human.data.name, "小谢");
     const record = [...f.records.values()].find(
-      (row) => row.schema_tag === "morphz-human-profile/v1",
+      (row) => row.schema_tag === profileRom.human.schemaTag,
     )!;
     assert.equal(
       (record.key as { principal_scope: string }).principal_scope,
@@ -317,4 +337,258 @@ test("Host Profile连接错误和非法Header不会把管理凭据放进错误�
     return true;
   });
   assert.equal(requests, 1);
+});
+
+test("停用保留已选字段且可正常读取，全未设置强制disabled并保留CAS/丢回执重试", async () => {
+  const f = await fixture();
+  try {
+    const data = {
+      ...defaultAgentProfile,
+      name: "阿芷",
+      traits: { ...defaultAgentProfile.traits, humor: 0 },
+    };
+    const saved = await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      enabled: true,
+      data,
+    });
+    assert.equal(saved.enabled, true);
+    const offRequest = {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 1,
+      enabled: false,
+      data,
+    };
+    const off = await f.client.update(localAccess, offRequest);
+    assert.equal(off.enabled, false);
+    assert.deepEqual((await f.client.read(localAccess)).agent, {
+      revision: 2,
+      enabled: false,
+      data,
+    });
+    assert.deepEqual(await f.client.update(localAccess, offRequest), off);
+    const emptyRequest = {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 2,
+      enabled: true,
+      data: defaultAgentProfile,
+    };
+    let lost = false;
+    const lossy = new RuntimeProfileClient(
+      () => f.config,
+      async (...args) => {
+        const response = await fetch(...args);
+        if (args[1]?.method === "PUT" && !lost) {
+          lost = true;
+          await response.text();
+          throw new Error("synthetic response lost after durable write");
+        }
+        return response;
+      },
+    );
+    await assert.rejects(lossy.update(localAccess, emptyRequest), /连接失败/);
+    const empty = await lossy.update(localAccess, emptyRequest);
+    assert.equal(empty.revision, 3);
+    assert.equal(empty.enabled, false);
+    assert.deepEqual(empty.data, defaultAgentProfile);
+    assert.equal(
+      [...f.records.values()][0]?.canonical_sexpr,
+      "(agent-profile (version 2))",
+    );
+    const puts = f.calls.filter(
+      (call) =>
+        call.method === "PUT" &&
+        JSON.parse(call.body).command_id === emptyRequest.commandId,
+    );
+    assert.equal(puts.length, 2);
+    assert.equal(puts[0]?.body, puts[1]?.body);
+    assert.equal(JSON.parse(puts[0]!.body).enabled, false);
+    await assert.rejects(
+      f.client.update(localAccess, {
+        ...emptyRequest,
+        enabled: false,
+        data,
+        commandId: randomUUID(),
+      }),
+      /Profile 已更新/,
+    );
+    const enabledAgain = await f.client.update(localAccess, {
+      ...offRequest,
+      commandId: randomUUID(),
+      expectedRevision: 3,
+      enabled: true,
+    });
+    assert.equal(enabledAgain.enabled, true);
+    assert.ok("traits" in enabledAgain.data);
+    assert.equal(enabledAgain.data.traits.humor, 0);
+    const emptyCustom = await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 4,
+      enabled: true,
+      data: { ...defaultAgentProfile, customStyle: "   " },
+    });
+    assert.equal(emptyCustom.enabled, false);
+    assert.deepEqual(emptyCustom.data, defaultAgentProfile);
+    const emptyAddress = await f.client.update(localAccess, {
+      subject: "human",
+      commandId: randomUUID(),
+      expectedRevision: 0,
+      enabled: true,
+      data: { ...defaultHumanProfile, preferredAddress: "   " },
+    });
+    assert.equal(emptyAddress.enabled, false);
+    assert.deepEqual(emptyAddress.data, defaultHumanProfile);
+  } finally {
+    await f.close();
+  }
+});
+
+test("读取v1沿用显式值和disabled head且不写回，下一次显式保存迁移v2", async () => {
+  const f = await fixture();
+  try {
+    const legacy = {
+      name: "旧名字",
+      traits: { humor: 2, rigor: 3, warmth: 3, verbosity: 2 },
+      speechStyle: "natural" as const,
+      customStyle: null,
+    };
+    const key = JSON.stringify([profileRom.agent.namespace, undefined]);
+    f.records.set(key, {
+      entry_id: "legacy-entry",
+      key: { agent_id: f.agentId, namespace: profileRom.agent.namespace },
+      revision: 7,
+      schema_tag: profileRom.agent.legacySchemaTag,
+      canonical_sexpr: `(agent-profile (identity (name 旧名字)) (personality (humor 2) (rigor 3) (warmth 3) (verbosity 2)) (speech (style natural) (custom "")) (contract ${JSON.stringify(profileContract)}))`,
+      enabled: false,
+      canonical_format_version: 1,
+      content_hash: "a".repeat(64),
+      created_by: "operator",
+      created_at: "2026-10-02T00:00:00Z",
+    });
+    assert.deepEqual((await f.client.read(localAccess)).agent, {
+      revision: 7,
+      enabled: false,
+      data: legacy,
+    });
+    assert.equal(
+      f.calls.some((call) => call.method === "PUT"),
+      false,
+    );
+    const saved = await f.client.update(localAccess, {
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 7,
+      data: legacy,
+      enabled: false,
+    });
+    assert.equal(saved.enabled, false);
+    assert.deepEqual(saved.data, legacy);
+    assert.equal(f.records.get(key)?.schema_tag, profileRom.agent.schemaTag);
+    assert.equal(
+      f.records.get(key)?.canonical_sexpr,
+      compileProfileRom("agent", legacy),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("真实embedded Host的disabled/全未设置Profile仍可读编辑和显示独立Agent头像", async () => {
+  // Real Host authorization/Platform/byte Store; Runtime protocol uses the
+  // controlled endpoint above. Full Rust/model validation has a separate smoke.
+  const f = await fixture(),
+    root = mkdtempSync(join(tmpdir(), "morphz-profile-unset-host-"));
+  const workspace = new WorkspaceStore(join(root, "workspace.sqlite"), {
+    mode: "transport",
+  });
+  const bridge = new RuntimeBridge(workspace, f.config);
+  let domains:
+    Awaited<ReturnType<typeof openApplicationDomainsHost>> | undefined;
+  let connection: LocalApplicationConnection | undefined;
+  try {
+    domains = await openApplicationDomainsHost(root, workspace);
+    domains.bindRuntime(bridge);
+    connection = new LocalApplicationConnection(
+      new Application(workspace, { profiles: domains.profiles }),
+    );
+    const boot = (await connection.call("platform.bootstrap")) as {
+      csrfToken: string;
+    };
+    const options = { identityGeneration: boot.csrfToken };
+    const read = async () =>
+      profileSnapshotSchema.parse(
+        await connection!.call("profile.read", {}, options),
+      );
+    const before = await read();
+    assert.equal(before.agent.available, true);
+    assert.equal(before.agent.enabled, false);
+    assert.deepEqual(before.agent.data, defaultAgentProfile);
+    assert.deepEqual(before.human.data, defaultHumanProfile);
+    assert.equal(f.records.size, 0);
+    const png = await sharp({
+      create: { width: 64, height: 64, channels: 4, background: "#31b4bb" },
+    })
+      .png()
+      .toBuffer();
+    const avatar = await connection.call(
+      "profile.avatar.set",
+      {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 0,
+        data: png,
+      },
+      options,
+    );
+    const data = { ...defaultAgentProfile, name: "仅显示的名字" };
+    await connection.call(
+      "profile.update",
+      {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 0,
+        enabled: false,
+        data,
+      },
+      options,
+    );
+    const disabled = await read();
+    assert.equal(disabled.agent.available, true);
+    assert.equal(disabled.agent.editable, true);
+    assert.equal(disabled.agent.enabled, false);
+    assert.deepEqual(disabled.agent.data, data);
+    assert.deepEqual(disabled.agent.avatar, avatar);
+    await connection.call(
+      "profile.update",
+      {
+        subject: "agent",
+        commandId: randomUUID(),
+        expectedRevision: 1,
+        enabled: true,
+        data: defaultAgentProfile,
+      },
+      options,
+    );
+    const empty = await read();
+    assert.equal(empty.agent.available, true);
+    assert.equal(empty.agent.enabled, false);
+    assert.deepEqual(empty.agent.data, defaultAgentProfile);
+    assert.deepEqual(empty.agent.avatar, avatar);
+    assert.equal(
+      f.calls.some((call) => call.path.includes("/sessions")),
+      false,
+    );
+  } finally {
+    connection?.close();
+    await bridge.stop();
+    await domains?.close();
+    workspace.close();
+    await f.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

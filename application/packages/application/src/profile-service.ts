@@ -3,7 +3,6 @@ import {
   defaultAgentProfile,
   defaultHumanProfile,
   profileSnapshotSchema,
-  humanProfileDataSchema,
   profileToolSchema,
   profileUpdateSchema,
   type ProfileSnapshot,
@@ -19,9 +18,7 @@ export class ProfileService {
     private readonly runtime: () => RuntimeBridge | undefined,
     private readonly platform: PlatformStore,
     readonly avatars?: ProfileAvatarService,
-    private readonly initialHumanName?: (
-      access: AccessContext,
-    ) => string | undefined,
+    _initialHumanName?: (access: AccessContext) => string | undefined,
   ) {}
   async read(
     actor: PlatformActor,
@@ -36,15 +33,8 @@ export class ProfileService {
           ? owner.actor.initiatingHumanActantId!
           : owner.actor.actantId,
     };
-    // This is an existing trusted identity presentation, not a second writable
-    // Profile. An overlong operator name is never silently truncated to fit ROM.
-    const initialHuman = humanProfileDataSchema.safeParse({
-      ...defaultHumanProfile,
-      name: this.initialHumanName?.(access) ?? defaultHumanProfile.name,
-    });
-    const humanDefaults = initialHuman.success
-      ? initialHuman.data
-      : defaultHumanProfile;
+    // Existing identity presentation remains separate from optional ROM fields.
+    // Merely viewing/saving an unset Profile must not copy identity defaults into it.
     let profile:
       Awaited<ReturnType<RuntimeBridge["profiles"]["read"]>> | undefined;
     const runtime = this.runtime();
@@ -65,9 +55,10 @@ export class ProfileService {
     active();
     return profileSnapshotSchema.parse({
       human: {
-        data: profile?.human.revision ? profile.human.data : humanDefaults,
+        data: profile?.human.data ?? defaultHumanProfile,
         revision: profile?.human.revision ?? 0,
         available: !!profile,
+        enabled: profile?.human.enabled ?? false,
         editable: true,
         avatar: humanAvatar,
       },
@@ -76,6 +67,7 @@ export class ProfileService {
         data: profile?.agent.data ?? defaultAgentProfile,
         revision: profile?.agent.revision ?? 0,
         available: !!profile,
+        enabled: profile?.agent.enabled ?? false,
         editable: profile?.identity.agentEditable ?? false,
         avatar: agentAvatar,
       },

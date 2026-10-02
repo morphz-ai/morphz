@@ -126,24 +126,28 @@ test("Agent Profile请求经过持久根输入来源校验，仅提议并明确�
         title: "真实授权测试",
       },
     );
+    let presentationReads = 0;
     const profile = new ProfileService(
       () => undefined,
       platform,
       undefined,
       (access) => {
+        presentationReads++;
         assert.equal(access.principalId, "alice");
         assert.equal(access.actantId, "alice-human");
         return "原有身份名";
       },
     );
     const initial = await profile.read({ credential: "setup" });
-    assert.equal(initial.human.data.name, "原有身份名");
+    assert.equal(initial.human.data.name, null);
     assert.equal(initial.human.revision, 0);
     assert.equal(initial.human.available, false);
+    assert.equal(initial.human.enabled, false);
+    assert.equal(presentationReads, 0); // Identity display name is not optional ROM data.
     const agentRead = await authority.withInvocation(route, (actor) =>
       profile.agentOperation(actor, { action: "read" }),
     );
-    assert.equal((agentRead as typeof initial).human.data.name, "原有身份名");
+    assert.equal((agentRead as typeof initial).human.data.name, null);
     const params = {
       change: {
         subject: "human",
