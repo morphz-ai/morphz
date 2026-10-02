@@ -57,6 +57,12 @@ async function editText(editor: Locator, action: string, label: string) {
     await editor.getByRole("button", { name: action, exact: true }).click();
   await expect(input).toBeVisible();
   await expect(input).toBeEnabled();
+  // Name/address editing stays in place; finishing or clearing is an input
+  // boundary, never an extra action row or a second persistence operation.
+  await expect(editor.locator(".personality-edit-actions")).toHaveCount(0);
+  await expect(
+    editor.getByRole("button", { name: /^(完成|不设置.*)$/ }),
+  ).toHaveCount(0);
   return input;
 }
 async function preferences(editor: Locator) {
@@ -619,7 +625,7 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
   ).toHaveLength(2);
 });
 
-test("实际UI空风格/称呼归一null；Agent清空保留总开关on且无默认字段，Human全空停用", async ({
+test("实际Inplace名字/称呼结束空值写null且请求省略；临时空名保护、默认零写、风格null与Human停用保持", async ({
   page,
 }) => {
   const writes: ProfileUpdate[] = [];
@@ -632,6 +638,13 @@ test("实际UI空风格/称呼归一null；Agent清空保留总开关on且无默
   });
   await enter(page);
   const agent = await agentEditor(page);
+  const initialName = await editText(agent, "编辑智能体名字", "智能体的名字");
+  await expect(initialName).toHaveValue("");
+  await initialName.press("Tab");
+  await expect(initialName).toBeHidden();
+  expect((await fixture.read()).agent.revision).toBe(0);
+  expect(writes).toHaveLength(0);
+  expect(fixture.sql("SELECT entry_id FROM agent_rom_heads")).toHaveLength(0);
   await preferences(agent);
   await agent
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
@@ -669,6 +682,13 @@ test("实际UI空风格/称呼归一null；Agent清空保留总开关on且无默
   const human = page
     .getByRole("dialog", { name: "设置", exact: true })
     .getByRole("region", { name: "个人资料", exact: true });
+  const initialHumanName = await editText(human, "编辑你的名字", "你的名字");
+  await expect(initialHumanName).toHaveValue("");
+  const beforeEmptyHumanEnd = writes.length;
+  await initialHumanName.press("Enter");
+  await expect(initialHumanName).toBeHidden();
+  expect((await fixture.read()).human.revision).toBe(0);
+  expect(writes).toHaveLength(beforeEmptyHumanEnd);
   const address = await editText(human, "编辑称呼", "Agent 对你的称呼");
   await expect(address).toHaveValue("");
   expect((await fixture.read()).human.revision).toBe(0);
@@ -700,6 +720,135 @@ test("实际UI空风格/称呼归一null；Agent清空保留总开关on且无默
   });
   expect(fixture.sql("SELECT id FROM sessions")).toHaveLength(0);
   expect(fixture.requests).toHaveLength(0);
+
+  await page.getByRole("button", { name: "关闭设置", exact: true }).click();
+  const agentNameMarker = "TEST_INPLACE_AGENT_NAME_REMOVED";
+  const name = await editText(agent, "编辑智能体名字", "智能体的名字");
+  await name.fill(agentNameMarker);
+  // Effective text still autosaves after the existing debounce while editing;
+  // entering a temporary empty name must not erase that durable value.
+  await expect
+    .poll(async () => (await fixture.read()).agent.data.name)
+    .toBe(agentNameMarker);
+  await expect(name).toBeVisible();
+  const namedAgent = (await fixture.read()).agent;
+  await name.fill("");
+  await page.waitForTimeout(550);
+  await expect(name).toBeFocused();
+  expect((await fixture.read()).agent).toMatchObject({
+    revision: namedAgent.revision,
+    data: { name: agentNameMarker },
+  });
+  await name.press("Escape");
+  await expect(name).toBeHidden();
+  await expect(
+    agent.getByRole("button", { name: "编辑智能体名字", exact: true }),
+  ).toBeFocused();
+  await expect(agent.locator(".personality-save-state")).toHaveText(
+    "资料已保存",
+  );
+  expect((await fixture.read()).agent).toMatchObject({
+    revision: namedAgent.revision,
+    data: { name: agentNameMarker },
+  });
+  await editText(agent, "编辑智能体名字", "智能体的名字");
+  await name.fill("");
+  await name.press("Enter");
+  await expect(name).toBeHidden();
+  const clearedAgent = await settled(agent);
+  expect(clearedAgent).toMatchObject({
+    revision: namedAgent.revision + 1,
+    enabled: true,
+    data: defaultAgentProfile,
+  });
+  expect((await fixture.rom("agent")).body.canonical_sexpr).toBe(
+    "(agent-profile (version 2))",
+  );
+  expect(
+    writes.filter((write) => write.subject === "agent").at(-1),
+  ).toMatchObject({
+    enabled: true,
+    data: { name: null },
+  });
+  const agentClearedRequest = modelText(
+    await send(page, "PROFILE_INPLACE_AGENT_NAME_CLEARED"),
+  );
+  assertEmptyRom(agentClearedRequest);
+  expect(agentClearedRequest).not.toContain(agentNameMarker);
+
+  await page
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true })
+    .click();
+  await page
+    .getByRole("group", { name: "用户菜单", exact: true })
+    .getByRole("button", { name: "个人资料", exact: true })
+    .click();
+  const humanNameMarker = "TEST_INPLACE_HUMAN_NAME_REMOVED";
+  const humanAddressMarker = "TEST_INPLACE_ADDRESS_REMOVED";
+  const humanName = await editText(human, "编辑你的名字", "你的名字");
+  await humanName.fill(humanNameMarker);
+  await humanName.press("Enter");
+  await settled(human);
+  await editText(human, "编辑称呼", "Agent 对你的称呼");
+  await address.fill(humanAddressMarker);
+  await address.press("Enter");
+  const namedHuman = await settled(human);
+  expect(namedHuman.data).toEqual({
+    name: humanNameMarker,
+    preferredAddress: humanAddressMarker,
+  });
+  await editText(human, "编辑你的名字", "你的名字");
+  await humanName.fill("");
+  await humanName.press("Enter");
+  await expect(humanName).toBeHidden();
+  const clearedHumanName = await settled(human);
+  expect(clearedHumanName.data).toEqual({
+    name: null,
+    preferredAddress: humanAddressMarker,
+  });
+  const identity = await fixture.runtime.profiles.identity(localAccess);
+  const privateRom = (await fixture.rom("human", identity.principalId)).body;
+  expect(privateRom.canonical_sexpr).not.toContain("(name ");
+  expect(privateRom.canonical_sexpr).toContain(humanAddressMarker);
+  expect((await fixture.rom("human")).status).toBe(404);
+  await page.getByRole("button", { name: "关闭设置", exact: true }).click();
+  const humanNameClearedRequest = modelText(
+    await send(page, "PROFILE_INPLACE_HUMAN_NAME_CLEARED"),
+  );
+  expect(humanNameClearedRequest).toContain(humanAddressMarker);
+  expect(humanNameClearedRequest).not.toContain(humanNameMarker);
+
+  await page
+    .getByRole("button", { name: "用户菜单", exact: true })
+    .filter({ visible: true })
+    .click();
+  await page
+    .getByRole("group", { name: "用户菜单", exact: true })
+    .getByRole("button", { name: "个人资料", exact: true })
+    .click();
+  await editText(human, "编辑称呼", "Agent 对你的称呼");
+  await address.fill("");
+  await address.press("Tab");
+  await expect(address).toBeHidden();
+  const clearedHuman = await settled(human, false);
+  expect(clearedHuman.data).toEqual({ name: null, preferredAddress: null });
+  expect(
+    (await fixture.rom("human", identity.principalId)).body.canonical_sexpr,
+  ).toBe("(human-profile (version 2))");
+  expect(
+    writes.filter((write) => write.subject === "human").at(-1),
+  ).toMatchObject({
+    enabled: false,
+    data: { name: null, preferredAddress: null },
+  });
+  await page.getByRole("button", { name: "关闭设置", exact: true }).click();
+  const humanClearedRequest = modelText(
+    await send(page, "PROFILE_INPLACE_ALL_PERSONAL_TEXT_CLEARED"),
+  );
+  assertEmptyRom(humanClearedRequest);
+  expect(humanClearedRequest).not.toContain(humanNameMarker);
+  expect(humanClearedRequest).not.toContain(humanAddressMarker);
 });
 
 test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom off保留原文且请求零字节、reload/on恢复", async ({

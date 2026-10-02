@@ -253,14 +253,149 @@ async function editText(editor: Locator, field: "name" | "preferredAddress") {
   return input;
 }
 async function clearText(editor: Locator, field: "name" | "preferredAddress") {
-  await editText(editor, field);
-  const name =
-    field === "preferredAddress"
-      ? "不设置称呼"
-      : (await editor.getAttribute("aria-label")) === "智能体资料"
-        ? "不设置智能体名字"
-        : "不设置你的名字";
-  await editor.getByRole("button", { name, exact: true }).click();
+  const input = await editText(editor, field);
+  await input.fill("");
+  await input.press("Enter");
+  await expect(input).toBeHidden();
+}
+async function expectInplaceOnly(editor: Locator) {
+  await expect(editor.locator(".personality-edit-actions")).toHaveCount(0);
+  await expect(editor.locator(".personality-inline-editor button")).toHaveCount(
+    0,
+  );
+  await expect(
+    editor.getByRole("button", { name: "完成", exact: true }),
+  ).toHaveCount(0);
+  await expect(editor.getByRole("button", { name: /^不设置/ })).toHaveCount(0);
+}
+function profileTextDisplay(
+  editor: Locator,
+  field: "name" | "preferredAddress",
+) {
+  return editor.getByRole("button", {
+    name:
+      field === "preferredAddress"
+        ? "编辑称呼"
+        : /^(编辑智能体名字|编辑你的名字)$/,
+    exact: true,
+  });
+}
+async function expectInplaceGeometry(
+  editor: Locator,
+  field: "name" | "preferredAddress",
+  scale: number,
+) {
+  const display = profileTextDisplay(editor, field);
+  const before = await display.evaluate((element, field) => {
+    const rect = (target: Element) => {
+      const box = target.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+      };
+    };
+    const spans = element.querySelectorAll("span");
+    const text = field === "preferredAddress" ? spans[1]! : spans[0]!;
+    const style = getComputedStyle(text);
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const glyph = range.getBoundingClientRect();
+    const root = element.closest(".personality-profile")!;
+    return {
+      box: rect(field === "preferredAddress" ? text : element),
+      caption: field === "preferredAddress" ? rect(spans[0]!) : null,
+      identity: rect(root.querySelector(".personality-identity")!),
+      master: rect(root.querySelector(".personality-master")!),
+      value: text.textContent,
+      glyphLeft: glyph.left,
+      glyphRight: glyph.right,
+      font: {
+        family: style.fontFamily,
+        size: style.fontSize,
+        weight: style.fontWeight,
+        lineHeight: style.lineHeight,
+        letterSpacing: style.letterSpacing,
+        align:
+          style.textAlign === "start"
+            ? style.direction === "rtl"
+              ? "right"
+              : "left"
+            : style.textAlign,
+      },
+    };
+  }, field);
+  const input = await editText(editor, field);
+  await expectInplaceOnly(editor);
+  await expect(input).toHaveValue(before.value ?? "");
+  const after = await input.evaluate((element) => {
+    const rect = (target: Element) => {
+      const box = target.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+      };
+    };
+    const style = getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    const root = element.closest(".personality-profile")!;
+    const caption = element.parentElement!.querySelector("label");
+    return {
+      box: rect(element),
+      caption: caption ? rect(caption) : null,
+      identity: rect(root.querySelector(".personality-identity")!),
+      master: rect(root.querySelector(".personality-master")!),
+      textLeft:
+        box.left +
+        parseFloat(style.paddingLeft) +
+        parseFloat(style.borderLeftWidth),
+      textRight:
+        box.right -
+        parseFloat(style.paddingRight) -
+        parseFloat(style.borderRightWidth),
+      font: {
+        family: style.fontFamily,
+        size: style.fontSize,
+        weight: style.fontWeight,
+        lineHeight: style.lineHeight,
+        letterSpacing: style.letterSpacing,
+        align:
+          style.textAlign === "start"
+            ? style.direction === "rtl"
+              ? "right"
+              : "left"
+            : style.textAlign,
+      },
+    };
+  });
+  expect(after.font).toEqual(before.font);
+  for (const part of ["box", "identity", "master"] as const)
+    for (const coordinate of ["left", "top", "width", "height"] as const)
+      expect(
+        Math.abs(after[part][coordinate] - before[part][coordinate]) / scale,
+      ).toBeLessThanOrEqual(1);
+  if (field === "preferredAddress") {
+    expect(before.caption).not.toBeNull();
+    expect(after.caption).not.toBeNull();
+    for (const coordinate of ["left", "top", "width", "height"] as const)
+      expect(
+        Math.abs(after.caption![coordinate] - before.caption![coordinate]) /
+          scale,
+      ).toBeLessThanOrEqual(1);
+  }
+  expect(
+    Math.abs(
+      after.font.align === "right"
+        ? after.textRight - before.glyphRight
+        : after.textLeft - before.glyphLeft,
+    ) / scale,
+  ).toBeLessThanOrEqual(1);
+  await input.press("Escape");
+  await expect(input).toBeHidden();
+  await expect(display).toBeFocused();
 }
 async function expectProfileUsage(editor: Locator, enabled: boolean) {
   if ((await editor.getAttribute("aria-label")) === "智能体资料")
@@ -397,8 +532,15 @@ async function setLevel(editor: Locator, label: string, level: number) {
 }
 async function flushText(editor: Locator) {
   await editor.evaluate((element) => {
-    if (element.contains(document.activeElement))
-      (document.activeElement as HTMLElement | null)?.blur();
+    const active = document.activeElement;
+    // Complete text editing without manufacturing a blur on the target which
+    // just received focus (for example a summary, switch, button or slider).
+    if (
+      element.contains(active) &&
+      (active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLInputElement && active.type === "text"))
+    )
+      active.blur();
   });
 }
 async function waitForAutosave(editor: Locator) {
@@ -968,6 +1110,7 @@ for (const subject of ["agent", "human"] as const) {
       fullPage: true,
     });
     const name = await editText(editor, "name");
+    await expectInplaceOnly(editor);
     await expect(name).toHaveValue("");
     await expect(name).toHaveAttribute("data-configured", "false");
     expect(fixture.commands).toHaveLength(0);
@@ -1015,6 +1158,286 @@ for (const subject of ["agent", "human"] as const) {
     await expect(editor.getByRole("textbox")).toHaveCount(0);
   });
 }
+
+for (const appearance of ["light", "dark"] as const) {
+  test(`原位编辑 ${appearance} 阅读与编辑文字和框同位置，390px及CSS200%不移头像或开关且零写入`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await profileFixture(page);
+    await page.emulateMedia({
+      colorScheme: appearance,
+      reducedMotion: "reduce",
+    });
+    await enterDialogue(page);
+    for (const subject of ["agent", "human"] as const) {
+      const editor =
+        subject === "agent" ? await openAgent(page) : await openHuman(page);
+      for (const [width, scale] of [
+        [390, 1],
+        [1440, 2],
+      ] as const) {
+        await page.setViewportSize({ width, height: 960 });
+        await cssProfileZoom(page, scale);
+        await expectCompactIdentity(editor, scale);
+        await expectInplaceGeometry(editor, "name", scale);
+        if (subject === "human")
+          await expectInplaceGeometry(editor, "preferredAddress", scale);
+        await expectInplaceOnly(editor);
+        await editText(editor, "name");
+        await page.screenshot({
+          path: testInfo.outputPath(
+            `${subject}-${appearance}-${width}-${scale}-inplace.png`,
+          ),
+          fullPage: true,
+        });
+        await profileText(editor, "name").press("Escape");
+      }
+      await cssProfileZoom(page, 1);
+    }
+    expect(fixture.commands).toHaveLength(0);
+    expect(fixture.snapshot.agent.revision).toBe(1);
+    expect(fixture.snapshot.human.revision).toBe(1);
+  });
+}
+
+test("原位空名字真实失焦清null且不抢目标，Enter清称呼后Human回到空资料，Agent清末项保留on", async ({
+  page,
+}) => {
+  const snapshot = initialProfile();
+  snapshot.agent.data = {
+    ...structuredClone(defaultAgentProfile),
+    name: "TEST 唯一名字",
+  };
+  const fixture = await profileFixture(page, snapshot);
+  await enterDialogue(page);
+  const agent = await openAgent(page);
+  const name = await editText(agent, "name");
+  await name.fill("");
+  const summary = agent.locator(".personality-preferences > summary");
+  await summary.click();
+  await expect(name).toBeHidden();
+  await expect(summary).toBeFocused();
+  const agentClear = await waitForAutosave(agent);
+  expect(agentClear).toMatchObject({
+    subject: "agent",
+    enabled: true,
+    data: defaultAgentProfile,
+  });
+  await expect(summary).toBeFocused();
+  await expectEmptyProfileUsage(agent, true);
+  await expectInplaceOnly(agent);
+  const human = await openHuman(page);
+  const humanName = await editText(human, "name");
+  await humanName.fill("");
+  await profileTextDisplay(human, "preferredAddress").click();
+  const address = profileText(human, "preferredAddress");
+  await expect(humanName).toBeHidden();
+  await expect(address).toBeFocused();
+  const humanClear = await waitForAutosave(human);
+  expect(humanClear).toMatchObject({
+    subject: "human",
+    enabled: true,
+    data: { name: null, preferredAddress: "TEST 称呼" },
+  });
+  await clearText(human, "preferredAddress");
+  const addressClear = await waitForAutosave(human);
+  expect(addressClear).toMatchObject({
+    subject: "human",
+    enabled: false,
+    data: defaultHumanProfile,
+  });
+  await expectEmptyProfileUsage(human);
+  await expectInplaceOnly(human);
+  await expect(
+    page.getByRole("dialog", { name: "设置", exact: true }),
+  ).toBeVisible();
+  expect(fixture.commands).toHaveLength(3);
+  expect(fixture.commands.map((command) => command.subject)).toEqual([
+    "agent",
+    "human",
+    "human",
+  ]);
+});
+
+test("原位IME未完成不退出或清除，同frame组合尾input与单项合并最新名，空组合结束不复活旧名", async ({
+  page,
+}) => {
+  const snapshot = initialProfile();
+  snapshot.agent.data = {
+    ...structuredClone(defaultAgentProfile),
+    name: "Echo",
+  };
+  const fixture = await profileFixture(page, snapshot);
+  await enterDialogue(page);
+  const editor = await openAgent(page);
+  await openPreferences(editor);
+  const clockStart = new Date("2026-10-02T04:00:00.000Z");
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(new Date(clockStart.getTime() + 1000));
+  let name = await editText(editor, "name");
+  // These are real DOM composition handlers, not native-system IME acceptance.
+  await name.dispatchEvent("compositionstart", { data: "" });
+  await name.fill("");
+  await page.clock.runFor(450);
+  await name.press("Enter");
+  await expect(name).toBeVisible();
+  expect(fixture.commands).toHaveLength(0);
+  expect(fixture.snapshot.agent.data.name).toBe("Echo");
+  const summary = editor.locator(".personality-preferences > summary");
+  await summary.focus();
+  await expect(name).toBeVisible();
+  await expect(summary).toBeFocused();
+  expect(fixture.commands).toHaveLength(0);
+  await name.evaluate((input) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    // The final DOM value was not an earlier React change. End, its trailing
+    // input, and another field's click deliberately share one event turn.
+    setter.call(input, "TEST 组合结束的最新文字");
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", {
+        data: "TEST 组合结束的最新文字",
+        bubbles: true,
+      }),
+    );
+    input.dispatchEvent(
+      new InputEvent("input", {
+        data: "TEST 组合结束的最新文字",
+        inputType: "insertCompositionText",
+        bubbles: true,
+      }),
+    );
+    input
+      .closest(".personality-profile")!
+      .querySelector<HTMLInputElement>('input[aria-label="设置幽默"]')!
+      .click();
+  });
+  await expect(name).toBeHidden();
+  const composed = await waitForAutosave(editor);
+  expect(composed).toMatchObject({
+    enabled: true,
+    data: {
+      name: "TEST 组合结束的最新文字",
+      traits: { ...defaultAgentProfile.traits, humor: 0 },
+    },
+  });
+  await expect(summary).toBeFocused();
+  await page.clock.resume();
+  name = await editText(editor, "name");
+  await name.dispatchEvent("compositionstart", { data: "" });
+  await name.fill("");
+  await name.press("Escape");
+  await expect(name).toBeVisible();
+  expect(fixture.commands).toHaveLength(1);
+  await summary.focus();
+  await expect(name).toBeVisible();
+  await name.evaluate((input) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    setter.call(input, "");
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "", bubbles: true }),
+    );
+    // A trailing old-value input cannot reopen a closed editing epoch or
+    // replace the explicit null chosen by the completed empty blur.
+    setter.call(input, "TEST 组合结束的最新文字");
+    input.dispatchEvent(
+      new InputEvent("input", {
+        data: "TEST 组合结束的最新文字",
+        inputType: "insertCompositionText",
+        bubbles: true,
+      }),
+    );
+    input
+      .closest(".personality-profile")!
+      .querySelector<HTMLInputElement>('input[aria-label="设置幽默"]')!
+      .click();
+  });
+  await expect(name).toBeHidden();
+  const cleared = await waitForAutosave(editor);
+  expect(cleared).toMatchObject({ enabled: true, data: defaultAgentProfile });
+  expect(fixture.commands).toHaveLength(2);
+  const human = await openHuman(page);
+  const address = await editText(human, "preferredAddress");
+  await page.clock.pauseAt(
+    await page.evaluate(() => new Date(Date.now() + 1000).toISOString()),
+  );
+  await address.dispatchEvent("compositionstart", { data: "" });
+  await address.fill("");
+  await page.clock.runFor(450);
+  await expect(address).toBeFocused();
+  expect(fixture.commands).toHaveLength(2);
+  expect(fixture.snapshot.human.data.preferredAddress).toBe("TEST 称呼");
+  await address.fill("TEST 中文候选");
+  await page.clock.runFor(450);
+  await expect(address).toHaveValue("TEST 中文候选");
+  expect(fixture.commands).toHaveLength(2);
+  await address.evaluate((input) => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, "TEST 最终称呼");
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", {
+        data: "TEST 最终称呼",
+        bubbles: true,
+      }),
+    );
+  });
+  await page.clock.runFor(449);
+  expect(fixture.commands).toHaveLength(2);
+  await page.clock.runFor(1);
+  await expect
+    .poll(() => fixture.snapshot.human.data.preferredAddress)
+    .toBe("TEST 最终称呼");
+  await address.press("Enter");
+  const humanFinal = await waitForAutosave(human);
+  expect(humanFinal).toMatchObject({
+    subject: "human",
+    enabled: true,
+    data: { name: "TEST 本人", preferredAddress: "TEST 最终称呼" },
+  });
+  expect(fixture.commands).toHaveLength(3);
+  await editText(human, "preferredAddress");
+  await address.dispatchEvent("compositionstart", { data: "" });
+  await address.fill("");
+  await profileTextDisplay(human, "name").focus();
+  await page.clock.runFor(450);
+  await expect(address).toBeVisible();
+  expect(fixture.commands).toHaveLength(3);
+  expect(fixture.snapshot.human.data.preferredAddress).toBe("TEST 最终称呼");
+  await address.evaluate((input) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    setter.call(input, "");
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "", bubbles: true }),
+    );
+    setter.call(input, "TEST 最终称呼");
+    input.dispatchEvent(
+      new InputEvent("input", {
+        data: "TEST 最终称呼",
+        inputType: "insertCompositionText",
+        bubbles: true,
+      }),
+    );
+  });
+  await expect(address).toBeHidden();
+  const humanUnset = await waitForAutosave(human);
+  expect(humanUnset).toMatchObject({
+    subject: "human",
+    enabled: true,
+    data: { name: "TEST 本人", preferredAddress: null },
+  });
+  expect(fixture.commands).toHaveLength(4);
+  await page.clock.resume();
+});
 
 for (const subject of ["agent", "human"] as const) {
   test(`${subject === "agent" ? "Agent" : "Human"} 相机仅悬停或键盘进入头像时显示，离开恢复隐藏且不写资料`, async ({
@@ -1099,7 +1522,7 @@ for (const subject of ["agent", "human"] as const) {
   });
 }
 
-test("胶囊开关鼠标没有额外圈线，键盘 Tab 内部提示不加外圈且保存实际选值", async ({
+test("胶囊开关与滑杆鼠标没有额外圈线，键盘 Tab 内部提示不加外圈且保存实际选值", async ({
   page,
 }, testInfo) => {
   const fixture = await profileFixture(page);
@@ -1149,6 +1572,71 @@ test("胶囊开关鼠标没有额外圈线，键盘 Tab 内部提示不加外圈
   await expectSwitchKeyboardFocus(humor);
   await waitForAutosave(editor);
   expect(fixture.snapshot.agent.data.traits.humor).toBe(0);
+  const slider = editor.getByRole("slider", {
+    name: "幽默程度",
+    exact: true,
+  });
+  await slider.click();
+  await expect(slider).toBeFocused();
+  await expect(slider).toHaveCSS("outline-style", "none");
+  await expect(slider).toHaveCSS("box-shadow", "none");
+  expect(
+    await slider.evaluate((element) => element.matches(":focus-visible")),
+  ).toBe(false);
+  const pointerLevel = Number(await slider.inputValue());
+  await waitForAutosave(editor);
+  expect(fixture.snapshot.agent.data.traits.humor).toBe(pointerLevel);
+  expect(fixture.snapshot.agent.enabled).toBe(false);
+  await page.screenshot({
+    path: testInfo.outputPath("range-mouse-no-ring.png"),
+    fullPage: true,
+  });
+  await slider.press("Shift+Tab");
+  await expectSwitchKeyboardFocus(humor);
+  await humor.press("Tab");
+  await expect(slider).toBeFocused();
+  await expect(slider).toHaveCSS("outline-style", "none");
+  await expect(slider).toHaveCSS("box-shadow", "none");
+  const thumbFocus = await slider.evaluate((element) => {
+    const shadow = getComputedStyle(element).getPropertyValue(
+      "--trait-thumb-shadow",
+    );
+    const probe = document.createElement("span");
+    probe.hidden = true;
+    probe.style.color = "var(--ink)";
+    probe.style.boxShadow = shadow;
+    element.parentElement!.append(probe);
+    const style = getComputedStyle(probe);
+    const ink = style.color;
+    const resolvedShadow = style.boxShadow;
+    probe.remove();
+    return {
+      visible: element.matches(":focus-visible"),
+      // Chromium does not expose a reliable thumb pseudo-element style. Read
+      // its live inherited paint variable and retain a real rendered image.
+      shadow,
+      resolvedShadow,
+      ink,
+    };
+  });
+  expect(thumbFocus.visible).toBe(true);
+  expect(thumbFocus.shadow).toContain("inset 0 0 0 2px");
+  expect(thumbFocus.resolvedShadow).toContain(
+    `${thumbFocus.ink} 0px 0px 0px 2px inset`,
+  );
+  await slider.press("Home");
+  await slider.press("ArrowRight");
+  await slider.press("ArrowRight");
+  await expect(slider).toHaveValue("2");
+  await expect(slider).toHaveAttribute("aria-valuetext", /^2，/);
+  await waitForAutosave(editor);
+  expect(fixture.snapshot.agent.data.traits.humor).toBe(2);
+  expect(fixture.snapshot.agent.enabled).toBe(false);
+  await expect(slider).toBeFocused();
+  await page.screenshot({
+    path: testInfo.outputPath("range-keyboard-internal-cue.png"),
+    fullPage: true,
+  });
   // The identity-row native checkbox remains keyboard reachable independently
   // of field controls and has a keyboard-only internal cue, not an outer ring.
   await usage.focus();
@@ -1234,6 +1722,66 @@ test.describe("触控资料操作", () => {
       "agent",
     ]);
     expect(avatarWrites).toEqual([]);
+  });
+  test("触控原位输入不跳位，点出名字或称呼直接结束清空，不依赖额外按钮", async ({
+    page,
+  }) => {
+    const snapshot = initialProfile();
+    snapshot.agent.data = {
+      ...structuredClone(defaultAgentProfile),
+      name: "TEST 触控名字",
+    };
+    const fixture = await profileFixture(page, snapshot);
+    await page.setViewportSize({ width: 390, height: 960 });
+    await enterDialogue(page);
+    const agent = await openAgent(page);
+    const display = profileTextDisplay(agent, "name");
+    const before = await display.boundingBox();
+    expect(before).not.toBeNull();
+    expect(before!.height).toBe(44);
+    await display.tap();
+    const name = profileText(agent, "name");
+    await expect(name).toBeFocused();
+    const after = await name.boundingBox();
+    expect(after).not.toBeNull();
+    for (const coordinate of ["x", "y", "width", "height"] as const)
+      expect(
+        Math.abs(after![coordinate] - before![coordinate]),
+      ).toBeLessThanOrEqual(1);
+    await expectInplaceOnly(agent);
+    await name.fill("");
+    const summary = agent.locator(".personality-preferences > summary");
+    await summary.tap();
+    await expect(name).toBeHidden();
+    await waitForAutosave(agent);
+    expect(fixture.snapshot.agent).toMatchObject({
+      enabled: true,
+      data: defaultAgentProfile,
+    });
+    const human = await openHuman(page);
+    await profileTextDisplay(human, "name").tap();
+    const humanName = profileText(human, "name");
+    await expect(humanName).toBeFocused();
+    await humanName.fill("");
+    await profileTextDisplay(human, "preferredAddress").tap();
+    const address = profileText(human, "preferredAddress");
+    await expect(humanName).toBeHidden();
+    await expect(address).toBeFocused();
+    await waitForAutosave(human);
+    const reopenedAddress = await editText(human, "preferredAddress");
+    await reopenedAddress.fill("");
+    await human.locator(".personality-heading > h2").tap();
+    await expect(reopenedAddress).toBeHidden();
+    await waitForAutosave(human);
+    expect(fixture.snapshot.human).toMatchObject({
+      enabled: false,
+      data: defaultHumanProfile,
+    });
+    await expectInplaceOnly(human);
+    await expect(
+      page.getByRole("dialog", { name: "设置", exact: true }),
+    ).toBeVisible();
+    expect(fixture.commands).toHaveLength(3);
   });
 });
 
@@ -1812,7 +2360,7 @@ for (const lostReceipt of [false, true]) {
   });
 }
 
-test("已确认 Echo 的临时空名字不误关设定，关闭后空名字期间新增字段也不偷偷恢复", async ({
+test("已确认 Echo 输入中临时空名字零写，Escape不清除，Enter明确null且关闭后编辑不偷偷恢复", async ({
   page,
 }) => {
   const snapshot = initialProfile();
@@ -1824,29 +2372,45 @@ test("已确认 Echo 的临时空名字不误关设定，关闭后空名字期�
   const fixture = await profileFixture(page, snapshot);
   await enterDialogue(page);
   const editor = await openAgent(page);
-  const name = await editText(editor, "name");
+  const clockStart = new Date("2026-10-02T04:00:00.000Z");
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(new Date(clockStart.getTime() + 1000));
+  let name = await editText(editor, "name");
   await name.fill("");
-  await openPreferences(editor);
-  await editor
-    .getByRole("checkbox", { name: "设置幽默", exact: true })
-    .uncheck();
-  await expect
-    .poll(() => fixture.snapshot.agent.data)
-    .toEqual({
-      ...defaultAgentProfile,
-      name: "Echo",
-    });
-  expect(fixture.commands.at(-1)).toMatchObject({
-    enabled: true,
-    data: { name: "Echo", traits: defaultAgentProfile.traits },
+  await page.clock.runFor(450);
+  await expect(name).toBeFocused();
+  expect(fixture.commands).toHaveLength(0);
+  expect(fixture.snapshot.agent.data).toEqual({
+    ...defaultAgentProfile,
+    name: "Echo",
+    traits: { ...defaultAgentProfile.traits, humor: 0 },
   });
+  await name.press("Escape");
+  await expect(name).toBeHidden();
+  await expect(
+    editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+  ).toHaveText("Echo");
+  expect(fixture.commands).toHaveLength(0);
+  await page.clock.resume();
+  name = await editText(editor, "name");
+  await name.fill("");
+  await name.press("Enter");
+  const cleared = await waitForAutosave(editor);
+  expect(cleared).toMatchObject({
+    enabled: true,
+    data: { name: null, traits: { ...defaultAgentProfile.traits, humor: 0 } },
+  });
+  await expect(name).toBeHidden();
   await expect(profileUsageControl(editor)).toBeEnabled();
   await expectProfileUsage(editor, true);
-  await expect(name).toHaveValue("");
   await setProfileUsage(editor, false);
-  await expect.poll(() => fixture.snapshot.agent.enabled).toBe(false);
+  await waitForAutosave(editor);
+  name = await editText(editor, "name");
+  await name.fill("");
   await setLevel(editor, "严谨", 0);
-  await expect.poll(() => fixture.snapshot.agent.data.traits.rigor).toBe(0);
+  await waitForAutosave(editor);
+  await expect(name).toBeHidden();
+  expect(fixture.snapshot.agent.data.traits.rigor).toBe(0);
   expect(fixture.snapshot.agent.enabled).toBe(false);
   await editor.getByRole("radio", { name: "直率", exact: true }).check();
   await expect
@@ -1867,9 +2431,9 @@ test("已确认 Echo 的临时空名字不误关设定，关闭后空名字期�
     .poll(() => fixture.snapshot.agent.data.customStyle)
     .toBe("TEST 临时空名字时新增");
   expect(fixture.snapshot.agent.enabled).toBe(false);
-  expect(fixture.snapshot.agent.data.name).toBe("Echo");
+  expect(fixture.snapshot.agent.data.name).toBeNull();
   await expectProfileUsage(editor, false);
-  await expect(name).toHaveValue("");
+  name = await editText(editor, "name");
   await name.fill("Nova");
   await waitForAutosave(editor);
   expect(fixture.snapshot.agent).toMatchObject({
@@ -2372,6 +2936,7 @@ test("保存进行中仍能连续输入和拖动分值，旧回执不覆盖最�
     expect(last!.commandId).not.toBe(fixture.commands[0]!.commandId);
     expect(fixture.snapshot.agent.revision).toBe(3);
     await expect(name).toHaveValue("Echo");
+    await editText(editor, "name");
     await name.press("Escape");
     await expect(
       editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
@@ -3519,10 +4084,11 @@ for (const appearance of ["light", "dark"] as const) {
     expect(zoomGeometry.right).toBeLessThanOrEqual(zoomGeometry.viewport + 1);
     // Exercise the last real field in the modal scroller. A removed save
     // footer is not a keyboard or geometry target in the immediate design.
-    await address.scrollIntoViewIfNeeded();
-    await address.focus();
-    await expect(address).toBeFocused();
-    await expect(address).toBeInViewport({ ratio: 1 });
+    const bottomAddress = await editText(human, "preferredAddress");
+    await bottomAddress.scrollIntoViewIfNeeded();
+    await bottomAddress.focus();
+    await expect(bottomAddress).toBeFocused();
+    await expect(bottomAddress).toBeInViewport({ ratio: 1 });
     await page.screenshot({
       path: testInfo.outputPath(
         `human-${appearance}-1440-2-controls-visible.png`,

@@ -160,6 +160,8 @@
   display: flex;
   align-items: center;
   min-height: 36px;
+  height: 36px;
+  width: 100%;
   max-width: 100%;
   gap: 10px;
   border: 0;
@@ -168,6 +170,8 @@
   background: transparent;
   color: var(--ink);
   text-align: left;
+  line-height: 36px;
+  cursor: text;
 }
 .app .personality-name-display {
   font-size: 22px;
@@ -176,18 +180,10 @@
 }
 .personality-name-display > span {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.personality-name-display > svg,
-.personality-detail-display > svg {
-  flex: none;
-  color: var(--muted);
-  opacity: 0;
-}
-.personality-name-display:is(:hover, :focus-visible) > svg,
-.personality-detail-display:is(:hover, :focus-visible) > svg {
-  opacity: 1;
+  white-space: nowrap;
 }
 .app .personality-name-display:disabled,
 .app .personality-detail-display:disabled {
@@ -211,14 +207,20 @@
   display: block;
   width: 100%;
   min-width: 0;
+  min-height: 36px;
+  height: 36px;
   border: 0;
-  border-bottom: 1px solid var(--line);
   border-radius: 0;
   box-shadow: none;
+  outline: none;
   background: transparent;
+  font-family: inherit;
   font-size: 22px;
   font-weight: 600;
-  padding: 4px 0;
+  letter-spacing: -0.025em;
+  line-height: 36px;
+  text-align: left;
+  padding: 0;
   color: var(--ink);
 }
 .app .personality-inline-editor > input:disabled {
@@ -229,28 +231,6 @@
 }
 .app .personality-inline-editor > input:focus-visible {
   outline: 0;
-  border-bottom-color: var(--accent);
-}
-.personality-edit-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 4px;
-}
-.app .personality-edit-actions > button {
-  min-height: 32px;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.app .personality-edit-actions > button:first-child {
-  color: var(--accent);
-}
-.app .personality-edit-actions > button:hover {
-  color: var(--ink);
 }
 .app .personality-text-action {
   margin-top: 4px;
@@ -272,15 +252,31 @@
 }
 .personality-detail-display > span:first-child {
   color: var(--muted);
+  flex: none;
 }
 .personality-detail-display > span:nth-child(2) {
-  margin-left: auto;
+  flex: 1;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.personality-field .personality-inline-editor > input {
-  font-size: 15px;
-  font-weight: 500;
+.personality-address-editor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.personality-address-editor > label {
+  flex: none;
+  color: var(--muted);
+  line-height: 36px;
+}
+.app .personality-address-editor > input {
+  flex: 1;
+  width: 0;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
 }
 .personality-preferences {
   min-width: 0;
@@ -382,6 +378,7 @@
 }
 .app .personality-trait input[type="range"] {
   --track-empty: color-mix(in srgb, var(--ink) 9%, var(--paper));
+  --trait-thumb-shadow: 0 1px 6px #0002;
   -webkit-appearance: none;
   appearance: none;
   box-sizing: border-box;
@@ -390,7 +387,7 @@
   margin: 0;
   height: 22px;
   border: 0;
-  outline-offset: 5px;
+  outline: none;
   padding: 0;
   box-shadow: none;
   border-radius: 999px;
@@ -405,6 +402,13 @@
       no-repeat;
   cursor: pointer;
 }
+.app .personality-trait input[type="range"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+.app .personality-trait input[type="range"]:focus-visible {
+  --trait-thumb-shadow: inset 0 0 0 2px var(--ink), 0 1px 6px #0002;
+}
 .personality-trait input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 21px;
@@ -412,7 +416,7 @@
   border-radius: 50%;
   border: 3px solid var(--paper);
   background: var(--accent);
-  box-shadow: 0 1px 6px #0002;
+  box-shadow: var(--trait-thumb-shadow);
 }
 .personality-trait input[type="range"]::-moz-range-thumb {
   width: 15px;
@@ -420,7 +424,7 @@
   border-radius: 50%;
   border: 3px solid var(--paper);
   background: var(--accent);
-  box-shadow: 0 1px 6px #0002;
+  box-shadow: var(--trait-thumb-shadow);
 }
 .personality-trait-ends {
   display: flex;
@@ -550,9 +554,18 @@
   .personality-master,
   .personality-speaking label > span,
   .app .personality-name-display,
-  .app .personality-detail-display,
-  .app .personality-edit-actions > button {
+  .app .personality-detail-display {
     min-height: 44px;
+  }
+  .app .personality-name-display,
+  .app .personality-detail-display,
+  .app .personality-inline-editor > input {
+    height: 44px;
+    min-height: 44px;
+    line-height: 44px;
+  }
+  .personality-address-editor > label {
+    line-height: 44px;
   }
   .personality-optional {
     min-width: 44px;
@@ -560,10 +573,6 @@
   .personality-master {
     min-width: 44px;
     justify-content: center;
-  }
-  .personality-name-display > svg,
-  .personality-detail-display > svg {
-    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {

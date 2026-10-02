@@ -6,7 +6,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from "react";
-import { Camera, ChevronRight, Pencil } from "lucide-react";
+import { Camera, ChevronRight } from "lucide-react";
 import {
   defaultAgentProfile,
   defaultHumanProfile,
@@ -103,17 +103,26 @@ export function ProfileEditor({
     actual?.data ??
     (subject === "agent" ? defaultAgentProfile : defaultHumanProfile);
   const enabled = auto.enabled ?? actual?.enabled ?? false;
+  const textIntent = useRef({ data, enabled });
+  textIntent.current = { data, enabled };
   const [avatarBusy, setBusy] = useState(false);
   const [avatarError, setError] = useState("");
   const [avatarConflict, setConflict] = useState<"avatar">();
   const [editingName, setEditingName] = useState(false);
   const [editingAddress, setEditingAddress] = useState(false);
+  const [compositionValues, setCompositionValues] = useState<
+    Partial<Record<"name" | "preferredAddress", string>>
+  >({});
+  const activeTextEdit = useRef(new Set<"name" | "preferredAddress">());
+  const editEpoch = useRef(0);
+  const composingText = useRef(new Set<"name" | "preferredAddress">());
+  const blurredComposition = useRef(new Set<"name" | "preferredAddress">());
   const busy = avatarBusy || auto.saving;
   const conflict = avatarConflict || auto.conflict;
   const error = avatarError || auto.error;
   const activateText = profile.textActivation[subject];
   // Like the save queue, an intermediate empty name retains the last
-  // confirmed name; only the explicit unset action clears it.
+  // confirmed name; only explicitly ending an empty edit clears it.
   const hasConfiguration = (next: AgentProfileData | HumanProfileData) =>
     profileHasConfiguredFields({
       ...next,
@@ -125,8 +134,10 @@ export function ProfileEditor({
   const configured = hasConfiguration(data);
   // Retained choices with enabled=false are an explicit opt-out, not a
   // request to activate the whole Profile when another field is selected.
-  const canActivate =
-    enabled || (!configured && (subject === "human" || actual?.revision === 0));
+  const canActivate = () =>
+    textIntent.current.enabled ||
+    (!hasConfiguration(textIntent.current.data) &&
+      (subject === "human" || actual?.revision === 0));
   const Heading = subject === "agent" ? "h3" : "h2";
   const headingText = subject === "agent" ? "设定" : "个人资料";
   const avatarPending = useRef<
@@ -154,50 +165,55 @@ export function ProfileEditor({
     return () => onBusy?.(false);
   }, [busy, onBusy]);
   const change = (
-    next: AgentProfileData | HumanProfileData,
-    nextEnabled = enabled,
+    update:
+      | AgentProfileData
+      | HumanProfileData
+      | ((
+          current: AgentProfileData | HumanProfileData,
+        ) => AgentProfileData | HumanProfileData),
+    nextEnabled = textIntent.current.enabled,
     delay = 0,
     allowEmpty = false,
   ) => {
     setError("");
+    const next =
+      typeof update === "function" ? update(textIntent.current.data) : update;
     const configured = hasConfiguration(next);
-    profile.edit(
-      subject,
-      next,
-      subject === "agent" || configured || allowEmpty ? nextEnabled : false,
-      delay,
-    );
+    const effectiveEnabled =
+      subject === "agent" || configured || allowEmpty ? nextEnabled : false;
+    textIntent.current = { data: next, enabled: effectiveEnabled };
+    profile.edit(subject, next, effectiveEnabled, delay);
   };
   const textChange = (
     field: "name" | "preferredAddress" | "customStyle",
     value: string,
   ) => {
+    if (field !== "customStyle" && !activeTextEdit.current.has(field)) return;
+    if (field !== "customStyle" && composingText.current.has(field)) {
+      // Provisional IME text is an editing draft, not consent to persist a
+      // temporary empty name/address or partial composition.
+      setCompositionValues((current) => ({ ...current, [field]: value }));
+      return;
+    }
     const firstValue =
-      !!value.trim() && canActivate && (activateText.has(field) || !configured);
+      !!value.trim() &&
+      canActivate() &&
+      (activateText.has(field) || !hasConfiguration(textIntent.current.data));
     if (value.trim()) activateText.delete(field);
-    change({ ...data, [field]: value }, firstValue ? true : enabled, 450, true);
+    change(
+      (current) => ({ ...current, [field]: value }),
+      firstValue ? true : textIntent.current.enabled,
+      450,
+      true,
+    );
   };
   const flushText = () => void profile.flush(subject).catch(() => {});
-  const selectText = (field: "name" | "preferredAddress", checked: boolean) => {
-    if (checked && canActivate) activateText.add(field);
-    else activateText.delete(field);
-    change(
-      { ...data, [field]: checked ? "" : null },
-      enabled,
-      0,
-      checked && enabled,
-    );
-    if (checked)
-      requestAnimationFrame(() => {
-        document.getElementById(`${id}-${field}`)?.focus();
-      });
-  };
   const selectCustomStyle = (checked: boolean) => {
-    if (checked && canActivate) activateText.add("customStyle");
+    if (checked && canActivate()) activateText.add("customStyle");
     else activateText.delete("customStyle");
     // A field's use and its retained authoring text are separate. The Host
     // atomically persists this choice with the effective ROM projection.
-    const agent = data as AgentProfileData;
+    const agent = textIntent.current.data as AgentProfileData;
     const next = {
       ...agent,
       customStyle: agent.customStyle ?? (checked ? "" : null),
@@ -205,9 +221,11 @@ export function ProfileEditor({
     };
     change(
       next,
-      checked && hasConfiguration(next) ? canActivate : enabled,
+      checked && hasConfiguration(next)
+        ? canActivate()
+        : textIntent.current.enabled,
       0,
-      checked && enabled,
+      checked && textIntent.current.enabled,
     );
     if (checked)
       requestAnimationFrame(() =>
@@ -217,24 +235,84 @@ export function ProfileEditor({
   const openText = (field: "name" | "preferredAddress") => {
     // Opening a personal detail is presentation only: a fallback name must
     // never turn into a configured field or an instruction to the model.
+    activeTextEdit.current.add(field);
+    const epoch = ++editEpoch.current;
     if (field === "name") setEditingName(true);
     else setEditingAddress(true);
-    requestAnimationFrame(() =>
-      document.getElementById(`${id}-${field}`)?.focus(),
-    );
+    requestAnimationFrame(() => {
+      if (editEpoch.current === epoch && activeTextEdit.current.has(field))
+        document.getElementById(`${id}-${field}`)?.focus();
+    });
   };
-  const finishText = (field: "name" | "preferredAddress") => {
+  const clearCompositionValue = (field: "name" | "preferredAddress") => {
+    setCompositionValues((current) => {
+      if (!(field in current)) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  };
+  const finishText = (
+    field: "name" | "preferredAddress",
+    value: string,
+    { unsetBlank = false, restoreFocus = true } = {},
+  ) => {
+    // Closing a focused editor can itself dispatch blur and an IME's final
+    // change. Mark it closed synchronously, before React hides the input.
+    if (!activeTextEdit.current.delete(field)) return;
+    const epoch = ++editEpoch.current;
+    composingText.current.delete(field);
+    blurredComposition.current.delete(field);
+    clearCompositionValue(field);
+    if (unsetBlank && !value.trim()) {
+      activateText.delete(field);
+      change((current) => ({ ...current, [field]: null }));
+    }
     flushText();
     if (field === "name") setEditingName(false);
     else setEditingAddress(false);
-    requestAnimationFrame(() =>
-      document.getElementById(`${id}-${field}-edit`)?.focus(),
-    );
+    // Pointer/Tab departure belongs to the next control, not this editor.
+    if (restoreFocus) {
+      const trigger = document.getElementById(`${id}-${field}-edit`);
+      const input = document.getElementById(`${id}-${field}`);
+      requestAnimationFrame(() => {
+        if (
+          editEpoch.current === epoch &&
+          trigger?.isConnected &&
+          [document.body, input, trigger].includes(
+            document.activeElement as HTMLElement,
+          )
+        )
+          trigger.focus();
+      });
+    }
+  };
+  const blurText = (field: "name" | "preferredAddress", value: string) => {
+    if (!activeTextEdit.current.has(field)) return;
+    if (composingText.current.has(field)) {
+      blurredComposition.current.add(field);
+      return;
+    }
+    finishText(field, value, { unsetBlank: true, restoreFocus: false });
+  };
+  const endComposition = (
+    field: "name" | "preferredAddress",
+    value: string,
+  ) => {
+    if (!activeTextEdit.current.has(field)) return;
+    composingText.current.delete(field);
+    clearCompositionValue(field);
+    // The final composition text must reach the existing queue before an
+    // earlier focus departure flushes it. Never clear a provisional IME value.
+    textChange(field, value);
+    if (blurredComposition.current.delete(field))
+      finishText(field, value, { unsetBlank: true, restoreFocus: false });
   };
   const textKey = (
     e: KeyboardEvent<HTMLInputElement>,
     field: "name" | "preferredAddress",
   ) => {
+    if (!activeTextEdit.current.has(field)) return;
     if (e.key === "Escape") {
       // A native dialog's cancel is a default action, not event bubbling.
       // Composition may consume Escape without dismissing personal details.
@@ -243,12 +321,15 @@ export function ProfileEditor({
     }
     if (
       (e.key === "Enter" || e.key === "Escape") &&
-      !e.nativeEvent.isComposing
+      !e.nativeEvent.isComposing &&
+      !composingText.current.has(field)
     ) {
       e.preventDefault();
       // Escape ends editing; it does not pretend to undo a durable autosave.
       // Drafts and unknown/error receipts remain owned by the scoped queue.
-      finishText(field);
+      finishText(field, e.currentTarget.value, {
+        unsetBlank: e.key === "Enter",
+      });
     }
   };
   async function upload(file?: File) {
@@ -401,7 +482,7 @@ export function ProfileEditor({
         disabled={!editable || (subject === "human" && !configured)}
         onChange={(e) => {
           activateText.clear();
-          change(data, e.target.checked);
+          change((current) => current, e.target.checked);
         }}
       />
     </label>
@@ -498,7 +579,6 @@ export function ProfileEditor({
             onClick={() => openText("name")}
           >
             <span>{displayName}</span>
-            <Pencil size={13} aria-hidden="true" />
           </button>
           <div className="personality-inline-editor" hidden={!editingName}>
             <input
@@ -506,35 +586,17 @@ export function ProfileEditor({
               aria-label={subject === "agent" ? "智能体的名字" : "你的名字"}
               data-configured={data.name !== null}
               maxLength={40}
-              value={data.name ?? ""}
+              value={compositionValues.name ?? data.name ?? ""}
               disabled={!editable}
               placeholder={subject === "agent" ? "Morphz" : "你的名字"}
               onChange={(e) => textChange("name", e.target.value)}
-              onBlur={flushText}
+              onBlur={(e) => blurText("name", e.currentTarget.value)}
+              onCompositionStart={() => composingText.current.add("name")}
+              onCompositionEnd={(e) =>
+                endComposition("name", e.currentTarget.value)
+              }
               onKeyDown={(e) => textKey(e, "name")}
             />
-            <div className="personality-edit-actions">
-              <button
-                type="button"
-                disabled={!editable}
-                onClick={() => finishText("name")}
-              >
-                完成
-              </button>
-              <button
-                type="button"
-                aria-label={
-                  subject === "agent" ? "不设置智能体名字" : "不设置你的名字"
-                }
-                disabled={!editable}
-                onClick={() => {
-                  selectText("name", false);
-                  finishText("name");
-                }}
-              >
-                不设置
-              </button>
-            </div>
           </div>
           {avatar?.media && (
             <button
@@ -561,47 +623,36 @@ export function ProfileEditor({
           >
             <span>称呼</span>
             <span>{confirmedAddress || "未设置"}</span>
-            <Pencil size={13} aria-hidden="true" />
           </button>
-          <div className="personality-inline-editor" hidden={!editingAddress}>
-            <label
-              className="profile-visually-hidden"
-              htmlFor={`${id}-preferredAddress`}
-            >
-              称呼
-            </label>
+          <div
+            className="personality-inline-editor personality-address-editor"
+            hidden={!editingAddress}
+          >
+            <label htmlFor={`${id}-preferredAddress`}>称呼</label>
             <input
               id={`${id}-preferredAddress`}
               aria-label="Agent 对你的称呼"
               data-configured={human.preferredAddress !== null}
               maxLength={40}
-              value={human.preferredAddress ?? ""}
+              value={
+                compositionValues.preferredAddress ??
+                human.preferredAddress ??
+                ""
+              }
               placeholder="希望我怎么称呼你"
               disabled={!editable}
               onChange={(e) => textChange("preferredAddress", e.target.value)}
-              onBlur={flushText}
+              onBlur={(e) =>
+                blurText("preferredAddress", e.currentTarget.value)
+              }
+              onCompositionStart={() =>
+                composingText.current.add("preferredAddress")
+              }
+              onCompositionEnd={(e) =>
+                endComposition("preferredAddress", e.currentTarget.value)
+              }
               onKeyDown={(e) => textKey(e, "preferredAddress")}
             />
-            <div className="personality-edit-actions">
-              <button
-                type="button"
-                disabled={!editable}
-                onClick={() => finishText("preferredAddress")}
-              >
-                完成
-              </button>
-              <button
-                type="button"
-                aria-label="不设置称呼"
-                disabled={!editable}
-                onClick={() => {
-                  selectText("preferredAddress", false);
-                  finishText("preferredAddress");
-                }}
-              >
-                不设置
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -651,14 +702,16 @@ export function ProfileEditor({
                           disabled={!editable}
                           onChange={(e) =>
                             change(
-                              {
-                                ...agent,
+                              (current) => ({
+                                ...current,
                                 traits: {
-                                  ...agent.traits,
+                                  ...(current as AgentProfileData).traits,
                                   [trait.key]: e.target.checked ? 0 : null,
                                 },
-                              },
-                              e.target.checked ? canActivate : enabled,
+                              }),
+                              e.target.checked
+                                ? canActivate()
+                                : textIntent.current.enabled,
                             )
                           }
                         />
@@ -683,14 +736,14 @@ export function ProfileEditor({
                           }
                           onChange={(e) =>
                             change(
-                              {
-                                ...agent,
+                              (current) => ({
+                                ...current,
                                 traits: {
-                                  ...agent.traits,
+                                  ...(current as AgentProfileData).traits,
                                   [trait.key]: Number(e.target.value),
                                 },
-                              },
-                              enabled,
+                              }),
+                              textIntent.current.enabled,
                               300,
                             )
                           }
@@ -715,7 +768,9 @@ export function ProfileEditor({
                     type="radio"
                     name={`${id}-style`}
                     checked={agent.speechStyle === null}
-                    onChange={() => change({ ...agent, speechStyle: null })}
+                    onChange={() =>
+                      change((current) => ({ ...current, speechStyle: null }))
+                    }
                   />
                   <span>不设置</span>
                 </label>
@@ -728,8 +783,14 @@ export function ProfileEditor({
                       checked={agent.speechStyle === style.value}
                       onChange={() =>
                         change(
-                          { ...agent, speechStyle: style.value },
-                          agent.speechStyle === null ? canActivate : enabled,
+                          (current) => ({
+                            ...current,
+                            speechStyle: style.value,
+                          }),
+                          (textIntent.current.data as AgentProfileData)
+                            .speechStyle === null
+                            ? canActivate()
+                            : textIntent.current.enabled,
                         )
                       }
                     />

@@ -1,5 +1,19 @@
 # 桌面能力实施记录
 
+## 2026-10-02 名字原位编辑与人格滑杆去外圈
+
+名字／称呼现在直接在原文字位置编辑，不再显示「完成」「不设置」操作行、铅笔、清除图标或输入下划线；字号、行高及头像／总开关位置保持。沿用450ms自动提交，Enter或离开结束，空文本明确结束时写null；输入中临时空名字不覆盖确认值，Escape不清空中间态或伪装撤销已保存值。IME候选只作临时输入显示，组合结束才进入原队列；关闭编辑的同步标志防止随后blur／尾input重新写值，失焦不抢回点击／Tab目标。同事件轮的其他字段合并最新意图，不丢名字。默认回退Morphz／我只作展示，打开／离开零写；整体关闭后编辑仍保持关闭。没有新增持久模型、Host／Runtime字段、API、迁移或客户端人格副本，CAS／unknown／确认读回与身份边界保持。
+
+追加截图要求的人格滑杆整条青色外圈已移除，鼠标与键盘均无轨道外outline／box-shadow；现有圆点、轨道和数值不改，Tab提示只在圆点内部，方向键／Home／End与自动提交仍可用。不扩大为删除分组卡片边线或全站焦点提示。
+
+最终生产构建退出0（`/tmp/morphz-profile-inplace-final-build.log`）；相关队列／Host／领域单测 **36／36**、零跳过（`/tmp/morphz-profile-inplace-unit.log`）。完整Profile UI **48／48**、零跳过（52.4秒，`/tmp/morphz-profile-inplace-ui.fIfXud/final-profile.log`），包括原43项语义守门、新原位明暗／390px／200% CSS几何、失焦去向、触控清空、组合输入与同事件轮合并，原开关case扩展滑杆鼠标／真实Tab／Home与方向键及实际确认读回。明暗原位及滑杆鼠标／内部键盘提示截图已复看。CSS几何和DOM组合事件不称原生Electron缩放或系统IME验收；类型、格式与差异检查通过。
+
+实际UI → typed Host → 隔离SQL → 现有Rust Runtime → 确定性Provider **5／5**、零跳过（21.4秒，`/tmp/morphz-profile-inplace-actual.6WoY2Q/deterministic-inplace-focus-final.log`）。增强原第4项：临时空名字／Escape保留原revision，Enter／失焦真正持久null且新请求省略旧名字／称呼，默认打开／离开零写，Human只保留称呼及全空规则保持；实际CAS、丢回执、Echo发送屏障、停用保留、自定义作者态、旧Thread冻结版本全部保留。首轮同实际链5／5的22.9秒日志保留。未修改Runtime或新增付费模型调用，不把确定性请求证据称为人格主观效果或上游cache命中。
+
+首轮UI44／48失败日志保留为`/tmp/morphz-profile-inplace-ui.fIfXud/profile.log`：两项对齐比较使用未归一化的left／start，另外两项是测试flush helper主动blur已正确获得焦点的summary；现仅结束真实文本输入，原失焦前后断言未删除。定向原位4项通过；追加滑杆首轮仅hex／rgb比较失败，DOM解析颜色后专项通过（`/tmp/morphz-profile-inplace-targeted.KQOEiX7u/profile-targeted.log`、`/tmp/morphz-profile-inplace-range.X7VpHJlA/profile-range.log`），随后统一重跑最终48项。
+
+原同一`/Users/shafreeck/Applications/Morphz.app`确认空输入、资料已确认后正常Cmd+R载入；实看名字原位输入无操作行／下划线，未输入或清除用户资料。原侧栏显隐、设定页签、两组展开、324px／345.875px宽度，以及用户本轮自己选择的使用on、幽默4／严谨2／细腻均保留，没有代用户切换开关、移动滑杆、头像、模型或发送消息；用户继续操作后不强行恢复旧状态或结束其编辑。Runtime仍67258／18089，未重启。短时12库逻辑核对 **212／240相同**，其间用户继续对话和选风格，另有3个新Thread／输入、6条时间线记录和revision64；旧63条Profile版本／回执hash全相同、零改零删，不称所有数据库或在途工作停止变化。只读审计摘要保留`/tmp/morphz-profile-inplace-ui.fIfXud/original-state-audit.json`，无凭据／私有原文。本轮只完成原位与去圈实现，不宣称长期人格化目标或用户审美已验收。
+
 ## 2026-10-02 恢复 Logo 右侧直接人格开关
 
 按用户本次明确方向撤回末尾按钮，Agent 身份行恢复 Logo／名字右侧原生「使用人格设定」正向开关，不增加标题或重复关闭文字。沿用原 32×20 胶囊及 44px 触控命中区；按追加要求，总控和单项开关均去掉外焦点圈，鼠标只显示底色与圆点，主动键盘焦点只在胶囊内部提示，Tab／Space 仍可达；不因字段为空或分组收起而禁用。关闭保留全部选值／头像，不停止 Agent，继续编辑不暗中开启；仅尚无 head 的首次有效字段自然使用。Human 原标题开关位置和空字段规则不改。
