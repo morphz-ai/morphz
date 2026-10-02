@@ -345,17 +345,25 @@
 .app .personality-usage-action {
   flex: none;
   min-height: 32px;
-  padding: 4px 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
+  padding: 6px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--paper);
   box-shadow: none;
-  color: var(--muted);
-  font-size: 12px;
-}
-.app .personality-usage-action:hover {
   color: var(--ink);
-  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 110ms ease,
+    border-color 110ms ease;
+}
+.app .personality-usage-action:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--text-secondary);
+}
+.app .personality-usage-action:active:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, var(--hover));
 }
 .app .personality-usage-action:focus-visible {
   outline: 2px solid var(--accent);
@@ -585,7 +593,8 @@
   .personality-speaking label > span,
   .app .personality-name-display,
   .app .personality-detail-display,
-  .app .personality-edit-actions > button {
+  .app .personality-edit-actions > button,
+  .app .personality-usage-action {
     min-height: 44px;
   }
   .personality-optional {
@@ -602,6 +611,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .personality-camera,
+  .app .personality-usage-action,
   .personality-profile input[type="checkbox"],
   .personality-profile input[type="checkbox"]::before {
     transition: none;

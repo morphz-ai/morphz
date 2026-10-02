@@ -330,6 +330,54 @@ function profileUsageControl(editor: Locator) {
     '.personality-usage > button,input[aria-label="使用个人资料"]',
   );
 }
+async function expectUsageButtonAppearance(
+  button: Locator,
+  { touch = false, scale = 1 } = {},
+) {
+  await expect(button).toBeVisible();
+  await expect(button).toHaveCSS("border-top-style", "solid");
+  await expect(button).toHaveCSS("border-top-width", "1px");
+  await expect(button).toHaveCSS("border-top-left-radius", "8px");
+  await expect(button).toHaveCSS("padding-left", "12px");
+  await expect(button).toHaveCSS("padding-right", "12px");
+  await expect(button).toHaveCSS("cursor", "pointer");
+  const rendered = await button.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const bounds = element.getBoundingClientRect();
+    // Resolve the actual theme tokens in the same rendered DOM. This only
+    // probes styling, not source text, and cannot submit a Profile command.
+    const probe = document.createElement("span");
+    probe.hidden = true;
+    probe.style.color = "var(--ink)";
+    probe.style.backgroundColor = "var(--paper)";
+    element.append(probe);
+    const ink = getComputedStyle(probe).color;
+    const paper = getComputedStyle(probe).backgroundColor;
+    probe.style.backgroundColor = "var(--hover)";
+    const hover = getComputedStyle(probe).backgroundColor;
+    probe.style.backgroundColor =
+      "color-mix(in srgb, var(--ink) 8%, var(--hover))";
+    const active = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return {
+      height: bounds.height,
+      width: bounds.width,
+      opacity: style.opacity,
+      background: style.backgroundColor,
+      color: style.color,
+      ink,
+      paper,
+      hover,
+      active,
+    };
+  });
+  expect(rendered.height / scale).toBeGreaterThanOrEqual(touch ? 44 : 32);
+  expect(rendered.width / scale).toBeGreaterThanOrEqual(touch ? 44 : 32);
+  expect(rendered.opacity).toBe("1");
+  expect(rendered.color).toBe(rendered.ink);
+  expect(rendered.background).not.toMatch(/^(transparent|rgba\(0, 0, 0, 0\))$/);
+  return rendered;
+}
 async function openPreferences(editor: Locator) {
   const details = editor.locator("details.personality-preferences");
   if (
@@ -1078,6 +1126,23 @@ test("胶囊开关真实鼠标点击没有外焦点圈，键盘 Tab 到达仍有
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await enterDialogue(page);
   const editor = await openAgent(page);
+  const usage = profileUsageControl(editor);
+  await page.mouse.move(1, 1);
+  const buttonAppearance = await expectUsageButtonAppearance(usage);
+  await expect(usage).toHaveCSS("background-color", buttonAppearance.paper);
+  await usage.hover();
+  await expect(usage).toHaveCSS("background-color", buttonAppearance.hover);
+  await page.mouse.down();
+  try {
+    await expect(usage).toHaveCSS("background-color", buttonAppearance.active);
+    expect(fixture.commands).toHaveLength(0);
+    // Release outside the target: pointer feedback alone must not toggle it.
+    await page.mouse.move(1, 1);
+  } finally {
+    await page.mouse.up();
+  }
+  await expect(usage).toHaveCSS("background-color", buttonAppearance.paper);
+  expect(fixture.commands).toHaveLength(0);
   await setProfileUsage(editor, false);
   await expect(profileUsageControl(editor)).toBeFocused();
   await expect(profileUsageControl(editor)).toHaveCSS("outline-style", "none");
@@ -1108,9 +1173,8 @@ test("胶囊开关真实鼠标点击没有外焦点圈，键盘 Tab 到达仍有
   await expect(humor).toHaveCSS("outline-style", "solid");
   await waitForAutosave(editor);
   expect(fixture.snapshot.agent.data.traits.humor).toBe(0);
-  // The secondary text action remains keyboard reachable independently of
+  // The secondary button remains keyboard reachable independently of
   // the capsule switches; it is not a hidden checkbox substitute.
-  const usage = profileUsageControl(editor);
   await usage.focus();
   await usage.press("Shift+Tab");
   await expect(usage).not.toBeFocused();
@@ -1124,9 +1188,9 @@ test("胶囊开关真实鼠标点击没有外焦点圈，键盘 Tab 到达仍有
   });
 });
 
-test.describe("触控头像操作", () => {
+test.describe("触控资料操作", () => {
   test.use({ hasTouch: true });
-  test("无悬停设备上双方相机可直接点击，取消选择不上传或改资料", async ({
+  test("末尾按钮44px触控可用，双方相机取消选择不上传或改资料", async ({
     page,
   }, testInfo) => {
     const fixture = await profileFixture(page);
@@ -1145,10 +1209,34 @@ test.describe("触控头像操作", () => {
     for (const subject of ["agent", "human"] as const) {
       const editor =
         subject === "agent" ? await openAgent(page) : await openHuman(page);
+      if (subject === "agent") {
+        const usage = profileUsageControl(editor);
+        await expectUsageButtonAppearance(usage, { touch: true });
+        await usage.scrollIntoViewIfNeeded();
+        await expect(usage).toBeInViewport({ ratio: 1 });
+        const selected = structuredClone(fixture.snapshot.agent.data);
+        await usage.tap();
+        await waitForAutosave(editor);
+        await expectProfileUsage(editor, false);
+        await expectUsageButtonAppearance(usage, { touch: true });
+        expect(fixture.snapshot.agent).toMatchObject({
+          enabled: false,
+          data: selected,
+        });
+        await usage.tap();
+        await waitForAutosave(editor);
+        await expectProfileUsage(editor, true);
+        expect(fixture.snapshot.agent).toMatchObject({
+          enabled: true,
+          data: selected,
+        });
+      }
       const camera = editor.getByRole("button", {
         name: subject === "agent" ? "上传智能体头像" : "上传自己的头像",
         exact: true,
       });
+      const beforePicker = structuredClone(fixture.snapshot);
+      const commandsBeforePicker = fixture.commands.length;
       await expect(camera).toHaveCSS("opacity", "1");
       await expect(camera).toHaveCSS("pointer-events", "auto");
       const picked = page.waitForEvent("filechooser");
@@ -1156,12 +1244,18 @@ test.describe("触控头像操作", () => {
       const chooser = await picked;
       expect(chooser.isMultiple()).toBe(false);
       await chooser.setFiles([]);
+      expect(fixture.commands).toHaveLength(commandsBeforePicker);
+      expect(fixture.snapshot).toEqual(beforePicker);
       await page.screenshot({
         path: testInfo.outputPath(`${subject}-camera-touch.png`),
         fullPage: true,
       });
     }
-    expect(fixture.commands).toHaveLength(0);
+    expect(fixture.commands).toHaveLength(2);
+    expect(fixture.commands.map((command) => command.subject)).toEqual([
+      "agent",
+      "agent",
+    ]);
     expect(avatarWrites).toEqual([]);
   });
 });
@@ -3228,6 +3322,7 @@ for (const appearance of ["light", "dark"] as const) {
       );
       await expect(usage).toBeFocused();
       await expect(usage).toBeInViewport({ ratio: 1 });
+      await expectUsageButtonAppearance(usage, { scale: zoom });
       await page.screenshot({
         path: testInfo.outputPath(
           `agent-${appearance}-${width}-${zoom}-usage-expanded.png`,
@@ -3261,6 +3356,7 @@ for (const appearance of ["light", "dark"] as const) {
       ).toBeVisible();
       await expect(usage).toHaveText("使用这些设定");
       await expect(usage).toBeInViewport({ ratio: 1 });
+      await expectUsageButtonAppearance(usage, { scale: zoom });
       await usage.press("Enter");
       await waitForAutosave(agent);
       await expectProfileUsage(agent, true);
