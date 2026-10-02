@@ -1,0 +1,1066 @@
+{
+  "syntheticOnly": true,
+  "originalRuntimeModified": false,
+  "originalDataUsed": false,
+  "modelGate": false,
+  "initialDriverGate": true,
+  "gateInvalidatedByReview": "RoutedClient used compatibility atomic stream fallback; native incremental streaming and continuation were not validated.",
+  "runs": [
+    {
+      "name": "serial-off",
+      "enabled": false,
+      "retry": false,
+      "requests": 3,
+      "turns": [
+        {
+          "turn": 1,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\"}",
+                "func_name": "probe_read",
+                "id": "call_TCj2CcCInCs8BUD5XSWLhMWz",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_TCj2CcCInCs8BUD5XSWLhMWz",
+              "type": "function"
+            }
+          ],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 11070.970374999999,
+          "usage": null,
+          "clientCallCount": 1,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 1,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e101",
+            "tool_name": "probe_read",
+            "result": {
+              "system": "Linux"
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"architecture\"}",
+                "func_name": "probe_read",
+                "id": "call_UletKDyd9pqNvcJjabgtEHlF",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"architecture\"}",
+              "func_name": "probe_read",
+              "id": "call_UletKDyd9pqNvcJjabgtEHlF",
+              "type": "function"
+            }
+          ],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 10280.935125000002,
+          "usage": null,
+          "clientCallCount": 2,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 2,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e102",
+            "tool_name": "probe_read",
+            "result": {
+              "architecture": "ARM64"
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "streamKinds": [
+            "started",
+            "text_delta",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "已核对合成环境，结果如下：\n\n- 操作系统：Linux\n- 处理器架构：ARM64",
+            "tool_calls": []
+          },
+          "businessCalls": [],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "已核对合成环境，结果如下：\n\n- 操作系统：Linux\n- 处理器架构：ARM64",
+          "firstPublicTextAt": 8128.743958999999,
+          "lastPublicTextAt": 8128.743958999999,
+          "finishedAt": 8129.629709000001,
+          "usage": null,
+          "clientCallCount": 3,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 3,
+          "httpRequestCount": null,
+          "continuationPreserved": false
+        }
+      ],
+      "completed": true,
+      "projection": {
+        "scope": {
+          "executionId": "synthetic-serial-off",
+          "generation": 1
+        },
+        "terminal": true,
+        "status": "completed",
+        "terminalSequence": 300
+      }
+    },
+    {
+      "name": "serial-v1",
+      "enabled": true,
+      "retry": false,
+      "requests": 3,
+      "turns": [
+        {
+          "turn": 1,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\",\"_annotations\":{\"intent\":\"读取合成环境的操作系统信息\",\"execution\":{\"title\":\"核对操作系统\",\"progress\":\"正在读取操作系统合成事实\"}}}",
+                "func_name": "probe_read",
+                "id": "call_oQIdljkQf1EhKNlnukHKqPNe",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_oQIdljkQf1EhKNlnukHKqPNe",
+              "type": "function"
+            }
+          ],
+          "annotations": [
+            {
+              "id": "379fccca737e3d667aa905630a807e22fc3051de602b8f4024c860fadbbf8e6a",
+              "kind": "execution.title",
+              "value": "核对操作系统",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-serial-v1-1",
+                "attemptId": "attempt-serial-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1
+            },
+            {
+              "id": "075afe79f065c636e0a6354c737e03d29f45e5dadd7c82627572bd99e974bc71",
+              "kind": "execution.progress",
+              "value": "正在读取操作系统合成事实",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-serial-v1-1",
+                "attemptId": "attempt-serial-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1
+            },
+            {
+              "id": "e2cd8b6f801fbf013ae09e812ff105f09a4cbc1b99da0ba7a9851c6d4923a049",
+              "kind": "intent",
+              "value": "读取合成环境的操作系统信息",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-serial-v1-1",
+                "attemptId": "attempt-serial-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "callId": "call_oQIdljkQf1EhKNlnukHKqPNe"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 5015.179708,
+          "usage": null,
+          "clientCallCount": 4,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 4,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e101",
+            "tool_name": "probe_read",
+            "result": {
+              "system": "Linux"
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"architecture\",\"_annotations\":{\"intent\":\"读取合成环境的处理器架构\",\"execution\":{\"title\":\"核对处理器架构\",\"progress\":\"已确认操作系统，正在读取处理器架构\"},\"observations\":[{\"ref\":\"@e101\",\"result\":\"合成环境的操作系统为 Linux\"}]}}",
+                "func_name": "probe_read",
+                "id": "call_yJoKZBuAUoeeqAy9fhoCBZTv",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"architecture\"}",
+              "func_name": "probe_read",
+              "id": "call_yJoKZBuAUoeeqAy9fhoCBZTv",
+              "type": "function"
+            }
+          ],
+          "annotations": [
+            {
+              "id": "5b8b57d33dc65812b4d13be809aad83f43cb1d85de6c5e0a2c58627a4ede155e",
+              "kind": "execution.title",
+              "value": "核对处理器架构",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-serial-v1-2",
+                "attemptId": "attempt-serial-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1
+            },
+            {
+              "id": "0e5ff6b1b97b3587c45bbca42eb474245bc07351b5097e36fd2b899ead2a1421",
+              "kind": "execution.progress",
+              "value": "已确认操作系统，正在读取处理器架构",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-serial-v1-2",
+                "attemptId": "attempt-serial-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1
+            },
+            {
+              "id": "8a1dae6666a9c28a6be957ae05897caa0d0e0c061171aeef4bd4f07d6b0851c3",
+              "kind": "intent",
+              "value": "读取合成环境的处理器架构",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-serial-v1-2",
+                "attemptId": "attempt-serial-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "callId": "call_yJoKZBuAUoeeqAy9fhoCBZTv"
+            },
+            {
+              "id": "ebacd58711f9cfa735ef209d6ec8d6e7679f9bf00f628db1236681bb0e6cf41d",
+              "kind": "observation.result",
+              "value": "合成环境的操作系统为 Linux",
+              "ordinal": 3,
+              "source": {
+                "eventId": "assistant-serial-v1-2",
+                "attemptId": "attempt-serial-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "observationRef": "@e101",
+              "observationEventId": "output-serial-v1-call_oQIdljkQf1EhKNlnukHKqPNe"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 11871.517708000007,
+          "usage": null,
+          "clientCallCount": 5,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 5,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e102",
+            "tool_name": "probe_read",
+            "result": {
+              "architecture": "ARM64"
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"content\":\"已核对合成环境的信息：\\n- 操作系统：Linux\\n- 处理器架构：ARM64\\n\\n以上结果来自合成事实读取，并非对真实设备的检测。\",\"annotations\":{\"execution\":{\"result\":\"合成环境的操作系统为 Linux，处理器架构为 ARM64。\"},\"observations\":[{\"ref\":\"@e101\",\"result\":\"操作系统读取成功，结果为 Linux。\"},{\"ref\":\"@e102\",\"result\":\"处理器架构读取成功，结果为 ARM64。\"}]}}",
+                "func_name": "reply",
+                "id": "call_HEZalQ20IzBGPLYk22Mi3NpM",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [],
+          "annotations": [
+            {
+              "id": "cb40b726183aef4916d99aade81797d1bcbab59caebdf32de945dbebc3046a28",
+              "kind": "execution.result",
+              "value": "合成环境的操作系统为 Linux，处理器架构为 ARM64。",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-serial-v1-3",
+                "attemptId": "attempt-serial-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "resultBoundary": "delivery",
+              "effective": true
+            },
+            {
+              "id": "a3de759b2d5dc5b2f2861f7b4b2415266ceaed4a7095bd8277712671b8652d03",
+              "kind": "observation.result",
+              "value": "操作系统读取成功，结果为 Linux。",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-serial-v1-3",
+                "attemptId": "attempt-serial-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "observationRef": "@e101",
+              "observationEventId": "output-serial-v1-call_oQIdljkQf1EhKNlnukHKqPNe"
+            },
+            {
+              "id": "5a0f5a2e6d1751becd4a2d09ed0058beae5eedbaf62537f81586bb7f84493fb7",
+              "kind": "observation.result",
+              "value": "处理器架构读取成功，结果为 ARM64。",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-serial-v1-3",
+                "attemptId": "attempt-serial-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-serial-v1",
+              "generation": 1,
+              "observationRef": "@e102",
+              "observationEventId": "output-serial-v1-call_yJoKZBuAUoeeqAy9fhoCBZTv"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "已核对合成环境的信息：\n- 操作系统：Linux\n- 处理器架构：ARM64\n\n以上结果来自合成事实读取，并非对真实设备的检测。",
+          "firstPublicTextAt": 11497.839500000002,
+          "lastPublicTextAt": 11497.839500000002,
+          "finishedAt": 11498.463625000004,
+          "usage": null,
+          "clientCallCount": 6,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 6,
+          "httpRequestCount": null,
+          "continuationPreserved": false
+        }
+      ],
+      "completed": true,
+      "projection": {
+        "scope": {
+          "executionId": "synthetic-serial-v1",
+          "generation": 1
+        },
+        "terminal": true,
+        "status": "completed",
+        "terminalSequence": 300,
+        "title": "核对处理器架构",
+        "result": "合成环境的操作系统为 Linux，处理器架构为 ARM64。"
+      }
+    },
+    {
+      "name": "retry-off",
+      "enabled": false,
+      "retry": true,
+      "requests": 4,
+      "turns": [
+        {
+          "turn": 1,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\"}",
+                "func_name": "probe_read",
+                "id": "call_7fg9nXzoCVoRnQpmTd33gd0i",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_7fg9nXzoCVoRnQpmTd33gd0i",
+              "type": "function"
+            }
+          ],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 12606.652374999998,
+          "usage": null,
+          "clientCallCount": 7,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 7,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "error",
+            "observation_ref": "@e101",
+            "tool_name": "probe_read",
+            "result": {
+              "retryable": true,
+              "error": "Synthetic temporary read error; retry this same key once."
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\"}",
+                "func_name": "probe_read",
+                "id": "call_NAL7p15mNEjT731kz0zCv68Q",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_NAL7p15mNEjT731kz0zCv68Q",
+              "type": "function"
+            }
+          ],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 8957.550875,
+          "usage": null,
+          "clientCallCount": 8,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 8,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e102",
+            "tool_name": "probe_read",
+            "result": {
+              "system": "Linux"
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"architecture\"}",
+                "func_name": "probe_read",
+                "id": "call_PJnacyy3FTziAvh0ck2MWkSn",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"architecture\"}",
+              "func_name": "probe_read",
+              "id": "call_PJnacyy3FTziAvh0ck2MWkSn",
+              "type": "function"
+            }
+          ],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 8902.821082999988,
+          "usage": null,
+          "clientCallCount": 9,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 9,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e103",
+            "tool_name": "probe_read",
+            "result": {
+              "architecture": "ARM64"
+            }
+          }
+        },
+        {
+          "turn": 4,
+          "streamKinds": [
+            "started",
+            "text_delta",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "已核对合成环境的信息：\n\n- 操作系统：Linux\n- 处理器架构：ARM64",
+            "tool_calls": []
+          },
+          "businessCalls": [],
+          "annotations": [],
+          "diagnostics": [],
+          "publicText": "已核对合成环境的信息：\n\n- 操作系统：Linux\n- 处理器架构：ARM64",
+          "firstPublicTextAt": 10061.114582999988,
+          "lastPublicTextAt": 10061.114582999988,
+          "finishedAt": 10061.376416,
+          "usage": null,
+          "clientCallCount": 10,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 10,
+          "httpRequestCount": null,
+          "continuationPreserved": false
+        }
+      ],
+      "completed": true,
+      "projection": {
+        "scope": {
+          "executionId": "synthetic-retry-off",
+          "generation": 1
+        },
+        "terminal": true,
+        "status": "completed",
+        "terminalSequence": 400
+      }
+    },
+    {
+      "name": "retry-v1",
+      "enabled": true,
+      "retry": true,
+      "requests": 4,
+      "turns": [
+        {
+          "turn": 1,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\",\"_annotations\":{\"intent\":\"读取合成环境的操作系统信息\",\"execution\":{\"title\":\"核对操作系统\",\"progress\":\"正在读取操作系统合成事实\"}}}",
+                "func_name": "probe_read",
+                "id": "call_toKjBJhiZkV0i0wHXHfVaav1",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_toKjBJhiZkV0i0wHXHfVaav1",
+              "type": "function"
+            }
+          ],
+          "annotations": [
+            {
+              "id": "50a3be0e030c8746a33a4545a3313281115dd258f44e7d915adccbd85c046c56",
+              "kind": "execution.title",
+              "value": "核对操作系统",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-retry-v1-1",
+                "attemptId": "attempt-retry-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "63527fab4879373eb424afce54e6b90873e1f8fd54460f6c96e0d89517a978bd",
+              "kind": "execution.progress",
+              "value": "正在读取操作系统合成事实",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-retry-v1-1",
+                "attemptId": "attempt-retry-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "5e2ebfb8f1f0bb97328b5cf9b44f50cc17c5e5dac5c4783ca217c13d5a6e4656",
+              "kind": "intent",
+              "value": "读取合成环境的操作系统信息",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-retry-v1-1",
+                "attemptId": "attempt-retry-v1-1",
+                "sequence": 100
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "callId": "call_toKjBJhiZkV0i0wHXHfVaav1"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 7239.687832999989,
+          "usage": null,
+          "clientCallCount": 11,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 11,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "error",
+            "observation_ref": "@e101",
+            "tool_name": "probe_read",
+            "result": {
+              "retryable": true,
+              "error": "Synthetic temporary read error; retry this same key once."
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"system\",\"_annotations\":{\"intent\":\"按可重试错误提示重试操作系统读取一次\",\"execution\":{\"title\":\"重试操作系统读取\",\"progress\":\"首次读取出现临时错误，正在重试\"},\"observations\":[{\"ref\":\"@e101\",\"result\":\"操作系统首次读取出现可重试的合成临时错误\"}]}}",
+                "func_name": "probe_read",
+                "id": "call_sFvTDdCaguVSVLdolZ9ZmSTT",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"system\"}",
+              "func_name": "probe_read",
+              "id": "call_sFvTDdCaguVSVLdolZ9ZmSTT",
+              "type": "function"
+            }
+          ],
+          "annotations": [
+            {
+              "id": "52b7661b9ea01c74aacc68664eb5b0270afa79810961124c2c5a20f189b0c38e",
+              "kind": "execution.title",
+              "value": "重试操作系统读取",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-retry-v1-2",
+                "attemptId": "attempt-retry-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "1284386e44e6f62976bfd10831fc75381b21281fa0a3d8da9b96fbaefa147901",
+              "kind": "execution.progress",
+              "value": "首次读取出现临时错误，正在重试",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-retry-v1-2",
+                "attemptId": "attempt-retry-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "183974f37dbe6fcacaf08890c5edf58a6bd5422abbc895a2aa75c0326a5bde5e",
+              "kind": "intent",
+              "value": "按可重试错误提示重试操作系统读取一次",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-retry-v1-2",
+                "attemptId": "attempt-retry-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "callId": "call_sFvTDdCaguVSVLdolZ9ZmSTT"
+            },
+            {
+              "id": "423a1448ca96bef7dbd21178befe6bd3bf85ae5a6f61efe7b50104843f7b1168",
+              "kind": "observation.result",
+              "value": "操作系统首次读取出现可重试的合成临时错误",
+              "ordinal": 3,
+              "source": {
+                "eventId": "assistant-retry-v1-2",
+                "attemptId": "attempt-retry-v1-2",
+                "sequence": 200
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "observationRef": "@e101",
+              "observationEventId": "output-retry-v1-call_toKjBJhiZkV0i0wHXHfVaav1"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 12179.079333000001,
+          "usage": null,
+          "clientCallCount": 12,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 12,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e102",
+            "tool_name": "probe_read",
+            "result": {
+              "system": "Linux"
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"key\":\"architecture\",\"_annotations\":{\"intent\":\"读取合成环境的处理器架构信息\",\"execution\":{\"title\":\"核对处理器架构\",\"progress\":\"已确认操作系统，正在读取处理器架构\"},\"observations\":[{\"ref\":\"@e102\",\"result\":\"合成环境的操作系统为 Linux\"}]}}",
+                "func_name": "probe_read",
+                "id": "call_tMwKTjmosX5XH3eT0NJINwDq",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [
+            {
+              "arguments": "{\"key\":\"architecture\"}",
+              "func_name": "probe_read",
+              "id": "call_tMwKTjmosX5XH3eT0NJINwDq",
+              "type": "function"
+            }
+          ],
+          "annotations": [
+            {
+              "id": "235fb252f87e83452fdce99158193f1a468774f5243f38750409b745320e0196",
+              "kind": "execution.title",
+              "value": "核对处理器架构",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-retry-v1-3",
+                "attemptId": "attempt-retry-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "9692433370dd5f1842a3ee14ef0dca7a5ef4601f225f0a2304207ed09c627cde",
+              "kind": "execution.progress",
+              "value": "已确认操作系统，正在读取处理器架构",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-retry-v1-3",
+                "attemptId": "attempt-retry-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1
+            },
+            {
+              "id": "566e8b8ed0eb2b4a016dde55aa09c5dd64f8eda5714df4f3120a1b5beed6f86f",
+              "kind": "intent",
+              "value": "读取合成环境的处理器架构信息",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-retry-v1-3",
+                "attemptId": "attempt-retry-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "callId": "call_tMwKTjmosX5XH3eT0NJINwDq"
+            },
+            {
+              "id": "6500725a05a2680bf672321f6cd9bd5a0b33f53d27e6624a6a4247d49e5346ff",
+              "kind": "observation.result",
+              "value": "合成环境的操作系统为 Linux",
+              "ordinal": 3,
+              "source": {
+                "eventId": "assistant-retry-v1-3",
+                "attemptId": "attempt-retry-v1-3",
+                "sequence": 300
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "observationRef": "@e102",
+              "observationEventId": "output-retry-v1-call_sFvTDdCaguVSVLdolZ9ZmSTT"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "",
+          "firstPublicTextAt": null,
+          "lastPublicTextAt": null,
+          "finishedAt": 8825.040542000002,
+          "usage": null,
+          "clientCallCount": 13,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 13,
+          "httpRequestCount": null,
+          "continuationPreserved": false,
+          "receipt": {
+            "status": "success",
+            "observation_ref": "@e103",
+            "tool_name": "probe_read",
+            "result": {
+              "architecture": "ARM64"
+            }
+          }
+        },
+        {
+          "turn": 4,
+          "streamKinds": [
+            "started",
+            "tool_call_started",
+            "tool_arguments_delta",
+            "tool_call_completed",
+            "completed"
+          ],
+          "completed": true,
+          "raw": {
+            "content": "",
+            "tool_calls": [
+              {
+                "arguments": "{\"content\":\"已核对合成环境的信息：\\n- 操作系统：Linux\\n- 处理器架构：ARM64\\n\\n操作系统首次读取遇到临时错误，重试一次后成功。以上结果来自合成事实读取，并非对实际设备的检测。\",\"annotations\":{\"execution\":{\"result\":\"合成环境的操作系统为 Linux，处理器架构为 ARM64。\"},\"observations\":[{\"ref\":\"@e102\",\"result\":\"重试成功，确认操作系统为 Linux\"},{\"ref\":\"@e103\",\"result\":\"读取成功，确认处理器架构为 ARM64\"}]}}",
+                "func_name": "reply",
+                "id": "call_Wz2z36ColsZAJLQIUnJB0TW6",
+                "type": "function"
+              }
+            ]
+          },
+          "businessCalls": [],
+          "annotations": [
+            {
+              "id": "2d43c1a4a8686b83560f3e36a9b40464e65905d4395d43b1e23b5304f1b51f47",
+              "kind": "execution.result",
+              "value": "合成环境的操作系统为 Linux，处理器架构为 ARM64。",
+              "ordinal": 0,
+              "source": {
+                "eventId": "assistant-retry-v1-4",
+                "attemptId": "attempt-retry-v1-4",
+                "sequence": 400
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "resultBoundary": "delivery",
+              "effective": true
+            },
+            {
+              "id": "7c71ae542d09774f27e47dca710c195567454e1b08c1a26ab119de7be754251e",
+              "kind": "observation.result",
+              "value": "重试成功，确认操作系统为 Linux",
+              "ordinal": 1,
+              "source": {
+                "eventId": "assistant-retry-v1-4",
+                "attemptId": "attempt-retry-v1-4",
+                "sequence": 400
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "observationRef": "@e102",
+              "observationEventId": "output-retry-v1-call_sFvTDdCaguVSVLdolZ9ZmSTT"
+            },
+            {
+              "id": "ce6b5d7d2ef1dfd54083e8f249beb2ee4949b6cde0738a8f321f80aa4bcd5f0f",
+              "kind": "observation.result",
+              "value": "读取成功，确认处理器架构为 ARM64",
+              "ordinal": 2,
+              "source": {
+                "eventId": "assistant-retry-v1-4",
+                "attemptId": "attempt-retry-v1-4",
+                "sequence": 400
+              },
+              "executionId": "synthetic-retry-v1",
+              "generation": 1,
+              "observationRef": "@e103",
+              "observationEventId": "output-retry-v1-call_tMwKTjmosX5XH3eT0NJINwDq"
+            }
+          ],
+          "diagnostics": [],
+          "publicText": "已核对合成环境的信息：\n- 操作系统：Linux\n- 处理器架构：ARM64\n\n操作系统首次读取遇到临时错误，重试一次后成功。以上结果来自合成事实读取，并非对实际设备的检测。",
+          "firstPublicTextAt": 12105.259416999994,
+          "lastPublicTextAt": 12105.259416999994,
+          "finishedAt": 12105.500291999982,
+          "usage": null,
+          "clientCallCount": 14,
+          "startedEventsThisCall": 1,
+          "startedEventsTotal": 14,
+          "httpRequestCount": null,
+          "continuationPreserved": false
+        }
+      ],
+      "completed": true,
+      "projection": {
+        "scope": {
+          "executionId": "synthetic-retry-v1",
+          "generation": 1
+        },
+        "terminal": true,
+        "status": "completed",
+        "terminalSequence": 400,
+        "title": "核对处理器架构",
+        "result": "合成环境的操作系统为 Linux，处理器架构为 ARM64。"
+      }
+    }
+  ],
+  "route": {
+    "base_url": "http://localhost:8317",
+    "base_url_scope": "origin_only",
+    "credential_reference_checked": false,
+    "http_request_count_available": false,
+    "kind": "ready",
+    "max_output_tokens": 8192,
+    "maximum_client_calls": 16,
+    "model": "gpt-6.1-sol",
+    "native_continuation": "process_memory_only",
+    "protocol": "openai-responses",
+    "reasoning_effort": "low"
+  },
+  "clientRequests": 14
+}

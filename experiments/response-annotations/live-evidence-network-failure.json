@@ -1,0 +1,31 @@
+{
+  "syntheticOnly": true,
+  "originalRuntimeModified": false,
+  "originalDataUsed": false,
+  "modelGate": false,
+  "runs": [
+    {
+      "name": "serial-off",
+      "enabled": false,
+      "retry": false,
+      "requests": 1,
+      "turns": [],
+      "completed": false
+    }
+  ],
+  "route": {
+    "base_url": "http://mini-m4.local:8317",
+    "base_url_scope": "origin_only",
+    "credential_reference_checked": false,
+    "http_request_count_available": false,
+    "kind": "ready",
+    "max_output_tokens": 8192,
+    "maximum_client_calls": 16,
+    "model": "gpt-6.1-sol",
+    "native_continuation": "process_memory_only",
+    "protocol": "openai-responses",
+    "reasoning_effort": "low"
+  },
+  "clientRequests": 1,
+  "failure": "Native probe failed: transient_network"
+}
