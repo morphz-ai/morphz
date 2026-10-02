@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER, USER_AGENT};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -3165,6 +3165,10 @@ struct StreamAccumulator {
     chat_reasoning_content: String,
     responses_reasoning_items: BTreeMap<usize, Value>,
     responses_message_items: BTreeMap<usize, Value>,
+    responses_text_deltas: BTreeMap<(usize, usize), String>,
+    responses_text_final: BTreeMap<(usize, usize), String>,
+    responses_unindexed_text: bool,
+    responses_unindexed_text_final: Option<PartiallyIndexedResponsesText>,
     gemini_function_calls: BTreeMap<usize, GeminiFunctionCallContinuation>,
     gemini_tool_index: usize,
     terminal: bool,
@@ -3173,6 +3177,14 @@ struct StreamAccumulator {
     responses_completed_output_tokens: Option<u64>,
     prompt_tokens: Option<u64>,
     usage: ModelUsage,
+}
+
+#[derive(Debug, Default)]
+struct PartiallyIndexedResponsesText {
+    // A missing coordinate never erases one the Provider did supply.
+    text: String,
+    output_index: Option<usize>,
+    content_index: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -3281,7 +3293,7 @@ impl StreamAccumulator {
         item: &Value,
         authoritative: bool,
         stream: &ModelStreamSender,
-    ) {
+    ) -> Result<(), ProviderError> {
         match item.get("type").and_then(Value::as_str) {
             Some("reasoning") => {
                 self.responses_reasoning_items.insert(index, item.clone());
@@ -3292,6 +3304,13 @@ impl StreamAccumulator {
                 // response.completed. Retain the authoritative item so finish
                 // can recover that text without duplicating streamed deltas.
                 self.responses_message_items.insert(index, item.clone());
+                if authoritative {
+                    let parts = Self::openai_responses_message_text(index, item);
+                    self.validate_openai_responses_text_snapshot(&parts, Some(index))?;
+                    for (part, text) in parts {
+                        self.remember_openai_responses_text(part, &text)?;
+                    }
+                }
             }
             Some("function_call") => {
                 self.tool(
@@ -3318,6 +3337,193 @@ impl StreamAccumulator {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn openai_responses_message_text(
+        index: usize,
+        item: &Value,
+    ) -> BTreeMap<(usize, usize), String> {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            return BTreeMap::new();
+        }
+        item.get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(content_index, block)| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| ((index, content_index), text.to_string()))
+            })
+            .collect()
+    }
+
+    fn validate_openai_responses_text_snapshot(
+        &self,
+        parts: &BTreeMap<(usize, usize), String>,
+        output_index: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        let included = |part: &(usize, usize)| output_index.is_none_or(|index| part.0 == index);
+        if self.responses_text_final.iter().any(|(part, previous)| {
+            included(part) && parts.get(part).is_none_or(|text| text != previous)
+        }) {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text terminals disagree or omit an already completed output/content part",
+            ));
+        }
+        if self.responses_text_deltas.iter().any(|(part, prefix)| {
+            included(part) && parts.get(part).is_none_or(|text| !text.starts_with(prefix))
+        }) {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text rewrites, truncates or omits an already streamed output/content part",
+            ));
+        }
+        if output_index.is_none()
+            && !parts
+                .values()
+                .map(String::as_str)
+                .collect::<String>()
+                .starts_with(&self.content)
+        {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text rewrites or truncates the already streamed response",
+            ));
+        }
+        Ok(())
+    }
+
+    fn remember_unindexed_openai_responses_text(
+        &mut self,
+        text: &str,
+        output_index: Option<usize>,
+        content_index: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        if let Some(previous) = &mut self.responses_unindexed_text_final {
+            if previous.text != text
+                || previous
+                    .output_index
+                    .zip(output_index)
+                    .is_some_and(|(a, b)| a != b)
+                || previous
+                    .content_index
+                    .zip(content_index)
+                    .is_some_and(|(a, b)| a != b)
+            {
+                return Err(provider_protocol_failure(
+                    ModelProtocol::OpenaiResponses,
+                    "unindexed authoritative text terminals disagree in text or index constraints",
+                ));
+            }
+            // Repeated terminals can add evidence, never erase a supplied
+            // half index when a later compatibility frame omits that field.
+            previous.output_index = previous.output_index.or(output_index);
+            previous.content_index = previous.content_index.or(content_index);
+        } else {
+            self.responses_unindexed_text_final = Some(PartiallyIndexedResponsesText {
+                text: text.to_string(),
+                output_index,
+                content_index,
+            });
+        }
+        Ok(())
+    }
+
+    fn resolve_unindexed_openai_responses_text(&mut self) -> Result<(), ProviderError> {
+        let Some(candidate) = self.responses_unindexed_text_final.take() else {
+            return Ok(());
+        };
+        let known_parts = self
+            .responses_text_deltas
+            .keys()
+            .chain(self.responses_text_final.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let parts = known_parts
+            .iter()
+            .filter(|part| {
+                candidate.output_index.is_none_or(|index| index == part.0)
+                    && candidate.content_index.is_none_or(|index| index == part.1)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if !known_parts.is_empty() && parts.is_empty() {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text index constraints contradict all known output/content parts",
+            ));
+        }
+        if parts.len() != 1 {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "unindexed authoritative text has no unique known output/content part; cannot infer identity",
+            ));
+        }
+        self.remember_openai_responses_text(parts[0], &candidate.text)
+    }
+
+    fn remember_openai_responses_text(
+        &mut self,
+        part: (usize, usize),
+        text: &str,
+    ) -> Result<(), ProviderError> {
+        if self
+            .responses_text_final
+            .get(&part)
+            .is_some_and(|previous| previous != text)
+        {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text terminals disagree for one output/content part",
+            ));
+        }
+        if self
+            .responses_text_deltas
+            .get(&part)
+            .is_some_and(|prefix| !text.starts_with(prefix))
+        {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text rewrites or truncates an already streamed output/content part",
+            ));
+        }
+        self.responses_text_final.insert(part, text.to_string());
+        Ok(())
+    }
+
+    /// Complete only with bytes explicitly supplied by an authoritative
+    /// Provider terminal. Never infer missing punctuation or replace a
+    /// conflicting prefix after it has already been published to the caller.
+    fn reconcile_openai_responses_text(
+        &mut self,
+        stream: &ModelStreamSender,
+    ) -> Result<(), ProviderError> {
+        if self.responses_text_final.is_empty() {
+            return Ok(());
+        }
+        let mut parts = if self.responses_unindexed_text {
+            // Compatibility endpoints can omit delta indices. Their global
+            // prefix still must match the terminal's actual ordered text.
+            BTreeMap::new()
+        } else {
+            self.responses_text_deltas.clone()
+        };
+        parts.extend(self.responses_text_final.clone());
+        let complete = parts.into_values().collect::<String>();
+        let Some(suffix) = complete.strip_prefix(&self.content) else {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                "authoritative text rewrites or truncates the already streamed response",
+            ));
+        };
+        let suffix = suffix.to_string();
+        self.text(&suffix, stream);
+        Ok(())
     }
 
     fn backfill_openai_responses_message_text(&mut self, stream: &ModelStreamSender) {
@@ -3445,7 +3651,7 @@ impl StreamAccumulator {
             .flatten()
             .enumerate()
         {
-            self.apply_openai_responses_output_item(index, item, false, stream);
+            self.apply_openai_responses_output_item(index, item, false, stream)?;
         }
         self.backfill_openai_responses_message_text(stream);
         if let Some(usage) = response.get("usage") {
@@ -3587,7 +3793,52 @@ impl StreamAccumulator {
         match kind {
             "response.output_text.delta" => {
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    if let (Some(output_index), Some(content_index)) = (
+                        event.get("output_index").and_then(Value::as_u64),
+                        event.get("content_index").and_then(Value::as_u64),
+                    ) {
+                        let part = (output_index as usize, content_index as usize);
+                        let prefix = self.responses_text_deltas.entry(part).or_default();
+                        prefix.push_str(delta);
+                        if self
+                            .responses_text_final
+                            .get(&part)
+                            .is_some_and(|text| !text.starts_with(prefix.as_str()))
+                        {
+                            return Err(provider_protocol_failure(
+                                ModelProtocol::OpenaiResponses,
+                                "text delta conflicts with its authoritative output/content part",
+                            ));
+                        }
+                    } else {
+                        self.responses_unindexed_text = true;
+                    }
                     self.text(delta, stream);
+                }
+            }
+            "response.output_text.done" => {
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    if let (Some(output_index), Some(content_index)) = (
+                        event.get("output_index").and_then(Value::as_u64),
+                        event.get("content_index").and_then(Value::as_u64),
+                    ) {
+                        self.remember_openai_responses_text(
+                            (output_index as usize, content_index as usize),
+                            text,
+                        )?;
+                    } else {
+                        self.remember_unindexed_openai_responses_text(
+                            text,
+                            event
+                                .get("output_index")
+                                .and_then(Value::as_u64)
+                                .map(|index| index as usize),
+                            event
+                                .get("content_index")
+                                .and_then(Value::as_u64)
+                                .map(|index| index as usize),
+                        )?;
+                    }
                 }
             }
             "response.reasoning_summary_text.delta" => {
@@ -3604,7 +3855,7 @@ impl StreamAccumulator {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                self.apply_openai_responses_output_item(index, item, false, stream);
+                self.apply_openai_responses_output_item(index, item, false, stream)?;
             }
             "response.function_call_arguments.delta" => {
                 let index = event
@@ -3633,6 +3884,35 @@ impl StreamAccumulator {
             }
             "response.output_item.done" => {
                 let item = event.get("item").unwrap_or(&Value::Null);
+                if item.get("type").and_then(Value::as_str) == Some("message")
+                    && event.get("output_index").and_then(Value::as_u64).is_none()
+                {
+                    let parts = item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .filter_map(|(index, block)| {
+                            block
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .map(|text| (index, text))
+                        })
+                        .collect::<Vec<_>>();
+                    if parts.len() != 1 {
+                        return Err(provider_protocol_failure(
+                            ModelProtocol::OpenaiResponses,
+                            "unindexed message terminal has no unique text part; cannot infer identity",
+                        ));
+                    }
+                    self.remember_unindexed_openai_responses_text(
+                        parts[0].1,
+                        None,
+                        Some(parts[0].0),
+                    )?;
+                    return Ok(());
+                }
                 let index = event
                     .get("output_index")
                     .and_then(Value::as_u64)
@@ -3640,7 +3920,7 @@ impl StreamAccumulator {
                 // The done item is authoritative and can add complete text,
                 // tool arguments, or opaque reasoning fields absent from the
                 // corresponding added event.
-                self.apply_openai_responses_output_item(index, item, true, stream);
+                self.apply_openai_responses_output_item(index, item, true, stream)?;
             }
             "response.completed" => {
                 let response = event.get("response").unwrap_or(&Value::Null);
@@ -3683,6 +3963,14 @@ impl StreamAccumulator {
                 }
                 self.responses_completed = true;
                 self.terminal = true;
+                if let Some(output) = event.pointer("/response/output").and_then(Value::as_array) {
+                    let parts = output
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, item)| Self::openai_responses_message_text(index, item))
+                        .collect::<BTreeMap<_, _>>();
+                    self.validate_openai_responses_text_snapshot(&parts, None)?;
+                }
                 for (index, item) in event
                     .pointer("/response/output")
                     .and_then(Value::as_array)
@@ -3690,9 +3978,10 @@ impl StreamAccumulator {
                     .flatten()
                     .enumerate()
                 {
-                    self.apply_openai_responses_output_item(index, item, true, stream);
+                    self.apply_openai_responses_output_item(index, item, true, stream)?;
                 }
-                self.backfill_openai_responses_message_text(stream);
+                self.resolve_unindexed_openai_responses_text()?;
+                self.reconcile_openai_responses_text(stream)?;
                 if let Some(usage) = event.pointer("/response/usage") {
                     self.responses_completed_output_tokens =
                         usage.get("output_tokens").and_then(Value::as_u64);
@@ -8301,6 +8590,510 @@ mod tests {
             gemini.pointer("/contents/0/parts/0/text"),
             Some(&json!("alpha beta"))
         );
+    }
+
+    #[test]
+    fn responses_authoritative_text_reconciles_partial_deltas_without_duplicates() {
+        let complete = "\"准备完成。\"";
+        let prefix = "\"准备完成。";
+        for terminal_source in ["output_item.done", "completed", "output_text.done"] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":prefix}),
+                    &stream,
+                )
+                .unwrap();
+            let message = json!({"type":"message", "status":"completed", "content":[{"type":"output_text", "text":complete}]});
+            if terminal_source == "output_item.done" {
+                accumulator
+                    .apply_openai_responses(
+                        json!({"type":"response.output_item.done", "output_index":0, "item":message}),
+                        &stream,
+                    )
+                    .unwrap();
+            } else if terminal_source == "output_text.done" {
+                accumulator
+                    .apply_openai_responses(
+                        json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "text":complete}),
+                        &stream,
+                    )
+                    .unwrap();
+            }
+            accumulator
+                .apply_openai_responses(
+                    if terminal_source == "completed" {
+                        json!({"type":"response.completed", "response":{"status":"completed", "output":[message]}})
+                    } else {
+                        json!({"type":"response.completed", "response":{"status":"completed"}})
+                    },
+                    &stream,
+                )
+                .unwrap();
+            let response = accumulator.finish(&stream).unwrap();
+            assert_eq!(response.content, complete, "source={terminal_source}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&response.content).unwrap(),
+                json!("准备完成。")
+            );
+            let visible = std::iter::from_fn(|| receiver.try_recv().ok())
+                .filter_map(|event| match event {
+                    ModelStreamEvent::TextDelta { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<String>();
+            assert_eq!(
+                visible, complete,
+                "stream must append only the provider-authored suffix"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_preserves_indices_duplicates_and_tool_lifecycle() {
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        for event in [
+            json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"第一条。"}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":{"type":"message", "content":[{"type":"output_text", "text":"第一条。"}]}}),
+            json!({"type":"response.output_item.added", "output_index":1, "item":{"type":"function_call", "call_id":"c1", "name":"read"}}),
+            json!({"type":"response.function_call_arguments.delta", "output_index":1, "delta":"{\"path\":"}),
+            json!({"type":"response.function_call_arguments.delta", "output_index":1, "delta":"\"README.md\"}"}),
+            json!({"type":"response.function_call_arguments.done", "output_index":1, "arguments":"{\"path\":\"README.md\"}"}),
+            json!({"type":"response.output_text.delta", "output_index":2, "content_index":0, "delta":"第二条。"}),
+            json!({"type":"response.output_text.delta", "output_index":2, "content_index":1, "delta":"世"}),
+        ] {
+            accumulator.apply_openai_responses(event, &stream).unwrap();
+        }
+        for event in [
+            json!({"type":"response.output_text.done", "output_index":2, "content_index":1, "text":"世界。"}),
+            json!({"type":"response.output_text.done", "output_index":2, "content_index":1, "text":"世界。"}),
+            json!({"type":"response.output_item.done", "output_index":2, "item":{"type":"message", "content":[{"type":"output_text", "text":"第二条。"},{"type":"output_text", "text":"世界。"}]}}),
+            json!({"type":"response.completed", "response":{"status":"completed", "output":[
+                {"type":"message", "content":[{"type":"output_text", "text":"第一条。"}]},
+                {"type":"function_call", "call_id":"c1", "name":"read", "arguments":"{\"path\":\"README.md\"}"},
+                {"type":"message", "content":[{"type":"output_text", "text":"第二条。"},{"type":"output_text", "text":"世界。"}]}
+            ]}}),
+        ] {
+            accumulator.apply_openai_responses(event, &stream).unwrap();
+        }
+        let response = accumulator.finish(&stream).unwrap();
+        assert_eq!(response.content, "第一条。第二条。世界。");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].arguments, "{\"path\":\"README.md\"}");
+        let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let visible = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, response.content);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelStreamEvent::ToolCallStarted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelStreamEvent::ToolCallCompleted { .. }))
+                .count(),
+            1
+        );
+        let arguments = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::ToolArgumentsDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(arguments, response.tool_calls[0].arguments);
+    }
+
+    #[test]
+    fn responses_authoritative_text_preserves_unindexed_compatibility_and_equal_text() {
+        for prefix in ["\"准备完成。", "\"准备完成。\""] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.output_text.delta", "delta":prefix}),
+                    &stream,
+                )
+                .unwrap();
+            let completed = json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":"\"准备完成。\""}]}]}});
+            accumulator
+                .apply_openai_responses(completed.clone(), &stream)
+                .unwrap();
+            accumulator
+                .apply_openai_responses(completed, &stream)
+                .unwrap();
+            let response = accumulator.finish(&stream).unwrap();
+            let deltas = std::iter::from_fn(|| receiver.try_recv().ok())
+                .filter_map(|event| match event {
+                    ModelStreamEvent::TextDelta { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(deltas.concat(), "\"准备完成。\"");
+            assert_eq!(response.content, deltas.concat());
+            assert_eq!(deltas.len(), if prefix.ends_with('"') { 1 } else { 2 });
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_never_guesses_zero_for_unindexed_done() {
+        let complete = "\"准备完成。\"";
+        let prefix = "\"准备完成。";
+        for terminal_source in ["text", "item"] {
+            for complete_snapshot in [false, true] {
+                let mut accumulator = StreamAccumulator::default();
+                let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+                accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":2, "content_index":0, "delta":prefix}), &stream).unwrap();
+                let message =
+                    json!({"type":"message", "content":[{"type":"output_text", "text":complete}]});
+                accumulator
+                    .apply_openai_responses(
+                        if terminal_source == "text" {
+                            json!({"type":"response.output_text.done", "text":complete})
+                        } else {
+                            json!({"type":"response.output_item.done", "item":message})
+                        },
+                        &stream,
+                    )
+                    .unwrap();
+                accumulator.apply_openai_responses(if complete_snapshot {
+                    json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"reasoning"},{"type":"reasoning"},message]}})
+                } else {
+                    json!({"type":"response.completed", "response":{"status":"completed"}})
+                }, &stream).unwrap();
+                let response = accumulator.finish(&stream).unwrap();
+                assert_eq!(response.content, complete);
+                assert_eq!(
+                    std::iter::from_fn(|| receiver.try_recv().ok())
+                        .filter_map(|event| match event {
+                            ModelStreamEvent::TextDelta { text } => Some(text),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                    complete
+                );
+            }
+        }
+
+        // Even the delta can omit its index: a real later done item fixes the
+        // unique identity to message 1, not to the preceding reasoning item 0.
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        accumulator
+            .apply_openai_responses(
+                json!({"type":"response.output_text.delta", "delta":prefix}),
+                &stream,
+            )
+            .unwrap();
+        accumulator
+            .apply_openai_responses(
+                json!({"type":"response.output_text.done", "text":complete}),
+                &stream,
+            )
+            .unwrap();
+        let message =
+            json!({"type":"message", "content":[{"type":"output_text", "text":complete}]});
+        accumulator
+            .apply_openai_responses(
+                json!({"type":"response.output_item.done", "output_index":1, "item":message}),
+                &stream,
+            )
+            .unwrap();
+        accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"reasoning"},message]}}), &stream).unwrap();
+        assert_eq!(accumulator.finish(&stream).unwrap().content, complete);
+    }
+
+    #[test]
+    fn responses_authoritative_text_preserves_half_index_constraints() {
+        for (constraint, compatible) in [
+            (json!({"output_index":2}), true),
+            (json!({"output_index":1}), false),
+            (json!({"content_index":1}), true),
+            (json!({"content_index":0}), false),
+        ] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":2, "content_index":1, "delta":"abc"}), &stream).unwrap();
+            let mut done = constraint;
+            done["type"] = json!("response.output_text.done");
+            done["text"] = json!("abcd");
+            accumulator.apply_openai_responses(done, &stream).unwrap();
+            let terminal = accumulator.apply_openai_responses(
+                json!({"type":"response.completed", "response":{"status":"completed"}}),
+                &stream,
+            );
+            if compatible {
+                terminal.unwrap();
+                assert_eq!(accumulator.finish(&stream).unwrap().content, "abcd");
+                assert_eq!(
+                    std::iter::from_fn(|| receiver.try_recv().ok())
+                        .filter_map(|event| match event {
+                            ModelStreamEvent::TextDelta { text } => Some(text),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                    "abcd"
+                );
+            } else {
+                assert!(
+                    terminal.is_err(),
+                    "a provided half index cannot be discarded"
+                );
+                assert_eq!(accumulator.content, "abc");
+            }
+        }
+        // A provided coordinate can disambiguate several real known parts;
+        // completely unindexed terminals still cannot choose among them.
+        for (second_part, constraint) in [
+            ((3, 0), json!({"output_index":2})),
+            ((2, 1), json!({"content_index":0})),
+        ] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":2, "content_index":0, "delta":"first"}), &stream).unwrap();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":second_part.0, "content_index":second_part.1, "delta":"second"}), &stream).unwrap();
+            let mut done = constraint;
+            done["type"] = json!("response.output_text.done");
+            done["text"] = json!("first");
+            accumulator.apply_openai_responses(done, &stream).unwrap();
+            accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.completed", "response":{"status":"completed"}}),
+                    &stream,
+                )
+                .unwrap();
+            assert_eq!(accumulator.finish(&stream).unwrap().content, "firstsecond");
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_preserves_unindexed_item_content_offset() {
+        for (content_index, compatible) in [(0, false), (1, true)] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":2, "content_index":content_index, "delta":"abc"}), &stream).unwrap();
+            accumulator.apply_openai_responses(json!({"type":"response.output_item.done", "item":{"type":"message", "content":[{"type":"non_text"},{"type":"output_text", "text":"abcd"}]}}), &stream).unwrap();
+            let terminal = accumulator.apply_openai_responses(
+                json!({"type":"response.completed", "response":{"status":"completed"}}),
+                &stream,
+            );
+            if compatible {
+                terminal.unwrap();
+                assert_eq!(accumulator.finish(&stream).unwrap().content, "abcd");
+            } else {
+                assert!(
+                    terminal.is_err(),
+                    "filtered text retains its real content array index"
+                );
+                assert_eq!(accumulator.content, "abc");
+            }
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_duplicate_done_never_discards_known_indices() {
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":2, "content_index":0, "delta":"abc"}), &stream).unwrap();
+        accumulator
+            .apply_openai_responses(
+                json!({"type":"response.output_text.done", "output_index":1, "text":"abcd"}),
+                &stream,
+            )
+            .unwrap();
+        accumulator
+            .apply_openai_responses(
+                json!({"type":"response.output_text.done", "text":"abcd"}),
+                &stream,
+            )
+            .unwrap();
+        assert!(accumulator
+            .apply_openai_responses(
+                json!({"type":"response.completed", "response":{"status":"completed"}}),
+                &stream
+            )
+            .is_err());
+        assert_eq!(accumulator.content, "abc");
+        for (first, conflicting) in [
+            (json!({"output_index":2}), json!({"output_index":1})),
+            (json!({"content_index":1}), json!({"content_index":0})),
+        ] {
+            let mut accumulator = StreamAccumulator::default();
+            let done = |mut constraint: Value| {
+                constraint["type"] = json!("response.output_text.done");
+                constraint["text"] = json!("same");
+                constraint
+            };
+            accumulator
+                .apply_openai_responses(done(first), &stream)
+                .unwrap();
+            assert!(accumulator
+                .apply_openai_responses(done(conflicting), &stream)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_rejects_ambiguous_unindexed_done() {
+        for indices in [vec![], vec![1, 2]] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            for index in indices {
+                accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":index, "content_index":0, "delta":"same"}), &stream).unwrap();
+            }
+            accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.output_text.done", "text":"same"}),
+                    &stream,
+                )
+                .unwrap();
+            let error = accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.completed", "response":{"status":"completed"}}),
+                    &stream,
+                )
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("no unique known output/content part"));
+        }
+    }
+
+    #[test]
+    fn responses_authoritative_text_rejects_rewrites_truncation_and_conflicting_terminals() {
+        for (prefix, final_text) in [("abc", "abd"), ("abcd", "abc")] {
+            let mut accumulator = StreamAccumulator::default();
+            let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":prefix}), &stream).unwrap();
+            let error = accumulator.apply_openai_responses(json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "text":final_text}), &stream).unwrap_err();
+            assert!(error.to_string().contains("rewrites or truncates"));
+            assert_eq!(accumulator.content, prefix);
+        }
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        accumulator.apply_openai_responses(json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "text":"first"}), &stream).unwrap();
+        let error = accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":"different"}]}]}}), &stream).unwrap_err();
+        assert!(error.to_string().contains("terminals disagree"));
+
+        for output in [json!([]), json!([{"type":"message", "content":[]}])] {
+            let mut accumulator = StreamAccumulator::default();
+            accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"first"}), &stream).unwrap();
+            let error = accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":output}}), &stream).unwrap_err();
+            assert!(error.to_string().contains("omits an already streamed"));
+            assert_eq!(accumulator.content, "first");
+        }
+
+        // A prefix in the middle of an earlier message cannot be completed
+        // after a later message has already been published. Never insert or
+        // reorder visible bytes to make it look like a valid stream.
+        let mut accumulator = StreamAccumulator::default();
+        accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"first"}), &stream).unwrap();
+        accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":1, "content_index":0, "delta":"second"}), &stream).unwrap();
+        let error = accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":"first!"}]},{"type":"message", "content":[{"type":"output_text", "text":"second"}]}]}}), &stream).unwrap_err();
+        assert!(error.to_string().contains("already streamed response"));
+        assert_eq!(accumulator.content, "firstsecond");
+    }
+
+    #[test]
+    fn responses_authoritative_text_does_not_repair_malformed_json_or_terminal_failures() {
+        let malformed = "\"准备完成。";
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        accumulator.apply_openai_responses(json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":malformed}), &stream).unwrap();
+        accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":malformed}]}]}}), &stream).unwrap();
+        let response = accumulator.finish(&stream).unwrap();
+        assert_eq!(response.content, malformed);
+        let result = crate::sexpr_eval::decode_infer_result(
+            crate::sexpr_eval::InferResultKind::Json {
+                ty: crate::yao::Type::String,
+                definitions: BTreeMap::new(),
+                span: crate::yao::SourceSpan::empty(crate::yao::SourceLocation::start()),
+            },
+            json!(response.content),
+        );
+        assert!(result.unwrap_err().contains("EOF while parsing a string"));
+
+        let mut accumulator = StreamAccumulator::default();
+        let refusal = accumulator.apply_openai_responses(json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"refusal", "refusal":"Cannot comply"}]}]}}), &stream).unwrap_err();
+        assert!(refusal
+            .downcast_ref::<ModelFailure>()
+            .is_some_and(|failure| failure.kind == ModelFailureKind::SafetyRefusal));
+
+        let mut accumulator = StreamAccumulator::default();
+        accumulator.apply_openai_responses(json!({"type":"response.incomplete", "response":{"status":"incomplete", "incomplete_details":{"reason":"max_output_tokens"}, "output":[{"type":"message", "content":[{"type":"output_text", "text":malformed}]}]}}), &stream).unwrap();
+        assert_eq!(accumulator.content, malformed);
+        assert!(accumulator.finish(&stream).is_err());
+    }
+
+    #[tokio::test]
+    async fn responses_authoritative_text_replays_real_protocol_sse_without_paid_model() {
+        let app = Router::new().route("/responses", post(|| async {
+            let frames = [
+                json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "delta":"\"准备完成。"}),
+                json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "text":"\"准备完成。\""}),
+                json!({"type":"response.output_item.done", "output_index":0, "item":{"type":"message", "content":[{"type":"output_text", "text":"\"准备完成。\""}]}}),
+                json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":"\"准备完成。\""}]}], "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}),
+            ];
+            AxumResponse::builder().header("content-type", "text/event-stream").body(Body::from(frames.iter().map(|frame| format!("data: {frame}\n\n")).collect::<String>())).unwrap()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "isolated-replay".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let response = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "synthetic replay".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                stream,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.content, "\"准备完成。\"");
+        let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(events.first(), Some(&ModelStreamEvent::Started));
+        assert_eq!(events.last(), Some(&ModelStreamEvent::Completed));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelStreamEvent::TextDelta { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            response.content
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::Usage { .. })));
     }
 
     #[test]
