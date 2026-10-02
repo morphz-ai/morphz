@@ -43,11 +43,29 @@ async function agentEditor(page: Page) {
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
   await expect(
-    editor.getByRole("checkbox", { name: "设置智能体名字", exact: true }),
+    editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
   ).toBeEnabled();
   return editor;
 }
+async function editText(editor: Locator, action: string, label: string) {
+  const input = editor.locator(`input[aria-label="${label}"]`);
+  if (!(await input.isVisible()))
+    await editor.getByRole("button", { name: action, exact: true }).click();
+  await expect(input).toBeVisible();
+  await expect(input).toBeEnabled();
+  return input;
+}
+async function preferences(editor: Locator) {
+  const summary = editor.locator("summary").filter({ hasText: "个性与表达" });
+  if (
+    !(await summary.evaluate(
+      (element) => (element.parentElement as HTMLDetailsElement).open,
+    ))
+  )
+    await summary.click();
+}
 async function level(editor: Locator, label: string, value: number) {
+  await preferences(editor);
   await editor
     .getByRole("checkbox", { name: `设置${label}`, exact: true })
     .check();
@@ -74,9 +92,14 @@ async function settled(editor: Locator, expectedEnabled = true) {
       element.querySelector<HTMLInputElement | HTMLTextAreaElement>(
         `[aria-label="${name}"]`,
       )?.value ?? "";
+    const configuredText = (name: string) =>
+      element.querySelector<HTMLInputElement>(`input[aria-label="${name}"]`)
+        ?.dataset.configured === "true"
+        ? text(name)
+        : null;
     return element.getAttribute("aria-label") === "智能体资料"
       ? {
-          name: checked("设置智能体名字") ? text("智能体的名字") : null,
+          name: configuredText("智能体的名字"),
           traits: Object.fromEntries(
             [
               ["humor", "幽默"],
@@ -94,10 +117,8 @@ async function settled(editor: Locator, expectedEnabled = true) {
             : null,
         }
       : {
-          name: checked("设置你的名字") ? text("你的名字") : null,
-          preferredAddress: checked("设置称呼")
-            ? text("Agent 对你的称呼")
-            : null,
+          name: configuredText("你的名字"),
+          preferredAddress: configuredText("Agent 对你的称呼"),
         };
   });
   const data =
@@ -191,8 +212,21 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
   await expect(editor.getByRole("slider")).toHaveCount(0);
   for (const label of ["幽默", "严谨", "亲和", "详略"])
     await expect(
-      editor.getByRole("checkbox", { name: `设置${label}`, exact: true }),
+      editor.getByRole("checkbox", {
+        name: `设置${label}`,
+        exact: true,
+        includeHidden: true,
+      }),
     ).not.toBeChecked();
+  await expect(
+    editor.locator('input[aria-label="智能体的名字"]'),
+  ).toHaveAttribute("data-configured", "false");
+  await expect(
+    editor.locator("summary").filter({ hasText: "个性与表达" }),
+  ).toBeVisible();
+  await expect(
+    editor.locator("details.personality-preferences"),
+  ).not.toHaveAttribute("open");
   expect((await fixture.read()).agent.data).toEqual(defaultAgentProfile);
   expect(fixture.sql("SELECT entry_id FROM agent_rom_heads")).toHaveLength(0);
   expect(fixture.sql("SELECT id FROM sessions")).toHaveLength(0);
@@ -338,13 +372,13 @@ test("真实个人资料UI只保存选中称呼，ROM精确私有Principal；关
   const editor = page
     .getByRole("dialog", { name: "设置", exact: true })
     .getByRole("region", { name: "个人资料", exact: true });
-  await expect(
-    editor.getByRole("checkbox", { name: "设置你的名字", exact: true }),
-  ).not.toBeChecked();
-  await editor.getByRole("checkbox", { name: "设置称呼", exact: true }).check();
-  await editor
-    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-    .fill("测试同学");
+  await expect(editor.locator('input[aria-label="你的名字"]')).toHaveAttribute(
+    "data-configured",
+    "false",
+  );
+  const address = await editText(editor, "编辑称呼", "Agent 对你的称呼");
+  expect((await fixture.read()).human.revision).toBe(0);
+  await address.fill("测试同学");
   await settled(editor);
   const saved = await fixture.read();
   await editor.screenshot({
@@ -430,13 +464,7 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
     }
     return route.continue();
   });
-  await editor
-    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-    .check();
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "编辑智能体名字", "智能体的名字");
   await name.fill("ReceiptName");
   await name.press("Enter");
   await expect(
@@ -500,6 +528,7 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   });
   await enter(page);
   const agent = await agentEditor(page);
+  await preferences(agent);
   await agent.locator(".personality-custom summary").click();
   await agent
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
@@ -537,18 +566,13 @@ test("实际UI空自定义风格和空称呼成功归一为null，不误报提�
   const human = page
     .getByRole("dialog", { name: "设置", exact: true })
     .getByRole("region", { name: "个人资料", exact: true });
-  await human.getByRole("checkbox", { name: "设置称呼", exact: true }).check();
-  await expect(
-    human.getByRole("textbox", { name: "Agent 对你的称呼", exact: true }),
-  ).toHaveValue("");
+  const address = await editText(human, "编辑称呼", "Agent 对你的称呼");
+  await expect(address).toHaveValue("");
   expect((await fixture.read()).human.revision).toBe(0);
-  await human
-    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-    .fill("TEST 待清空称呼");
+  await address.fill("TEST 待清空称呼");
   await settled(human);
-  await human
-    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-    .fill("");
+  await editText(human, "编辑称呼", "Agent 对你的称呼");
+  await address.fill("");
   await settled(human, false);
   expect((await fixture.read()).human).toMatchObject({
     enabled: false,
@@ -610,13 +634,7 @@ test("同一Session即时Echo与旧Thread固定版本；不使用人格时新增
     return route.continue();
   });
   const input = await openInput(page);
-  await editor
-    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-    .check();
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "编辑智能体名字", "智能体的名字");
   await name.fill("Echo");
   const configuredStart = fixture.requests.length;
   fixture.hold("PROFILE_IMMEDIATE_ECHO");
@@ -656,6 +674,7 @@ test("同一Session即时Echo与旧Thread固定版本；不使用人格时新增
   expect(echoBindings).toHaveLength(1);
   expect(echoBindings[0]!.revision).toBe(savedEcho.revision);
 
+  await editText(editor, "编辑智能体名字", "智能体的名字");
   await name.fill("Nova");
   await name.press("Enter");
   const savedNova = await settled(editor);

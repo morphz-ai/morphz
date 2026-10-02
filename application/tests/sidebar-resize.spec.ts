@@ -309,12 +309,15 @@ test("分隔条可键盘调整，图标导航仍可辨认并打开项目、搜�
   const search = await railMenu(page);
   await expect(search.menu).toHaveAttribute("aria-label", "用户菜单");
   await expect(search.menu.getByRole("button")).toHaveCount(
-    4 +
+    5 +
       Number(
         (await conversationClient(page)).boot!.capabilities.teamAuthentication,
       ),
   );
   await expect(search.menu.getByRole("button").first()).toHaveAccessibleName(
+    "个人资料",
+  );
+  await expect(search.menu.getByRole("button").nth(1)).toHaveAccessibleName(
     "搜索资料",
   );
   await search.menu

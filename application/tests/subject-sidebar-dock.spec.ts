@@ -3,6 +3,7 @@ import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { mockPlatformConversation } from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
+import { openSettings } from "./settings-helpers.js";
 
 // Navigation refreshes can outlive the last assertion. Drain mocked responses
 // before Playwright disposes their APIRequestContext; do not swallow failures.
@@ -19,6 +20,19 @@ async function openSubject(page: Page) {
     await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
   await expect(panel).toBeVisible();
   return panel;
+}
+
+async function finishColorTransitions(page: Page) {
+  await page.evaluate(async () => {
+    // Theme and selected-state colors have real finite CSS transitions. Do
+    // not compare one tab's intermediate frame with another's final color.
+    await Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation instanceof CSSTransition)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    );
+  });
 }
 
 async function expectLauncherCentered(panel: Locator, scale = 1) {
@@ -168,6 +182,69 @@ test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项�
     "d",
     "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z",
   );
+  const brandColors = new Set<string>();
+  const readColors = () =>
+    tabs.evaluate((element) => {
+      const settings = element.querySelector('[data-view="settings"]')!;
+      const glyph = settings.querySelector("svg.brand-mark")!;
+      const activity = element.querySelector('[data-view="activity"]')!;
+      const authorization = element.querySelector('[data-view="permissions"]')!;
+      const left = document.querySelector(
+        ".sidebar .agent-presence .brand-mark",
+      )!;
+      return {
+        selected: settings.getAttribute("aria-selected"),
+        own: getComputedStyle(settings).color,
+        glyph: getComputedStyle(glyph).color,
+        fill: getComputedStyle(glyph.querySelector(":scope > path")!).fill,
+        activity: getComputedStyle(activity).color,
+        inactive: getComputedStyle(authorization).color,
+        panel: getComputedStyle(element.closest(".subject-sidebar")!).color,
+        brand: getComputedStyle(left).color,
+        brandFill: getComputedStyle(left.querySelector(":scope > path")!).fill,
+      };
+    });
+  for (const appearance of ["亮色", "暗色"]) {
+    for (const color of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
+      await openSettings(page, "外观");
+      await page.getByRole("button", { name: appearance, exact: true }).click();
+      await page.getByRole("button", { name: color, exact: true }).click();
+      await page.keyboard.press("Escape");
+      const activity = tabs.getByRole("tab", { name: "活动", exact: true });
+      await activity.click();
+      await page.mouse.move(1, 1);
+      await finishColorTransitions(page);
+      // Sample SVG, its tab and all peers in the same browser frame.
+      const inactive = await readColors();
+      expect(inactive.selected).toBe("false");
+      expect(inactive.own).toBe(inactive.inactive);
+      expect(inactive.glyph).toBe(inactive.own);
+      expect(inactive.fill).toBe(inactive.own);
+      expect(inactive.activity).toBe(inactive.panel);
+      expect(inactive.panel).not.toBe(inactive.inactive);
+      await settings.click();
+      await page.mouse.move(1, 1);
+      await finishColorTransitions(page);
+      const selected = await readColors();
+      expect(selected.selected).toBe("true");
+      expect(selected.own).toBe(selected.panel);
+      expect(selected.glyph).toBe(selected.own);
+      expect(selected.fill).toBe(selected.own);
+      expect(selected.activity).toBe(selected.inactive);
+      expect(selected.brandFill).toBe(selected.brand);
+      expect(selected.brand).not.toBe(selected.own);
+      expect(selected.brand).not.toBe(selected.inactive);
+      brandColors.add(selected.brand);
+      await testInfo.attach(`tab-colors-${appearance}-${color}`, {
+        body: JSON.stringify({ inactive, selected }),
+        contentType: "application/json",
+      });
+      await expect(await openInput(page)).toHaveValue(draft);
+    }
+  }
+  // Real appearance controls preserve all four brand hues. Only the tab's
+  // idle/selected glyph inherits its peer text color, not the left Logo.
+  expect(brandColors.size).toBe(8);
   for (const name of ["设定", "活动", "授权", "定时任务", "设定"]) {
     await tabs.getByRole("tab", { name, exact: true }).click();
     await expect(tabs.getByRole("tab", { name, exact: true })).toHaveAttribute(
@@ -180,10 +257,14 @@ test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项�
   await expect(
     panel.getByRole("button", { name: /已发布的项目摘要|当前理解|项目摘要/ }),
   ).toHaveCount(0);
+  const capabilities = panel.locator("details.subject-settings-system");
+  await expect(capabilities).not.toHaveAttribute("open", "");
+  await capabilities.locator(":scope > summary").click();
+  await expect(capabilities).toHaveAttribute("open", "");
   await expect(panel.locator(".subject-settings dl")).toContainText(model);
   await panel.getByText("已安装执行方式", { exact: true }).click();
   const harnesses = panel
-    .locator(".subject-settings details")
+    .locator(".subject-settings-group details")
     .filter({ hasText: "已安装执行方式" });
   await expect(harnesses).toContainText("TEST-profile-harness");
   await expect(harnesses.locator("small")).toHaveText("1");
@@ -287,6 +368,8 @@ test("主体栏默认活动，四个图标分类支持键盘并记住选择，�
     tabs.getByRole("tab", { name: "设定", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   const preferenceKey = `morphz:${fixture.client.boot.centerId}:${fixture.client.boot.principalId}:preferences`;
+  const rememberedDraft = "TEST 刷新侧栏状态时保留的未发送草稿";
+  await (await openInput(page)).fill(rememberedDraft);
   await page.evaluate((key) => {
     const saved = JSON.parse(localStorage.getItem(key) ?? "{}");
     localStorage.setItem(
@@ -301,14 +384,14 @@ test("主体栏默认活动，四个图标分类支持键盘并记住选择，�
     );
   }, preferenceKey);
   await page.reload();
-  // A retired sidebar pin must not reopen an activity scope over the user's
-  // remembered settings view. Other pin preferences remain independent.
+  // A retired execution pin must not override either the remembered
+  // visibility or settings classification. Other pins remain independent.
   await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "显示右侧栏", exact: true }),
+    page.getByRole("button", { name: "隐藏右侧栏", exact: true }),
   ).toBeVisible();
-  await expect(panel).toHaveCount(0);
-  await openSubject(page);
+  await expect(panel).toBeVisible();
+  await expect(await openInput(page)).toHaveValue(rememberedDraft);
   await expect(
     tabs.getByRole("tab", { name: "设定", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -319,6 +402,27 @@ test("主体栏默认活动，四个图标分类支持键盘并记住选择，�
   expect(saved.inspectorWidth).toBe(356);
   expect(saved.dockApplications).toEqual(["preserve-dock-pin@1"]);
   expect(saved.pinnedInputs).toEqual({ "preserve-input-pin": true });
+  expect(saved.subjectOpen).toBe(true);
+  await page.getByRole("button", { name: "隐藏右侧栏", exact: true }).click();
+  await page.reload();
+  await expect(panel).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "显示右侧栏", exact: true }),
+  ).toBeVisible();
+  const closed = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    preferenceKey,
+  );
+  expect(closed.subjectOpen).toBe(false);
+  expect(closed.subjectTab).toBe("settings");
+  await expect(await openInput(page)).toHaveValue(rememberedDraft);
+  expect(closed.inspectorWidth).toBe(356);
+  expect(closed.dockApplications).toEqual(["preserve-dock-pin@1"]);
+  expect(closed.pinnedInputs).toEqual({ "preserve-input-pin": true });
+  await openSubject(page);
+  await expect(
+    tabs.getByRole("tab", { name: "设定", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
   await expect(
     panel.getByRole("button", { name: /固定信息栏|固定活动面板/ }),
   ).toHaveCount(0);

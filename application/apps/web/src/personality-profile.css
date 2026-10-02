@@ -1,18 +1,15 @@
 .personality-profile {
   --profile-accent: var(--accent);
   display: grid;
-  gap: 16px;
+  gap: 20px;
   min-width: 0;
   padding: 2px 0 0;
 }
 .personality-identity {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px;
-  border-radius: 16px;
-  background: var(--paper);
-  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  gap: 16px;
+  padding: 4px 0 12px;
   min-width: 0;
 }
 .personality-master,
@@ -101,9 +98,7 @@
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
-.app .personality-master > input[type="checkbox"],
-.app .personality-name .personality-optional > input[type="checkbox"],
-.app .personality-field .personality-optional > input[type="checkbox"] {
+.app .personality-master > input[type="checkbox"] {
   margin-left: auto;
 }
 .personality-portrait {
@@ -160,36 +155,102 @@
   min-width: 0;
   flex: 1;
 }
-.personality-name > label {
-  color: var(--muted);
-  font-size: 12px;
+.app .personality-name-display,
+.app .personality-detail-display {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  max-width: 100%;
+  gap: 10px;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
 }
-.app .personality-name > input {
+.app .personality-name-display {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.personality-name-display > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.personality-name-display > svg,
+.personality-detail-display > svg {
+  flex: none;
+  color: var(--muted);
+  opacity: 0;
+}
+.personality-name-display:is(:hover, :focus-visible) > svg,
+.personality-detail-display:is(:hover, :focus-visible) > svg {
+  opacity: 1;
+}
+.app .personality-name-display:disabled,
+.app .personality-detail-display:disabled {
+  opacity: 1;
+}
+.app .personality-name-display:focus-visible,
+.app .personality-detail-display:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.personality-inline-editor[hidden],
+.app .personality-name-display[hidden],
+.app .personality-detail-display[hidden] {
+  display: none;
+}
+.personality-inline-editor {
+  min-width: 0;
+}
+.app .personality-inline-editor > input {
   display: block;
   width: 100%;
   min-width: 0;
   border: 0;
-  border-bottom: 1px solid transparent;
+  border-bottom: 1px solid var(--line);
   border-radius: 0;
   box-shadow: none;
   background: transparent;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
-  padding: 2px 0 4px;
+  padding: 4px 0;
   color: var(--ink);
 }
-.app .personality-name > input:disabled {
+.app .personality-inline-editor > input:disabled {
   opacity: 1;
 }
-.personality-name > input::placeholder {
+.personality-inline-editor > input::placeholder {
   color: var(--text-secondary);
 }
-.app .personality-name > input:not(:disabled):hover {
-  border-bottom-color: var(--line);
-}
-.app .personality-name > input:focus-visible {
+.app .personality-inline-editor > input:focus-visible {
   outline: 0;
   border-bottom-color: var(--accent);
+}
+.personality-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.app .personality-edit-actions > button {
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .personality-edit-actions > button:first-child {
+  color: var(--accent);
+}
+.app .personality-edit-actions > button:hover {
+  color: var(--ink);
 }
 .app .personality-text-action {
   margin-top: 4px;
@@ -205,22 +266,63 @@
   gap: 8px;
   font-size: 13px;
 }
-.app .personality-field > input {
+.app .personality-detail-display {
   width: 100%;
-  border: 1px solid var(--line);
-  background: var(--paper);
-  border-radius: 8px;
-  padding: 8px 10px;
   font-size: 13px;
+}
+.personality-detail-display > span:first-child {
+  color: var(--muted);
+}
+.personality-detail-display > span:nth-child(2) {
+  margin-left: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.personality-field .personality-inline-editor > input {
+  font-size: 15px;
+  font-weight: 500;
 }
 .personality-preferences {
   min-width: 0;
 }
-.personality-group-title {
-  margin: 0 2px 8px;
-  color: var(--text-secondary);
+.personality-preferences > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  column-gap: 12px;
+  row-gap: 5px;
+  min-height: 44px;
+  padding: 8px 0;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+.personality-preferences > summary::-webkit-details-marker {
+  display: none;
+}
+.personality-expression {
+  grid-column: 1;
+  color: var(--muted);
   font-size: 12px;
-  font-weight: 500;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.personality-preferences > summary > svg {
+  width: 14px;
+  height: 14px;
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: center;
+  color: var(--muted);
+}
+.personality-preferences[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.personality-preferences-editor {
+  padding-top: 12px;
 }
 .personality-traits {
   display: grid;
@@ -440,9 +542,9 @@
 @media (max-width: 520px) {
   .personality-identity {
     gap: 12px;
-    padding: 12px;
   }
-  .personality-name > input {
+  .app .personality-name-display,
+  .app .personality-name .personality-inline-editor > input {
     font-size: 20px;
   }
 }
@@ -454,7 +556,10 @@
   .personality-optional,
   .personality-master,
   .personality-speaking label > span,
-  .personality-custom summary {
+  .personality-custom summary,
+  .app .personality-name-display,
+  .app .personality-detail-display,
+  .app .personality-edit-actions > button {
     min-height: 44px;
   }
   .personality-optional {
@@ -463,6 +568,10 @@
   .personality-master {
     min-width: 44px;
     justify-content: center;
+  }
+  .personality-name-display > svg,
+  .personality-detail-display > svg {
+    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -66,6 +66,10 @@
   width: 18px;
   height: 18px;
 }
+.app .subject-tabs .profile-avatar,
+.app .subject-tabs .brand-mark {
+  color: inherit;
+}
 .subject-section h3,
 .subject-objectives h3 {
   margin: 0 0 14px;
@@ -201,10 +205,36 @@
   justify-content: space-between;
 }
 .subject-settings-system h4 {
-  margin: 0 2px 8px;
+  margin: 0;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
+}
+.subject-settings-system {
+  border-top: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  padding-top: 8px;
+}
+.subject-settings-system > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  list-style: none;
+  cursor: pointer;
+}
+.subject-settings-system > summary::-webkit-details-marker {
+  display: none;
+}
+.subject-settings-system > summary > svg {
+  flex: none;
+  color: var(--muted);
+}
+.subject-settings-system[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.subject-settings-system > .subject-settings-group {
+  margin-top: 8px;
 }
 .subject-settings-group {
   overflow: hidden;

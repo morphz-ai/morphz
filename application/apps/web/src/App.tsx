@@ -165,6 +165,7 @@ type InspectorSelection =
   | { view: "understanding" | "collaboration" };
 type Preferences = InterfacePreferences & {
   subjectTab?: SubjectView;
+  subjectOpen: boolean;
   dockApplications?: string[];
   taskList?: TaskListOptions;
   executionWidth?: number;
@@ -245,6 +246,7 @@ const defaultPrefs: Preferences = {
   artifactId: null,
   artifactRevision: null,
   collaboration: false,
+  subjectOpen: false,
   composer: true,
   conversation: null,
   sidebar: true,
@@ -347,6 +349,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       ...p,
       ...interfacePreferences(p),
       ...sidebarPreference(p.sidebarWidth, p.sidebarCompact),
+      subjectOpen: p.subjectOpen === true,
+      subjectTab: ["activity", "permissions", "schedules", "settings"].includes(
+        p.subjectTab ?? "",
+      )
+        ? p.subjectTab
+        : "activity",
+      collaboration: p.subjectOpen === true ? false : p.collaboration === true,
       projectOpen: p.projectOpen ?? p.view === "projects",
       view: ["dialogue", "inbox", "content", "desk", "projects"].includes(
         p.view ?? "",
@@ -361,7 +370,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   );
   const leftSidebar = useSidebarLayout(leftSidebarPreference);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [subjectView, setSubjectView] = useState<SubjectView | null>(null);
+  // Persist only the subject's presentation, never a concrete execution scope.
+  const subjectView = prefs.subjectOpen
+    ? (prefs.subjectTab ?? "activity")
+    : null;
   const [allActivity, setAllActivity] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const dictationControls = useRef<{
@@ -1059,6 +1071,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }, [contextKey, inputVisible]);
   const collaborationVisible =
     !executions &&
+    !subjectView &&
     !understandingOpen &&
     !!artifact &&
     (compact ? mobileCollaboration : prefs.collaboration);
@@ -1118,11 +1131,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const resizeInspector = (inspectorWidth: number) =>
     prefer({ inspectorWidth });
   function closeInspector() {
-    setSubjectView(null);
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
-    prefer({ collaboration: false });
+    prefer({ collaboration: false, subjectOpen: false });
     requestAnimationFrame(() => {
       const trigger = document.querySelector<HTMLElement>(".inspector-toggle");
       if (trigger?.getClientRects().length) trigger.focus();
@@ -1180,6 +1192,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           : {}),
         ...("artifactId" in change ? { artifactRevision: null } : {}),
         ...change,
+        ...(change.collaboration === true ? { subjectOpen: false } : {}),
         ...(change.selectedConversations
           ? {
               selectedConversations: {
@@ -2191,8 +2204,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (!staged) updateDraft(key, () => ({ ...emptyDraft, textQuotes: [] }));
       if (!staged && currentContext.current === key) {
         if (asAnnotation) {
-          if (compact) setMobileCollaboration(true);
-          else prefer({ collaboration: true });
+          openCollaboration();
           if (latestInteraction.current !== "hidden")
             sentInputFocus.current = {
               key,
@@ -2337,8 +2349,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ? project.title
         : "无项目");
   const openExecutions = () => {
-    setSubjectView("activity");
-    prefer({ subjectTab: "activity" });
+    prefer({ subjectTab: "activity", subjectOpen: true });
     keepExchangeOpen();
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
@@ -2350,11 +2361,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
   };
   const openCollaboration = () => {
-    setSubjectView(null);
     setExecutions(null);
     setUnderstandingOpen(false);
     setMobileCollaboration(true);
-    prefer({ collaboration: true });
+    prefer({ collaboration: true, subjectOpen: false });
   };
   const rememberedInspector = inspectorSelections.current.get(contextKey);
   const showInspector = () => {
@@ -2373,9 +2383,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       keepExchangeOpen();
       setUnderstandingOpen(false);
       setMobileCollaboration(false);
-      prefer({ collaboration: false });
+      prefer({
+        collaboration: false,
+        subjectTab: "activity",
+        subjectOpen: true,
+      });
       setExecutions(rememberedInspector.scope);
-      setSubjectView("activity");
     } else {
       selectSubjectView(prefs.subjectTab ?? "activity");
     }
@@ -2383,8 +2396,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   function selectSubjectView(view: SubjectView) {
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
-    prefer({ collaboration: false, subjectTab: view });
-    setSubjectView(view);
+    prefer({ collaboration: false, subjectTab: view, subjectOpen: true });
     if (view === "activity")
       setExecutions(
         (current) =>
@@ -2468,8 +2480,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return;
     }
     keepExchangeOpen();
-    setSubjectView("activity");
-    prefer({ subjectTab: "activity" });
+    prefer({ subjectTab: "activity", subjectOpen: true });
     setUnderstandingOpen(false);
     setMobileCollaboration(false);
     prefer({ collaboration: false });
@@ -2874,6 +2885,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                 onClick={() => {
                   setUnderstandingOpen(false);
                   setExecutions(null);
+                  prefer({ subjectOpen: false });
                   compact
                     ? setMobileCollaboration(!mobileCollaboration)
                     : prefer({ collaboration: !prefs.collaboration });

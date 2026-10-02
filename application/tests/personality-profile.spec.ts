@@ -204,7 +204,7 @@ async function openAgent(page: Page) {
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
   await expect(
-    editor.getByRole("checkbox", { name: "设置智能体名字", exact: true }),
+    editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
   ).toBeEnabled();
   return editor;
 }
@@ -221,11 +221,67 @@ async function openHuman(page: Page) {
     .getByRole("dialog", { name: "设置", exact: true })
     .getByRole("region", { name: "个人资料", exact: true });
   await expect(
-    editor.getByRole("checkbox", { name: "设置你的名字", exact: true }),
+    editor.getByRole("button", { name: "编辑你的名字", exact: true }),
   ).toBeEnabled();
   return editor;
 }
+function profileText(editor: Locator, field: "name" | "preferredAddress") {
+  return editor.locator(
+    field === "preferredAddress"
+      ? 'input[aria-label="Agent 对你的称呼"]'
+      : 'input[aria-label="智能体的名字"],input[aria-label="你的名字"]',
+  );
+}
+async function editText(editor: Locator, field: "name" | "preferredAddress") {
+  const name =
+    field === "preferredAddress"
+      ? "编辑称呼"
+      : (await editor.getAttribute("aria-label")) === "智能体资料"
+        ? "编辑智能体名字"
+        : "编辑你的名字";
+  const input = profileText(editor, field);
+  if (!(await input.isVisible()))
+    await editor.getByRole("button", { name, exact: true }).click();
+  await expect(input).toBeVisible();
+  await expect(input).toBeEnabled();
+  return input;
+}
+async function clearText(editor: Locator, field: "name" | "preferredAddress") {
+  await editText(editor, field);
+  const name =
+    field === "preferredAddress"
+      ? "不设置称呼"
+      : (await editor.getAttribute("aria-label")) === "智能体资料"
+        ? "不设置智能体名字"
+        : "不设置你的名字";
+  await editor.getByRole("button", { name, exact: true }).click();
+}
+async function openPreferences(editor: Locator) {
+  const details = editor.locator("details.personality-preferences");
+  if (
+    !(await details.evaluate((element) => (element as HTMLDetailsElement).open))
+  )
+    await details.locator(":scope > summary").click();
+  await expect(details).toHaveAttribute("open", "");
+}
+async function openSystem(page: Page) {
+  const details = page.locator("details.subject-settings-system");
+  if (
+    !(await details.evaluate((element) => (element as HTMLDetailsElement).open))
+  )
+    await details.locator(":scope > summary").click();
+  return details;
+}
+async function openCustom(editor: Locator) {
+  await openPreferences(editor);
+  const details = editor.locator(".personality-custom");
+  if (
+    !(await details.evaluate((element) => (element as HTMLDetailsElement).open))
+  )
+    await details.locator(":scope > summary").click();
+}
 async function setLevel(editor: Locator, label: string, level: number) {
+  await openPreferences(editor);
   await editor
     .getByRole("checkbox", { name: `设置${label}`, exact: true })
     .check();
@@ -265,12 +321,21 @@ async function waitForAutosave(editor: Locator) {
       element.querySelector<HTMLInputElement | HTMLTextAreaElement>(
         `[aria-label="${name}"]`,
       )?.value ?? "";
+    const configured = (name: string) => {
+      const input = element.querySelector<HTMLElement>(
+        `[aria-label="${name}"]`,
+      );
+      return (
+        input?.closest<HTMLElement>("[data-configured]")?.dataset.configured ===
+        "true"
+      );
+    };
     const agent = element.getAttribute("aria-label") === "智能体资料";
     return {
       enabled: checked(agent ? "使用人格设定" : "使用个人资料"),
       data: agent
         ? {
-            name: checked("设置智能体名字") ? text("智能体的名字") : null,
+            name: configured("智能体的名字") ? text("智能体的名字") : null,
             traits: Object.fromEntries(
               [
                 ["humor", "幽默"],
@@ -295,8 +360,8 @@ async function waitForAutosave(editor: Locator) {
               : null,
           }
         : {
-            name: checked("设置你的名字") ? text("你的名字") : null,
-            preferredAddress: checked("设置称呼")
+            name: configured("你的名字") ? text("你的名字") : null,
+            preferredAddress: configured("Agent 对你的称呼")
               ? text("Agent 对你的称呼")
               : null,
           },
@@ -344,6 +409,14 @@ async function paintedProfileLabels(editor: Locator) {
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const text = node.textContent?.trim();
       if (!text || !node.parentElement) continue;
+      if (
+        !node.parentElement.checkVisibility({
+          checkOpacity: true,
+          checkVisibilityCSS: true,
+        })
+      )
+        continue;
+      if (node.parentElement.closest(".personality-edit-actions")) continue;
       // Saved receipts and errors are still necessary feedback. This check
       // concerns the repeated field/master labels, not those result messages.
       if (
@@ -360,6 +433,9 @@ async function paintedProfileLabels(editor: Locator) {
       ) {
         const style = getComputedStyle(parent);
         if (
+          (parent instanceof HTMLDetailsElement &&
+            !parent.open &&
+            !parent.querySelector(":scope > summary")?.contains(node)) ||
           style.display === "none" ||
           style.visibility !== "visible" ||
           Number(style.opacity) === 0 ||
@@ -383,7 +459,9 @@ async function paintedProfileLabels(editor: Locator) {
 async function expectQuietProfileLabels(editor: Locator, speechUnset: boolean) {
   const painted = await paintedProfileLabels(editor);
   expect(painted).not.toMatch(/已设置|已启用|未启用/);
-  expect(painted.match(/不设置/g) ?? []).toHaveLength(speechUnset ? 1 : 0);
+  expect(painted.match(/不设置/g) ?? []).toHaveLength(
+    speechUnset && (await editor.getByRole("radio").count()) > 0 ? 1 : 0,
+  );
 }
 
 async function expectUniformSwitches(editor: Locator) {
@@ -406,6 +484,17 @@ async function expectUniformSwitches(editor: Locator) {
 }
 
 async function expectCompactIdentity(editor: Locator, scale = 1) {
+  // Native modal positioning and ResizeObserver anchoring settle after a
+  // viewport/CSS zoom change. Assert the real bounded rectangle eventually,
+  // then keep all final exact size, overflow and alignment checks below.
+  await expect
+    .poll(() =>
+      editor.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return Math.max(-bounds.left, bounds.right - innerWidth);
+      }),
+    )
+    .toBeLessThanOrEqual(1);
   const geometry = await editor.evaluate((element) => {
     const rect = (selector: string) => {
       const target = element.querySelector<HTMLElement>(selector);
@@ -449,6 +538,41 @@ async function expectCompactIdentity(editor: Locator, scale = 1) {
       right: bounds.right,
       viewport: innerWidth,
       overflow: element.scrollWidth > element.clientWidth + 1,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      descendants:
+        element.scrollWidth > element.clientWidth + 1
+          ? [...element.querySelectorAll<HTMLElement>("*")]
+              .map((child) => {
+                const box = child.getBoundingClientRect();
+                return {
+                  tag: child.tagName,
+                  className: child.className,
+                  aria: child.getAttribute("aria-label"),
+                  hidden: child.hidden,
+                  visible: child.checkVisibility({
+                    contentVisibilityAuto: true,
+                    opacityProperty: true,
+                    visibilityProperty: true,
+                  }),
+                  clientWidth: child.clientWidth,
+                  scrollWidth: child.scrollWidth,
+                  left: box.left,
+                  right: box.right,
+                  width: box.width,
+                  detailsOpen:
+                    child instanceof HTMLDetailsElement ? child.open : null,
+                  contentVisibility: getComputedStyle(child).contentVisibility,
+                };
+              })
+              .filter(
+                (child) =>
+                  child.scrollWidth > child.clientWidth + 1 ||
+                  child.right > bounds.right + 1 ||
+                  child.tag === "DETAILS" ||
+                  child.className === "personality-inline-editor",
+              )
+          : [],
     };
   });
   expect(geometry.firstClasses).toEqual([
@@ -494,18 +618,107 @@ async function expectCompactIdentity(editor: Locator, scale = 1) {
   );
   expect(geometry.left).toBeGreaterThanOrEqual(-1);
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 1);
-  expect(geometry.overflow).toBe(false);
+  expect(geometry.overflow, JSON.stringify(geometry)).toBe(false);
   return geometry;
 }
 
 async function cssProfileZoom(page: Page, scale: number) {
-  await page.evaluate((zoom) => {
+  await page.evaluate(async (zoom) => {
     document.documentElement.style.zoom = String(zoom);
     // Bound the shell's logical canvas, otherwise root CSS zoom multiplies
     // 100dvh too. This is CSS geometry coverage, NOT Electron native zoom.
     const shell = document.querySelector<HTMLElement>(".app");
     if (shell) shell.style.height = `calc(100dvh / ${zoom})`;
+    await new Promise<void>((done) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => done())),
+    );
   }, scale);
+}
+
+for (const subject of ["agent", "human"] as const) {
+  test(`${subject === "agent" ? "Agent" : "Human"} 查看资料与打开局部编辑零写入，IME和Escape不误关对话框`, async ({
+    page,
+  }, testInfo) => {
+    const snapshot = initialProfile();
+    snapshot.agent.data = structuredClone(defaultAgentProfile);
+    snapshot.agent.enabled = false;
+    snapshot.agent.revision = 0;
+    snapshot.human.data = structuredClone(defaultHumanProfile);
+    snapshot.human.enabled = false;
+    snapshot.human.revision = 0;
+    const fixture = await profileFixture(page, snapshot);
+    await page.setViewportSize({ width: 390, height: 960 });
+    await enterDialogue(page);
+    const editor =
+      subject === "agent" ? await openAgent(page) : await openHuman(page);
+    await expectCompactIdentity(editor);
+    await expect(editor.getByRole("textbox")).toHaveCount(0);
+    await expect(editor.getByRole("slider")).toHaveCount(0);
+    await expect(editor.getByRole("checkbox")).toHaveCount(1);
+    const display = editor.getByRole("button", {
+      name: subject === "agent" ? "编辑智能体名字" : "编辑你的名字",
+      exact: true,
+    });
+    await expect(display).toHaveText(subject === "agent" ? "Morphz" : "我");
+    if (subject === "agent") {
+      await expect(
+        editor.locator(".personality-preferences"),
+      ).not.toHaveAttribute("open", "");
+      await expect(
+        page.locator(".subject-settings-system"),
+      ).not.toHaveAttribute("open", "");
+    }
+    await page.screenshot({
+      path: testInfo.outputPath(`${subject}-personal-view.png`),
+      fullPage: true,
+    });
+    const name = await editText(editor, "name");
+    await expect(name).toHaveValue("");
+    await expect(name).toHaveAttribute("data-configured", "false");
+    expect(fixture.commands).toHaveLength(0);
+    // Composition flags are DOM regression evidence, not native OS IME acceptance.
+    for (const key of ["Enter", "Escape"]) {
+      const notCancelled = await name.evaluate(
+        (input, key) =>
+          input.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key,
+              isComposing: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          ),
+        key,
+      );
+      // Escape must suppress the dialog's native cancel even during IME;
+      // its editor remains open until a non-composition key completes it.
+      if (key === "Escape") expect(notCancelled).toBe(false);
+      await expect(name).toBeVisible();
+      await expect(name).toBeFocused();
+      expect(fixture.commands).toHaveLength(0);
+    }
+    await name.press("Escape");
+    await expect(name).toBeHidden();
+    await expect(display).toBeFocused();
+    if (subject === "human") {
+      const dialog = page.getByRole("dialog", { name: "设置", exact: true });
+      await expect(dialog).toBeVisible();
+      const address = await editText(editor, "preferredAddress");
+      await expect(address).toHaveValue("");
+      await expect(address).toHaveAttribute("data-configured", "false");
+      await address.press("Escape");
+      await expect(dialog).toBeVisible();
+    }
+    expect(fixture.commands).toHaveLength(0);
+    expect(fixture.snapshot[subject]).toMatchObject({
+      revision: 0,
+      enabled: false,
+    });
+    await clearText(editor, "name");
+    expect(fixture.commands).toHaveLength(0);
+    expect(fixture.snapshot[subject].data.name).toBeNull();
+    await expect(editor.getByRole("textbox")).toHaveCount(0);
+  });
 }
 
 for (const subject of ["agent", "human"] as const) {
@@ -568,8 +781,8 @@ for (const subject of ["agent", "human"] as const) {
     });
     await camera.press("Tab");
     await expect(
-      editor.getByRole("checkbox", {
-        name: subject === "agent" ? "设置智能体名字" : "设置你的名字",
+      editor.getByRole("button", {
+        name: subject === "agent" ? "编辑智能体名字" : "编辑你的名字",
         exact: true,
       }),
     ).toBeFocused();
@@ -597,6 +810,7 @@ test("胶囊开关真实鼠标点击没有外焦点圈，键盘 Tab 到达仍有
   await waitForAutosave(editor);
   expect(fixture.snapshot.agent.enabled).toBe(false);
   const humor = editor.getByRole("checkbox", { name: "设置幽默", exact: true });
+  await openPreferences(editor);
   await humor.click();
   await expect(humor).toBeFocused();
   await expect(humor).not.toBeChecked();
@@ -698,9 +912,7 @@ test("资料状态不重复绘制，统一开关仍保持未设置、单项选�
   await expectQuietProfileLabels(editor, true);
   await expectUniformSwitches(editor);
   await expect(editor.getByRole("slider")).toHaveCount(0);
-  await expect(
-    editor.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toBeDisabled();
+  await expect(profileText(editor, "name")).toBeHidden();
   expect(fixture.commands).toHaveLength(0);
 
   await setLevel(editor, "幽默", 5);
@@ -753,16 +965,8 @@ test("资料状态不重复绘制，统一开关仍保持未设置、单项选�
   await expect(humanMaster).not.toBeChecked();
   await expectQuietProfileLabels(human, false);
   await expectUniformSwitches(human);
-  await human
-    .getByRole("checkbox", { name: "设置你的名字", exact: true })
-    .check();
-  await human
-    .getByRole("textbox", { name: "你的名字", exact: true })
-    .fill("TEST 清河");
-  await human.getByRole("checkbox", { name: "设置称呼", exact: true }).check();
-  await human
-    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-    .fill("TEST 河哥");
+  await (await editText(human, "name")).fill("TEST 清河");
+  await (await editText(human, "preferredAddress")).fill("TEST 河哥");
   await expectQuietProfileLabels(human, false);
   const humanCommand = await waitForAutosave(human);
   await expect(humanMaster).toBeChecked();
@@ -795,8 +999,9 @@ test("紧凑身份区和独立设定分组保留键盘自动保存路径，矮�
   const editor = await openAgent(page);
   await expectCompactIdentity(editor);
   await expect(
-    editor.getByRole("heading", { name: "表达偏好", exact: true }),
-  ).toHaveCount(1);
+    editor.locator(".personality-preferences > summary > span").first(),
+  ).toHaveText("个性与表达");
+  await openPreferences(editor);
   await expect(editor.locator(".personality-traits")).toHaveCount(1);
   const rows = editor.locator(".personality-trait");
   await expect(rows).toHaveCount(4);
@@ -822,12 +1027,13 @@ test("紧凑身份区和独立设定分组保留键盘自动保存路径，矮�
   await page.keyboard.press("Tab");
   await expect(camera).toBeFocused();
   await camera.press("Tab");
-  const nameChoice = editor.getByRole("checkbox", {
-    name: "设置智能体名字",
+  const nameChoice = editor.getByRole("button", {
+    name: "编辑智能体名字",
     exact: true,
   });
   await expect(nameChoice).toBeFocused();
-  await nameChoice.press("Tab");
+  await editor.locator(".personality-preferences > summary").focus();
+  await page.keyboard.press("Tab");
   const humor = editor.getByRole("checkbox", {
     name: "设置幽默",
     exact: true,
@@ -889,10 +1095,8 @@ test("紧凑身份区和独立设定分组保留键盘自动保存路径，矮�
   await expect(master).toBeFocused();
   await expect(master).toHaveCSS("outline-style", "solid");
   await expect(master).toBeInViewport();
-  const system = page.locator(".subject-settings-system");
-  await expect(
-    system.getByRole("heading", { name: "能力与连接", exact: true }),
-  ).toHaveCount(1);
+  const system = await openSystem(page);
+  await expect(system.locator(":scope > summary")).toHaveText("能力与连接");
   await expect(system.locator(".subject-settings-group")).toHaveCount(1);
   const connection = system.getByRole("button", {
     name: "智能体连接",
@@ -914,25 +1118,17 @@ test("双方资料入口分离，关闭面板仍提交 Agent 修改，消息草�
   const input = await openInput(page);
   await input.fill("TEST 不应丢失的消息草稿");
   let agent = await openAgent(page);
-  await agent
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("星禾");
+  await (await editText(agent, "name")).fill("星禾");
   await page
     .locator(".subject-sidebar")
     .getByRole("tab", { name: "活动", exact: true })
     .click();
   agent = await openAgent(page);
-  await expect(
-    agent.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("星禾");
+  await expect(profileText(agent, "name")).toHaveValue("星禾");
   const human = await openHuman(page);
   await expect(human.getByRole("slider")).toHaveCount(0);
-  await human
-    .getByRole("textbox", { name: "你的名字", exact: true })
-    .fill("清河");
-  await human
-    .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-    .fill("河哥");
+  await (await editText(human, "name")).fill("清河");
+  await (await editText(human, "preferredAddress")).fill("河哥");
   const humanCommand = await waitForAutosave(human);
   expect(humanCommand).toMatchObject({
     subject: "human",
@@ -944,12 +1140,7 @@ test("双方资料入口分离，关闭面板仍提交 Agent 修改，消息草�
       ?.data.name,
   ).toBe("星禾");
   await page.getByRole("button", { name: "关闭设置", exact: true }).click();
-  await expect(
-    (await openAgent(page)).getByRole("textbox", {
-      name: "智能体的名字",
-      exact: true,
-    }),
-  ).toHaveValue("星禾");
+  await expect(profileText(await openAgent(page), "name")).toHaveValue("星禾");
   await expect(await openInput(page)).toHaveValue("TEST 不应丢失的消息草稿");
 });
 
@@ -972,18 +1163,17 @@ test("默认全部不设置且未启用，不强迫取名，Logo不冒充已配�
     editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
   ).not.toBeChecked();
   await expect(editor.getByRole("slider")).toHaveCount(0);
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = profileText(editor, "name");
   await expect(name).toHaveValue("");
-  await expect(name).toBeDisabled();
+  await expect(name).toBeHidden();
   await expect(name).toHaveAttribute("placeholder", "Morphz");
   await expect(
     editor.locator(".personality-portrait svg.brand-mark"),
   ).toHaveCount(1);
   await expect(
-    editor.getByRole("radio", { name: "不设置", exact: true }),
+    editor.locator(
+      '.personality-speaking input[value="on"],.personality-speaking input:not([value])',
+    ),
   ).toBeChecked();
   expect(fixture.commands).toHaveLength(0);
   // Without any valid choice there is no Profile to enable, and simply
@@ -1000,13 +1190,7 @@ test("默认全部不设置且未启用，不强迫取名，Logo不冒充已配�
     editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
   ).not.toBeChecked();
   await expectQuietProfileLabels(editor, true);
-  await editor
-    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-    .check();
-  const configuredName = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const configuredName = await editText(editor, "name");
   await expect(configuredName).toBeFocused();
   await expect(configuredName).toHaveValue("");
   await expect(
@@ -1069,12 +1253,7 @@ for (const subject of ["agent", "human"] as const) {
     if (subject === "agent") {
       await setLevel(editor, "幽默", 0);
     } else {
-      await editor
-        .getByRole("checkbox", { name: "设置你的名字", exact: true })
-        .check();
-      await editor
-        .getByRole("textbox", { name: "你的名字", exact: true })
-        .fill("TEST 清河");
+      await (await editText(editor, "name")).fill("TEST 清河");
     }
     await waitForAutosave(editor);
     expect(fixture.snapshot[subject].enabled).toBe(true);
@@ -1093,26 +1272,16 @@ for (const subject of ["agent", "human"] as const) {
       // activated text fields are all additions, not an opt-in to the ROM.
       await setLevel(editor, "严谨", 0);
       await editor.getByRole("radio", { name: "直率", exact: true }).check();
-      await editor.getByText("自定义风格", { exact: true }).click();
+      await openCustom(editor);
       await editor
         .getByRole("checkbox", { name: "设置自定义风格", exact: true })
         .check();
       await editor
         .getByRole("textbox", { name: "自定义讲话风格", exact: true })
         .fill("TEST 关闭时新增风格");
-      await editor
-        .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-        .check();
-      await editor
-        .getByRole("textbox", { name: "智能体的名字", exact: true })
-        .fill("Echo");
+      await (await editText(editor, "name")).fill("Echo");
     } else {
-      await editor
-        .getByRole("checkbox", { name: "设置称呼", exact: true })
-        .check();
-      await editor
-        .getByRole("textbox", { name: "Agent 对你的称呼", exact: true })
-        .fill("TEST 河哥");
+      await (await editText(editor, "preferredAddress")).fill("TEST 河哥");
     }
     await waitForAutosave(editor);
     await expect(master).not.toBeChecked();
@@ -1151,15 +1320,13 @@ test("已确认 Echo 的临时空名字不误关设定，关闭后空名字期�
   const fixture = await profileFixture(page, snapshot);
   await enterDialogue(page);
   const editor = await openAgent(page);
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "name");
   const master = editor.getByRole("checkbox", {
     name: "使用人格设定",
     exact: true,
   });
   await name.fill("");
+  await openPreferences(editor);
   await editor
     .getByRole("checkbox", { name: "设置幽默", exact: true })
     .uncheck();
@@ -1186,7 +1353,7 @@ test("已确认 Echo 的临时空名字不误关设定，关闭后空名字期�
     .poll(() => fixture.snapshot.agent.data.speechStyle)
     .toBe("direct");
   expect(fixture.snapshot.agent.enabled).toBe(false);
-  await editor.getByText("自定义风格", { exact: true }).click();
+  await openCustom(editor);
   await editor
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
     .check();
@@ -1228,7 +1395,7 @@ test("清空唯一自定义风格后真实读回全空且不使用，标题开�
     name: "使用人格设定",
     exact: true,
   });
-  await editor.getByText("自定义风格", { exact: true }).click();
+  await openCustom(editor);
   await editor
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
     .check();
@@ -1337,6 +1504,7 @@ test("仅所选幽默5与严谨0进入资料，0不是不设置，停用保留�
     .getByRole("tab", { name: "活动", exact: true })
     .click();
   const reopened = await openAgent(page);
+  await openPreferences(reopened);
   await expect(
     reopened.getByRole("checkbox", { name: "使用人格设定", exact: true }),
   ).not.toBeChecked();
@@ -1377,14 +1545,11 @@ test("名字、称呼、讲话风格和自定义文字可各自撤回为null，�
     "aria-label",
     /TEST 伙伴/,
   );
-  await expect(
-    agent.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("TEST 伙伴");
-  await agent
-    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-    .uncheck();
+  await expect(profileText(agent, "name")).toHaveValue("TEST 伙伴");
+  await clearText(agent, "name");
+  await openPreferences(agent);
   await agent.getByRole("radio", { name: "不设置", exact: true }).check();
-  await agent.getByText("自定义风格", { exact: true }).click();
+  await openCustom(agent);
   await agent
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
     .check();
@@ -1402,12 +1567,8 @@ test("名字、称呼、讲话风格和自定义文字可各自撤回为null，�
     data: { name: null, speechStyle: null, customStyle: null },
   });
   const human = await openHuman(page);
-  await human
-    .getByRole("checkbox", { name: "设置你的名字", exact: true })
-    .uncheck();
-  await human
-    .getByRole("checkbox", { name: "设置称呼", exact: true })
-    .uncheck();
+  await clearText(human, "name");
+  await clearText(human, "preferredAddress");
   const humanCleared = await waitForAutosave(human);
   expect(humanCleared).toMatchObject({
     subject: "human",
@@ -1431,13 +1592,14 @@ test("风格单选和自定义上下文保存后重开保持，不借此创建�
   });
   await enterDialogue(page);
   const editor = await openAgent(page);
+  await openPreferences(editor);
   for (const style of ["自然", "干练", "细腻", "直率"]) {
     await editor.getByRole("radio", { name: style, exact: true }).check();
     await expect(
       editor.getByRole("radio", { name: style, exact: true }),
     ).toBeChecked();
   }
-  await editor.getByText("自定义风格", { exact: true }).click();
+  await openCustom(editor);
   await editor
     .getByRole("checkbox", { name: "设置自定义风格", exact: true })
     .check();
@@ -1456,7 +1618,7 @@ test("风格单选和自定义上下文保存后重开保持，不借此创建�
     .getByRole("tab", { name: "活动", exact: true })
     .click();
   const reopened = await openAgent(page);
-  await reopened.getByText("自定义风格", { exact: true }).click();
+  await openCustom(reopened);
   await expect(
     reopened.getByRole("textbox", { name: "自定义讲话风格", exact: true }),
   ).toHaveValue(text);
@@ -1478,9 +1640,7 @@ test("写入成功但回执丢失时同 commandId 重试；CAS 冲突不冒称�
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await enterDialogue(page);
   const editor = await openAgent(page);
-  await editor
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("回执重试");
+  await (await editText(editor, "name")).fill("回执重试");
   await flushText(editor);
   await expect(editor.getByRole("alert")).toBeVisible();
   // A real browser fetch rejection is localized, while its durable command
@@ -1506,14 +1666,10 @@ test("写入成功但回执丢失时同 commandId 重试；CAS 冲突不冒称�
     });
     return true;
   });
-  await editor
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("冲突后的本地草稿");
+  await (await editText(editor, "name")).fill("冲突后的本地草稿");
   await flushText(editor);
   await expect(editor.getByRole("alert")).toContainText("资料已被其他操作修改");
-  await expect(
-    editor.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("冲突后的本地草稿");
+  await expect(profileText(editor, "name")).toHaveValue("冲突后的本地草稿");
   await expect(editor.locator(".personality-save-state")).toHaveText(
     "资料修改尚未确认",
   );
@@ -1538,10 +1694,8 @@ for (const keepChanges of [false, true]) {
     await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
     await enterDialogue(page);
     const editor = await openAgent(page);
-    const name = editor.getByRole("textbox", {
-      name: "智能体的名字",
-      exact: true,
-    });
+    await openPreferences(editor);
+    const name = await editText(editor, "name");
     await name.fill("本地待确认草稿");
     // An independent writer advanced the authoritative revision after the UI
     // loaded. The controlled transport enforces CAS, not an unconditional error.
@@ -1625,9 +1779,7 @@ test("保存后的读取失败必须显示未确认，恢复读取后同操作�
   });
   await enterDialogue(page);
   const editor = await openAgent(page);
-  await editor
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("等待核对");
+  await (await editText(editor, "name")).fill("等待核对");
   await flushText(editor);
   await expect(editor.getByRole("alert")).toContainText(
     "TEST 保存结果暂无法读取",
@@ -1657,9 +1809,7 @@ test("失败保存关闭再打开保留同一 commandId，绝不把未知结果�
   });
   await enterDialogue(page);
   let editor = await openAgent(page);
-  await editor
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("重开仍是同一次保存");
+  await (await editText(editor, "name")).fill("重开仍是同一次保存");
   await flushText(editor);
   await expect(editor.getByRole("alert")).toBeVisible();
   await page
@@ -1667,9 +1817,7 @@ test("失败保存关闭再打开保留同一 commandId，绝不把未知结果�
     .getByRole("tab", { name: "活动", exact: true })
     .click();
   editor = await openAgent(page);
-  await expect(
-    editor.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("重开仍是同一次保存");
+  await expect(profileText(editor, "name")).toHaveValue("重开仍是同一次保存");
   await editor.getByRole("button", { name: "重试保存", exact: true }).click();
   await waitForAutosave(editor);
   expect(fixture.commands[1]).toEqual(fixture.commands[0]);
@@ -1692,10 +1840,7 @@ test("保存进行中仍能连续输入和拖动分值，旧回执不覆盖最�
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await enterDialogue(page);
   const editor = await openAgent(page);
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "name");
   try {
     await name.fill("TEST 先发出的名字");
     await name.press("Enter");
@@ -1704,6 +1849,10 @@ test("保存进行中仍能连续输入和拖动分值，旧回执不覆盖最�
       "正在保存资料",
     );
     await expect(name).toBeEnabled();
+    await expect(
+      editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+    ).toHaveText("TEST 伙伴");
+    await editText(editor, "name");
     await name.fill("Echo");
     await setLevel(editor, "幽默", 5);
     await flushText(editor);
@@ -1724,6 +1873,10 @@ test("保存进行中仍能连续输入和拖动分值，旧回执不覆盖最�
     expect(last!.commandId).not.toBe(fixture.commands[0]!.commandId);
     expect(fixture.snapshot.agent.revision).toBe(3);
     await expect(name).toHaveValue("Echo");
+    await name.press("Escape");
+    await expect(
+      editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+    ).toHaveText("Echo");
     await expect(
       editor.getByRole("slider", { name: "幽默程度", exact: true }),
     ).toHaveValue("5");
@@ -1754,17 +1907,16 @@ test("未知回执冻结原 command，继续修改只排队，人工重试先核
   });
   await enterDialogue(page);
   const editor = await openAgent(page);
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "name");
   await name.fill("TEST 未知回执版本");
   await name.press("Enter");
   await expect(editor.getByRole("alert")).toBeVisible();
   const original = structuredClone(fixture.commands[0]!);
   await expect(name).toBeEnabled();
+  await editText(editor, "name");
   await name.fill("TEST 排队的新版本");
   await name.press("Enter");
+  await openPreferences(editor);
   await editor.getByRole("radio", { name: "直率", exact: true }).check();
   expect(fixture.commands).toEqual([original]);
   expect(fixture.snapshot.agent.revision).toBe(2);
@@ -1794,10 +1946,7 @@ test("文本防抖只提交最后意图，Enter立即刷新；未设置空文本
   // A running synthetic clock still advances during browser action waits.
   // Pause first, then test the complete 450ms contract with exact steps.
   await page.clock.pauseAt(new Date(clockStart.getTime() + 1000));
-  const name = editor.getByRole("textbox", {
-    name: "智能体的名字",
-    exact: true,
-  });
+  const name = await editText(editor, "name");
   await name.fill("TEST 第一稿");
   await page.clock.runFor(200);
   await name.fill("TEST 最后一稿");
@@ -1809,6 +1958,7 @@ test("文本防抖只提交最后意图，Enter立即刷新；未设置空文本
     .toBe("TEST 最后一稿");
   await waitForAutosave(editor);
   expect(fixture.commands).toHaveLength(1);
+  await editText(editor, "name");
   await name.fill("Echo");
   await name.press("Enter");
   await waitForAutosave(editor);
@@ -1844,13 +1994,7 @@ for (const explicitOff of [false, true]) {
     }
     const baseline = structuredClone(fixture.snapshot.agent);
     const writesBeforeEmptyName = fixture.commands.length;
-    await editor
-      .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-      .check();
-    const name = editor.getByRole("textbox", {
-      name: "智能体的名字",
-      exact: true,
-    });
+    const name = await editText(editor, "name");
     await expect(name).toBeFocused();
     await expect(name).toHaveValue("");
     await page
@@ -1858,13 +2002,8 @@ for (const explicitOff of [false, true]) {
       .getByRole("tab", { name: "活动", exact: true })
       .click();
     editor = await openAgent(page);
-    await expect(
-      editor.getByRole("checkbox", { name: "设置智能体名字", exact: true }),
-    ).toBeChecked();
-    const reopened = editor.getByRole("textbox", {
-      name: "智能体的名字",
-      exact: true,
-    });
+    const reopened = await editText(editor, "name");
+    await expect(reopened).toHaveAttribute("data-configured", "false");
     await expect(reopened).toHaveValue("");
     await expect(reopened).toBeEnabled();
     expect(fixture.commands).toHaveLength(writesBeforeEmptyName);
@@ -2144,9 +2283,7 @@ test("头像读取被拒绝时无越权重试路径，保留资料并安全降�
     editor.locator(".personality-portrait > .profile-avatar"),
   ).toHaveAttribute("data-avatar-kind", "native");
   await expect(editor.locator(".profile-avatar-media")).toHaveCount(0);
-  await expect(
-    editor.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("TEST 伙伴");
+  await expect(profileText(editor, "name")).toHaveValue("TEST 伙伴");
   expect(
     requests.every(
       (request) => new URL(request).searchParams.get("subject") === "agent",
@@ -2305,9 +2442,7 @@ test("头像真实 CAS 冲突只更新显式基线，上传与移除重试使用
     buffer: buffers.original,
   });
   await expect(editor.getByRole("alert")).toContainText("TEST 头像版本已更新");
-  await expect(
-    editor.getByRole("textbox", { name: "你的名字", exact: true }),
-  ).toBeDisabled();
+  await expect(profileText(editor, "name")).toBeDisabled();
   expect(uploads).toHaveLength(1);
   expect(uploads[0]!.expectedRevision).toBe(0);
   await editor.getByRole("button", { name: "保留修改", exact: true }).click();
@@ -2416,9 +2551,7 @@ test("成功读取资料与解码头像后 403 撤权须隐藏旧资料并撤销
     ).profileTestUrls.urls.slice(),
   );
   expect(avatarUrls).toHaveLength(2);
-  await editor
-    .getByRole("textbox", { name: "智能体的名字", exact: true })
-    .fill("撤权时仍应保留的本人草稿");
+  await (await editText(editor, "name")).fill("撤权时仍应保留的本人草稿");
   fixture.read(async (route) => {
     await route.fulfill({
       status: 403,
@@ -2470,9 +2603,9 @@ test("成功读取资料与解码头像后 403 撤权须隐藏旧资料并撤销
   expect(fixture.commands).toHaveLength(1);
   fixture.read();
   await editor.getByRole("button", { name: "重试", exact: true }).click();
-  await expect(
-    editor.getByRole("textbox", { name: "智能体的名字", exact: true }),
-  ).toHaveValue("撤权时仍应保留的本人草稿");
+  await expect(profileText(editor, "name")).toHaveValue(
+    "撤权时仍应保留的本人草稿",
+  );
   await expect(image).toHaveAttribute("src", /^blob:/);
   await expect(image).not.toHaveAttribute("src", originalUrl!);
   expect(fixture.commands).toHaveLength(1);
@@ -2559,9 +2692,7 @@ test("真实 Team 登录切换后丢弃 mock 旧资料迟到响应与旧草稿�
     };
     await login(0);
     const editor = await openAgent(page);
-    await editor
-      .getByRole("textbox", { name: "智能体的名字", exact: true })
-      .fill("旧身份本地草稿");
+    await (await editText(editor, "name")).fill("旧身份本地草稿");
     let held = false;
     fixture.update(async (route, command) => {
       if (held) return false;
@@ -2602,13 +2733,9 @@ test("真实 Team 登录切换后丢弃 mock 旧资料迟到响应与旧草稿�
     fixture.snapshot.human.data.name = "新身份用户";
     await login(1);
     const next = await openAgent(page);
-    await expect(
-      next.getByRole("textbox", { name: "智能体的名字", exact: true }),
-    ).toHaveValue("新身份伙伴");
+    await expect(profileText(next, "name")).toHaveValue("新身份伙伴");
     gate.release();
-    await expect(
-      next.getByRole("textbox", { name: "智能体的名字", exact: true }),
-    ).toHaveValue("新身份伙伴");
+    await expect(profileText(next, "name")).toHaveValue("新身份伙伴");
     await expect(next.locator(".personality-save-state")).not.toHaveText(
       "正在保存资料",
     );
@@ -2646,8 +2773,17 @@ for (const appearance of ["light", "dark"] as const) {
     const agent = await openAgent(page);
     await expectCompactIdentity(agent);
     await expect(
-      agent.getByRole("heading", { name: "表达偏好", exact: true }),
-    ).toHaveCount(1);
+      agent.locator(".personality-preferences > summary > span").first(),
+    ).toHaveText("个性与表达");
+    await expect(agent.locator(".personality-preferences")).not.toHaveAttribute(
+      "open",
+      "",
+    );
+    await expect(page.locator(".subject-settings-system")).not.toHaveAttribute(
+      "open",
+      "",
+    );
+    await expect(agent.getByRole("textbox")).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath(`agent-default-${appearance}-1440.png`),
       fullPage: true,
@@ -2670,9 +2806,30 @@ for (const appearance of ["light", "dark"] as const) {
       path: testInfo.outputPath(`agent-default-${appearance}-390.png`),
       fullPage: true,
     });
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await cssProfileZoom(page, 2);
+    await expectCompactIdentity(agent, 2);
+    await expect(agent.getByRole("textbox")).toHaveCount(0);
+    await expect(agent.getByRole("slider")).toHaveCount(0);
+    await expect(agent.locator(".personality-heading")).toBeInViewport({
+      ratio: 1,
+    });
+    await page.screenshot({
+      path: testInfo.outputPath(`agent-default-${appearance}-1440-2-view.png`),
+      fullPage: true,
+    });
+    await cssProfileZoom(page, 1);
+    await page.setViewportSize({ width: 390, height: 960 });
+    const emptyAgentName = await editText(agent, "name");
+    await expect(emptyAgentName).toHaveValue("");
+    await page.screenshot({
+      path: testInfo.outputPath(`agent-${appearance}-390-name-editor.png`),
+      fullPage: true,
+    });
+    await emptyAgentName.press("Escape");
     for (const label of ["幽默", "严谨", "亲和", "详略"])
       await setLevel(agent, label, 3);
-    await agent.getByText("自定义风格", { exact: true }).click();
+    await openCustom(agent);
     await agent
       .getByRole("checkbox", { name: "设置自定义风格", exact: true })
       .check();
@@ -2733,9 +2890,10 @@ for (const appearance of ["light", "dark"] as const) {
       await expect(customText).toBeInViewport({ ratio: 1 });
       await waitForAutosave(agent);
       await expectQuietProfileLabels(agent, true);
-      const connection = page
-        .locator(".subject-settings-system")
-        .getByRole("button", { name: "智能体连接", exact: true });
+      const connection = (await openSystem(page)).getByRole("button", {
+        name: "智能体连接",
+        exact: true,
+      });
       await connection.focus();
       await expect(connection).toBeFocused();
       await expect(connection).toBeInViewport({ ratio: 1 });
@@ -2745,10 +2903,10 @@ for (const appearance of ["light", "dark"] as const) {
     const human = await openHuman(page);
     await expectCompactIdentity(human);
     await expect(
-      human.getByRole("textbox", { name: "你的名字", exact: true }),
+      human.getByRole("button", { name: "编辑你的名字", exact: true }),
     ).toBeInViewport();
     await expect(
-      human.getByRole("textbox", { name: "Agent 对你的称呼", exact: true }),
+      human.getByRole("button", { name: "编辑称呼", exact: true }),
     ).toBeInViewport();
     const humanGeometry = await human.evaluate((element) => ({
       overflow: element.scrollWidth > element.clientWidth + 1,
@@ -2761,15 +2919,22 @@ for (const appearance of ["light", "dark"] as const) {
       path: testInfo.outputPath(`human-${appearance}-390.png`),
       fullPage: true,
     });
-    const name = human.getByRole("textbox", {
-      name: "你的名字",
-      exact: true,
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await cssProfileZoom(page, 2);
+    await expectCompactIdentity(human, 2);
+    await expect(human.getByRole("textbox")).toHaveCount(0);
+    await expect(human.locator(".personality-heading")).toBeInViewport({
+      ratio: 1,
     });
+    await page.screenshot({
+      path: testInfo.outputPath(`human-${appearance}-1440-2-view.png`),
+      fullPage: true,
+    });
+    await cssProfileZoom(page, 1);
+    await page.setViewportSize({ width: 390, height: 960 });
+    const name = await editText(human, "name");
     await name.fill(`TEST ${appearance} 资料草稿`);
-    const address = human.getByRole("textbox", {
-      name: "Agent 对你的称呼",
-      exact: true,
-    });
+    const address = await editText(human, "preferredAddress");
     await address.focus();
     await expect(address).toBeFocused();
     await expect(address).toBeInViewport({ ratio: 1 });

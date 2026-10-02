@@ -109,8 +109,8 @@ try {
   await panel.getByRole("tab", { name: "设定", exact: true }).click();
   const editor = panel.getByRole("region", { name: "智能体资料", exact: true });
   await editor
-    .getByRole("checkbox", { name: "设置智能体名字", exact: true })
-    .check();
+    .getByRole("button", { name: "编辑智能体名字", exact: true })
+    .click();
   await editor
     .getByRole("textbox", { name: "智能体的名字", exact: true })
     .fill("Echo");

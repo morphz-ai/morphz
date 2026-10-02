@@ -247,8 +247,11 @@ export function SubjectSidebar({
                 allowMotion={allowMotion}
               />
             )}
-            <div className="subject-settings-system">
-              <h4>能力与连接</h4>
+            <details className="subject-settings-system">
+              <summary>
+                <h4>能力与连接</h4>
+                <ChevronRight size={14} aria-hidden="true" />
+              </summary>
               <div className="subject-settings-group">
                 <dl>
                   {!profile && (
@@ -290,7 +293,7 @@ export function SubjectSidebar({
                   </details>
                 ) : null}
               </div>
-            </div>
+            </details>
           </section>
         )}
       </div>

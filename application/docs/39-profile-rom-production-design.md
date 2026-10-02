@@ -2,6 +2,14 @@
 
 状态：2026-10-02 Runtime ROM、Host/Profile 与 UI 首轮已实现。用户实际测试发现：未保存的预填数值被误看为有效配置，原生默认头像被否决，首轮缺少 UI 保存到实际模型请求的整链路证据。当前“不设置”及 Logo 修复已通过实际链路、独立真实模型与原窗口验收，详见下方记录；这不等于整个长期人格化目标或主观表达效果已经完成。历史证据保留，并区分隔离测试、原窗口及真实模型结果。
 
+### 2026-10-02 资料优先的展示修正
+
+默认身份区只展示圆角头像和已确认名字，不把 Profile 绘成常驻姓名标签、开关和输入框的配置卡。名字、Human 称呼可点击／键盘进入局部编辑；打开和关闭查看本身零写入，展示回退不转成 ROM。局部「不设置」沿用稀疏 null，文本继续自动保存；完成／Enter／Escape 是结束编辑而非撤销已提交结果，组合输入期间不退出，Escape 不触发原生 dialog cancel。个性与表达折叠摘要仅来自已确认且已启用的字段，无设定显示「由模型决定」，不生成新简介、虚构人格或额外模型请求。「能力与连接」为独立折叠操作组，原入口保留。
+
+总开关仍在标题右侧，关闭整份不使用；头像独立，桌面更换按钮仅悬停／键盘进入时出现。页签 Logo 继承同组图标颜色，身份与左侧品牌不改。右栏显隐、合法页签及宽度在原 center／principal 的界面偏好中保存，与左栏状态独立；不将旧执行图钉或具体 Thread、root、input 存为刷新恢复指令。以上为消费者展示调整，没有修改 Runtime、Host、schema、版本绑定或 prefix-cache 契约。
+
+本轮最终 Profile／Dock **43／43**（41.4 秒）、侧栏刷新／原伸缩 **14／14**（29.5 秒）、实际 UI → typed Host → 隔离 SQL → Rust Runtime → Provider 请求 **5／5**（14.5 秒），相关单测 **39／39**；全部零跳过。日志 `/tmp/morphz-profile-person-final-proof.log`、`/tmp/morphz-subject-reload-final.bWBaCA/final-ui.log`、`/tmp/morphz-profile-person-final.Uh5aje/deterministic-person-final.log` 和 `/tmp/morphz-profile-person-sidebar-unit.log`。实际链使用确定性 Provider 做字节验证，未新增付费模型或人格质量验收；DOM 的 IME／Escape 与 CSS 200% 不冒称原生系统输入法或 Electron 缩放。原同一 App 载入并只读实看双方资料，再次刷新后右栏自动保持设定及宽度，左栏保持原状态；前后 240／240 表逻辑摘要一致，未替用户改 Profile 或发送消息。完整实施及失败记录见 `13-implementation-status.md`。
+
 ## 1. 产品边界
 
 Agent 可以有名字、头像、幽默、严谨、亲和、详略和讲话风格；Human 可以设置自己的名字、希望 Agent 怎么称呼自己和头像。名字是显示身份，不重命名 Principal、Agent ID、Context、Session、Thread，也不搬移历史或取消工作。当前中心仍是一位 Agent，不增加成员管理、每项目 Agent 或新聊天体系。

@@ -6,7 +6,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from "react";
-import { Camera, ChevronRight } from "lucide-react";
+import { Camera, ChevronRight, Pencil } from "lucide-react";
 import {
   defaultAgentProfile,
   defaultHumanProfile,
@@ -104,12 +104,14 @@ export function ProfileEditor({
   const [avatarBusy, setBusy] = useState(false);
   const [avatarError, setError] = useState("");
   const [avatarConflict, setConflict] = useState<"avatar">();
+  const [editingName, setEditingName] = useState(false);
+  const [editingAddress, setEditingAddress] = useState(false);
   const busy = avatarBusy || auto.saving;
   const conflict = avatarConflict || auto.conflict;
   const error = avatarError || auto.error;
   const activateText = profile.textActivation[subject];
   // Like the save queue, an intermediate empty name retains the last
-  // confirmed name; only the name checkbox explicitly clears it.
+  // confirmed name; only the explicit unset action clears it.
   const hasConfiguration = (next: AgentProfileData | HumanProfileData) =>
     profileHasConfiguredFields({
       ...next,
@@ -190,10 +192,41 @@ export function ProfileEditor({
         document.getElementById(`${id}-${field}`)?.focus();
       });
   };
-  const textKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+  const openText = (field: "name" | "preferredAddress") => {
+    // Opening a personal detail is presentation only: a fallback name must
+    // never turn into a configured field or an instruction to the model.
+    if (field === "name") setEditingName(true);
+    else setEditingAddress(true);
+    requestAnimationFrame(() =>
+      document.getElementById(`${id}-${field}`)?.focus(),
+    );
+  };
+  const finishText = (field: "name" | "preferredAddress") => {
+    flushText();
+    if (field === "name") setEditingName(false);
+    else setEditingAddress(false);
+    requestAnimationFrame(() =>
+      document.getElementById(`${id}-${field}-edit`)?.focus(),
+    );
+  };
+  const textKey = (
+    e: KeyboardEvent<HTMLInputElement>,
+    field: "name" | "preferredAddress",
+  ) => {
+    if (e.key === "Escape") {
+      // A native dialog's cancel is a default action, not event bubbling.
+      // Composition may consume Escape without dismissing personal details.
       e.preventDefault();
-      flushText();
+      e.stopPropagation();
+    }
+    if (
+      (e.key === "Enter" || e.key === "Escape") &&
+      !e.nativeEvent.isComposing
+    ) {
+      e.preventDefault();
+      // Escape ends editing; it does not pretend to undo a durable autosave.
+      // Drafts and unknown/error receipts remain owned by the scoped queue.
+      finishText(field);
     }
   };
   async function upload(file?: File) {
@@ -301,6 +334,30 @@ export function ProfileEditor({
   }
   const agent = subject === "agent" ? (data as AgentProfileData) : undefined;
   const human = subject === "human" ? (data as HumanProfileData) : undefined;
+  const displayName =
+    actual?.data.name || (subject === "agent" ? "Morphz" : "我");
+  const confirmedAgent =
+    subject === "agent"
+      ? (actual?.data as AgentProfileData | undefined)
+      : undefined;
+  const expression =
+    confirmedAgent && actual?.enabled
+      ? [
+          ...traits.flatMap((trait) => {
+            const level = confirmedAgent.traits[trait.key];
+            return level === null ? [] : [trait.values[level]];
+          }),
+          ...styles
+            .filter((style) => style.value === confirmedAgent.speechStyle)
+            .map((style) => style.label),
+          ...(confirmedAgent.customStyle ? [confirmedAgent.customStyle] : []),
+        ]
+      : [];
+  const expressionText = expression.join(" · ") || "由模型决定";
+  const confirmedAddress =
+    subject === "human"
+      ? (actual?.data as HumanProfileData | undefined)?.preferredAddress
+      : null;
   if (profile.accessDenied)
     return (
       <section
@@ -356,7 +413,7 @@ export function ProfileEditor({
         <div className="personality-portrait">
           {subject === "agent" ? (
             <ProfileAvatar
-              name={data.name ?? "Morphz"}
+              name={displayName}
               label={stateLabel}
               state={state}
               src={urls?.original}
@@ -367,7 +424,7 @@ export function ProfileEditor({
             />
           ) : (
             <HumanAvatar
-              name={data.name ?? "我"}
+              name={displayName}
               src={urls?.original}
               posterSrc={urls?.poster}
               animated={animated}
@@ -398,33 +455,55 @@ export function ProfileEditor({
           />
         </div>
         <div className="personality-name">
-          <label className="personality-optional" htmlFor={`${id}-name-set`}>
-            <span>{subject === "agent" ? "名字" : "你的名字"}</span>
-            <span className="profile-visually-hidden">
-              {data.name === null ? "不设置" : "已设置"}
-            </span>
+          <button
+            id={`${id}-name-edit`}
+            className="personality-name-display"
+            type="button"
+            aria-label={subject === "agent" ? "编辑智能体名字" : "编辑你的名字"}
+            title={displayName}
+            hidden={editingName}
+            disabled={!editable}
+            onClick={() => openText("name")}
+          >
+            <span>{displayName}</span>
+            <Pencil size={13} aria-hidden="true" />
+          </button>
+          <div className="personality-inline-editor" hidden={!editingName}>
             <input
-              id={`${id}-name-set`}
-              type="checkbox"
-              aria-label={
-                subject === "agent" ? "设置智能体名字" : "设置你的名字"
-              }
-              checked={data.name !== null}
+              id={`${id}-name`}
+              aria-label={subject === "agent" ? "智能体的名字" : "你的名字"}
+              data-configured={data.name !== null}
+              maxLength={40}
+              value={data.name ?? ""}
               disabled={!editable}
-              onChange={(e) => selectText("name", e.target.checked)}
+              placeholder={subject === "agent" ? "Morphz" : "你的名字"}
+              onChange={(e) => textChange("name", e.target.value)}
+              onBlur={flushText}
+              onKeyDown={(e) => textKey(e, "name")}
             />
-          </label>
-          <input
-            id={`${id}-name`}
-            aria-label={subject === "agent" ? "智能体的名字" : "你的名字"}
-            maxLength={40}
-            value={data.name ?? ""}
-            disabled={!editable || data.name === null}
-            placeholder={subject === "agent" ? "Morphz" : "你的名字"}
-            onChange={(e) => textChange("name", e.target.value)}
-            onBlur={flushText}
-            onKeyDown={textKey}
-          />
+            <div className="personality-edit-actions">
+              <button
+                type="button"
+                disabled={!editable}
+                onClick={() => finishText("name")}
+              >
+                完成
+              </button>
+              <button
+                type="button"
+                aria-label={
+                  subject === "agent" ? "不设置智能体名字" : "不设置你的名字"
+                }
+                disabled={!editable}
+                onClick={() => {
+                  selectText("name", false);
+                  finishText("name");
+                }}
+              >
+                不设置
+              </button>
+            </div>
+          </div>
           {avatar?.media && (
             <button
               className="personality-text-action"
@@ -438,182 +517,219 @@ export function ProfileEditor({
       </div>
       {human && (
         <div className="personality-field">
-          <label className="personality-optional">
-            <span>希望我怎么称呼你</span>
-            <span className="profile-visually-hidden">
-              {human.preferredAddress === null ? "不设置" : "已设置"}
-            </span>
+          <button
+            id={`${id}-preferredAddress-edit`}
+            className="personality-detail-display"
+            type="button"
+            aria-label="编辑称呼"
+            hidden={editingAddress}
+            disabled={!editable}
+            onClick={() => openText("preferredAddress")}
+          >
+            <span>称呼</span>
+            <span>{confirmedAddress || "未设置"}</span>
+            <Pencil size={13} aria-hidden="true" />
+          </button>
+          <div className="personality-inline-editor" hidden={!editingAddress}>
+            <label
+              className="profile-visually-hidden"
+              htmlFor={`${id}-preferredAddress`}
+            >
+              称呼
+            </label>
             <input
-              type="checkbox"
-              aria-label="设置称呼"
-              checked={human.preferredAddress !== null}
+              id={`${id}-preferredAddress`}
+              aria-label="Agent 对你的称呼"
+              data-configured={human.preferredAddress !== null}
+              maxLength={40}
+              value={human.preferredAddress ?? ""}
+              placeholder="希望我怎么称呼你"
               disabled={!editable}
-              onChange={(e) => selectText("preferredAddress", e.target.checked)}
+              onChange={(e) => textChange("preferredAddress", e.target.value)}
+              onBlur={flushText}
+              onKeyDown={(e) => textKey(e, "preferredAddress")}
             />
-          </label>
-          <input
-            id={`${id}-preferredAddress`}
-            aria-label="Agent 对你的称呼"
-            maxLength={40}
-            value={human.preferredAddress ?? ""}
-            placeholder="称呼"
-            disabled={!editable || human.preferredAddress === null}
-            onChange={(e) => textChange("preferredAddress", e.target.value)}
-            onBlur={flushText}
-            onKeyDown={textKey}
-          />
+            <div className="personality-edit-actions">
+              <button
+                type="button"
+                disabled={!editable}
+                onClick={() => finishText("preferredAddress")}
+              >
+                完成
+              </button>
+              <button
+                type="button"
+                aria-label="不设置称呼"
+                disabled={!editable}
+                onClick={() => {
+                  selectText("preferredAddress", false);
+                  finishText("preferredAddress");
+                }}
+              >
+                不设置
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {agent && (
-        <div className="personality-preferences">
-          <h4 className="personality-group-title">表达偏好</h4>
-          <div className="personality-traits">
-            {traits.map((trait) => {
-              const level = agent.traits[trait.key];
-              return (
-                <div
-                  className="personality-trait"
-                  data-configured={level !== null}
-                  key={trait.key}
-                >
-                  <span className="personality-trait-heading">
-                    <span>{trait.label}</span>
+        <details className="personality-preferences">
+          <summary>
+            <span>个性与表达</span>
+            <span className="personality-expression" title={expressionText}>
+              {expressionText}
+            </span>
+            <ChevronRight size={14} aria-hidden="true" />
+          </summary>
+          <div className="personality-preferences-editor">
+            <div className="personality-traits">
+              {traits.map((trait) => {
+                const level = agent.traits[trait.key];
+                return (
+                  <div
+                    className="personality-trait"
+                    data-configured={level !== null}
+                    key={trait.key}
+                  >
+                    <span className="personality-trait-heading">
+                      <span>{trait.label}</span>
+                      {level !== null && (
+                        <span className="personality-trait-value">
+                          <output htmlFor={`${id}-${trait.key}`}>
+                            <span>{trait.values[level]}</span>
+                            <b>{level}</b>
+                          </output>
+                        </span>
+                      )}
+                      <label className="personality-optional">
+                        <span className="profile-visually-hidden">
+                          {level === null ? "不设置" : "已设置"}
+                        </span>
+                        <input
+                          type="checkbox"
+                          aria-label={`设置${trait.label}`}
+                          checked={level !== null}
+                          disabled={!editable}
+                          onChange={(e) =>
+                            change(
+                              {
+                                ...agent,
+                                traits: {
+                                  ...agent.traits,
+                                  [trait.key]: e.target.checked ? 0 : null,
+                                },
+                              },
+                              e.target.checked ? canActivate : enabled,
+                            )
+                          }
+                        />
+                      </label>
+                    </span>
                     {level !== null && (
-                      <span className="personality-trait-value">
-                        <output htmlFor={`${id}-${trait.key}`}>
-                          <span>{trait.values[level]}</span>
-                          <b>{level}</b>
-                        </output>
-                      </span>
+                      <>
+                        <input
+                          type="range"
+                          id={`${id}-${trait.key}`}
+                          aria-label={`${trait.label}程度`}
+                          aria-valuetext={`${level}，${trait.values[level]}`}
+                          min={0}
+                          max={5}
+                          step={1}
+                          value={level}
+                          disabled={!editable}
+                          style={
+                            {
+                              "--trait-fill": `${level * 20}%`,
+                            } as CSSProperties
+                          }
+                          onChange={(e) =>
+                            change(
+                              {
+                                ...agent,
+                                traits: {
+                                  ...agent.traits,
+                                  [trait.key]: Number(e.target.value),
+                                },
+                              },
+                              enabled,
+                              300,
+                            )
+                          }
+                          onPointerUp={flushText}
+                          onBlur={flushText}
+                        />
+                        <span className="personality-trait-ends">
+                          <span>{trait.low}</span>
+                          <span>{trait.high}</span>
+                        </span>
+                      </>
                     )}
-                    <label className="personality-optional">
-                      <span className="profile-visually-hidden">
-                        {level === null ? "不设置" : "已设置"}
-                      </span>
-                      <input
-                        type="checkbox"
-                        aria-label={`设置${trait.label}`}
-                        checked={level !== null}
-                        disabled={!editable}
-                        onChange={(e) =>
-                          change(
-                            {
-                              ...agent,
-                              traits: {
-                                ...agent.traits,
-                                [trait.key]: e.target.checked ? 0 : null,
-                              },
-                            },
-                            e.target.checked ? canActivate : enabled,
-                          )
-                        }
-                      />
-                    </label>
-                  </span>
-                  {level !== null && (
-                    <>
-                      <input
-                        type="range"
-                        id={`${id}-${trait.key}`}
-                        aria-label={`${trait.label}程度`}
-                        aria-valuetext={`${level}，${trait.values[level]}`}
-                        min={0}
-                        max={5}
-                        step={1}
-                        value={level}
-                        disabled={!editable}
-                        style={
-                          {
-                            "--trait-fill": `${level * 20}%`,
-                          } as CSSProperties
-                        }
-                        onChange={(e) =>
-                          change(
-                            {
-                              ...agent,
-                              traits: {
-                                ...agent.traits,
-                                [trait.key]: Number(e.target.value),
-                              },
-                            },
-                            enabled,
-                            300,
-                          )
-                        }
-                        onPointerUp={flushText}
-                        onBlur={flushText}
-                      />
-                      <span className="personality-trait-ends">
-                        <span>{trait.low}</span>
-                        <span>{trait.high}</span>
-                      </span>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <fieldset className="personality-speaking" disabled={!editable}>
-            <legend>讲话风格</legend>
-            <div>
-              <label>
-                <input
-                  type="radio"
-                  name={`${id}-style`}
-                  checked={agent.speechStyle === null}
-                  onChange={() => change({ ...agent, speechStyle: null })}
-                />
-                <span>不设置</span>
-              </label>
-              {styles.map((style) => (
-                <label key={style.value}>
+                  </div>
+                );
+              })}
+            </div>
+            <fieldset className="personality-speaking" disabled={!editable}>
+              <legend>讲话风格</legend>
+              <div>
+                <label>
                   <input
                     type="radio"
                     name={`${id}-style`}
-                    value={style.value}
-                    checked={agent.speechStyle === style.value}
-                    onChange={() =>
-                      change(
-                        { ...agent, speechStyle: style.value },
-                        agent.speechStyle === null ? canActivate : enabled,
-                      )
-                    }
+                    checked={agent.speechStyle === null}
+                    onChange={() => change({ ...agent, speechStyle: null })}
                   />
-                  <span>{style.label}</span>
+                  <span>不设置</span>
                 </label>
-              ))}
-            </div>
-          </fieldset>
-          <details className="personality-custom">
-            <summary>
-              <span>自定义风格</span>
-              <ChevronRight size={14} />
-            </summary>
-            <label className="personality-optional">
-              <span className="profile-visually-hidden">
-                {agent.customStyle === null ? "不设置" : "已设置"}
-              </span>
-              <input
-                type="checkbox"
-                aria-label="设置自定义风格"
-                checked={agent.customStyle !== null}
-                disabled={!editable}
-                onChange={(e) => selectText("customStyle", e.target.checked)}
+                {styles.map((style) => (
+                  <label key={style.value}>
+                    <input
+                      type="radio"
+                      name={`${id}-style`}
+                      value={style.value}
+                      checked={agent.speechStyle === style.value}
+                      onChange={() =>
+                        change(
+                          { ...agent, speechStyle: style.value },
+                          agent.speechStyle === null ? canActivate : enabled,
+                        )
+                      }
+                    />
+                    <span>{style.label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <details className="personality-custom">
+              <summary>
+                <span>自定义风格</span>
+                <ChevronRight size={14} />
+              </summary>
+              <label className="personality-optional">
+                <span className="profile-visually-hidden">
+                  {agent.customStyle === null ? "不设置" : "已设置"}
+                </span>
+                <input
+                  type="checkbox"
+                  aria-label="设置自定义风格"
+                  checked={agent.customStyle !== null}
+                  disabled={!editable}
+                  onChange={(e) => selectText("customStyle", e.target.checked)}
+                />
+              </label>
+              <textarea
+                id={`${id}-customStyle`}
+                aria-label="自定义讲话风格"
+                maxLength={500}
+                rows={3}
+                disabled={!editable || agent.customStyle === null}
+                value={agent.customStyle ?? ""}
+                placeholder="例如：先给结论，再聊细节。"
+                onChange={(e) => textChange("customStyle", e.target.value)}
+                onBlur={flushText}
               />
-            </label>
-            <textarea
-              id={`${id}-customStyle`}
-              aria-label="自定义讲话风格"
-              maxLength={500}
-              rows={3}
-              disabled={!editable || agent.customStyle === null}
-              value={agent.customStyle ?? ""}
-              placeholder="例如：先给结论，再聊细节。"
-              onChange={(e) => textChange("customStyle", e.target.value)}
-              onBlur={flushText}
-            />
-          </details>
-        </div>
+            </details>
+          </div>
+        </details>
       )}
       {!actual?.editable && actual?.available && (
         <p className="muted">由中心管理员管理</p>
