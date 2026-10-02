@@ -369,7 +369,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         ? threadId.slice("thread-".length)
         : "";
       const sourceSessionId = sentSessions.get(inputId);
-      if (sourceSessionId !== familyPath[1])
+      if (!sourceSessionId || sourceSessionId !== familyPath[1])
         return send(404, { error: "Session Thread not found" });
       return send(200, {
         session_id: sourceSessionId,

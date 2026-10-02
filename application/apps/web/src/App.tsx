@@ -720,6 +720,10 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }, [prefs.view]);
   const directoryScope = `${project?.id}:${conversationId}`;
   const canAuthorizeDirectories =
+    // The reserved ID of an unsent conversation is only a local draft. Its
+    // first input creates the authorized conversation atomically; there are
+    // no directory grants to read or inherit until that commit succeeds.
+    !selectedDraft &&
     !!client.boot?.capabilities.agentDirectories &&
     !!window.morphzDesktop?.directories;
   const [directoryState, setDirectoryState] = useState<DirectoryState>({

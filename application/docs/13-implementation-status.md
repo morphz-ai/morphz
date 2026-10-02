@@ -10,6 +10,12 @@
 两项都完成实现与验收后才结束本轮目标。剧本的生产数据模型／语义设计见
 `28-script-studio-executable-yao.md` 顶部；活动沿用真实父子关系与授权事实，不以同 Session／输入猜归组，不增加 LLM 请求、健康轮询或第二份执行账本。
 
+原窗口后续进展：同一原 App 解锁后正常重开，已实看原提醒主活动及独立子 Thread，错误的 family 截断提示已消失，未停止原提醒。通过真实 UI 创建 `TEST  1003` 项目、《TEST 原窗短确认 1003》及三个空条目；不使用另一手工中心、复制隔离候选或构造 Human IPC 输入。首次发送发现新命名草稿错误查询尚不存在的目录授权，使发送按钮被锁住；现在只在已持久对话读取目录授权，首次输入仍原子创建对话，零继承旧授权，已有对话查询失败继续阻止发送。
+
+该首发守门的实际挂载 App／Human IPC／Host／Platform 回归 2/2、零跳过（`/tmp/morphz-draft-conversation-directories-verified.log`），验证逐字正文、稳定 input ID、低 effort、刷新恢复、旧授权不变和首次提交后恢复目录读取。真实 Platform 入口专项 1/1（`/tmp/morphz-draft-directory-ingress-test.log`）；生产构建与严格类型通过（`/tmp/morphz-draft-directory-original-build-fixed.log`）。首轮构建暴露 family 夹具的可选 Session ID 未收窄，已增加不存在时的 404 守门，不用断言强转。中间 UI 测试误把 effort／正文断言放到非权威投影字段，已改核实际 Runtime activation／text；失败日志保留，不降低生产授权检查。
+
+原 UI 提案请求已于本地 02:55 实际发送，保存了原正文、轻量 effort，进入 Script discussion；候选仍为零。内部模型请求认证失败，尚未收到唯一提案，因此尚未发送简短确认，不把新 TEST Session 的创建当作剧本交付完成。原窗口四节点工具活动验收仍未开始；两项完整验收前目标保持进行中。
+
 子 Thread 实现、隔离真实 Runtime 与实际组件回归已通过。剧本 1.4.2 三组真实模型场景通过；
 1.4.3 首次新正向模型验收失败，修复独立证实的输出传输缺陷后，第二次有界真实链通过。
 原失败证据与新 build 的验收边界分别保留，详见下面的输出传输边界。
