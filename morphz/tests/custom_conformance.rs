@@ -128,6 +128,16 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
     on.authoring_state_sexpr =
         Some("(editor (custom RETAIN_THIS_STYLE) (custom-enabled true))".into());
     let v1 = committed(store.put_custom(on.clone(), "host").await.unwrap());
+    assert!(store
+        .get_custom_revision(&on.key, 0)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_custom_revision(&on.key, u64::MAX)
+        .await
+        .unwrap()
+        .is_none());
     let old_id = thread(&*store, &ids, "old", Some(&ids.3)).await;
     let old = store.bind_thread_custom(&old_id).await.unwrap();
     assert!(old
@@ -161,6 +171,24 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         .contains("RETAIN_THIS_STYLE"));
     assert!(!v2.canonical_sexpr.contains("RETAIN_THIS_STYLE"));
     assert_eq!(store.get_custom(&off.key).await.unwrap(), Some(v2.clone()));
+    assert_eq!(
+        store.get_custom_revision(&off.key, 1).await.unwrap(),
+        Some(v1.clone())
+    );
+    assert_eq!(
+        store.get_custom_revision(&off.key, 2).await.unwrap(),
+        Some(v2.clone())
+    );
+    assert!(store
+        .get_custom_revision(&off.key, 3)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store.get_custom(&off.key).await.unwrap(),
+        Some(v2.clone()),
+        "history reads must not move the head"
+    );
     assert_eq!(
         store.list_custom(&ids.0, None).await.unwrap(),
         vec![v2.clone()]
@@ -292,7 +320,21 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         "(human (name Alice))",
     );
     private.authoring_state_sexpr = Some("(editor (private PRIVATE_ALICE_EDITOR))".into());
-    let private_v1 = committed(store.put_custom(private, "host").await.unwrap());
+    let private_v1 = committed(store.put_custom(private.clone(), "host").await.unwrap());
+    assert_eq!(
+        store.get_custom_revision(&private.key, 1).await.unwrap(),
+        Some(private_v1.clone())
+    );
+    let mut other_scope = private.key.clone();
+    other_scope.principal_scope = Some(ids.4.clone());
+    assert!(
+        store
+            .get_custom_revision(&other_scope, 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "history reads are exact-scope, not latest public/private fallback"
+    );
     assert_eq!(
         store.list_custom(&ids.0, Some(&ids.3)).await.unwrap(),
         vec![private_v1]
@@ -344,6 +386,34 @@ async fn authoring_conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix:
         assert!(store.get_custom(&invalid.key).await.unwrap().is_none());
     }
     assert_eq!(v1.canonical_authoring_state, on.authoring_state_sexpr);
+    let mut disabled = off.clone();
+    disabled.command_id = format!("{prefix}-author-disable-history");
+    disabled.expected_revision = 3;
+    disabled.enabled = false;
+    let v4 = committed(store.put_custom(disabled, "host").await.unwrap());
+    assert!(!v4.enabled);
+    assert!(
+        store
+            .get_custom_revision(&off.key, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(
+        store.get_custom_revision(&off.key, 4).await.unwrap(),
+        Some(v4.clone())
+    );
+    assert_eq!(
+        committed(store.put_custom(off.clone(), "host").await.unwrap()),
+        v2,
+        "full PUT exact retry keeps the original immutable receipt after intervening writes"
+    );
+    assert_eq!(
+        store.get_custom(&off.key).await.unwrap(),
+        Some(v4),
+        "history reads and exact retries do not roll the head back or re-enable it"
+    );
 }
 
 async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
@@ -1052,6 +1122,81 @@ async fn sqlite_custom_authority_conformance_and_reopen() {
             .unwrap(),
         before.unwrap()
     );
+}
+
+#[tokio::test]
+async fn postgres_custom_authoring_history_isolated(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Ok(url) = std::env::var("MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL") else {
+        eprintln!("SKIPPED real PostgreSQL Custom history: set MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL to an explicitly approved test connection");
+        return Ok(());
+    };
+    // This test creates and cleans only its generated schema. It never uses
+    // the configured connection's public schema or a user's existing records.
+    let schema = format!(
+        "custom_history_{}_{}",
+        std::process::id(),
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap()
+            .unsigned_abs()
+    );
+    assert!(
+        schema.starts_with("custom_history_")
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await?;
+    let mut scoped = reqwest::Url::parse(&url)?;
+    let query = scoped
+        .query_pairs()
+        .filter(|(key, _)| key != "options")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    scoped.set_query(None);
+    scoped
+        .query_pairs_mut()
+        .extend_pairs(query)
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await?;
+    let expected_schema = schema.clone();
+    // Postgres migration borrows have SQLx's non-general Send bound. Keep the
+    // panic-contained test local; cleanup still runs before a panic is resumed.
+    let local = tokio::task::LocalSet::new();
+    let result = local
+        .run_until(async move {
+            tokio::task::spawn_local(async move {
+                let store = Arc::new(PostgresStore::new(scoped.as_str(), 4).await?);
+                let search_path: String = sqlx::query_scalar("SHOW search_path")
+                    .fetch_one(store.pool())
+                    .await?;
+                assert_eq!(
+                    search_path, expected_schema,
+                    "no public fallback is permitted"
+                );
+                authoring_conformance(store.clone(), &expected_schema).await;
+                store.pool().close().await;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            })
+            .await
+        })
+        .await;
+    let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await;
+    admin.close().await;
+    cleanup?;
+    match result {
+        Ok(result) => result,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[tokio::test]

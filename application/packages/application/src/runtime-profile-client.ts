@@ -153,6 +153,7 @@ export class RuntimeProfileClient {
   async identity(
     access: Pick<AccessContext, "principalId">,
     active: () => void = () => {},
+    expectedAgentId?: string,
   ) {
     const status = z
       .object({
@@ -160,6 +161,8 @@ export class RuntimeProfileClient {
         principal_id: z.string().min(1).max(512),
       })
       .parse(await this.call("/api/status", active));
+    if (expectedAgentId !== undefined && status.agent_id !== expectedAgentId)
+      throw new DomainError("forbidden", "工具调用者不是当前个人智能体。");
     const config = this.configuration();
     const team = config.identityMode === "trusted_gateway";
     const principalId = team
@@ -190,29 +193,38 @@ export class RuntimeProfileClient {
     subject: "human" | "agent",
     identity: { agentId: string; principalId: string },
     active: () => void,
+    revision?: number,
   ) {
     const expected = {
       agent_id: identity.agentId,
       namespace: profileCustom[subject].namespace,
       ...(subject === "human" ? { principal_scope: identity.principalId } : {}),
     };
+    const query = new URLSearchParams();
+    if (subject === "human") query.set("principal_scope", identity.principalId);
+    if (revision !== undefined) query.set("revision", String(revision));
     const path =
       `/api/agents/${encodeURIComponent(identity.agentId)}/custom/${profileCustom[subject].namespace}` +
-      (subject === "human"
-        ? "?principal_scope=" + encodeURIComponent(identity.principalId)
-        : "");
+      (query.size ? "?" + query.toString() : "");
     const raw = await this.call(path, active);
-    if (raw === null)
+    if (raw === null) {
+      if (revision !== undefined)
+        throw new DomainError(
+          "conflict",
+          "Profile 原始版本不存在，请重新读取后保存。",
+        );
       return {
         revision: 0,
         enabled: false,
         data: subject === "human" ? defaultHumanProfile : defaultAgentProfile,
       };
+    }
     const record = recordSchema.parse(raw);
     if (
       record.key.agent_id !== expected.agent_id ||
       record.key.namespace !== expected.namespace ||
       record.key.principal_scope !== expected.principal_scope ||
+      (revision !== undefined && record.revision !== revision) ||
       (record.schema_tag !== profileCustom[subject].schemaTag &&
         record.schema_tag !== profileCustom[subject].legacySchemaTag)
     )
@@ -223,8 +235,12 @@ export class RuntimeProfileClient {
       data: this.recordData(subject, record),
     };
   }
-  async read(access: AccessContext, active: () => void = () => {}) {
-    const identity = await this.identity(access, active);
+  async read(
+    access: AccessContext,
+    active: () => void = () => {},
+    expectedAgentId?: string,
+  ) {
+    const identity = await this.identity(access, active, expectedAgentId);
     // A missing entry is a valid default; a missing Custom API is not support.
     const capability = await this.call(
       `/api/agents/${encodeURIComponent(identity.agentId)}/custom`,
@@ -242,16 +258,35 @@ export class RuntimeProfileClient {
     ]);
     return { identity, human, agent };
   }
+  /** Merge a sparse self-edit against its immutable authoring revision, not
+   * today's head. Replaying a command then produces exactly the same Custom
+   * write bytes even after intervening changes; Runtime owns CAS and receipts. */
+  async readAgentRevision(
+    access: AccessContext,
+    revision: number,
+    expectedAgentId: string,
+    active: () => void = () => {},
+  ) {
+    z.number().int().nonnegative().parse(revision);
+    const identity = await this.identity(access, active, expectedAgentId);
+    if (!identity.agentEditable)
+      throw new DomainError("forbidden", "团队智能体资料只读。");
+    if (revision === 0)
+      return { revision: 0, enabled: false, data: defaultAgentProfile };
+    const record = await this.readRecord("agent", identity, active, revision);
+    return { ...record, data: normalizeAgentProfileData(record.data) };
+  }
   async update(
     access: AccessContext,
     raw: unknown,
     active: () => void = () => {},
+    expectedAgentId?: string,
   ) {
     const request = profileUpdateSchema.parse(raw);
     if (request.subject === "human")
       request.data = normalizeHumanProfileData(request.data);
     else request.data = normalizeAgentProfileData(request.data);
-    const identity = await this.identity(access, active);
+    const identity = await this.identity(access, active, expectedAgentId);
     if (request.subject === "agent" && !identity.agentEditable)
       throw new DomainError("forbidden", "团队智能体资料只读。");
     const key = {

@@ -4745,6 +4745,16 @@ impl MorphzRuntime {
         self.inner.store.get_custom(key).await
     }
 
+    /// Trusted operator read of an immutable authoring revision. Zero means
+    /// unconfigured; model tools are not granted this control-plane API.
+    pub async fn get_custom_revision(
+        &self,
+        key: &crate::context::CustomKey,
+        revision: u64,
+    ) -> Result<Option<crate::context::Custom>, RuntimeError> {
+        self.inner.store.get_custom_revision(key, revision).await
+    }
+
     pub async fn list_custom(
         &self,
         agent_id: &str,

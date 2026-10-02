@@ -8624,6 +8624,13 @@ pub trait CustomStore: Send + Sync {
         &self,
         key: &crate::context::CustomKey,
     ) -> Result<Option<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Read an immutable authoring revision in this exact key/scope, never the
+    /// current head. Revision zero denotes absence and returns None.
+    async fn get_custom_revision(
+        &self,
+        key: &crate::context::CustomKey,
+        revision: u64,
+    ) -> Result<Option<crate::context::Custom>, Box<dyn std::error::Error + Send + Sync>>;
     /// Only this exact scope is returned. `None` lists public entries, never private data.
     async fn list_custom(
         &self,

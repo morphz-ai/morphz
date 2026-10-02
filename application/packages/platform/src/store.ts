@@ -1864,12 +1864,12 @@ export class PlatformStore {
     const actor = await this.authorize(access);
     if (subject !== "human" && subject !== "agent") throw new PlatformStorageError("invalid", "头像主体无效。");
     if (write && actor.kind !== "human") throw new PlatformStorageError("forbidden", "修改头像需要用户确认。");
-    if (actor.kind === "agent") await this.transaction(q => this.assertMember(q, actor, actor.scopeProjectId!), "read");
+    if (actor.kind === "agent") await this.transaction(q => this.assertMember(q, actor, actor.scopeProjectId!, false), "read");
     if (subject === "human") return { actor, subjectId: actor.principalId };
     const agent = await this.capabilities.resolveProfileAgent?.({ tenantId: actor.tenantId, principalId: actor.principalId });
     if (!agent || !agent.agentId || agent.agentId.length > 512 || /[\x00-\x1f\x7f]/.test(agent.agentId)) throw new PlatformStorageError("forbidden", "智能体身份尚未可靠连接。");
     if (write && !agent.editable) throw new PlatformStorageError("forbidden", "当前智能体资料只读。");
-    return { actor, subjectId: agent.agentId };
+    return { actor, subjectId: agent.agentId, editable: agent.editable };
   }
 
   private async profileAvatarState(q: Query, tenantId: string, subject: ProfileSubject, subjectId: string): Promise<ProfileAvatarSnapshot> {

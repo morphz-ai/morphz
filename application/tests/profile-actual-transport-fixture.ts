@@ -61,7 +61,7 @@ export async function profileActualTransportFixture(
   const runtimePort = await port(),
     hostPort = await port();
   const namespace = randomUUID();
-  const manifest = prepareHostTools(directory, hostPort, namespace, true);
+  const manifest = prepareHostTools(directory, hostPort, namespace);
   const runtimeUrl = `http://127.0.0.1:${runtimePort}`;
   const origin = `http://127.0.0.1:${hostPort}`;
   const requests: CapturedRequest[] = [];
@@ -76,18 +76,22 @@ export async function profileActualTransportFixture(
     response: ServerResponse,
     request: CapturedRequest,
     transaction?: string,
+    providedTool?: { name: string; arguments: unknown },
   ) => {
-    const call = transaction
-      ? {
-          index: 0,
-          id: randomUUID(),
-          type: "function",
-          function: {
-            name: "context_tx",
-            arguments: JSON.stringify({ transaction }),
-          },
-        }
-      : undefined;
+    const call =
+      transaction || providedTool
+        ? {
+            index: 0,
+            id: randomUUID(),
+            type: "function",
+            function: {
+              name: providedTool?.name ?? "context_tx",
+              arguments: JSON.stringify(
+                providedTool?.arguments ?? { transaction },
+              ),
+            },
+          }
+        : undefined;
     const message = call
       ? { role: "assistant", content: "", tool_calls: [call] }
       : {
@@ -299,6 +303,7 @@ export async function profileActualTransportFixture(
         authority: bindingAuthority.authority,
         work: domains.work.service,
         content: domains.content,
+        profile: domains.profiles.service,
         reader: domains.reader.service,
       }),
     });
@@ -350,6 +355,15 @@ export async function profileActualTransportFixture(
         const item = held.get(marker);
         assert.ok(item, "Expected held actual provider request");
         respond(item.response, item.request);
+        held.delete(marker);
+      },
+      releaseWithTool(marker: string, name: string, args: unknown) {
+        const item = held.get(marker);
+        assert.ok(item, "Expected held actual provider request");
+        respond(item.response, item.request, undefined, {
+          name,
+          arguments: args,
+        });
         held.delete(marker);
       },
       async continueHeld(marker: string) {

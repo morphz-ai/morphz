@@ -6,6 +6,8 @@ import {
   profileToolSchema,
   profileUpdateSchema,
   profileCustomStyleEnabled,
+  mergeAgentProfilePatch,
+  normalizeAgentProfileData,
   type ProfileSnapshot,
 } from "../../core/src/profile.js";
 import type { PlatformActor, PlatformStore } from "../../platform/src/store.js";
@@ -95,9 +97,13 @@ export class ProfileService {
       active,
     );
   }
-  /** Agent requests are data, never an implicit Human confirmation or Custom put.
-   * No pending draft is represented as a saved profile or durable receipt. */
-  async agentOperation(actor: PlatformActor, raw: unknown) {
+  /** Human proposals remain proposals. The host may perform a narrowly scoped
+   * self-Agent Custom update under the actual persisted invocation identity. */
+  async agentOperation(
+    actor: PlatformActor,
+    raw: unknown,
+    trustedAgentId?: string,
+  ) {
     const request = profileToolSchema.parse(raw);
     if (request.action === "read") {
       const snapshot = await this.read(actor);
@@ -109,6 +115,67 @@ export class ProfileService {
       )
         snapshot.agent.data = { ...snapshot.agent.data, customStyle: null };
       return snapshot;
+    }
+    if (request.action === "update") {
+      const owner = await this.platform.profileAvatarSubject(actor, "agent");
+      if (
+        owner.actor.kind !== "agent" ||
+        !owner.actor.runtimeInputId ||
+        !trustedAgentId ||
+        owner.subjectId !== trustedAgentId ||
+        !("editable" in owner) ||
+        !owner.editable
+      )
+        throw new DomainError(
+          "forbidden",
+          "只能修改本次调用所属的个人智能体资料。",
+        );
+      if (
+        request.enabled === undefined &&
+        (!request.data ||
+          !Object.values(request.data).some(
+            (value) =>
+              value !== undefined &&
+              (typeof value !== "object" ||
+                value === null ||
+                Object.keys(value).length > 0),
+          ))
+      )
+        throw new DomainError("invalid", "请指定要修改的资料字段或使用开关。");
+      const runtime = this.runtime();
+      if (!runtime)
+        throw new DomainError("invalid", "尚未连接 Runtime，Profile 未保存。");
+      const access: AccessContext = {
+        principalId: owner.actor.principalId,
+        actantId: owner.actor.initiatingHumanActantId!,
+      };
+      // Full authoring data remains inside the trusted Host. It is never
+      // returned to the Agent simply to reconstruct a sparse write.
+      const current = await runtime.profiles.readAgentRevision(
+        access,
+        request.expectedRevision,
+        trustedAgentId,
+      );
+      const saved = await runtime.profiles.update(
+        access,
+        {
+          subject: "agent",
+          commandId: request.commandId,
+          expectedRevision: request.expectedRevision,
+          enabled: request.enabled ?? current.enabled,
+          data: mergeAgentProfilePatch(current.data, request.data ?? {}),
+        },
+        () => {},
+        trustedAgentId,
+      );
+      const data = normalizeAgentProfileData(saved.data);
+      return {
+        ...saved,
+        data:
+          !saved.enabled || !profileCustomStyleEnabled(data)
+            ? { ...data, customStyle: null }
+            : data,
+      };
     }
     await this.platform.profileAvatarSubject(actor, "human");
     return {

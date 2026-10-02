@@ -196,6 +196,21 @@ impl CustomStore for PostgresStore {
         sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND h.namespace=$2 AND h.principal_scope IS NOT DISTINCT FROM $3::text AND v.revision=h.current_revision"))
             .bind(&key.agent_id).bind(&key.namespace).bind(&key.principal_scope).fetch_optional(&self.pool).await?.map(record).transpose()
     }
+    async fn get_custom_revision(
+        &self,
+        key: &CustomKey,
+        revision: u64,
+    ) -> Result<Option<Custom>, StoreError> {
+        validate_key(key)?;
+        if revision == 0 {
+            return Ok(None);
+        }
+        let Ok(revision) = i64::try_from(revision) else {
+            return Ok(None);
+        };
+        sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND h.namespace=$2 AND h.principal_scope IS NOT DISTINCT FROM $3::text AND v.revision=$4"))
+            .bind(&key.agent_id).bind(&key.namespace).bind(&key.principal_scope).bind(revision).fetch_optional(&self.pool).await?.map(record).transpose()
+    }
 
     async fn list_custom(
         &self,

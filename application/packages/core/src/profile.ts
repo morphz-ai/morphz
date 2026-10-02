@@ -529,6 +529,29 @@ export const profileUpdateSchema = z.discriminatedUnion("subject", [
     .strict(),
 ]);
 export type ProfileUpdate = z.infer<typeof profileUpdateSchema>;
+/** Agent self-editing is a sparse patch. Omission retains authoring values;
+ * explicit null unsets a field. Enable switches never erase retained text. */
+export const agentProfilePatchSchema = z
+  .object({
+    name: agentProfileDataSchema.shape.name.optional(),
+    traits: agentProfileDataSchema.shape.traits.partial().optional(),
+    speechStyle: agentProfileDataSchema.shape.speechStyle.optional(),
+    customStyle: z.string().trim().max(500).nullable().optional(),
+    customStyleEnabled: z.boolean().optional(),
+  })
+  .strict();
+export type AgentProfilePatch = z.infer<typeof agentProfilePatchSchema>;
+export function mergeAgentProfilePatch(
+  current: AgentProfileData,
+  raw: AgentProfilePatch,
+): AgentProfileData {
+  const patch = agentProfilePatchSchema.parse(raw);
+  return normalizeAgentProfileData({
+    ...current,
+    ...patch,
+    traits: { ...current.traits, ...patch.traits },
+  });
+}
 export const profileUpdateResultSchema = z.discriminatedUnion("subject", [
   z
     .object({
@@ -567,6 +590,14 @@ export const profileAvatarReadSchema = z
   .strict();
 export const profileToolSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("read") }).strict(),
+  z
+    .object({
+      action: z.literal("update"),
+      ...commandFields,
+      enabled: z.boolean().optional(),
+      data: agentProfilePatchSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       action: z.literal("propose"),

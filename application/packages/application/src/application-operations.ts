@@ -90,7 +90,9 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       `profile.${action}`,
       action === "read"
         ? "读取本人和智能体资料"
-        : "请求用户确认资料修改（不会直接保存）",
+        : action === "update"
+          ? "实际保存自身个人智能体资料；省略保留、null取消；enabled独立控制使用，关闭保留设定；须使用当前revision和稳定commandId，不能改用户或团队智能体"
+          : "请求用户确认资料修改（不会直接保存）",
       action === "read" ? "read" : "write",
       withoutAction(schema),
       (params) => ({ action: "profile", profile: { action, ...params } }),

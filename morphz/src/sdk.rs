@@ -2586,6 +2586,21 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    /// Same trusted-operator/exact-scope boundary as the head read. Returns
+    /// the immutable authoring record, including inactive editor preferences.
+    pub async fn get_custom_revision_as_operator(
+        &self,
+        key: &CustomKey,
+        revision: u64,
+    ) -> SdkResult<Option<Custom>> {
+        crate::context::validate_key(key)
+            .map_err(|e| SdkError::new(SdkErrorCode::InvalidArgument, e.to_string()))?;
+        self.runtime
+            .get_custom_revision(key, revision)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn list_custom_as_operator(
         &self,
         agent_id: &str,

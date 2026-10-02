@@ -4227,6 +4227,8 @@ async fn handle_list_agents(
 
 #[derive(Debug, serde::Deserialize)]
 struct CustomQuery {
+    /// Optional immutable authoring revision; absence reads the current head.
+    revision: Option<u64>,
     token: Option<String>,
     principal_scope: Option<String>,
 }
@@ -4311,7 +4313,16 @@ async fn handle_get_custom(
         namespace,
         principal_scope: query.principal_scope,
     };
-    match state.sdk.get_custom_as_operator(&key).await {
+    let result = match query.revision {
+        Some(revision) => {
+            state
+                .sdk
+                .get_custom_revision_as_operator(&key, revision)
+                .await
+        }
+        None => state.sdk.get_custom_as_operator(&key).await,
+    };
+    match result {
         Ok(Some(record)) => Json(record).into_response(),
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Custom entry does not exist"),
         Err(error) => sdk_error_response(error),
@@ -11218,6 +11229,7 @@ mod tests {
             enabled: true,
         };
         let query = || CustomQuery {
+            revision: None,
             token: None,
             principal_scope: Some("rom-human".into()),
         };
@@ -11297,6 +11309,7 @@ mod tests {
             Path("agent-test".into()),
             dashboard_headers(),
             Query(CustomQuery {
+                revision: None,
                 token: None,
                 principal_scope: None,
             }),
@@ -11460,6 +11473,90 @@ mod tests {
                 assert_eq!(response.status().as_u16(), 200);
                 let listed: Value = response.json().await.unwrap();
                 assert_eq!(listed["entries"], json!([committed["record"]]));
+            }
+
+            // Host sparse-patch retries merge against their immutable expected
+            // revision, not a later head. History is still operator-only.
+            let mut changed = command.clone();
+            changed.command_id = format!("custom-history-{first}");
+            changed.expected_revision = 1;
+            changed.body_sexpr = "(profile (name Nora))".into();
+            changed.authoring_state_sexpr =
+                Some("(editor (retained CHANGED_INACTIVE_ONLY))".into());
+            changed.enabled = false;
+            let response = client
+                .put(path(first))
+                .bearer_auth("dashboard-secret")
+                .json(&changed)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 200);
+            let changed: Value = response.json().await.unwrap();
+            assert_eq!(changed["record"]["revision"], 2);
+            assert_eq!(changed["record"]["enabled"], false);
+            let history_path = |resource: &str, revision: &str| {
+                let separator = if query.is_empty() { '?' } else { '&' };
+                format!("{}{separator}revision={revision}", path(resource))
+            };
+            for resource in [first, second] {
+                let response = client
+                    .get(history_path(resource, "1"))
+                    .bearer_auth("gateway-secret")
+                    .header("x-morphz-principal", "custom-human")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 401);
+                for (revision, expected) in [("1", &committed["record"]), ("2", &changed["record"])]
+                {
+                    let response = client
+                        .get(history_path(resource, revision))
+                        .bearer_auth("dashboard-secret")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 200);
+                    assert_eq!(response.json::<Value>().await.unwrap(), *expected);
+                }
+                for revision in ["0", "3", "18446744073709551615"] {
+                    let response = client
+                        .get(history_path(resource, revision))
+                        .bearer_auth("dashboard-secret")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 404);
+                }
+                for revision in ["-1", "not-a-revision"] {
+                    let response = client
+                        .get(history_path(resource, revision))
+                        .bearer_auth("dashboard-secret")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), 400);
+                }
+                let response = client
+                    .put(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .json(&command)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                let replay: Value = response.json().await.unwrap();
+                assert_eq!(replay["duplicate"], true);
+                assert_eq!(replay["record"], committed["record"]);
+                assert_eq!(replay["receipt"], committed["receipt"]);
+                let response = client
+                    .get(path(resource))
+                    .bearer_auth("dashboard-secret")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                assert_eq!(response.json::<Value>().await.unwrap(), changed["record"]);
             }
         }
         for resource in ["custom", "rom"] {

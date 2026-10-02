@@ -222,7 +222,11 @@ export class PlatformAgentTools {
         throw new DomainError("invalid", "Profile 操作不可用。");
       if (platformSource === "task-run" || !inputId)
         throw new DomainError("forbidden", "后台事项不能请求修改用户资料。");
-      return this.domain.profile.agentOperation(actor, args.profile);
+      return this.domain.profile.agentOperation(
+        actor,
+        args.profile,
+        route.agent_id,
+      );
     }
     if (args.action === "applications") {
       if (platformSource === "task-run" || !inputId)
