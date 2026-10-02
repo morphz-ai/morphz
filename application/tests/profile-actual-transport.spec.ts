@@ -129,6 +129,13 @@ async function settled(editor: Locator, expectedEnabled = true) {
     subject === "agent"
       ? normalizeAgentProfileData(intent)
       : normalizeHumanProfileData(intent);
+  const usageIntent =
+    subject === "agent"
+      ? (await editor.getAttribute("data-profile-use")) === "true"
+      : await editor
+          .getByRole("checkbox", { name: "使用个人资料", exact: true })
+          .isChecked();
+  expect(usageIntent).toBe(expectedEnabled);
   expect(expectedEnabled && profileHasConfiguredFields(data)).toBe(
     expectedEnabled,
   );
@@ -141,22 +148,57 @@ async function settled(editor: Locator, expectedEnabled = true) {
     .toEqual(data);
   await expect
     .poll(async () => (await fixture.read())[subject].enabled)
-    .toBe(expectedEnabled);
+    .toBe(usageIntent);
   await expect(editor.getByRole("alert")).toHaveCount(0);
   await expect(editor.locator(".personality-save-state")).toHaveText(
     "资料已保存",
   );
-  const usage = editor.getByRole("checkbox", {
-    name: subject === "agent" ? "使用人格设定" : "使用个人资料",
-    exact: true,
-  });
-  // Usage is a secondary positive control; empty settings remain optional and
-  // cannot manufacture a configured ROM merely by toggling the control.
-  if (profileHasConfiguredFields(data))
-    await expect(usage).toBeChecked({ checked: expectedEnabled });
-  else {
-    await expect(usage).not.toBeChecked();
-    await expect(usage).toBeDisabled();
+  if (subject === "agent") {
+    await expect(editor).toHaveAttribute(
+      "data-profile-use",
+      String(expectedEnabled),
+    );
+    await expect(
+      editor.locator(".personality-identity input[type=checkbox]"),
+    ).toHaveCount(0);
+    const usage = editor.locator(".personality-usage");
+    if (profileHasConfiguredFields(data)) {
+      await expect(usage).toBeVisible();
+      await expect(
+        usage.getByRole("button", {
+          name: expectedEnabled ? "不使用人格设定" : "使用这些设定",
+          exact: true,
+        }),
+      ).toBeEnabled();
+      await expect(
+        usage.getByRole("button", {
+          name: expectedEnabled ? "使用这些设定" : "不使用人格设定",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      if (!expectedEnabled)
+        await expect(
+          usage.getByText("未使用人格设定", { exact: true }),
+        ).toBeVisible();
+    } else {
+      // Empty Profile is not a disabled/dead global choice. Only actual fields
+      // activate ROM; this presentation change must not manufacture a write.
+      await expect(usage).toHaveCount(0);
+      await expect(
+        editor.getByRole("button", { name: /^(不使用人格设定|使用这些设定)$/ }),
+      ).toHaveCount(0);
+    }
+  } else {
+    const usage = editor.getByRole("checkbox", {
+      name: "使用个人资料",
+      exact: true,
+    });
+    if (profileHasConfiguredFields(data))
+      await expect(usage).toBeChecked({ checked: expectedEnabled });
+    else {
+      await expect(usage).not.toBeChecked();
+      await expect(usage).toBeDisabled();
+    }
   }
   await expect(
     editor.getByRole("button", { name: "保存", exact: true }),
@@ -207,12 +249,17 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
   });
   await enter(page);
   const editor = await agentEditor(page);
+  await expect(editor).toHaveAttribute("data-profile-use", "false");
+  await expect(
+    editor.locator(".personality-identity input[type=checkbox]"),
+  ).toHaveCount(0);
   await expect(
     editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
-  ).not.toBeChecked();
+  ).toHaveCount(0);
+  await expect(editor.locator(".personality-usage")).toHaveCount(0);
   await expect(
-    editor.getByRole("checkbox", { name: "使用人格设定", exact: true }),
-  ).toBeDisabled();
+    editor.getByRole("button", { name: /^(不使用人格设定|使用这些设定)$/ }),
+  ).toHaveCount(0);
   await expect(editor.getByRole("slider")).toHaveCount(0);
   for (const label of ["幽默", "严谨", "亲和", "详略"])
     await expect(
@@ -299,8 +346,8 @@ test("真实 UI 自动保存稀疏0/5、空值不默认注入；停用后新Thre
   expect(bindings[0]!.revision).toBe(saved.agent.revision);
 
   await editor
-    .getByRole("checkbox", { name: "使用人格设定", exact: true })
-    .uncheck();
+    .getByRole("button", { name: "不使用人格设定", exact: true })
+    .click();
   await settled(editor, false);
   expect((await fixture.read()).agent).toMatchObject({
     enabled: false,
@@ -697,8 +744,8 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
   expect(continued).not.toContain("(name Nova)");
 
   await editor
-    .getByRole("checkbox", { name: "使用人格设定", exact: true })
-    .uncheck();
+    .getByRole("button", { name: "不使用人格设定", exact: true })
+    .click();
   const disabled = await settled(editor, false);
   expect(disabled.data.name).toBe("Nova");
   await level(editor, "幽默", 5);
@@ -716,8 +763,8 @@ test("同一Session即时Echo与旧Thread固定版本；整体off零ROM，custom
     ),
   ).toEqual(echoBindings);
   await editor
-    .getByRole("checkbox", { name: "使用人格设定", exact: true })
-    .check();
+    .getByRole("button", { name: "使用这些设定", exact: true })
+    .click();
   const restored = await settled(editor);
   expect(restored.data).toEqual(editedWhileDisabled.data);
   expect(restored.revision).toBe(editedWhileDisabled.revision + 1);

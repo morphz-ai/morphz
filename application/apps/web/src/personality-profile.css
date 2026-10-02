@@ -327,6 +327,40 @@
 .personality-preferences-editor {
   padding-top: 12px;
 }
+.personality-usage {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.personality-usage > span {
+  margin-right: auto;
+}
+.app .personality-usage-action {
+  flex: none;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app .personality-usage-action:hover {
+  color: var(--ink);
+  background: transparent;
+}
+.app .personality-usage-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 .personality-traits {
   display: grid;
   border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
