@@ -1,5 +1,17 @@
 # 桌面能力实施记录
 
+## 2026-10-02 Profile 显式设定与默认 Logo 修复
+
+首轮 UI 自动预填 2／3 等数值，但原窗口未保存，Runtime 没有 Profile；界面容易被当作已生效，首轮验证也缺少 UI 到实际模型请求的整链证据。本轮不以该预填值代替配置：Agent／Human 默认停用，姓名、称呼、四项特性、讲话风格及自定义风格独立允许不设置。`null` 完全省略，0 是明确分值；全空不能启用。关闭整份保留已选值及独立头像，但新 Thread 不挂载该 Profile。保存前显示待保存，真实回执与持久读回一致后才显示实际启用状态。已保存 v1 不自动改写，原 Thread 的确定版本绑定不变。默认 Agent 头像改回既有 Morphz Logo，删除被否决的紫色卡通及其概念变体，上传能力和已有资源保留。
+
+Core／Host 阶段本地提交 `9320a105`：25 项定向测试，24 通过、0 失败、1 跳过（未配置本轮 PostgreSQL 环境）；包含 v1 原样读取、稀疏编译、0／null、停用数据和头像保留、权限、CAS／幂等与 Agent 工具 JSON Schema。最新 UI **26／26**、Avatar 实际 DOM／领域 **5／5** 通过，明暗、390px、200% 截图逐张复看；TypeScript、Vite、Host 构建及差异检查通过。构建日志 `/tmp/morphz-profile-optional-final-build.log`。不是应用全量回归，也不补称本轮完成 PostgreSQL 验收。
+
+新增实际整链 **4／4**（8.8 秒）：真实 UI → typed HTTP Host → 隔离持久 SQL → 实际 Rust Runtime → 实际模型 HTTP 请求；确定性 Provider 回应仅用于请求字节断言。验证初始无 Profile、只选幽默5／严谨0、关闭及全空后新工作无 Profile 扩展、旧工作 continuation 固定旧版本、真实丢回执同命令重试及 Rust CAS409；Human 只设称呼的私有 Principal 精确绑定，公开入口404，停用后新请求不注入。最后补正空自定义风格／空称呼的 UI canonical intent 与 Host 一致，实际提交为null，读回未启用且不再误报资料再次变化。最新构建再跑上述UI26／26及Avatar5／5通过。日志 `/tmp/morphz-profile-actual-transport-final-ui.log`，复跑配置 `playwright.profile-actual.config.ts`。
+
+另用原已配置的 `gpt-6.1-sol` 做独立真实模型 probe，**3 次实际请求**：未设置回答「幽默配置：未设置。」→ UI 保存幽默5回答「幽默配置：5/5。」→ UI 关闭后回答「幽默配置：未设置。」。输入只含合成验收问题，Host／Runtime 都是新建隔离库，凭据只在内存中交给既有本机代理，未写入仓库或测试配置，不传用户历史。不把这三次准确自报当作人格表现质量或上游 prefix-cache 命中率证明。
+
+原 `/Users/shafreeck/Applications/Morphz.app` 正常退出／重开后已实看：默认 Logo、使用 Profile 未启用、全部特性不设置、讲话风格不设置，原输入为空、听写关闭，恢复原设定侧栏。最后空文本修复仅正常刷新Renderer，仍实看未启用与不设置。升级前私有备份包含12库、原配置、desktop和旧编译产物；原可见未保存测试值单独记为草稿快照，不擅自保存／启用或把旧预填迁成显式设定。切换前后240个表逻辑摘要中239个一致，唯一变化是原 Host 的 `runtime_deliveries` 投影（182条不增减）；早期备份已有180条全部原样，新增2条来自用户升级前的实际聊天。另已保存当前12库一致备份，全部quick_check=ok，包含新增消息。所有 Runtime 表原样，进程仍为11395，Session17、Thread237、ROM heads0，未来 pending timer1及原审批／目录授权保持。没有在用户原窗口保存 Profile、上传头像、发送验收消息或重启 Runtime。
+
 ## 2026-10-02 审批预览与推理默认读回修复
 
 审批控制器原先只在菜单打开后读取策略，导致首次进入或刷新时底栏保留未读取的空盾牌。现在对可见输入范围只读一次，菜单打开时再核对最新策略；不创建空 Session、不发送消息、不改审批权限，补充在途工作的入口仍不读取或修改它的权限。审批专项 **18／18**（24.9 秒）通过，新增三种模式在未打开菜单和刷新后的真实 SVG 断言，覆盖原有范围／身份竞态、安全默认及几何回归。日志 `/tmp/morphz-approval-preview-ui.log`。

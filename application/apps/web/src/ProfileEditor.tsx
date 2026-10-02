@@ -98,6 +98,9 @@ export function ProfileEditor({
   const [revision, setRevision] = useState(
     savedDraft?.revision ?? actual?.revision ?? 0,
   );
+  const [enabled, setEnabled] = useState(
+    savedDraft?.enabled ?? actual?.enabled ?? false,
+  );
   const [dirty, setDirty] = useState(!!savedDraft);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -126,6 +129,7 @@ export function ProfileEditor({
   useEffect(() => {
     if (actual && !dirty) {
       setData(actual.data);
+      setEnabled(actual.enabled);
       setRevision(actual.revision);
     }
   }, [actual?.revision, actual?.available, dirty]);
@@ -133,19 +137,25 @@ export function ProfileEditor({
     onBusy?.(busy);
     return () => onBusy?.(false);
   }, [busy, onBusy]);
-  const change = (next: AgentProfileData | HumanProfileData) => {
+  const change = (
+    next: AgentProfileData | HumanProfileData,
+    nextEnabled = enabled,
+  ) => {
     setData(next);
+    setEnabled(nextEnabled);
     setDirty(true);
     setSaved(false);
     setError("");
     if (subject === "agent")
       profile.drafts.current.agent = {
         data: next as AgentProfileData,
+        enabled: nextEnabled,
         revision,
       };
     else
       profile.drafts.current.human = {
         data: next as HumanProfileData,
+        enabled: nextEnabled,
         revision,
       };
   };
@@ -154,11 +164,14 @@ export function ProfileEditor({
     setError("");
     setSaved(false);
     try {
+      if (data.name !== null && !data.name.trim())
+        throw new Error("请填写名字，或选择不设置。");
       const candidate = profileUpdateSchema.parse({
         subject,
         commandId: "pending",
         expectedRevision: revision,
         data,
+        enabled,
       });
       const fingerprint = JSON.stringify(candidate);
       if (pending.current?.fingerprint !== fingerprint)
@@ -171,17 +184,20 @@ export function ProfileEditor({
       if (candidate.subject === "agent")
         profile.drafts.current.agent = {
           data: candidate.data,
+          enabled: candidate.enabled === true,
           revision: candidate.expectedRevision,
           pending: pending.current,
         };
       else
         profile.drafts.current.human = {
           data: candidate.data,
+          enabled: candidate.enabled === true,
           revision: candidate.expectedRevision,
           pending: pending.current,
         };
       const result = await profile.save(pending.current.command);
       setData(result[subject].data);
+      setEnabled(result[subject].enabled);
       setRevision(result[subject].revision);
       delete profile.drafts.current[subject];
       pending.current = undefined;
@@ -275,16 +291,19 @@ export function ProfileEditor({
           if (subject === "agent")
             profile.drafts.current.agent = {
               data: data as AgentProfileData,
+              enabled,
               revision: fresh.revision,
             };
           else
             profile.drafts.current.human = {
               data: data as HumanProfileData,
+              enabled,
               revision: fresh.revision,
             };
           setDirty(true);
         } else {
           setData(fresh.data);
+          setEnabled(fresh.enabled);
           delete profile.drafts.current[subject];
           setDirty(false);
         }
@@ -344,11 +363,24 @@ export function ProfileEditor({
       aria-label={subject === "agent" ? "智能体资料" : "个人资料"}
       aria-busy={busy}
     >
+      <label className="personality-master">
+        <span>使用 Profile</span>
+        <span className="personality-master-state">
+          {dirty ? "待保存" : actual?.enabled ? "已启用" : "未启用"}
+        </span>
+        <input
+          type="checkbox"
+          aria-label="使用 Profile"
+          checked={enabled}
+          disabled={!editable}
+          onChange={(e) => change(data, e.target.checked)}
+        />
+      </label>
       <div className="personality-identity">
         <div className="personality-portrait">
           {subject === "agent" ? (
             <ProfileAvatar
-              name={data.name}
+              name={data.name ?? "Morphz"}
               label={stateLabel}
               state={state}
               src={urls?.original}
@@ -359,7 +391,7 @@ export function ProfileEditor({
             />
           ) : (
             <HumanAvatar
-              name={data.name}
+              name={data.name ?? "我"}
               src={urls?.original}
               posterSrc={urls?.poster}
               animated={animated}
@@ -388,16 +420,29 @@ export function ProfileEditor({
           />
         </div>
         <div className="personality-name">
-          <label htmlFor={`${id}-name`}>
-            {subject === "agent" ? "名字" : "你的名字"}
+          <label className="personality-optional" htmlFor={`${id}-name-set`}>
+            <span>{subject === "agent" ? "名字" : "你的名字"}</span>
+            <span>{data.name === null ? "不设置" : "已设置"}</span>
+            <input
+              id={`${id}-name-set`}
+              type="checkbox"
+              aria-label={
+                subject === "agent" ? "设置智能体名字" : "设置你的名字"
+              }
+              checked={data.name !== null}
+              disabled={!editable}
+              onChange={(e) =>
+                change({ ...data, name: e.target.checked ? "" : null })
+              }
+            />
           </label>
           <input
             id={`${id}-name`}
             aria-label={subject === "agent" ? "智能体的名字" : "你的名字"}
             maxLength={40}
-            value={data.name}
-            disabled={!editable}
-            placeholder={subject === "agent" ? "你想怎么叫我？" : "你的名字"}
+            value={data.name ?? ""}
+            disabled={!editable || data.name === null}
+            placeholder={subject === "agent" ? "Morphz" : "你的名字"}
             onChange={(e) => change({ ...data, name: e.target.value })}
           />
           {avatar?.media && (
@@ -411,81 +456,119 @@ export function ProfileEditor({
           )}
         </div>
       </div>
-      {actual?.available && actual.revision === 0 && subject === "agent" && (
-        <div className="personality-onboarding">
-          <span>先给我起个名字吧。</span>
-          <button
-            disabled={!editable}
-            onClick={() => {
-              change({ ...data, name: "Morphz" });
-            }}
-          >
-            就叫 Morphz
-          </button>
-        </div>
-      )}
       {human && (
-        <label className="personality-field">
-          希望我怎么称呼你
+        <div className="personality-field">
+          <label className="personality-optional">
+            <span>希望我怎么称呼你</span>
+            <span>{human.preferredAddress === null ? "不设置" : "已设置"}</span>
+            <input
+              type="checkbox"
+              aria-label="设置称呼"
+              checked={human.preferredAddress !== null}
+              disabled={!editable}
+              onChange={(e) =>
+                change({
+                  ...human,
+                  preferredAddress: e.target.checked ? "" : null,
+                })
+              }
+            />
+          </label>
           <input
             aria-label="Agent 对你的称呼"
             maxLength={40}
-            value={human.preferredAddress}
-            placeholder="用你的名字"
-            disabled={!editable}
+            value={human.preferredAddress ?? ""}
+            placeholder="称呼"
+            disabled={!editable || human.preferredAddress === null}
             onChange={(e) =>
               change({ ...human, preferredAddress: e.target.value })
             }
           />
-        </label>
+        </div>
       )}
       {agent && (
         <>
           <div className="personality-traits">
-            {traits.map((trait) => (
-              <label className="personality-trait" key={trait.key}>
-                <span className="personality-trait-heading">
-                  <span>{trait.label}</span>
-                  <output htmlFor={`${id}-${trait.key}`}>
-                    <span>{trait.values[agent.traits[trait.key]]}</span>
-                    <b>{agent.traits[trait.key]}</b>
-                  </output>
-                </span>
-                <input
-                  type="range"
-                  id={`${id}-${trait.key}`}
-                  aria-label={`${trait.label}程度`}
-                  aria-valuetext={`${agent.traits[trait.key]}，${trait.values[agent.traits[trait.key]]}`}
-                  min={0}
-                  max={5}
-                  step={1}
-                  value={agent.traits[trait.key]}
-                  disabled={!editable}
-                  style={
-                    {
-                      "--trait-fill": `${agent.traits[trait.key] * 20}%`,
-                    } as CSSProperties
-                  }
-                  onChange={(e) =>
-                    change({
-                      ...agent,
-                      traits: {
-                        ...agent.traits,
-                        [trait.key]: Number(e.target.value),
-                      },
-                    })
-                  }
-                />
-                <span className="personality-trait-ends">
-                  <span>{trait.low}</span>
-                  <span>{trait.high}</span>
-                </span>
-              </label>
-            ))}
+            {traits.map((trait) => {
+              const level = agent.traits[trait.key];
+              return (
+                <div className="personality-trait" key={trait.key}>
+                  <span className="personality-trait-heading">
+                    <span>{trait.label}</span>
+                    <label className="personality-optional">
+                      <span>{level === null ? "不设置" : "已设置"}</span>
+                      <input
+                        type="checkbox"
+                        aria-label={`设置${trait.label}`}
+                        checked={level !== null}
+                        disabled={!editable}
+                        onChange={(e) =>
+                          change({
+                            ...agent,
+                            traits: {
+                              ...agent.traits,
+                              [trait.key]: e.target.checked ? 0 : null,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                  </span>
+                  {level !== null && (
+                    <>
+                      <span className="personality-trait-value">
+                        <output htmlFor={`${id}-${trait.key}`}>
+                          <span>{trait.values[level]}</span>
+                          <b>{level}</b>
+                        </output>
+                      </span>
+                      <input
+                        type="range"
+                        id={`${id}-${trait.key}`}
+                        aria-label={`${trait.label}程度`}
+                        aria-valuetext={`${level}，${trait.values[level]}`}
+                        min={0}
+                        max={5}
+                        step={1}
+                        value={level}
+                        disabled={!editable}
+                        style={
+                          {
+                            "--trait-fill": `${level * 20}%`,
+                          } as CSSProperties
+                        }
+                        onChange={(e) =>
+                          change({
+                            ...agent,
+                            traits: {
+                              ...agent.traits,
+                              [trait.key]: Number(e.target.value),
+                            },
+                          })
+                        }
+                      />
+                      <span className="personality-trait-ends">
+                        <span>{trait.low}</span>
+                        <span>{trait.high}</span>
+                      </span>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <fieldset className="personality-speaking" disabled={!editable}>
             <legend>讲话风格</legend>
             <div>
+              <label>
+                <input
+                  type="radio"
+                  name={`${id}-style`}
+                  checked={agent.speechStyle === null}
+                  onChange={() => change({ ...agent, speechStyle: null })}
+                />
+                <span>不设置</span>
+              </label>
               {styles.map((style) => (
                 <label key={style.value}>
                   <input
@@ -504,15 +587,30 @@ export function ProfileEditor({
           </fieldset>
           <details className="personality-custom">
             <summary>自定义风格</summary>
+            <label className="personality-optional">
+              <span>{agent.customStyle === null ? "不设置" : "已设置"}</span>
+              <input
+                type="checkbox"
+                aria-label="设置自定义风格"
+                checked={agent.customStyle !== null}
+                disabled={!editable}
+                onChange={(e) =>
+                  change({
+                    ...agent,
+                    customStyle: e.target.checked ? "" : null,
+                  })
+                }
+              />
+            </label>
             <textarea
               aria-label="自定义讲话风格"
               maxLength={500}
               rows={3}
-              disabled={!editable}
+              disabled={!editable || agent.customStyle === null}
               value={agent.customStyle ?? ""}
               placeholder="例如：先给结论，再聊细节。"
               onChange={(e) =>
-                change({ ...agent, customStyle: e.target.value || undefined })
+                change({ ...agent, customStyle: e.target.value })
               }
             />
           </details>
@@ -545,7 +643,7 @@ export function ProfileEditor({
           ) : saved ? (
             <>
               <Check size={14} />
-              已保存
+              {enabled ? "已保存" : "已保存 · 未启用"}
             </>
           ) : dirty ? (
             "未保存"
@@ -561,6 +659,7 @@ export function ProfileEditor({
             onClick={() => {
               if (!actual) return;
               setData(actual.data);
+              setEnabled(actual.enabled);
               setRevision(actual.revision);
               setDirty(false);
               setError("");
@@ -574,10 +673,7 @@ export function ProfileEditor({
         <button
           className="button primary personality-save"
           disabled={
-            !editable ||
-            !!conflict ||
-            !data.name.trim() ||
-            (!dirty && actual?.revision !== 0)
+            !editable || !!conflict || (!dirty && actual?.revision !== 0)
           }
           title={
             subject === "agent"

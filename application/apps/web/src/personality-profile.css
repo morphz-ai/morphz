@@ -12,6 +12,38 @@
   padding: 12px 0 4px;
   min-width: 0;
 }
+.personality-master,
+.personality-optional {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.personality-master {
+  padding: 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.personality-master-state,
+.personality-optional > span:last-of-type {
+  color: var(--muted);
+  font-size: 12px;
+}
+.personality-master-state,
+.personality-name .personality-optional > span:last-of-type,
+.personality-field .personality-optional > span:last-of-type {
+  margin-left: auto;
+}
+.app .personality-optional > input[type="checkbox"],
+.app .personality-master > input[type="checkbox"] {
+  appearance: auto;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
 .personality-portrait {
   position: relative;
   flex: 0 0 96px;
@@ -74,25 +106,6 @@
   color: var(--muted);
   box-shadow: none;
 }
-.personality-onboarding {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 7%, var(--paper));
-}
-.app .personality-onboarding button {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--accent);
-  font-size: 12px;
-  padding: 0;
-}
 .personality-field {
   display: grid;
   gap: 9px;
@@ -120,14 +133,15 @@
   justify-content: space-between;
   font-size: 13px;
 }
-.personality-trait-heading output {
+.personality-trait-value output {
   display: flex;
   align-items: center;
   gap: 9px;
   color: var(--muted);
   font-size: 11px;
+  justify-content: flex-end;
 }
-.personality-trait-heading output b {
+.personality-trait-value output b {
   min-width: 24px;
   padding: 2px 5px;
   text-align: center;
@@ -199,7 +213,7 @@
 }
 .personality-speaking > div {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   padding: 4px;
   gap: 3px;
   border-radius: 13px;
@@ -238,6 +252,10 @@
 }
 .personality-custom summary {
   cursor: pointer;
+}
+.personality-custom > .personality-optional {
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 .app .personality-custom textarea {
   display: block;

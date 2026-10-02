@@ -18,6 +18,7 @@ import '/src/styles.css';
 import '/src/ui.css';
 import '/src/visual-system.css';
 import '/src/profile-avatar.css';
+import '/src/subject-logo.css';
 const image = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="48" height="48"%3E%3Cpath fill="%239eadbc" d="M0 0h48v48H0z"/%3E%3C/svg%3E';
 const animatedImage = '__ANIMATED_IMAGE__';
 function Fixture() {
@@ -26,11 +27,10 @@ function Fixture() {
   const [motion, setMotion] = useState(true);
   return <main className="app workspace-content" data-accent="cyan" style={{height:'auto',padding:32,display:'block',width:'100%',boxSizing:'border-box',color:'var(--ink)'}}>
     <div style={{display:'flex', gap:32,alignItems:'center',marginBottom:32}}>
-      {['seed','fold','wing'].map(concept=><div key={concept} data-candidate={concept} style={{display:'flex',flexDirection:'column',gap:12,alignItems:'center'}}>
-        <span style={{fontSize:12}}>{concept}</span>
+      {[96,32,18].map(size=><div key={size} data-candidate={size} style={{display:'flex',flexDirection:'column',gap:12,alignItems:'center'}}>
+        <span style={{fontSize:12}}>{size}px</span>
         <div style={{display:'flex',gap:12,alignItems:'center'}}>
-        <ProfileAvatar name="阿叶" concept={concept} state={state} active={active} allowMotion={motion}/>
-        <ProfileAvatar name="阿叶" concept={concept} size={32} state={state} active={active} allowMotion={motion}/>
+        <ProfileAvatar name="阿叶" size={size} state={state} active={active} allowMotion={motion}/>
         </div>
       </div>)}
     </div>
@@ -53,7 +53,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
 
 const browserExecutable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
 test(
-  "实际 DOM 的独立眼睛眨眼／视线／折面动作，状态和无动态退化保持尺寸",
+  "默认 Logo 的真实状态动效、上传头像与无动态退化保持尺寸",
   {
     timeout: 45000,
     skip:
@@ -146,7 +146,12 @@ test(
       await primary.getAttribute("aria-label"),
       "阿叶：实际工作状态",
     );
-    assert.equal(await primary.locator("ellipse").count(), 2);
+    assert.equal(await primary.locator("ellipse").count(), 0);
+    assert.equal(await primary.locator("svg.brand-mark").count(), 1);
+    assert.equal(
+      await primary.locator("svg > path").getAttribute("d"),
+      "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z",
+    );
     const originalBounds = await primary.boundingBox();
     assert.equal(originalBounds?.width, 96);
     assert.equal(originalBounds?.height, 96);
@@ -180,51 +185,22 @@ test(
         { name, time },
       );
     }
-    const open = await sample(
-      ".profile-avatar-eyes",
-      "profile-avatar-blink",
+    const glintStart = await sample(
+      ".brand-mark-glint",
+      "subject-mark-glint",
       0,
     );
-    const blink = await sample(
-      ".profile-avatar-eyes",
-      "profile-avatar-blink",
-      3306,
-    );
-    assert.notEqual(open, blink);
+    const glint = await sample(".brand-mark-glint", "subject-mark-glint", 3200);
+    assert.notEqual(glintStart, glint);
     await page.getByRole("button", { name: "working", exact: true }).click();
-    const glanceStart = await sample(
-      ".profile-avatar-look",
-      "profile-avatar-thought",
-      0,
-    );
-    const glance = await sample(
-      ".profile-avatar-look",
-      "profile-avatar-thought",
-      1440,
-    );
+    const glanceStart = await sample(".brand-mark", "subject-mark-breathe", 0);
+    const glance = await sample(".brand-mark", "subject-mark-breathe", 1400);
     assert.notEqual(glanceStart, glance);
-    const foldStart = await sample(
-      ".profile-avatar-fold-left",
-      "profile-avatar-fold-left",
-      0,
-    );
-    const fold = await sample(
-      ".profile-avatar-fold-left",
-      "profile-avatar-fold-left",
-      1600,
-    );
-    assert.notEqual(foldStart, fold);
-    assert.equal(
-      await primary
-        .locator(".profile-avatar-body")
-        .evaluate((node) => node.getAnimations().length),
-      0,
-    );
     assert.deepEqual(await primary.boundingBox(), originalBounds);
-    const small = page.locator('[data-candidate="seed"] [data-small="true"]');
+    const small = page.locator('[data-candidate="32"] [data-small="true"]');
     assert.equal(
       await small
-        .locator(".profile-avatar-fold-left")
+        .locator(".brand-mark")
         .evaluate((node) => node.getAnimations().length),
       0,
     );
@@ -299,42 +275,32 @@ test(
     }
 
     const screenshotDir = await mkdtemp(
-      resolve(tmpdir(), "morphz-avatar-concepts-"),
+      resolve(tmpdir(), "morphz-avatar-logo-"),
     );
     await page.screenshot({
-      path: resolve(screenshotDir, "concepts-light.png"),
+      path: resolve(screenshotDir, "logo-light.png"),
     });
     await page.emulateMedia({ colorScheme: "dark" });
     await page.screenshot({
-      path: resolve(screenshotDir, "concepts-dark.png"),
+      path: resolve(screenshotDir, "logo-dark.png"),
     });
-    context.diagnostic(`Concept and actual DOM screenshots: ${screenshotDir}`);
+    context.diagnostic(`Logo and actual DOM screenshots: ${screenshotDir}`);
 
     await page.getByRole("button", { name: "approval", exact: true }).click();
+    assert.equal(await primary.getAttribute("data-state"), "approval");
     assert.equal(
       await primary
-        .locator(".profile-avatar-mouth")
-        .evaluate((node) => getComputedStyle(node).display),
-      "none",
-    );
-    assert.equal(
-      await primary
-        .locator(".profile-avatar-attentive-mouth")
-        .evaluate((node) => getComputedStyle(node).display),
-      "block",
+        .locator(".brand-mark")
+        .evaluate((node) => node.getAnimations().length),
+      0,
     );
     await page.getByRole("button", { name: "paused", exact: true }).click();
+    assert.equal(await primary.getAttribute("data-state"), "paused");
     assert.equal(
       await primary
-        .locator(".profile-avatar-eyes")
-        .evaluate((node) => getComputedStyle(node).display),
-      "none",
-    );
-    assert.equal(
-      await primary
-        .locator(".profile-avatar-rest-eyes")
-        .evaluate((node) => getComputedStyle(node).display),
-      "block",
+        .locator(".brand-mark")
+        .evaluate((node) => node.getAnimations().length),
+      0,
     );
     for (const state of ["offline", "unavailable"]) {
       await page.getByRole("button", { name: state, exact: true }).click();

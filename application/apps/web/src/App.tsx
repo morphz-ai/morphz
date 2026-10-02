@@ -2402,7 +2402,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   const agentName =
-    (profile.snapshot?.agent.available && profile.snapshot.agent.revision > 0
+    (profile.snapshot?.agent.available && profile.snapshot.agent.enabled
       ? profile.snapshot.agent.data.name
       : undefined) ??
     client.boot!.workspace.actants.find((actor) => actor.kind === "agent")
@@ -2503,7 +2503,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ? "智能体连接异常"
         : "智能体未连接";
   const identityLabel =
-    (profile.snapshot?.human.available && profile.snapshot.human.revision > 0
+    (profile.snapshot?.human.available && profile.snapshot.human.enabled
       ? profile.snapshot.human.data.name
       : undefined) ?? actorName(state, client.boot!.actantId);
   const connected = client.online && client.boot!.runtime.connected;

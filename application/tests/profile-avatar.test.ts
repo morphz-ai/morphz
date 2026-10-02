@@ -22,22 +22,23 @@ test("头像尺寸稳定，姓名首字支持中文和 Unicode，不借名字猜
   assert.equal(profileAvatarSize(Number.POSITIVE_INFINITY), 96);
 });
 
-test("原生头像与品牌轮廓分离，两只眼睛与独立折面保留，三种概念可比较", () => {
-  for (const concept of ["seed", "fold", "wing"] as const) {
+test("默认 Agent 头像复用真实 Morphz Logo，不再使用卡通角色", () => {
+  for (const size of [18, 32, 96]) {
     const html = renderToStaticMarkup(
-      createElement(ProfileAvatar, { name: "阿叶", concept }),
+      createElement(ProfileAvatar, { name: "阿叶", size, allowMotion: false }),
     );
-    assert.match(html, new RegExp(`data-concept="${concept}"`));
     assert.match(html, /role="img" aria-label="阿叶"/);
     assert.match(html, /data-avatar-kind="native"/);
-    assert.equal((html.match(/<ellipse /g) || []).length, 2);
-    assert.match(html, /profile-avatar-fold-left/);
-    assert.match(html, /profile-avatar-fold-right/);
+    assert.match(html, /class="brand-mark"/);
+    assert.match(
+      html,
+      /M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z/,
+    );
+    assert.match(html, /data-motion="off"/);
     assert.doesNotMatch(
       html,
-      /brand-mark|agent-presence-status|tabindex|aria-live/i,
+      /ellipse|profile-avatar-face|profile-avatar-fold|data-concept|brand-mark-glint|agent-presence-status|tabindex|aria-live/i,
     );
-    assert.doesNotMatch(html, /M8 4 48 40/);
   }
 });
 

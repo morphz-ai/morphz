@@ -221,10 +221,13 @@ try {
   );
   assert.equal(initial.agent.available, true);
   assert.equal(initial.agent.revision, 0);
+  assert.equal(initial.agent.enabled, false);
+  assert.deepEqual(initial.agent.data, defaultAgentProfile);
   const agentCommand = {
     subject: "agent" as const,
     commandId: randomUUID(),
     expectedRevision: 0,
+    enabled: true,
     data: {
       ...defaultAgentProfile,
       name: "小芷",
@@ -235,6 +238,7 @@ try {
     await localConnection.call("profile.update", agentCommand, localOptions),
   );
   assert.equal(agentSaved.revision, 1);
+  assert.equal(agentSaved.enabled, true);
   assert.equal(agentSaved.data.name, "小芷");
   assert.deepEqual(
     await localConnection.call("profile.update", agentCommand, localOptions),
@@ -321,7 +325,7 @@ try {
     (actor) => teamDomains!.profiles.service.read(actor),
   );
   assert.equal(unavailable.human.available, false);
-  assert.equal(unavailable.human.data.name, "Alice 原名");
+  assert.equal(unavailable.human.data.name, null);
   teamBridge.updateConnection({ ...teamConfig, operatorToken: operator });
   for (const token of loginTokens) {
     const connection = new LocalApplicationConnection(
@@ -357,7 +361,7 @@ try {
   );
   assert.equal(aliceRead.human.data.preferredAddress, "阿丽");
   assert.equal(bobRead.human.revision, 0);
-  assert.equal(bobRead.human.data.name, "Bob 原名");
+  assert.equal(bobRead.human.data.name, null);
   assert.equal(aliceRead.agent.editable, false);
   await assert.rejects(
     teamConnections[0]!.call(

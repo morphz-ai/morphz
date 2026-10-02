@@ -5,6 +5,9 @@ import {
   profileUpdateSchema,
   profileUpdateResultSchema,
   profileAvatarBytesSchema,
+  profileHasConfiguredFields,
+  normalizeAgentProfileData,
+  normalizeHumanProfileData,
   type ProfileSnapshot,
   type ProfileSubject,
   type ProfileUpdate,
@@ -15,6 +18,7 @@ import type { WorkspaceClient } from "./client.js";
 type AvatarUrls = { original: string; poster: string };
 type ProfileDraft<T> = {
   data: T;
+  enabled: boolean;
   revision: number;
   pending?: { fingerprint: string; command: ProfileUpdate };
 };
@@ -155,6 +159,11 @@ export function useProfile(client: WorkspaceClient) {
   };
   async function save(command: ProfileUpdate) {
     command = profileUpdateSchema.parse(command);
+    // Compare the same canonical intent that Host persists: empty optional
+    // text means unset, not a conflicting save or an unknown receipt.
+    if (command.subject === "human")
+      command.data = normalizeHumanProfileData(command.data);
+    else command.data = normalizeAgentProfileData(command.data);
     const requestKey = key;
     const receipt = profileUpdateResultSchema.parse(
       await applicationCall("profile.update", command),
@@ -163,7 +172,9 @@ export function useProfile(client: WorkspaceClient) {
     if (
       receipt.commandId !== command.commandId ||
       receipt.subject !== command.subject ||
-      receipt.revision !== command.expectedRevision + 1
+      receipt.revision !== command.expectedRevision + 1 ||
+      receipt.enabled !==
+        (command.enabled === true && profileHasConfiguredFields(command.data))
     )
       throw new Error("保存回执不匹配，请用同一次操作重试。");
     const actual = await refresh();
@@ -175,7 +186,8 @@ export function useProfile(client: WorkspaceClient) {
       throw new Error("保存结果待核对，请用同一次操作重试。");
     if (
       JSON.stringify(actual[command.subject].data) !==
-      JSON.stringify(command.data)
+        JSON.stringify(command.data) ||
+      actual[command.subject].enabled !== receipt.enabled
     )
       throw new Error("资料已再次变化，请重新读取后确认。");
     return actual;

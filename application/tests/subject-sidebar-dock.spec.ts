@@ -143,16 +143,20 @@ test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项�
   const tabs = panel.getByRole("tablist", { name: "Morphz 信息分类" });
   const settings = tabs.getByRole("tab", { name: "设定", exact: true });
   const avatar = settings.locator(".profile-avatar");
-  const mark = avatar.locator("svg.profile-avatar-character");
+  const mark = avatar.locator("svg.brand-mark");
   const leftMark = page.locator(".sidebar .agent-presence .brand-mark");
   await expect(mark).toHaveCount(1);
   await expect(leftMark).toHaveCount(1);
-  await expect(settings.locator("svg.brand-mark")).toHaveCount(0);
+  await expect(settings.locator("svg.brand-mark")).toHaveCount(1);
   await expect(avatar).toHaveAttribute("data-motion", "off");
   await expect(avatar).toHaveAttribute("data-small", "true");
   await expect(avatar).toHaveCSS("width", "18px");
   await expect(avatar).toHaveCSS("height", "18px");
-  await expect(mark.locator("ellipse")).toHaveCount(2);
+  await expect(mark.locator("ellipse")).toHaveCount(0);
+  await expect(mark.locator(":scope > path")).toHaveAttribute(
+    "d",
+    "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z",
+  );
   await expect(mark).toHaveCSS("animation-name", "none");
   expect(
     await avatar.evaluate(

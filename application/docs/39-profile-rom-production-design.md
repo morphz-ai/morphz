@@ -1,6 +1,6 @@
 # 人格化个人助手：Profile 与只读 ROM
 
-状态：2026-10-02 Runtime ROM、Host/Profile 与 UI 已实现，最终回归和原 Morphz 窗口更新已完成。以下区分设计、隔离验证和原窗口证据，不以测试页面冒称真实权限写入或模型个性表达已验证。
+状态：2026-10-02 Runtime ROM、Host/Profile 与 UI 首轮已实现。用户实际测试发现：未保存的预填数值被误看为有效配置，原生默认头像被否决，首轮缺少 UI 保存到实际模型请求的整链路证据。当前“不设置”及 Logo 修复已通过实际链路、独立真实模型与原窗口验收，详见下方记录；这不等于整个长期人格化目标或主观表达效果已经完成。历史证据保留，并区分隔离测试、原窗口及真实模型结果。
 
 ## 1. 产品边界
 
@@ -66,6 +66,21 @@ ROM 规范编码只含稳定内容、精确版本/hash 与作用范围，不把�
 
 ## 4. Profile 的结构化消费者
 
+### 2026-10-02 修复：显式设置与不设置
+
+唯一权威仍是既有 Runtime ROM，不新增 Profile 数据表或 Renderer 持久配置。v2 保持两种 namespace 与 subject 身份不变；每个业务字段允许 `null`，表示“不设置”，不是数字 0、自然风格或自动取名。新的 Agent / Human 表单默认全为 `null`，整份 Profile 默认停用。备用显示名 Morphz / 认证身份名仅用于 UI，不因此进入模型上下文。
+
+- 全局启用状态使用不可变 ROM version 的既有 `enabled`。关闭整份 Profile 保留显式设置，以便再次启用，但新 Thread 不选择其内容；读取停用记录仍可编辑，不能误报服务不可用。
+- 逐项关闭将该值清为 `null`；编译完全省略相应字段，而不是写入默认值或 unset 指令。全空时强制停用，空 BODY 不附加风格 contract 或数值说明。其他调用方 ROM namespace 不受影响。
+- 姓名、称呼、四项数值、讲话风格、自定义风格均独立选择。数字 0 是明确的最低偏好，5 是最高；选中值的 ROM 要解释量表及行为含义，并明确这是配置偏好而不是模型权重、温度或能力。询问已配置数值时应如实报告 `值/5`。
+- Typed snapshot / 写回回执分别返回 `enabled`、确切 revision 和稀疏 data。保存采用原 CAS / command ID；未知结果重用命令，冲突需明确恢复，头像仍有独立 Platform 修订，不随 Profile 开关消失。
+- 新写入 schema tag 使用 `morphz-agent-profile/v2` / `morphz-human-profile/v2`。已保存 v1 读取为原明确数值及原 enabled，不自动迁移、重写或停用；只有用户下一次显式保存才写入 v2。旧 Thread 的已绑定版本及恢复语义不变。
+- Agent 无上传头像时统一使用现有 Morphz Logo，撤掉首轮紫色卡通，不改变 Human 的默认人像、已上传资源或上传能力。头像不进入 ROM，也不要求启用人格才能上传。
+
+验证必须包含真实 UI typed 保存 → Host → Rust Runtime 持久版本 → 新 Thread 实际 Provider 请求。受控 Provider 用于确定性字节断言；如执行真实模型 probe，另记实际结果，不能把模拟回应当作模型已遵循。全关闭的请求需证明无 Profile 内容、系统扩展和旧缓存契约变化；原同一 Electron 窗口需要实看 Logo、未设置状态及升级后原数据保留。
+
+下文 v1 为首轮格式的历史记录，不是新表单默认值。
+
 约定 namespace / schema（业务由 Host 定义，Runtime 仅存自由结构）：
 
 - `morphz.profile.agent` / `morphz-agent-profile/v1`：name（1–40）、traits（humor / rigor / warmth / verbosity，0–5）、speechStyle（natural / concise / thoughtful / direct）、可选 customStyle（≤500）。
@@ -101,11 +116,11 @@ Platform 头像指针以 `(tenant_id, subject_kind, subject_id)` 定位，保存
 
 研究不是照抄皮肤。[Muse 官方产品导览](https://www.youtube.com/watch?v=wHn0hTjvFoo) 把聊天和内容保留为主体；[Meta 头像研究展示](https://research.meta.ai/blog/bringing-your-muse-to-life) 用柔和材质、少数表情部件和留白表现存在感；研究页明确不等于所有角色已在产品开放。[发布者通话屏录](https://x.com/alexandr_wang/status/2102923941669171330) 标注 coming soon。[Masko 官方 Companion](https://masko.ai/companions/ai-desktop-companion) 与[四秒预制动作](https://assets.masko.ai/7fced6/ko-95a7/listen-focus-aac994c2-360.webm) 展示了外观和 Working / Waiting / Done 状态的分离。它们不证明我们的 Runtime 或生成式视频功能。
 
-本产品采用：身份、工具状态与产品品牌分开；Profile 大头像可生动，侧栏小头像低幅慢频，不在每条消息/菜单/按钮加动画和常驻说明。默认原生头像采用独立原创形象，不给现 Logo 随意贴眼睛，也不复制动物角色。当前工作状态来自现 Runtime/stream 事实，不用 hover 或永远循环冒充正在执行。
+本产品采用：身份、工具状态与产品品牌分开；侧栏小头像低幅慢频，不在每条消息/菜单/按钮加动画和常驻说明。首轮原创卡通被用户否决，当前无上传头像时使用既有 Morphz Logo，不给 Logo 贴眼睛或再加未经确认的角色。当前工作状态来自现 Runtime/stream 事实，不用 hover 或永远循环冒充正在执行。
 
 Profile 主视觉只有头像和名字；人格控制采用统一少量 0–5 控件，短标签、清晰当前值与两端含义，不堆六级菜单和长段解释。Agent 页面在右侧「设定」，Human 页面从底部个人菜单进入，两个主体不混淆。保存反馈不改变窗口尺寸或闪出说明行。真实错误、冲突和危险确认保留，范围/下一份工作生效等细节放可访问描述和按需提示。
 
-静态上传头像就是静态；原生默认头像具有真实多部分眨眼、视线和状态响应；用户动态图只是素材播放，不自称实时思考或语音生成。`prefers-reduced-motion`、非活动窗口、页面不可见时停装饰动画，动态图使用持久首帧。固定外框尺寸，不让任何状态更换造成抖动。
+静态上传头像就是静态；默认 Logo 不再具有卡通眨眼部件；用户动态图只是素材播放，不自称实时思考或语音生成。`prefers-reduced-motion`、非活动窗口、页面不可见时停装饰动画，动态图使用持久首帧。固定外框尺寸，不让任何状态更换造成抖动。
 
 ## 7. 阶段与验收
 
@@ -117,6 +132,16 @@ Profile 主视觉只有头像和名字；人格控制采用统一少量 0–5 �
 完成并验证一阶段后聚焦本地提交，不推送。设计、实现、隔离测试和实际原窗口证据必须分别写清楚；任何一项未完成，整体目标继续保持进行中。
 
 ## 8. 实施与验证记录
+
+### 2026-10-02 显式设定修复验收
+
+- Core／Host 本地提交 `9320a105`：24通过、0失败、1跳过；PostgreSQL 本轮环境未配置，未冒称验证。已保存 v1 原样、仅选字段 contract、0 与 null、关闭保留数据及头像、实际存储、权限、CAS和同命令重试均覆盖。
+- 最新构建后的 Profile／Dock UI 26／26、Avatar 实际 DOM及领域5／5；明暗、390px、200%最终截图复看。未选项不展示预填数值；实际读回后才展示已启用／未启用，保存前为待保存。
+- `playwright.profile-actual.config.ts` 的实际整链4／4通过：真实界面保存、实际HTTP Host、真实隔离SQL及Rust Runtime、实际Provider请求。只有Provider的确定性回答受控。幽默5／严谨0精确BODY、初始／关闭／全空无Profile及系统扩展、旧Thread继续固定revision1、真实提交后丢回执同命令重试、真实CAS409保留草稿、Human私有Principal仅称呼及关闭均实证。空风格／空称呼也经过实际UI保存，Client／Host统一null语义，不误报成功保存为冲突；最终构建UI26及Avatar5再次通过。
+- `scripts/profile-real-model-probe.ts` 另在隔离Host／Runtime使用既有本机代理和实际 `gpt-6.1-sol`：3次请求依次回答「幽默配置：未设置。」「幽默配置：5/5。」「幽默配置：未设置。」，同时核对真正发出消息中的BODY存在／缺席。不包含原用户历史，不把模拟输出替换为这些回答，不宣称风格评分、所有模型一致遵循或上游缓存命中率。
+- 原应用正常重开后截图／可访问树均确认默认Logo、整份未启用、各项不设置；未替用户写资料或头像。原可见未保存值仅私有备份，不把旧预填默认迁为新显式设置。原Runtime未重启，全部Runtime表逻辑摘要不变、17个Session与237个Thread及未来timer保留；12库备份、desktop与旧编译产物可恢复。具体表级验收边界见[桌面实施记录](13-implementation-status.md)。
+
+### 首轮历史证据（不替代上方修复验收）
 
 - Runtime 阶段本地提交 `dca1332a`：SQLite / 真实 PostgreSQL / 临时 workerd remote-store conformance 四项无跳过；实际 Context、Thread 版本绑定、只读、安全边界、空配置字节兼容、缓存契约与恢复均经过专门测试。TS SDK 9/9。另有真实 PostgreSQL 旧库升级回归。不是上游模型 prefix-cache 命中率实测，也未部署公共云 Cell。
 - Host 阶段本地提交 `79dd6d83`：最终领域回归 89 项，88 通过、0 失败；唯一跳过是缺完整外部 S3 配置的云部署备份。另有 SQLite / 真实 PostgreSQL Platform 迁移回归 60/60。受控 S3 与两台真实 PostgreSQL Host 的双版本头像和 CAS 验证，不等于已验证用户的外部 S3 全量恢复。

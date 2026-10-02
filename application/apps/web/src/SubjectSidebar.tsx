@@ -85,7 +85,7 @@ export function SubjectSidebar({
   );
   const attention = runtime.attention;
   const name =
-    (profile?.snapshot?.agent.available && profile.snapshot.agent.revision > 0
+    (profile?.snapshot?.agent.available && profile.snapshot.agent.enabled
       ? profile.snapshot.agent.data.name
       : undefined) ??
     subject?.name ??
