@@ -1,5 +1,55 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第八阶段：发送协议与共享顶栏
+
+`host/submit-exchange-draft.ts` 实际接管原阅读／目录／选区／附件检查及四个
+互斥发送分支。普通输入仍 Profile flush→身份复核→当前工作面复核→构造载荷；
+定向补充仍先保存原 command ID／operation，再沿用原工作来源投递。Client 的
+typed gateway、outbox、权限及首发事务不改；App 保留准备锁、原 key 的草稿
+消费、staged 迟到失败保护、错误分类与焦点。receipt/catch/finally 反馈在原
+execute continuation 内同步调用，不加重试、全局状态、网络或 LLM 请求。
+阅读类型迁入纯 `reading-context-model.ts`，原组件 re-export 且 JSX 不变。
+
+`shell/WorkspaceTopbar.tsx` 是一个原生 header 的生产 owner，接受有限只读
+事实及语义动作。App 原三个 target state／setter 原位且原样直传；三个 div
+常驻，仅 hidden 切换，不重建 portal container、不加 key、包装或样式。原项目
+菜单留原分支／节点位置；领域应用仍拥有自己的工具栏、画布和正文状态。
+这是两个实际接入的边界，不是已完成整个 App／Exchange／查询层迁移。
+
+固定 `55988f3a` 的真实 send handler 与当前源码隔离执行，35 情形的载荷、
+草稿变化及回调顺序完全一致；该对照不是 React／Host／原窗证明。实际新 owner
+43 项逻辑与 5 项有限 AST 门禁通过，30 个指定违规反例被拒；顶栏 4 项包括
+固定旧 markup 126 种分支／属性情形及真实 App import／三 setter 门禁，8 个
+合法语法违规反例保留。相关新旧 Node 合跑 67/67。隔离实际 React 顶栏挂载
+5/5：节点／值／焦点、portal 清理、四色明暗／宽窄、CSS 200%、粗指针和减少
+动态；不是 Electron／OS 200% 或原生命中验收。
+
+七套原 Host 草稿／焦点／首发／目录回归未修改，全新临时 Host 一次 31/31，
+48.4 秒、零跳过／重试。另扩展原 21 文件 84 项矩阵，73 通过、11 失败，未
+删除断言或算成全绿。旧固定 JS 的独立实测已复现断线发送仍 enabled、旧模型
+description、未 hover 的补充入口及旧活动按钮等首次失败；focus 单项旧版 fresh
+与当前完整 fresh 31 项均通过，仅在混跑复现，尚未单独证明其共享 Host 隔离
+原因。其余首次失败仍单独核验，不据此宣称所有失败都已定位或修好。
+
+实际 UI／HTTP／SQLite Host／Rust Runtime Profile 回归 4/5：新输入即时绑定、
+关闭省略及旧 Thread 固定版本通过；CAS 冲突用例等待 409 超时，保留红记录。
+provider 是确定性本机夹具，不是付费模型。选定剧本路径 2/4：目录与焦点通过；
+旧移除意图入口及已撤回的 Agent 创作权限表单阻止另外两项到达发送断言，未
+把它们冒称真实生成验证。新增模块不通过这些旧入口恢复已撤回界面。
+
+冻结最终生产及测试后，完整 Node 1468 项：1305 通过、163 条现有可选集成
+跳过、零失败；build/typecheck、受影响源码格式与空白检查通过。最终 JS
+`app-Bvd6t3qX.js`；CSS 仍 `app-Bl-K6QYD.css`，SHA256
+`0a46e4301841e99b7c688123e4a07ff83e8ebd6b33918325331294aaad442648`。
+收尾曾发现新顶栏门禁漏检自闭合旧 header，已补门禁且保留负例与原红输出；
+浏览器初轮缺 Chrome 亦保留，改用既有 Playwright binary，不改产品或断言。
+主线程完整证据 `/tmp/morphz-submission-topbar-verification.wTUEdY`；顶栏隔离
+记录 `/tmp/morphz-workspace-topbar-20261004.1KZb9u`；固定旧 bundle 首次失败
+对照 `/tmp/morphz-submission-old-bundle.MjQh1p`。
+
+原 Mac 本轮只读检查仍锁屏，原 App 最终复验未完成；未换 profile、改锁屏
+设置或重启用户 Runtime。上述源码／自动验证不替代原窗及整个目标验收。
+
 ## 2026-10-04 前端重构第七阶段：草稿生命周期唯一 owner
 
 `host/exchange-drafts.ts` 实际拥有输入、尚未首发的命名会话、丢弃会话三份

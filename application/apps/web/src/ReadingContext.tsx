@@ -1,23 +1,10 @@
 import { BookOpen, ChevronDown, X } from "lucide-react";
-import type {
-  ReadingPosition,
-  ReadingReference,
-} from "../../../packages/core/src/reader.js";
-
-export type ReadingFocus =
-  | { reference: ReadingReference; selected: true }
-  | { reference: ReadingPosition; selected: false };
-export type ReadingSurface = {
-  key: string;
-  artifactId: string;
-  revision: number;
-  focus: ReadingFocus | null;
-  capture: () => ReadingFocus | null;
-};
-export type ReadingContextChange = (
-  key: string,
-  surface: ReadingSurface | null,
-) => void;
+import type { ReadingFocus } from "./reading-context-model.js";
+export type {
+  ReadingFocus,
+  ReadingSurface,
+  ReadingContextChange,
+} from "./reading-context-model.js";
 
 /** A compact, inspectable attachment; no second input or automatic model call. */
 export function ReadingContext({

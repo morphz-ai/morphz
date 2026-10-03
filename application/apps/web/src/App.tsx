@@ -13,8 +13,6 @@ import { createPortal, flushSync } from "react-dom";
 import { replaceDictationTail } from "./live-dictation.js";
 import {
   ArrowUp,
-  ArrowLeft,
-  ArrowRight,
   MessageCircle,
   MessageSquareText,
   Plus,
@@ -22,7 +20,6 @@ import {
   Link2,
   MessageSquarePlus,
   RefreshCw,
-  ChevronRight,
   Search,
   Mic,
   Square,
@@ -72,16 +69,14 @@ import {
   updateComposerDraft,
 } from "./composer-drafts.js";
 import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
-import {
-  quotedInputText,
-  type TextQuote,
-} from "../../../packages/core/src/text-quotes.js";
+import type { TextQuote } from "../../../packages/core/src/text-quotes.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
 import { subjectLogoState, type SubjectView } from "./subject-sidebar-model.js";
 import { SubjectLogo } from "./SubjectLogo.js";
 import { ApplicationDock } from "./ApplicationDock.js";
+import { WorkspaceTopbar } from "./shell/WorkspaceTopbar.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import "./execution.css";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
@@ -164,6 +159,7 @@ import {
   useExchangeDiscardedDraftState,
   type InputDraft,
 } from "./host/exchange-drafts.js";
+import { submitExchangeDraft } from "./host/submit-exchange-draft.js";
 import {
   createWorkspaceNavigationCommands,
   isNavigationPreferenceChange,
@@ -1462,233 +1458,100 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       sendPending.current = false;
       setSending(false);
     };
-    try {
-      if (
-        !asAnnotation &&
-        !captured.continuation &&
-        !captured.taskResult &&
-        !captured.scriptGeneration &&
-        !captured.reading &&
-        !captured.selection &&
-        !captured.textQuotes?.length &&
-        !captured.skipReading &&
-        readingExpected
-      ) {
-        const focus = currentReading?.capture();
-        if (!focus)
-          throw new Error(
-            "当前阅读内容仍在加载或无法读取，请稍后发送；草稿已保留。",
-          );
-        captured.reading = structuredClone(focus.reference);
-        captured.revision = currentReading!.revision;
-        captured.selection = focus.selected ? focus.reference.quote : "";
-      }
-      if (
-        !captured.continuation &&
-        canAuthorizeDirectories &&
-        (directoryState.scope !== directoryScope || !directoryState.ready)
-      )
-        throw new Error("目录授权尚未确认，请稍后发送；草稿已保留。");
-      if (
-        asAnnotation &&
-        (!artifact || !captured.selection || !captured.revision)
-      )
-        throw new Error("选区已失效，请重新选择文字。");
-      if (
-        !captured.continuation &&
-        (asAnnotation || captured.taskResult) &&
-        captured.attachments?.length
-      )
-        throw new Error(
-          "批注与事项结果暂不支持附件，请移除附件或改为发送消息；草稿已保留。",
-        );
-      if (captured.continuation) {
-        const original = state!.inputs.find(
-          (i) => i.id === captured.continuation!.inputId,
-        );
-        if (!original) throw new Error("原请求已不可用，草稿已保留。");
-        if (
-          !client.boot?.capabilities.directedInput ||
-          !client.boot.runtime.configured
-        )
-          throw new Error("当前连接不支持定向补充，草稿已保留。");
-        const command = captured.pendingSupplement ?? {
-          commandId: crypto.randomUUID(),
-          operation: {
-            type: "record-input" as const,
-            continuation: captured.continuation,
-            projectId: original.projectId,
-            conversationId: discussionId(original),
-            artifactId: original.artifactId,
-            artifactRevision: original.artifactRevision,
-            selection: "",
-            body: captured.body,
-            ...(captured.textQuotes?.length
-              ? { textQuotes: captured.textQuotes }
-              : {}),
-            targetActantId: original.targetActantId,
-            ...(captured.attachments?.length
-              ? { attachments: captured.attachments }
-              : {}),
-          },
-        };
-        // Persist the immutable retry payload before IPC/HTTP can lose a receipt.
-        updateDraft(key, (old) => ({
-          ...old,
-          pendingSupplement: command,
-          continuationFailure: undefined,
-        }));
-        const receipt = await client.execute(
-          command.operation,
-          true,
-          undefined,
-          command.commandId,
-        );
-        setRevealedInputs((old) => ({
-          ...old,
-          [conversationId]: receipt.entityId,
-        }));
-      } else if (captured.taskResult && !asAnnotation) {
-        if (captured.taskResult.taskId !== artifact?.id)
-          throw new Error("请回到这件事项后提交结果，草稿已保留。");
-        await client.execute({
-          type: "respond-task",
-          taskId: captured.taskResult.taskId,
-          expectedRevision: captured.taskResult.revision,
-          body: quotedInputText(captured.body, captured.textQuotes),
-        });
-      } else if (
-        asAnnotation &&
-        artifact &&
-        captured.selection &&
-        captured.revision
-      ) {
-        await client.execute({
-          type: "annotate",
-          artifactId: artifact.id,
-          artifactRevision: captured.revision,
-          quote: captured.selection,
-          ...(captured.page ? { page: captured.page } : {}),
-          body: quotedInputText(captured.body, captured.textQuotes),
-        });
-        setAnnotationRefresh((value) => value + 1);
-      } else {
-        if (
-          firstConversation &&
-          !client.boot?.capabilities.conversationOnFirstInput
-        )
-          throw new Error(
-            "当前版本不支持新建会话，请更新应用；草稿已保留，现有会话仍可使用。",
-          );
-        // A new root binds the latest confirmed Profile. Drain debounced text
-        // and uncertain receipts before staging its immutable input; directed
-        // supplements above keep their existing Thread's frozen version.
-        await profile.flush();
-        profile.assertCurrentScope();
-        if (currentContext.current !== key)
-          throw new Error("工作范围已切换，草稿已保留，请回到原处发送。");
-        await client.execute(
-          {
-            type: "record-input",
-            dispatchMode,
-            ...(captured.model ? { model: captured.model } : {}),
-            ...(captured.reasoningEffort
-              ? { reasoningEffort: captured.reasoningEffort }
-              : {}),
-            projectId: project.id,
-            conversationId,
-            ...(firstConversation
-              ? { newConversation: { title: firstConversation.title } }
-              : {}),
-            ...(activeInstance
-              ? {
-                  application: {
-                    id: activeInstance.applicationId,
-                    version: activeInstance.applicationVersion,
-                  },
-                }
-              : {}),
-            artifactId: artifact?.id ?? null,
-            artifactRevision: artifact
-              ? (captured.revision ?? artifact.revision)
-              : null,
-            selection: captured.selection,
-            ...(captured.reading ? { reading: captured.reading } : {}),
-            body: captured.body,
-            ...(captured.textQuotes?.length
-              ? { textQuotes: captured.textQuotes }
-              : {}),
-            ...(captured.scriptGeneration
-              ? { scriptGeneration: captured.scriptGeneration }
-              : {}),
-            ...(canAuthorizeDirectories && directoryState.grants.length
-              ? { directories: directoryState.grants }
-              : {}),
-            ...(captured.attachments?.length
-              ? { attachments: captured.attachments }
-              : {}),
-            ...(browserPage &&
-            activeInstance?.applicationId === "morphz.browser"
-              ? {
-                  browser: {
-                    pageId: browserPage.pageId,
-                    epoch: browserPage.epoch,
-                    url: browserPage.url,
-                    title: browserPage.title,
-                  },
-                }
-              : {}),
-            ...(captured.intent ? { intent: captured.intent } : {}),
-            targetActantId: "morphz-agent",
-          },
-          !!client.boot?.runtime.configured,
-          undefined,
-          firstConversation?.inputId,
-          onInputStaged,
-        );
-      }
-      // The acknowledged input consumed this conversation's references.
-      if (!staged)
-        updateDraft(key, (current) =>
-          consumeComposerDraft(current, emptyDraft),
-        );
-      if (!staged && currentContext.current === key) {
-        if (asAnnotation) {
-          openCollaboration();
-          requestSentInputFocus(key);
-        } else if (captured.continuation || !captured.taskResult) {
-          setMobileCollaboration(false);
-          // Focus only after React removes the sending-disabled state.
-          showSentInput(key);
-        }
-      }
-    } catch (e) {
-      // A staged input owns its failure/retry control. Do not attach an older
-      // submission error to the user's new composer contents.
-      if (staged) return;
-      if (captured.continuation) {
-        const reason =
-          e instanceof RequestError && e.code === "work_closed"
-            ? "closed"
-            : e instanceof RequestError && e.status < 500 && e.status !== 408
-              ? "changed"
-              : "unknown";
-        updateDraft(key, (old) => ({
-          ...old,
-          continuationFailure: reason,
-          ...(reason !== "unknown" ? { pendingSupplement: undefined } : {}),
-        }));
-      }
-      setInputErrors((old) => ({
-        ...old,
-        [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
-      }));
-    } finally {
-      if (!staged) {
-        sendPending.current = false;
-        setSending(false);
-      }
-    }
+    await submitExchangeDraft(
+      captured,
+      asAnnotation,
+      dispatchMode,
+      {
+        projectId: project.id,
+        conversationId,
+        firstConversation,
+        artifact,
+        activeInstance,
+        browserPage,
+        readingExpected,
+        currentReading,
+        canAuthorizeDirectories,
+        directoryScope,
+        directoryState,
+        capabilities: {
+          directedInput: client.boot?.capabilities.directedInput,
+          conversationOnFirstInput:
+            client.boot?.capabilities.conversationOnFirstInput,
+          runtimeConfigured: client.boot?.runtime.configured,
+        },
+      },
+      {
+        execute: client.execute,
+        profile: {
+          flush: profile.flush,
+          assertCurrentScope: profile.assertCurrentScope,
+        },
+        isCurrentSurface: () => currentContext.current === key,
+        originalInput: (id) => state!.inputs.find((input) => input.id === id),
+        persistSupplement: (command) =>
+          updateDraft(key, (old) => ({
+            ...old,
+            pendingSupplement: command,
+            continuationFailure: undefined,
+          })),
+        onInputStaged,
+        onResolved: (result) => {
+          if (result.kind === "supplement")
+            setRevealedInputs((old) => ({
+              ...old,
+              [conversationId]: result.receipt.entityId,
+            }));
+          else if (result.kind === "annotation")
+            setAnnotationRefresh((value) => value + 1);
+          // The acknowledged input consumed this conversation's references.
+          if (!staged)
+            updateDraft(key, (current) =>
+              consumeComposerDraft(current, emptyDraft),
+            );
+          if (!staged && currentContext.current === key) {
+            if (asAnnotation) {
+              openCollaboration();
+              requestSentInputFocus(key);
+            } else if (captured.continuation || !captured.taskResult) {
+              setMobileCollaboration(false);
+              // Focus only after React removes the sending-disabled state.
+              showSentInput(key);
+            }
+          }
+        },
+        onRejected: (e) => {
+          // A staged input owns its failure/retry control. Do not attach an older
+          // submission error to the user's new composer contents.
+          if (staged) return;
+          if (captured.continuation) {
+            const reason =
+              e instanceof RequestError && e.code === "work_closed"
+                ? "closed"
+                : e instanceof RequestError &&
+                    e.status < 500 &&
+                    e.status !== 408
+                  ? "changed"
+                  : "unknown";
+            updateDraft(key, (old) => ({
+              ...old,
+              continuationFailure: reason,
+              ...(reason !== "unknown" ? { pendingSupplement: undefined } : {}),
+            }));
+          }
+          setInputErrors((old) => ({
+            ...old,
+            [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。",
+          }));
+        },
+        onSettled: () => {
+          if (!staged) {
+            sendPending.current = false;
+            setSending(false);
+          }
+        },
+      },
+    );
   }
   function supplement(target: InputContinuation) {
     if (sending || draft.pendingSupplement) {
@@ -2225,118 +2088,46 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               }}
             />
           )}
-        <header
-          className="topbar"
-          aria-label={`${applicationWorkspaceOpen ? project.title : labels[prefs.view]}工具栏`}
-        >
-          <SidebarToggle
-            className="sidebar-toggle"
-            side="left"
-            expanded={prefs.sidebar}
-            controls="workspace-sidebar"
-            onClick={() => {
-              prefer({ sidebar: !prefs.sidebar });
-            }}
-          />
-          <div
-            className="navigation-history"
-            role="group"
-            aria-label="浏览位置"
-          >
-            <button
-              className="icon-button"
-              aria-label="返回上一位置"
-              title="后退 · ⌘[ / Alt+←"
-              disabled={trail.current.index <= 0}
-              onClick={() => travel(-1)}
-            >
-              <ArrowLeft />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="前往下一位置"
-              title="前进 · ⌘] / Alt+→"
-              disabled={trail.current.index >= trail.current.places.length - 1}
-              onClick={() => travel(1)}
-            >
-              <ArrowRight />
-            </button>
-          </div>
-          <div
-            className="application-toolbar-slot"
-            ref={setToolbarTarget}
-            hidden={!applicationWorkspaceOpen}
-          />
-          {!applicationWorkspaceOpen && artifact?.content.kind === "task" ? (
-            <div className="breadcrumb task-breadcrumb">
-              <button onClick={() => navigate(prefs.view)}>
-                {labels[prefs.view]}
-              </button>
-              <ChevronRight />
-              <h1 className="toolbar-title">{artifact.title}</h1>
-            </div>
-          ) : (
-            !applicationWorkspaceOpen && (
-              <div className="breadcrumb">
-                <h1 className="toolbar-title">
-                  {artifact ? (
-                    <button onClick={() => navigate(prefs.view)}>
-                      {labels[prefs.view]}
-                    </button>
-                  ) : (
-                    labels[prefs.view]
-                  )}
-                </h1>
-                {prefs.view === "projects" && prefs.projectOpen && (
-                  <>
-                    <ChevronRight />
-                    <button onClick={() => openProject(project.id)}>
-                      {project.title}
-                    </button>
-                    <ProjectMenu project={project} onAction={manageProject} />
-                  </>
-                )}
-                {artifact && (
-                  <>
-                    <ChevronRight />
-                    <strong>{artifact.title}</strong>
-                  </>
-                )}
-              </div>
-            )
-          )}
-          <div
-            className="page-toolbar-slot"
-            ref={setPageToolbarTarget}
-            hidden={applicationWorkspaceOpen || !!artifact}
-          ></div>
-          <div
-            className="detail-toolbar-slot"
-            ref={setDetailToolbarTarget}
-            hidden={openingObject || (!artifact && creating !== "document")}
-          />
-          <div className="top-actions">
-            {artifact && (
-              <button
-                className="icon-button collaboration-panel-toggle"
-                aria-label={collaborationVisible ? "收起批注栏" : "展开批注栏"}
-                title={artifact ? "对象批注" : "打开对象后查看批注"}
-                disabled={!artifact}
-                aria-pressed={collaborationVisible}
-                onClick={() => {
-                  setUnderstandingOpen(false);
-                  setExecutions(null);
-                  prefer({ subjectOpen: false });
-                  compact
-                    ? setMobileCollaboration(!mobileCollaboration)
-                    : prefer({ collaboration: !prefs.collaboration });
-                }}
-              >
-                <MessageSquareText />
-              </button>
-            )}
-          </div>
-        </header>
+        <WorkspaceTopbar
+          view={{
+            applicationWorkspaceOpen,
+            view: prefs.view,
+            viewLabel: labels[prefs.view],
+            projectTitle: project.title,
+            projectOpen: prefs.projectOpen,
+            artifact: artifact
+              ? { title: artifact.title, kind: artifact.content.kind }
+              : null,
+            openingObject,
+            creating,
+            collaborationVisible,
+          }}
+          history={{
+            index: trail.current.index,
+            length: trail.current.places.length,
+          }}
+          sidebarExpanded={prefs.sidebar}
+          slots={{
+            application: setToolbarTarget,
+            page: setPageToolbarTarget,
+            detail: setDetailToolbarTarget,
+          }}
+          projectControls={
+            <ProjectMenu project={project} onAction={manageProject} />
+          }
+          onToggleSidebar={() => prefer({ sidebar: !prefs.sidebar })}
+          onTravel={travel}
+          onNavigateView={() => navigate(prefs.view)}
+          onOpenProject={() => openProject(project.id)}
+          onToggleCollaboration={() => {
+            setUnderstandingOpen(false);
+            setExecutions(null);
+            prefer({ subjectOpen: false });
+            compact
+              ? setMobileCollaboration(!mobileCollaboration)
+              : prefer({ collaboration: !prefs.collaboration });
+          }}
+        />
         {inspectorControls}
         <div
           className="workspace-body"
