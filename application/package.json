@@ -43,6 +43,7 @@
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-react": "6.1.1",
     "electron": "44.2.0",
+    "postcss": "8.5.28",
     "prettier": "3.9.6",
     "tsx": "4.23.13",
     "typescript": "7.0.2",

@@ -1,0 +1,33 @@
+/* The exchange owns resize geometry and hit surfaces. Its drawing, interaction
+   feedback and motion remain in visual-system.css. */
+.exchange-resizer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+.exchange-resizer::after {
+  position: absolute;
+  top: 3px;
+  left: calc(50% - 18px);
+  width: 36px;
+  height: 3px;
+}
+.exchange-panel:has(> .exchange-resizer) > .exchange-panel-header {
+  padding-top: 14px;
+}
+.exchange-resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
