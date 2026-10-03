@@ -1,5 +1,54 @@
 # 桌面能力实施记录
 
+## 2026-10-03 原窗口四节点等待复验与注解事实缺口（目标仍进行中）
+
+当前同一原 App 可正常读取，不沿用早先锁屏或 Computer Use 工具故障猜测现场。
+Runtime 仍为 33840／18089，部署 binary SHA256
+`9901fef20c46affb779092d9efe73a7d7636ef9b1487cf9a905c9000f55cb56e`。
+通过真实原 UI 只发送一次新的 `TEST 四节点只读活动（等待修复终验）`，input
+`6d0abff8-87d9-4779-9dd1-cf82531136f4`、root
+`msg_1791008977902387000_33840_0`；三个 canonical 来源逐字和 SHA256 一致。
+没有通过 API 构造 Human 输入、复用旧 accepted root 或另开手工中心。
+
+实际四个 Thread、四次成功 Profile.read、三项 attached 调度及两级 all Group 汇合均完成。
+本轮 12 个物理业务模型请求全部接受，`invalid_wait`、协议纠错、拒绝及注解专用请求均为零；
+不把 12 写成夹具的 8，也不说总体零 LLM 请求。四节点各有可核来源的工作进度，两次调度
+各有精确 carrier intent；四个实际物理 Job 与标题／结果来源通过正式 Application 解析器。
+原 6244 Events、Profile head／80 versions、Mind 28／14 Frames／6 protected、剧本候选／
+正式版本／回执、原 15 Schedules 和未来提醒保持；本轮不需要 Context 维护。
+证据目录 `/tmp/morphz-original-four-node-wait-regression.euab8K`，其中机制报告
+`verification.json` 为通过，不等同于注解文案语义全部正确。
+
+原窗口实际打开这项主活动，AX 和截图确认主执行、A、B、A1 分组、各自步骤及结束状态；
+`original-ui-main.jpeg`、`original-ui-grandchild.jpeg` 保留该轮画面。模型最终正文及
+44 字 result 却错误自评主节点 Profile／调度“缺少注解”，与持久的 title／progress／intent
+事实相反。不能以来源合法或 JSON 契约通过，将这项语义错误宣称解决。
+
+源码复核发现原始 `_annotations` 在即时工具 continuation 保留，但更后轮的 compiled Inbox
+主要呈现已清洗业务参数，不回显已接受 bundle。最后上游 prompt 未保存，因此只证明存在
+跨轮观察缺口，不把它断言为本次错误的唯一原因。按
+`docs/morphz_response_annotations_proposal_v1.md` 的新回执设计继续修复：只在现有授权来源
+附加有界的 Runtime accepted metadata 事实，区分 accepted／none_accepted／unknown／截断，
+保持 Off、原业务参数与原 continuation，不增加 LLM 请求、表、账本或健康轮询。
+仍需零付费真实跨 Group 唤醒请求链、部署及原窗口真实模型语义复验；两项目标未关闭。
+
+新请求链夹具已写入 `morphz/tests/thread_group_wait_runtime.rs`：保留原 8 请求用例，
+增加两个真实只读 Recall 后为 10 个业务请求，先完成实际等待／汇合／终态，最后才检查
+新 Activation 的 canonical Context 中的先前注解回执及精确 call ID／generation／cutoff。
+首次旧生产编译日志 `/tmp/morphz-annotation-receipt-regression.I9zEQX/old-runtime-red.log`
+退出 101，失败在 lib archive 的 ENOSPC，尚未运行断言，不计行为 RED；生产三个修复文件
+仍未改。仅清理本目标 02:26–02:28 编译期的两个独占 dep／query 缓存（847899471 字节）
+后仍不足，已请求额外过期构建缓存清理的方向，未擅自扩大删除范围。实际部署 binary
+哈希仍与上述一致；原 Runtime、数据、测试二进制和失败日志保留。
+随后仅清理此次失败编译覆盖生成的 16 个独占 `.rcgu.o` 中间物（398090696 字节），
+mtime 均落在失败日志窗口，清理前再核无构建进程／打开句柄；rmeta、其他 deps、二进制、
+日志及用户数据保留。可由源码重建，实际空间恢复至 973 MiB；没有再赌一次大编译。
+
+同轮另外补齐 populated-v6 PostgreSQL preparation 的实际迁移缺口：SQLite／PostgreSQL
+同文件 14/14、零跳过，整应用严格类型检查通过。该测试与验证附记已聚焦本地提交
+`925173c6`，未推送；唯一合成 TEST 库核 owner／无连接后删除，可由 fixture 重建，
+不接原中心。这项迁移验证不代替上述尚未完成的语义验收。
+
 ## 2026-10-03 认知应用准备输入时保留模型与草稿
 
 既有 `compose({ artifactId, text })` 入口在目标 surface 重建草稿时仅写 body／selection／revision，丢掉已选模型、effort、附件等字段；普通发送与刷新已有的修复并未覆盖这个分支。现在以 functional 最新状态追加目标正文，保留目标模型／effort／附件与原 selection／reading／page／revision，不搬移来源应用草稿。旧 key 仅在默认会话承接对应 project＋artifact 草稿；有专用补充、批注、事项结果或剧本生成绑定时明确拒绝，原输入不变。超出既有正文上限则拒绝，不截断。

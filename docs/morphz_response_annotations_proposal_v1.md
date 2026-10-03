@@ -4,6 +4,10 @@
 
 日期：2026 年 10 月 2 日。
 
+2026-10-03 补充修复进行中：真实父子孙 Thread 的注解已保存，但跨工作轮次／等待恢复后，
+模型可见 Context 没有完整回显这些已接受的元数据事实，最终自评可能错误地报告“没有注解”。
+以下新增回执设计尚待生产实现与请求链验收；此前通过的展示、等待与持久验证不替代这项验证。
+
 本文面向 Runtime 和调用方开发者，设计一种随既有模型响应提交的展示注解。目标是在不专门增加 LLM 请求的情况下，为一次 Execution 提供短标题、阶段说明、步骤意图和结果解读。先用隔离原型与真实模型验证，按验证发现修订本文，达标后再修改 Runtime。
 
 ## 范围与原则
@@ -142,6 +146,57 @@ title 按当前 generation 内的可信输入修订选择。初始修订为 0；
 输入修订不是模型参数，也不等于全局 Context version 或事件上界。Runtime 核对补充 Event 的当前 Thread、generation、Session、发起 Principal、实际请求可见范围及已 Claimed 或 Acknowledged 的持久 Signal，以真实补充 Event ID 和 sequence 生成 host-only title_input_revision，并与来源响应的 manifest、注解一起原子保存。后续 Activation 可以从已验证来源继承修订，包括补充出现时尚未产生标题的情况，不能依赖补充 Signal 仍属于新 Activation 或仍驻留压缩后的 Context。恢复只复验保存的输入证据，不能扫描今日所有 Signal 而把旧响应升级为新修订。
 
 展示选择最新已验证输入修订中的首个有效标题；若新修订没有有效标题，沿用已有标题。旧响应迟到或重放不得覆盖更新后的标题。阶段描述仍不能直接改名，补充输入也不自动新建活动、重跑已提交 Job 或扩大权限。progress 与 result 各按适用事实边界选最新有效值。
+
+## 已接受注解的模型可见回执（2026-10-03 修订，实施前设计）
+
+原始 Provider 参数在即时工具 continuation 中保留，不表示每个后续 Activation 都重放了它。
+当前 compiled Inbox 的工作调用正文来自已清洗的业务参数；跨轮或 Group 等待恢复后的模型
+不能仅据这些参数没有 `_annotations`，断言以前未提交注解。本轮原窗的四节点运行实际保存了
+主节点 Profile 和调度的意图／进度，最终正文与 result 却作了相反自评。该证据证明自评错误；
+最后上游 prompt 未保存，不将源码的观察缺口推断为这一次错误的唯一原因。
+
+新增的是 Runtime 已持久接受元数据的读回执，不是另一次模型判断，也不是新的写入协议。
+权威仍为既有响应 Event／bundle、实际 Thread／Activation 和真实 Store sequence：
+
+- 身份随既有可见 Observation 绑定 source Event、attempt、当前 Thread／root／generation，
+  intent 再绑定唯一的实际 Provider call ID。不得信任模型自报的身份、序号或裸业务参数。
+- 仅给本次实际授权、未退休／排除且通过 causal frontier 的来源附加回执。当前冻结协议为
+  Off、typed infer 或无法验证当前 owner 时完全不附加；不扫描额外历史、不提升 Recall 权限，
+  不把 preview 变成 `ContextViewManifest.resident_event_ids` 中的完整原件。
+- 回执只陈述被接受的字段种类及精确调用／观察引用，不重复 title／progress／result 文案。
+  `accepted` 不表示注解已被选为当前生效标题或最终结果，更不表示物理工具执行成功。
+  工作轮的 result 候选、真实完成状态与最终选取继续由既有投影／生命周期分别决定。
+- 有效空 bundle 可表述 `none_accepted`，含义仅是该来源没有被接受的注解，不能改写成
+  “模型从未提交”。缺失、损坏、无法验证或范围不可见是 `unknown`；诊断省略／字段限额用
+  明确 `truncated` 表示。无回执不构成历史注解缺失的证据，不要求模型补写。
+- 每个来源最多输出 16 项细节，引用沿用 128 ASCII 字符上限，整份回执最多 2 KiB。
+  不能可靠呈现的绑定标为未知／截断而非伪造空事实。新增字节进入实际 Context 的 token
+  测量与压力管理，不只更新 UI，也不能靠未计量的后置拼接绕过维护阈值。
+
+生产数据模型不增表、索引、账本或双写。回执是每次从已可见、已验证来源计算的有界
+`ContextObservation` 可选投影；序列化省略空字段，生命周期与原 Event／Context 退休保持。
+SQLite／PostgreSQL 继续用现有来源和冻结身份，不伪造事务快照或全历史完整性。
+复核真实来源 Activation 只对本次可见候选取最多 32 个精确 ID，复用现有批量点读；
+Off／typed infer 不增加这项查询，超出窗口仍不能宣称历史无注解。新增公有 Rust
+`ContextObservation` 的可选字段虽不改变 Off 序列化，外部完整 struct literal 仍需补字段；
+明确这是源码兼容边界，不以仓库内没有外部 literal 冒称所有 SDK 使用者零改动。
+
+Full 与 experimental Delta 使用同一 canonical 回执编码。Delta 现有工具结果增量不能只携
+业务输出而遗失其调用来源回执；只能携本次已经可见的实际来源，不能暗补被退休的调用。
+启用协议的静态指导／编码版本必须参与已有 digest／seed fence，使旧无回执 seed 失配；
+动态回执不进入稳定 system 前缀，Off 的提示、Observation 字节与旧 seed 保持不变。
+已有缓存增量的可选来源 ID 只用于授权／可见性复核；来源退休或本次不可见时，应以当前
+Full 重建，而不是为移除元数据连同合法业务工具结果一起丢弃。旧缓存可反序列化，
+启用新回执的编码版本／Thread／generation fence 不允许复用旧无回执或旧代 seed。
+原始 continuation 与执行参数剥离规则不变，不增加命名、摘要、修复或注解专用 LLM 请求。
+
+实施门槛先用零付费真实 Runtime／Store 链验证：工作调用 → 后续工作／调度 → 已落盘等待
+→ 真实子 Thread 完成／Group 唤醒 → 新 Activation 最终请求。捕获实际模型请求，确认后者
+仍含当前执行最早来源的 accepted intent／progress 回执，绑定真实 call ID、generation 和
+manifest cutoff；同时核对旧／跨范围来源拒绝、截断语义、preview 不提升 resident、Off 字节、
+Full／Delta canonical 一致与旧 seed 失配、原业务请求数及物理参数不变。即时两轮 fixture
+或纯 JSON 测试不替代该门槛。最后再在同一原窗口检查真实模型是否按这些事实收尾；不改写
+此前错误输出，不将有回执说成所有模型永不作错误自评。
 
 ## Yao 和 typed infer 的边界
 
