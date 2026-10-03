@@ -3892,6 +3892,8 @@ pub struct ThreadGroupFilter {
     pub session_id: Option<String>,
     pub supervisor_kind: Option<ThreadSupervisorKind>,
     pub supervisor_id: Option<String>,
+    /// Restrict the authoritative generation before applying `limit`.
+    pub generation: Option<u64>,
     pub status: Option<ThreadGroupStatus>,
     pub include_terminal: bool,
     pub newest_first: bool,

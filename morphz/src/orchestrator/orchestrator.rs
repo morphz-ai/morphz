@@ -2611,9 +2611,67 @@ enum NoReplyMode {
 struct ThreadYieldState {
     active_background_tasks: usize,
     pending_schedules: usize,
+    has_pending_thread_group: bool,
     pending_routed_inputs: usize,
     wait_secs: u64,
     wait_explicitly_requested: bool,
+}
+
+/// A dispatched attached child is no longer a queued Schedule, but its
+/// unsettled Group remains an authoritative wake source for its exact owner.
+/// Never infer this from arbitrary running work in the Session or from a
+/// bounded Context projection. The generation filter is applied by the Store
+/// before LIMIT so obsolete open Groups cannot hide a current dependency.
+async fn has_pending_owned_thread_group(
+    store: &dyn SessionStore,
+    activation: &ThreadActivationRecord,
+) -> Result<bool, DynError> {
+    let Some(current) = store.get_thread_by_root(&activation.root_turn_id).await? else {
+        return Ok(false);
+    };
+    if current.lifecycle != ThreadLifecycle::Open
+        || current.kind != ThreadKind::Execution
+        || current.agent_id != activation.agent_id
+        || current.context_id != activation.context_id
+        || current.session_id != activation.session_id
+        || current.initiating_principal_id != activation.initiating_principal_id
+        || current.root_turn_id != activation.root_turn_id
+        || current.generation != activation.generation
+    {
+        return Ok(false);
+    }
+    Ok(store
+        .list_thread_groups(ThreadGroupFilter {
+            context_id: Some(current.context_id.clone()),
+            session_id: Some(current.session_id.clone()),
+            supervisor_kind: Some(ThreadSupervisorKind::Thread),
+            supervisor_id: Some(current.id.clone()),
+            generation: Some(current.generation),
+            status: Some(crate::memory::ThreadGroupStatus::Open),
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await?
+        .into_iter()
+        .any(|group| {
+            group.context_id == current.context_id
+                && group.session_id == current.session_id
+                && group.supervisor_kind == ThreadSupervisorKind::Thread
+                && group.supervisor_id == current.id
+                && group.generation == current.generation
+                && group.status == crate::memory::ThreadGroupStatus::Open
+        }))
+}
+
+fn new_response_protocol_error_id() -> Result<String, DynError> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("Failed to generate response protocol error identity: {error}"))?;
+    let random = bytes
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("response_protocol_error_{random}"))
 }
 
 impl TerminalDecision {
@@ -2639,7 +2697,7 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only tool call and cannot accompany content."),
+        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, open Thread Group owned by the current Thread generation, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only tool call and cannot accompany content."),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -4524,16 +4582,17 @@ impl Orchestrator {
         };
         if thread.lifecycle.is_terminal()
             || thread.control_state != crate::memory::ThreadControlState::Active
-            || (timer
-                .payload
-                .get("response_annotations")
-                .and_then(serde_json::Value::as_str)
-                == Some("v1")
-                && timer
+            || (matches!(
+                timer
                     .payload
-                    .get("thread_generation")
-                    .and_then(serde_json::Value::as_u64)
-                    != Some(thread.generation))
+                    .get("response_annotations")
+                    .and_then(serde_json::Value::as_str),
+                Some("v1" | "v2")
+            ) && timer
+                .payload
+                .get("thread_generation")
+                .and_then(serde_json::Value::as_u64)
+                != Some(thread.generation))
         {
             return Ok(TimerDisposition::Complete);
         }
@@ -14839,16 +14898,23 @@ impl Orchestrator {
                         .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                         .await?
                         .len();
+                    // Group settlement atomically closes the Group and adds
+                    // its owner's Signal. Read the Group before the mailbox:
+                    // either the still-open fact or its newly queued wake is
+                    // visible across that commit boundary.
+                    let has_pending_thread_group =
+                        has_pending_owned_thread_group(session_store.as_ref(), activation).await?;
                     let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
                     if thread_kind != "execution"
                         || (active_root_tasks == 0
                             && pending_schedules == 0
+                            && !has_pending_thread_group
                             && pending_routed_inputs == 0)
                     {
                         let reason = if thread_kind != "execution" {
                             "no_reply(mode=wait) was rejected: the current Thread is not an Execution Thread that can suspend while waiting for a physical event. Reply to the current Session directly, or use mode=silent only when silence is genuinely intended"
                         } else {
-                            "no_reply(mode=wait) was rejected: the Runtime currently has no running background task, queued schedule, or pending event. The latest completed or failed result is authoritative; handle it and reply or continue acting, or use mode=silent only when silence is genuinely intended"
+                            "no_reply(mode=wait) was rejected: the Runtime currently has no running background task, queued schedule, open owned Thread Group, or pending event. The latest completed or failed result is authoritative; handle it and reply or continue acting, or use mode=silent only when silence is genuinely intended"
                         };
                         protocol_errors += 1;
                         self.record_response_protocol_error(
@@ -14978,6 +15044,8 @@ impl Orchestrator {
                 .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                 .await?
                 .len();
+            let has_pending_thread_group =
+                has_pending_owned_thread_group(session_store.as_ref(), activation).await?;
             let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
             let explicit_wait = decision.wait_spec().is_some();
             let (wait_secs, wait_explicitly_requested) = decision
@@ -14988,6 +15056,7 @@ impl Orchestrator {
                     || (thread_kind != "dialogue_turn"
                         && (active_root_tasks > 0
                             || pending_schedules > 0
+                            || has_pending_thread_group
                             || pending_routed_inputs > 0)))
             {
                 if let TerminalDecision::Deliver(content) = &decision {
@@ -15051,6 +15120,7 @@ impl Orchestrator {
                     ThreadYieldState {
                         active_background_tasks: active_root_tasks,
                         pending_schedules,
+                        has_pending_thread_group,
                         pending_routed_inputs,
                         wait_secs,
                         wait_explicitly_requested,
@@ -15456,10 +15526,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "response_protocol_error_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_response_protocol_error_id()?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
                 "runtime/response_protocol_error".to_string(),
@@ -17160,6 +17227,9 @@ impl Orchestrator {
                 json!(wait_timer.generation),
             ),
         ];
+        if state.has_pending_thread_group {
+            payload.push(("has_pending_thread_group".to_string(), json!(true)));
+        }
         if let Some(bundle) = annotation_bundle.as_ref() {
             append_response_annotation_bundle(&mut payload, bundle, false);
             payload.extend([
@@ -27554,6 +27624,638 @@ mod tests {
         assert_eq!(wake.len(), 1);
         assert_eq!(wake[0].payload["wake_kind"], "thread_wait_timeout");
         assert_eq!(wake[0].payload["wait_secs"], 60);
+    }
+
+    async fn group_wait_scope_fixture(
+        protocol: ResponseAnnotationProtocol,
+    ) -> (
+        TempDir,
+        Arc<SqliteStore>,
+        crate::memory::ThreadRecord,
+        ThreadActivationRecord,
+    ) {
+        let directory = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(directory.path().join("group-scope.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "group-agent".into(),
+                    title: "Group scope".into(),
+                    root_context_id: "group-context".into(),
+                },
+                NewCognitiveContext {
+                    id: "group-context".into(),
+                    agent_id: "group-agent".into(),
+                    title: "Group scope".into(),
+                },
+                NewSession {
+                    id: "group-session".into(),
+                    agent_id: "group-agent".into(),
+                    context_id: "group-context".into(),
+                    parent_session_id: None,
+                    title: "Group scope".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                response_annotations: protocol,
+                model_alias: None,
+                reasoning_effort: None,
+                id: "group-owner".into(),
+                agent_id: "group-agent".into(),
+                context_id: "group-context".into(),
+                session_id: "group-session".into(),
+                initiating_principal_id: None,
+                root_turn_id: "scheduled_root_group-owner".into(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let event=Event::new("group-trigger".into(),"Runtime-Scheduler".into(),TYPE_TOOL_OUTPUT.into(),"chat/schedule_due".into(),json!({
+            "context_id":thread.context_id,"session_id":thread.session_id,"root_turn_id":thread.root_turn_id,"text":"Actual persisted trigger"
+        }).as_object().unwrap().clone());
+        store.append(event.clone()).await.unwrap();
+        let persisted = store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "group-activation".into(),
+                agent_id: thread.agent_id.clone(),
+                context_id: thread.context_id.clone(),
+                session_id: thread.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: event.id,
+                trigger_sequence: persisted.sequence.unwrap(),
+                trigger_kind: "chat/schedule_due".into(),
+                parent_activation_id: None,
+                root_turn_id: thread.root_turn_id.clone(),
+            })
+            .await
+            .unwrap();
+        (directory, store, thread, activation)
+    }
+
+    #[tokio::test]
+    async fn owned_thread_group_wait_requires_current_exact_persisted_scope() {
+        use crate::memory::{
+            NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan, ScheduleStore as _,
+            ThreadGroupPolicy, ThreadGroupStatus, ThreadGroupStore as _, ThreadLifecycle,
+            ThreadMutation, ThreadSupervisorKind,
+        };
+        let (_directory, store, thread, activation) =
+            group_wait_scope_fixture(ResponseAnnotationProtocol::V2).await;
+        assert!(
+            !super::has_pending_owned_thread_group(store.as_ref(), &activation)
+                .await
+                .unwrap()
+        );
+        // An unrelated durable open Thread is not an owned Group and cannot
+        // authorize waiting; detached work must not be inferred by Session.
+        let mut unrelated = NewThread {
+            response_annotations: ResponseAnnotationProtocol::V2,
+            model_alias: None,
+            reasoning_effort: None,
+            id: "group-unrelated".into(),
+            agent_id: thread.agent_id.clone(),
+            context_id: thread.context_id.clone(),
+            session_id: thread.session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: "scheduled_root_unrelated".into(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".into(),
+            executor_id: None,
+            target_id: None,
+            supervision: crate::memory::ThreadSupervision::runtime("Runtime"),
+        };
+        store.ensure_thread(unrelated.clone()).await.unwrap();
+        assert!(
+            !super::has_pending_owned_thread_group(store.as_ref(), &activation)
+                .await
+                .unwrap()
+        );
+        unrelated.id = "group-member".into();
+        unrelated.root_turn_id = "scheduled_root_group-member".into();
+        unrelated.supervision = crate::memory::ThreadSupervision::attached(
+            &thread.id,
+            thread.generation,
+            &activation.id,
+        );
+        unrelated.supervision.thread_group_id = Some("owned-open-group".into());
+        store
+            .commit_schedule_transaction(
+                &[],
+                &[],
+                &[unrelated],
+                &[],
+                &[NewThreadGroupPlan {
+                    group: NewThreadGroup {
+                        id: "owned-open-group".into(),
+                        context_id: thread.context_id.clone(),
+                        session_id: thread.session_id.clone(),
+                        supervisor_kind: ThreadSupervisorKind::Thread,
+                        supervisor_id: thread.id.clone(),
+                        generation: thread.generation,
+                        policy: ThreadGroupPolicy::Any,
+                        completion_contract: json!({}),
+                    },
+                    members: vec![NewThreadGroupMember {
+                        thread_id: "group-member".into(),
+                        ordinal: 0,
+                        required: true,
+                    }],
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(
+            super::has_pending_owned_thread_group(store.as_ref(), &activation)
+                .await
+                .unwrap()
+        );
+        for field in [
+            "agent",
+            "context",
+            "session",
+            "principal",
+            "generation",
+            "root",
+        ] {
+            let mut foreign = activation.clone();
+            match field {
+                "agent" => foreign.agent_id = "foreign-agent".into(),
+                "context" => foreign.context_id = "foreign-context".into(),
+                "session" => foreign.session_id = "foreign-session".into(),
+                "principal" => foreign.initiating_principal_id = Some("foreign-principal".into()),
+                "generation" => foreign.generation += 1,
+                "root" => foreign.root_turn_id = "missing-root".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !super::has_pending_owned_thread_group(store.as_ref(), &foreign)
+                    .await
+                    .unwrap(),
+                "{field}"
+            );
+        }
+        let member = store.get_thread("group-member").await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .control_thread(
+                    &member.id,
+                    member.revision,
+                    crate::memory::ThreadControlAction::Cancel,
+                    Some("test completion"),
+                    Some("test-host")
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        let settled = store
+            .get_thread_group("owned-open-group")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            settled.status,
+            ThreadGroupStatus::Open,
+            "actual member cancellation settles its actual Group"
+        );
+        assert!(
+            !super::has_pending_owned_thread_group(store.as_ref(), &activation)
+                .await
+                .unwrap()
+        );
+        let current = store.get_thread(&thread.id).await.unwrap().unwrap();
+        let supersede = crate::memory::thread_supersede_event(
+            &current,
+            "A new generation",
+            "test fence",
+            "test-host",
+        );
+        let newer = store
+            .supersede_thread(&current.id, current.revision, &supersede)
+            .await
+            .unwrap();
+        assert!(
+            matches!(newer,ThreadMutation::Updated(ref current) if current.generation>activation.generation && current.lifecycle==ThreadLifecycle::Open)
+        );
+        assert!(
+            !super::has_pending_owned_thread_group(store.as_ref(), &activation)
+                .await
+                .unwrap()
+        );
+        let current = store.get_thread(&thread.id).await.unwrap().unwrap();
+        let terminal = store
+            .control_thread(
+                &current.id,
+                current.revision,
+                crate::memory::ThreadControlAction::Cancel,
+                Some("test end"),
+                Some("test-host"),
+            )
+            .await
+            .unwrap();
+        let ThreadMutation::Updated(terminal) = terminal else {
+            panic!("actual owner cancellation must commit");
+        };
+        assert_eq!(terminal.lifecycle, ThreadLifecycle::Cancelled);
+        let mut latest = activation.clone();
+        latest.generation = terminal.generation;
+        assert!(
+            !super::has_pending_owned_thread_group(store.as_ref(), &latest)
+                .await
+                .unwrap(),
+            "a terminal owner cannot wait even with matching latest generation"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_wait_timer_fences_stale_v1_v2_generations_without_changing_off() {
+        for protocol in [
+            ResponseAnnotationProtocol::V2,
+            ResponseAnnotationProtocol::V1,
+            ResponseAnnotationProtocol::Off,
+        ] {
+            let (_directory, store, thread, _activation) = group_wait_scope_fixture(protocol).await;
+            let timer=store.upsert_runtime_timer(crate::memory::NewRuntimeTimer{
+                id:"exact-old-generation-wait".into(),generation:777,kind:crate::memory::RuntimeTimerKind::ThreadWait,owner_id:thread.id.clone(),due_at:Utc::now()+chrono::Duration::hours(1),
+                payload:json!({"context_id":thread.context_id,"session_id":thread.session_id,"activation_id":"old-generation-activation","response_annotations":protocol,"thread_generation":thread.generation,"wait_secs":60}),
+            }).await.unwrap();
+            let supersede = crate::memory::thread_supersede_event(
+                &thread,
+                "new generation",
+                "test exact timer fence",
+                "test-host",
+            );
+            let newer = store
+                .supersede_thread(&thread.id, thread.revision, &supersede)
+                .await
+                .unwrap();
+            assert!(
+                matches!(newer,crate::memory::ThreadMutation::Updated(ref current) if current.generation>thread.generation && current.lifecycle==crate::memory::ThreadLifecycle::Open)
+            );
+            let signals_before = store
+                .list_context_thread_signals_for_threads(
+                    &thread.context_id,
+                    &[thread.id.clone()],
+                    None,
+                )
+                .await
+                .unwrap();
+            let config = crate::config::OrchestratorConfig::default();
+            let context_engine = Arc::new(
+                ContextEngine::new(store.clone() as Arc<dyn EventStore>, config.clone())
+                    .with_session_store(store.clone() as Arc<dyn crate::memory::SessionStore>),
+            );
+            let orchestrator = Orchestrator::new_test_with_context_engine(
+                Arc::new(InMemoryEventBus::new()),
+                store.clone() as Arc<dyn EventStore>,
+                None,
+                store.clone() as Arc<dyn crate::memory::ActionGroupStore>,
+                Arc::new(NeverCalledClient),
+                Arc::new(Registry::new()),
+                config,
+                context_engine,
+                Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+                None,
+            )
+            .unwrap();
+            // Pause does not advance the generation or cancel in-flight
+            // Evaluations. Its existing timer admission fence must remain
+            // intact for a valid current-generation timer as well.
+            let current = store.get_thread(&thread.id).await.unwrap().unwrap();
+            let paused = store
+                .control_thread(
+                    &current.id,
+                    current.revision,
+                    crate::memory::ThreadControlAction::Pause,
+                    Some("timer pause test"),
+                    Some("test-host"),
+                )
+                .await
+                .unwrap();
+            let crate::memory::ThreadMutation::Updated(paused) = paused else {
+                panic!("actual pause must commit");
+            };
+            assert_eq!(paused.generation, current.generation);
+            let mut valid_payload = timer.payload.clone();
+            valid_payload["thread_generation"] = json!(current.generation);
+            let valid = store
+                .upsert_runtime_timer(crate::memory::NewRuntimeTimer {
+                    id: "current-generation-paused-wait".into(),
+                    generation: 778,
+                    kind: timer.kind,
+                    owner_id: thread.id.clone(),
+                    due_at: Utc::now() + chrono::Duration::hours(1),
+                    payload: valid_payload,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                orchestrator
+                    .clone()
+                    .dispatch_thread_wait(valid.clone())
+                    .await
+                    .unwrap(),
+                TimerDisposition::Complete
+            );
+            assert!(store
+                .query(QueryFilter {
+                    event_id: Some(format!(
+                        "thread_wait_due_{}_g{}",
+                        thread.id, valid.generation
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                store
+                    .list_context_thread_signals_for_threads(
+                        &thread.context_id,
+                        &[thread.id.clone()],
+                        None
+                    )
+                    .await
+                    .unwrap(),
+                signals_before
+            );
+            assert!(
+                matches!(store.control_thread(&paused.id,paused.revision,crate::memory::ThreadControlAction::Resume,Some("timer resume test"),Some("test-host")).await.unwrap(),crate::memory::ThreadMutation::Updated(ref current) if current.generation==paused.generation)
+            );
+            assert_eq!(
+                orchestrator
+                    .dispatch_thread_wait(timer.clone())
+                    .await
+                    .unwrap(),
+                TimerDisposition::Complete
+            );
+            let wake = store
+                .query(QueryFilter {
+                    event_id: Some(format!(
+                        "thread_wait_due_{}_g{}",
+                        thread.id, timer.generation
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let signals_after = store
+                .list_context_thread_signals_for_threads(
+                    &thread.context_id,
+                    &[thread.id.clone()],
+                    None,
+                )
+                .await
+                .unwrap();
+            if protocol.is_off() {
+                assert_eq!(
+                    wake.len(),
+                    1,
+                    "Off preserves its preexisting dispatch contract"
+                );
+                assert_eq!(signals_after.len(), signals_before.len() + 1);
+            } else {
+                assert!(
+                    wake.is_empty(),
+                    "stale {protocol:?} timer must not append a current-generation wake"
+                );
+                assert_eq!(
+                    signals_after, signals_before,
+                    "stale timer must not create a Signal or model Evaluation"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_response_protocol_errors_keep_independent_persisted_scope_and_source() {
+        let (_directory, store, left, left_activation) =
+            group_wait_scope_fixture(ResponseAnnotationProtocol::V2).await;
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "error-right-agent".into(),
+                    title: "Right".into(),
+                    root_context_id: "error-right-context".into(),
+                },
+                NewCognitiveContext {
+                    id: "error-right-context".into(),
+                    agent_id: "error-right-agent".into(),
+                    title: "Right".into(),
+                },
+                NewSession {
+                    id: "error-right-session".into(),
+                    agent_id: "error-right-agent".into(),
+                    context_id: "error-right-context".into(),
+                    parent_session_id: None,
+                    title: "Right".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let right = store
+            .ensure_thread(NewThread {
+                response_annotations: ResponseAnnotationProtocol::V2,
+                model_alias: None,
+                reasoning_effort: None,
+                id: "error-right-thread".into(),
+                agent_id: "error-right-agent".into(),
+                context_id: "error-right-context".into(),
+                session_id: "error-right-session".into(),
+                initiating_principal_id: None,
+                root_turn_id: "scheduled_root_error-right".into(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let trigger=Event::new("error-right-trigger".into(),"test-host".into(),TYPE_TOOL_OUTPUT.into(),"chat/schedule_due".into(),json!({"context_id":right.context_id,"session_id":right.session_id,"root_turn_id":right.root_turn_id}).as_object().unwrap().clone());
+        store.append(trigger.clone()).await.unwrap();
+        let trigger = store
+            .query(QueryFilter {
+                event_id: Some(trigger.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let right_activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "error-right-activation".into(),
+                agent_id: right.agent_id.clone(),
+                context_id: right.context_id.clone(),
+                session_id: right.session_id.clone(),
+                initiating_principal_id: None,
+                trigger_event_id: trigger.id,
+                trigger_sequence: trigger.sequence.unwrap(),
+                trigger_kind: "chat/schedule_due".into(),
+                parent_activation_id: None,
+                root_turn_id: right.root_turn_id.clone(),
+            })
+            .await
+            .unwrap();
+        let bus = Arc::new(InMemoryEventBus::new());
+        let writer_store = store.clone();
+        bus.subscribe_durable(
+            "runtime/response_protocol_error".into(),
+            Arc::new(move |event| {
+                let store = writer_store.clone();
+                Box::pin(async move { store.append(event).await })
+            }),
+        );
+        let config = crate::config::OrchestratorConfig::default();
+        let context_engine = Arc::new(
+            ContextEngine::new(store.clone() as Arc<dyn EventStore>, config.clone())
+                .with_session_store(store.clone() as Arc<dyn crate::memory::SessionStore>),
+        );
+        let orchestrator = Orchestrator::new_test_with_context_engine(
+            bus,
+            store.clone() as Arc<dyn EventStore>,
+            None,
+            store.clone() as Arc<dyn crate::memory::ActionGroupStore>,
+            Arc::new(NeverCalledClient),
+            Arc::new(Registry::new()),
+            config,
+            context_engine,
+            Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+            None,
+        )
+        .unwrap();
+        for (thread, activation) in [(&left, &left_activation), (&right, &right_activation)] {
+            orchestrator
+                .session_contexts
+                .insert(thread.session_id.clone(), thread.context_id.clone());
+            // These are trusted host route snapshots of the actual rows,
+            // not model-reported identities. This test invokes the production
+            // error publisher directly; it does not claim model validation.
+            orchestrator.activation_routes.insert(
+                activation.id.clone(),
+                super::ActivationRoute {
+                    thread_id: thread.id.clone(),
+                    thread_generation: thread.generation,
+                    response_annotations: thread.response_annotations,
+                    activation_id: activation.id.clone(),
+                    root_turn_id: thread.root_turn_id.clone(),
+                    trigger_event_id: activation.trigger_event_id.clone(),
+                    trigger_sequence: activation.trigger_sequence,
+                    initiating_principal_id: activation.initiating_principal_id.clone(),
+                    context_snapshot_version: None,
+                    model_alias: "test".into(),
+                    explicit_model_alias: None,
+                    explicit_reasoning_effort: None,
+                    reasoning_effort: "provider_default".into(),
+                    context_token_budget: None,
+                    thread_kind: "execution",
+                    internal_child_handoff: false,
+                    delivery_thread_ids: vec![],
+                },
+            );
+        }
+        futures_util::future::try_join_all((0..64).map(|index| {
+            let orchestrator = orchestrator.clone();
+            let (session, attempt) = if index % 2 == 0 {
+                (left.session_id.clone(), left_activation.id.clone())
+            } else {
+                (right.session_id.clone(), right_activation.id.clone())
+            };
+            async move {
+                let response = crate::llm::Response {
+                    content: format!("source-{index}"),
+                    tool_calls: vec![],
+                };
+                orchestrator
+                    .record_response_protocol_error(
+                        &session,
+                        &attempt,
+                        index,
+                        "invalid_wait",
+                        &format!("reason-{index}"),
+                        Some(&response),
+                    )
+                    .await
+            }
+        }))
+        .await
+        .unwrap();
+        let events = store
+            .query(QueryFilter {
+                topic: Some("runtime/response_protocol_error".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 64);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| &event.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            64
+        );
+        for event in events {
+            let suffix = event.id.strip_prefix("response_protocol_error_").unwrap();
+            assert_eq!(suffix.len(), 32);
+            assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            let index = event.payload["error_count"].as_u64().unwrap();
+            let (thread, activation) = if index % 2 == 0 {
+                (&left, &left_activation)
+            } else {
+                (&right, &right_activation)
+            };
+            assert_eq!(event.payload["context_id"], thread.context_id);
+            assert_eq!(event.payload["session_id"], thread.session_id);
+            assert_eq!(event.payload["thread_id"], thread.id);
+            assert_eq!(event.payload["root_turn_id"], thread.root_turn_id);
+            assert_eq!(event.payload["activation_id"], activation.id);
+            assert_eq!(event.payload["thread_generation"], thread.generation);
+            assert_eq!(
+                event.payload["trigger_event_id"],
+                activation.trigger_event_id
+            );
+            assert_eq!(
+                event.payload["trigger_sequence"],
+                activation.trigger_sequence
+            );
+            assert_eq!(event.payload["reason"], format!("reason-{index}"));
+            assert_eq!(
+                event.payload["response_content_preview"],
+                format!("source-{index}")
+            );
+            assert_eq!(
+                event.payload["response_content_chars"],
+                format!("source-{index}").chars().count()
+            );
+            assert_eq!(event.payload["response_state"], "invalid_wait");
+            assert_eq!(event.payload["response_tool_call_count"], 0);
+            assert!(event.sequence.is_some());
+        }
     }
 
     #[test]

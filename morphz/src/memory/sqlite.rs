@@ -15458,6 +15458,11 @@ impl ThreadGroupStore for SqliteStore {
         if let Some(supervisor_id) = filter.supervisor_id {
             query.push(" AND supervisor_id = ").push_bind(supervisor_id);
         }
+        if let Some(generation) = filter.generation {
+            query
+                .push(" AND generation = ")
+                .push_bind(i64::try_from(generation)?);
+        }
         if let Some(status) = filter.status {
             query.push(" AND status = ").push_bind(status.as_str());
         } else if !filter.include_terminal {

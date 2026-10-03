@@ -22,6 +22,20 @@
 
 本次真实业务计数为 18 queued／18 usage＝14 个已接收业务响应＋4 个被拒绝的 `no_reply(mode=wait)`，不能改成 14 或宣称零额外请求；其中独立命名／注解-only 请求为零，四次重试是工作等待协议被拒，不是注解修补。源码等待守门只计后台 Job、queued Schedule 和 pending Signal，漏掉已分派且仍 open 的真实 attached 子 Thread／Group；首个拒绝时 A、B 均在途。这造成额外修复与结果查询，正在补同范围真实待汇合 Group 的合法等待与终态／跨范围拒绝回归。两项总目标保持进行中，不以 Custom 已修复或四节点终态掩盖等待请求成本缺陷。
 
+10:55 已用 Computer Use 打开同一原窗口主活动，实看主执行、A、B 与 A1 的分组、递进缩排、各自已结束状态及各自一次 Profile 只读步骤；原截图在 `/tmp/morphz-original-four-node-mechanism-ui.kuVLme/{main,children}.jpeg`。这只确认功能链的显示，不覆盖上述严格失败。独立原 SQLite 复核确认 18 份 usage／response hash 与精确 model attempt 归属一致；正式 Application 注解解析器确认四个物理步骤均有 intent、四节点终轮都有 title／result。模型最终回复中“早期业务调用缺少注解”的自评并不符合这些持久证据，不把自评当缺失事实；每步 result 注解仍为可选，不能冒称该轮已产生。
+
+等待修复的真实 SQLite／Runtime 四节点夹具已先红：实际 Execution、v2、当前 generation、真实 schedule 回执后仍被 `invalid_wait` 拒绝，排除了 Dialogue-kind 的假红。新方案只读取 fresh 真实 owner／Activation 身份及同 Context／Session／owner／generation 的 Open Group，在 SQLite／PostgreSQL SQL 过滤后限量一项，结果为 bool 而非伪计数；先读 Group 后读 Signal，验证与 yield 共用规则。没有新增执行账本、依赖行、模型请求或生产轮询。独立审查还发现既有 v2 ThreadWait 回退 timer 漏代际守门，正一并补合法 v1／v2 的精确 fence 与 stale-v2 零唤醒回归。仍待绿测、部署及下一次原 UI 完整验收，不称这些待修复事项已完成。
+
+Timer 红测的首次编译被 ENOSPC 中断，尚未获得该负测的行为结果；不把编译推进当红／绿通过。确认无 Cargo 后，只删除本轮 libtest 的失败 `s-hmusdz9eb9-1re6rl2-working`（1.6 GiB）及已验证 Custom libtest 对应的旧增量缓存 `s-hmurt0zwf9-1dzco21-28g72nieqr12odbjgc6097ah3`（1.9 GiB），均位于 `target/debug/incremental/morphz-1jxv1138pe5n0/`，可由源码重建；保留实际验证二进制 `morphz-5edcb2d3137b1930`、失败日志及所有用户库／资料。APFS 实际剩余 2.5 GiB 后继续验证。Pause 不扩成另一项控制重写：当前 admission 挡新 Activation、在途模型可收尾，等待 dispatch 仍核 Active；不能让 paused owner 的存在性 false 触发额外 `invalid_wait` 模型纠错，也不宣称本次改了 Pause／Resume 代际语义。
+
+随后 Timer 行为红确证 stale v2 能产生当前代 wake（`timer-v2-red.log`）；该首红使用 due-now，测试构造器会自动启动 TimerEngine，因此只证明旧守门允许错误唤醒，不冒称唯一手动派发来源。最终夹具改 future-due 后手动调用真实 handler，V1／V2 stale 零 wake／Signal、Off 旧行为、同代 paused 零 wake 及既有持久长等待／取消／fallback 的两项回归全绿；owner 当前身份／Group 存在性 1/1、真实 SQLite 两 scope 的 64 个并发错误回执 1/1、既有 `custom_` 10/10。原并发失败同时暴露 timestamp-only 错误 Event ID 碰撞，已改既有 getrandom 的 128-bit ID，不加 UUID 依赖；随机源失败明确返回错误、不退时钟。64 条是生产 publisher／Store 回执测试，不是 64 次模型响应。
+
+后续空间恢复仅追加清理本轮 11:07 红测以及 10:53–10:57 两次四节点夹具编译的五个精确增量缓存，二进制／日志仍留存；验证改为本次环境 `CARGO_INCREMENTAL=0`、jobs=2，未改 Cargo profile。集中首编译的 Arc move 错误只在新 timer 夹具，补 clone 后行为组退出 0，记录 `/tmp/morphz-custom-scheduled-regression.0OfJqy/wait-unit-green.log`。默认生产 Runtime 四节点等待、实际 SQLite／PostgreSQL 查询合同、最终构建／部署及原窗口仍待完成，不把这一阶段的单测全绿当两项目标结束。
+
+默认生产 Runtime／SQLite 四节点等待随后 1/1 通过：真实 parent→A／B→A1、非空 frozen Custom、两个真实 Open owner Group、没有 Job／queued Schedule／pending Signal 时两个合法 wait；叶响应释放后四节点 completed、两组 satisfied、两个回退 Timer cancelled，准确 8 次既有业务模型响应、零协议纠错／注解专用响应／付费请求。日志 `wait-runtime-green.log`；直接 barrier Event 断言为 topic／owner Thread／root／status／sequence，Context／Session／generation 的严格证据分别在真实 Group 与 wait Timer 核验，不混作每个 barrier 字段均直接断言。新纯查询合同在真实 SQLite／PostgreSQL 2/2、零跳过，证实 SQL 先完整范围与 generation 筛选再 LIMIT；None 查询兼容、ASC／DESC、溢出与零 limit 保持。旧 None+LIMIT 后再过滤的反例是实际 Store 查询反例，不冒称旧生产 binary 回放 RED。证据 `/tmp/morphz-thread-group-generation-query.96vzex/`；唯一 TEST PG 库已核 owner／无连接后精确删除并确认不存在，原库未改。
+
+新增 `ThreadGroupFilter.generation: Option<u64>` 不加表／列／迁移／HTTP 字段；外部 Rust 调用者若写满旧 struct literal 而未使用 `..Default::default()`，需补该可选字段，这是源码兼容边界，不冒称完全零 API 变化。该代码阶段已达到确定性行为门禁，下一阶段才是最终构建、同一原 Runtime 更新与原 UI 真实模型验收；两项目标仍未关闭。原 Runtime SQLite 已在线备份 `/tmp/morphz-owned-group-predeploy.rn4hZa/runtime.sqlite`，无在途执行且唯一原提醒仍在 2026-10-23T01:00:00Z。为新 integration 链接，仅另删本轮旧 10:56 静态编译缓存 `libmorphz-021d5f4da39a7917.rlib`，最新 library、所有测试可执行文件与日志保留。
+
 该首发守门的实际挂载 App／Human IPC／Host／Platform 回归 2/2、零跳过（`/tmp/morphz-draft-conversation-directories-verified.log`），验证逐字正文、稳定 input ID、低 effort、刷新恢复、旧授权不变和首次提交后恢复目录读取。真实 Platform 入口专项 1/1（`/tmp/morphz-draft-directory-ingress-test.log`）；生产构建与严格类型通过（`/tmp/morphz-draft-directory-original-build-fixed.log`）。首轮构建暴露 family 夹具的可选 Session ID 未收窄，已增加不存在时的 404 守门，不用断言强转。中间 UI 测试误把 effort／正文断言放到非权威投影字段，已改核实际 Runtime activation／text；失败日志保留，不降低生产授权检查。
 
 原 UI 提案请求已于本地 02:55 实际发送，保存了原正文、轻量 effort，进入 Script discussion；候选仍为零。内部模型请求认证失败，尚未收到唯一提案，因此尚未发送简短确认，不把新 TEST Session 的创建当作剧本交付完成。原窗口四节点工具活动验收仍未开始；两项完整验收前目标保持进行中。

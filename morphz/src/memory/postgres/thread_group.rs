@@ -251,6 +251,11 @@ impl ThreadGroupStore for PostgresStore {
         if let Some(value) = filter.supervisor_id {
             query.push(" AND supervisor_id = ").push_bind(value);
         }
+        if let Some(value) = filter.generation {
+            query
+                .push(" AND generation = ")
+                .push_bind(i64::try_from(value)?);
+        }
         if let Some(value) = filter.status {
             query.push(" AND status = ").push_bind(value.as_str());
         } else if !filter.include_terminal {
