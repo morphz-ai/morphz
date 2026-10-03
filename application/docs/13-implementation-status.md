@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-04 交流控件回归契约修正
+
+组件重构已提交 `7f1584b7`，本批只修 `composer-tool-state.spec.ts`，
+没有生产源码／CSS 改动。记录显隐改为显式按钮操作，保留 focus 不自动展开
+负例；28px／13px 交流控件与 32px 紧凑菜单沿用当前实际语义，不借用应用
+Dock 的材质。八种主题组合、稳定命中、pressed、hover／键盘、草稿与对比度
+保留。对比辅助改为保留 alpha 的祖先背景合成，并用独立透明／半透明反例
+验证；它不是屏幕像素取样，不声称模拟 sibling／backdrop blur。
+
+主线程真实跑 3/3 通过、零重试／跳过，包括临时隔离 profile 的生产 Electron
+fixture、1380／760px 窗口和实际 200% zoom；24 张主题／尺寸截图中独立查看
+宽亮／窄暗两张。首次补测暴露紧凑菜单的局部中性 ink 与 outside-focus 关闭
+行为，按原生产源码修正测试后复跑，不修改菜单或放宽等待。
+输出见 `/tmp/morphz-control-owner-verification.LhN5kb/tool-state-final.log`。
+
+另以固定旧 JS `app-DASFnNYG.js` 加冻结旧测试真实运行七项失败分类，
+七项均同类失败且每项有旧 bundle 实际匹配回执；负基线保留在
+`/tmp/morphz-control-legacy-baseline.ohSJ7t`，不是七项“通过”。其余布局／
+检查器回归仍在独立修复；原用户 App 的最终复验仍待解锁，上述隔离 fixture
+不能替代原窗验收或完整前端目标完成。
+
 ## 2026-10-04 前端重构第六阶段：登记图形与透明原生按钮
 
 `design/control-icons.tsx` 登记原有七个 Lucide 构造器与两类控件语义，
