@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.2 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：0.3 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -12,6 +12,7 @@
 | -------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                  | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                   |
 | 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                          | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                          |
+| 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。 |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费 | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`    | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                        |
 
@@ -112,6 +113,14 @@ SHOULD：专业应用编辑草稿留领域 owner；Exchange draft adapter 不管
 
 统一导航意图、打开成功回执、返回现场及 generation 竞争。实例恢复与显式打开内容分开；全局目录与项目目录不创建 Session；来源版本引用与 live head 不混用。
 
+首段生产迁移已落地：`useWorkspaceNavigationState` 只拥有原状态／ref，无 effects；
+`createWorkspaceNavigationCommands` 是无构造副作用的四命令闭包；
+`useWorkspaceNavigationCommit` 在原 trail／快捷键位置注册原 effects。
+同一 generation 仍由 exchange 与 ApplicationHost 消费，原 prefs writer 仍在 App；
+不通过整个 setter bag、latest 快照或新增 store 镜像宿主。偏好 patch 与返回的
+raw spread 语义分开。`workspace-navigation-boundary.test.ts` 约束这条真实 seam，
+`workspace-navigation.test.ts` 验证原回执／错误／历史契约，不覆盖所有 App 业务入口。
+
 页面局部选择如果要持久化，声明唯一 owner 和恢复顺序，例如显式新 navigation intent → 对象确切引用 → 既有持久视图；不能 App、实例状态、localStorage 三处互相回写。迁移前需逐个确认当前优先顺序，不使用新 key 默认覆盖旧用户偏好。
 
 ## 4. 事件、查询与写操作
@@ -193,7 +202,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 - 契约检查：图标 role／可访问名称、状态槽完整性、无回复样例、motion 开停及 fallback 必须进入测试矩阵。
 - 旧模块有确切 allowlist，门禁先作用于新／已迁移区域；每批缩小债务清单，不以全量报错迫使删除合法局部 state。
 
-工作面和交流 controller 的 AST 门禁已随各自阶段实现；其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
+工作面、交流 controller 与首段导航 owner 的 AST 门禁已随各自阶段实现；其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
 
 ## 7. 渐进迁移与证明责任
 
@@ -224,7 +233,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 
 采纳与迁移完成后，应能做到：一个组件语义变化有唯一 owner；一个状态规则变化无需修改五个消费页面；一个角色尺寸变化由 component token 控制；每项活动 prose 能追溯来源，缺失不造消息；新 feature 默认复用宿主与 UI primitives，同时保留领域画布自由。
 
-当前已有工作面解析、交流意图／焦点和各自 AST 门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、role 型组件和全产品 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
+当前已有工作面解析、交流意图／焦点、回应等待事实、首段导航 owner 和对应有限门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、role 型组件和全产品 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
 
 ## 9. 源码审计入口
 

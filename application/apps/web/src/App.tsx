@@ -34,7 +34,6 @@ import {
   inConversation,
   discussionId,
   applicationFor,
-  isContentArtifact,
   type InputDispatchMode,
 } from "../../../packages/core/src/model.js";
 import {
@@ -77,7 +76,6 @@ import {
   quotedInputText,
   type TextQuote,
 } from "../../../packages/core/src/text-quotes.js";
-import { contentText } from "../../../packages/core/src/retrieval.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
@@ -162,6 +160,15 @@ import {
   useExchangeControllerFocus,
 } from "./host/use-exchange-controller.js";
 import {
+  createWorkspaceNavigationCommands,
+  isNavigationPreferenceChange,
+  mergeNavigationPreferences,
+  useWorkspaceNavigationCommit,
+  useWorkspaceNavigationState,
+  type NavigationPlace,
+  type PreferenceWriter,
+} from "./host/use-workspace-navigation.js";
+import {
   acknowledgeReplies,
   conversationMessages,
   focusedInputs,
@@ -240,18 +247,6 @@ type ConversationDraft = {
   title: string;
   inputId: string;
 };
-type NavigationPlace = Pick<
-  Preferences,
-  | "view"
-  | "projectId"
-  | "projectOpen"
-  | "artifactId"
-  | "artifactRevision"
-  | "artifactPage"
-  | "readerMode"
-  | "applications"
-  | "scriptLocation"
->;
 const defaultPrefs: Preferences = {
   ...interfacePreferences({}),
   view: "desk",
@@ -534,17 +529,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           value.intent
         ),
     );
-  const [openingObject, setOpeningObject] = useState(false);
-  const [restoredPlace, setRestoredPlace] = useState<NavigationPlace | null>(
-    null,
-  );
-  const trail = useRef<{ places: NavigationPlace[]; index: number }>({
-    places: [],
-    index: -1,
-  });
-  const [trailVersion, setTrailVersion] = useState(0);
-  const restoring = useRef(false);
-  const [websiteIntent, setWebsiteIntent] = useState<string | null>(null);
+  const navigation = useWorkspaceNavigationState();
+  const {
+    openingObject,
+    restoredPlace,
+    trail,
+    websiteIntent,
+    navigationGeneration,
+    setExplicitWebsiteIntent: setWebsiteIntent,
+  } = navigation;
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
   const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
     null,
@@ -557,7 +550,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null);
-  const navigationGeneration = useRef(0);
   const [importing, setImporting] = useState(false);
   const [compact, setCompact] = useState(
       () => matchMedia("(max-width:850px)").matches,
@@ -720,6 +712,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     resize: exchangeResize,
     sentInputFocusPending,
   } = exchangeController;
+  const { travel, openObject, openScriptLocation, launchDockApplication } =
+    createWorkspaceNavigationCommands({
+      owner: navigation,
+      client,
+      workspace: state,
+      surface: workSurface,
+      preferences: prefs,
+      prefer,
+      writePreferences,
+      shell: {
+        finishCreation: () => setCreating(null),
+        dismissExecutionInspector: () => setExecutions(null),
+      },
+      recordContentVisit,
+      onNotice: setNotice,
+    });
   const positions = useRef(new Map<string, number>());
   const exchangePositions = useRef(new Map<string, ExchangePosition>());
   const [revealedInputs, setRevealedInputs] = useState<Record<string, string>>(
@@ -829,100 +837,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     applications: prefs.applications,
     scriptLocation: prefs.scriptLocation ?? null,
   };
-  const placeKey = JSON.stringify(place);
-  useLayoutEffect(() => {
-    if (openingObject) return;
-    if (restoring.current) {
-      restoring.current = false;
-      return;
-    }
-    const current = trail.current;
-    if (JSON.stringify(current.places[current.index]) === placeKey) return;
-    current.places = [
-      ...current.places.slice(0, current.index + 1),
-      place,
-    ].slice(-100);
-    current.index = current.places.length - 1;
-    setTrailVersion((v) => v + 1);
-  }, [placeKey, openingObject]);
-  async function travel(direction: number) {
-    const current = trail.current,
-      index = current.index + direction,
-      next = current.places[index];
-    if (!next) return;
-    if (
-      !next.artifactId &&
-      !next.scriptLocation &&
-      !state?.projects.some((p) => p.id === next.projectId)
-    ) {
-      setNotice("原位置已不可用或无访问权限。");
-      return;
-    }
-    const generation = ++navigationGeneration.current;
-    setOpeningObject(true);
-    try {
-      if (next.artifactId) {
-        const resolved = await client.resolveArtifact(
-          next.artifactId,
-          next.artifactRevision ?? undefined,
-        );
-        if (!resolved) throw new Error("原位置已不可用或无访问权限。");
-      }
-      if (next.scriptLocation) {
-        const resolved = await client.resolveScriptLocation(
-          next.scriptLocation,
-        );
-        if (!resolved) throw new Error("原位置已不可用或无访问权限。");
-      }
-      if (generation !== navigationGeneration.current) return;
-      setCreating(null);
-      setWebsiteIntent(null);
-      setExecutions(null);
-      current.index = index;
-      restoring.current = true;
-      setRestoredPlace(next);
-      setPrefs((previous) => {
-        const restored = { ...previous, ...next };
-        try {
-          writeLocal("preferences", restored);
-        } catch {
-          setNotice("当前位置暂时无法持久保存。");
-        }
-        return restored;
-      });
-      setTrailVersion((v) => v + 1);
-    } catch (cause) {
-      if (generation === navigationGeneration.current)
-        setNotice(
-          cause instanceof Error ? cause.message : "原位置暂时无法读取。",
-        );
-    } finally {
-      if (generation === navigationGeneration.current) setOpeningObject(false);
-    }
-  }
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (
-        e.target instanceof Element &&
-        e.target.closest(
-          "input, textarea, [contenteditable=true], dialog[open]",
-        )
-      )
-        return;
-      const direction =
-        (e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")
-          ? -1
-          : (e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")
-            ? 1
-            : 0;
-      if (direction) {
-        e.preventDefault();
-        travel(direction);
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [trailVersion, placeKey]);
+  useWorkspaceNavigationCommit(navigation, { place, travel });
   useExchangeControllerFocus(exchangeController);
   useEffect(() => {
     // Do not retain a hidden recorder that could restart when returning here.
@@ -1014,76 +929,31 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
-    if (
-      "view" in change ||
-      "projectId" in change ||
-      "artifactId" in change ||
-      "applications" in change ||
-      "scriptLocation" in change ||
-      "selectedConversations" in change
-    ) {
-      navigationGeneration.current++;
+    if (isNavigationPreferenceChange(change)) {
+      navigation.beginIntent();
       setUnderstandingOpen(false);
-      setRestoredPlace(null);
-      setOpeningObject(false);
+      navigation.resetPreferenceNavigation();
       clearResizePreview();
     }
+    writePreferences(
+      (previous) => mergeNavigationPreferences(previous, change),
+      "settings",
+    );
+  }
+  function writePreferences(
+    update: Parameters<PreferenceWriter<Preferences>>[0],
+    failure: Parameters<PreferenceWriter<Preferences>>[1],
+  ) {
     setPrefs((previous) => {
-      const next = {
-        ...previous,
-        ...("view" in change ||
-        "projectId" in change ||
-        "selectedConversations" in change ||
-        typeof change.artifactId === "string"
-          ? { scriptLocation: null }
-          : {}),
-        ...("view" in change ||
-        "projectId" in change ||
-        "artifactId" in change ||
-        "applications" in change ||
-        "selectedConversations" in change
-          ? { localFile: undefined }
-          : {}),
-        ...("artifactId" in change ? { artifactRevision: null } : {}),
-        ...change,
-        ...(change.collaboration === true ? { subjectOpen: false } : {}),
-        ...(change.selectedConversations
-          ? {
-              selectedConversations: {
-                ...previous.selectedConversations,
-                ...change.selectedConversations,
-              },
-            }
-          : {}),
-        ...(change.interactions
-          ? {
-              interactions: {
-                ...previous.interactions,
-                ...change.interactions,
-              },
-            }
-          : {}),
-        ...(change.pinnedInputs
-          ? {
-              pinnedInputs: {
-                ...previous.pinnedInputs,
-                ...change.pinnedInputs,
-              },
-            }
-          : {}),
-        ...(change.exchangeHeights
-          ? {
-              exchangeHeights: {
-                ...previous.exchangeHeights,
-                ...change.exchangeHeights,
-              },
-            }
-          : {}),
-      };
+      const next = update(previous);
       try {
         writeLocal("preferences", next);
       } catch {
-        setNotice("设置暂时无法持久保存。");
+        setNotice(
+          failure === "settings"
+            ? "设置暂时无法持久保存。"
+            : "当前位置暂时无法持久保存。",
+        );
       }
       return next;
     });
@@ -1199,7 +1069,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         (item) => item.id === id || item.contentId === id,
       );
       if (script) return openScriptLocation({ productionId: script.id });
-      const generation = ++navigationGeneration.current;
+      const generation = navigation.beginIntent();
       const loadedArtifact = state?.artifacts.find((item) => item.id === id);
       const catalogEntry =
         client.contentCatalog.find((entry) => entry.id === id) ??
@@ -1225,7 +1095,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   async function openReading(id: string) {
-    const generation = ++navigationGeneration.current;
+    const generation = navigation.beginIntent();
     const a =
       state?.artifacts.find((a) => a.id === id) ??
       (await client.resolveArtifact(id));
@@ -1295,7 +1165,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   async function openScriptLibrary() {
     const owner = personalSpace("desk");
     if (!owner) return;
-    const generation = ++navigationGeneration.current;
+    const generation = navigation.beginIntent();
     try {
       const receipt = await client.execute({
         type: "launch-application",
@@ -1316,124 +1186,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         setNotice((e as Error).message);
     }
   }
-  async function openScriptLocation(target: ScriptLocation) {
-    const generation = ++navigationGeneration.current;
-    setOpeningObject(true);
-    try {
-      const resolved = await client.resolveScriptLocation(target);
-      if (generation !== navigationGeneration.current) return;
-      if (!resolved) {
-        setNotice("剧本结果已不可用或无访问权限。");
-        return;
-      }
-      const receipt = await client.execute({
-        type: "launch-application",
-        workspaceId: resolved.production.projectId,
-        applicationId: scriptStudioApplication.id,
-        applicationVersion: scriptStudioApplication.version,
-        scriptTarget: target,
-      });
-      if (generation !== navigationGeneration.current) return;
-      setCreating(null);
-      if (resolved.production.contentId)
-        recordContentVisit(resolved.production.contentId);
-      prefer({
-        artifactId: null,
-        scriptLocation: { ...target, requestId: receipt.commandId },
-        applications: {
-          ...prefs.applications,
-          [resolved.production.projectId]: receipt.entityId,
-        },
-        interactions: { [exchangeKey]: "hidden" },
-      });
-    } catch (error) {
-      if (generation === navigationGeneration.current)
-        setNotice((error as Error).message);
-    } finally {
-      if (generation === navigationGeneration.current) setOpeningObject(false);
-    }
-  }
-  async function openObject(
-    workspaceId: string,
-    id: string,
-    revision?: number,
-    page?: number,
-    readerMode = false,
-    reading?: ReadingLocation,
-    expectedQuote?: string,
-  ) {
-    const generation = ++navigationGeneration.current;
-    setOpeningObject(true);
-    try {
-      const opened = await client.resolveArtifact(id, revision);
-      if (generation !== navigationGeneration.current) return;
-      if (!opened || opened.projectId !== workspaceId)
-        throw new Error("内容暂时无法读取，请检查连接或访问权限后重试。");
-      if (expectedQuote) {
-        const exact = opened.versions.find(
-          (version) => version.revision === (revision ?? opened.revision),
-        );
-        if (!exact || !contentText(exact.content).includes(expectedQuote))
-          throw new Error("引用与当前原件版本不一致，请重新搜索后再试。");
-      }
-      // Catalog and task navigation are views, not application launches.
-      // Keep the workspace's current application intact when reading from them.
-      const readingView =
-        readerMode ||
-        opened.content.kind === "publication" ||
-        opened.content.kind === "pdf";
-      const application = readingView ? readerApplication : objectsApplication;
-      const result = applicationWorkspaceOpen
-        ? await client.execute({
-            type: "launch-application",
-            workspaceId,
-            applicationId: application.id,
-            applicationVersion: application.version,
-            artifactId: id,
-          })
-        : null;
-      // A slow open must not undo a later navigation or object selection.
-      if (generation !== navigationGeneration.current) return;
-      setCreating(null);
-      prefer({
-        artifactId: id,
-        artifactRevision: revision ?? null,
-        artifactPage: page ?? null,
-        readerMode: readingView,
-        readingTarget: reading
-          ? {
-              artifactId: id,
-              revision: revision ?? opened.revision,
-              location: reading,
-              requestId: crypto.randomUUID(),
-            }
-          : null,
-        ...(prefs.interactions?.[exchangeKey] === "history"
-          ? {
-              interactions: {
-                [exchangeKey]: "recent" as const,
-              },
-            }
-          : {}),
-        ...(result
-          ? {
-              applications: {
-                ...prefs.applications,
-                [workspaceId]: result.entityId,
-              },
-            }
-          : {}),
-      });
-      // Only successful explicit opens affect recency. Restoring an old
-      // application when returning to its workspace is not a new file open.
-      if (isContentArtifact(opened)) recordContentVisit(id);
-      return navigationGeneration.current;
-    } catch (e) {
-      setNotice((e as Error).message);
-    } finally {
-      if (generation === navigationGeneration.current) setOpeningObject(false);
-    }
-  }
   async function openWorkspaceContents() {
     if (project && spaceKind(project) !== "project") {
       setContentScope("all");
@@ -1441,8 +1193,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return;
     }
     if (!project) return;
-    const generation = ++navigationGeneration.current;
-    setOpeningObject(true);
+    const generation = navigation.beginOpen();
     try {
       const receipt = await client.execute({
         type: "launch-application",
@@ -1457,7 +1208,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (generation === navigationGeneration.current)
         setNotice((error as Error).message);
     } finally {
-      if (generation === navigationGeneration.current) setOpeningObject(false);
+      navigation.finishOpen(generation);
     }
   }
   function activateApplication(
@@ -1660,7 +1411,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   }
   async function openBrowser(url?: string) {
     if (!project) return;
-    const generation = ++navigationGeneration.current;
+    const generation = navigation.beginIntent();
     try {
       const result = await client.execute({
         type: "launch-application",
@@ -3215,33 +2966,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                                 },
                               });
                           }}
-                          onLaunch={async (app) => {
-                            const generation = ++navigationGeneration.current;
-                            const receipt = await client.execute({
-                              type: "launch-application",
-                              workspaceId: project.id,
-                              applicationId: app.id,
-                              applicationVersion: app.version,
-                            });
-                            if (generation !== navigationGeneration.current)
-                              return;
-                            prefer({
-                              view:
-                                spaceKind(project) === "project"
-                                  ? "projects"
-                                  : "desk",
-                              projectId: project.id,
-                              projectOpen: true,
-                              artifactId: null,
-                              artifactRevision: null,
-                              scriptLocation: null,
-                              readerMode: app.id === readerApplication.id,
-                              applications: {
-                                ...prefs.applications,
-                                [project.id]: receipt.entityId,
-                              },
-                            });
-                          }}
+                          onLaunch={launchDockApplication}
                         />
                       </div>
                     )}

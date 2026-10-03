@@ -233,14 +233,29 @@ function ownership(controllerText: string, appText: string): string[] {
     "Focus seam receives the same controller",
   );
   const effects = calls(app, "useLayoutEffect");
-  for (const owner of ["positions", "trail"])
-    check(
+  check(
+    !!focus &&
+      effects.some(
+        (effect) => mentions(effect, "positions") && effect.pos < focus.pos,
+      ),
+    "Owner restoration precedes explicit focus: positions",
+  );
+  const navigationCommits = calls(app, "useWorkspaceNavigationCommit");
+  const navigationCommit = navigationCommits[0];
+  check(
+    navigationCommits.length === 1 &&
+      !!navigationCommit &&
       !!focus &&
-        effects.some(
-          (effect) => mentions(effect, owner) && effect.pos < focus.pos,
-        ),
-      `Owner restoration precedes explicit focus: ${owner}`,
-    );
+      navigationCommit.arguments.length === 2 &&
+      text(navigationCommit.arguments[0]!, app) === "navigation" &&
+      text(navigationCommit.arguments[1]!, app) === "{place,travel}" &&
+      effects.some(
+        (effect) =>
+          mentions(effect, "positions") && effect.pos < navigationCommit.pos,
+      ) &&
+      navigationCommit.pos < focus.pos,
+    "Named trail commit follows position restoration and precedes explicit focus",
+  );
   check(
     !!focus &&
       effects.some(
@@ -286,6 +301,19 @@ test("controller ownership gate rejects duplicate requests, lost suspension and 
     app.replace("!!capture ||", ""),
     app.replace("surface: workSurface,", "surface: { ...workSurface },"),
     app.replace("useExchangeControllerFocus(exchangeController);", ""),
+    app.replace(
+      "useWorkspaceNavigationCommit(navigation, { place, travel });",
+      "",
+    ),
+    app
+      .replace(
+        "useWorkspaceNavigationCommit(navigation, { place, travel });",
+        "",
+      )
+      .replace(
+        "useExchangeControllerFocus(exchangeController);",
+        "useExchangeControllerFocus(exchangeController);\nuseWorkspaceNavigationCommit(navigation, { place, travel });",
+      ),
   ])
     assert.ok(ownership(controller, changed).length > 0);
   assert.ok(

@@ -1,5 +1,40 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第五阶段：导航状态、回执与历史的单一所有权
+
+`host/use-workspace-navigation.ts` 将原导航状态与 generation 收到一个无 effect
+state hook；四个 render-local 命令集中对象打开、剧本交付、历史往返和 Dock
+启动回执。trail／快捷键在原位置的独立 commit hook 注册，保持画布恢复、
+title、trail／快捷键、交流焦点的原顺序与依赖。App 保留同一个 prefs state 和
+一个偏好 writer，不新增全局 store、第二个 work surface 或持久化键。
+
+迁移保留六字段的存在性判断、四 map merge、历史 raw spread、100 条历史及
+前进分支裁剪、权限回读、原错误／finally 差异和对象打开后的更新 epoch。
+其他业务入口仍留 App，只作批准的 generation owner 机械替换；不是借重构
+补修未复现的旧竞态。发送、草稿、命令 identity、Session、权限和 UI 图形不改，
+JSX 仅 Dock 的原 onLaunch 改为等价命名回调，ref／key／DOM／CSS 保持。
+
+导航相关 8 文件 Node／门禁回归 76/76、零跳过；新增有限 AST 约束有 33 个
+违规反例，检查实际导入、唯一 owner／writer、state→resolver 与原 effect seam，
+不是全 App 静态语义证明。固定 `ebda0f03` 的独立源码／纯逻辑对照通过：221 个
+JSX 节点、15 个状态／ref 声明、37 个保留处理器、14 个保留 effects；44 偏好、
+8 trail-record 和 19 命令场景共 71 条 trace，以及 140 步历史均与旧实现一致。
+SSR 仅验证初始 owner 隔离，不冒充 mounted React effect 验证。
+
+冻结构建 `app-DASFnNYG.js / app-5L3clyL9.css` 的 typecheck／build 通过，CSS
+摘要与第三／第四阶段一致。13 套实际 Host 浏览器回归 44/44，零跳过／重试，
+覆盖迟到启动／关闭回执、返回原件、剧本交付、独立草稿、目录授权、Dock 手势、
+交流显隐／焦点／伸缩、消息操作、回应等待及父子活动。同版含同期 SQLite 修复
+的全量 Node 1381 项中 1218 通过、163 条现有可选集成跳过、零失败。
+原始构建／单元／浏览器／oracle 输出：
+`/tmp/morphz-navigation-owner-verification.Nu3QDS`；独立对照说明
+`/tmp/morphz-navigation-oracle.FJkaSS/report.md`。
+
+本轮本机界面检查仍确认原 Mac 锁屏，未操作锁屏设置、替换 App／profile 或
+重启 Runtime；原窗口最终焦点、滚动、几何与动效复验仍未完成。自动回归不作为
+原窗验收，也不宣称整体架构已完成；query facade、role 型基础组件与跨领域
+presentation 仍在后续迁移范围。
+
 ## 2026-10-04 SQLite 变化通知：双通道与注册空窗校准
 
 修复真实跨进程通知漏报类别：目录监听注册成功但没有任何回调，提交已经落库，
