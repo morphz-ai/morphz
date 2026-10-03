@@ -120,7 +120,6 @@ import {
   type ReadingContextChange,
 } from "./ReadingContext.js";
 import type {
-  ReadingInput,
   ReaderTarget,
   ReadingLocation,
 } from "../../../packages/core/src/reader.js";
@@ -131,8 +130,7 @@ import { SpeechDialog } from "./SpeechDialog.js";
 import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { MessageAttachments } from "./MessageAttachments.js";
-import type { InputAttachment } from "../../../packages/core/src/model.js";
-import type { Operation, Workspace } from "../../../packages/core/src/model.js";
+import type { Workspace } from "../../../packages/core/src/model.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import { RequestError } from "./application-transport.js";
 import type { BrowserView } from "./desktop.js";
@@ -159,6 +157,13 @@ import {
   useExchangeController,
   useExchangeControllerFocus,
 } from "./host/use-exchange-controller.js";
+import {
+  createExchangeDraftCommands,
+  useExchangeInputDraftState,
+  useExchangeConversationDraftState,
+  useExchangeDiscardedDraftState,
+  type InputDraft,
+} from "./host/exchange-drafts.js";
 import {
   createWorkspaceNavigationCommands,
   isNavigationPreferenceChange,
@@ -214,39 +219,12 @@ type Preferences = InterfacePreferences & {
   selectedConversations?: Record<string, string>;
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };
-import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
 import {
   scriptOutputLocation,
   type ScriptLocation,
   type ScriptOutput,
 } from "../../../packages/core/src/script-delivery.js";
 
-type InputDraft = {
-  textQuotes?: TextQuote[];
-  reading?: ReadingInput;
-  skipReading?: boolean;
-  scriptGeneration?: ScriptGeneration;
-  continuation?: InputContinuation;
-  continuationLabel?: string;
-  continuationFailure?: "closed" | "changed" | "unknown";
-  pendingSupplement?: { commandId: string; operation: Operation };
-  attachments?: InputAttachment[];
-  annotation?: boolean;
-  model?: string;
-  reasoningEffort?: import("../../../packages/core/src/inference.js").ReasoningEffort;
-  body: string;
-  intent?: InputIntent;
-  taskResult?: { taskId: string; revision: number };
-  selection: string;
-  revision: number | null;
-  page?: number;
-};
-type ConversationDraft = {
-  id: string;
-  projectId: string;
-  title: string;
-  inputId: string;
-};
 const defaultPrefs: Preferences = {
   ...interfacePreferences({}),
   view: "desk",
@@ -423,25 +401,23 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ),
     [creating, setCreating] = useState<"document" | "project" | null>(null),
     [sending, setSending] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, InputDraft>>(() =>
-    readLocal(draftKey("inputs"), {}),
-  );
-  const [conversationDrafts, setConversationDrafts] = useState<
-    Record<string, ConversationDraft>
-  >(() => readLocal(draftKey("conversations"), {}));
-  const conversationDraftsRef = useRef(conversationDrafts);
-  conversationDraftsRef.current = conversationDrafts;
+  const inputDraftState = useExchangeInputDraftState({ readLocal, writeLocal });
+  const drafts = inputDraftState.value;
+  const conversationDraftState = useExchangeConversationDraftState({
+    readLocal,
+    writeLocal,
+  });
+  const conversationDrafts = conversationDraftState.value;
   const [projectAction, setProjectAction] = useState<{
     project: Project;
     action: ProjectAction;
   } | null>(null);
   const [projectDirectoryVersion, setProjectDirectoryVersion] = useState(0);
-  const [discardedDrafts, setDiscardedDrafts] = useState<
-    Record<
-      string,
-      { conversation: ConversationDraft; drafts: Record<string, InputDraft> }
-    >
-  >(() => readLocal(draftKey("discarded-conversations"), {}));
+  const discardedDraftState = useExchangeDiscardedDraftState({
+    readLocal,
+    writeLocal,
+  });
+  const discardedDrafts = discardedDraftState.value;
   const manageProject = (project: Project, action: ProjectAction) =>
     setProjectAction({ project, action });
   const sendPending = useRef(false);
@@ -449,6 +425,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     quote: TextQuote;
     token: string;
   } | null>(null);
+  const draftCommands = createExchangeDraftCommands({
+    inputs: inputDraftState,
+    conversations: conversationDraftState,
+    discarded: discardedDraftState,
+    storage: { readLocal, writeLocal },
+    onNotice: setNotice,
+  });
+  const { writeInputs: writeDrafts } = draftCommands;
   const startedConversations = new Set([
     ...(state?.conversations
       .filter((c) => c.id !== c.projectId)
@@ -459,25 +443,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ...(client.boot?.runtime.messages.map(discussionId) ?? []),
   ]);
   useEffect(() => {
-    // The first local bubble does not create a Session. Retire its draft only
-    // once authoritative navigation/history confirms the same conversation.
-    const next = { ...conversationDraftsRef.current };
-    let changed = false;
-    for (const [projectId, entry] of Object.entries(next)) {
-      if (
-        state?.conversations.some(
-          (conversation) => conversation.id === entry.id,
-        )
-      ) {
-        delete next[projectId];
-        changed = true;
-      }
-    }
-    if (changed) {
-      conversationDraftsRef.current = next;
-      setConversationDrafts(next);
-      writeLocal(draftKey("conversations"), next);
-    }
+    draftCommands.retireCommittedConversations(state?.conversations);
   }, [state?.conversations]);
   const projectMetrics = useMemo(() => {
     const metrics = projectDirectoryMetrics(
@@ -974,21 +940,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
   }
-  function writeDrafts(
-    update: (
-      previous: Record<string, InputDraft>,
-    ) => Record<string, InputDraft>,
-  ) {
-    setDrafts((previous) => {
-      const next = update(previous);
-      try {
-        writeLocal(draftKey("inputs"), next);
-      } catch {
-        setNotice("本地草稿保存失败，请不要刷新页面。");
-      }
-      return next;
-    });
-  }
   function open(id: string, revision?: number, page?: number) {
     setWebsiteIntent(null);
     void openUser(id, revision, page);
@@ -1284,19 +1235,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   async function createProjectConversation(workspaceId: string, title: string) {
     // Starting to type is local navigation, not a server-side conversation.
     // Repeated clicks reuse the unfinished draft; the first input commits both.
-    let pending = conversationDraftsRef.current[workspaceId];
-    if (!pending) {
-      pending = {
-        id: crypto.randomUUID(),
-        projectId: workspaceId,
-        title,
-        inputId: crypto.randomUUID(),
-      };
-      const next = { ...conversationDraftsRef.current, [workspaceId]: pending };
-      writeLocal(draftKey("conversations"), next);
-      conversationDraftsRef.current = next;
-      setConversationDrafts(next);
-    }
+    const pending = draftCommands.createConversation(workspaceId, title);
     selectConversation(workspaceId, pending.id, true);
   }
   function discardConversationDraft(id: string) {
@@ -1304,71 +1243,22 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setNotice("消息正在提交，请等待结果后整理草稿。");
       return;
     }
-    const conversation =
-      Object.values(conversationDrafts).find((c) => c.id === id) ??
-      state?.conversations.find((c) => c.id === id);
-    if (!conversation) return;
-    const discarded = {
-      ...discardedDrafts,
-      [id]: {
-        conversation: {
-          ...conversation,
-          inputId:
-            "inputId" in conversation
-              ? conversation.inputId
-              : crypto.randomUUID(),
-        },
-        drafts: Object.fromEntries(
-          Object.entries(drafts).filter(([key]) => key.startsWith(id + ":")),
-        ),
+    draftCommands.discardConversation(
+      id,
+      () => state?.conversations.find((c) => c.id === id),
+      (conversation) => {
+        if (conversationId === id) openProject(conversation.projectId);
       },
-    };
-    const remaining = { ...conversationDrafts };
-    if (remaining[conversation.projectId]?.id === id)
-      delete remaining[conversation.projectId];
-    const remainingInputs = Object.fromEntries(
-      Object.entries(drafts).filter(([key]) => !key.startsWith(id + ":")),
     );
-    try {
-      writeLocal(draftKey("discarded-conversations"), discarded);
-      writeLocal(draftKey("inputs"), remainingInputs);
-      writeLocal(draftKey("conversations"), remaining);
-      setDiscardedDrafts(discarded);
-      setDrafts(remainingInputs);
-      setConversationDrafts(remaining);
-      conversationDraftsRef.current = remaining;
-      if (conversationId === id) openProject(conversation.projectId);
-    } catch {
-      setNotice("草稿整理未完成，原文仍保留，请重试。");
-    }
   }
   function restoreConversationDraft(id: string) {
-    const saved = discardedDrafts[id];
-    if (!saved) return;
-    const pending = conversationDrafts[saved.conversation.projectId];
-    if (pending && pending.id !== id && hasConversationDraft(pending.id)) {
-      setNotice("请先发送或丢弃当前项目的新草稿，再恢复这份草稿。");
-      return;
-    }
-    const inputs = { ...drafts, ...saved.drafts },
-      next = {
-        ...conversationDrafts,
-        [saved.conversation.projectId]: saved.conversation,
+    draftCommands.restoreConversation(
+      id,
+      hasConversationDraft,
+      (conversation) => {
+        selectConversation(conversation.projectId, id, true);
       },
-      trash = { ...discardedDrafts };
-    delete trash[id];
-    try {
-      writeLocal(draftKey("inputs"), inputs);
-      writeLocal(draftKey("conversations"), next);
-      writeLocal(draftKey("discarded-conversations"), trash);
-      setDrafts(inputs);
-      setConversationDrafts(next);
-      conversationDraftsRef.current = next;
-      setDiscardedDrafts(trash);
-      selectConversation(saved.conversation.projectId, id, true);
-    } catch {
-      setNotice("草稿恢复失败，保存的原文仍在，请重试。");
-    }
+    );
   }
   function openProject(id: string) {
     // An explicit project click means its default conversation, not whichever

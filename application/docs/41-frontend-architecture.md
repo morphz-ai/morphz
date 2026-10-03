@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.5 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：0.6 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -13,6 +13,7 @@
 | 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                  | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                   |
 | 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                          | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                          |
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。 |
+| 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。 |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费 | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。 |
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`    | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                        |
@@ -110,6 +111,14 @@ MUST：显式项目点击走默认连续会话；命名会话保持隔离；应�
 
 SHOULD：专业应用编辑草稿留领域 owner；Exchange draft adapter 不管理章节正文、浏览器表单或 PDF 页面。领域 `compose` 只准备引用／意图，不自动发送。
 
+首段草稿生产迁移：`host/exchange-drafts.ts` 只拥有原输入、新命名会话、
+丢弃会话的三份本机记录及五个生命周期命令。三个 state hook 分开保留 App
+初始化顺序，不注册新 effect；权威会话集合退休草稿的 effect 仍在原位置。
+App 继续决定发送中 guard、实际已保存输入是否构成草稿、听写打断、成功后导航
+与发送冻结载荷。创建读取当前 ref，丢弃／恢复保持原 render snapshot；不会
+为了“统一”全部改成 latest。原多步 localStorage 写入不是事务，失败前缀与
+提示仍按原合同保留，不借迁移增加数据库、键、回滚、网络或 LLM 请求。
+
 ### 3.3 NavigationController
 
 统一导航意图、打开成功回执、返回现场及 generation 竞争。实例恢复与显式打开内容分开；全局目录与项目目录不创建 Session；来源版本引用与 live head 不混用。
@@ -140,6 +149,16 @@ MUST：
 - Web 与 Desktop 共用语义，Desktop 经受限桥；不直接开放任意 Node、SQL 或本地 HTTP。
 
 首阶段复用现有粗粒度 workspaceChangeRevision，不为视觉整齐先新增事件协议。进一步的 domain／resource 失效需要平台契约及测量：当前确有扇出，不能把“已有推送”误称最优查询粒度。
+
+2026-10-04 查询候选核验：TaskList 与 SubjectSchedules 可读取同一 task ID，
+但前者的 12s deadline／失败 retry／workspace 失效／Boot 发布，与后者一次性、
+无 deadline／retry 的局部读取不是相同 observation 合同。隔离实际消费者的
+两种自然路径均 2 GET，一例仅约 0.3ms browser pending 重叠，另一例无重叠；
+未实证候选 2→1。事项资格与连接呈现受控、实际快照 run0，不能据此宣称真实
+Runtime 工作收益。285 行 pending helper 保持 `/tmp` 隔离，未加入生产；
+无状态 raw wrapper 也不冒充共享 facade。其他目录／审阅的过滤及范围不同，
+文稿默认历史读取为顺序且含 live metadata。既有共享对话流与剧本概览仍复用；
+后续共享迁移必须先证明同语义与实际收益，本次审计不等于查询层目标完成。
 
 ### 4.2 恢复与刷新
 
@@ -241,7 +260,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 
 采纳与迁移完成后，应能做到：一个组件语义变化有唯一 owner；一个状态规则变化无需修改五个消费页面；一个角色尺寸变化由 component token 控制；每项活动 prose 能追溯来源，缺失不造消息；新 feature 默认复用宿主与 UI primitives，同时保留领域画布自由。
 
-当前已有工作面解析、交流意图／焦点、回应等待事实、首段导航 owner、首批登记图形／透明按钮和对应有限门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、全产品 role 型组件和 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
+当前已有工作面解析、交流意图／焦点、回应等待事实、首段导航 owner、草稿生命周期、首批登记图形／透明按钮和对应有限门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、全产品 role 型组件和 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
 
 ## 9. 源码审计入口
 

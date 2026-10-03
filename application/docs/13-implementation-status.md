@@ -1,5 +1,53 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第七阶段：草稿生命周期唯一 owner
+
+`host/exchange-drafts.ts` 实际拥有输入、尚未首发的命名会话、丢弃会话三份
+旧本机记录与创建／退休／丢弃／恢复／functional 输入写入五个命令。
+三个无 effect state hook 保留 App 原初始化位置；原权威 conversation 退休
+effect 仍在原位置及原依赖。App 保留发送中 guard、已保存但未投递输入判断、
+听写打断、发送冻结与成功后的导航，不把未发送草稿暴露给 Agent。
+
+创建读当前 ref，丢弃／恢复读原 render snapshot；持久会话查找只在本地未命中
+时求值。原 inputs 保存失败仍本地发布、create persist→ref→state、退休
+ref→state→persist、丢弃与恢复各自不同的三写顺序及 try 内导航保留。
+每第 1／2／3 步失败均保留原部分 localStorage 前缀与提示；不是新事务或回滚。
+不增持久键、全局 store、网络、Session、授权或模型请求。专业应用正文草稿
+及手动新文档草稿仍属原领域，本批没有宣称整体 Exchange／发送已拆完。
+
+冻结 `a5278c21` 对照：221 个 JSX raw source 节点、setDraft／updateDraft／
+hasConversationDraft／send／supplement 五个保留处理器完全一致；16 个原
+effect 中只有原位置的退休 body 迁到命令。所有 CSS 不改，产物仍为原
+`app-Bl-K6QYD.css`；生产 JS 为 `app-Bkw1VkRR.js`。这证明源码边界，不冒充
+原窗口像素、焦点或动效验收。
+
+16 项生产命令逻辑回归、6 项有限 AST 门禁通过，36 个违规反例被指定规则
+拒绝；门禁仅治理这批实际导入、三个原 key、hook 位置、writer／ref 及失败／
+导航 seam，不是任意 JS 纯度或全 App 权限证明。实际 React 挂载 4/4：
+原三 key／重 render 零 I/O、同 tick 稳定 ID／ref、functional 最新输入、
+真实 localStorage／sessionStorage 的中心／身份 keyed remount 与双窗口恢复、
+StrictMode 零自发写入。该 fixture 不挂业务 Host，不证明真实登录撤权或 Runtime。
+
+七套现有 Host 浏览器回归完全未修改，31/31、34.2 秒、零跳过／重试：
+首发失败及稳定 ID 重试、迟到回执不抢导航、丢弃／恢复／刷新、跨会话正文与引用、
+模型／effort、目录授权、原显隐／焦点／几何。隔离 queued ingress 保留；
+Runtime dispatch 停止，受控模型目录不冒充真实模型执行。
+冻结最终源后的全量 Node 1416 项中 1253 通过、163 条现有可选集成跳过、
+零失败；最终 typecheck 与受影响源码格式检查通过。新增门禁收尾出现的未使用
+import／精确 allowlist 误伤均在测试内修正，未改变生产或删除违规反例。
+完整输出、源码对照、构建与最终检查见
+`/tmp/morphz-exchange-draft-verification.MOk4t6`。
+
+查询收敛另做只读审计与实际隔离消费者测量，发现 TaskList／Schedules 的同 ID
+读取具有不同 deadline／retry／失效／发布合同。两自然路径各 2 GET，最多约
+0.3ms browser pending 重叠，未实证候选 2→1；实际快照 run0，资格与连接受控，
+不是 Runtime 工作收益。285 行候选没有加入生产，见
+`/tmp/morphz-natural-task-reads-20261004.mZNMJA/RESULT.md`。
+既有对话流／概览共享继续复用，不把 raw wrapper 或候选审计称为完整 facade。
+
+原 Mac 只读检查仍锁屏，最终原 App 验收未完成；未换 profile、重启 Runtime
+或改锁屏设置。本阶段与整个前端目标的未完成范围分别保留。
+
 ## 2026-10-04 检查器回归接回当前实际界面
 
 本批只更新 `inspector.spec.ts`：真实对象创建及原文回读后显式刷新其受控 workspace
