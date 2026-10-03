@@ -86,7 +86,6 @@ import {
   type ScriptDocxManifest,
 } from "../../../packages/core/src/script-studio-docx.js";
 import {
-  mergePlatformHistories,
   readContentArtifact,
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -96,8 +95,11 @@ import {
   contentVersionTitle,
   readTaskArtifact,
   scriptLibraryEntryFromContent,
-  type HistoryScope,
 } from "./platform-workspace-view.js";
+import {
+  createConversationHistory,
+  type ConversationHistory,
+} from "./data/conversation-history.js";
 import { contentVisits } from "./recent-content.js";
 import { runPendingFileImport } from "./pending-file-import.js";
 export { RequestError } from "./application-transport.js";
@@ -848,13 +850,7 @@ export function useWorkspace() {
   const current = useRef<Boot | null>(null),
     inputSends = useRef(new Map<string, Promise<Receipt>>()),
     platform = useRef<PlatformClient | null>(null),
-    historyScope = useRef<HistoryScope | null>(null),
-    historyCache = useRef<{
-      version: string;
-      catalogVersion: number;
-      scope: HistoryScope;
-      value: import("./platform-client.js").PlatformHistory;
-    } | null>(null),
+    history = useRef<ConversationHistory | null>(null),
     catalogCache = useRef<PlatformNavigationCache | null>(null),
     scriptOverviews = useRef(new Map<string, ScriptOverview>()),
     pendingScriptOverviews = useRef(new Map<string, Promise<ScriptOverview>>()),
@@ -863,8 +859,31 @@ export function useWorkspace() {
     epoch = useRef(0),
     snapshotText = useRef(""),
     refreshing = useRef<Promise<boolean> | null>(null),
-    refreshDrain = useRef<ReturnType<typeof createRefreshDrain> | null>(null),
-    loadingEarlier = useRef<Promise<void> | null>(null);
+    refreshDrain = useRef<ReturnType<typeof createRefreshDrain> | null>(null);
+  history.current ??= createConversationHistory({
+    connection: () => {
+      const source = platform.current;
+      return source
+        ? {
+            identityGeneration: source.boot.csrfToken,
+            readPage: (scope, before, signal) =>
+              source.history(
+                scope.projectId,
+                scope.conversationId,
+                before,
+                signal,
+              ),
+          }
+        : undefined;
+    },
+    currentIdentity: () => current.current?.csrfToken,
+    pendingRefresh: () => refreshing.current,
+    refreshProjection: refresh,
+    invalidateProjectionReuse: () => {
+      navigationCacheKey.current = "";
+    },
+  });
+  const conversationHistory = history.current;
   function sendingInputIds(
     identity: Pick<Boot, "centerId" | "principalId" | "actantId">,
   ) {
@@ -899,8 +918,7 @@ export function useWorkspace() {
     protectedReadGeneration.current++;
     current.current = null;
     platform.current = null;
-    historyScope.current = null;
-    historyCache.current = null;
+    conversationHistory.clear();
     catalogCache.current = null;
     scriptOverviews.current.clear();
     pendingScriptOverviews.current.clear();
@@ -966,7 +984,7 @@ export function useWorkspace() {
         const recentContentIds = contentVisits(
           local.readLocal<unknown>("recent-content", []),
         ).map((visit) => visit.artifactId);
-        let requestedScope = historyScope.current;
+        let requestedScope = conversationHistory.captureSelection();
         const preparedPersonal = !catalogCache.current
           ? await source.ensurePersonalSpaces(signal)
           : undefined;
@@ -1030,9 +1048,7 @@ export function useWorkspace() {
             preferences: { ...preferences, contentScope },
             recentContentIds,
           },
-          historyCache.current?.catalogVersion === navigation.catalogVersion
-            ? historyCache.current
-            : undefined,
+          conversationHistory.cachedForCatalog(navigation.catalogVersion),
           reusableNavigationCatalog(
             catalogCache.current,
             navigation.catalogVersion,
@@ -1148,19 +1164,15 @@ export function useWorkspace() {
         };
         if (
           version !== epoch.current ||
-          historyScope.current !== requestedScope
+          !conversationHistory.isSelectionCurrent(requestedScope)
         )
           return false;
-        historyScope.current = resolvedScope;
-        historyCache.current =
-          history && resolvedScope && navigation.historyVersion
-            ? {
-                version: navigation.historyVersion,
-                catalogVersion: navigation.catalogVersion,
-                scope: resolvedScope,
-                value: history,
-              }
-            : null;
+        conversationHistory.commitProjection(
+          resolvedScope,
+          history,
+          navigation.historyVersion,
+          navigation.catalogVersion,
+        );
         catalogCache.current = {
           version: navigation.catalogVersion,
           revisions: navigation.revisions,
@@ -1273,120 +1285,6 @@ export function useWorkspace() {
     // view. Let it settle, then read the latest state and local selection once.
     if (refreshing.current) await refreshing.current;
     return refresh();
-  }
-  async function selectHistoryScope(scope: HistoryScope) {
-    if (
-      historyScope.current?.projectId === scope.projectId &&
-      historyScope.current.conversationId === scope.conversationId
-    )
-      return;
-    historyScope.current = scope;
-    if (refreshing.current) await refreshing.current;
-    await refresh();
-  }
-  async function loadEarlierHistory() {
-    if (loadingEarlier.current) return loadingEarlier.current;
-    loadingEarlier.current = (async () => {
-      if (refreshing.current) await refreshing.current;
-      const cache = historyCache.current;
-      const source = platform.current;
-      let before = cache?.value.nextCursor;
-      if (!cache || !source || !before) return;
-      let history = cache.value;
-      const signal = AbortSignal.timeout(15000);
-      // A server window may contain only entries this reader cannot see.
-      // Continue over a few empty windows so one click still reveals older
-      // visible messages, while bounding both requests and total wait.
-      for (let window = 0; window < 4 && before; window++) {
-        const older = await source.history(
-          cache.scope.projectId,
-          cache.scope.conversationId,
-          before,
-          signal,
-        );
-        if (
-          older.nextCursor &&
-          (older.nextCursor.createdAt > before.createdAt ||
-            (older.nextCursor.createdAt === before.createdAt &&
-              older.nextCursor.id >= before.id))
-        )
-          throw new Error("历史分页位置没有前进，请重试。");
-        if (
-          historyCache.current !== cache ||
-          current.current?.csrfToken !== source.boot.csrfToken ||
-          historyScope.current?.projectId !== cache.scope.projectId ||
-          historyScope.current?.conversationId !== cache.scope.conversationId
-        )
-          return;
-        history = mergePlatformHistories(history, older, older.nextCursor);
-        before = older.nextCursor;
-        if (older.inputs.length || older.runtime.messages.length) break;
-      }
-      historyCache.current = {
-        ...cache,
-        value: history,
-      };
-      navigationCacheKey.current = "";
-      await refresh();
-    })().finally(() => {
-      loadingEarlier.current = null;
-    });
-    return loadingEarlier.current;
-  }
-  async function loadHistoryUntil(messageId: string): Promise<boolean> {
-    if (loadingEarlier.current) await loadingEarlier.current;
-    const cache = historyCache.current;
-    const source = platform.current;
-    if (!cache || !source) return false;
-    const contains = (
-      history: import("./platform-client.js").PlatformHistory,
-    ) =>
-      history.inputs.some((input) => input.id === messageId) ||
-      history.runtime.messages.some((message) => message.id === messageId);
-    if (contains(cache.value)) return true;
-    let found = false;
-    loadingEarlier.current = (async () => {
-      let history = cache.value;
-      // A source jump is explicit. Read older authorized pages only on that
-      // action, not during routine refresh or while the user scrolls.
-      for (let page = 0; history.nextCursor && page < 200; page++) {
-        const before = history.nextCursor;
-        const older = await source.history(
-          cache.scope.projectId,
-          cache.scope.conversationId,
-          before,
-          AbortSignal.timeout(15000),
-        );
-        if (
-          older.nextCursor &&
-          (older.nextCursor.createdAt > before.createdAt ||
-            (older.nextCursor.createdAt === before.createdAt &&
-              older.nextCursor.id >= before.id))
-        )
-          throw new Error("历史分页位置没有前进，请重试。");
-        if (
-          historyCache.current !== cache ||
-          current.current?.csrfToken !== source.boot.csrfToken ||
-          historyScope.current?.projectId !== cache.scope.projectId ||
-          historyScope.current?.conversationId !== cache.scope.conversationId
-        )
-          throw new Error("对话已切换或更新，请重新打开引用。");
-        history = mergePlatformHistories(history, older, older.nextCursor);
-        found = contains(history);
-        if (found) break;
-      }
-      historyCache.current = { ...cache, value: history };
-      navigationCacheKey.current = "";
-      await refresh();
-      if (!found && history.nextCursor)
-        throw new Error(
-          "引用仍在更早的记录中；已加载旧消息，请再点一次查看原文。",
-        );
-    })().finally(() => {
-      loadingEarlier.current = null;
-    });
-    await loadingEarlier.current;
-    return found;
   }
   function rememberContent(
     entry: import("./platform-client.js").PlatformContent,
@@ -2057,8 +1955,7 @@ export function useWorkspace() {
     scriptVersionTitles.current.clear();
     current.current = null;
     platform.current = null;
-    historyScope.current = null;
-    historyCache.current = null;
+    conversationHistory.clear();
     catalogCache.current = null;
     scriptOverviews.current.clear();
     pendingScriptOverviews.current.clear();
@@ -2081,8 +1978,7 @@ export function useWorkspace() {
     scriptVersionTitles.current.clear();
     current.current = null;
     platform.current = null;
-    historyScope.current = null;
-    historyCache.current = null;
+    conversationHistory.clear();
     catalogCache.current = null;
     scriptOverviews.current.clear();
     pendingScriptOverviews.current.clear();
@@ -3049,10 +2945,10 @@ export function useWorkspace() {
     workspaceChangeRevision,
     refresh,
     refreshView: refreshAfterMutation,
-    selectHistoryScope,
-    loadEarlierHistory,
-    loadHistoryUntil,
-    olderHistoryCursor: historyCache.current?.value.nextCursor ?? null,
+    selectHistoryScope: conversationHistory.selectScope,
+    loadEarlierHistory: conversationHistory.loadEarlier,
+    loadHistoryUntil: conversationHistory.loadUntil,
+    olderHistoryCursor: conversationHistory.olderCursor,
     resolveArtifact,
     resolveScriptLocation,
     readScriptEditor,

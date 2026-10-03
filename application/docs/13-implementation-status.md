@@ -1,5 +1,54 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第九阶段：会话历史查询唯一 owner
+
+`data/conversation-history.ts` 实际接管原 Client 的范围选择、历史缓存和
+单一分页 promise，以及 workspace view 的 head 复用和 timeline 合并。
+Client 持有一个稳定实例，原三个命令与 refresh 提交／授权清理直接消费；
+workspace view 仍解析授权范围，只调用 owner 的 head 策略，旧 export 保留
+re-export 兼容。不是另添 wrapper、并存 store 或全量查询 facade；不声称
+请求数降低。该模块没有构造副作用、React、DOM、storage、HTTP／IPC 或订阅。
+
+原 CSRF、epoch、scope 对象 identity、catalogVersion 及最终导航版本检查
+仍留 Client。清理同步撤下投影，不取消或重置原在途分页；cache 对象、身份
+和 scope 守门阻止迟到页面恢复。缓存命中同步返回原对象，没有新增 await。
+更早消息仍先等 refresh，最多四个不可见窗口共享 15s；引用回溯仍不增加
+此等待，最多 200 页、每页独立 15s。原游标／stale 检查次序、部分提交、
+错误文案、消息／input 重叠判定和多 review 输出身份均保留，没有 UI／CSS
+变化、轮询、新存储键、授权／协议或 LLM 请求。
+
+18 项新增对照测试使用固定 `9ea571d0` 的旧函数主体，根线程独立核对七段
+源实现，仅归一 import 路径／空白，oracle 不调用新 owner。相关 70 项单元
+测试通过。独立审查另外运行 18 组时序、48 组 head、120 组合并；这些有限
+情形不是完整 React／权限证明。两项 AST 门禁含 14 个违规反例，只治理本
+owner 的已知依赖和直接副作用，不是安全沙箱或全产品门禁。
+
+根线程最终全量 Node 1491 项：1328 通过、163 条现有可选集成跳过、零失败，
+67.6 秒。跳过项不是本轮真实 Runtime、模型或原生能力通过证明。
+
+原六文件 31 项首次在未迁移 JS 上真实得到 22/31；七个未读测试仍假定焦点
+自动打开关闭历史，另外两个 fixture 改版本却未发失效事件。仅补真实显式
+阅读／既有 foreground wake 前置，原 70 条 expect 和等待预算保留，校准以
+独立测试提交 `c986fffd` 保存。校准后同一旧 JS 31/31，新 JS 31/31，后者
+38.1 秒、零跳过／重试。不是通过恢复已撤回的自动展开或加入轮询换绿。
+
+新 JS 的原 21 文件 84 项跨页面矩阵 **81 通过、3 失败**，零跳过／重试；
+与迁移前最终矩阵保留相同三个红项及原断言：applications 的 iframe 连续性、
+navigation 的项目自动进入、shell 的项目标题。项目新增误触 accessChanged
+的问题仍待此前提出的修复范围确认，未绕过撤权保护；不能称 E2E 全绿。
+
+根线程最终 build／typecheck、受影响源码格式及空白检查通过。实际 HTML、
+JS／CSS 响应核对：`app-ZrFEj5mM.js`，SHA256
+`457f0117886216b504d6deea7fa480f751b28e1ff3971f83e01e8e1b33e48887`；
+CSS 仍 `app-Bl-K6QYD.css`，SHA256
+`0a46e4301841e99b7c688123e4a07ff83e8ebd6b33918325331294aaad442648`。
+根线程原日志／traces：`/tmp/morphz-conversation-history-owner.WIENvK`；独立
+review：`/tmp/morphz-history-independent-audit.laXqGE/REVIEW.md`。自动化使用
+原 test-server 的隔离临时 Host，不是付费模型、原窗口或整个目标验收。
+原 Mac 只读检查仍锁屏，最终原 App 复验未完成；未换用户 profile、改锁屏
+设置或重启用户 Runtime。整体架构目标继续，完整导航、跨领域呈现及其他
+查询／样式／组件边界尚待迁移。
+
 ## 2026-10-04 现有回归契约校准：保留真实红项
 
 发送／顶栏阶段已提交 `d45cf84d`；未知补充回执另以 `28cecd4a` 修复。本批

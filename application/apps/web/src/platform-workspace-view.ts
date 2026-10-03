@@ -33,9 +33,18 @@ import type {
 } from "./platform-client.js";
 import {
 } from "../../../packages/core/src/script-studio.js";
-import { scriptOutputKey } from "../../../packages/core/src/script-delivery.js";
 import { RequestError } from "./application-transport.js";
 import type { NavigationRevisions } from "../../../packages/core/src/application-api.js";
+import {
+  readHistoryHead,
+  type CachedHistory,
+  type HistoryScope,
+} from "./data/conversation-history.js";
+export {
+  mergePlatformHistories,
+  type CachedHistory,
+  type HistoryScope,
+} from "./data/conversation-history.js";
 
 const objectVersionSchema = z.object({
   objectId: z.string(),
@@ -50,7 +59,6 @@ const objectVersionSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-export type HistoryScope = { projectId: string; conversationId: string };
 export type HistorySelection = {
   scope?: HistoryScope | null;
   recentContentIds?: string[];
@@ -65,70 +73,6 @@ export type HistorySelection = {
     scriptLocation?: { productionId: string } | null;
   };
 };
-export type CachedHistory = {
-  scope: HistoryScope;
-  version: string;
-  value: PlatformHistory;
-};
-/** Merge adjacent history windows without moving late replies under their
- * source input. The first argument owns the current connection/attention
- * state; only timeline rows are retained from the older window.
- */
-export function mergePlatformHistories(
-  latest: PlatformHistory,
-  older: PlatformHistory,
-  nextCursor = older.nextCursor,
-): PlatformHistory {
-  const byId = <T extends { id: string; createdAt: string }>(
-    previous: T[],
-    current: T[],
-  ) =>
-    [
-      ...new Map(
-        [...previous, ...current].map((item) => [item.id, item]),
-      ).values(),
-    ].sort(
-      (a, b) =>
-        a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-    );
-  return {
-    inputs: byId(older.inputs, latest.inputs),
-    scriptOutputs: [
-      ...new Map(
-        [...older.scriptOutputs, ...latest.scriptOutputs].map((output) => [
-          scriptOutputKey(output),
-          output,
-        ]),
-      ).values(),
-    ].sort(
-      (a, b) =>
-        a.createdAt.localeCompare(b.createdAt) ||
-        a.commandId.localeCompare(b.commandId),
-    ),
-    nextCursor,
-    runtime: {
-      ...latest.runtime,
-      deliveries: [
-        ...new Map(
-          [...older.runtime.deliveries, ...latest.runtime.deliveries].map(
-            (delivery) => [delivery.inputId, delivery],
-          ),
-        ).values(),
-      ],
-      messages: byId(older.runtime.messages, latest.runtime.messages),
-    },
-  };
-}
-function overlappingHistory(left: PlatformHistory, right: PlatformHistory) {
-  const known = new Set([
-    ...right.inputs.map((input) => input.id),
-    ...right.runtime.messages.map((message) => message.id),
-  ]);
-  return (
-    left.inputs.some((input) => known.has(input.id)) ||
-    left.runtime.messages.some((message) => known.has(message.id))
-  );
-}
 export type PlatformWorkspaceCatalog = {
   personal: { deskId: string; inboxId: string; dialogueId: string };
   projects: PlatformProject[];
@@ -568,37 +512,29 @@ export async function readPlatformWorkspace(
         .map((instance) => instance.state.productionId),
     ].filter((value): value is string => typeof value === "string" && !!value),
   );
-  const matchingHistory =
-    cachedHistory?.scope.projectId === historyScope?.projectId &&
-    cachedHistory?.scope.conversationId === historyScope?.conversationId
-      ? cachedHistory
-      : undefined;
-  const histories: PlatformHistory[] =
+  const historyHead =
     runtimeSnapshot.configured && historyScope
-      ? [
-          matchingHistory && matchingHistory.version === historyVersion
-            ? matchingHistory.value
-            : await (async () => {
-                const latest = await client.history(
-                  historyScope.projectId,
-                  historyScope.conversationId,
-                  undefined,
-                  signal,
-                );
-                // A new publication often changes historyVersion while the
-                // reader is looking at an older page. Retain that page only
-                // when the fresh window overlaps and no older delivery can
-                // still change state. Otherwise restart from a known window.
-                return matchingHistory &&
-                  overlappingHistory(latest, matchingHistory.value) &&
-                  !matchingHistory.value.runtime.deliveries.some((delivery) =>
-                    ["queued", "sending", "running"].includes(delivery.state),
-                  )
-                  ? mergePlatformHistories(latest, matchingHistory.value)
-                  : latest;
-              })(),
-        ]
-      : [];
+      ? readHistoryHead(
+          (scope, before, signal) =>
+            client.history(
+              scope.projectId,
+              scope.conversationId,
+              before,
+              signal,
+            ),
+          historyScope,
+          historyVersion,
+          cachedHistory,
+          signal,
+        )
+      : null;
+  const histories: PlatformHistory[] = historyHead
+    ? [
+        historyHead.kind === "cached"
+          ? historyHead.value
+          : await historyHead.pending,
+      ]
+    : [];
   const visibleInputIds = histories.flatMap((history) =>
     history.inputs.map((input) => input.id),
   );

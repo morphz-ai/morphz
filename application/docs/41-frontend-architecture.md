@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.8 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：0.9 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -16,6 +16,7 @@
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect      | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
 | 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                       | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                        | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
+| 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                    | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费              | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
@@ -181,6 +182,26 @@ Runtime 工作收益。285 行 pending helper 保持 `/tmp` 隔离，未加入�
 无状态 raw wrapper 也不冒充共享 facade。其他目录／审阅的过滤及范围不同，
 文稿默认历史读取为顺序且含 live metadata。既有共享对话流与剧本概览仍复用；
 后续共享迁移必须先证明同语义与实际收益，本次审计不等于查询层目标完成。
+
+会话历史的生产 owner 现为 `data/conversation-history.ts`。它统一拥有选定范围、
+可撤下的内存缓存、单一分页 promise、head 复用和 timeline 合并；Client 使用
+同一实例实际接入范围选择、加载更早、引用回溯、refresh 提交和授权清理，
+workspace view 仍解析真实授权范围并通过该模块决定 head。既有 export 保留
+为兼容 re-export，不保留第二套算法或状态。收益是完整查询生命周期的唯一
+所有权与可验证合同，不声称减少原网络请求或已实现全局 query facade。
+
+该 owner 不导入 React、UI、storage 或 transport，也不自行订阅／发布 Boot、
+读取身份或开启轮询。连接及刷新通过有限 typed ports 提供；Client 仍检查
+身份、epoch、原 scope 对象、catalogVersion 和最终 navigation revision。
+原授权／切换中心的清理调用同步清投影，但不取消或重置原在途分页 promise；
+迟到页面由原 cache 对象及身份／scope 检查拒绝。不能借此保留撤权内容。
+
+缓存命中同步返回原对象，不能因抽 helper 增加一次 await；新 head 仍沿原
+异步序列读取。单次加载最多跨四个不可见窗口，共用 15s；显式引用回溯最多
+200 页，每页独立 15s。后者不新增等待 workspace refresh，前者仍先等待；
+游标检查在 stale 检查前、部分提交及原错误文案均保留。固定 `9ea571d0`
+旧算法为对照，新增 18 项逻辑测试；有限 AST 门禁拒绝已列出的直接副作用、
+依赖与无类型合同，不是安全沙箱或对整个前端的完整依赖治理。
 
 ### 4.2 恢复与刷新
 
