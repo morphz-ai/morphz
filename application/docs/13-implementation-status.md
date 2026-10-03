@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-04 SQLite 变化通知：双通道与注册空窗校准
+
+修复真实跨进程通知漏报类别：目录监听注册成功但没有任何回调，提交已经落库，
+原 3 秒提示断言仍超时。自然失败的只读诊断记录了完整事务与零回调；未将其
+归因于模型、轮询间隔或尚未证实的 Node 版本差异。
+
+`commit-notifications.ts` 保留目录监听，并订阅确切 DB／WAL／journal 文件；
+实际事件共用原 20ms 合并校验，注册成功与错误恢复各校准一次。缺席侧车不启动
+定时发现；只有真实订阅错误沿用 500ms 恢复。旧 inode／订阅实例的迟到回调和
+error 不得关闭新实例，close 取消全部监听、待校验与重连。无健康空闲 SQL 或
+文件扫描轮询，不改变数据库、公共 API、内存来源、PG 或 ready 语义。
+
+17 项专项中 16 通过、1 项现有 PG 集成跳过；连续 24 轮、最多 4 并行均相同，
+原真实跨进程案例仍保留 3 秒、未提交／rollback 无提示和最终 `[2]` 断言。
+新增强制目录静默的 WAL／DELETE 实测使用真实文件事件与子进程事务；受控
+事件／计时另验证静默零 SQL、侧车及 DB 替换、注册空窗、错误恢复与关闭。
+相关 workspace change／ready cancellation 12 项中 10 通过、2 PG 集成跳过。
+原始逐轮输出与冻结 SHA：`/tmp/morphz-storage-dual-channel-20261004.mRHrlT`。
+
+同期冻结导航迁移与本修复的完整工作树 typecheck／build 通过，全量 Node
+1381 项中 1218 通过、163 条现有可选集成跳过、零失败；原始输出
+`/tmp/morphz-navigation-owner-verification.Nu3QDS/full-unit.log`。不以强制静默
+成功证明所有文件监听都可靠：修复后未再次捕获天然失声并恢复的同轮 trace；
+通知仍仅是失效提示，启动、重连与唤醒须读取权威版本。
+
 ## 2026-10-04 前端重构第四阶段：回应等待的共享事实投影
 
 `conversation-presentation.ts` 的纯 `isPendingResponse` 统一消息与 Logo 共用的

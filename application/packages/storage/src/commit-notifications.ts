@@ -125,6 +125,11 @@ export function observeSqlChanges(
     let retry: ReturnType<typeof setTimeout> | null = null;
     let baseline = 0;
     let fileIdentity = "";
+    let recoveryPending = false;
+    const fileWatchers = new Map<
+      string,
+      { identity: string; watcher: FSWatcher }
+    >();
     const readVersion = () =>
       Number(
         (
@@ -142,13 +147,13 @@ export function observeSqlChanges(
       baseline = readVersion();
     };
     const checkVersion = () => {
-      if (closed || !value.filename) return;
+      if (closed || !value.filename) return false;
       try {
         const stat = statSync(value.filename);
         if (`${stat.dev}:${stat.ino}` !== fileIdentity || !observer) {
           openObserver();
           enqueue("resync");
-          return;
+          return true;
         }
         const version = readVersion();
         if (version !== baseline) {
@@ -158,6 +163,7 @@ export function observeSqlChanges(
       } catch {
         enqueue("resync");
       }
+      return false;
     };
     const knownCommit = () => {
       if (closed) return;
@@ -174,48 +180,131 @@ export function observeSqlChanges(
     const listeners = sqliteBus.get(source.identity) ?? new Set<() => void>();
     listeners.add(knownCommit);
     sqliteBus.set(source.identity, listeners);
-    const attach = () => {
-      if (closed || !value.filename) return;
-      try {
-        if (!observer) openObserver();
-        const name = basename(value.filename);
-        watcher = watch(
-          dirname(value.filename),
-          { persistent: false },
-          (_event, entry) => {
-            if (
-              entry &&
-              ![name, `${name}-wal`, `${name}-journal`].includes(String(entry))
-            )
-              return;
-            if (!timer) {
-              timer = setTimeout(() => {
-                timer = null;
-                checkVersion();
-              }, 20);
-              timer.unref();
-            }
-          },
-        );
-        watcher.on("error", () => {
-          watcher?.close();
-          watcher = null;
-          enqueue("resync");
-          if (!retry) {
-            retry = setTimeout(() => {
-              retry = null;
-              attach();
-            }, 500);
-            retry.unref();
-          }
-        });
-      } catch {
-        enqueue("resync");
+    const closeWatchers = () => {
+      const directoryWatcher = watcher;
+      watcher = null;
+      const files = [...fileWatchers.values()];
+      fileWatchers.clear();
+      directoryWatcher?.close();
+      for (const file of files) file.watcher.close();
+    };
+    const lost = () => {
+      if (closed) return;
+      closeWatchers();
+      if (timer) clearTimeout(timer);
+      timer = null;
+      recoveryPending = true;
+      enqueue("resync");
+      if (!retry) {
         retry = setTimeout(() => {
           retry = null;
           attach();
         }, 500);
         retry.unref();
+      }
+    };
+    const scheduleCheck = () => {
+      if (closed || timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        try {
+          reconcileFiles();
+          // Opening a replacement observer can create its WAL/SHM. Subscribe
+          // to the new sidecar once, without looping over version reads.
+          if (checkVersion()) reconcileFiles();
+        } catch {
+          lost();
+        }
+      }, 20);
+      timer.unref();
+    };
+    const reconcileFiles = () => {
+      if (closed || !value.filename) return;
+      for (const filename of [
+        value.filename,
+        `${value.filename}-wal`,
+        `${value.filename}-journal`,
+      ]) {
+        const current = fileWatchers.get(filename);
+        let identity: string;
+        try {
+          const stat = statSync(filename);
+          identity = `${stat.dev}:${stat.ino}`;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          if (current) {
+            fileWatchers.delete(filename);
+            current.watcher.close();
+          }
+          // Absent sidecars are normal. Only registration and actual events
+          // discover them; no healthy timer scans for future files.
+          continue;
+        }
+        if (current?.identity === identity) continue;
+        if (current) {
+          fileWatchers.delete(filename);
+          current.watcher.close();
+        }
+        let next: FSWatcher;
+        try {
+          next = watch(filename, { persistent: false }, () => {
+            if (fileWatchers.get(filename)?.watcher !== next) return;
+            scheduleCheck();
+          });
+        } catch (error) {
+          // A short-lived journal can disappear between stat and watch.
+          if (
+            filename !== value.filename &&
+            (error as NodeJS.ErrnoException).code === "ENOENT"
+          )
+            continue;
+          throw error;
+        }
+        fileWatchers.set(filename, { identity, watcher: next });
+        next.on("error", () => {
+          if (fileWatchers.get(filename)?.watcher !== next) return;
+          lost();
+        });
+      }
+    };
+    const attach = () => {
+      if (closed || !value.filename) return;
+      try {
+        if (!observer) openObserver();
+        const name = basename(value.filename);
+        const next: FSWatcher = watch(
+          dirname(value.filename),
+          { persistent: false },
+          (_event, entry) => {
+            if (watcher !== next) return;
+            if (
+              entry &&
+              ![name, `${name}-wal`, `${name}-journal`].includes(String(entry))
+            )
+              return;
+            scheduleCheck();
+          },
+        );
+        watcher = next;
+        next.on("error", () => {
+          if (watcher !== next) return;
+          lost();
+        });
+        // Direct file subscriptions keep WAL commits observable even when a
+        // successfully registered directory watcher delivers no callbacks.
+        reconcileFiles();
+        // The observer baseline is read before registration. A writer can
+        // commit in that gap, or while a failed watcher is reconnecting. Check
+        // once after successful registration, never on a healthy idle timer.
+        if (checkVersion()) reconcileFiles();
+        if (recoveryPending) {
+          recoveryPending = false;
+          // A lost subscription also invalidates the consumer's snapshot,
+          // even when this connection's data_version did not change.
+          enqueue("resync");
+        }
+      } catch {
+        lost();
       }
     };
     attach();
@@ -229,7 +318,7 @@ export function observeSqlChanges(
         if (!listeners.size) sqliteBus.delete(source.identity);
         if (timer) clearTimeout(timer);
         if (retry) clearTimeout(retry);
-        watcher?.close();
+        closeWatchers();
         observer?.close();
       },
     };

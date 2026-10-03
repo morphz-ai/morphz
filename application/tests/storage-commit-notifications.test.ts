@@ -2,10 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { EventEmitter, once } from "node:events";
+import fs, {
+  mkdtempSync,
+  existsSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  type FSWatcher,
+  type WatchListener,
+} from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
 import {
@@ -34,6 +43,148 @@ async function until(check: () => boolean | Promise<boolean>, timeout = 3000) {
     if (Date.now() >= deadline)
       throw new Error("Expected change notification did not arrive");
     await pause(10);
+  }
+}
+
+function interceptChangeWatch(
+  filename: string,
+  intercept: (
+    target: string,
+    open: () => FSWatcher,
+    listener: WatchListener<string>,
+  ) => FSWatcher,
+) {
+  const original = fs.watch;
+  const directory = realpathSync(dirname(filename));
+  const canonical = join(directory, basename(filename));
+  const targets = new Set([
+    directory,
+    canonical,
+    `${canonical}-wal`,
+    `${canonical}-journal`,
+  ]);
+  fs.watch = ((...args: Parameters<typeof fs.watch>) => {
+    const open = () => Reflect.apply(original, fs, args) as FSWatcher;
+    const target = String(args[0]);
+    if (!targets.has(target)) {
+      assert.ok(
+        !target.startsWith(`${directory}/`),
+        `unexpected isolated watcher target: ${target}`,
+      );
+      return open();
+    }
+    const listener = args.find((argument) => typeof argument === "function");
+    assert.equal(typeof listener, "function");
+    return intercept(target, open, listener as WatchListener<string>);
+  }) as typeof fs.watch;
+  syncBuiltinESMExports();
+  return () => {
+    fs.watch = original;
+    syncBuiltinESMExports();
+  };
+}
+
+class ControlledWatcher extends EventEmitter implements FSWatcher {
+  closeCalls = 0;
+  constructor(
+    readonly target: string,
+    readonly deliver: WatchListener<string>,
+  ) {
+    super();
+  }
+  close() {
+    this.closeCalls++;
+  }
+  ref() {
+    return this;
+  }
+  unref() {
+    return this;
+  }
+}
+
+function controlledChangeWatches(filename: string) {
+  const directory = realpathSync(dirname(filename));
+  const canonical = join(directory, basename(filename));
+  const watchers: ControlledWatcher[] = [];
+  const restore = interceptChangeWatch(filename, (target, _open, listener) => {
+    const watcher = new ControlledWatcher(target, listener);
+    watchers.push(watcher);
+    return watcher;
+  });
+  const current = (target: string) => {
+    const watcher = watchers.findLast(
+      (watcher) => watcher.target === target && watcher.closeCalls === 0,
+    );
+    assert.ok(watcher, `active isolated watcher missing: ${target}`);
+    return watcher;
+  };
+  return { directory, canonical, watchers, restore, current };
+}
+
+function countVersionReads() {
+  const original = DatabaseSync.prototype.prepare;
+  let count = 0;
+  DatabaseSync.prototype.prepare = function (sql: string) {
+    if (sql === "PRAGMA data_version") count++;
+    return original.call(this, sql);
+  };
+  return {
+    get count() {
+      return count;
+    },
+    restore() {
+      DatabaseSync.prototype.prepare = original;
+    },
+  };
+}
+
+async function assertExternalTransactions(
+  filename: string,
+  hints: SqlChangeHint[],
+) {
+  const script = `import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync(process.argv[1]);db.exec('BEGIN IMMEDIATE');db.prepare('INSERT INTO items VALUES(?)').run(Number(process.argv[2]));process.send('staged');process.once('message', mode=>{db.exec(mode==='commit'?'COMMIT':'ROLLBACK');db.close();process.disconnect();});`;
+  for (const [id, mode] of [
+    [1, "rollback"],
+    [2, "commit"],
+  ] as const) {
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "-e", script, filename, String(id)],
+      { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+    );
+    try {
+      await once(child, "message");
+      await pause(80);
+      assert.equal(hints.length, 0, "uncommitted writes are not a commit");
+      const exited = once(child, "exit");
+      child.send(mode);
+      const [code] = await exited;
+      assert.equal(code, 0);
+      if (mode === "commit")
+        await until(() => hints.some((hint) => hint.reason === "commit"));
+      else {
+        await pause(70);
+        assert.deepEqual(hints, []);
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    }
+  }
+}
+
+async function externalInsert(filename: string, id: number) {
+  const script = `import {DatabaseSync} from 'node:sqlite';const db=new DatabaseSync(process.argv[1]);db.exec('BEGIN IMMEDIATE');db.prepare('INSERT INTO items VALUES(?)').run(Number(process.argv[2]));db.exec('COMMIT');db.close();`;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", script, filename, String(id)],
+    { stdio: "ignore" },
+  );
+  try {
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0, "the isolated external transaction must commit");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
   }
 }
 
@@ -169,7 +320,7 @@ test("同一 canonical SQLite 的独立 Store 收到提交，重放不失效，c
   }
 });
 
-test("SQLite 文件监听跨进程以 data_version 校验真实提交，rollback 不报变化；健康闲置不读 SQL", async () => {
+test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提交和 rollback 不报变化", async () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-commit-process-"));
   const filename = join(directory, "external.sqlite"),
     db = new DatabaseSync(filename);
@@ -222,10 +373,6 @@ test("SQLite 文件监听跨进程以 data_version 校验真实提交，rollback
       }
     }
     assert.ok(versionReads > 1);
-    await pause(80);
-    const idleReads = versionReads;
-    await pause(150);
-    assert.equal(versionReads, idleReads);
     assert.deepEqual(
       db
         .prepare("SELECT id FROM items")
@@ -236,6 +383,741 @@ test("SQLite 文件监听跨进程以 data_version 校验真实提交，rollback
   } finally {
     await subscription.close();
     DatabaseSync.prototype.prepare = original;
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite 观察器基线与文件监听注册之间的提交在注册后只校准一次", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-register-"));
+  const filename = join(directory, "registration.sqlite"),
+    db = new DatabaseSync(filename),
+    writer = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const original = DatabaseSync.prototype.prepare;
+  let versionReads = 0;
+  DatabaseSync.prototype.prepare = function (sql: string) {
+    if (sql === "PRAGMA data_version") versionReads++;
+    return original.call(this, sql);
+  };
+  let registrations = 0;
+  const restoreWatch = interceptChangeWatch(filename, (target, open) => {
+    if (target !== realpathSync(directory)) return open();
+    registrations++;
+    assert.equal(versionReads, 1, "the old baseline predates registration");
+    writer.exec("INSERT INTO items VALUES(2)");
+    return open();
+  });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  try {
+    assert.equal(registrations, 1);
+    assert.equal(versionReads, 2, "one bounded post-registration calibration");
+    await subscription.ready;
+    assert.deepEqual(hints, [{ reason: "resync" }]);
+    assert.deepEqual(
+      db
+        .prepare("SELECT id FROM items")
+        .all()
+        .map((row) => row.id),
+      [2],
+    );
+  } finally {
+    await subscription.close();
+    restoreWatch();
+    DatabaseSync.prototype.prepare = original;
+    writer.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite 可控文件事件按20ms合并校验，初始和提交后静默零SQL，close取消读取和提示", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-events-"));
+  const filename = join(directory, "controlled.sqlite"),
+    db = new DatabaseSync(filename),
+    writer = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const original = DatabaseSync.prototype.prepare;
+  let versionReads = 0;
+  DatabaseSync.prototype.prepare = function (sql: string) {
+    if (sql === "PRAGMA data_version") versionReads++;
+    return original.call(this, sql);
+  };
+  const watches = controlledChangeWatches(filename);
+  // No OS callback is delivered in a quiet phase. This is the precise idle
+  // precondition; native fs.watch may deliver late or duplicate WAL events.
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  const deliverBatch = () => {
+    watches
+      .current(watches.directory)
+      .deliver("change", "controlled.sqlite-wal");
+    watches.current(watches.canonical).deliver("change", "controlled.sqlite");
+    watches
+      .current(`${watches.canonical}-wal`)
+      .deliver("change", "controlled.sqlite-wal");
+  };
+  try {
+    assert.equal(versionReads, 2);
+    assert.deepEqual(
+      watches.watchers.map((watcher) => watcher.target).sort(),
+      [watches.directory, watches.canonical, `${watches.canonical}-wal`].sort(),
+      "all exact subscriptions are controlled; absent journal needs no watcher",
+    );
+    await subscription.ready;
+    assert.deepEqual(hints, [{ reason: "resync" }]);
+    hints.length = 0;
+    const initialReads = versionReads;
+    t.mock.timers.tick(150);
+    await Promise.resolve();
+    assert.equal(versionReads, initialReads, "no initial healthy SQL polling");
+    assert.deepEqual(hints, []);
+
+    watches
+      .current(watches.directory)
+      .deliver("change", "controlled.sqlite-shm");
+    watches
+      .current(watches.directory)
+      .deliver("change", "unrelated.sqlite-wal");
+    t.mock.timers.tick(150);
+    assert.equal(
+      versionReads,
+      initialReads,
+      "irrelevant entries do not read SQL",
+    );
+
+    writer.exec("BEGIN IMMEDIATE; INSERT INTO items VALUES(1)");
+    deliverBatch();
+    t.mock.timers.tick(19);
+    assert.equal(versionReads, initialReads, "no check before 20ms");
+    t.mock.timers.tick(1);
+    await Promise.resolve();
+    assert.equal(versionReads, initialReads + 1, "one check per event batch");
+    assert.deepEqual(hints, [], "uncommitted WAL writes are not a commit");
+    writer.exec("ROLLBACK");
+    deliverBatch();
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    assert.equal(versionReads, initialReads + 2);
+    assert.deepEqual(hints, [], "rollback does not change data_version");
+
+    await externalInsert(filename, 2);
+    const beforeCommitEvent = versionReads;
+    assert.deepEqual(hints, [], "SQL alone does not start a healthy timer");
+    deliverBatch();
+    t.mock.timers.tick(19);
+    assert.equal(versionReads, beforeCommitEvent);
+    t.mock.timers.tick(1);
+    await Promise.resolve();
+    assert.equal(versionReads, beforeCommitEvent + 1);
+    assert.deepEqual(hints, [{ reason: "commit" }]);
+    assert.deepEqual(
+      db
+        .prepare("SELECT id FROM items")
+        .all()
+        .map((row) => row.id),
+      [2],
+    );
+
+    hints.length = 0;
+    const idleReads = versionReads;
+    t.mock.timers.tick(150);
+    await Promise.resolve();
+    assert.equal(
+      versionReads,
+      idleReads,
+      "no healthy SQL polling after commit",
+    );
+    assert.deepEqual(hints, []);
+
+    deliverBatch();
+    await subscription.close();
+    assert.ok(watches.watchers.every((watcher) => watcher.closeCalls === 1));
+    // Also tolerate a callback already queued when the native watcher closed.
+    for (const watcher of watches.watchers) {
+      watcher.deliver("change", basename(watcher.target));
+      watcher.emit("error", new Error("TEST retired subscription error"));
+    }
+    t.mock.timers.tick(600);
+    await Promise.resolve();
+    assert.equal(
+      versionReads,
+      idleReads,
+      "close cancels pending version checks",
+    );
+    assert.deepEqual(hints, [], "close cancels pending hints");
+    assert.equal(watches.watchers.length, 3, "close also cancels recovery");
+  } finally {
+    await subscription.close();
+    t.mock.timers.reset();
+    watches.restore();
+    DatabaseSync.prototype.prepare = original;
+    writer.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const journalMode of ["WAL", "DELETE"] as const) {
+  test(`SQLite ${journalMode}目录回调失声时真实文件订阅仍校验跨进程commit和rollback`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "morphz-commit-silent-dir-"));
+    const filename = join(directory, "silent.sqlite"),
+      db = new DatabaseSync(filename);
+    db.exec(
+      `PRAGMA journal_mode=${journalMode}; CREATE TABLE items(id INTEGER PRIMARY KEY)`,
+    );
+    const canonicalDirectory = realpathSync(directory);
+    const registrations: string[] = [],
+      closedTargets: string[] = [];
+    const restoreWatch = interceptChangeWatch(
+      filename,
+      (target, open, listener) => {
+        registrations.push(target);
+        if (target === canonicalDirectory) {
+          const watcher = new ControlledWatcher(target, listener);
+          const close = watcher.close.bind(watcher);
+          watcher.close = () => {
+            closedTargets.push(target);
+            close();
+          };
+          return watcher;
+        }
+        const watcher = open();
+        const close = watcher.close.bind(watcher);
+        watcher.close = () => {
+          closedTargets.push(target);
+          close();
+        };
+        return watcher;
+      },
+    );
+    const hints: SqlChangeHint[] = [];
+    const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+      hints.push(hint);
+    });
+    try {
+      await subscription.ready;
+      await pause(50);
+      hints.length = 0;
+      await assertExternalTransactions(filename, hints);
+      assert.deepEqual(
+        db
+          .prepare("SELECT id FROM items")
+          .all()
+          .map((row) => row.id),
+        [2],
+      );
+      assert.ok(
+        registrations.includes(join(canonicalDirectory, "silent.sqlite")),
+      );
+      if (journalMode === "WAL")
+        assert.ok(
+          registrations.includes(join(canonicalDirectory, "silent.sqlite-wal")),
+        );
+      await subscription.close();
+      assert.deepEqual(closedTargets.sort(), registrations.sort());
+    } finally {
+      await subscription.close();
+      restoreWatch();
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("SQLite 初始缺席WAL在只读观察器基线后创建并订阅，静默不反复发现侧车", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-initial-wal-"));
+  const filename = join(directory, "initial.sqlite");
+  const setup = new DatabaseSync(filename);
+  setup.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  setup.close();
+  assert.equal(existsSync(`${filename}-wal`), false);
+  const db = new DatabaseSync(filename);
+  const watches = controlledChangeWatches(filename);
+  const reads = countVersionReads();
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const subscription = observeSqlChanges(sqliteChangeSource(db), () => {});
+  try {
+    assert.equal(existsSync(`${filename}-wal`), true);
+    assert.ok(watches.current(`${watches.canonical}-wal`));
+    assert.equal(reads.count, 2);
+    const count = watches.watchers.length;
+    await subscription.ready;
+    t.mock.timers.tick(1200);
+    assert.equal(
+      reads.count,
+      2,
+      "no periodic SQL while all event sources are quiet",
+    );
+    assert.equal(watches.watchers.length, count, "no timed sidecar scans");
+  } finally {
+    await subscription.close();
+    assert.ok(watches.watchers.every((watcher) => watcher.closeCalls === 1));
+    t.mock.timers.reset();
+    reads.restore();
+    watches.restore();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite journal创建、消失和inode替换仅按真实事件收敛，旧实例迟到回调和error无效", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-journal-"));
+  const filename = join(directory, "journal.sqlite"),
+    db = new DatabaseSync(filename),
+    writer = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=DELETE; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const watches = controlledChangeWatches(filename);
+  const reads = countVersionReads();
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  const journal = `${watches.canonical}-journal`;
+  try {
+    await subscription.ready;
+    hints.length = 0;
+    assert.equal(watches.watchers.length, 2, "absent journal is not watched");
+    writer.exec("BEGIN IMMEDIATE; INSERT INTO items VALUES(1)");
+    assert.equal(existsSync(journal), true);
+    watches.current(watches.directory).deliver("rename", basename(journal));
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    const transactionJournal = watches.current(journal);
+    assert.equal(reads.count, 3);
+    assert.deepEqual(
+      hints,
+      [],
+      "creating an uncommitted journal is not a commit",
+    );
+    writer.exec("ROLLBACK");
+    assert.equal(existsSync(journal), false);
+    transactionJournal.deliver("rename", basename(journal));
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    assert.equal(transactionJournal.closeCalls, 1);
+    assert.deepEqual(hints, []);
+
+    // Empty, non-hot journals are safe filesystem lifecycle fixtures. SQLite
+    // remains authoritative; no database or WAL bytes are edited.
+    fs.writeFileSync(journal, "");
+    watches.current(watches.directory).deliver("rename", basename(journal));
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    const old = watches.current(journal);
+    fs.renameSync(journal, join(directory, "retired-journal"));
+    fs.writeFileSync(journal, "");
+    old.deliver("rename", basename(journal));
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    const replacement = watches.current(journal);
+    assert.notEqual(replacement, old);
+    assert.equal(old.closeCalls, 1);
+    const idleReads = reads.count,
+      registrations = watches.watchers.length;
+    for (const retired of [transactionJournal, old]) {
+      retired.deliver("change", basename(journal));
+      retired.emit("error", new Error("TEST error from retired inode"));
+    }
+    t.mock.timers.tick(1200);
+    await Promise.resolve();
+    assert.equal(reads.count, idleReads, "retired callbacks do not sample SQL");
+    assert.equal(
+      watches.watchers.length,
+      registrations,
+      "retired error cannot reconnect",
+    );
+    assert.equal(
+      replacement.closeCalls,
+      0,
+      "retired error cannot close replacement",
+    );
+    assert.deepEqual(hints, []);
+  } finally {
+    if (writer.isTransaction) writer.exec("ROLLBACK");
+    await subscription.close();
+    assert.ok(watches.watchers.every((watcher) => watcher.closeCalls === 1));
+    t.mock.timers.reset();
+    reads.restore();
+    watches.restore();
+    writer.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("SQLite DB替换重新打开观察器后收敛新WAL一次，旧DB和WAL实例不能影响新订阅", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-replace-"));
+  const filename = join(directory, "replace.sqlite"),
+    db = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const replacementFile = join(directory, "replacement.sqlite");
+  const setup = new DatabaseSync(replacementFile);
+  setup.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(7)",
+  );
+  setup.close();
+  assert.equal(existsSync(`${replacementFile}-wal`), false);
+  const watches = controlledChangeWatches(filename);
+  const reads = countVersionReads();
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  let sourceClosed = false;
+  try {
+    await subscription.ready;
+    hints.length = 0;
+    const oldDb = watches.current(watches.canonical),
+      oldWal = watches.current(`${watches.canonical}-wal`);
+    db.close();
+    sourceClosed = true;
+    for (const suffix of ["", "-wal", "-shm"]) {
+      fs.renameSync(
+        `${filename}${suffix}`,
+        join(directory, `retired.sqlite${suffix}`),
+      );
+    }
+    fs.renameSync(replacementFile, filename);
+    assert.equal(existsSync(`${filename}-wal`), false);
+    oldDb.deliver("rename", basename(filename));
+    t.mock.timers.tick(20);
+    await Promise.resolve();
+    assert.equal(
+      reads.count,
+      3,
+      "replacement opens one baseline, not a read loop",
+    );
+    assert.deepEqual(hints, [{ reason: "resync" }]);
+    assert.equal(existsSync(`${filename}-wal`), true);
+    const newDb = watches.current(watches.canonical),
+      newWal = watches.current(`${watches.canonical}-wal`);
+    assert.notEqual(newDb, oldDb);
+    assert.notEqual(newWal, oldWal);
+    assert.equal(oldDb.closeCalls, 1);
+    assert.equal(oldWal.closeCalls, 1);
+    const verify = new DatabaseSync(filename, { readOnly: true });
+    try {
+      assert.deepEqual(
+        verify
+          .prepare("SELECT id FROM items")
+          .all()
+          .map((row) => row.id),
+        [7],
+      );
+    } finally {
+      verify.close();
+    }
+    hints.length = 0;
+    const registrations = watches.watchers.length;
+    for (const old of [oldDb, oldWal]) {
+      old.deliver("change", basename(old.target));
+      old.emit("error", new Error("TEST retired DB/WAL error"));
+    }
+    t.mock.timers.tick(1200);
+    await Promise.resolve();
+    assert.equal(reads.count, 3);
+    assert.equal(watches.watchers.length, registrations);
+    assert.equal(newDb.closeCalls, 0);
+    assert.equal(newWal.closeCalls, 0);
+    assert.deepEqual(hints, []);
+  } finally {
+    await subscription.close();
+    assert.ok(watches.watchers.every((watcher) => watcher.closeCalls === 1));
+    t.mock.timers.reset();
+    reads.restore();
+    watches.restore();
+    if (!sourceClosed) db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const errorCode of ["ENOENT", "EMFILE"] as const) {
+  test(`SQLite ${errorCode}侧车注册空窗遵守缺席/错误恢复边界且旧目录error不能关闭新实例`, async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "morphz-commit-file-error-"));
+    const filename = join(directory, "error.sqlite"),
+      db = new DatabaseSync(filename);
+    db.exec(
+      "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+    );
+    const canonicalDirectory = realpathSync(directory),
+      canonical = join(canonicalDirectory, "error.sqlite");
+    const watchers: ControlledWatcher[] = [];
+    let failed = false;
+    const restoreWatch = interceptChangeWatch(
+      filename,
+      (target, _open, listener) => {
+        if (target === `${canonical}-wal` && !failed) {
+          failed = true;
+          throw Object.assign(new Error("TEST sidecar registration gap"), {
+            code: errorCode,
+          });
+        }
+        const watcher = new ControlledWatcher(target, listener);
+        watchers.push(watcher);
+        return watcher;
+      },
+    );
+    const reads = countVersionReads();
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const hints: SqlChangeHint[] = [];
+    const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+      hints.push(hint);
+    });
+    try {
+      await subscription.ready;
+      hints.length = 0;
+      const oldDirectory = watchers[0]!;
+      if (errorCode === "ENOENT") {
+        assert.equal(reads.count, 2);
+        assert.ok(watchers.every((watcher) => watcher.closeCalls === 0));
+        t.mock.timers.tick(1200);
+        await Promise.resolve();
+        assert.equal(reads.count, 2);
+        assert.equal(
+          watchers.length,
+          2,
+          "absent sidecar does not start timed discovery",
+        );
+        oldDirectory.deliver("rename", "error.sqlite-wal");
+        t.mock.timers.tick(20);
+        await Promise.resolve();
+        assert.equal(reads.count, 3);
+        assert.equal(
+          watchers.length,
+          3,
+          "a real event discovers the available sidecar",
+        );
+        assert.deepEqual(hints, []);
+      } else {
+        assert.equal(reads.count, 1);
+        assert.ok(watchers.every((watcher) => watcher.closeCalls === 1));
+        t.mock.timers.tick(499);
+        assert.equal(watchers.length, 2);
+        assert.equal(reads.count, 1);
+        t.mock.timers.tick(1);
+        await Promise.resolve();
+        assert.equal(watchers.length, 5);
+        assert.equal(reads.count, 2, "one post-recovery calibration");
+        assert.deepEqual(
+          hints,
+          [{ reason: "resync" }],
+          "restored watcher invalidates even unchanged data_version",
+        );
+        hints.length = 0;
+        oldDirectory.deliver("change", "error.sqlite-wal");
+        oldDirectory.emit("error", new Error("TEST retired directory error"));
+        t.mock.timers.tick(1200);
+        await Promise.resolve();
+        assert.equal(reads.count, 2);
+        assert.equal(watchers.length, 5);
+        assert.ok(
+          watchers.slice(2).every((watcher) => watcher.closeCalls === 0),
+        );
+        assert.deepEqual(hints, []);
+      }
+    } finally {
+      await subscription.close();
+      assert.ok(watchers.every((watcher) => watcher.closeCalls === 1));
+      t.mock.timers.reset();
+      reads.restore();
+      restoreWatch();
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("SQLite 活跃文件订阅error只触发500ms恢复，恢复读取空窗提交且旧实例和close不再读SQL", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-active-error-"));
+  const filename = join(directory, "active.sqlite"),
+    db = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const watches = controlledChangeWatches(filename);
+  const reads = countVersionReads();
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  try {
+    await subscription.ready;
+    hints.length = 0;
+    const retired = [...watches.watchers];
+    watches
+      .current(`${watches.canonical}-wal`)
+      .emit("error", new Error("TEST lost active WAL subscription"));
+    await Promise.resolve();
+    assert.deepEqual(hints, [{ reason: "resync" }]);
+    assert.ok(retired.every((watcher) => watcher.closeCalls === 1));
+    assert.equal(reads.count, 2);
+    hints.length = 0;
+    await externalInsert(filename, 2);
+    t.mock.timers.tick(499);
+    assert.equal(
+      reads.count,
+      2,
+      "no SQL or healthy checks inside the lost subscription gap",
+    );
+    assert.equal(watches.watchers.length, 3);
+    t.mock.timers.tick(1);
+    await Promise.resolve();
+    assert.equal(reads.count, 3, "one calibration reads the missed commit");
+    assert.equal(watches.watchers.length, 6);
+    assert.deepEqual(hints, [{ reason: "resync" }]);
+    assert.deepEqual(
+      db
+        .prepare("SELECT id FROM items")
+        .all()
+        .map((row) => row.id),
+      [2],
+    );
+    hints.length = 0;
+    for (const watcher of retired) {
+      watcher.deliver("change", basename(watcher.target));
+      watcher.emit("error", new Error("TEST late error from old subscription"));
+    }
+    t.mock.timers.tick(1200);
+    await Promise.resolve();
+    assert.equal(reads.count, 3);
+    assert.equal(watches.watchers.length, 6);
+    assert.ok(
+      watches.watchers.slice(3).every((watcher) => watcher.closeCalls === 0),
+    );
+    assert.deepEqual(hints, []);
+    watches
+      .current(`${watches.canonical}-wal`)
+      .deliver("change", "active.sqlite-wal");
+    t.mock.timers.tick(19);
+    await subscription.close();
+    for (const watcher of watches.watchers) {
+      watcher.deliver("change", basename(watcher.target));
+      watcher.emit("error", new Error("TEST callback after close"));
+    }
+    t.mock.timers.tick(1200);
+    await Promise.resolve();
+    assert.equal(reads.count, 3);
+    assert.equal(watches.watchers.length, 6);
+    assert.deepEqual(hints, []);
+  } finally {
+    await subscription.close();
+    assert.ok(watches.watchers.every((watcher) => watcher.closeCalls === 1));
+    t.mock.timers.reset();
+    reads.restore();
+    watches.restore();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const gap of ["registration", "disconnect"] as const) {
+  test(`SQLite ${gap}空窗内的跨进程提交在监听恢复后提示重新读取权威版本`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "morphz-commit-reconnect-"));
+    const filename = join(directory, "reconnect.sqlite"),
+      db = new DatabaseSync(filename);
+    db.exec(
+      "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+    );
+    let accepting = gap === "disconnect";
+    const watchers: FSWatcher[] = [];
+    const restoreWatch = interceptChangeWatch(filename, (target, open) => {
+      if (!accepting)
+        throw Object.assign(new Error("TEST isolated watcher unavailable"), {
+          code: "EMFILE",
+        });
+      const watcher = open();
+      if (target === realpathSync(directory)) watchers.push(watcher);
+      return watcher;
+    });
+    const resyncRegistrations: number[] = [];
+    let visible: unknown[] = [];
+    const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+      if (hint.reason === "resync") resyncRegistrations.push(watchers.length);
+      visible = db
+        .prepare("SELECT id FROM items")
+        .all()
+        .map((row) => row.id);
+    });
+    try {
+      await subscription.ready;
+      await pause(0);
+      assert.deepEqual(visible, []);
+      if (gap === "disconnect") {
+        accepting = false;
+        watchers[0]!.emit("error", new Error("TEST lost file subscription"));
+        await pause(0);
+      }
+      const before = watchers.length;
+      await externalInsert(filename, 2);
+      assert.equal(
+        watchers.length,
+        before,
+        "commit occurred without a watcher",
+      );
+      resyncRegistrations.length = 0;
+      accepting = true;
+      await until(
+        () =>
+          watchers.length === before + 1 &&
+          resyncRegistrations.includes(watchers.length) &&
+          visible.length === 1,
+      );
+      assert.deepEqual(visible, [2]);
+      assert.deepEqual(resyncRegistrations, [before + 1]);
+    } finally {
+      await subscription.close();
+      restoreWatch();
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("SQLite 失败注册的恢复在close后取消，不重新监听或输出提示", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-cancel-"));
+  const filename = join(directory, "cancel.sqlite"),
+    db = new DatabaseSync(filename);
+  db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY)");
+  let attempts = 0;
+  const restoreWatch = interceptChangeWatch(filename, () => {
+    attempts++;
+    throw new Error("TEST isolated watcher unavailable");
+  });
+  const hints: SqlChangeHint[] = [];
+  const subscription = observeSqlChanges(sqliteChangeSource(db), (hint) => {
+    hints.push(hint);
+  });
+  try {
+    await subscription.ready;
+    await pause(0);
+    hints.length = 0;
+    await subscription.close();
+    await pause(600);
+    assert.equal(attempts, 1);
+    assert.deepEqual(hints, []);
+  } finally {
+    await subscription.close();
+    restoreWatch();
     db.close();
     rmSync(directory, { recursive: true, force: true });
   }
