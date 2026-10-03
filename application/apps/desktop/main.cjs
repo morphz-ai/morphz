@@ -43,6 +43,11 @@ const {
   collectLegacyPreferences,
   restorePreferences,
 } = require("./preferences.cjs");
+const {
+  failurePath,
+  failurePage,
+  errorSummary,
+} = require("./startup-page.cjs");
 const developmentBundle =
   app.isPackaged &&
   require(join(app.getAppPath(), "package.json")).morphzDevelopmentBundle ===
@@ -66,6 +71,9 @@ const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   let window;
+  let windowStartup;
+  let windowReady = false;
+  let startupFailure = "";
   let browser;
   let appearance;
   let host;
@@ -94,7 +102,8 @@ else {
     getWindow: () => window,
   });
   let microphoneRequest = 0;
-  async function createWindow() {
+  function createWindow() {
+    if (window && !window.isDestroyed()) return windowStartup;
     // Set translucency before Electron creates the native/compositor surfaces.
     // Converting an opaque window later can leave stale sidebar tiles behind.
     const appearanceOptions = windowAppearanceOptions(nativeTheme);
@@ -124,6 +133,10 @@ else {
         additionalArguments: ["--morphz-application-bridge"],
       },
     });
+    const createdWindow = window;
+    const isCurrent = () =>
+      window === createdWindow && !createdWindow.isDestroyed();
+    windowReady = false;
     appearance = new DesktopAppearance(
       window,
       nativeTheme,
@@ -132,18 +145,20 @@ else {
     );
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     browser = new DesktopBrowser(
-      window,
+      createdWindow,
       uiURL,
       (input, init) =>
-        window.webContents.session.fetch(input, {
+        createdWindow.webContents.session.fetch(input, {
           ...init,
           credentials: "include",
         }),
       application,
     );
+    const createdBrowser = browser;
     // Reloading/crashing the trusted renderer must end its native capabilities.
     // React cleanup cannot run reliably when the renderer is replaced.
     const releaseRenderer = () => {
+      if (!isCurrent()) return;
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
@@ -151,24 +166,28 @@ else {
       application.invalidate();
       // Revoke browser access on the fresh connection; invalidating afterward
       // would abort the asynchronous exchange that clears the broker grant.
-      browser?.close();
+      createdBrowser.close();
     };
     window.webContents.on("did-start-navigation", (details) => {
       if (details.isMainFrame && !details.isInPlace) releaseRenderer();
     });
     window.webContents.on("render-process-gone", releaseRenderer);
     window.on("close", () => {
+      if (!isCurrent()) return;
       microphoneRequest++;
       microphone.cancel();
       capture.cancel();
       scriptExports?.invalidate();
       application.invalidate();
-      browser?.stop();
+      createdBrowser.stop();
     });
     window.on("closed", () => {
+      if (window !== createdWindow) return;
       browser = null;
       appearance = null;
       window = null;
+      windowReady = false;
+      windowStartup = undefined;
     });
     window.webContents.on("will-navigate", (event, destination) => {
       if (!trustedMainURL(destination, uiURL)) event.preventDefault();
@@ -177,10 +196,10 @@ else {
       if (!trustedMainURL(destination, uiURL)) event.preventDefault();
     });
     window.webContents.on("will-attach-webview", (event, preferences, params) =>
-      browser.willAttach(event, preferences, params),
+      createdBrowser.willAttach(event, preferences, params),
     );
     window.webContents.on("did-attach-webview", (_event, contents) =>
-      browser.didAttach(contents),
+      createdBrowser.didAttach(contents),
     );
     const appSession = session.fromPartition(appPartition);
     appSession.setPermissionRequestHandler(
@@ -196,30 +215,66 @@ else {
     // Always go through the one-use request gate, including after a previous recording.
     appSession.setPermissionCheckHandler(() => false);
     appSession.on("will-download", (event) => event.preventDefault());
-    try {
-      if (!hot && preferences) {
-        const restored = await restorePreferences(window, preferences);
-        writeFileSync(
-          join(app.getPath("userData"), "embedded-preferences-recovery.json"),
-          JSON.stringify({
-            ...restored,
-            scope: preferences.prefix,
-            restoredAt: new Date().toISOString(),
-          }),
-          { mode: 0o600 },
-        );
+    windowStartup = (async () => {
+      let phase = "preferences";
+      try {
+        if (!hot && preferences) {
+          const restored = await restorePreferences(createdWindow, preferences);
+          if (!isCurrent()) return;
+          writeFileSync(
+            join(app.getPath("userData"), "embedded-preferences-recovery.json"),
+            JSON.stringify({
+              ...restored,
+              scope: preferences.prefix,
+              restoredAt: new Date().toISOString(),
+            }),
+            { mode: 0o600 },
+          );
+        }
+        phase = "main-page";
+        await createdWindow.loadURL(uiURL + "/");
+        if (!isCurrent()) return;
+        if (!trustedMainURL(createdWindow.webContents.getURL(), uiURL))
+          throw new Error("正式界面未进入受信任的主页面。");
+        // The migration page is implementation detail, never a Back destination.
+        // This affects only this main frame, not browser guests or stored data.
+        createdWindow.webContents.navigationHistory.clear();
+        windowReady = true;
+        createdWindow.show();
+      } catch (error) {
+        if (!isCurrent()) return;
+        startupFailure = errorSummary(error);
+        try {
+          writeFileSync(
+            join(app.getPath("userData"), "desktop-startup-failure.json"),
+            JSON.stringify({
+              phase,
+              message: startupFailure,
+              at: new Date().toISOString(),
+            }),
+            { mode: 0o600 },
+          );
+        } catch {}
+        try {
+          await createdWindow.loadURL("morphz://app" + failurePath);
+          if (!isCurrent()) return;
+          createdWindow.webContents.navigationHistory.clear();
+          windowReady = true;
+          createdWindow.show();
+        } catch (failureError) {
+          if (!isCurrent()) return;
+          await dialog.showMessageBox(createdWindow, {
+            type: "error",
+            title: "Morphz 界面未能加载",
+            message:
+              "界面恢复页也未能载入。请重新打开 Morphz。数据和设置未重置。",
+            detail: errorSummary(failureError),
+          });
+          if (isCurrent()) createdWindow.close();
+        }
       }
-      await window.loadURL(uiURL + "/");
-      window.show();
-    } catch (error) {
-      await dialog.showMessageBox(window, {
-        type: "info",
-        title: "Morphz 界面未能加载",
-        message: "请检查内置界面是否已完成构建。",
-        detail: String(error?.message ?? error),
-      });
-      window.show();
-    }
+    })();
+    return windowStartup;
   }
   app
     .whenReady()
@@ -287,6 +342,12 @@ else {
       );
       appSession.protocol.handle("morphz", (request) => {
         const url = new URL(request.url);
+        if (
+          url.host === "app" &&
+          url.pathname === failurePath &&
+          request.method === "GET"
+        )
+          return failurePage(startupFailure, uiURL + "/");
         return url.host === "app" &&
           url.pathname === restorePath &&
           request.method === "GET"
@@ -519,6 +580,7 @@ else {
     if (!window || window.isDestroyed()) void createWindow();
     else {
       if (window.isMinimized()) window.restore();
+      if (!windowReady) return;
       window.show();
       window.focus();
     }

@@ -1,5 +1,31 @@
 # 桌面能力实施记录
 
+## 2026-10-03 主窗口空白恢复与启动兜底
+
+原窗口实查停在 `morphz://app/__desktop_restore`，不是 UI 资源丢失；偏好恢复
+回执已写入，旧进程却没有保留正式入口的失败日志。原 `createWindow` 的函数体回归
+复现两项确定缺陷：入口加载失败仍显示迁移空页，及旧窗口异步恢复错误操作新窗口。
+这证明源码路径有缺陷，不证明本次最初触发错误就是 `ERR_ABORTED`。
+
+现在每次创建固定自己的 Window／Browser，await 后核当前身份与销毁状态；重复创建
+共享同一启动 Promise，activate 不提前显示迁移页。正式入口成功且可信后仅清理
+该主 frame 的导航历史；失败则载入同 origin 的无脚本恢复页，提供真实主入口链接，
+先清理迁移历史再显示。IPC 白名单未扩大，profile／原 storage／guest 历史未清除。
+新失败日志只记录受限启动阶段、限长且去 URL 登录／查询信息的错误及时间，不作为
+通用业务日志或通用秘密脱敏机制。
+
+同一原 App 在正常退出及 SIGTERM 无效后，采样显示 Node `FreeEnvironment →
+RunCleanup → CleanupHandles` 卡住；该旧进程已无业务数据库或工具 socket。
+只强制结束原桌面 PID 20613，以原包／原 profile 重开，20:45 实见原事项、项目及
+历史活动，主入口 `morphz://app/`；新主进程 35371，外部 Runtime 68670 及启动时间
+保持，未重启它、重放输入或创建测试业务对象。偏好恢复记录为 restored=0、
+ownerRestored=true。原窗口截图：
+`/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/com.openai.sky.CUAService/Morphz Screenshot 2026-10-03 at 8.45.03 PM.jpeg`。
+
+启动／恢复／安全／开发配置定向回归 19/19 通过、零跳过，typecheck 通过。
+本轮修复启动失败空白兜底与窗口竞争并恢复原 UI；Node 退出清理为何卡住、最初
+正式入口为何未正常停留仍没有足够日志定位，不宣称这些根因已经彻底修复。
+
 ## 2026-10-03 阅读按钮组半透明材质修正
 
 按用户截图，仅当前交流／完整记录展开时，右上角交流按钮组使用既有
