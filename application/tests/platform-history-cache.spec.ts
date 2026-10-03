@@ -77,11 +77,15 @@ test("正式 Platform 会话定时刷新复用正文，新事件版本才重读"
   expect(catalogCalls).toBe(initialCatalogCalls);
 
   version = "b".repeat(64);
+  // Changing this routed snapshot is not a server event. Foregrounding is an
+  // existing explicit refresh trigger; healthy idle remains zero polling.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect.poll(() => historyCalls.length, { timeout: 10_000 }).toBe(2);
   expect(historyCalls[1]).toBe(historyCalls[0]);
   expect(catalogCalls).toBe(initialCatalogCalls);
 
   catalogBump++;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect
     .poll(() => catalogCalls, { timeout: 10_000 })
     .toBeGreaterThan(initialCatalogCalls);

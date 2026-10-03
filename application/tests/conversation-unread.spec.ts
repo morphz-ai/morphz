@@ -6,7 +6,11 @@ import {
 } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExchangeReading,
+  composerAction,
+} from "./interaction-helpers.js";
 import {
   mockPlatformConversation,
   test,
@@ -85,6 +89,7 @@ async function setup(page: Page, artifactId: string | null = null) {
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   const input = await openInput(page);
   await input.fill("TEST 保留未发送草稿");
+  await openExchangeReading(page);
   await expect(
     page.getByText("TEST 已读的第二条回复", { exact: true }),
   ).toBeVisible();
@@ -127,7 +132,7 @@ test("已读回复刷新后不重报，真正未读跨刷新保留，读完后�
   await expect(badge(page)).toBeVisible();
   await page.reload();
   await expect(badge(page)).toBeVisible();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(fixture.input).toHaveValue("TEST 保留未发送草稿");
   await expect(
     page.getByText("TEST 真正新到的回复", { exact: true }),
@@ -264,7 +269,7 @@ test("原生历史错误重放：早期错误不覆盖已读终态，刷新与�
   };
   await emit({ ...final, sequence: 470, text: "TEST 早期底层错误" });
   await expect(badge(page)).toHaveCount(0);
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(page.getByText(final.text, { exact: true })).toBeVisible();
   await expect(
     page.getByText("TEST 早期底层错误", { exact: true }),
@@ -422,13 +427,13 @@ test("只打开旧消息阅读位置不清除新回复，返回最新后才清�
     { id: "long-new", text: "TEST 在旧消息下方的新回复", kind: "reply" },
   ]);
   await expect(badge(page)).toBeVisible();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(
     page.getByRole("button", { name: "有新内容 · 返回最新", exact: true }),
   ).toBeVisible();
   await hide(page);
   await expect(badge(page)).toBeVisible();
-  await openInput(page);
+  await openExchangeReading(page);
   await page
     .getByRole("button", { name: "有新内容 · 返回最新", exact: true })
     .click();
@@ -457,7 +462,7 @@ test("当前对象的提示与展开的局部交流一致，不用别处回复�
     .getByRole("button", { name: /^查看(?:内容库|项目内容)$/, exact: true })
     .click();
   await page.locator(".artifact-card").filter({ hasText: title }).click();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(
     page.getByText("TEST 已读的第二条回复", { exact: true }),
   ).toBeVisible();
@@ -472,7 +477,7 @@ test("当前对象的提示与展开的局部交流一致，不用别处回复�
     },
   ]);
   await expect(badge(page)).toHaveCount(0);
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(
     page.getByText("TEST 别的工作的新回复", { exact: true }),
   ).toHaveCount(0);

@@ -139,6 +139,9 @@ test("长对话先读最近消息，旧消息按需加载且保持阅读位置",
   );
   earlierAccessRemoved = true;
   catalogBump++;
+  // This access change belongs to the synthetic response, not the real Host.
+  // Use its existing foreground reconciliation instead of inventing polling.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(
     conversation.locator('[data-message-id="history-000"]'),
   ).toHaveCount(0, { timeout: 12_000 });
