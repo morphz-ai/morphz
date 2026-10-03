@@ -543,9 +543,9 @@
   /* Keep the full button hit area above the reading-edge resize strip. */
   z-index: 6;
 }
-/* The 28px local tools share the 32px app buttons' optical centre, not edge. */
+/* Keep the smaller local tools on the app Dock's bottom edge. */
 .exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
-  padding-bottom: 10px;
+  padding-bottom: 8px;
 }
 .exchange-panel:has(> .conversation) > .exchange-controls-slot {
   top: 8px;

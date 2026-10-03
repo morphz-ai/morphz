@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-03 局部动作与中间应用 Dock 底边对齐试用
+
+按用户纠正，仅输入时右侧交流按钮与中间 Dock 的按钮底边对齐，不是移到输入底栏。
+生产样式只把输入态控件离输入卡片的间距从 10 改为 8 CSS px；中间 Dock 32px／14px、
+局部动作 28px／13px、透明材质、阅读展开时右上角与触控 44px 均保持，未改消息／输入衔接。
+对应两份回归改为真实按钮底边与双 8px 间距；原尺寸、材质、实际命中、无碰撞、稳定节点、
+零额外高度与草稿／零发送守门保留。
+
+默认 Chrome 通道因机器没有 Google Chrome 在启动时失败，不计业务 RED；使用既有缓存
+Chromium 与既有隔离配置后，旧生产准确复现 Expected 8／Received 10，证据
+`/tmp/morphz-dock-bottom-align-red-geometry`。修正后 build／typecheck 与两完整定向套件
+12/12 通过、零跳过，含宽窄、CSS 200%、粗指针、菜单／焦点与阅读伸缩，输出
+`/tmp/morphz-dock-bottom-align-green`；构建 `/tmp/morphz-dock-bottom-align-build.log`。
+Computer Use 正常刷新同一原 App 前端，实看仅输入效果及展开阅读后仍在右上角；
+通过可访问操作打开／收起记录，未把坐标点击当作本轮原生命中证明。截图
+`/tmp/morphz-dock-bottom-align-original-input.jpg`、
+`/tmp/morphz-dock-bottom-align-original-reading.jpg`。恢复原事项页、右栏与隐藏输入，
+未发送、改稿、改资料或重启 Runtime。
+
 ## 2026-10-03 应用入口与交流动作分层，聚焦尊重记录显隐
 
 按用户进一步确认，中间应用 Dock 保留原 32px 点击区、14px 图形和既有按钮材质；

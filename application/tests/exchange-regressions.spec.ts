@@ -228,15 +228,18 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   expect(p.height).toBeCloseTo(c.height, 0);
   // Measure the actual button group, not the slot's transparent hover bridge.
   expect(c.y - d.y - d.height).toBeCloseTo(8, 0);
-  expect(c.y - t.y - t.height).toBeCloseTo(10, 0);
-  expect(t.y + t.height / 2).toBeCloseTo(d.y + d.height / 2, 0);
-  const dockIcon = (await dockButtons
-    .locator("svg,img")
+  expect(c.y - t.y - t.height).toBeCloseTo(8, 0);
+  expect(t.y + t.height).toBeCloseTo(d.y + d.height, 0);
+  const dockButton = (await dockButtons
+    .locator("button:visible")
     .first()
     .boundingBox())!;
-  const toolIcon = (await tools.locator("button > svg").first().boundingBox())!;
-  expect(toolIcon.y + toolIcon.height / 2).toBeCloseTo(
-    dockIcon.y + dockIcon.height / 2,
+  const toolButton = (await tools
+    .locator(":scope > button:visible")
+    .first()
+    .boundingBox())!;
+  expect(toolButton.y + toolButton.height).toBeCloseTo(
+    dockButton.y + dockButton.height,
     0,
   );
   // Removing only the tool paint must not resize the input/frame.
@@ -284,21 +287,21 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
         ).toBeCloseTo(8, 0);
         expect(
           currentComposer.y - currentTools.y - currentTools.height,
-        ).toBeCloseTo(10, 0);
-        expect(currentTools.y + currentTools.height / 2).toBeCloseTo(
-          currentDock.y + currentDock.height / 2,
+        ).toBeCloseTo(8, 0);
+        expect(currentTools.y + currentTools.height).toBeCloseTo(
+          currentDock.y + currentDock.height,
           0,
         );
-        const currentDockIcon = (await dockButtons
-          .locator("svg,img")
+        const currentDockButton = (await dockButtons
+          .locator("button:visible")
           .first()
           .boundingBox())!;
-        const currentToolIcon = (await tools
-          .locator("button > svg")
+        const currentToolButton = (await tools
+          .locator(":scope > button:visible")
           .first()
           .boundingBox())!;
-        expect(currentToolIcon.y + currentToolIcon.height / 2).toBeCloseTo(
-          currentDockIcon.y + currentDockIcon.height / 2,
+        expect(currentToolButton.y + currentToolButton.height).toBeCloseTo(
+          currentDockButton.y + currentDockButton.height,
           0,
         );
       } else {

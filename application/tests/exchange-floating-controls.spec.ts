@@ -306,13 +306,9 @@ async function expectFloats(page: Page) {
         ).toBe(true);
       }
       if (!geometry.reading) {
-        const dockIcon = dockButtons[0]!.icon!;
-        expect(button.icon!.y + button.icon!.height / 2).toBeCloseTo(
-          dockIcon.y + dockIcon.height / 2,
-          0,
-        );
+        expect(button.bottom).toBeCloseTo(dockButtons[0]!.bottom, 0);
         expect(geometry.composer.y - button.bottom).toBeCloseTo(
-          (geometry.coarse ? 8 : 10) * geometry.zoom,
+          8 * geometry.zoom,
           0,
         );
       }
