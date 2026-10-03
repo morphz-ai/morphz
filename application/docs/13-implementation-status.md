@@ -1,5 +1,27 @@
 # 桌面能力实施记录
 
+## 2026-10-03 前端重构第二阶段：交流布局意图与焦点控制器
+
+`host/use-exchange-controller.ts` 集中交流显隐、固定、临时伸缩预览及待执行的
+输入／会话／发送后焦点意图。它投影原工作面与偏好，未建立第二份持久化状态。
+导航、草稿、发送协议、DOM 几何及查询仍由原 owner 管理；焦点 layout effects
+保留在原 canvas／trail 恢复之后、inspector 之前的执行位置。
+
+本阶段 App JSX、ref、key、键盘与草稿代码等价；原 350 个元素、12 个 ref、
+15 个 key 的结构核对不替代真实交互验证。原 CI 发现纯 Node 投影／依赖边界门禁，
+另有标准 Playwright 挂载生产 hook，验证跨工作面、陈旧请求、ABA 导航、StrictMode、
+发送锁及焦点顺序；不将可选浏览器跳过伪装成 unit 通过。
+
+当前 build 通过；相关 unit 56/56、交流／Dock／范围／动效浏览器回归 42/42、
+控制器挂载与原焦点回归 20/20 均零跳过／重试。证据
+`/tmp/morphz-launcher-controller-verification.E6kwq5` 与
+`/tmp/morphz-exchange-controller-focus.bf2mHX`。这版 bundle 同时包含独立图标与
+剧本修正，不能把那些视觉或业务改动称为本次等价重构。
+
+同一原 App 正常刷新后保留原对话，空输入聚焦、Launcher 打开及 Escape 关闭正常；
+未发送、改资料或重启 Runtime。此现场检查不等于所有范围的原窗实机验收。
+整体重构仍在进行，命令编排、查询与样式所有权等尚未完成。
+
 ## 2026-10-03 执行消息的悬停操作与正文活动捷径
 
 按用户反馈，气泡外“补充／执行状态”沿用原 footer，仅在消息悬停或键盘焦点

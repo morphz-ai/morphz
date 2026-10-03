@@ -139,9 +139,8 @@ import type { InputContinuation } from "../../../packages/core/src/continuation.
 import { RequestError } from "./application-transport.js";
 import type { BrowserView } from "./desktop.js";
 import { Notifications } from "./Notifications.js";
-import { afterSend, revealInput, type InteractionMode } from "./interaction.js";
+import type { InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
-import { useExchangeFocus } from "./useExchangeFocus.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
 import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
@@ -158,6 +157,10 @@ import {
   workSurfaceConversationId,
   type WorkSurfaceView,
 } from "./host/work-surface.js";
+import {
+  useExchangeController,
+  useExchangeControllerFocus,
+} from "./host/use-exchange-controller.js";
 import {
   acknowledgeReplies,
   conversationMessages,
@@ -553,8 +556,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     exchange = useRef<HTMLDivElement>(null),
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
-    file = useRef<HTMLInputElement>(null),
-    previousFocus = useRef<HTMLElement | null>(null);
+    file = useRef<HTMLInputElement>(null);
+  const navigationGeneration = useRef(0);
   const [importing, setImporting] = useState(false);
   const [compact, setCompact] = useState(
       () => matchMedia("(max-width:850px)").matches,
@@ -665,23 +668,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   useEffect(() => setQuoteReveal(null), [conversationId]);
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
-  const [exchangeResizePreview, setExchangeResizePreview] = useState<{
-    scope: string;
-    mode: "recent";
-  } | null>(null);
-  const interaction =
-    (exchangeResizePreview?.scope === exchangeKey
-      ? exchangeResizePreview.mode
-      : undefined) ??
-    prefs.interactions?.[exchangeKey] ??
-    "input";
-  const inputVisible = dialogueCanvas || interaction !== "hidden";
-  const conversationVisible =
-    dialogueCanvas ||
-    !!selectedConversation?.archivedAt ||
-    interaction === "recent" ||
-    interaction === "history";
-  const historyVisible = dialogueCanvas || interaction === "history";
   function recordContentVisit(id: string) {
     setRecentContentVisits((previous) => {
       const next = visitContent(previous, id);
@@ -693,12 +679,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       return next;
     });
   }
-  const inputPinned = !!prefs.pinnedInputs?.[exchangeKey];
-  const keepExchangeOpen = useExchangeFocus({
-    root: exchange,
-    scope: exchangeKey,
-    visible: inputVisible,
-    pinned: inputPinned,
+  const exchangeController = useExchangeController({
+    surface: workSurface,
+    preferences: prefs,
+    input,
+    exchange,
+    toggle,
+    navigationGeneration,
+    sending,
     suspended:
       dialogueCanvas ||
       !!speech ||
@@ -711,10 +699,27 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       nativeExportDialog ||
       directoryPickerScope === directoryScope ||
       !!uploadingDrafts[contextKey],
-    onLeave: () => setInteraction("hidden"),
+    prefer,
+    onShowInput: () => setMobileCollaboration(false),
   });
-  const latestInteraction = useRef(interaction);
-  latestInteraction.current = interaction;
+  const {
+    interaction,
+    inputVisible,
+    conversationVisible,
+    historyVisible,
+    inputPinned,
+    keepExchangeOpen,
+    clearResizePreview,
+    setInteraction,
+    showInput,
+    hideInput,
+    requestConversationFocus,
+    requestSentInputFocus,
+    showSentInput,
+    toggleInputPin,
+    resize: exchangeResize,
+    sentInputFocusPending,
+  } = exchangeController;
   const positions = useRef(new Map<string, number>());
   const exchangePositions = useRef(new Map<string, ExchangePosition>());
   const [revealedInputs, setRevealedInputs] = useState<Record<string, string>>(
@@ -918,60 +923,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [trailVersion, placeKey]);
-  const navigationGeneration = useRef(0);
-  const requestedComposerFocus = useRef<number | null>(null);
-  useLayoutEffect(() => {
-    const generation = requestedComposerFocus.current;
-    if (generation === null) return;
-    requestedComposerFocus.current = null;
-    // Guest IPC can reach an animation frame before React mounts the revealed
-    // input. Honor the explicit request after commit, never on newer navigation.
-    if (
-      generation === navigationGeneration.current &&
-      inputVisible &&
-      input.current
-    ) {
-      keepExchangeOpen();
-      input.current.focus({ preventScroll: true });
-    }
-  });
-  const requestedConversationFocus = useRef<{
-    id: string;
-    generation: number;
-  } | null>(null);
-  useLayoutEffect(() => {
-    const request = requestedConversationFocus.current;
-    if (!request) return;
-    if (request.generation !== navigationGeneration.current) {
-      requestedConversationFocus.current = null;
-      return;
-    }
-    if (request.id === conversationId && inputVisible && input.current) {
-      requestedConversationFocus.current = null;
-      keepExchangeOpen();
-      input.current.focus();
-    }
-    // Reusing the current draft keeps its IDs unchanged. Honor a fresh request
-    // on that render as well, rather than waiting for navigation to change.
-  });
-  const sentInputFocus = useRef<{
-    key: string;
-    generation: number;
-  } | null>(null);
-  useLayoutEffect(() => {
-    const request = sentInputFocus.current;
-    if (!request || sending) return;
-    sentInputFocus.current = null;
-    if (
-      request.key === contextKey &&
-      request.generation === navigationGeneration.current &&
-      inputVisible &&
-      input.current
-    ) {
-      keepExchangeOpen();
-      input.current.focus();
-    }
-  }, [sending, contextKey, inputVisible]);
+  useExchangeControllerFocus(exchangeController);
   useEffect(() => {
     // Do not retain a hidden recorder that could restart when returning here.
     setSpeech((current) =>
@@ -1074,7 +1026,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setUnderstandingOpen(false);
       setRestoredPlace(null);
       setOpeningObject(false);
-      setExchangeResizePreview(null);
+      clearResizePreview();
     }
     setPrefs((previous) => {
       const next = {
@@ -1135,15 +1087,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       }
       return next;
     });
-  }
-  function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
-    setExchangeResizePreview(null);
-    if (id)
-      prefer({
-        interactions: {
-          [id === navigationProject?.id ? exchangeKey : id]: mode,
-        },
-      });
   }
   function setDraft(key: string, value: InputDraft) {
     if (key === currentContext.current && value.body !== drafts[key]?.body)
@@ -1238,7 +1181,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     );
     if (generation !== undefined) {
       if (navigationGeneration.current !== generation) return;
-      requestedConversationFocus.current = { id: conversationId, generation };
+      requestConversationFocus(conversationId, generation);
       keepExchangeOpen();
       setInteraction("recent");
     }
@@ -1584,10 +1527,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     });
     if (focus) {
       keepExchangeOpen();
-      requestedConversationFocus.current = {
-        id,
-        generation: navigationGeneration.current,
-      };
+      requestConversationFocus(id, navigationGeneration.current);
     }
   }
   async function createProjectConversation(workspaceId: string, title: string) {
@@ -1688,13 +1628,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       sharedDefault ? (personalSpace("dialogue")?.id ?? id) : id,
     );
   }
-  function showInput() {
-    keepExchangeOpen();
-    setMobileCollaboration(false);
-    previousFocus.current = document.activeElement as HTMLElement;
-    requestedComposerFocus.current = navigationGeneration.current;
-    setInteraction(revealInput(interaction));
-  }
   function composeIntent(intent: InputIntent) {
     if (
       intent === "script" &&
@@ -1757,34 +1690,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       });
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "浏览器未能打开。");
-    }
-  }
-  function hideInput() {
-    if (dialogueCanvas) {
-      input.current?.blur();
-      return;
-    }
-    setInteraction("hidden");
-    if (document.activeElement?.closest("#global-composer")) {
-      const origin = document.activeElement;
-      const restore = previousFocus.current;
-      const generation = navigationGeneration.current;
-      requestAnimationFrame(() => {
-        // A newer keyboard focus or reopen must win over this delayed hide.
-        // Otherwise Enter can land in the guest instead of the reopen button.
-        if (generation !== navigationGeneration.current || input.current)
-          return;
-        const active = document.activeElement;
-        if (
-          active &&
-          active !== document.body &&
-          active !== origin &&
-          active.isConnected
-        )
-          return;
-        if (restore?.isConnected) restore.focus();
-        else toggle.current?.focus();
-      });
     }
   }
   function closeSpeech() {
@@ -1909,12 +1814,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setRevealedInputs((old) => ({ ...old, [conversationId]: inputId }));
       if (currentContext.current === key) {
         setMobileCollaboration(false);
-        setInteraction(afterSend(latestInteraction.current));
-        if (latestInteraction.current !== "hidden")
-          sentInputFocus.current = {
-            key,
-            generation: navigationGeneration.current,
-          };
+        showSentInput(key);
       }
       // Only preparation locks the editor. Delivery owns its immutable payload;
       // later receipts must never erase or disable the next draft.
@@ -2114,20 +2014,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       if (!staged && currentContext.current === key) {
         if (asAnnotation) {
           openCollaboration();
-          if (latestInteraction.current !== "hidden")
-            sentInputFocus.current = {
-              key,
-              generation: navigationGeneration.current,
-            };
+          requestSentInputFocus(key);
         } else if (captured.continuation || !captured.taskResult) {
           setMobileCollaboration(false);
-          setInteraction(afterSend(latestInteraction.current));
-          if (latestInteraction.current !== "hidden")
-            // Focus only after React removes the sending-disabled state.
-            sentInputFocus.current = {
-              key,
-              generation: navigationGeneration.current,
-            };
+          // Focus only after React removes the sending-disabled state.
+          showSentInput(key);
         }
       }
     } catch (e) {
@@ -3195,13 +3086,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       pinned={inputPinned}
                       unread={!conversationVisible && unseenReply}
                       onInteraction={setInteraction}
-                      onPin={() => {
-                        keepExchangeOpen();
-                        if (inputPinned) input.current?.focus();
-                        prefer({
-                          pinnedInputs: { [exchangeKey]: !inputPinned },
-                        });
-                      }}
+                      onPin={toggleInputPin}
                       onHide={hideInput}
                     />
                   ) : undefined
@@ -3211,30 +3096,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   inputVisible &&
                   projectStatus(project) === "active" &&
                   !selectedConversation?.archivedAt
-                    ? {
-                        scope: exchangeKey,
-                        mode: interaction,
-                        height: prefs.exchangeHeights?.[exchangeKey],
-                        onStart: keepExchangeOpen,
-                        onPreview: (mode) =>
-                          setExchangeResizePreview((previous) =>
-                            mode
-                              ? { scope: exchangeKey, mode }
-                              : previous?.scope === exchangeKey
-                                ? null
-                                : previous,
-                          ),
-                        onCommit: ({ mode, height }) => {
-                          keepExchangeOpen();
-                          setExchangeResizePreview(null);
-                          prefer({
-                            interactions: { [exchangeKey]: mode },
-                            ...(mode === "recent"
-                              ? { exchangeHeights: { [exchangeKey]: height } }
-                              : {}),
-                          });
-                        },
-                      }
+                    ? exchangeResize
                     : undefined
                 }
               >
@@ -4162,7 +4024,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             context={contextTitle}
             resizeLabel="调整批注栏宽度"
             // Showing a saved annotation must not steal focus from continued input.
-            focusOnMount={!sentInputFocus.current}
+            focusOnMount={!sentInputFocusPending}
             layout={rightInspector}
             onResize={resizeInspector}
             onClose={closeInspector}
