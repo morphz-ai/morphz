@@ -432,6 +432,7 @@ test("并发等待各自归属，补充送达不冒充新回复，结束线程�
   f.threads[0]!.kind = "execution";
   await f.update();
   await expect(supplement).toHaveAttribute("title", "给这项后台工作追加要求");
+  await page.locator('[data-message-id="waiting-a"]').hover();
   await supplement.click();
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
     "TEST 首字反馈 1",

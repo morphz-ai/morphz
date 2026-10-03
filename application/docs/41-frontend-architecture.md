@@ -2,15 +2,18 @@
 
 日期：2026-10-03 · 版本：0.2 · 状态：分阶段实施中，整体迁移尚未完成。
 
+阶段清单更新：2026-10-04。
+
 目标：明确共享宿主、状态、数据、组件及样式所有权，减少页面独立复制同类逻辑。保留已有共享设施、数据与授权；不推倒 Runtime／Platform，不为状态展示增加 LLM 请求，不另做 Desktop 前端。本工程设计独立于已撤回的视觉探索，不采纳其数值或审美规则。下文保留完整目标，具体生产实现及验证分别记录，不能据此宣称整体架构已迁移完成。
 
 ### 已落地的边界
 
-| 阶段                 | 生产 owner 与消费方                                                                   | 工程约束与范围                                                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值               | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。 |
-| 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                       | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。        |
-| 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts` | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。      |
+| 阶段                 | 生产 owner 与消费方                                                                      | 工程约束与范围                                                                                                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                  | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                   |
+| 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                          | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                          |
+| 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费 | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。 |
+| 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`    | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                        |
 
 交流伸缩的首段样式 owner 也已迁入 `exchange-layout.css`，原 23 项几何与 9 项绘制声明保持；`exchange-css-ownership.test.ts` 治理唯一入口与已知竞争规则，非全产品 CSS 门禁。该阶段的原 App 原生命中复验仍待系统解锁。
 
@@ -51,7 +54,7 @@
 
 Shell 负责组合和几何，feature 负责领域内容。共享业务权威仍在 Platform，执行权威仍在 Runtime；renderer 只持有有范围的读取投影与 UI 状态。
 
-可浏览职责图见[前端架构图](./design/2026-10-03-design-system/frontend-architecture.html)。该图表示目标职责和依赖，不表示代码已按图拆完。
+上表是本工程的目标职责和依赖，不依赖已撤回视觉探索中的原型图，也不表示代码已按层拆完。具体已迁移 owner 以阶段清单和生产入口为准。
 
 ### 2.1 建议目录（逐批迁移，不预建空骨架）
 

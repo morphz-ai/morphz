@@ -1,6 +1,7 @@
 import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import type { TaskRuntime } from "../../../packages/core/src/task-runtime.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
+import { isPendingResponse } from "./conversation-presentation.js";
 
 export type SubjectView = "activity" | "permissions" | "schedules" | "settings";
 
@@ -77,14 +78,16 @@ export function subjectLogoState(
   const pending = runtime.configured
     ? runtime.deliveries.filter(
         (delivery) =>
-          !delivery.error &&
-          !delivery.supplement &&
           !delivery.cancelRequested &&
-          ["queued", "sending", "running"].includes(delivery.state) &&
-          !answered.has(delivery.inputId) &&
-          !runtime.attention?.approvals.some(
-            (approval) => approval.scope.inputId === delivery.inputId,
-          ),
+          isPendingResponse({
+            configured: runtime.configured,
+            delivery,
+            answered: answered.has(delivery.inputId),
+            approvalPending:
+              runtime.attention?.approvals.some(
+                (approval) => approval.scope.inputId === delivery.inputId,
+              ) ?? false,
+          }),
       )
     : [];
   const processing = pending.some((delivery) => delivery.state === "running");

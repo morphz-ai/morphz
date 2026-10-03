@@ -56,7 +56,10 @@ import { scriptKindLabels } from "../../../packages/core/src/script-studio.js";
 import type { WorkspaceClient } from "./client.js";
 import { ObjectIcon } from "./ArtifactEditor.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
-import { conversationDate } from "./conversation-presentation.js";
+import {
+  conversationDate,
+  isPendingResponse,
+} from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { executionPresentation } from "./execution-presentation.js";
 import { executionActivityStatus } from "./execution-activity.js";
@@ -309,17 +312,21 @@ export function Conversation({
       if (
         !runtime.configured ||
         !delivery ||
-        delivery.supplement ||
-        delivery.error ||
-        !["queued", "sending", "running"].includes(delivery.state) ||
-        group.messages.some(
-          (m) => (m.kind === "reply" || m.kind === "error") && m.text.trim(),
-        ) ||
-        outputs.some((o) => o.inputId === group.inputId) ||
-        scriptOutputs.some((o) => o.inputId === group.inputId) ||
-        runtime.attention?.approvals.some(
-          (a) => a.scope.inputId === group.inputId,
-        )
+        !isPendingResponse({
+          configured: runtime.configured,
+          delivery,
+          answered:
+            group.messages.some(
+              (m) =>
+                (m.kind === "reply" || m.kind === "error") && m.text.trim(),
+            ) ||
+            outputs.some((o) => o.inputId === group.inputId) ||
+            scriptOutputs.some((o) => o.inputId === group.inputId),
+          approvalPending:
+            runtime.attention?.approvals.some(
+              (a) => a.scope.inputId === group.inputId,
+            ) ?? false,
+        })
       )
         return [];
       const connected = client.online && runtime.connected;

@@ -1,5 +1,5 @@
 import { expect, type Page } from "@playwright/test";
-import { openInput, openExecutionPanel } from "./interaction-helpers.js";
+import { openInput, openExchangeReading } from "./interaction-helpers.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
@@ -340,14 +340,13 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   await page.route("**/api/executions?*", (route) =>
     route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
   );
-  await openExecutionPanel(page);
-  await page
-    .locator(".execution-work-row")
-    .filter({ hasText: "并发工作 A" })
-    .click();
-  const first = page
-    .getByRole("complementary", { name: "执行面板" })
-    .locator(".response-controls");
+  // This fixture has deliveries, not Runtime Threads. Stop the actual input
+  // from its message; the activity panel must not synthesize a work row for it.
+  const source = page.locator(`[data-message-id="${ids.get("并发工作 A")}"]`);
+  await source.hover();
+  const first = page.locator(
+    `[data-response-input-id="${ids.get("并发工作 A")}"]`,
+  );
   const calls: string[] = [];
   let release: (() => void) | undefined;
   let fail = true;
@@ -425,7 +424,7 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(
     page.getByRole("complementary", { name: "执行面板" }),
   ).toHaveCount(0);
