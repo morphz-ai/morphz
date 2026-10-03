@@ -5,7 +5,7 @@ import {
   mockPlatformConversation,
   test,
 } from "./platform-conversation-fixture.js";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, settleTransitions } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
 async function prepare(page: Page, { withQuote = false } = {}) {
@@ -204,23 +204,6 @@ async function appearance(button: Locator) {
       height: rect.height,
       borderWidth: style.borderWidth,
     };
-  });
-}
-
-async function settleTransitions(page: Page) {
-  // Appearance controls may start a short material transition. Measure the
-  // requested palette after that real transition, not a white/black midpoint.
-  // Do not wait on persistent execution/progress animations.
-  await page.evaluate(async () => {
-    await new Promise<void>((done) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => done())),
-    );
-    await Promise.all(
-      document
-        .getAnimations()
-        .filter((animation) => animation instanceof CSSTransition)
-        .map((animation) => animation.finished.catch(() => undefined)),
-    );
   });
 }
 

@@ -5,7 +5,7 @@ import {
   mockPlatformConversation,
   test,
 } from "./platform-conversation-fixture.js";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, settleTransitions } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
 async function prepare(page: Page) {
@@ -198,6 +198,7 @@ test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下�
         .click();
       await settings.getByRole("button", { name: accent, exact: true }).click();
       await page.keyboard.press("Escape");
+      await settleTransitions(page);
       for (const button of [status, supplement]) {
         await button.evaluate((element) => (element as HTMLElement).blur());
         await page.mouse.move(0, 0);

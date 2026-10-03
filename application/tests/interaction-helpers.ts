@@ -1,5 +1,21 @@
 import { expect, type Page } from "@playwright/test";
 
+/** Measure the requested palette after finite transitions, not its midpoint. */
+export async function settleTransitions(page: Page) {
+  // Do not wait on persistent execution/progress animations.
+  await page.evaluate(async () => {
+    await new Promise<void>((done) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => done())),
+    );
+    await Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation instanceof CSSTransition)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    );
+  });
+}
+
 /** The shell toggle controls visibility; the subject tab chooses activity. */
 export async function openExecutionPanel(page: Page) {
   if (!(await page.locator(".workspace-inspector").isVisible()))
