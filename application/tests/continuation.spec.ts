@@ -1,5 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
+import {
+  inspectExchangeWork,
+  supplementExchangeWork,
+} from "./exchange-action-helpers.js";
+
+const source = { inputId: "continuation-fixture-0", body: "报告 A" };
 
 async function setup(page: Page) {
   let principalId = "local-owner";
@@ -139,23 +145,23 @@ async function setup(page: Page) {
 
 test("查看不改目标，显式选择才补充；Dock/普通发送不变，多项工作不串线", async ({
   page,
-}) => {
+}, info) => {
   const f = await setup(page);
   await f.composer.fill("保留这份草稿");
-  await f.source.getByRole("button", { name: "后台执行中" }).click();
+  const activity = await inspectExchangeWork(page, f.source, {
+    ...source,
+    threadId: "thread-continuation-fixture-0",
+  });
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(f.composer).toHaveValue("保留这份草稿");
-  await page
-    .getByRole("complementary", { name: "执行面板" })
-    .getByRole("button", { name: "补充要求", exact: true })
-    .click();
+  await activity.getByRole("button", { name: "补充要求", exact: true }).click();
   const target = page.getByRole("group", { name: "补充目标" });
   await expect(target).toContainText("报告 A");
   await expect(f.composer).toBeFocused();
   await expect(f.composer).toHaveValue("保留这份草稿");
   await target.getByRole("button", { name: "取消补充，改为普通输入" }).click();
   await expect(f.composer).toHaveValue("保留这份草稿");
-  await f.source.getByRole("button", { name: "补充要求", exact: true }).click();
+  await supplementExchangeWork(page, f.source, source);
   await f.composer.fill("改用人民币汇总，资料 B 不变");
   for (const width of [1440, 760, 390]) {
     await page.setViewportSize({ width, height: 960 });
@@ -167,7 +173,7 @@ test("查看不改目标，显式选择才补充；Dock/普通发送不变，多
     ).toBeTruthy();
   }
   await page.setViewportSize({ width: 1440, height: 960 });
-  await page.screenshot({ path: "test-results/continuation-target.png" });
+  await page.screenshot({ path: info.outputPath("continuation-target.png") });
   await page.getByRole("button", { name: "发送补充", exact: true }).click();
   await expect(f.composer).toHaveValue("");
   await expect(target).toHaveCount(0);
@@ -188,7 +194,7 @@ test("已结束：保留草稿和目标，刷新不丢失，只有明确继续�
 }) => {
   const f = await setup(page);
   f.fail("closed");
-  await f.source.getByRole("button", { name: "补充要求", exact: true }).click();
+  await supplementExchangeWork(page, f.source, source);
   await f.composer.fill("增加风险总结");
   await page.getByRole("button", { name: "发送补充", exact: true }).click();
   await expect(
@@ -216,7 +222,7 @@ test("未知回执冻结同份投递，刷新后只核对原命令，不重发�
 }) => {
   const f = await setup(page);
   f.fail("unknown");
-  await f.source.getByRole("button", { name: "补充要求", exact: true }).click();
+  await supplementExchangeWork(page, f.source, source);
   await f.composer.fill("仅补充 A");
   await page.getByRole("button", { name: "发送补充", exact: true }).click();
   await expect(

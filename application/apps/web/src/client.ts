@@ -46,6 +46,7 @@ import {
   withoutSavedInputs,
   inputSubmissionSchema,
   newInputOperation,
+  matchSavedInputOperation,
   savedInputOperation,
   type LocalSavedInput,
 } from "./local-saved-inputs.js";
@@ -2242,14 +2243,9 @@ export function useWorkspace() {
         localStorage,
         savedInputScope(identity),
       ).find((input) => input.commandId === commandId);
-      const parsed = operationSchema.parse(
-        existing ? operation : newInputOperation(operation),
-      );
-      if (
-        existing &&
-        JSON.stringify(existing.operation) !== JSON.stringify(parsed)
-      )
-        throw new Error("这条消息已保存，请从原消息重试；新草稿未发送。");
+      const parsed = existing
+        ? matchSavedInputOperation(operation, existing.operation)
+        : operationSchema.parse(newInputOperation(operation));
       const entry: LocalSavedInput = existing ?? {
         commandId,
         createdAt: new Date().toISOString(),

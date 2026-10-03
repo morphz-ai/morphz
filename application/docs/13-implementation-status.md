@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-04 未知补充回执：刷新重试沿用原命令
+
+恢复当前真实补充入口后，旧完整回归继续暴露一个生产问题：Client 首发保存的
+operation 补入 `dispatchMode: parallel`，补充编辑器保留的 pending operation
+却省略该字段。刷新后双方精确比较失败，原命令未被核对，草稿仍冻结。
+原红记录及两份本机存储诊断保留，不将它归成旧按钮定位错误。
+
+`local-saved-inputs.ts` 的 `matchSavedInputOperation` 只认可双方均为 supplement、
+候选省略 dispatchMode、已保存值为 parallel 的这一处差异；严格 schema 后
+仍比较全部字段，相等才返回原 saved operation。Client 沿原身份范围与
+commandId 找原 entry，原发送函数、首发默认、权限检查、重试 ID 和冻结载荷
+不改。显式不同 mode、正文、来源、模型、授权或代次变化仍拒绝；普通及旧无
+mode 记录不获得新默认。matcher 不写存储，原发送流程仍正常更新 submission
+状态，不能将此描述为整个 outbox 从此不变。
+
+三项新增单元测试含实际保存／刷新与 14 个 schema 合法的字段变化负例。
+相关 62 项 Node 回归通过；全量 Node 1471 项中 1308 通过、163 条现有可选
+集成跳过、零失败。独立只读字段挑战和原发送函数字节对照未发现阻断。
+原五项查看／补充／已结束／未知回执／Session 权限测试在实际新 bundle
+完整 5/5 通过、零跳过／重试；未知回执原 requests 数量、同 command 与整份
+request deepEqual 断言保留。活动查看改走确切消息卡片，补充先真实 hover，
+不强制点击隐藏按钮或伪造旧执行面板。
+
+最终 typecheck／build／受影响格式及空白检查通过；实际 HTML 和 JS／CSS
+响应核对为 `app-DhicvD4e.js`，SHA256
+`7b791f63d9874f81387025db8360e363e264917cdf500d243dc2194a9cd56492`；
+CSS 仍 `app-Bl-K6QYD.css`，原摘要不变。独立验证见
+`/tmp/morphz-exchange-entry-fixed.uD1K8c/REVIEW.md`；根线程原输出见
+`/tmp/morphz-existing-regression-contracts.5Ne96P`。这是实际生产 renderer 配合
+受控回执的回归，不是付费模型、原 Mac 窗口或整个前端目标完成证明。
+
 ## 2026-10-04 前端重构第八阶段：发送协议与共享顶栏
 
 `host/submit-exchange-draft.ts` 实际接管原阅读／目录／选区／附件检查及四个

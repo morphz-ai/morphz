@@ -30,6 +30,27 @@ export function savedInputOperation(operation: InputOperation): InputOperation {
         : (operation.dispatchMode ?? "parallel"),
   };
 }
+
+/** The supplement editor retains its pre-freeze operation.
+ * Recognize only its omitted parallel marker, then compare every parsed field.
+ * The saved outbox remains authoritative: no bytes or retry ID are rewritten,
+ * and a differing explicit mode or changed source/payload is still rejected. */
+export function matchSavedInputOperation(
+  candidate: InputOperation,
+  saved: InputOperation,
+): InputOperation {
+  const parsed = operationSchema.parse(
+    candidate.continuation?.mode === "supplement" &&
+      saved.continuation?.mode === "supplement" &&
+      candidate.dispatchMode === undefined &&
+      saved.dispatchMode === "parallel"
+      ? { ...candidate, dispatchMode: saved.dispatchMode }
+      : candidate,
+  );
+  if (JSON.stringify(saved) !== JSON.stringify(parsed))
+    throw new Error("这条消息已保存，请从原消息重试；新草稿未发送。");
+  return saved;
+}
 export const inputSubmissionSchema = z.object({
   state: z.enum(["sending", "accepted", "failed"]),
   error: z.string().optional(),
