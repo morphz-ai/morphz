@@ -6,6 +6,7 @@ import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
   SyntaxKind,
+  isArrowFunction,
   isBindingElement,
   isCallExpression,
   isFunctionDeclaration,
@@ -37,7 +38,10 @@ import {
 // Finite consumption contract, not arbitrary JS purity, React scheduling or
 // visual/OS hit-test proof. cb7246a2 canonical hashes below were computed from
 // the fixed original App/Host, not the migrated implementation. CI needs no git
-// history. Only the two approved App→Host prop replacements are normalized;
+// history. The App→Host prop replacements and Stage13's six exact inspector
+// event ports are normalized; the latter use the independently fixed Git85
+// callbacks. The four state registrations/one commit expand the actual owner
+// at their real import-bound calls, retaining the original hook/effect hashes.
 // literal trees, callbacks, keys/refs/hidden/portals and hook arguments remain.
 // A future deliberate UI/lifecycle change must explicitly review this baseline.
 const baseline = {
@@ -176,7 +180,12 @@ function parse(contents: Record<string, string>) {
     api.close();
   }
 }
-function syntax(node: Node, normalizeAppHost = false): unknown {
+function syntax(
+  node: Node,
+  normalizeAppHost = false,
+  subjectAttributes?: Map<Node, unknown>,
+): unknown {
+  if (subjectAttributes?.has(node)) return subjectAttributes.get(node);
   if (
     normalizeAppHost &&
     isJsxAttribute(node) &&
@@ -194,7 +203,7 @@ function syntax(node: Node, normalizeAppHost = false): unknown {
   }
   const children: unknown[] = [];
   node.forEachChild((child) => {
-    const value = syntax(child, normalizeAppHost);
+    const value = syntax(child, normalizeAppHost, subjectAttributes);
     if (value !== undefined) children.push(value);
   });
   return [node.kind, children.length ? children : node.getText()];
@@ -246,7 +255,7 @@ function oneVariable(parsed: Parsed, name: string) {
   assert.equal(found.length, 1, `one ${name} variable`);
   return found[0]!;
 }
-function structure(parsed: Parsed, normalizeAppHost: boolean) {
+function reactHooks(parsed: Parsed) {
   const hooks = new Map<number | undefined, string>();
   for (const node of parsed.nodes.filter(isImportDeclaration)) {
     if (
@@ -294,22 +303,35 @@ function structure(parsed: Parsed, normalizeAppHost: boolean) {
       }
     }
   }
-  const calls = parsed.nodes
-    .filter(isCallExpression)
-    .filter(
-      (node) =>
-        isIdentifier(node.expression) &&
-        hooks.has(parsed.symbols.get(node.expression)),
-    );
-  const hook = (node: CallExpression) => [
-    hooks.get(parsed.symbols.get(node.expression)),
+  return hooks;
+}
+type SubjectContract = {
+  attributes: Map<Node, unknown>;
+  expanded: Map<Node, { node: CallExpression; name: string }[]>;
+};
+function structure(
+  parsed: Parsed,
+  normalizeAppHost: boolean,
+  subject?: SubjectContract,
+) {
+  const hooks = reactHooks(parsed);
+  const calls = parsed.nodes.filter(isCallExpression).flatMap((node) => {
+    const expanded = subject?.expanded.get(node);
+    if (expanded) return expanded;
+    if (
+      isIdentifier(node.expression) &&
+      hooks.has(parsed.symbols.get(node.expression))
+    )
+      return [{ node, name: hooks.get(parsed.symbols.get(node.expression))! }];
+    return [];
+  });
+  const hook = ({ node, name }: (typeof calls)[number]) => [
+    name,
     [...(node.typeArguments ?? [])].map((node) => syntax(node)),
     [...node.arguments].map((node) => syntax(node)),
   ];
-  const effects = calls.filter((node) =>
-    ["useEffect", "useLayoutEffect"].includes(
-      hooks.get(parsed.symbols.get(node.expression))!,
-    ),
+  const effects = calls.filter(({ name }) =>
+    ["useEffect", "useLayoutEffect"].includes(name),
   );
   const jsxNodes = parsed.nodes.filter(jsx);
   const roots = jsxNodes.filter((node) => {
@@ -320,19 +342,253 @@ function structure(parsed: Parsed, normalizeAppHost: boolean) {
   return {
     jsxNodes: jsxNodes.length,
     jsxRoots: roots.length,
-    jsx: digest(roots.map((node) => syntax(node, normalizeAppHost))),
+    jsx: digest(
+      roots.map((node) => syntax(node, normalizeAppHost, subject?.attributes)),
+    ),
     effectsCount: effects.length,
     effects: digest(effects.map(hook)),
     hooksCount: calls.length,
     hooks: digest(calls.map(hook)),
   };
 }
-function consumption(appText: string, hostText: string, ownerText: string) {
+const subjectPath = "./host/use-subject-inspector.js";
+const subjectAdapterText = `
+const commitArguments = {contextKey, executions, understandingOpen, collaborationVisible};
+const originalAllWork = setAllActivity;
+const originalExecution = setExecutions;
+`;
+function bindingVariable(parsed: Parsed, name: string) {
+  const found = parsed.nodes.filter(isVariableDeclaration).filter((node) => {
+    let matched = false;
+    walk(node.name, (child) => {
+      if (isIdentifier(child) && child.text === name) matched = true;
+    });
+    return matched;
+  });
+  assert.equal(found.length, 1, `one ${name} registration seam`);
+  return found[0]!;
+}
+function subjectContract(
+  app: Parsed,
+  subject: Parsed,
+  fixed: Parsed,
+  adapter: Parsed,
+): SubjectContract {
+  const expanded: SubjectContract["expanded"] = new Map(),
+    attributes = new Map<Node, unknown>(),
+    ownerHooks = reactHooks(subject),
+    registered = new Set<Node>();
+  for (const [name, local, before, after, primitives] of [
+    [
+      "useSubjectActivityState",
+      "subjectActivity",
+      "notificationsOpen",
+      "unreadNotifications",
+      ["useState"],
+    ],
+    [
+      "useSubjectInspectionState",
+      "subjectInspection",
+      "capture",
+      "searchOpen",
+      ["useState", "useState"],
+    ],
+    [
+      "useSubjectCollaborationState",
+      "subjectCollaboration",
+      "compact",
+      "personalSpace",
+      ["useState"],
+    ],
+    [
+      "useSubjectInspectorMemory",
+      "inspectorSelections",
+      "inspectorOpen",
+      "resizeInspector",
+      ["useRef"],
+    ],
+    ["useSubjectInspectorCommit", null, null, null, ["useLayoutEffect"]],
+  ] as const) {
+    const symbol = imported(app, subjectPath, name);
+    const uses = app.identifiers.filter(
+      (node) => app.symbols.get(node) === symbol,
+    );
+    const calls = uses.filter(
+      (node) =>
+        isCallExpression(node.parent) && node.parent.expression === node,
+    );
+    assert.equal(uses.length, 2, `${name}: import plus one direct call only`);
+    assert.equal(calls.length, 1, `${name}: one actual registration`);
+    const call = calls[0]!.parent;
+    assert.ok(isCallExpression(call));
+    assert.equal(call.typeArguments?.length ?? 0, 0);
+    if (local) {
+      assert.equal(oneVariable(app, local).initializer, call);
+      assert.equal(call.arguments.length, 0);
+      assert.ok(bindingVariable(app, before).end < call.pos);
+      assert.ok(call.end < bindingVariable(app, after).pos);
+    } else {
+      assert.equal(call.parent.kind, SyntaxKind.ExpressionStatement);
+      assert.equal(call.arguments.length, 2);
+      assert.equal(call.arguments[0]!.getText(), "inspectorSelections");
+      assert.deepEqual(
+        syntax(call.arguments[1]!),
+        syntax(oneVariable(adapter, "commitArguments").initializer!),
+      );
+    }
+    const body = oneFunction(subject, name).body;
+    assert.ok(body);
+    const hookCalls: { node: CallExpression; name: string }[] = [];
+    walk(body, (node) => {
+      if (!isCallExpression(node) || !isIdentifier(node.expression)) return;
+      const hookName = ownerHooks.get(subject.symbols.get(node.expression));
+      if (hookName) {
+        registered.add(node);
+        hookCalls.push({ node, name: hookName });
+      } else
+        assert.doesNotMatch(
+          node.expression.text,
+          /^use[A-Z]/,
+          "no hidden hook bridge",
+        );
+    });
+    assert.deepEqual(
+      hookCalls.map(({ name }) => name),
+      primitives,
+    );
+    expanded.set(call, hookCalls);
+  }
+  const allOwnerHooks = subject.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        ownerHooks.has(subject.symbols.get(node.expression)),
+    );
+  assert.equal(
+    allOwnerHooks.length,
+    registered.size,
+    "no extra owner lifecycle outside original registrations",
+  );
+
+  const factory = imported(app, subjectPath, "createSubjectInspectorCommands");
+  const commandCalls = app.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        app.symbols.get(node.expression) === factory,
+    );
+  assert.equal(commandCalls.length, 1, "one actual subject command factory");
+  const declaration = oneVariable(app, "subjectInspector");
+  assert.equal(declaration.initializer, commandCalls[0]);
+  const commands = app.symbols.get(declaration.name);
+  assert.ok(commands !== undefined);
+  for (const [tag, path, attr, member, original] of [
+    [
+      "WorkspaceTopbar",
+      "./shell/WorkspaceTopbar.js",
+      "onToggleCollaboration",
+      "toggleCollaboration",
+      "toggleCollaboration",
+    ],
+    ["SubjectSidebar", "./SubjectSidebar.js", "onBack", "back", "onBack"],
+    [
+      "SubjectSidebar",
+      "./SubjectSidebar.js",
+      "onInspect",
+      "selectScope",
+      "onInspect",
+    ],
+    [
+      "ExecutionSidebar",
+      "./ExecutionSidebar.js",
+      "onAllWorkChange",
+      "setAllActivity",
+      "originalAllWork",
+    ],
+    [
+      "ExecutionSidebar",
+      "./ExecutionSidebar.js",
+      "onSelect",
+      "selectExecution",
+      "originalExecution",
+    ],
+    [
+      "SubjectObjectives",
+      "./SubjectObjectives.js",
+      "onSelect",
+      "selectExecution",
+      "originalExecution",
+    ],
+  ]) {
+    const component = imported(app, path!, tag!);
+    const ports = app.nodes.filter(isJsxAttribute).filter((node) => {
+      const opening = node.parent.parent;
+      return (
+        node.name.getText() === attr &&
+        (isJsxOpeningElement(opening) || isJsxSelfClosingElement(opening)) &&
+        isIdentifier(opening.tagName) &&
+        app.symbols.get(opening.tagName) === component
+      );
+    });
+    assert.equal(ports.length, 1, `${tag}.${attr}: one original consumer port`);
+    const port = ports[0]!,
+      value = port.initializer;
+    assert.ok(value && isJsxExpression(value) && value.expression);
+    const expression = value.expression;
+    assert.ok(
+      isPropertyAccessExpression(expression) &&
+        isIdentifier(expression.expression),
+    );
+    assert.equal(app.symbols.get(expression.expression), commands);
+    assert.equal(expression.name.text, member);
+    const originalNode = oneVariable(
+      original!.startsWith("original") ? adapter : fixed,
+      original!,
+    ).initializer!;
+    let originalTree = syntax(originalNode);
+    if (original === "onInspect") {
+      // The fixed fixture adds a type solely for its extracted binding. Git85's
+      // JSX callback is `(scope) => { ... }`; its exact original body is reused.
+      assert.ok(isArrowFunction(originalNode));
+      assert.equal(originalNode.parameters.length, 1);
+      const parameter = originalNode.parameters[0]!;
+      assert.equal(parameter.name.getText(), "scope");
+      assert.equal(parameter.type?.getText(), "ExecutionScope");
+      const children: unknown[] = [];
+      originalNode.forEachChild((child) => {
+        if (child === parameter) {
+          const binding: unknown[] = [];
+          child.forEachChild((part) => {
+            if (part !== parameter.type) binding.push(syntax(part));
+          });
+          children.push([child.kind, binding]);
+        } else children.push(syntax(child));
+      });
+      originalTree = [originalNode.kind, children];
+    }
+    attributes.set(port, [
+      port.kind,
+      [syntax(port.name), [SyntaxKind.JsxExpression, [originalTree]]],
+    ]);
+  }
+  return { attributes, expanded };
+}
+function consumption(
+  appText: string,
+  hostText: string,
+  ownerText: string,
+  subjectOwnerText = subjectOwner,
+) {
   const parsed = parse({
     App: appText,
     Host: hostText,
     Owner: ownerText,
     Adapter: adapterText,
+    Subject: subjectOwnerText,
+    FixedSubject: fixedSubject,
+    SubjectAdapter: subjectAdapterText,
   });
   const app = parsed.get("App")!,
     host = parsed.get("Host")!,
@@ -519,7 +775,16 @@ function consumption(appText: string, hostText: string, ownerText: string) {
   assert.ok(isShorthandPropertyAssignment(returnedActions[0]!));
 
   assert.deepEqual(
-    structure(app, true),
+    structure(
+      app,
+      true,
+      subjectContract(
+        app,
+        parsed.get("Subject")!,
+        parsed.get("FixedSubject")!,
+        parsed.get("SubjectAdapter")!,
+      ),
+    ),
     baseline.App,
     "original App JSX/effects/all React lifecycle registrations",
   );
@@ -533,6 +798,14 @@ const app = readFileSync("apps/web/src/App.tsx", "utf8");
 const host = readFileSync("apps/web/src/ApplicationHost.tsx", "utf8");
 const owner = readFileSync(
   "apps/web/src/host/use-workspace-navigation.ts",
+  "utf8",
+);
+const subjectOwner = readFileSync(
+  "apps/web/src/host/use-subject-inspector.ts",
+  "utf8",
+);
+const fixedSubject = readFileSync(
+  "tests/fixtures/subject-inspector-85a50934.ts",
   "utf8",
 );
 function changed(source: string, from: string, to: string) {
@@ -731,4 +1004,85 @@ test("finite gate permits comments and unrelated non-UI/non-lifecycle helpers", 
     host + "\n// An unrelated comment is not a mount or state change.\n",
     owner,
   );
+});
+
+test("Stage13 expansion rejects fake/shadowed imports, repeated or relocated hooks and unapproved inspector ports", () => {
+  const commit = app.match(
+    /  useSubjectInspectorCommit\(inspectorSelections, \{[\s\S]*?\n  \}\);/,
+  )?.[0];
+  assert.ok(commit, "the real commit seam exists");
+  for (const candidate of [
+    changed(app, subjectPath, "./host/fake-subject-inspector.js"),
+    changed(
+      app,
+      "const subjectActivity = useSubjectActivityState();",
+      "const useSubjectActivityState = () => ({allActivity:false});\nconst subjectActivity = useSubjectActivityState();",
+    ),
+    changed(
+      app,
+      "const subjectActivity = useSubjectActivityState();",
+      "const subjectActivity = useSubjectActivityState();\nconst duplicate = useSubjectActivityState();",
+    ),
+    changed(
+      app,
+      "const subjectActivity = useSubjectActivityState();",
+      "const subjectActivity = (() => useSubjectActivityState())();",
+    ),
+    changed(
+      app,
+      commit,
+      commit.replace("    contextKey,", '    contextKey: "another-surface",'),
+    ),
+    changed(
+      changed(app, commit, ""),
+      "  useExchangeControllerFocus(exchangeController);",
+      `${commit}\n  useExchangeControllerFocus(exchangeController);`,
+    ),
+    changed(app, "onBack={subjectInspector.back}", "onBack={unrelated.back}"),
+    changed(
+      app,
+      "onSelect={subjectInspector.selectExecution}",
+      "onSelect={subjectInspector.selectScope}",
+    ),
+    changed(
+      app,
+      "onAllWorkChange={subjectInspector.setAllActivity}",
+      "onAllWorkChange={(value) => subjectInspector.setAllActivity(value)}",
+    ),
+  ])
+    assert.throws(
+      () => consumption(candidate, host, owner),
+      assert.AssertionError,
+    );
+});
+
+test("Stage13 expands actual owner initializers/effect trees and rejects drift or an extra lifecycle", () => {
+  for (const candidate of [
+    changed(subjectOwner, "useState(false)", "useState(true)"),
+    changed(
+      subjectOwner,
+      "new Map<string, InspectorSelection>()",
+      "new Map<string, InspectorSelection>([[contextKey, selection]])",
+    ),
+    changed(
+      subjectOwner,
+      "[contextKey, executions, understandingOpen, collaborationVisible]",
+      "[executions, contextKey, understandingOpen, collaborationVisible]",
+    ),
+    changed(
+      subjectOwner,
+      "if (executions)",
+      'if (subjectView === "activity" && executions)',
+    ),
+    changed(
+      subjectOwner,
+      "const [allActivity, setAllActivity] = useState(false);",
+      "useLayoutEffect(() => {}, []);\nconst [allActivity, setAllActivity] = useState(false);",
+    ),
+    subjectOwner + "\nexport function extraLifecycle() { useState(0); }\n",
+  ])
+    assert.throws(
+      () => consumption(app, host, owner, candidate),
+      assert.AssertionError,
+    );
 });

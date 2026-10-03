@@ -23,6 +23,18 @@
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
+主体检查器的生产状态、按工作现场的详情记忆、纯派生展示和完整语义动作现归
+`host/use-subject-inspector.ts`。四组注册与记忆 layout effect 仍在 App 的原
+相对位置，不新增 store、请求、偏好键或 effect；close 命令仍在 startup
+return 前可用。App 保留唯一 prefs writer、授权批注读取、实际 DOM 焦点与
+导航／输入的原清理端口；SubjectSidebar、活动／目标列表、Logo 与顶栏消费
+同一动作 owner。图标、原 JSX、CSS 及真实数据来源不因此迁移或更改。
+
+这不是把所有右栏强行合并为一个领域：全局 subjectTab 与按现场记忆的
+ExecutionScope、对象批注、摘要和移动端显隐保留原有区别。固定旧 Git
+oracle、有限实际接线门禁和旧新编译 Host 对照分别记录在实施记录；本机
+锁屏仍挡住原 App 复验，不能把隔离自动截图视为用户窗口验收。
+
 交流 frame 的样式 owner 现为 `exchange-layout.css`：原 56 条规则、144 项
 声明的上下文、值、权重及选定的实际编译顺序保留，统一承载画布避让、阅读／
 输入排列、控制区与 Dock 外部锚点、断点和伸缩命中几何。Dock 内部显隐、

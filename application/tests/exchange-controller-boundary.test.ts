@@ -69,9 +69,20 @@ function parse(controller: string, app: string) {
     try {
       const program = snapshot.getProject(config)!.program;
       assert.deepEqual(program.getSyntacticDiagnostics(), []);
+      const appSource = program.getSourceFile(`${directory}/App.tsx`)!;
+      const identifiers: Node[] = [];
+      walk(appSource, (node) => {
+        if (isIdentifier(node)) identifiers.push(node);
+      });
+      const resolved = snapshot
+        .getProject(config)!
+        .checker.getSymbolAtLocation(identifiers);
       return {
         controller: program.getSourceFile(`${directory}/controller.ts`)!,
-        app: program.getSourceFile(`${directory}/App.tsx`)!,
+        app: appSource,
+        appSymbols: new Map(
+          identifiers.map((node, index) => [node, resolved[index]?.id]),
+        ),
       };
     } finally {
       snapshot.dispose();
@@ -100,7 +111,7 @@ function mentions(node: Node, name: string) {
   return found;
 }
 function ownership(controllerText: string, appText: string): string[] {
-  const { controller, app } = parse(controllerText, appText);
+  const { controller, app, appSymbols } = parse(controllerText, appText);
   const problems: string[] = [];
   const check = (valid: boolean, message: string) => {
     if (!valid) problems.push(message);
@@ -256,12 +267,62 @@ function ownership(controllerText: string, appText: string): string[] {
       navigationCommit.pos < focus.pos,
     "Named trail commit follows position restoration and precedes explicit focus",
   );
+  // Inspector memory now has one named commit seam; the inspector's own gate
+  // checks its original layout effect/body/deps. Resolve the actual import so a
+  // same-named local function cannot stand in for that lifecycle boundary.
+  const inspectorImports: Node[] = [];
+  walk(app, (node) => {
+    if (
+      isImportDeclaration(node) &&
+      isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "./host/use-subject-inspector.js" &&
+      node.importClause?.phaseModifier !== SyntaxKind.TypeKeyword &&
+      node.importClause?.namedBindings &&
+      isNamedImports(node.importClause.namedBindings)
+    )
+      for (const item of node.importClause.namedBindings.elements)
+        if (
+          !item.isTypeOnly &&
+          (item.propertyName ?? item.name).text === "useSubjectInspectorCommit"
+        )
+          inspectorImports.push(item.name);
+  });
+  const inspectorSymbol = appSymbols.get(inspectorImports[0]!);
+  const inspectorCommits: CallExpression[] = [];
+  walk(app, (node) => {
+    if (
+      isCallExpression(node) &&
+      isIdentifier(node.expression) &&
+      inspectorSymbol !== undefined &&
+      appSymbols.get(node.expression) === inspectorSymbol
+    )
+      inspectorCommits.push(node);
+  });
+  const inspectorCommit = inspectorCommits[0];
+  const inspectorFacts = inspectorCommit?.arguments[1];
   check(
-    !!focus &&
-      effects.some(
-        (effect) =>
-          mentions(effect, "inspectorSelections") && effect.pos > focus.pos,
-      ),
+    inspectorImports.length === 1 &&
+      inspectorCommits.length === 1 &&
+      !!focus &&
+      !!inspectorCommit &&
+      inspectorCommit.pos > focus.pos &&
+      inspectorCommit.arguments.length === 2 &&
+      text(inspectorCommit.arguments[0]!, app) === "inspectorSelections" &&
+      !!inspectorFacts &&
+      isObjectLiteralExpression(inspectorFacts) &&
+      inspectorFacts.properties.length === 4 &&
+      inspectorFacts.properties.every(
+        (property, index) =>
+          isShorthandPropertyAssignment(property) &&
+          property.name.getText() ===
+            [
+              "contextKey",
+              "executions",
+              "understandingOpen",
+              "collaborationVisible",
+            ][index],
+      ) &&
+      !effects.some((effect) => mentions(effect, "inspectorSelections")),
     "Inspector effects remain after explicit focus",
   );
   const focusEffects = calls(controller, "useLayoutEffect");
@@ -325,4 +386,31 @@ test("controller ownership gate rejects duplicate requests, lost suspension and 
       app,
     ).length > 0,
   );
+});
+
+test("controller gate rejects moved, duplicate or falsely bound inspector commit", () => {
+  const commit = app.match(
+    /  useSubjectInspectorCommit\(inspectorSelections, \{[\s\S]*?\n  \}\);/,
+  )?.[0];
+  assert.ok(commit, "actual migrated inspector seam exists");
+  for (const changed of [
+    app
+      .replace(commit, "")
+      .replace(
+        "useExchangeControllerFocus(exchangeController);",
+        `${commit}\nuseExchangeControllerFocus(exchangeController);`,
+      ),
+    app.replace(commit, `${commit}\n${commit}`),
+    app.replace(
+      commit,
+      `const useSubjectInspectorCommit = () => {};\n${commit}`,
+    ),
+  ]) {
+    assert.notEqual(changed, app);
+    assert.ok(
+      ownership(controller, changed).includes(
+        "Inspector effects remain after explicit focus",
+      ),
+    );
+  }
 });

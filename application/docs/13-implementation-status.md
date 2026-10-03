@@ -1,5 +1,85 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第十三阶段：主体检查器状态、现场记忆与动作 owner
+
+`host/use-subject-inspector.ts` 实际承接 all-work／execution／summary／
+mobile collaboration 状态、按工作现场的详情 Map、原记忆 layout effect、
+五个纯派生值及完整打开／关闭／分类／Logo／原消息详情／返回／范围／
+批注切换动作。四组 hooks 与记忆提交留在原相对位置；不是只抽取 JSX，
+也不新增全局 store、storage key、请求、效果或领域授权。App 减少 83 行，
+仍负责唯一 prefs writer、真实批注读取及 DOM 焦点，导航／输入的原清理
+消费同一 owner 的 typed setter。
+
+close 仍在 startup return 前可用，关闭后由 App 同步端口最后安排原 RAF
+焦点回退。活动总览先 prefer 再 keep-open，消息详情先 keep-open 再 prefer；
+原功能 updater、scope 对象和 setter identity、捕获的 prefs／Client、非
+活动分类保留详情、all-work 保留、异步历史回执及错误语义均不强行统一。
+没有趁重构给旧 history completion 添加新 navigation／身份 guard。
+
+初版纯派生抽取使 TypeScript 丢失 collaborationVisible 对 artifact 存在的
+关联证明，暴露三处旧批注表达式 nullable 错误。修正仅在原派生 seam 保留
+`!!artifact` 类型见证；完整原逻辑仍由 owner 计算，批注 JSX／读取和消息
+分支不改。不是可选链化错误来掩盖新路径。
+
+根线程从真实 Git `85a50934` 独立核对渲染 AST：除六个已验证的命令消费
+seams，整个主 return JSX 相同。新编译 CSS SHA256 仍为
+`552d58cb432d3559ca7b754f8839ca2e9305c2ce726543970e6005c25841f3d9`。
+旧编译 Host 七文件 **30/30**，新编译同一组原断言 **30/30**；实际 HTTP
+入口资产响应 200／SHA 已核对，不以磁盘包替代浏览器加载证据。
+
+固定旧 oracle 的 17 个实体、四状态初始化、Map 与记忆 effect／deps 经
+Git 独立实核；额外标量核验纳入 prefix／postfix operator，避免把不是
+`forEachChild` 子节点的逻辑运算符遗漏。行为对照 **21/21**，含 640 组
+展示组合、setter／scope identity、真假／缺失／null／undefined 快照、
+同步 throw／异步错误、原 Promise 顺序和迟到来源。真实隔离 StrictMode
+挂载 **1/1**，核初始值、稳定 ref／setter、A/B 现场记忆和执行／摘要／
+批注优先级、关闭恢复、无关重绘、真实 unmount／remount，零 fetch/XHR。
+独立完整生产 AST 展开后 81 个 hooks／effects 注册顺序、24 个未迁移本地
+函数及原 RAF 焦点语句相同；不是以单个动作 trace 代替 React 生命周期。
+
+新增 opt-in `subject-inspector-equivalence.spec.ts` 消费保存的旧编译包与
+实际候选 manifest。四个有限明暗／1440 与 390 窗口组合，每组总览、详情、
+关闭重开、返回及四分类共七阶段，**4/4，28 对阶段**通过；old/old 先校准
+4/4。computed 几何／paint declarations、图标、选择、正文、草稿及原
+input DOM identity 严格相同，零发送／应用写入，实际 input／delivery 与
+会话目录前后相同。PNG 保留原图与 raw 差异诊断，沿用有 AA 盲区及一阶
+RGB 校准的有限 oracle，不能宣称 raw RGBA 全同或完整平台／原生矩阵。
+受控部分仅为已完成 Runtime 活动呈现，身份／导航仍为隔离真实 Platform；
+没有模型请求、伪造实际执行回执或更改生产 motion。
+
+截图写入探针经独立复核扩到全部非 GET/HEAD 的 Platform／input 请求，
+包含真实 app-views launch／save／close；这暴露原 Host bootstrap 的一次
+personal-space ensure。测试单独严格核这条原初始化回执，信息栏操作区间
+仍须零写入，不把初始化 API 从探针隐藏。原 narrow-probe 通过与完整探针
+暴露初始化的四红报告保留，修正后的完整探针四例全部通过。异常时嵌套
+finally 关闭浏览器 context，不静默吞掉读取或测试失败。
+
+主体门禁四项、原交流控制门禁四项及原导航消费门禁八项，在冻结后全量
+检查中通过。新增 32 个主体反例、三个记忆提交反例及 15 个导航消费反例；
+原反例保留。反例先独立解析，只接受指定规则的 AssertionError，标量
+operator 也纳入比较。旧导航基准的 196 JSX／14 roots、81 hooks／16
+effects 与摘要不变；仅展开真实 import-bound owner，并归一六个已核消费
+seams，不用新摘要接受漂移。
+
+首轮全量为 1565 项、五失败，分别为尚未适配迁移的两个旧导航消费检查、
+记忆 effect 表达式比较、TypeScript 7 的属性签名 API 名称及 null 回执修正
+期间的固定 fixture 摘要。原红报告保留；修正实际绑定／AST 比较、兼容
+API 和冻结摘要后重跑，没有删除断言、刷新旧基准或隐藏异常。最终全量
+**1570 项：1405 通过、165 条可选集成跳过、零失败**，70.6 秒。跳过包含
+一条本机默认 Chromium 缺失的新增挂载测试；已另用实际安装的浏览器执行
+该项并通过，不能将跳过项称为 Runtime、模型或原生验收通过。
+
+最终 typecheck／build、受影响文件格式及空白检查通过。最终磁盘资产
+再次与已实读 HTTP 的对照 manifest 核同，新 JS `app-C3_7G4YY.js` SHA256
+`d892c329627e19446ace0292364e47ad824e8a6de9caee0d11fc0b2b9aedf1c1`；
+CSS 与 preload helper 字节保持旧编译包不变。构建只保留原 OpenCV 外部化
+及大 chunk 提示，不以源码／静态包或全量 Node 代替实际窗口验收。
+
+源码与资产证据、原回归／校准／候选画面 reports 分开保留于
+`/tmp/morphz-subject-inspector-owner.1kGG4B`。原 App 本轮只读 computer-use
+确认仍被系统锁屏拦住；未重启 Runtime、换 profile／center、修改锁屏设置
+或解锁。原窗口及整体架构目标尚未完成。
+
 ## 2026-10-04 前端重构第十二阶段：交流 frame 样式唯一 owner
 
 `exchange-layout.css` 实际承接原 56 条规则／144 项声明（包括已迁的 23 项

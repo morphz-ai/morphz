@@ -79,7 +79,6 @@ import { ApplicationDock } from "./ApplicationDock.js";
 import { WorkspaceTopbar } from "./shell/WorkspaceTopbar.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import "./execution.css";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import { ProjectConversations } from "./ProjectConversations.js";
 import {
   ProjectMenu,
@@ -168,6 +167,19 @@ import {
   type PreferenceWriter,
 } from "./host/use-workspace-navigation.js";
 import {
+  createSubjectInspectorCloseCommand,
+  createSubjectInspectorCommands,
+  subjectCollaborationVisible,
+  subjectInspectorOpen,
+  subjectInspectorPresentation,
+  subjectInspectorView,
+  useSubjectActivityState,
+  useSubjectCollaborationState,
+  useSubjectInspectionState,
+  useSubjectInspectorCommit,
+  useSubjectInspectorMemory,
+} from "./host/use-subject-inspector.js";
+import {
   acknowledgeReplies,
   conversationMessages,
   focusedInputs,
@@ -179,9 +191,6 @@ import {
 } from "./conversation-read.js";
 
 type View = WorkSurfaceView;
-type InspectorSelection =
-  | { view: "execution"; scope: ExecutionScope }
-  | { view: "understanding" | "collaboration" };
 type Preferences = InterfacePreferences & {
   subjectTab?: SubjectView;
   subjectOpen: boolean;
@@ -350,11 +359,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   );
   const leftSidebar = useSidebarLayout(leftSidebarPreference);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  // Persist only the subject's presentation, never a concrete execution scope.
-  const subjectView = prefs.subjectOpen
-    ? (prefs.subjectTab ?? "activity")
-    : null;
-  const [allActivity, setAllActivity] = useState(false);
+  const subjectView = subjectInspectorView(prefs);
+  const subjectActivity = useSubjectActivityState();
+  const { allActivity } = subjectActivity;
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const dictationControls = useRef<{
     toggle(): void;
@@ -384,8 +391,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       artifactId?: string;
       artifactRevision?: number;
     } | null>(null),
-    [executions, setExecutions] = useState<ExecutionScope | null>(null),
-    [understandingOpen, setUnderstandingOpen] = useState(false),
+    subjectInspection = useSubjectInspectionState(),
+    { executions, setExecutions, understandingOpen, setUnderstandingOpen } =
+      subjectInspection,
     [searchOpen, setSearchOpen] = useState(false),
     [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(null),
     [detailToolbarTarget, setDetailToolbarTarget] =
@@ -514,7 +522,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [compact, setCompact] = useState(
       () => matchMedia("(max-width:850px)").matches,
     ),
-    [mobileCollaboration, setMobileCollaboration] = useState(false);
+    subjectCollaboration = useSubjectCollaborationState();
+  const { mobileCollaboration, setMobileCollaboration } = subjectCollaboration;
   useEffect(() => {
     const media = matchMedia("(max-width:850px)");
     const changed = () => {
@@ -824,12 +833,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         : current,
     );
   }, [contextKey, inputVisible]);
+  // Keep the original artifact-existence witness for annotation JSX narrowing.
   const collaborationVisible =
-    !executions &&
-    !subjectView &&
-    !understandingOpen &&
     !!artifact &&
-    (compact ? mobileCollaboration : prefs.collaboration);
+    subjectCollaborationVisible({
+      executions,
+      subjectView,
+      understandingOpen,
+      artifact,
+      compact,
+      mobileCollaboration,
+      preferences: prefs,
+    });
   const [annotationRefresh, setAnnotationRefresh] = useState(0);
   const [annotationResult, setAnnotationResult] = useState<{
     artifactId: string;
@@ -868,35 +883,34 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   ]);
   const { ref: inspectorWorkspace, layout: rightInspector } =
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
-  const inspectorOpen =
-    !!executions || !!subjectView || understandingOpen || collaborationVisible;
-  const inspectorSelections = useRef(new Map<string, InspectorSelection>());
-  useLayoutEffect(() => {
-    // Visibility never chooses a feature. Remember the last explicit view in
-    // each work surface, including the exact execution provenance being read.
-    if (executions)
-      inspectorSelections.current.set(contextKey, {
-        view: "execution",
-        scope: executions,
-      });
-    else if (understandingOpen)
-      inspectorSelections.current.set(contextKey, { view: "understanding" });
-    else if (collaborationVisible)
-      inspectorSelections.current.set(contextKey, { view: "collaboration" });
-  }, [contextKey, executions, understandingOpen, collaborationVisible]);
+  const inspectorOpen = subjectInspectorOpen({
+    executions,
+    subjectView,
+    understandingOpen,
+    collaborationVisible,
+  });
+  const inspectorSelections = useSubjectInspectorMemory();
+  useSubjectInspectorCommit(inspectorSelections, {
+    contextKey,
+    executions,
+    understandingOpen,
+    collaborationVisible,
+  });
   const resizeInspector = (inspectorWidth: number) =>
     prefer({ inspectorWidth });
-  function closeInspector() {
-    setExecutions(null);
-    setUnderstandingOpen(false);
-    setMobileCollaboration(false);
-    prefer({ collaboration: false, subjectOpen: false });
-    requestAnimationFrame(() => {
-      const trigger = document.querySelector<HTMLElement>(".inspector-toggle");
-      if (trigger?.getClientRects().length) trigger.focus();
-      else (input.current ?? toggle.current)?.focus();
-    });
-  }
+  const closeInspector = createSubjectInspectorCloseCommand({
+    inspection: subjectInspection,
+    collaboration: subjectCollaboration,
+    prefer,
+    onClosedFocus: () => {
+      requestAnimationFrame(() => {
+        const trigger =
+          document.querySelector<HTMLElement>(".inspector-toggle");
+        if (trigger?.getClientRects().length) trigger.focus();
+        else (input.current ?? toggle.current)?.focus();
+      });
+    },
+  });
   const { surfaceDraft, draft } = readWorkSurfaceDraft(
     workSurface,
     drafts,
@@ -1535,78 +1549,31 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       : spaceKind(project) === "project"
         ? project.title
         : "无项目");
-  const openExecutions = () => {
-    prefer({ subjectTab: "activity", subjectOpen: true });
-    keepExchangeOpen();
-    setUnderstandingOpen(false);
-    setMobileCollaboration(false);
-    prefer({ collaboration: false });
-    setExecutions({
-      projectId: conversationProjectId,
-      conversationId,
-      artifactId: null,
-    });
-  };
-  const openCollaboration = () => {
-    setExecutions(null);
-    setUnderstandingOpen(false);
-    setMobileCollaboration(true);
-    prefer({ collaboration: true, subjectOpen: false });
-  };
   const rememberedInspector = inspectorSelections.current.get(contextKey);
-  const showInspector = () => {
-    if (prefs.subjectTab && prefs.subjectTab !== "activity") {
-      selectSubjectView(prefs.subjectTab);
-      return;
-    }
-    if (
-      rememberedInspector?.view === "execution" &&
-      state.projects.some(
-        (p) => p.id === rememberedInspector.scope.projectId,
-      ) &&
-      (!rememberedInspector.scope.inputId ||
-        state.inputs.some((i) => i.id === rememberedInspector.scope.inputId))
-    ) {
-      keepExchangeOpen();
-      setUnderstandingOpen(false);
-      setMobileCollaboration(false);
-      prefer({
-        collaboration: false,
-        subjectTab: "activity",
-        subjectOpen: true,
-      });
-      setExecutions(rememberedInspector.scope);
-    } else {
-      selectSubjectView(prefs.subjectTab ?? "activity");
-    }
-  };
-  function selectSubjectView(view: SubjectView) {
-    setUnderstandingOpen(false);
-    setMobileCollaboration(false);
-    prefer({ collaboration: false, subjectTab: view, subjectOpen: true });
-    if (view === "activity")
-      setExecutions(
-        (current) =>
-          current ?? {
-            projectId: conversationProjectId,
-            conversationId,
-            artifactId: null,
-          },
-      );
-  }
-  function openSubjectFromLogo(view: SubjectView) {
-    selectSubjectView(view);
-    if (view === "activity") {
-      // The mark represents the one subject, not the selected project or an
-      // old message detail. Use the existing authorized all-work projection.
-      setAllActivity(true);
-      setExecutions({
-        projectId: conversationProjectId,
-        conversationId,
-        artifactId: null,
-      });
-    }
-  }
+  const subjectInspector = createSubjectInspectorCommands({
+    activity: subjectActivity,
+    inspection: subjectInspection,
+    collaboration: subjectCollaboration,
+    rememberedInspector,
+    workspace: state,
+    historyClient: client,
+    preferences: prefs,
+    conversationProjectId,
+    conversationId,
+    compact,
+    prefer,
+    keepExchangeOpen,
+    onNotice: setNotice,
+    close: closeInspector,
+  });
+  const {
+    openExecutions,
+    openCollaboration,
+    show: showInspector,
+    selectSubject: selectSubjectView,
+    openFromLogo: openSubjectFromLogo,
+    inspectExecution,
+  } = subjectInspector;
   const agentName =
     (profile.snapshot?.agent.available && profile.snapshot.agent.enabled
       ? profile.snapshot.agent.data.name
@@ -1647,47 +1614,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ]
       : []),
   ];
-  const inspectExecution = async (id: string) => {
-    let source = state.inputs.find((i) => i.id === id);
-    if (!source) {
-      try {
-        if (await client.loadHistoryUntil(id))
-          source = client
-            .getSnapshot()
-            ?.workspace.inputs.find((i) => i.id === id);
-      } catch (error) {
-        setNotice(
-          error instanceof Error ? error.message : "原消息暂时无法读取。",
-        );
-        return;
-      }
-    }
-    if (!source) {
-      setNotice("原消息暂时不在已加载的记录中。");
-      return;
-    }
-    keepExchangeOpen();
-    prefer({ subjectTab: "activity", subjectOpen: true });
-    setUnderstandingOpen(false);
-    setMobileCollaboration(false);
-    prefer({ collaboration: false });
-    setExecutions({
-      projectId: source.projectId,
-      conversationId: source.conversationId ?? source.projectId,
-      artifactId: source.artifactId,
-      inputId: source.id,
-    });
-  };
-  const inspectorTitle = understandingOpen
-    ? "已发布摘要"
-    : collaborationVisible
-      ? "对象批注"
-      : "Morphz 信息";
-  const activityScope = executions ?? {
-    projectId: conversationProjectId,
+  const { inspectorTitle, activityScope } = subjectInspectorPresentation({
+    executions,
+    understandingOpen,
+    collaborationVisible,
+    conversationProjectId,
     conversationId,
-    artifactId: null,
-  };
+  });
   const inspectorControls = (
     <div className="workspace-inspector-controls">
       <SidebarToggle
@@ -2002,14 +1935,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           onTravel={travel}
           onNavigateView={() => navigate(prefs.view)}
           onOpenProject={() => openProject(project.id)}
-          onToggleCollaboration={() => {
-            setUnderstandingOpen(false);
-            setExecutions(null);
-            prefer({ subjectOpen: false });
-            compact
-              ? setMobileCollaboration(!mobileCollaboration)
-              : prefer({ collaboration: !prefs.collaboration });
-          }}
+          onToggleCollaboration={subjectInspector.toggleCollaboration}
         />
         {inspectorControls}
         <div
@@ -3210,17 +3136,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               onResize={resizeInspector}
               onClose={closeInspector}
               detail={!!(executions?.inputId || executions?.threadId)}
-              onBack={() =>
-                setExecutions({
-                  projectId: executions?.projectId ?? conversationProjectId,
-                  conversationId: executions?.conversationId ?? conversationId,
-                  artifactId: null,
-                })
-              }
-              onInspect={(scope) => {
-                selectSubjectView("activity");
-                setExecutions(scope);
-              }}
+              onBack={subjectInspector.back}
+              onInspect={subjectInspector.selectScope}
               onOpen={openUser}
               onModels={
                 client.boot!.capabilities.modelSettings
@@ -3252,12 +3169,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   client={client}
                   scope={activityScope}
                   allWork={allActivity}
-                  onAllWorkChange={setAllActivity}
+                  onAllWorkChange={subjectInspector.setAllActivity}
                   viewOptions={inspectorViewOptions}
                   layout={rightInspector}
                   onResize={resizeInspector}
                   onClose={closeInspector}
-                  onSelect={setExecutions}
+                  onSelect={subjectInspector.selectExecution}
                   onSupplement={
                     client.boot!.capabilities.directedInput
                       ? supplement
@@ -3273,7 +3190,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       client={client}
                       scope={activityScope}
                       allWork={allWork}
-                      onSelect={setExecutions}
+                      onSelect={subjectInspector.selectExecution}
                     />
                   )}
                 />
