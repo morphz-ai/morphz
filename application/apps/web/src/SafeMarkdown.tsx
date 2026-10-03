@@ -8,8 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
+import { MarkdownTable } from "./MarkdownTable.js";
+import { markdownRemarkPlugins } from "./markdown-parsing.js";
 import { preserveMarkdownLineBreaks } from "./markdown-line-breaks.js";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
@@ -80,18 +80,7 @@ const markdownComponents = {
       </span>
     );
   },
-  table: function MarkdownTable({ children }: { children?: ReactNode }) {
-    return (
-      <div
-        className="markdown-table-scroll"
-        role="region"
-        aria-label="表格"
-        tabIndex={0}
-      >
-        <table>{children}</table>
-      </div>
-    );
-  },
+  table: MarkdownTable,
   a: function MarkdownLink({
     href,
     children,
@@ -292,8 +281,7 @@ const MarkdownBody = memo(function MarkdownBody({
     <Markdown
       skipHtml
       remarkPlugins={[
-        remarkGfm,
-        remarkCjkFriendly,
+        ...markdownRemarkPlugins,
         [omitRepeatedDocumentTitle, { title: documentTitle }],
       ]}
       rehypePlugins={[

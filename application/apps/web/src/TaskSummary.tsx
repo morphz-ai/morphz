@@ -1,4 +1,6 @@
 import Markdown from "react-markdown";
+import { MarkdownTable } from "./MarkdownTable.js";
+import { markdownRemarkPlugins } from "./markdown-parsing.js";
 import { preserveMarkdownLineBreaks } from "./markdown-line-breaks.js";
 import {
   CircleCheck,
@@ -130,8 +132,10 @@ export function TaskSummary({
         {value.description ? (
           <Markdown
             skipHtml
+            remarkPlugins={markdownRemarkPlugins}
             rehypePlugins={[preserveMarkdownLineBreaks]}
             components={{
+              table: MarkdownTable,
               a: ({ children }) => <span>{children}</span>,
               img: ({ alt }) => <span>[图片：{alt}]</span>,
             }}
