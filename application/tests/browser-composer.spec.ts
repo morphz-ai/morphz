@@ -99,7 +99,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       (
         globalThis as unknown as { browserExchangeNativeDiagnostic: unknown[] }
       ).browserExchangeNativeDiagnostic = events;
-      const record = (type: string) =>
+      const record = (type: string, details: Record<string, unknown> = {}) =>
         events.push({
           at: Date.now(),
           type,
@@ -107,11 +107,29 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
           bounds: main.getBounds(),
           contentBounds: main.getContentBounds(),
           zoom: main.webContents.getZoomFactor(),
+          ...details,
         });
       main.on("focus", () => record("focus"));
       main.on("blur", () => record("blur"));
       main.on("move", () => record("move"));
       main.on("resize", () => record("resize"));
+      // Native keyboard provenance complements the renderer's input events.
+      // A stray character must not be mistaken for a draft lifecycle change.
+      main.webContents.on("before-input-event", (_event, input) =>
+        record("before-input-event", {
+          input: {
+            type: input.type,
+            key: input.key,
+            code: input.code,
+            meta: input.meta,
+            control: input.control,
+            alt: input.alt,
+            shift: input.shift,
+            isAutoRepeat: input.isAutoRepeat,
+            isComposing: input.isComposing,
+          },
+        }),
+      );
       record("installed");
       app.focus({ steal: true });
       main.focus();
@@ -287,6 +305,13 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       .click();
     await expect.poll(siteState).toEqual(before);
     await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    // Input-only has no reading header or resize affordance. Reopening the
+    // actual reading surface is the explicit path back to its edge gesture.
+    await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
+    await expect(page.locator(".exchange-resizer")).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
     // The composed guest must not intercept an edge drag or lose its viewport,
     // instance or form when the host exchange changes size.
     const resize = page.getByRole("separator", { name: "调整消息区高度" });
@@ -299,6 +324,30 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       (
         window as unknown as { browserExchangeGestureDiagnostic: unknown[] }
       ).browserExchangeGestureDiagnostic = events;
+      const bindings = Object.keys(localStorage)
+        .filter((key) => key.includes(":draft:") && key.endsWith(":inputs"))
+        .flatMap((storageKey) =>
+          Object.entries(
+            JSON.parse(localStorage.getItem(storageKey)!) as Record<
+              string,
+              { body?: unknown }
+            >,
+          )
+            .filter(([, value]) => value.body === "TEST 网页悬浮输入，不发送")
+            .map(([surfaceKey]) => ({ storageKey, surfaceKey })),
+        );
+      if (bindings.length !== 1)
+        throw new Error(
+          "The original TEST draft must have one exact persisted surface key",
+        );
+      (
+        window as unknown as {
+          browserComposerDraftBinding: {
+            storageKey: string;
+            surfaceKey: string;
+          };
+        }
+      ).browserComposerDraftBinding = bindings[0]!;
       const name = (target: EventTarget | null) =>
         target instanceof Element
           ? {
@@ -311,6 +360,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       const state = () => {
         const handle = document.querySelector(".exchange-resizer");
         const panel = document.querySelector(".exchange-panel");
+        const input = document.querySelector<HTMLTextAreaElement>(
+          '.composer textarea[aria-label="AI 输入内容"]',
+        );
         return {
           mode: document
             .querySelector(".primary-panel")
@@ -321,15 +373,46 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
           shield: !!document.querySelector(".exchange-resize-shield"),
           focused: document.hasFocus(),
           active: name(document.activeElement),
+          body: input?.value ?? null,
+          selection: input
+            ? { start: input.selectionStart, end: input.selectionEnd }
+            : null,
         };
       };
       const record = (event: Event) => {
         const pointer = event instanceof PointerEvent ? event : undefined;
+        const keyboard = event instanceof KeyboardEvent ? event : undefined;
+        const input = event instanceof InputEvent ? event : undefined;
+        const composition =
+          event instanceof CompositionEvent ? event : undefined;
         const handle = document.querySelector(".exchange-resizer");
         events.push({
           at: Date.now(),
           type: event.type,
           target: name(event.target),
+          trusted: event.isTrusted,
+          defaultPrevented: event.defaultPrevented,
+          ...(keyboard
+            ? {
+                key: keyboard.key,
+                code: keyboard.code,
+                keyCode: keyboard.keyCode,
+                meta: keyboard.metaKey,
+                control: keyboard.ctrlKey,
+                alt: keyboard.altKey,
+                shift: keyboard.shiftKey,
+                repeat: keyboard.repeat,
+                isComposing: keyboard.isComposing,
+              }
+            : {}),
+          ...(input
+            ? {
+                data: input.data,
+                inputType: input.inputType,
+                isComposing: input.isComposing,
+              }
+            : {}),
+          ...(composition ? { data: composition.data } : {}),
           ...(pointer
             ? {
                 x: pointer.clientX,
@@ -353,6 +436,15 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
             : {}),
           ...state(),
         });
+        if (event.type === "input")
+          queueMicrotask(() =>
+            events.push({
+              at: Date.now(),
+              type: "after-input",
+              target: name(event.target),
+              ...state(),
+            }),
+          );
       };
       for (const type of [
         "pointerdown",
@@ -363,6 +455,13 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
         "lostpointercapture",
         "focus",
         "blur",
+        "keydown",
+        "keyup",
+        "beforeinput",
+        "input",
+        "compositionstart",
+        "compositionupdate",
+        "compositionend",
       ])
         window.addEventListener(type, record, true);
       const observer = new MutationObserver((changes) => {
@@ -391,7 +490,52 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       });
       observer.observe(document.body, { childList: true });
       events.push({ at: Date.now(), type: "installed", ...state() });
+      (
+        window as unknown as {
+          browserComposerCheckpoint: (label: string) => void;
+        }
+      ).browserComposerCheckpoint = (label) =>
+        events.push({
+          at: Date.now(),
+          type: "draft-checkpoint",
+          label,
+          binding: bindings[0],
+          ...state(),
+          savedDrafts: Object.fromEntries(
+            Object.keys(localStorage)
+              .filter(
+                (key) => key.includes(":draft:") && key.endsWith(":inputs"),
+              )
+              .map((key) => [key, JSON.parse(localStorage.getItem(key)!)]),
+          ),
+        });
     });
+    const expectDraft = async (step: string, visible = true) => {
+      const savedBody = await page.evaluate((step) => {
+        const diagnostic = window as unknown as {
+          browserComposerCheckpoint: (label: string) => void;
+          browserComposerDraftBinding: {
+            storageKey: string;
+            surfaceKey: string;
+          };
+        };
+        diagnostic.browserComposerCheckpoint(step);
+        const { storageKey, surfaceKey } =
+          diagnostic.browserComposerDraftBinding;
+        return (
+          JSON.parse(localStorage.getItem(storageKey) ?? "{}")[surfaceKey]
+            ?.body ?? null
+        );
+      }, step);
+      expect(
+        savedBody,
+        `原稿持久值在 ${step} 后保持同一 surface key 与正文`,
+      ).toBe("TEST 网页悬浮输入，不发送");
+      if (visible)
+        await expect(input, `原稿在 ${step} 后保持不变`).toHaveValue(
+          "TEST 网页悬浮输入，不发送",
+        );
+    };
     const dragTo = async (height: number) => {
       const reading = Number(await resize.getAttribute("aria-valuenow"));
       const r = (await resize.boundingBox())!;
@@ -415,16 +559,17 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       await page.mouse.up();
       await expect(page.locator(".exchange-resize-shield")).toHaveCount(0);
     };
-    const collapsed = (await page.locator(".exchange-panel").boundingBox())!;
+    const readingBefore = Number(await resize.getAttribute("aria-valuenow"));
+    const panelBefore = (await page.locator(".exchange-panel").boundingBox())!;
     await dragTo(200);
-    // Revealing the browser's scope header consumes some reading height. The
-    // frame edge, rather than the text-only height, must follow the pointer.
+    // The reading surface is already open, so its visible frame edge follows
+    // the exact pointer delta without recreating a hidden input header.
     await expect
       .poll(
         async () =>
           (await page.locator(".exchange-panel").boundingBox())!.height,
       )
-      .toBeCloseTo(collapsed.height + 200, 0);
+      .toBeCloseTo(panelBefore.height + 200 - readingBefore, 0);
     await dragTo(200);
     await expect(resize).toHaveAttribute("aria-valuenow", "200");
     await expect.poll(siteState).toEqual(before);
@@ -484,7 +629,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
         });
     });
     await expect(input).toBeFocused();
-    await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    await expectDraft("guest shortcut and host key release");
     // Hold the hide action's next-frame focus restoration until the Human has
     // focused the reopen button. A stale callback must not steal that focus.
     await page.evaluate(() => {
@@ -519,7 +664,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expect(reopen).toBeFocused();
     await reopen.press("Enter");
     await expect(input).toBeFocused();
-    await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    await expectDraft("keyboard reopen after delayed hide frames");
     await expect(
       page.getByRole("button", { name: "允许 Agent 协助", exact: true }),
     ).toBeVisible();
@@ -534,6 +679,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       .toBe(before.instance);
     await expect.poll(async () => (await siteState())?.form).toBe(before.form);
     await openInput(page);
+    await expectDraft("return to original browser instance");
     await page
       .getByRole("button", { name: "收起 AI 输入框", exact: true })
       .click();
@@ -547,6 +693,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     const zoomed = await siteState();
     await reopen.click();
     await expect(input).toBeInViewport();
+    await expectDraft("native 200 percent reopen before resize keys");
     await expect.poll(siteState).toEqual(zoomed);
     await expect(resize).toBeInViewport();
     await resize.focus();
@@ -555,11 +702,13 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       "data-interaction",
       "history",
     );
+    await expectDraft("native 200 percent resize End");
     await page.keyboard.press("ArrowDown");
     await expect(page.locator(".primary-panel")).toHaveAttribute(
       "data-interaction",
       "recent",
     );
+    await expectDraft("native 200 percent resize ArrowDown");
     await expect(input).toBeInViewport();
     await expect.poll(siteState).toEqual(zoomed);
     const geometry = await page.evaluate(() => {
@@ -658,6 +807,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       .getByRole("group", { name: "选文与评论" })
       .getByRole("button", { name: "编辑引用 1 的评论", exact: true });
     await expect(cleanQuote).toBeInViewport();
+    // The host input was explicitly hidden before selecting guest text. The
+    // standalone quote editor does not reopen it; check its exact saved draft.
+    await expectDraft("native 200 percent selection comment opened", false);
     const zoomedCommentBounds = (await cleanQuote.boundingBox())!;
     expect(zoomedCommentBounds.width).toBeLessThanOrEqual(260);
     expect(zoomedCommentBounds.height).toBeLessThanOrEqual(60);
@@ -665,6 +817,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       cleanQuote.locator("header, blockquote, footer, button"),
     ).toHaveCount(0);
     await page.keyboard.press("Escape");
+    await expectDraft("native 200 percent selection comment Escape", false);
     await expect(cleanDraft).toHaveAttribute(
       "title",
       /TEST 网页画布，TEST 可见尾句/,
@@ -692,9 +845,12 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       )
       .toBe("TEST 网页画布，TEST 可见尾句\nTEST 第二行");
     await openInput(page);
-    await expect(input).toHaveValue("TEST 网页悬浮输入，不发送");
+    await expectDraft(
+      "native 200 percent quote original reveal and input reopen",
+    );
     await page.getByRole("button", { name: "移除引用 1", exact: true }).click();
     await expect(input).toBeFocused();
+    await expectDraft("native 200 percent quote removal");
   } finally {
     try {
       const page = desktop.windows().find((p) => p.url() === "morphz://app/");

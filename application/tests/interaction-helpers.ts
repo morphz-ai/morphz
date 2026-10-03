@@ -34,12 +34,60 @@ export async function openInput(page: Page) {
   return input;
 }
 
-/** Use the existing direct action in its input or panel group; never a menu. */
+/** Use the same panel action, directly or in its narrow-width overflow menu. */
 export async function composerAction(page: Page, name: string) {
-  await page
-    .locator(".exchange-panel")
-    .getByLabel(name, { exact: true })
-    .click();
+  const panel = page.locator(".exchange-panel");
+  if (
+    ["固定输入框", "取消固定输入框", "展开完整记录", "返回工作内容"].includes(
+      name,
+    )
+  )
+    // ResizeObserver can replace More with direct buttons after a viewport
+    // change. Wait only for that layout decision before choosing a branch;
+    // never retry an already clicked toggle, reopen input, or accept hiding.
+    await expect
+      .poll(
+        () =>
+          panel.evaluate((root) => {
+            const controls = root.querySelector<HTMLElement>(
+              ".exchange-view-tools",
+            );
+            if (
+              !root.hasAttribute("data-open") ||
+              !controls ||
+              !controls.getClientRects().length
+            )
+              throw new Error(
+                "Exchange controls unexpectedly hidden or missing",
+              );
+            return (
+              controls.hasAttribute("data-compact") === root.clientWidth <= 620
+            );
+          }),
+        {
+          timeout: 5000,
+          message: "Exchange controls must match the actual panel breakpoint",
+        },
+      )
+      .toBe(true);
+  const direct = panel.getByRole("button", { name, exact: true });
+  if (await direct.isVisible()) {
+    await direct.click();
+    return;
+  }
+  const more = panel.getByRole("button", {
+    name: "更多交流选项",
+    exact: true,
+  });
+  if (!(await more.isVisible())) {
+    // A missing or incorrectly named wide control remains a real failure.
+    await direct.click();
+    return;
+  }
+  if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+  const menu = panel.getByRole("group", { name: "交流选项", exact: true });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("button", { name, exact: true }).click();
 }
 
 /** Files and screenshots share the explicit + input menu, not the app Dock. */

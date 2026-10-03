@@ -461,13 +461,9 @@
   margin: 0 auto 10px;
   container: exchange / inline-size;
 }
+/* The panel arranges reading and writing; it is not an extra input frame. */
 .exchange-panel[data-open] {
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--paper);
-}
-.exchange-panel[data-open]:has(.composer textarea:focus) {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+  --exchange-controls-width: 140px;
 }
 .exchange-panel-header {
   display: flex;
@@ -477,7 +473,7 @@
   min-width: 0;
   padding: 8px 12px 0;
 }
-.exchange-panel-header:not(:has(button)) {
+.exchange-panel-header:not(:has(.conversation-scope)) {
   display: none;
 }
 .exchange-scope {
@@ -499,15 +495,27 @@
   /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
   padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
   flex: 0 1 auto;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
   box-shadow: none;
   scrollbar-gutter: auto;
 }
 .exchange-panel > .conversation:has(.conversation-empty) {
   flex-basis: auto;
   padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
+}
+/* Reading owns the upper-right controls; text must not run under them. This
+   clearance disappears with reading, never becoming an input-only header. */
+.exchange-panel:has(> .exchange-controls-slot) > .conversation {
+  padding-top: 48px;
+}
+.exchange-panel:has(> .exchange-controls-slot) > .exchange-panel-header {
+  padding-right: calc(var(--exchange-controls-width) + 24px);
+}
+.exchange-panel:has(.exchange-panel-header .conversation-scope)
+  > .conversation {
+  padding-top: 16px;
 }
 .exchange-panel .conversation-empty {
   padding: 0;
@@ -522,6 +530,25 @@
   padding: 0;
   background: transparent;
 }
+.exchange-panel:has(> .conversation) > .composer-dock {
+  margin-top: 8px;
+}
+/* Only the actual groups form a hover bridge. The unused width remains canvas. */
+.exchange-controls-slot {
+  position: absolute;
+  right: 16px;
+  bottom: 100%;
+  padding-bottom: 8px;
+  width: max-content;
+  /* Keep the full button hit area above the reading-edge resize strip. */
+  z-index: 6;
+}
+.exchange-panel:has(> .conversation) > .exchange-controls-slot {
+  top: 8px;
+  right: 12px;
+  bottom: auto;
+  padding-bottom: 0;
+}
 .app .composer {
   position: relative;
   flex: 1;
@@ -530,28 +557,12 @@
   margin: 0;
   padding: 8px 16px;
   background: color-mix(in srgb, var(--paper) 70%, var(--surface-raised));
-  border: 0;
-  border-radius: 0 0 15px 15px;
-  box-shadow: none;
-}
-.app .composer::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: var(--hairline);
-  pointer-events: none;
-}
-.exchange-panel:not(:has(> .conversation)) .composer::before,
-.primary-panel[data-dialogue-canvas] .composer::before {
-  display: none;
-}
-.exchange-panel:not(:has(> .conversation)) .composer {
-  border-radius: 15px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
   box-shadow: none;
 }
 .app .composer:focus-within {
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
 }
 .app .composer textarea {
   background: transparent;
@@ -629,6 +640,7 @@
 }
 .app .exchange-view-tools {
   flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 .app .composer-unread {
   position: absolute;
@@ -666,6 +678,10 @@
   position: relative;
   width: 16px;
   height: 16px;
+}
+.app .exchange-view-tools > .icon-button > svg {
+  width: 14px;
+  height: 14px;
 }
 .app
   :is(.composer-media-tools, .exchange-view-tools)
@@ -708,6 +724,11 @@
   }
   .exchange-panel-header {
     flex-wrap: wrap;
+  }
+}
+@container exchange (max-width: 620px) {
+  .composer-dock {
+    --exchange-controls-width: 104px;
   }
 }
 .app .composer-preferences {
@@ -778,6 +799,21 @@
     width: 44px;
     height: 44px;
   }
+  .exchange-panel[data-open] {
+    --exchange-controls-width: 176px;
+  }
+  .exchange-panel:has(> .exchange-controls-slot) > .conversation {
+    padding-top: 60px;
+  }
+  .exchange-panel:has(.exchange-panel-header .conversation-scope)
+    > .conversation {
+    padding-top: 16px;
+  }
+  @container exchange (max-width: 620px) {
+    .composer-dock {
+      --exchange-controls-width: 132px;
+    }
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .app .composer-floating-tools {
@@ -796,7 +832,7 @@
   background: var(--soft);
   opacity: 0.55;
 }
-.primary-panel[data-interaction="recent"] .exchange-panel[data-open] {
+.primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
   background: var(--surface-glass);
   -webkit-backdrop-filter: var(--material-blur);
   backdrop-filter: var(--material-blur);
@@ -867,6 +903,16 @@
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: none;
+}
+.primary-panel[data-dialogue-canvas] .exchange-panel > .conversation {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.primary-panel[data-dialogue-canvas]
+  .exchange-panel:has(> .conversation)
+  > .composer-dock {
+  margin-top: 0;
 }
 .app .primary-panel[data-dialogue-canvas] .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
@@ -1257,8 +1303,10 @@
   --nav-selected-outline: inset 0 0 0 1px var(--ink);
   --nav-selected: var(--selection);
 }
-:root[data-native-contrast="more"] .app .composer::before {
-  background: var(--popup-line);
+:root[data-native-contrast="more"]
+  .app
+  :is(.composer, .exchange-panel > .conversation) {
+  border-color: var(--popup-line);
 }
 @media (prefers-reduced-motion: reduce) {
   .app *,

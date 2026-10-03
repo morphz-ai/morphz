@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Grid2X2, Pin, PinOff } from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import { ComposerOptions } from "./ComposerOptions.js";
@@ -13,6 +13,7 @@ export function ApplicationDock({
   applications,
   pinned,
   activeKey,
+  compactWithExchange = false,
   onPinned,
   onLaunch,
   onManage,
@@ -20,6 +21,7 @@ export function ApplicationDock({
   applications: ApplicationCatalogEntry[];
   pinned?: string[];
   activeKey?: string;
+  compactWithExchange?: boolean;
   onPinned(keys: string[]): void;
   onLaunch(app: ApplicationCatalogEntry): Promise<void>;
   onManage(): void;
@@ -28,6 +30,25 @@ export function ApplicationDock({
     [error, setError] = useState("");
   const launching = useRef(false);
   const shortcuts = useRef<HTMLDivElement>(null);
+  const pins = useRef<HTMLDivElement>(null);
+  const launcher = useRef<HTMLButtonElement>(null);
+  const [compact, setCompact] = useState(false);
+  useLayoutEffect(() => {
+    const panel = shortcuts.current?.closest<HTMLElement>(".exchange-panel");
+    if (!panel) return;
+    const measure = () => {
+      const next = compactWithExchange && panel.clientWidth <= 440;
+      // Move focus before hiding its current node. A CSS-only breakpoint would
+      // leave an invisible focus target, or dismiss the unpinned input.
+      if (next && pins.current?.contains(document.activeElement))
+        launcher.current?.focus({ preventScroll: true });
+      setCompact((previous) => (previous === next ? previous : next));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    measure();
+    return () => observer.disconnect();
+  }, [compactWithExchange]);
   const fixed = pinnedApplications(applications, pinned);
   // A project-local catalog can hide pins belonging to another work scene.
   // Editing one visible shortcut must not remove those saved preferences.
@@ -47,22 +68,29 @@ export function ApplicationDock({
     }
   }
   return (
-    <div className="application-dock" aria-label="应用 Dock">
+    <div
+      className="application-dock"
+      aria-label="应用 Dock"
+      data-compact={compact || undefined}
+    >
       <div className="application-dock-buttons" ref={shortcuts}>
-        {fixed.map((app) => (
-          <button
-            className="application-dock-shortcut"
-            key={applicationKey(app)}
-            aria-label={`打开${app.title}`}
-            title={app.title}
-            disabled={busy}
-            aria-pressed={activeKey === applicationKey(app)}
-            onClick={() => void launch(app)}
-          >
-            <AppIcon app={app} />
-          </button>
-        ))}
+        <div className="application-dock-pins" ref={pins}>
+          {fixed.map((app) => (
+            <button
+              className="application-dock-shortcut"
+              key={applicationKey(app)}
+              aria-label={`打开${app.title}`}
+              title={app.title}
+              disabled={busy}
+              aria-pressed={activeKey === applicationKey(app)}
+              onClick={() => void launch(app)}
+            >
+              <AppIcon app={app} />
+            </button>
+          ))}
+        </div>
         <ComposerOptions
+          triggerRef={launcher}
           label="全部应用"
           menuLabel="选择应用"
           triggerIcon={<Grid2X2 />}

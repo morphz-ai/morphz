@@ -793,8 +793,8 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
     expect(button.height).toBe(32);
     expect(button.radius).toBe("9px");
     expect(button.shadow).toContain("inset");
-    expect(button.iconWidth).toBe(16);
-    expect(button.iconHeight).toBe(16);
+    expect(button.iconWidth).toBe(14);
+    expect(button.iconHeight).toBe(14);
   }
   await dock.getByRole("button", { name: "全部应用", exact: true }).click();
   const catalog = page.getByRole("group", { name: "选择应用", exact: true });

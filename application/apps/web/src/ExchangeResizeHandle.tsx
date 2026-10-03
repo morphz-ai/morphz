@@ -43,16 +43,20 @@ export function ExchangeResizeHandle({
   function geometry() {
     const root = panel.current!;
     const workspace = root.closest(".primary-panel")!;
+    const zoom =
+      (root as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom || 1;
+    const composer = root.querySelector<HTMLElement>(".composer-dock");
     const chrome =
-      (root.querySelector(".composer-dock")?.getBoundingClientRect().height ??
-        0) +
+      (composer?.getBoundingClientRect().height ?? 0) / zoom +
+      (composer ? parseFloat(getComputedStyle(composer).marginTop) : 0) +
       (root.querySelector(".exchange-panel-header")?.getBoundingClientRect()
-        .height ?? 0) +
+        .height ?? 0) /
+        zoom +
       parseFloat(getComputedStyle(root).borderTopWidth) +
       parseFloat(getComputedStyle(root).borderBottomWidth);
     const available = Math.max(
       0,
-      workspace.getBoundingClientRect().height -
+      workspace.getBoundingClientRect().height / zoom -
         parseFloat(getComputedStyle(root).marginBottom),
     );
     const reading = root.querySelector<HTMLElement>(":scope > .conversation");
@@ -61,10 +65,13 @@ export function ExchangeResizeHandle({
     // while dragging through the snap zone, including an empty conversation.
     const readingFloor = readingStyle
       ? parseFloat(readingStyle.paddingTop) +
-        parseFloat(readingStyle.paddingBottom)
+        parseFloat(readingStyle.paddingBottom) +
+        parseFloat(readingStyle.borderTopWidth) +
+        parseFloat(readingStyle.borderBottomWidth)
       : 0;
     return {
       root,
+      zoom,
       chrome,
       readingFloor,
       available,
@@ -74,11 +81,11 @@ export function ExchangeResizeHandle({
 
   function paint() {
     if (!panel.current) return;
-    const { root, chrome, readingFloor, available, max } = geometry();
+    const { root, zoom, chrome, readingFloor, available, max } = geometry();
     const gesture = drag.current;
     const preferred = preferredExchangeHeight(latest.current.height);
     const requested = gesture?.moved
-      ? gesture.startHeight + gesture.startY - gesture.y
+      ? gesture.startHeight + (gesture.startY - gesture.y) / zoom
       : latest.current.mode === "recent" && preferred !== undefined
         ? chrome + preferred
         : undefined;
@@ -94,20 +101,8 @@ export function ExchangeResizeHandle({
       root.style.removeProperty("--exchange-height");
       root.style.removeProperty("--exchange-max-height");
     }
-    // The composer floats over work canvases. Expose its actual height to
-    // scrollable content so the last item can be brought above the overlay.
-    const workspace = root.closest<HTMLElement>(".primary-panel")!;
-    const overlayHeight = `${Math.ceil(
-      root.getBoundingClientRect().height +
-        parseFloat(getComputedStyle(root).marginBottom),
-    )}px`;
-    if (
-      workspace.style.getPropertyValue("--exchange-overlay-height") !==
-      overlayHeight
-    )
-      workspace.style.setProperty("--exchange-overlay-height", overlayHeight);
     const height = Math.round(
-      Math.max(0, root.getBoundingClientRect().height - chrome),
+      Math.max(0, root.getBoundingClientRect().height / zoom - chrome),
     );
     setRange((old) =>
       old.height === height && old.max === Math.round(max)
@@ -121,7 +116,7 @@ export function ExchangeResizeHandle({
     if (!gesture) return;
     if (frame.current !== null) cancelAnimationFrame(frame.current);
     frame.current = null;
-    const { chrome, max } = geometry();
+    const { zoom, chrome, max } = geometry();
     drag.current = null;
     setCapturing(false);
     if (handle.current?.hasPointerCapture(gesture.pointer))
@@ -130,7 +125,7 @@ export function ExchangeResizeHandle({
       if (commit && gesture.moved)
         latest.current.onCommit(
           resolveExchangeSize(
-            gesture.startHeight + gesture.startY - gesture.y - chrome,
+            gesture.startHeight + (gesture.startY - gesture.y) / zoom - chrome,
             max,
           ),
         );
@@ -204,9 +199,6 @@ export function ExchangeResizeHandle({
       root.removeAttribute("data-resizing");
       root.style.removeProperty("--exchange-height");
       root.style.removeProperty("--exchange-max-height");
-      root
-        .closest<HTMLElement>(".primary-panel")
-        ?.style.removeProperty("--exchange-overlay-height");
       panel.current = null;
     };
   }, []);
@@ -246,7 +238,8 @@ export function ExchangeResizeHandle({
             scope: options.scope,
             pointer: event.pointerId,
             startY: event.clientY,
-            startHeight: panel.current!.getBoundingClientRect().height,
+            startHeight:
+              panel.current!.getBoundingClientRect().height / geometry().zoom,
             y: event.clientY,
             moved: false,
           };
@@ -276,6 +269,10 @@ export function ExchangeResizeHandle({
           event.preventDefault();
           event.stopPropagation();
           options.onStart();
+          if (size.mode === "input")
+            panel.current
+              ?.querySelector<HTMLTextAreaElement>(".composer textarea")
+              ?.focus({ preventScroll: true });
           options.onCommit(size);
         }}
       />

@@ -198,16 +198,34 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   const panel = page.locator(".exchange-panel");
   const composer = page.locator(".composer");
   const dock = page.locator(".application-dock-slot");
+  const dockButtons = dock.locator(".application-dock-buttons");
+  const controls = panel.locator(":scope > .exchange-controls-slot");
+  const tools = controls.getByRole("group", {
+    name: "交流面板操作",
+    exact: true,
+  });
   await expect(dock).toHaveCSS("position", "absolute");
-  await expect(page.locator(".exchange-panel-header")).toBeVisible();
+  await expect(controls).toHaveCount(1);
+  await expect(controls).toHaveCSS("position", "absolute");
+  await expect(
+    panel.locator(".composer-dock > .exchange-controls-slot"),
+  ).toHaveCount(0);
+  await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
+  await expect(page.locator(".exchange-resizer")).toHaveCount(0);
+  await expect(tools).toBeVisible();
+  await controls.evaluate(
+    (el) => (el.dataset.mountCheck = "controls-original"),
+  );
+  await tools.evaluate((el) => (el.dataset.mountCheck = "tools-original"));
   const p = (await panel.boundingBox())!;
   const c = (await composer.boundingBox())!;
-  const d = (await dock.boundingBox())!;
-  const header = (await page.locator(".exchange-panel-header").boundingBox())!;
-  expect(c.y - header.y - header.height).toBeLessThanOrEqual(1);
-  expect(p.height - c.height).toBeLessThanOrEqual(header.height + 10);
-  expect(d.y + d.height).toBeLessThanOrEqual(c.y);
-  expect(c.y - d.y - d.height).toBeLessThanOrEqual(8);
+  const d = (await dockButtons.boundingBox())!;
+  const t = (await tools.boundingBox())!;
+  expect(c.y).toBeCloseTo(p.y, 0);
+  expect(p.height).toBeCloseTo(c.height, 0);
+  // Measure the actual button group, not the slot's transparent hover bridge.
+  expect(c.y - d.y - d.height).toBeCloseTo(8, 0);
+  expect(t.y + t.height).toBeCloseTo(d.y + d.height, 0);
   // Removing only the tool paint must not resize the input/frame.
   await dock.evaluate((el) => ((el as HTMLElement).style.display = "none"));
   expect((await composer.boundingBox())!.height).toBe(c.height);
@@ -215,6 +233,57 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   await dock.evaluate((el) =>
     (el as HTMLElement).style.removeProperty("display"),
   );
+  for (const [name, mode] of [
+    ["查看交流记录", "recent"],
+    ["展开完整记录", "history"],
+    ["返回工作内容", "recent"],
+    ["收起交流记录", "input"],
+  ] as const) {
+    // Click the rendered control at its real location, including reading's
+    // upper-right position, rather than mutating the interaction preference.
+    await tools.getByRole("button", { name, exact: true }).click();
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      mode,
+    );
+    await expect(controls).toHaveAttribute(
+      "data-mount-check",
+      "controls-original",
+    );
+    await expect(tools).toHaveAttribute("data-mount-check", "tools-original");
+    await expect(tools).toBeVisible();
+    await expect(input).toHaveValue("TEST 悬浮 Dock 原始方案，不发送");
+    await expect(async () => {
+      const currentPanel = (await panel.boundingBox())!;
+      const currentComposer = (await composer.boundingBox())!;
+      const currentDock = (await dockButtons.boundingBox())!;
+      const currentTools = (await tools.boundingBox())!;
+      expect(currentComposer.y).toBeCloseTo(c.y, 0);
+      expect(currentComposer.height).toBe(c.height);
+      expect(
+        currentComposer.y - currentDock.y - currentDock.height,
+      ).toBeCloseTo(8, 0);
+      if (mode === "input") {
+        expect(currentComposer.y).toBeCloseTo(currentPanel.y, 0);
+        expect(currentPanel.height).toBeCloseTo(currentComposer.height, 0);
+        expect(currentTools.y + currentTools.height).toBeCloseTo(
+          currentDock.y + currentDock.height,
+          0,
+        );
+      } else {
+        expect(currentTools.y - currentPanel.y).toBeCloseTo(8, 0);
+        expect(
+          currentPanel.x +
+            currentPanel.width -
+            currentTools.x -
+            currentTools.width,
+        ).toBeCloseTo(12, 0);
+      }
+    }).toPass({ timeout: 1500 });
+  }
+  await expect(page.locator(".conversation")).toHaveCount(0);
+  await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
+  await expect(page.locator(".exchange-resizer")).toHaveCount(0);
   await dock.getByRole("button", { name: "全部应用", exact: true }).focus();
   await expect(dock).toBeVisible();
   await expect(dock).toHaveCSS("opacity", "1");
@@ -222,12 +291,16 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   await page.screenshot({ path: "test-results/floating-dock-collapsed.png" });
 });
 
-test("读写衔接只减弱底色差与分隔线，文字可读且增强对比度仍保留清晰边界", async ({
+test("独立读写卡片保留克制底色，文字可读且增强对比度仍有清晰边界", async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const input = await openInput(page);
   await input.fill("TEST 只调整读写衔接颜色，不发送");
+  // The input now owns a complete card boundary instead of a pseudo divider.
+  // Focus a stable, internal float so its ordinary boundary is measured, not
+  // the input's intentional keyboard-focus accent.
+  await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();
   const composer = page.locator(".composer");
   for (const appearance of ["light", "dark"]) {
     await page.locator(".app").evaluate((el, mode) => {
@@ -253,8 +326,8 @@ test("读写衔接只减弱底色差与分隔线，文字可读且增强对比�
         background: rgb(style.backgroundColor),
         paper: token("--paper"),
         previousBackground: token("--surface-raised"),
-        divider: rgb(getComputedStyle(el, "::before").backgroundColor),
-        previousDivider: token("--line"),
+        border: rgb(style.borderTopColor),
+        previousBorder: token("--line"),
         text: rgb(getComputedStyle(el.querySelector("textarea")!).color),
         placeholder: rgb(
           getComputedStyle(el.querySelector("textarea")!, "::placeholder")
@@ -269,8 +342,8 @@ test("读写衔接只减弱底色差与分隔线，文字可读且增强对比�
     expect(distance(colors.background, colors.paper)).toBeLessThanOrEqual(
       distance(colors.previousBackground, colors.paper),
     );
-    expect(distance(colors.divider, colors.paper)).toBeLessThanOrEqual(
-      distance(colors.previousDivider, colors.paper),
+    expect(distance(colors.border, colors.paper)).toBeLessThanOrEqual(
+      distance(colors.previousBorder, colors.paper),
     );
     const luminance = (rgb: number[]) => {
       const linear = rgb.map((v) => {
@@ -295,10 +368,10 @@ test("读写衔接只减弱底色差与分隔线，文字可读且增强对比�
         el.setAttribute("data-native-contrast", "more");
       });
     }
-    const divider = await composer.evaluate(
-      (el) => getComputedStyle(el, "::before").backgroundColor,
+    const border = await composer.evaluate(
+      (el) => getComputedStyle(el).borderTopColor,
     );
-    expect(divider).toBe(
+    expect(border).toBe(
       mode === "media" ? "rgb(142, 142, 152)" : "rgb(152, 152, 152)",
     );
     await expect(input).toHaveValue("TEST 只调整读写衔接颜色，不发送");

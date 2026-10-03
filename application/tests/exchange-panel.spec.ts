@@ -7,7 +7,7 @@ import {
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
-test("记录与输入共用面板，空态紧凑，按钮归属明确且切换不丢草稿", async ({
+test("记录与输入同属交流面板且各有独立边界，空态紧凑，切换不丢草稿", async ({
   page,
 }) => {
   await page.goto("/");
@@ -45,18 +45,27 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
   await expect(
     history.getByRole("button", { name: "查看全部交流", exact: true }),
   ).toHaveCount(0);
-  // One empty-state line plus safe reading clearance for the floating Dock;
-  // this clearance belongs to scrollable history, never a toolbar/header row.
+  // One empty-state line, upper-right control clearance and the floating Dock;
+  // these belong to reading, never an input-only toolbar/header row.
+  const readingBorders = await history.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return (
+      parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)
+    );
+  });
   expect((await history.boundingBox())!.height).toBeLessThanOrEqual(
-    45 + (await page.locator(".application-dock-slot").boundingBox())!.height,
+    85 +
+      (await page.locator(".application-dock-slot").boundingBox())!.height +
+      readingBorders,
   );
   const h = (await history.boundingBox())!;
   const c = (await composer.boundingBox())!;
-  expect(Math.abs(h.y + h.height - c.y)).toBeLessThanOrEqual(1);
+  expect(c.y - h.y - h.height).toBeCloseTo(8, 0);
   expect(Math.abs(h.x - c.x)).toBeLessThanOrEqual(1);
   expect(Math.abs(h.width - c.width)).toBeLessThanOrEqual(2);
-  await expect(history).toHaveCSS("border-top-width", "0px");
-  await expect(history).toHaveCSS("box-shadow", "none");
+  await expect(history).toHaveCSS("border-top-width", "1px");
+  await expect(history).toHaveCSS("border-radius", "16px");
+  await expect(history).not.toHaveCSS("box-shadow", "none");
   for (const name of [
     "收起交流记录",
     "展开完整记录",
@@ -93,6 +102,8 @@ test("记录与输入共用面板，空态紧凑，按钮归属明确且切换�
   expect(await canvas.boundingBox()).toEqual(canvasBounds);
   await composerAction(page, "收起交流记录");
   await expect(history).toHaveCount(0);
+  await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
+  await expect(page.locator(".exchange-resizer")).toHaveCount(0);
   await expect(
     controls.getByRole("button", { name: "展开完整记录", exact: true }),
   ).toBeVisible();
@@ -143,12 +154,27 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       "添加输入内容",
       "执行设置",
       "语音输入",
-      "取消固定输入框",
       "收起 AI 输入框",
     ])
       await expect(
         page.getByRole("button", { name, exact: true }),
       ).toBeInViewport();
+    const pin = controls.getByRole("button", {
+      name: "取消固定输入框",
+      exact: true,
+    });
+    if (await pin.isVisible()) await expect(pin).toBeInViewport();
+    else {
+      await controls
+        .getByRole("button", { name: "更多交流选项", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("group", { name: "交流选项", exact: true })
+          .getByRole("button", { name: "取消固定输入框", exact: true }),
+      ).toBeInViewport();
+      await page.keyboard.press("Escape");
+    }
     await expect(page.locator(".composer-scope-label")).toHaveCount(0);
     await expect(page.locator(".send")).toBeInViewport();
     const adding = await openComposerMedia(page);

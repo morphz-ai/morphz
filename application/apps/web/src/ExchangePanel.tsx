@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, History, Maximize2, Minimize2, Pin } from "lucide-react";
+import { ComposerOptions } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import type { InteractionMode } from "./interaction.js";
 import {
@@ -10,12 +11,14 @@ import {
 /** One shared reading/writing surface, floating above cognitive applications. */
 export function ExchangePanel({
   open,
+  conversationVisible,
   scopeRef,
   resize,
   children,
   controls,
 }: {
   open: boolean;
+  conversationVisible: boolean;
   scopeRef: (element: HTMLDivElement | null) => void;
   resize?: ExchangeResizeOptions;
   children: ReactNode;
@@ -26,7 +29,9 @@ export function ExchangePanel({
     const root = panel.current;
     const dock = root?.querySelector<HTMLElement>(".composer-dock");
     if (!root || !dock) return;
+    const workspace = root.closest<HTMLElement>(".primary-panel");
     let floating: HTMLElement | null = null;
+    let controls: HTMLElement | null = null;
     const measure = () => {
       const next = root.querySelector<HTMLElement>(".application-dock");
       if (next !== floating) {
@@ -34,40 +39,54 @@ export function ExchangePanel({
         floating = next;
         if (floating) observer.observe(floating);
       }
-      const toolsHeight = floating?.getBoundingClientRect().height ?? 0;
-      if (!floating || toolsHeight > 0)
+      const nextControls = root.querySelector<HTMLElement>(
+        ".exchange-controls-slot",
+      );
+      if (nextControls !== controls) {
+        if (controls) observer.unobserve(controls);
+        controls = nextControls;
+        if (controls) observer.observe(controls);
+      }
+      const toolsHeight = Math.max(
+        floating?.offsetHeight ?? 0,
+        controls?.offsetHeight ?? 0,
+      );
+      if ((!floating && !controls) || toolsHeight > 0)
         root.style.setProperty("--composer-tools-height", `${toolsHeight}px`);
+      // Input-only has no resize handle. Its real overlay still needs scroll
+      // clearance, and zoomed screen pixels must not become CSS padding.
+      workspace?.style.setProperty(
+        "--exchange-overlay-height",
+        `${Math.ceil(root.offsetHeight + toolsHeight + parseFloat(getComputedStyle(root).marginBottom))}px`,
+      );
     };
     const observer = new ResizeObserver(measure);
     observer.observe(dock);
+    observer.observe(root);
     // Draft navigation can replace the tool group without remounting the panel.
     const children = new MutationObserver(measure);
     children.observe(dock, { childList: true, subtree: true });
+    // The stable exchange controls live beside the reading/writing content.
+    // Observe only this root's direct mounts, not each streamed message node.
+    children.observe(root, { childList: true });
     measure();
     return () => {
       observer.disconnect();
       children.disconnect();
+      workspace?.style.removeProperty("--exchange-overlay-height");
     };
   }, []);
   return (
     <div className="exchange-panel" data-open={open || undefined} ref={panel}>
-      {open && resize && (
+      {open && conversationVisible && resize && (
         <ExchangeResizeHandle key={resize.scope} options={resize} />
       )}
-      {open && (
+      {open && conversationVisible && (
         <div className="exchange-panel-header">
           <div className="exchange-scope" ref={scopeRef} />
-          {controls && (
-            <div
-              className="exchange-view-tools"
-              role="group"
-              aria-label="交流面板操作"
-            >
-              {controls}
-            </div>
-          )}
         </div>
       )}
+      {controls && <div className="exchange-controls-slot">{controls}</div>}
       {children}
     </div>
   );
@@ -90,8 +109,59 @@ export function ExchangeControls({
   onPin: () => void;
   onHide: () => void;
 }) {
+  const tools = useRef<HTMLDivElement>(null);
+  const hide = useRef<HTMLButtonElement>(null);
+  const [compact, setCompact] = useState(false);
+  useLayoutEffect(() => {
+    const root = tools.current;
+    const panel = root?.closest<HTMLElement>(".exchange-panel");
+    if (!root || !panel) return;
+    let previous = false;
+    const measure = () => {
+      // Layout pixels, not the zoomed visible rect, define available space.
+      const next = panel.clientWidth <= 620;
+      if (next === previous) return;
+      previous = next;
+      const history = root.querySelector<HTMLButtonElement>(":scope > button");
+      const focused = document.activeElement;
+      if (
+        focused &&
+        root.contains(focused) &&
+        focused !== history &&
+        focused !== hide.current
+      )
+        history?.focus({ preventScroll: true });
+      setCompact(next);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    measure();
+    return () => observer.disconnect();
+  }, []);
+  const secondaryOptions = [
+    {
+      id: "history-size",
+      label: historyVisible ? "返回工作内容" : "展开完整记录",
+      icon: historyVisible ? <Minimize2 /> : <Maximize2 />,
+      pressed: historyVisible,
+      onSelect: () => onInteraction(historyVisible ? "recent" : "history"),
+    },
+    {
+      id: "pin",
+      label: pinned ? "取消固定输入框" : "固定输入框",
+      icon: <Pin />,
+      pressed: pinned,
+      onSelect: onPin,
+    },
+  ];
   return (
-    <>
+    <div
+      className="exchange-view-tools"
+      role="group"
+      aria-label="交流面板操作"
+      data-compact={compact || undefined}
+      ref={tools}
+    >
       <ComposerToolButtons
         unread={unread}
         options={[
@@ -103,24 +173,20 @@ export function ExchangeControls({
             onSelect: () =>
               onInteraction(conversationVisible ? "input" : "recent"),
           },
-          {
-            id: "history-size",
-            label: historyVisible ? "返回工作内容" : "展开完整记录",
-            icon: historyVisible ? <Minimize2 /> : <Maximize2 />,
-            pressed: historyVisible,
-            onSelect: () =>
-              onInteraction(historyVisible ? "recent" : "history"),
-          },
-          {
-            id: "pin",
-            label: pinned ? "取消固定输入框" : "固定输入框",
-            icon: <Pin />,
-            pressed: pinned,
-            onSelect: onPin,
-          },
         ]}
       />
+      {compact ? (
+        <ComposerOptions
+          label="更多交流选项"
+          menuLabel="交流选项"
+          below={conversationVisible}
+          options={secondaryOptions}
+        />
+      ) : (
+        <ComposerToolButtons options={secondaryOptions} />
+      )}
       <button
+        ref={hide}
         className="icon-button"
         aria-label="收起 AI 输入框"
         title="收起 AI 输入框"
@@ -128,6 +194,6 @@ export function ExchangeControls({
       >
         <ChevronDown />
       </button>
-    </>
+    </div>
   );
 }

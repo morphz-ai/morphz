@@ -3289,6 +3289,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             <div className="exchange-surface" ref={exchange}>
               <ExchangePanel
                 open={inputVisible || conversationVisible}
+                conversationVisible={conversationVisible}
                 scopeRef={setConversationToolbarTarget}
                 controls={
                   !dialogueCanvas && inputVisible ? (
@@ -3410,6 +3411,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                         data-expanded={inputVisible || undefined}
                       >
                         <ApplicationDock
+                          compactWithExchange={!dialogueCanvas && inputVisible}
                           applications={authorizedApplications(
                             state,
                             client.boot!.principalId,

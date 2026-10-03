@@ -4,7 +4,7 @@
   bottom: 100%;
   transform: translateX(-50%);
   width: max-content;
-  max-width: calc(100% - 16px);
+  max-width: calc(100% - 32px);
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -29,11 +29,41 @@
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  overflow-x: auto;
+  min-width: 0;
   padding: 0;
   border: 0;
   background: none;
   box-shadow: none;
+}
+.application-dock-pins {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.application-dock-pins:empty {
+  display: none;
+}
+/* Reserve symmetrical room for the right-side exchange controls, so the app
+   group remains centred without ever scrolling its Launcher out of reach. */
+.exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
+  > .composer-dock
+  > .application-dock-slot {
+  max-width: calc(100% - 2 * (var(--exchange-controls-width) + 24px));
+}
+.application-dock[data-compact] .application-dock-pins {
+  display: none;
+}
+@container exchange (max-width: 360px) {
+  .exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
+    > .composer-dock
+    > .application-dock-slot {
+    left: 16px;
+    transform: none;
+    max-width: calc(100% - var(--exchange-controls-width) - 48px);
+  }
 }
 .app .application-dock-shortcut {
   flex: 0 0 32px;
@@ -57,10 +87,10 @@
   box-shadow: inset 0 0 0 1px var(--line-strong);
   color: var(--ink);
 }
-.application-dock-shortcut svg,
-.application-dock-shortcut img {
-  width: 16px;
-  height: 16px;
+.app .application-dock-shortcut svg,
+.app .application-dock-shortcut img {
+  width: 14px;
+  height: 14px;
   object-fit: contain;
 }
 .application-dock-error {

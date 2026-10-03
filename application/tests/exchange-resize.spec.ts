@@ -43,6 +43,9 @@ async function startDrag(page: Page, distance: number) {
   await page.mouse.move(x, y - distance, { steps: 8 });
 }
 async function resizeTo(page: Page, height: number) {
+  if (!(await handle(page).isVisible()))
+    await composerAction(page, "查看交流记录");
+  await expect(handle(page)).toBeVisible();
   const current = Number(await handle(page).getAttribute("aria-valuenow"));
   await startDrag(page, height - current);
   await page.mouse.up();
@@ -157,6 +160,8 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   await page.mouse.up();
   await mode(page, "input");
   await expect(page.locator(".conversation")).toHaveCount(0);
+  await expect(handle(page)).toHaveCount(0);
+  await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
   await expect(page.locator(".exchange-resize-shield")).toHaveCount(0);
   await expect(input).toBeVisible();
   await resizeTo(page, 240);
@@ -184,7 +189,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   await page.screenshot({ path: "test-results/exchange-resize-recent.png" });
 });
 
-test("轻点不折叠，Escape 和失去指针取消拖动；从收起或全屏取消都恢复原状态", async ({
+test("轻点不折叠，Escape 和失去指针取消拖动；显式展开记录与全屏取消恢复原状态", async ({
   page,
 }) => {
   const input = page.getByLabel("AI 输入内容");
@@ -213,11 +218,22 @@ test("轻点不折叠，Escape 和失去指针取消拖动；从收起或全屏�
     ["展开完整记录", "history"],
   ]) {
     await composerAction(page, button!);
+    if (state === "input") {
+      await mode(page, "input");
+      await expect(handle(page)).toHaveCount(0);
+      const collapsedPrefs = await preferences(page);
+      await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
+      expect(await preferences(page)).toEqual(collapsedPrefs);
+      // No invisible edge can start a gesture. The Human first opens reading;
+      // cancelling the following gesture restores that explicit recent state.
+      await composerAction(page, "查看交流记录");
+    }
+    const expectedState = state === "input" ? "recent" : state;
     const before = await preferences(page);
     await startDrag(page, state === "input" ? 200 : -200);
     await page.keyboard.press("Escape");
     await page.mouse.up();
-    await mode(page, state!);
+    await mode(page, expectedState!);
     expect(await preferences(page)).toEqual(before);
   }
   await expect(input).toHaveValue("TEST 取消伸缩，保留草稿");
@@ -236,6 +252,18 @@ test("键盘可伸缩，调整高度按工作页面保存，刷新和切换仍�
   await mode(page, "recent");
   await page.keyboard.press("Home");
   await mode(page, "input");
+  await expect(handle(page)).toHaveCount(0);
+  await expect(page.getByLabel("AI 输入内容")).toBeFocused();
+  const showHistory = page.getByRole("button", {
+    name: "查看交流记录",
+    exact: true,
+  });
+  await showHistory.focus();
+  await showHistory.press("Enter");
+  await mode(page, "recent");
+  await handle(page).focus();
+  await page.keyboard.press("ArrowDown");
+  await mode(page, "recent");
   await page.keyboard.press("ArrowUp");
   await mode(page, "recent");
   await resizeTo(page, 280);
@@ -360,6 +388,12 @@ test("原生松手落在命中层且中间移动被合并时，仍按最终位�
   page,
 }) => {
   await composerAction(page, "收起交流记录");
+  await expect(handle(page)).toHaveCount(0);
+  await composerAction(page, "查看交流记录");
+  await expect(handle(page)).toBeVisible();
+  const readingBefore = Number(
+    await handle(page).getAttribute("aria-valuenow"),
+  );
   await page.evaluate(() =>
     window.addEventListener(
       "pointerdown",
@@ -377,7 +411,7 @@ test("原生松手落在命中层且中间移动被合并时，仍按最终位�
   await page.locator(".exchange-resize-shield").dispatchEvent("pointerup", {
     pointerId,
     clientX: point.x,
-    clientY: point.y - 240,
+    clientY: point.y - (240 - readingBefore),
     isPrimary: true,
     pointerType: "mouse",
   });
@@ -388,6 +422,8 @@ test("原生松手落在命中层且中间移动被合并时，仍按最终位�
   await handle(page).focus();
   await page.keyboard.press("Home");
   await mode(page, "input");
+  await expect(handle(page)).toHaveCount(0);
+  await expect(page.getByLabel("AI 输入内容")).toBeFocused();
 });
 
 test("长记录调整高度不替换消息节点，阅读旧回复不被拉到底部，最新位置继续跟随", async ({
