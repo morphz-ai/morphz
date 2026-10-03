@@ -204,6 +204,9 @@ test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下�
         const normal = await colors(button);
         expect(normal.background[3]).toBe(0);
         expect(normal.contrast).toBeGreaterThanOrEqual(4.5);
+        // Work controls are intentionally hover-only; enter the real card
+        // before crossing its footer, rather than clicking an invisible action.
+        await message.hover();
         await button.hover();
         const hovered = await settled(button, "hover");
         assertState(hovered, normal);
@@ -263,10 +266,11 @@ test("状态入口仍打开对应活动，补充保留草稿并不提交消息",
     )
       writes.push(request.url());
   });
-  const { status, supplement } = await prepare(page);
+  const { message, status, supplement } = await prepare(page);
   const composer = page.getByLabel("AI 输入内容");
   const draft = "TEST 未发送的补充草稿";
   await composer.fill(draft);
+  await message.hover();
   await status.click();
   const panel = page.getByRole("complementary", { name: "Morphz 信息" });
   await expect(
@@ -276,6 +280,7 @@ test("状态入口仍打开对应活动，补充保留草稿并不提交消息",
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(composer).toHaveValue(draft);
+  await message.hover();
   await supplement.click();
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
     "核对当前称呼",

@@ -193,11 +193,11 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await expect(dialog.getByText("需要你的批准")).toHaveCount(0);
   await expect(dialog.getByText("单次授权", { exact: true })).toHaveCount(0);
   await expect(
-    dialog.getByText("执行目标：本机 ·", { exact: true }),
+    dialog.getByText("执行节点：本机 ·", { exact: true }),
   ).toBeHidden();
   await dialog.getByText("技术详情", { exact: true }).click();
   await expect(
-    dialog.getByText("执行目标：本机 ·", { exact: true }),
+    dialog.getByText("执行节点：本机 ·", { exact: true }),
   ).toBeVisible();
   await dialog.getByText("技术详情", { exact: true }).click();
   expect(calls[0]!.action.type).toBe("allow-once");
