@@ -4,11 +4,12 @@
 
 日期：2026 年 10 月 2 日。
 
-2026-10-03 补充修复进行中：真实父子孙 Thread 的注解已保存，但跨工作轮次／等待恢复后，
-模型可见 Context 没有完整回显这些已接受的元数据事实，最终自评可能错误地报告“没有注解”。
-以下新增回执已接入生产，真实 Runtime／SQLite 的跨 Group 唤醒请求链及 SQLite／PostgreSQL
-快照合同及 pure／Context／实际 Delta 门禁已通过；同一原窗口的真实模型语义复验仍待完成。
-此前通过的展示、等待与持久验证不替代这项语义验证。
+2026-10-03 补充修复：跨工作轮次／等待恢复后的模型可见回执已接入生产。
+真实 Runtime／SQLite 的跨 Group 唤醒请求链、SQLite／PostgreSQL 快照合同、pure／Context／
+实际 Delta 门禁，以及同一原窗口的真实四节点读取、等待、分组展示与实际请求回执均已通过。
+主节点最终不再把已接受的自身注解误报为缺失；它对当前不可见的子节点回执仍明确表示未知。
+这不等于父模型能作全族注解认证，四节点元数据完整性由实际 Store 和 Application 投影验证。
+历史失败与这一可见性边界保留如下，不声称所有模型永不作错误自评。
 
 本文面向 Runtime 和调用方开发者，设计一种随既有模型响应提交的展示注解。目标是在不专门增加 LLM 请求的情况下，为一次 Execution 提供短标题、阶段说明、步骤意图和结果解读。先用隔离原型与真实模型验证，按验证发现修订本文，达标后再修改 Runtime。
 
@@ -240,6 +241,49 @@ call ID／Activation／generation／cutoff、原参数／continuation 和业务�
 原 App 的活动不可用提示随后自行恢复，两个实际 scheduler GET 均 HTTP 200 且通过 Host
 schema；没有把短暂提示断言为 Runtime 离线。此时尚未部署本轮回执，旧错误正文保持
 不变，真实模型语义门槛和两项总目标仍未关闭。
+
+### 认证恢复后的同一原窗口终验
+
+生产实现已本地提交 `33a58d68`。确认无在途工作、完成在线备份后，原 Runtime 正常
+停止重开；磁盘与新进程启动使用的 binary SHA256 为
+`d3308da4a3acf89da1c7d9d1afbe65459eb89f46456fedbb29a4f5adc1b82fbd`。
+首次重启选错本机模型代理的既有凭据绑定，新的单次 TEST 请求收到 HTTP 401，零成功
+模型响应、零工具步骤；这是部署失误，不是注解行为 RED。失败目录
+`/tmp/morphz-original-receipt-acceptance.E8nZx2` 留存，只通过正常 API 取消这个新空 TEST。
+凭据文件和路由配置未改；恢复正确绑定后的代理只读检查 HTTP 200，Runtime 为 68670。
+
+随后在同一个原 App／Session 的空输入框只发送一次新 TEST，input
+`0642ce7c-e1c4-4355-a04a-f2c767844d3a`、root
+`msg_1791014382180501000_68670_0`。三个 canonical 输入来源逐字相等，1066 字，SHA256
+`1e37dfa413f4d70b5f6ccc646f722d782ed652fd77de9124067b37c41a2b803e`。
+没有构造 Human API 输入、另开中心、重放旧 root 或改写旧错误回复。
+
+实际主→A、B，A→A1 的四个独立 Thread 全部完成，恰好四次成功 Profile.read、三项
+attached 调度、两层 all Group satisfied。四节点实际 title／intent／工作阶段 progress／
+最终 result 经正式 Application 解析器与真实来源绑定验证；原窗口实看四组及各自步骤。
+两批正常 Context 维护使 Mind 28→30，工作工具恢复后继续执行，没有调容量或 usage anchor。
+
+这次实际 15 个 queued 模型请求、15 个接受响应、15 份 usage；其中主 7、A 4、B 2、A1 2，
+包含两次既有维护请求。continued／rejected／invalid wait／repair／annotation-only 各零。
+不能把这称为总体零模型请求或与旧轮请求数相等，也未量化 Provider 内部 HTTP 重试。
+单 WS 捕获实际 `.messages`，15 次请求零漏捕；25 份 accepted 回执逐条与 immutable
+source／ACT／call ID／generation／协议及该响应 carrier 的实际 manifest cutoff 核验。
+主和 A 在真实 Group 唤醒后的最终请求均包含自身 Profile、schedule 两个历史来源的精确
+call ID 与工作进度，不仅检查“至少一条跨轮回执”。验证器补强门禁的合成自测不算模型验收。
+
+原 6357 Events、80 Profile versions、14 Frames、6 protected、剧本候选／版本／回执、
+18 原 Schedule 和未来提醒均保全。两条退休的旧真实网页阅读进度句经独立内容复核，
+没有独有业务事实或未完成承诺；十条精确相关 Event 原哈希相等。没有新增摘要，不能将
+持久保全说成所有历史仍驻留 Inbox。机械观察报告保留原来的“待语义复核”状态，独立
+`semantic-maintenance-review.json` 补足这两条内容审查，不覆盖原报告。
+
+最终主模型正确确认自身维护、读取和派生调用的已接受注解，不再断言缺失；对未在自身
+可见结果里的子节点回执明确表示无法认证。回执当前只证明自身 Thread／root／generation
+的来源，不能把子节点注解挂成主节点注解，也不能用 Group 成功冒充注解接受。四节点
+完整性由 Application family／实际 Store 的独立门禁核验；不以让模型说“全通过”为理由
+放宽 owner 校验、追加 Recall 或额外 LLM 请求。证据目录
+`/tmp/morphz-original-receipt-verified-auth.yjNbbY`，物理门禁 `proofComplete=true`，
+原业务／持久门禁 `mechanismPassed=true`、`originalStrictContractPassed=true`。
 
 ## Yao 和 typed infer 的边界
 

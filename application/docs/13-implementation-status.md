@@ -1,5 +1,41 @@
 # 桌面能力实施记录
 
+## 2026-10-03 同一原窗口四节点终验：真实回执、分组与原数据保全通过
+
+本轮生产实现本地提交 `33a58d68`，未推送。原同一 App、desktop profile、Session 与
+18089 保持；确认无在途工作、完成在线备份后正常停止重开 Runtime，部署 binary SHA256
+`d3308da4a3acf89da1c7d9d1afbe65459eb89f46456fedbb29a4f5adc1b82fbd`。
+首次选错本机代理凭据绑定造成单次 TEST 的 HTTP 401，零成功响应／工具执行；该失败
+独立留存在 `/tmp/morphz-original-receipt-acceptance.E8nZx2`，仅其新空 Thread 正常取消。
+恢复正确既有绑定后，代理只读检查 HTTP 200，Runtime 68670；不改凭据文件或路由。
+
+原空输入框一次发送新 input `0642ce7c-e1c4-4355-a04a-f2c767844d3a`，root
+`msg_1791014382180501000_68670_0`，三个 canonical 来源逐字／SHA 一致。
+真实主→A、B，A→A1 全 completed，四次成功 Profile.read、三 attached 调度、两 all
+Group satisfied。四节点 title／intent／工作 progress／最终 result 经正式 Application
+解析与 producer 绑定验证；Computer Use 在同一原窗口实看各组、独立步骤与结束状态。
+没有另开手工中心、API 构造 Human 输入、重放旧 root 或覆盖旧错误输出。
+
+Context 正常两批维护 28→30 后恢复工作工具并继续。实际 15 queued／15 accepted／15
+usage，主 7／A 4／B 2／A1 2；continued、rejected、invalid wait、repair 和专用注解
+请求各零，不称总体零请求。实际 `.messages` 单 WS 全捕获，25 份 accepted 回执精确
+核 source／ACT／call ID／代际／协议／实际 manifest cutoff。主与 A 的真实 Group 最终
+新 Activation 均保留自身 Profile 和 schedule 两个历史调用及 progress；验收器门禁已
+补强，不能靠“只找到一条跨轮回执”通过，解析异常也不输出私有参数片段。
+
+原 6357 Events、80 Profile versions、14 Frames、6 protected、剧本候选／版本／回执、
+18 原 Schedule 和未来提醒保全。两条退休的旧真实阅读进度句独立语义复核通过，十条
+精确相关 Event 与基线哈希相等；无新摘要，不将非驻留记录称为 Inbox 可见。机械报告
+原 `passed=false` 的唯一末项是“待内容复核”，原报告未覆盖；补充独立语义审查文件。
+新目录 `/tmp/morphz-original-receipt-verified-auth.yjNbbY` 的原业务／持久合同与物理
+回执门禁均通过。剧本先前已在原窗生成并保存两人物与五场大纲的三候选，继续待人审，
+没有伪造采纳、批准或覆盖正式空稿；本轮只核保全，不把候选自动采纳当修复门槛。
+
+模型最终正确确认主节点注解；对子节点回执未在自身结果里展示明确表示未知，并非断言
+丢失。当前回执仅证明本 Thread 的来源；四节点注解完整性由 Application family／Store
+门禁核验，而非让父模型作全局验收器。不放宽 owner 边界或增加模型请求来强行生成
+“全通过”。下面各节保留当阶段的失败和未部署状态，不能当作本段之后的当前运行状态。
+
 ## 2026-10-03 跨 Group 等待的注解回执：行为 RED 后请求链与实际 Store 通过
 
 重新检查时磁盘空间已恢复，未追加删除缓存。第一次成功编译后的新夹具因沿用
